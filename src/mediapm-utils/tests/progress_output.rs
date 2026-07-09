@@ -13,6 +13,7 @@
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
+/// Default terminal dimensions for standard tests.
 const H: u16 = 24;
 const W: u16 = 40;
 
@@ -22,17 +23,33 @@ const T: &str = "{prefix:>8.8} [{elapsed_precise}] {wide_bar} {pos}/{len} {msg}"
 /// Template with spinner + wide bar for spinner tests.
 const TS: &str = "{spinner} {prefix:>8.8} [{elapsed_precise}] {wide_bar} {pos}/{len} {msg}";
 
+/// Template for narrow terminals where the full template overflows W.
+const TN: &str = "{prefix:>8.8} {wide_bar} {pos}/{len}";
+
+/// Create a standard [`ProgressStyle`] from template [`T`].
 fn style() -> ProgressStyle {
     ProgressStyle::with_template(T).unwrap().progress_chars("█░")
 }
 
+/// Create a spinner [`ProgressStyle`] from template [`TS`].
 fn spinner_style() -> ProgressStyle {
     ProgressStyle::with_template(TS).unwrap().progress_chars("█░").tick_chars("◐◓")
 }
 
-/// Create a [`MultiProgress`] + [`InMemoryTerm`] pair for one test.
+/// Create a [`ProgressStyle`] from a custom template string.
+fn style_from(template: &str) -> ProgressStyle {
+    ProgressStyle::with_template(template).unwrap().progress_chars("█░")
+}
+
+/// Create a [`MultiProgress`] + [`InMemoryTerm`] pair for one test
+/// at the default terminal size (H=24, W=40).
 fn mk() -> (MultiProgress, InMemoryTerm) {
-    let term = InMemoryTerm::new(H, W);
+    mk_with_size(H, W)
+}
+
+/// Create a [`MultiProgress`] + [`InMemoryTerm`] pair at a custom size.
+fn mk_with_size(h: u16, w: u16) -> (MultiProgress, InMemoryTerm) {
+    let term = InMemoryTerm::new(h, w);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     (MultiProgress::with_draw_target(target), term)
 }
@@ -653,4 +670,664 @@ fn two_lines_child_finish_and_clear_early() {
     c.tick();
     o.tick();
     assert_eq!(term.contents(), " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/4");
+}
+
+// ── Spinner on both children AND overall ─────────────────────────────────────
+
+#[test]
+fn spinner_child_and_overall_initial() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    o.set_style(spinner_style());
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.set_style(spinner_style());
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◐    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "◐  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn spinner_child_and_overall_child_progress() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    o.set_style(spinner_style());
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.set_style(spinner_style());
+    c.inc(1);
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◐    tool1 [00:00:00] ██████░░░░░░░ 1/2\n",
+            "◐  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn spinner_child_and_overall_full() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    o.set_style(spinner_style());
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.set_style(spinner_style());
+    c.inc(2);
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◐    tool1 [00:00:00] █████████████ 2/2\n",
+            "◐  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn spinner_child_finishes_overall_active() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    o.set_style(spinner_style());
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.set_style(spinner_style());
+    c.tick();
+    o.tick();
+    c.finish_with_message("done");
+    c.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◓    tool1 [00:00:00] █████████ 2/2 done\n",
+            "◐  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn spinner_on_both_finish() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    o.set_style(spinner_style());
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.set_style(spinner_style());
+    c.tick();
+    o.tick();
+    c.inc(2);
+    o.inc(5);
+    c.finish_with_message("done");
+    o.finish_with_message("done");
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◓    tool1 [00:00:00] █████████ 2/2 done\n",
+            "◓  overall [00:00:00] █████████ 5/5 done",
+        ),
+    );
+}
+
+// ── More transition patterns ─────────────────────────────────────────────────
+
+#[test]
+fn transition_finish_without_clear() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.tick();
+    o.tick();
+    c.finish();
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool1 [00:00:00] ███████████████ 2/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn transition_abandon_child() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.inc(1);
+    c.tick();
+    o.tick();
+    c.abandon_with_message("failed");
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool1 [00:00:00] ████░░░░░ 1/2 failed\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn transition_two_children_both_finish() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let a = ins_bar(&mp, &o, 3, "tool-a");
+    let b = ins_bar(&mp, &o, 2, "tool-b");
+    a.inc(3);
+    b.inc(2);
+    a.tick();
+    b.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  tool-a [00:00:00] ███████████████ 3/3\n",
+            "  tool-b [00:00:00] ███████████████ 2/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn transition_child_progress_then_clear() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let child1 = ins_bar(&mp, &o, 2, "tool1");
+    child1.inc(2);
+    child1.finish_and_clear();
+    child1.tick();
+    o.tick();
+    drop(child1);
+    o.inc(2);
+    let child2 = ins_bar(&mp, &o, 3, "tool2");
+    child2.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            " overall [00:00:00] ██████░░░░░░░░░ 2/5",
+        ),
+    );
+}
+
+#[test]
+fn transition_abandon_and_reset() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let c = ins_bar(&mp, &o, 5, "tool1");
+    c.inc(3);
+    c.abandon_with_message("failed");
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool1 [00:00:00] █████░░░░ 3/5 failed\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+    c.reset();
+    c.set_message("");
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool1 [00:00:00] ░░░░░░░░░░░░░░░ 0/5\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn transition_out_of_order_clear() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let a = ins_bar(&mp, &o, 2, "tool-a");
+    let b = ins_bar(&mp, &o, 2, "tool-b");
+    let c = ins_bar(&mp, &o, 2, "tool-c");
+    a.tick();
+    b.tick();
+    c.tick();
+    o.tick();
+    b.finish_and_clear();
+    b.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  tool-a [00:00:00] ░░░░░░░░░░░░░░░ 0/2\n",
+            "  tool-c [00:00:00] ░░░░░░░░░░░░░░░ 0/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn transition_child_abandoned_new_child() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.inc(1);
+    c.abandon_with_message("failed");
+    c.tick();
+    o.tick();
+    c.finish_and_clear();
+    c.tick();
+    o.tick();
+    drop(c);
+    let c2 = ins_bar(&mp, &o, 2, "tool2");
+    c2.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool2 [00:00:00] ░░░░░░░░░░░░░░░ 0/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+#[test]
+fn transition_two_children_one_finishes_one_clears() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let a = ins_bar(&mp, &o, 3, "tool-a");
+    let b = ins_bar(&mp, &o, 2, "tool-b");
+    a.inc(3);
+    a.finish();
+    b.finish_and_clear();
+    a.tick();
+    b.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  tool-a [00:00:00] ███████████████ 3/3\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+    );
+}
+
+// ── Worker count changes ─────────────────────────────────────────────────────
+
+#[test]
+fn worker_count_grow() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 10, "overall");
+    let c1 = ins_bar(&mp, &o, 2, "tool1");
+    let c2 = ins_bar(&mp, &o, 3, "tool2");
+    let c3 = ins_bar(&mp, &o, 1, "tool3");
+    c1.tick();
+    c2.tick();
+    c3.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool1 [00:00:00] ░░░░░░░░░░░░░░░ 0/2\n",
+            "   tool2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "   tool3 [00:00:00] ░░░░░░░░░░░░░░░ 0/1\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░ 0/10",
+        ),
+    );
+}
+
+#[test]
+fn worker_count_shrink() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 10, "overall");
+    let a = ins_bar(&mp, &o, 3, "tool-a");
+    let b = ins_bar(&mp, &o, 2, "tool-b");
+    let c = ins_bar(&mp, &o, 1, "tool-c");
+    a.tick();
+    b.tick();
+    c.tick();
+    o.tick();
+    b.finish_and_clear();
+    b.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  tool-a [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  tool-c [00:00:00] ░░░░░░░░░░░░░░░ 0/1\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░ 0/10",
+        ),
+    );
+}
+
+#[test]
+fn worker_count_surge_drain() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let mut kids = Vec::new();
+    for i in 0..5 {
+        let name = format!("t{i:02}");
+        let c = ins_bar(&mp, &o, 1, &name);
+        c.inc(1);
+        c.finish_and_clear();
+        c.tick();
+        kids.push(c);
+    }
+    o.inc(5);
+    o.tick();
+    assert_eq!(term.contents(), " overall [00:00:00] ███████████████ 5/5");
+}
+
+#[test]
+fn worker_count_new_batch() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 10, "overall");
+    let a = ins_bar(&mp, &o, 2, "tool1");
+    let b = ins_bar(&mp, &o, 2, "tool2");
+    a.finish_and_clear();
+    b.finish_and_clear();
+    a.tick();
+    b.tick();
+    o.tick();
+    drop(a);
+    drop(b);
+    o.inc(4);
+    let c = ins_bar(&mp, &o, 2, "tool3");
+    let d = ins_bar(&mp, &o, 1, "tool4");
+    c.tick();
+    d.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool3 [00:00:00] ░░░░░░░░░░░░░░░ 0/2\n",
+            "   tool4 [00:00:00] ░░░░░░░░░░░░░░░ 0/1\n",
+            " overall [00:00:00] █████░░░░░░░░░ 4/10",
+        ),
+    );
+}
+
+// ── Many simultaneous bars ────────────────────────────────────────────────────
+
+#[test]
+fn many_bars_fifty() {
+    let (mp, term) = mk_with_size(55, 40);
+    let o = add_bar(&mp, 50, "overall");
+    let mut kids = Vec::new();
+    for i in 0..50 {
+        let p = format!("t{i:02}");
+        let c = ins_bar(&mp, &o, 1, &p);
+        c.tick();
+        kids.push(c);
+    }
+    o.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert_eq!(lines.len(), 51, "50 children + 1 overall = 51 lines");
+    assert_eq!(lines[0], "     t00 [00:00:00] ░░░░░░░░░░░░░░░ 0/1");
+    assert_eq!(lines[49], "     t49 [00:00:00] ░░░░░░░░░░░░░░░ 0/1");
+    assert_eq!(lines[50], " overall [00:00:00] ░░░░░░░░░░░░░░ 0/50");
+}
+
+#[test]
+fn many_bars_hundred() {
+    let (mp, term) = mk_with_size(105, 40);
+    let o = add_bar(&mp, 100, "overall");
+    let mut kids = Vec::new();
+    for i in 0..100 {
+        let p = format!("t{i:02}");
+        let c = ins_bar(&mp, &o, 1, &p);
+        c.tick();
+        kids.push(c);
+    }
+    o.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert_eq!(lines.len(), 101, "100 children + 1 overall = 101 lines");
+    assert_eq!(lines[0], "     t00 [00:00:00] ░░░░░░░░░░░░░░░ 0/1");
+    assert_eq!(lines[99], "     t99 [00:00:00] ░░░░░░░░░░░░░░░ 0/1");
+    assert!(lines[100].starts_with(" overall [00:00:00] "));
+    assert!(lines[100].ends_with(" 0/100"));
+}
+
+// ── Extreme width ────────────────────────────────────────────────────────────
+
+#[test]
+fn narrow_terminal_single_bar() {
+    let (mp, term) = mk_with_size(24, 10);
+    let pb = ProgressBar::new(4);
+    pb.set_style(style_from(TN));
+    pb.set_prefix("overall".to_string());
+    let pb = mp.add(pb);
+    pb.tick();
+    assert_eq!(term.contents(), concat!(" overall\n", "0/4"));
+}
+
+#[test]
+fn narrow_terminal_two_lines() {
+    let (mp, term) = mk_with_size(24, 10);
+    let o = ProgressBar::new(5);
+    o.set_style(style_from(TN));
+    o.set_prefix("overall".to_string());
+    let c = ProgressBar::new(3);
+    c.set_style(style_from(TN));
+    c.set_prefix("tool1".to_string());
+    let o = mp.add(o);
+    let c = mp.insert_before(&o, c);
+    c.tick();
+    o.tick();
+    assert_eq!(term.contents(), concat!("   tool1\n", "0/3\n", " overall\n", "0/5"),);
+}
+
+#[test]
+fn wide_terminal_single_bar() {
+    let (mp, term) = mk_with_size(24, 120);
+    let pb = add_bar(&mp, 4, "overall");
+    pb.tick();
+    let s = term.contents();
+    assert_eq!(s.lines().count(), 1, "single line at W=120");
+    assert!(s.starts_with(" overall [00:00:00] "));
+    assert!(s.ends_with(" 0/4"));
+}
+
+#[test]
+fn wide_terminal_two_lines() {
+    let (mp, term) = mk_with_size(24, 120);
+    let o = add_bar(&mp, 4, "overall");
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.tick();
+    o.tick();
+    let s = term.contents();
+    let lines: Vec<&str> = s.lines().collect();
+    assert_eq!(lines.len(), 2, "two lines at W=120");
+    assert!(lines[0].starts_with("   tool1 [00:00:00] "));
+    assert!(lines[0].ends_with(" 0/2"));
+    assert!(lines[1].starts_with(" overall [00:00:00] "));
+    assert!(lines[1].ends_with(" 0/4"));
+}
+
+// ── Extreme height ───────────────────────────────────────────────────────────
+
+#[test]
+fn tall_terminal() {
+    let (mp, term) = mk_with_size(50, 40);
+    let o = add_bar(&mp, 3, "overall");
+    let a = ins_bar(&mp, &o, 5, "tool-a");
+    let b = ins_bar(&mp, &o, 3, "tool-b");
+    a.tick();
+    b.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  tool-a [00:00:00] ░░░░░░░░░░░░░░░ 0/5\n",
+            "  tool-b [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+    );
+}
+
+#[test]
+fn short_terminal_two_lines() {
+    let (mp, term) = mk_with_size(3, 40);
+    let o = add_bar(&mp, 4, "overall");
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool1 [00:00:00] ░░░░░░░░░░░░░░░ 0/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/4",
+        ),
+    );
+}
+
+#[test]
+fn short_terminal_three_lines() {
+    let (mp, term) = mk_with_size(3, 40);
+    let o = add_bar(&mp, 3, "overall");
+    let a = ins_bar(&mp, &o, 5, "tool-a");
+    let b = ins_bar(&mp, &o, 3, "tool-b");
+    a.tick();
+    b.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  tool-a [00:00:00] ░░░░░░░░░░░░░░░ 0/5\n",
+            "  tool-b [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+    );
+}
+
+// ── Overflow ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn overflow_h3_5children() {
+    let (mp, term) = mk_with_size(3, 40);
+    let o = add_bar(&mp, 10, "overall");
+    let mut kids = Vec::new();
+    for i in 0..5 {
+        let p = format!("child{i}");
+        let c = ins_bar(&mp, &o, 3, &p);
+        c.tick();
+        kids.push(c);
+    }
+    o.tick();
+    // At H=3: first 3 children visible (child0, child1, child2).
+    assert_eq!(term.contents().lines().count(), 3);
+}
+
+#[test]
+fn overflow_h3_5children_clear_last() {
+    let (mp, term) = mk_with_size(3, 40);
+    let o = add_bar(&mp, 10, "overall");
+    let mut kids = Vec::new();
+    for i in 0..5 {
+        let p = format!("child{i}");
+        let c = ins_bar(&mp, &o, 3, &p);
+        c.tick();
+        kids.push(c);
+    }
+    o.tick();
+    // At H=3: first 3 children visible (child0, child1, child2).
+    assert_eq!(term.contents().lines().count(), 3, "3 lines visible at H=3");
+    // Clear the last created child (child4, not visible at H=3).
+    kids[4].finish_and_clear();
+    kids[4].tick();
+    o.tick();
+    // Still only 3 lines.
+    assert_eq!(term.contents().lines().count(), 3, "still 3 lines visible after clear");
+}
+
+#[test]
+fn overflow_h3_10children() {
+    let (mp, term) = mk_with_size(3, 40);
+    let o = add_bar(&mp, 10, "overall");
+    let mut kids = Vec::new();
+    for i in 0..10 {
+        let p = format!("child{i}");
+        let c = ins_bar(&mp, &o, 3, &p);
+        c.tick();
+        kids.push(c);
+    }
+    o.tick();
+    assert_eq!(term.contents().lines().count(), 3);
+}
+
+#[test]
+fn overflow_h4_6children_finish_clear_all() {
+    let (mp, term) = mk_with_size(4, 40);
+    let o = add_bar(&mp, 10, "overall");
+    let mut kids = Vec::new();
+    for i in 0..6 {
+        let p = format!("child{i}");
+        let c = ins_bar(&mp, &o, 3, &p);
+        c.tick();
+        kids.push(c);
+    }
+    o.tick();
+    // At H=4: first 4 children visible.
+    assert_eq!(term.contents().lines().count(), 4);
+    // Clear children that were past the visible window.
+    kids[4].finish_and_clear();
+    kids[5].finish_and_clear();
+    kids[4].tick();
+    kids[5].tick();
+    o.tick();
+    // Still 4 lines.
+    assert_eq!(term.contents().lines().count(), 4);
+}
+
+// ── Combined stress ──────────────────────────────────────────────────────────
+
+#[test]
+fn overflow_with_spinner() {
+    let (mp, term) = mk_with_size(3, 40);
+    let o = add_bar(&mp, 10, "overall");
+    o.set_style(spinner_style());
+    let mut kids = Vec::new();
+    for i in 0..5 {
+        let p = format!("child{i}");
+        let c = ins_bar(&mp, &o, 3, &p);
+        c.set_style(spinner_style());
+        c.tick();
+        kids.push(c);
+    }
+    o.tick();
+    assert_eq!(term.contents().lines().count(), 3);
+}
+
+#[test]
+fn worker_surge_with_overflow() {
+    let (mp, term) = mk_with_size(3, 40);
+    let o = add_bar(&mp, 10, "overall");
+    let mut kids = Vec::new();
+    for i in 0..5 {
+        let p = format!("child{i}");
+        let c = ins_bar(&mp, &o, 3, &p);
+        c.tick();
+        kids.push(c);
+    }
+    o.tick();
+    // At H=3: first 3 children visible.
+    assert_eq!(term.contents().lines().count(), 3);
+    // Surge: add 5 more children.
+    for i in 5..10 {
+        let p = format!("child{i}");
+        let c = ins_bar(&mp, &o, 3, &p);
+        c.tick();
+        kids.push(c);
+    }
+    o.tick();
+    // Still only 3 lines visible.
+    assert_eq!(term.contents().lines().count(), 3);
 }
