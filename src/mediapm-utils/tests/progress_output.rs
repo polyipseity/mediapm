@@ -36,6 +36,16 @@ fn spinner_style() -> ProgressStyle {
     ProgressStyle::with_template(TS).unwrap().progress_chars("█░").tick_chars("◐◓")
 }
 
+/// Create a spinner [`ProgressStyle`] with a 6-frame cycle for animation tests.
+///
+/// Empirical probe: with N tick chars, the visible cycling goes through indices
+/// 1, 2, …, N-2, 0 (skipping the last index N-1).  A 6-frame string yields
+/// 5 distinct cycling frames: ◓ → ◑ → ◒ → ● → ◐ → …  The 6th frame (○) is
+/// only shown when the bar finishes or is abandoned.
+fn spinner_long_style() -> ProgressStyle {
+    ProgressStyle::with_template(TS).unwrap().progress_chars("█░").tick_chars("◐◓◑◒●○")
+}
+
 /// Create a [`ProgressStyle`] from a custom template string.
 fn style_from(template: &str) -> ProgressStyle {
     ProgressStyle::with_template(template).unwrap().progress_chars("█░")
@@ -441,6 +451,172 @@ fn spinner_finishes() {
     pb.finish_with_message("done");
     pb.tick(); // ◓ (second tick char after finish ticks)
     assert_eq!(term.contents(), "◓     test [00:00:00] █████████ 5/5 done");
+}
+
+// ── Spinner: multi-frame animation (uses 5-frame cycle) ──────────────────────
+
+#[test]
+fn spinner_animation_cycle() {
+    let (mp, term) = mk();
+    let pb = add_bar(&mp, 5, "test");
+    pb.set_style(spinner_long_style());
+    // 6-frame "◐◓◑◒●○" cycles as: ◓ → ◑ → ◒ → ● → ◐ → ◓ → …
+    pb.tick();
+    assert_eq!(term.contents(), "◓     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 1/5");
+    pb.tick();
+    assert_eq!(term.contents(), "◑     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 2/5");
+    pb.tick();
+    assert_eq!(term.contents(), "◒     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 3/5");
+    pb.tick();
+    assert_eq!(term.contents(), "●     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 4/5");
+    pb.tick();
+    assert_eq!(term.contents(), "◐     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 5/5 wraps to ◐");
+}
+
+#[test]
+fn spinner_child_animation_with_overall() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.set_style(spinner_long_style());
+    // Child progresses through frames while overall stays static.
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◓    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+        "child frame 1/5 ◓",
+    );
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◑    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+        "child frame 2/5 ◑",
+    );
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◒    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+        "child frame 3/5 ◒",
+    );
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "●    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+        ),
+        "child frame 4/5 ●",
+    );
+}
+
+// ── Spinner: multi-bar animation ─────────────────────────────────────────────
+
+#[test]
+fn spinner_both_animate_together() {
+    let (mp, term) = mk();
+    let o = add_bar(&mp, 5, "overall");
+    o.set_style(spinner_long_style());
+    let c = ins_bar(&mp, &o, 2, "tool1");
+    c.set_style(spinner_long_style());
+    // Both progress independently.
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◓    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "◓  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+        ),
+        "both frame 1/5 ◓",
+    );
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◑    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "◑  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+        ),
+        "both frame 2/5 ◑",
+    );
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "◒    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "◒  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+        ),
+        "both frame 3/5 ◒",
+    );
+}
+
+// ── Spinner: finish/reset/abandon animation behavior ─────────────────────────
+
+#[test]
+fn spinner_finish_frame_stability() {
+    let (mp, term) = mk();
+    let pb = add_bar(&mp, 5, "test");
+    pb.set_style(spinner_long_style());
+    pb.tick();
+    assert_eq!(term.contents(), "◓     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
+    pb.tick();
+    assert_eq!(term.contents(), "◑     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
+    // Finish — frame should settle on the last tick char (○).
+    pb.finish_with_message("done");
+    pb.tick();
+    assert_eq!(term.contents(), "○     test [00:00:00] █████████ 5/5 done");
+    // Additional ticks should still show the same final frame.
+    pb.tick();
+    assert_eq!(term.contents(), "○     test [00:00:00] █████████ 5/5 done");
+}
+
+#[test]
+fn spinner_reset_continues_animation() {
+    let (mp, term) = mk();
+    let pb = add_bar(&mp, 5, "test");
+    pb.set_style(spinner_long_style());
+    pb.tick(); // ◓ (frame 1)
+    pb.tick(); // ◑ (frame 2)
+    pb.tick(); // ◒ (frame 3)
+    pb.reset();
+    pb.tick(); // Continued from frame 4 → ●
+    // Reset does NOT restart the animation cycle; it continues from where it was.
+    assert_eq!(
+        term.contents(),
+        "●     test [00:00:00] ░░░░░░░░░░░░░ 0/5",
+        "after reset, animation continues from next frame (●)"
+    );
+}
+
+#[test]
+fn spinner_abandon_ends_on_last_frame() {
+    let (mp, term) = mk();
+    let pb = add_bar(&mp, 5, "test");
+    pb.set_style(spinner_style());
+    // 2-frame "◐◓": first tick shows ◐.
+    pb.tick();
+    assert_eq!(term.contents(), "◐     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
+    // Abandon — frame settles on the last tick char (◓).
+    pb.abandon_with_message("failed");
+    pb.tick();
+    assert_eq!(term.contents(), "◓     test [00:00:00] ░░░░░░░ 0/5 failed");
+    // Additional ticks stay on the final frame.
+    pb.tick();
+    assert_eq!(term.contents(), "◓     test [00:00:00] ░░░░░░░ 0/5 failed");
 }
 
 // ── Edge cases ───────────────────────────────────────────────────────────────
