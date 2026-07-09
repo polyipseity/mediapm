@@ -1084,4 +1084,81 @@ mod tests {
         assert_eq!(h.total(), 10, "handle total preserved after finish_error");
         g.join(); // join must not panic on any state
     }
+
+    // ── recording_handle_set_message_and_prefix_ops ──
+
+    #[test]
+    fn recording_handle_set_message_and_prefix_ops() {
+        let h = RecordingProgressHandle::new(10);
+        h.set_message("hello");
+        h.set_prefix("pfx");
+        assert_eq!(
+            h.ops(),
+            vec![
+                ProgressOp::SetMessage { msg: "hello".to_string() },
+                ProgressOp::SetPrefix { prefix: "pfx".to_string() },
+            ]
+        );
+    }
+
+    // ── recording_group_add_bar_multiple_groups_independent ──
+
+    #[test]
+    fn recording_group_add_bar_multiple_groups_independent() {
+        let g1 = RecordingProgressGroup::new();
+        let g2 = RecordingProgressGroup::new();
+
+        let h1 = g1.add_bar(10, "group1-bar");
+        h1.advance(1);
+
+        let h2 = g2.add_bar(20, "group2-bar");
+        h2.advance(2);
+        h2.finish();
+
+        assert_eq!(
+            g1.ops(),
+            vec![
+                ProgressOp::AddBar { total: 10, label: "group1-bar".to_string() },
+                ProgressOp::Advance { delta: 1 },
+            ],
+            "group1 must have its own ops, unaffected by group2"
+        );
+
+        assert_eq!(
+            g2.ops(),
+            vec![
+                ProgressOp::AddBar { total: 20, label: "group2-bar".to_string() },
+                ProgressOp::Advance { delta: 2 },
+                ProgressOp::Finish,
+            ],
+            "group2 must have its own ops, unaffected by group1"
+        );
+    }
+
+    // ── recording_handle_finish_ops_sequence ──
+
+    #[test]
+    fn recording_handle_finish_ops_sequence() {
+        let h = RecordingProgressHandle::new(5);
+        assert_eq!(h.ops(), vec![], "no ops yet");
+
+        h.finish();
+        assert_eq!(h.ops(), vec![ProgressOp::Finish], "finish() records Finish");
+
+        let h2 = RecordingProgressHandle::new(5);
+        h2.finish_success("ok");
+        assert_eq!(
+            h2.ops(),
+            vec![ProgressOp::FinishSuccess { msg: "ok".to_string() }],
+            "finish_success records FinishSuccess"
+        );
+
+        let h3 = RecordingProgressHandle::new(5);
+        h3.finish_error("fail");
+        assert_eq!(
+            h3.ops(),
+            vec![ProgressOp::FinishError { msg: "fail".to_string() }],
+            "finish_error records FinishError"
+        );
+    }
 }
