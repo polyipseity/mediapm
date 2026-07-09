@@ -65,6 +65,7 @@ pub(crate) async fn reconcile_desired_tools(
     desired_tools: &BTreeMap<String, serde_json::Value>,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
     check_tag_updates: bool,
+    progress_group: Option<&ProgressGroup>,
 ) -> Result<ToolSyncReport, MediaPmError> {
     let mut report = ToolSyncReport::default();
 
@@ -89,14 +90,22 @@ pub(crate) async fn reconcile_desired_tools(
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = desired_tools.len() as u64;
-    let (group, pb) = ProgressGroup::with_overall("syncing tools", total_tools);
+    let (owned_group, pb) = if let Some(pg) = progress_group {
+        (None, pg.add_bar(total_tools, "syncing tools"))
+    } else {
+        let (g, p) = ProgressGroup::with_overall("syncing tools", total_tools);
+        (Some(g), p)
+    };
+    let effective_group: &ProgressGroup =
+        owned_group.as_ref().or(progress_group).expect("at least one progress group available");
 
     for (tool_id, _requirement_value) in desired_tools {
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
         // Fetch tool payload, import to CAS, get content map + command.
-        let payload_result = fetch_and_import_tool_payload(cas, tool_id, &cache, &group).await;
+        let payload_result =
+            fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group).await;
 
         match payload_result {
             Ok(Some(payload)) => {
@@ -196,7 +205,9 @@ pub(crate) async fn reconcile_desired_tools(
     }
 
     pb.finish_success("tools synced");
-    group.join_and_clear();
+    if let Some(g) = owned_group {
+        g.join_and_clear();
+    }
 
     // Companion binding resolution (for ffmpeg/deno selectors).
     let _ffmpeg_selection = resolve_companion_ffmpeg_selection(desired_tools);

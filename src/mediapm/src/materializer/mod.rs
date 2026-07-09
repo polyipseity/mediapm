@@ -119,6 +119,7 @@ pub async fn sync_hierarchy(
     _state: &MediaPmState,
     cas: &FileSystemCas,
     verify_materialization: bool,
+    progress_group: Option<&ProgressGroup>,
 ) -> Result<MaterializeReport, MediaPmError> {
     let hierarchy_root = &paths.hierarchy_root_dir;
 
@@ -140,8 +141,13 @@ pub async fn sync_hierarchy(
     // --- Concurrent materialization ---
     let worker_count = hierarchy_worker_count();
     let semaphore = Arc::new(Semaphore::new(worker_count));
-    let group = ProgressGroup::new();
-    let pb = group.add_bar(flattened.len() as u64, "materializing");
+    let (owned_group, pb) = if let Some(pg) = progress_group {
+        (None, pg.add_bar(flattened.len() as u64, "materializing"))
+    } else {
+        let g = ProgressGroup::new();
+        let p = g.add_bar(flattened.len() as u64, "materializing");
+        (Some(g), p)
+    };
 
     let mut join_set = tokio::task::JoinSet::new();
     let document_arc = Arc::new(document.clone());
@@ -193,7 +199,9 @@ pub async fn sync_hierarchy(
     } else {
         pb.finish_success("materialization complete");
     }
-    group.join_and_clear();
+    if let Some(g) = owned_group {
+        g.join_and_clear();
+    }
     if let Some(e) = materialize_error {
         return Err(e);
     }

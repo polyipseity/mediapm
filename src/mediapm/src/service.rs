@@ -731,6 +731,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             &desired_tools,
             &inherited_env_vars,
             check_tag_updates,
+            None,
         )
         .await?;
 
@@ -898,6 +899,7 @@ impl MediaPmService<FileSystemCas> {
                 &state,
                 &cas,
                 verify_materialization,
+                None,
             )
             .await?
         };
