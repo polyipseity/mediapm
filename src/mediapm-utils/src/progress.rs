@@ -65,13 +65,13 @@ mod inner {
 
     const CHILD_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>12.12} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {msg} ({eta})";
 
-    const OVERALL_BAR_TEMPLATE: &str =
-        "{prefix:>12.12} [{elapsed_precise}] {wide_bar:.green/dim} {pos}/{len} {msg}";
+    const OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>12.12} [{elapsed_precise}] {wide_bar:.green/dim} {pos}/{len} {msg}";
 
     const COMPACT_BAR_TEMPLATE: &str =
         "{spinner:.green} {prefix} [{elapsed_precise}] {pos}/{len} {msg}";
 
-    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{prefix} [{elapsed_precise}] {pos}/{len} {msg}";
+    const COMPACT_OVERALL_BAR_TEMPLATE: &str =
+        "{spinner:.green} {prefix} [{elapsed_precise}] {pos}/{len} {msg}";
 
     fn child_bar_style() -> ProgressStyle {
         ProgressStyle::with_template(CHILD_BAR_TEMPLATE)
@@ -84,11 +84,13 @@ mod inner {
         ProgressStyle::with_template(OVERALL_BAR_TEMPLATE)
             .expect("invalid overall bar template")
             .progress_chars("█░")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
     }
 
     fn compact_overall_bar_style() -> ProgressStyle {
         ProgressStyle::with_template(COMPACT_OVERALL_BAR_TEMPLATE)
             .expect("invalid compact overall bar template")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
     }
 
     fn apply_overall_bar_style(pb: &ProgressBar) {
@@ -251,9 +253,8 @@ mod inner {
 
         /// Create a group with an overall aggregate bar pinned at the bottom.
         ///
-        /// The overall bar has no [`{spinner}`] in its template, so
-        /// [`enable_steady_tick`] is intentionally **not** called — the bar
-        /// only redraws when its position or message changes.
+        /// The overall bar shares the same [`{spinner}`] prefix as child bars
+        /// so all bars are visually aligned horizontally.
         ///
         /// When progress has been globally disabled, returns a no-op group and
         /// a no-op handle.
@@ -269,6 +270,7 @@ mod inner {
             let inner = ProgressBar::new(total);
             apply_overall_bar_style(&inner);
             inner.set_prefix(label.to_string());
+            inner.enable_steady_tick(Duration::from_millis(100));
             let overall_handle = mp.add(inner);
             let handle = ProgressHandle { inner: Some(overall_handle) };
             let group = Self { inner: mp, overall: Some(handle.clone()), enabled: true };
