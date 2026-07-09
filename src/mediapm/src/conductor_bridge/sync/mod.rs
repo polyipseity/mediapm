@@ -206,7 +206,7 @@ pub(crate) async fn reconcile_desired_tools(
 
     pb.finish_success("tools synced");
     if let Some(g) = owned_group {
-        g.join_and_clear();
+        g.join();
     }
 
     // Companion binding resolution (for ffmpeg/deno selectors).

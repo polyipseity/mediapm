@@ -462,10 +462,15 @@ mod inner {
         /// Block until all bars in the group reach a finished state.
         ///
         /// In indicatif 0.17 `MultiProgress` has no blocking join, so this is
-        /// effectively a no-op.
+        /// effectively a no-op.  Bars remain visible in the terminal after
+        /// this call.
         pub fn join(&self) {}
 
         /// Clear the terminal display after all bars are done.
+        ///
+        /// Removes the progress bars from the terminal entirely.  Prefer
+        /// [`join()`](Self::join) to keep bars visible so users can read the
+        /// final state of each bar after work completes.
         pub fn join_and_clear(&self) {
             if let Some(ref slots) = self.slots {
                 slots.clear();
