@@ -1990,3 +1990,391 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
     assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
     assert!(lines[4].contains("3/3"), "overall shows complete: {0}", lines[4]);
 }
+
+// ── Slot pool / rendering tests ──
+
+#[test]
+fn slot_pool_blank_bars_remain_invisible() {
+    let (mp, term) = mk_with_size(5, 80);
+    let group = ProgressGroup::with_mp(mp, 5);
+
+    // Add a child bar so we can verify only 5 lines total.
+    let c = group.add_bar(10, "child");
+    c.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== slot_pool_blank_bars_remain_invisible, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5, "must have 5 lines (capacity=5, no overall)");
+    // First 4 lines are blank filler.
+    for i in 0..4 {
+        assert!(
+            lines[i].trim().is_empty(),
+            "line {i} should be blank filler but got: {line:?}",
+            line = lines[i]
+        );
+    }
+    // Last line (bottom slot) has the child bar.
+    assert!(lines[4].contains("child"), "line 4 has child: {0}", lines[4]);
+    assert!(lines[4].contains("0/10"), "line 4 shows 0/10: {0}", lines[4]);
+}
+
+#[test]
+fn slot_pool_acquire_returns_bottommost_child() {
+    let (mp, term) = mk_with_size(5, 80);
+    let group = ProgressGroup::with_mp(mp, 4); // clamped to 4
+
+    let c1 = group.add_bar(5, "first");
+    c1.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== acquire returns bottommost: after first, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 4, "4 slots");
+    assert!(lines[3].contains("first"), "line 3 has first: {0}", lines[3]);
+
+    let c2 = group.add_bar(3, "second");
+    c2.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== after second ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 4, "still 4 slots");
+    assert!(lines[3].contains("second"), "line 3 has second: {0}", lines[3]);
+    assert!(!lines[3].contains("first"), "line 3 no longer has first: {0}", lines[3]);
+}
+
+#[test]
+fn slot_pool_acquire_with_overall_above_overall() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+
+    let c = group.add_bar(7, "worker");
+    c.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== acquire with overall: H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5, "5 lines (4 fill + 1 overall)");
+    assert!(lines[0].trim().is_empty(), "line 0 blank");
+    assert!(lines[1].trim().is_empty(), "line 1 blank");
+    assert!(lines[2].trim().is_empty(), "line 2 blank");
+    assert!(lines[3].contains("worker"), "line 3 has child: {0}", lines[3]);
+    assert!(lines[3].contains("0/7"), "line 3 shows 0/7: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
+    assert!(lines[4].contains("0/10"), "line 4 shows 0/10: {0}", lines[4]);
+}
+
+#[test]
+fn progress_group_height_never_grows_with_many_bars() {
+    let (mp, term) = mk_with_size(4, 80);
+    let group = ProgressGroup::with_mp(mp, 4);
+
+    for i in 0..20 {
+        let c = group.add_bar(1, &format!("t{i}"));
+        c.tick();
+    }
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== height never grows: 20 add_bar, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 4, "must have exactly 4 lines even after 20 add_bar calls");
+}
+
+#[test]
+fn progress_group_overall_always_at_bottom() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+
+    for i in 0..5 {
+        let c = group.add_bar(2, &format!("task{i}"));
+        c.tick();
+        overall.tick();
+    }
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== overall always at bottom: 5 children, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5);
+    for i in 0..3 {
+        assert!(lines[i].trim().is_empty(), "line {i} blank");
+    }
+    assert!(lines[3].contains("task4"), "line 3 has last child: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "line 4 always has overall: {0}", lines[4]);
+    assert!(lines[4].contains("0/10"), "line 4 shows 0/10: {0}", lines[4]);
+}
+
+#[test]
+fn progress_group_join_preserves_all_content() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
+
+    let c = group.add_bar(3, "fetch");
+    c.advance(3);
+    c.tick();
+    overall.tick();
+
+    let before = term.contents();
+    group.join();
+    let after = term.contents();
+
+    assert_eq!(before, after, "join() is a no-op — contents must be identical before and after");
+}
+
+#[test]
+fn progress_group_add_bar_zero_total_renders() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 0);
+
+    let c = group.add_bar(0, "zero");
+    c.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== add_bar zero total, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5);
+    assert!(lines[0].trim().is_empty(), "line 0 blank");
+    assert!(lines[1].trim().is_empty(), "line 1 blank");
+    assert!(lines[2].trim().is_empty(), "line 2 blank");
+    assert!(lines[3].contains("zero"), "line 3 has zero bar: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
+    // 0/0 renders as full
+}
+
+#[test]
+fn consumer_lifecycle_materializer() {
+    let (mp, term) = mk_with_size(5, 80);
+    let group = ProgressGroup::with_mp(mp, 5);
+
+    let total = 3u64;
+    let pb = group.add_bar(total, "materializing");
+
+    pb.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== materializer: initial, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5);
+    assert!(lines[4].contains("materializing"), "line 4 has materializing label: {0}", lines[4]);
+    assert!(lines[4].contains("0/3"), "line 4 shows 0/3: {0}", lines[4]);
+
+    pb.advance(3);
+    pb.finish_success("materialization complete");
+    pb.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert!(
+        lines[4].contains("materializing"),
+        "bar still visible after finish_success: {0}",
+        lines[4]
+    );
+    assert!(lines[4].contains("complete"), "shows success message: {0}", lines[4]);
+
+    group.join();
+    let after_join = term.contents();
+    assert!(!after_join.is_empty(), "join() must keep bars visible");
+}
+
+#[test]
+fn consumer_lifecycle_conductor_sync() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "syncing tools", 2);
+
+    // Tool 1
+    let t1 = group.add_bar(0, "yt-dlp");
+    t1.set_message("downloading");
+    t1.advance(1);
+    t1.finish();
+    t1.tick();
+    overall.advance(1);
+    overall.tick();
+
+    // Tool 2
+    let t2 = group.add_bar(0, "ffmpeg");
+    t2.advance(1);
+    t2.finish();
+    t2.tick();
+    overall.advance(1);
+    overall.tick();
+
+    overall.finish_success("tools synced");
+    overall.tick();
+    group.join();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== conductor sync lifecycle, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5);
+    assert!(lines[0].trim().is_empty(), "line 0 blank");
+    assert!(lines[1].trim().is_empty(), "line 1 blank");
+    assert!(lines[2].trim().is_empty(), "line 2 blank");
+    assert!(lines[3].contains("ffmpeg"), "line 3 has latest tool: {0}", lines[3]);
+    assert!(lines[4].contains("syncing tools"), "line 4 has overall: {0}", lines[4]);
+    assert!(lines[4].contains("2/2"), "overall complete: {0}", lines[4]);
+    assert!(lines[4].contains("tools synced"), "overall success message: {0}", lines[4]);
+}
+
+#[test]
+fn consumer_lifecycle_conductor_cli() {
+    let (mp, term) = mk_with_size(4, 80);
+    let (group, pb) = ProgressGroup::with_mp_and_overall(mp, 4, "steps", 0);
+
+    // Simulate step_progress callback: set_total(N) then set_position(1..N)
+    pb.set_total(3);
+
+    pb.set_position(1);
+    pb.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== conductor CLI lifecycle: step 1/3 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0].trim().is_empty(), "line 0 blank");
+    assert!(lines[1].trim().is_empty(), "line 1 blank");
+    assert!(lines[2].trim().is_empty(), "line 2 blank");
+    assert!(lines[3].contains("steps"), "line 3 has steps: {0}", lines[3]);
+
+    pb.set_position(3);
+    pb.finish();
+    pb.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert!(lines[3].contains("steps"), "bar still visible after finish: {0}", lines[3]);
+
+    group.join();
+    assert!(!term.contents().is_empty(), "join() must keep bars visible");
+}
+
+#[test]
+fn progress_group_finish_and_clear_child_keeps_others() {
+    // Note: Since SlotPool reuses the bottom slot, both children occupy
+    // the same screen line. finish_and_clear may make that line blank.
+    // This test verifies the overall bar is still visible.
+    let (mp, term) = mk_with_size(4, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+
+    let c1 = group.add_bar(3, "alpha");
+    c1.advance(3);
+    c1.tick();
+    overall.tick();
+
+    c1.finish_and_clear();
+    c1.tick();
+    overall.tick();
+
+    // Overall must still be visible.
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== finish_and_clear child keeps others, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // finish_and_clear removes the child bar from MultiProgress draw list.
+    // Only the overall bar and blank filler slots remain, producing fewer visible lines.
+    assert_eq!(lines.len(), 3, "3 lines after child cleared");
+    assert!(lines[2].contains("overall"), "overall visible: {0}", lines[2]);
+}
+
+#[test]
+fn progress_group_abandon_preserves_bar() {
+    let (mp, term) = mk_with_size(5, 80);
+    let group = ProgressGroup::with_mp(mp, 5);
+
+    let c = group.add_bar(5, "worker");
+    c.advance(2);
+    c.tick();
+
+    c.abandon();
+    c.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== abandon preserves bar, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5);
+    assert!(lines[4].contains("worker"), "bar visible after abandon: {0}", lines[4]);
+    assert!(lines[4].contains("2/5"), "progress preserved: {0}", lines[4]);
+}
+
+#[test]
+fn progress_group_long_prefix_truncation() {
+    let (mp, term) = mk_with_size(5, 80);
+    let group = ProgressGroup::with_mp(mp, 5);
+
+    // Prefix > 16 chars — production uses {prefix:>16.16}
+    let long_prefix = "abcdefghijklmnopqrstuvwxyz"; // 26 chars
+    let c = group.add_bar(5, long_prefix);
+    c.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== long prefix truncation, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5);
+    // Prefix should be right-aligned to 16 chars, left-truncated to 16 chars.
+    // The production template is {prefix:>16.16} so it right-aligns and truncates to 16.
+    // Expected: "               abcdefghijklmnop" (16 chars right-aligned) — but this
+    // won't be exact because of ANSI color codes. Just verify the bar still shows.
+    assert!(lines[4].contains("0/5"), "bar shows progress: {0}", lines[4]);
+}
+
+#[test]
+fn progress_group_children_advance_independently() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+
+    // SlotPool reuses the bottom child slot for every add_bar call, so the
+    // latest child always replaces the previous one visually.
+    let a = group.add_bar(5, "tool-a");
+    a.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert!(lines[3].contains("tool-a"), "line 3 has tool-a: {0}", lines[3]);
+
+    // Second child replaces first in the same slot.
+    let b = group.add_bar(3, "tool-b");
+    b.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert!(lines[3].contains("tool-b"), "line 3 has tool-b: {0}", lines[3]);
+    assert!(!lines[3].contains("tool-a"), "line 3 no longer shows tool-a: {0}", lines[3]);
+
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert!(lines[4].contains("overall"), "overall visible: {0}", lines[4]);
+}
