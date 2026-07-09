@@ -2006,6 +2006,7 @@ dependencies = [
  "ffmetadata",
  "flate2",
  "futures-util",
+ "indicatif",
  "libc",
  "mediapm-cas",
  "mediapm-conductor",
