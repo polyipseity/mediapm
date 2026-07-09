@@ -32,18 +32,12 @@ fn style() -> ProgressStyle {
 }
 
 /// Create a spinner [`ProgressStyle`] from template [`TS`].
-fn spinner_style() -> ProgressStyle {
-    ProgressStyle::with_template(TS).unwrap().progress_chars("█░").tick_chars("◐◓")
-}
-
-/// Create a spinner [`ProgressStyle`] with a 6-frame cycle for animation tests.
 ///
-/// Empirical probe: with N tick chars, the visible cycling goes through indices
-/// 1, 2, …, N-2, 0 (skipping the last index N-1).  A 6-frame string yields
-/// 5 distinct cycling frames: ◓ → ◑ → ◒ → ● → ◐ → …  The 6th frame (○) is
-/// only shown when the bar finishes or is abandoned.
-fn spinner_long_style() -> ProgressStyle {
-    ProgressStyle::with_template(TS).unwrap().progress_chars("█░").tick_chars("◐◓◑◒●○")
+/// Uses the same tick chars and progress chars as production
+/// (`src/mediapm-utils/src/progress.rs`).  The last char (⠏) is only shown on
+/// finish/abandon — it never appears during normal cycling.
+fn spinner_style() -> ProgressStyle {
+    ProgressStyle::with_template(TS).unwrap().progress_chars("█░").tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 }
 
 /// Create a [`ProgressStyle`] from a custom template string.
@@ -421,8 +415,8 @@ fn spinner_active() {
     pb.set_style(spinner_style());
     pb.tick();
     let s = term.contents();
-    // First tick shows ◐.
-    assert_eq!(s, "◐     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
+    // First tick shows ⠙ (index 1 of production tick_chars).
+    assert_eq!(s, "⠙     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
 }
 
 #[test]
@@ -436,7 +430,7 @@ fn spinner_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "◐    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "⠙    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
             " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/4",
         ),
     );
@@ -447,30 +441,38 @@ fn spinner_finishes() {
     let (mp, term) = mk();
     let pb = add_bar(&mp, 5, "test");
     pb.set_style(spinner_style());
-    pb.tick(); // ◐
+    pb.tick(); // ⠙ (frame 1)
     pb.finish_with_message("done");
-    pb.tick(); // ◓ (second tick char after finish ticks)
-    assert_eq!(term.contents(), "◓     test [00:00:00] █████████ 5/5 done");
+    pb.tick(); // ⠏ (final frame)
+    assert_eq!(term.contents(), "⠏     test [00:00:00] █████████ 5/5 done");
 }
 
-// ── Spinner: multi-frame animation (uses 5-frame cycle) ──────────────────────
+// ── Spinner: multi-frame animation (uses production 10-frame cycle) ──────────
 
 #[test]
 fn spinner_animation_cycle() {
     let (mp, term) = mk();
     let pb = add_bar(&mp, 5, "test");
-    pb.set_style(spinner_long_style());
-    // 6-frame "◐◓◑◒●○" cycles as: ◓ → ◑ → ◒ → ● → ◐ → ◓ → …
+    pb.set_style(spinner_style());
+    // Production 10-frame "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" cycles as indices 1→2→3→4→5→6→7→8→0.
     pb.tick();
-    assert_eq!(term.contents(), "◓     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 1/5");
+    assert_eq!(term.contents(), "⠙     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 1/9");
     pb.tick();
-    assert_eq!(term.contents(), "◑     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 2/5");
+    assert_eq!(term.contents(), "⠹     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 2/9");
     pb.tick();
-    assert_eq!(term.contents(), "◒     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 3/5");
+    assert_eq!(term.contents(), "⠸     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 3/9");
     pb.tick();
-    assert_eq!(term.contents(), "●     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 4/5");
+    assert_eq!(term.contents(), "⠼     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 4/9");
     pb.tick();
-    assert_eq!(term.contents(), "◐     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 5/5 wraps to ◐");
+    assert_eq!(term.contents(), "⠴     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 5/9");
+    pb.tick();
+    assert_eq!(term.contents(), "⠦     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 6/9");
+    pb.tick();
+    assert_eq!(term.contents(), "⠧     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 7/9");
+    pb.tick();
+    assert_eq!(term.contents(), "⠇     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 8/9");
+    pb.tick();
+    assert_eq!(term.contents(), "⠋     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 9/9 wraps to ⠋");
 }
 
 #[test]
@@ -478,47 +480,47 @@ fn spinner_child_animation_with_overall() {
     let (mp, term) = mk();
     let o = add_bar(&mp, 5, "overall");
     let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_long_style());
+    c.set_style(spinner_style());
     // Child progresses through frames while overall stays static.
     c.tick();
     o.tick();
     assert_eq!(
         term.contents(),
         concat!(
-            "◓    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "⠙    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
             " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
         ),
-        "child frame 1/5 ◓",
+        "child frame 1/9 ⠙",
     );
     c.tick();
     o.tick();
     assert_eq!(
         term.contents(),
         concat!(
-            "◑    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "⠹    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
             " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
         ),
-        "child frame 2/5 ◑",
+        "child frame 2/9 ⠹",
     );
     c.tick();
     o.tick();
     assert_eq!(
         term.contents(),
         concat!(
-            "◒    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "⠸    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
             " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
         ),
-        "child frame 3/5 ◒",
+        "child frame 3/9 ⠸",
     );
     c.tick();
     o.tick();
     assert_eq!(
         term.contents(),
         concat!(
-            "●    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "⠼    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
             " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
         ),
-        "child frame 4/5 ●",
+        "child frame 4/9 ⠼",
     );
 }
 
@@ -528,39 +530,39 @@ fn spinner_child_animation_with_overall() {
 fn spinner_both_animate_together() {
     let (mp, term) = mk();
     let o = add_bar(&mp, 5, "overall");
-    o.set_style(spinner_long_style());
+    o.set_style(spinner_style());
     let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_long_style());
+    c.set_style(spinner_style());
     // Both progress independently.
     c.tick();
     o.tick();
     assert_eq!(
         term.contents(),
         concat!(
-            "◓    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            "◓  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+            "⠙    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
         ),
-        "both frame 1/5 ◓",
+        "both frame 1/9 ⠙",
     );
     c.tick();
     o.tick();
     assert_eq!(
         term.contents(),
         concat!(
-            "◑    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            "◑  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+            "⠹    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "⠹  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
         ),
-        "both frame 2/5 ◑",
+        "both frame 2/9 ⠹",
     );
     c.tick();
     o.tick();
     assert_eq!(
         term.contents(),
         concat!(
-            "◒    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            "◒  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+            "⠸    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "⠸  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
         ),
-        "both frame 3/5 ◒",
+        "both frame 3/9 ⠸",
     );
 }
 
@@ -570,35 +572,35 @@ fn spinner_both_animate_together() {
 fn spinner_finish_frame_stability() {
     let (mp, term) = mk();
     let pb = add_bar(&mp, 5, "test");
-    pb.set_style(spinner_long_style());
+    pb.set_style(spinner_style());
     pb.tick();
-    assert_eq!(term.contents(), "◓     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
+    assert_eq!(term.contents(), "⠙     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
     pb.tick();
-    assert_eq!(term.contents(), "◑     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
-    // Finish — frame should settle on the last tick char (○).
+    assert_eq!(term.contents(), "⠹     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
+    // Finish — frame should settle on the last tick char (⠏).
     pb.finish_with_message("done");
     pb.tick();
-    assert_eq!(term.contents(), "○     test [00:00:00] █████████ 5/5 done");
+    assert_eq!(term.contents(), "⠏     test [00:00:00] █████████ 5/5 done");
     // Additional ticks should still show the same final frame.
     pb.tick();
-    assert_eq!(term.contents(), "○     test [00:00:00] █████████ 5/5 done");
+    assert_eq!(term.contents(), "⠏     test [00:00:00] █████████ 5/5 done");
 }
 
 #[test]
 fn spinner_reset_continues_animation() {
     let (mp, term) = mk();
     let pb = add_bar(&mp, 5, "test");
-    pb.set_style(spinner_long_style());
-    pb.tick(); // ◓ (frame 1)
-    pb.tick(); // ◑ (frame 2)
-    pb.tick(); // ◒ (frame 3)
+    pb.set_style(spinner_style());
+    pb.tick(); // ⠙ (frame 1)
+    pb.tick(); // ⠹ (frame 2)
+    pb.tick(); // ⠸ (frame 3)
     pb.reset();
-    pb.tick(); // Continued from frame 4 → ●
+    pb.tick(); // Continued from frame 4 → ⠼
     // Reset does NOT restart the animation cycle; it continues from where it was.
     assert_eq!(
         term.contents(),
-        "●     test [00:00:00] ░░░░░░░░░░░░░ 0/5",
-        "after reset, animation continues from next frame (●)"
+        "⠼     test [00:00:00] ░░░░░░░░░░░░░ 0/5",
+        "after reset, animation continues from next frame (⠼)"
     );
 }
 
@@ -607,16 +609,16 @@ fn spinner_abandon_ends_on_last_frame() {
     let (mp, term) = mk();
     let pb = add_bar(&mp, 5, "test");
     pb.set_style(spinner_style());
-    // 2-frame "◐◓": first tick shows ◐.
+    // Production tick_chars "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏": first tick shows ⠙ (index 1).
     pb.tick();
-    assert_eq!(term.contents(), "◐     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
-    // Abandon — frame settles on the last tick char (◓).
+    assert_eq!(term.contents(), "⠙     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
+    // Abandon — frame settles on last char (⠏).
     pb.abandon_with_message("failed");
     pb.tick();
-    assert_eq!(term.contents(), "◓     test [00:00:00] ░░░░░░░ 0/5 failed");
+    assert_eq!(term.contents(), "⠏     test [00:00:00] ░░░░░░░ 0/5 failed");
     // Additional ticks stay on the final frame.
     pb.tick();
-    assert_eq!(term.contents(), "◓     test [00:00:00] ░░░░░░░ 0/5 failed");
+    assert_eq!(term.contents(), "⠏     test [00:00:00] ░░░░░░░ 0/5 failed");
 }
 
 // ── Edge cases ───────────────────────────────────────────────────────────────
@@ -769,7 +771,7 @@ fn single_bar_spinner_overall() {
     let pb = add_bar(&mp, 5, "overall");
     pb.set_style(spinner_style());
     pb.tick();
-    assert_eq!(term.contents(), "◐  overall [00:00:00] ░░░░░░░░░░░░░ 0/5");
+    assert_eq!(term.contents(), "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5");
 }
 
 // ── Single bar: long prefix (>8 chars) ──────────────────────────────────────
@@ -862,8 +864,8 @@ fn spinner_child_and_overall_initial() {
     assert_eq!(
         term.contents(),
         concat!(
-            "◐    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            "◐  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+            "⠙    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
+            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
         ),
     );
 }
@@ -881,8 +883,8 @@ fn spinner_child_and_overall_child_progress() {
     assert_eq!(
         term.contents(),
         concat!(
-            "◐    tool1 [00:00:00] ██████░░░░░░░ 1/2\n",
-            "◐  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+            "⠹    tool1 [00:00:00] ██████░░░░░░░ 1/2\n",
+            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
         ),
     );
 }
@@ -900,8 +902,8 @@ fn spinner_child_and_overall_full() {
     assert_eq!(
         term.contents(),
         concat!(
-            "◐    tool1 [00:00:00] █████████████ 2/2\n",
-            "◐  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+            "⠹    tool1 [00:00:00] █████████████ 2/2\n",
+            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
         ),
     );
 }
@@ -920,8 +922,8 @@ fn spinner_child_finishes_overall_active() {
     assert_eq!(
         term.contents(),
         concat!(
-            "◓    tool1 [00:00:00] █████████ 2/2 done\n",
-            "◐  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
+            "⠏    tool1 [00:00:00] █████████ 2/2 done\n",
+            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
         ),
     );
 }
@@ -944,8 +946,8 @@ fn spinner_on_both_finish() {
     assert_eq!(
         term.contents(),
         concat!(
-            "◓    tool1 [00:00:00] █████████ 2/2 done\n",
-            "◓  overall [00:00:00] █████████ 5/5 done",
+            "⠏    tool1 [00:00:00] █████████ 2/2 done\n",
+            "⠏  overall [00:00:00] █████████ 5/5 done",
         ),
     );
 }
