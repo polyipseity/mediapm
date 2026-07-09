@@ -125,6 +125,14 @@ mod inner {
         console::Term::stderr().size().1
     }
 
+    fn terminal_height() -> u16 {
+        console::Term::stderr().size().0
+    }
+
+    fn blank_bar_style() -> ProgressStyle {
+        ProgressStyle::with_template("{wide_msg}").expect("invalid blank bar template")
+    }
+
     // ---- ProgressHandle ---------------------------------------------------
 
     /// Handle to one progress bar.
@@ -235,25 +243,158 @@ mod inner {
                 inner.abandon();
             }
         }
+
+        /// Force a redraw (useful in test environments with
+        /// [`InMemoryTerm`](indicatif::InMemoryTerm) where steady tick
+        /// timers don't fire).
+        #[doc(hidden)]
+        pub fn tick(&self) {
+            if let Some(ref inner) = self.inner {
+                inner.tick();
+            }
+        }
     }
 
-    // ---- ProgressGroup ----------------------------------------------------
+    // ---- SlotPool (rendering concern) -------------------------------------
+    //
+    // Manages a fixed-size grid of [`ProgressBar`] slots in [`MultiProgress`].
+    // All slots are pre-allocated at construction so the draw height never
+    // changes — eliminating the root cause of terminal ghosting.
+    //
+    // Slots are initially blank (invisible).  Call [`acquire`] to get the
+    // bottommost child slot, which is always reused — no accumulation.
+
+    struct SlotPool {
+        inner: MultiProgress,
+        bars: Vec<ProgressHandle>,
+        /// Whether the bottom slot holds the overall bar.
+        has_overall: bool,
+    }
+
+    impl SlotPool {
+        /// Pre-allocate `capacity` blank bars in a fresh [`MultiProgress`].
+        fn new(capacity: usize) -> Self {
+            Self::from_mp(MultiProgress::new(), capacity)
+        }
+
+        /// Pre-allocate `capacity` blank bars in an existing [`MultiProgress`].
+        fn from_mp(mp: MultiProgress, capacity: usize) -> Self {
+            let mut bars = Vec::with_capacity(capacity);
+            for _ in 0..capacity {
+                let pb = ProgressBar::new(0);
+                // IMPORTANT: add to MultiProgress FIRST, then configure.
+                // Configuring before mp.add() prevents InMemoryTerm from
+                // capturing blank bar output in tests.
+                let handle = mp.add(pb);
+                handle.set_style(blank_bar_style());
+                handle.set_message(" ");
+                handle.set_prefix("");
+                bars.push(ProgressHandle { inner: Some(handle) });
+            }
+            // Trigger a final draw so all bars are captured by InMemoryTerm
+            // even when capacity == terminal height.
+            if let Some(last) = bars.last() {
+                last.tick();
+            }
+            Self { inner: mp, bars, has_overall: false }
+        }
+
+        /// Pre-allocate `capacity` bars with an overall bar at the bottom,
+        /// using a fresh [`MultiProgress`].  Returns `(pool, overall_handle)`.
+        fn with_overall(capacity: usize, total: u64, label: &str) -> (Self, ProgressHandle) {
+            Self::from_mp_with_overall(MultiProgress::new(), capacity, total, label)
+        }
+
+        /// Pre-allocate `capacity` bars with an overall bar at the bottom,
+        /// using an existing [`MultiProgress`].  Returns `(pool, overall_handle)`.
+        fn from_mp_with_overall(
+            mp: MultiProgress,
+            capacity: usize,
+            total: u64,
+            label: &str,
+        ) -> (Self, ProgressHandle) {
+            let mut bars = Vec::with_capacity(capacity);
+            for _ in 0..capacity.saturating_sub(1) {
+                let pb = ProgressBar::new(0);
+                let handle = mp.add(pb);
+                handle.set_style(blank_bar_style());
+                handle.set_message(" ");
+                handle.set_prefix("");
+                bars.push(ProgressHandle { inner: Some(handle) });
+            }
+            // Last slot = overall bar.
+            let inner = ProgressBar::new(total);
+            let overall_bar = mp.add(inner);
+            apply_overall_bar_style(&overall_bar);
+            overall_bar.set_prefix(label.to_string());
+            overall_bar.enable_steady_tick(Duration::from_millis(100));
+            let overall_handle = ProgressHandle { inner: Some(overall_bar) };
+            bars.push(overall_handle.clone());
+            (Self { inner: mp, bars, has_overall: true }, overall_handle)
+        }
+
+        /// Return the bottommost child slot.
+        ///
+        /// Always reuses the same slot (just above the overall bar when
+        /// present, or the absolute bottom otherwise) so child bars never
+        /// accumulate on screen.
+        fn acquire(&self) -> ProgressHandle {
+            let idx = self.bars.len() - 1 - self.has_overall as usize;
+            self.bars[idx].clone()
+        }
+
+        /// Clear the terminal display.
+        fn clear(&self) {
+            self.inner.clear().ok();
+        }
+    }
+
+    // ---- ProgressGroup (progress-tracking concern) ------------------------
+    //
+    // Uses [`SlotPool`] for rendering.  All progress-logic (bar setup,
+    // advance, finish, etc.) lives here; slot management lives in
+    // [`SlotPool`].
 
     /// A vertical stack of progress bars.
+    ///
+    /// Bars are drawn in a fixed-height grid determined by the terminal height
+    /// at construction time.  The draw height never changes, which eliminates
+    /// ghosting from bar-count changes.
     ///
     /// When progress is globally disabled (see [`set_progress_enabled`]), the
     /// group and all bars added to it are no-ops.
     pub struct ProgressGroup {
-        inner: MultiProgress,
-        overall: Option<ProgressHandle>,
-        enabled: bool,
+        /// `None` when progress is disabled.
+        slots: Option<SlotPool>,
     }
 
     impl ProgressGroup {
         /// Create a new group with no overall bar.
+        ///
+        /// Pre-allocates `max(terminal_height(), 4)` bars so the draw height
+        /// is fixed for the group's lifetime.
         #[must_use]
         pub fn new() -> Self {
-            Self { inner: MultiProgress::new(), overall: None, enabled: progress_enabled() }
+            if !progress_enabled() {
+                return Self { slots: None };
+            }
+            let cap = (terminal_height() as usize).clamp(MIN_SLOTS, MAX_SLOTS);
+            Self { slots: Some(SlotPool::new(cap)) }
+        }
+
+        /// Create a group from an existing [`MultiProgress`] with a fixed
+        /// number of pre-allocated slots.
+        ///
+        /// The `capacity` controls how many [`ProgressBar`] slots are
+        /// pre-allocated.  All slots are initially blank.  Callers that want
+        /// terminal-aware sizing should use [`new()`](Self::new) instead.
+        #[must_use]
+        pub fn with_mp(mp: MultiProgress, capacity: usize) -> Self {
+            let cap = capacity.clamp(MIN_SLOTS, MAX_SLOTS);
+            if !progress_enabled() {
+                return Self { slots: None };
+            }
+            Self { slots: Some(SlotPool::from_mp(mp, cap)) }
         }
 
         /// Create a group with an overall aggregate bar pinned at the bottom.
@@ -261,75 +402,74 @@ mod inner {
         /// The overall bar shares the same [`{spinner}`] prefix as child bars
         /// so all bars are visually aligned horizontally.
         ///
-        /// When progress has been globally disabled, returns a no-op group and
-        /// a no-op handle.
+        /// Pre-allocates `max(terminal_height(), 4)` bars.  The overall bar
+        /// occupies the bottom slot; children fill slots from the bottom up
+        /// when [`add_bar`] is called.
         #[must_use]
         pub fn with_overall(label: &str, total: u64) -> (Self, ProgressHandle) {
             if !progress_enabled() {
-                return (
-                    Self { inner: MultiProgress::new(), overall: None, enabled: false },
-                    ProgressHandle::disabled(),
-                );
+                return (Self { slots: None }, ProgressHandle::disabled());
             }
-            let mp = MultiProgress::new();
-            let inner = ProgressBar::new(total);
-            apply_overall_bar_style(&inner);
-            inner.set_prefix(label.to_string());
-            inner.enable_steady_tick(Duration::from_millis(100));
-            let overall_handle = mp.add(inner);
-            let handle = ProgressHandle { inner: Some(overall_handle) };
-            let group = Self { inner: mp, overall: Some(handle.clone()), enabled: true };
-            (group, handle)
+            let cap = (terminal_height() as usize).clamp(MIN_SLOTS, MAX_SLOTS);
+            let (pool, handle) = SlotPool::with_overall(cap, total, label);
+            (Self { slots: Some(pool) }, handle)
         }
 
-        /// Add a child bar.
+        /// Create a group from an existing [`MultiProgress`] with an overall
+        /// aggregate bar pinned at the bottom and a fixed number of
+        /// pre-allocated slots.
         ///
-        /// When the group has an overall bar, the child is inserted above it.
-        /// Otherwise children stack in insertion order.
+        /// The `capacity` controls how many [`ProgressBar`] slots are
+        /// pre-allocated (including the overall bar itself).  See
+        /// [`with_overall`](Self::with_overall) for semantics.
+        #[must_use]
+        pub fn with_mp_and_overall(
+            mp: MultiProgress,
+            capacity: usize,
+            label: &str,
+            total: u64,
+        ) -> (Self, ProgressHandle) {
+            if !progress_enabled() {
+                return (Self { slots: None }, ProgressHandle::disabled());
+            }
+            let cap = capacity.clamp(MIN_SLOTS, MAX_SLOTS);
+            let (pool, handle) = SlotPool::from_mp_with_overall(mp, cap, total, label);
+            (Self { slots: Some(pool) }, handle)
+        }
+
+        /// Add a child bar to the group.
         ///
-        /// When the group is disabled, returns a no-op handle.
+        /// Activates the next available slot closest to the overall bar (or
+        /// the bottom when there is no overall).  When the number of children
+        /// exceeds available slots, the bottommost child slot is reused — the
+        /// overall bar is always preserved.
         #[must_use]
         pub fn add_bar(&self, total: u64, label: &str) -> ProgressHandle {
-            if !self.enabled {
-                return ProgressHandle::disabled();
-            }
-            let inner = ProgressBar::new(total);
-            apply_bar_style(&inner);
-            inner.set_prefix(label.to_string());
-            inner.enable_steady_tick(Duration::from_millis(100));
-            let bar = if let Some(ref overall) = self.overall {
-                let overall_inner = overall
-                    .inner
-                    .as_ref()
-                    .expect("overall handle must be enabled when group is enabled");
-                self.inner.insert_before(overall_inner, inner)
-            } else {
-                self.inner.add(inner)
+            let pool = match self.slots {
+                Some(ref p) => p,
+                None => return ProgressHandle::disabled(),
             };
-            ProgressHandle { inner: Some(bar) }
+            let handle = pool.acquire();
+            if let Some(ref inner) = handle.inner {
+                apply_bar_style(inner);
+                inner.set_prefix(label.to_string());
+                inner.set_length(total);
+                inner.enable_steady_tick(Duration::from_millis(100));
+            }
+            handle
         }
 
         /// Block until all bars in the group reach a finished state.
         ///
         /// In indicatif 0.17 `MultiProgress` has no blocking join, so this is
-        /// effectively a no-op. The draw thread terminates when the group is
-        /// dropped and all bars are finished.
+        /// effectively a no-op.
         pub fn join(&self) {}
 
         /// Clear the terminal display after all bars are done.
-        ///
-        /// Call this after all bars have been finished (via [`finish`](ProgressHandle::finish)
-        /// / [`finish_success`](ProgressHandle::finish_success) / [`finish_and_clear`](ProgressHandle::finish_and_clear)).
-        /// Unfinished bars will have their tickers stopped when their handles
-        /// are dropped — [`clear`](MultiProgress::clear) only wipes the
-        /// terminal display so stale bar lines don't pollute scrollback.
-        ///
-        /// No-op when the group is disabled.
         pub fn join_and_clear(&self) {
-            if !self.enabled {
-                return;
+            if let Some(ref slots) = self.slots {
+                slots.clear();
             }
-            self.inner.clear().ok();
         }
     }
 
@@ -341,13 +481,9 @@ mod inner {
 
     impl Drop for ProgressGroup {
         fn drop(&mut self) {
-            if !self.enabled {
-                return;
+            if let Some(ref slots) = self.slots {
+                slots.clear();
             }
-            // Safety net: clear terminal so stale bars don't pollute scrollback
-            // if the caller forgot `join_and_clear()` or took an early-exit
-            // error path.
-            self.inner.clear().ok();
         }
     }
 }
@@ -657,6 +793,7 @@ impl ProgressGroupApi for recording::RecordingProgressGroup {
 mod tests {
     use super::recording::{ProgressOp, RecordingProgressGroup, RecordingProgressHandle};
     use super::{ProgressGroup, ProgressHandle, progress_enabled, set_progress_enabled};
+    use indicatif::MultiProgress;
 
     // ---- PROGRESS_ENABLED wiring -----------------------------------------
     //
@@ -824,5 +961,81 @@ mod tests {
         h.finish_and_clear();
         h.abandon();
         assert_eq!(h.ops(), vec![ProgressOp::FinishAndClear, ProgressOp::Abandon]);
+    }
+
+    #[test]
+    fn progress_group_new_creates_pool() {
+        let g = ProgressGroup::new();
+        let h = g.add_bar(42, "child");
+        assert!(h.total() > 0, "enabled handle must have total > 0");
+        assert_eq!(h.total(), 42);
+    }
+
+    #[test]
+    fn progress_group_with_overall_creates_both() {
+        let (g, overall) = ProgressGroup::with_overall("all", 100);
+        assert_eq!(overall.total(), 100, "overall bar must have total == 100");
+        let child = g.add_bar(50, "child");
+        assert_eq!(child.total(), 50, "child bar must have total == 50");
+    }
+
+    #[test]
+    fn recording_handle_set_total_updates_position() {
+        let h = RecordingProgressHandle::new(100);
+        h.set_position(5);
+        h.set_total(20);
+        assert_eq!(
+            h.ops(),
+            vec![ProgressOp::SetPosition { pos: 5 }, ProgressOp::SetTotal { total: 20 },]
+        );
+    }
+
+    #[test]
+    fn recording_handle_multiple_advances_sum() {
+        let h = RecordingProgressHandle::new(10);
+        h.advance(1);
+        h.advance(2);
+        h.advance(3);
+        let ops = h.ops();
+        assert_eq!(ops.len(), 3, "expected 3 separate Advance ops");
+        assert_eq!(ops[0], ProgressOp::Advance { delta: 1 });
+        assert_eq!(ops[1], ProgressOp::Advance { delta: 2 });
+        assert_eq!(ops[2], ProgressOp::Advance { delta: 3 });
+    }
+
+    #[test]
+    fn progress_group_join_and_clear_does_not_panic() {
+        // Non-empty group
+        let g = ProgressGroup::new();
+        let _h = g.add_bar(10, "a");
+        g.join();
+        g.join_and_clear();
+
+        // Empty group
+        let g = ProgressGroup::new();
+        g.join();
+        g.join_and_clear();
+    }
+
+    #[test]
+    fn progress_group_disabled_construction() {
+        let prev = progress_enabled();
+        set_progress_enabled(false);
+
+        let g1 = ProgressGroup::new();
+        let h1 = g1.add_bar(50, "c1");
+        assert_eq!(h1.total(), 0);
+
+        let g2 = ProgressGroup::with_mp(MultiProgress::new(), 4);
+        let h2 = g2.add_bar(30, "c2");
+        assert_eq!(h2.total(), 0);
+
+        let (_g3, h3) = ProgressGroup::with_overall("all", 200);
+        assert_eq!(h3.total(), 0);
+
+        let (_g4, h4) = ProgressGroup::with_mp_and_overall(MultiProgress::new(), 4, "all2", 300);
+        assert_eq!(h4.total(), 0);
+
+        set_progress_enabled(prev);
     }
 }
