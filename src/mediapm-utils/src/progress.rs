@@ -63,15 +63,20 @@ mod inner {
 
     // ---- style constants --------------------------------------------------
 
-    const CHILD_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>12.12} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {msg} ({eta})";
+    const CHILD_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {msg} ({eta})";
 
-    const OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>12.12} [{elapsed_precise}] {wide_bar:.green/dim} {pos}/{len} {msg}";
+    const OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {wide_bar:.green/dim} {pos}/{len} {msg}";
 
     const COMPACT_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix} [{elapsed_precise}] {pos}/{len} {msg}";
+        "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {pos}/{len} {msg}";
 
     const COMPACT_OVERALL_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix} [{elapsed_precise}] {pos}/{len} {msg}";
+        "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {pos}/{len} {msg}";
+
+    /// Minimum number of pre-allocated slot bars, even with no terminal.
+    const MIN_SLOTS: usize = 4;
+    /// Maximum number of pre-allocated slot bars (safety cap).
+    const MAX_SLOTS: usize = 200;
 
     fn child_bar_style() -> ProgressStyle {
         ProgressStyle::with_template(CHILD_BAR_TEMPLATE)
