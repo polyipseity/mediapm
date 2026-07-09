@@ -209,6 +209,7 @@ mod inner {
         /// Mark the bar as finished (keeps it visible).
         pub fn finish(&self) {
             if let Some(ref inner) = self.inner {
+                inner.disable_steady_tick();
                 inner.finish();
             }
         }
@@ -216,6 +217,7 @@ mod inner {
         /// Mark as finished with a success message (keeps it visible).
         pub fn finish_success(&self, msg: impl Into<String>) {
             if let Some(ref inner) = self.inner {
+                inner.disable_steady_tick();
                 inner.finish_with_message(msg.into());
             }
         }
@@ -223,6 +225,7 @@ mod inner {
         /// Mark as finished with an error message (keeps it visible).
         pub fn finish_error(&self, msg: impl Into<String>) {
             if let Some(ref inner) = self.inner {
+                inner.disable_steady_tick();
                 inner.abandon_with_message(msg.into());
             }
         }
@@ -233,6 +236,7 @@ mod inner {
         /// [`finish`](Self::finish) when the bar should disappear immediately.
         pub fn finish_and_clear(&self) {
             if let Some(ref inner) = self.inner {
+                inner.disable_steady_tick();
                 inner.finish_and_clear();
             }
         }
@@ -240,6 +244,7 @@ mod inner {
         /// Abandon the bar — leaves it visible but stops all updates.
         pub fn abandon(&self) {
             if let Some(ref inner) = self.inner {
+                inner.disable_steady_tick();
                 inner.abandon();
             }
         }
@@ -454,6 +459,7 @@ mod inner {
                 apply_bar_style(inner);
                 inner.set_prefix(label.to_string());
                 inner.set_length(total);
+                inner.reset_elapsed();
                 inner.enable_steady_tick(Duration::from_millis(100));
             }
             handle
