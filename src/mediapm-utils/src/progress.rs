@@ -348,6 +348,56 @@ mod inner {
 #[cfg(feature = "progress")]
 pub use inner::{ProgressGroup, ProgressHandle, progress_enabled, set_progress_enabled};
 
+// ---- Shared API traits for dependency injection (feature-gated) -------
+
+/// Minimal progress-bar handle API for dependency injection.
+///
+/// Both [`ProgressHandle`] and
+/// [`RecordingProgressHandle`](recording::RecordingProgressHandle) implement
+/// this trait, allowing consumer functions to accept either a real display
+/// bar or a recording bar for testing.
+#[cfg(feature = "progress")]
+pub trait ProgressBarApi: Send + Sync {
+    /// Advance the bar by `delta` work units.
+    fn advance(&self, delta: u64);
+    /// Mark as finished with a success message.
+    fn finish_success(&self, msg: &str);
+    /// Mark as finished with an error message.
+    fn finish_error(&self, msg: &str);
+}
+
+#[cfg(feature = "progress")]
+impl ProgressBarApi for ProgressHandle {
+    fn advance(&self, delta: u64) {
+        ProgressHandle::advance(self, delta);
+    }
+    fn finish_success(&self, msg: &str) {
+        ProgressHandle::finish_success(self, msg);
+    }
+    fn finish_error(&self, msg: &str) {
+        ProgressHandle::finish_error(self, msg);
+    }
+}
+
+/// Minimal progress-group API for dependency injection.
+///
+/// Both [`ProgressGroup`] and
+/// [`RecordingProgressGroup`](recording::RecordingProgressGroup) implement
+/// this trait, allowing consumer functions to accept either a real display
+/// group or a recording group for testing.
+#[cfg(feature = "progress")]
+pub trait ProgressGroupApi {
+    /// Add a child bar and return an [`Arc`]-wrapped handle.
+    fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi>;
+}
+
+#[cfg(feature = "progress")]
+impl ProgressGroupApi for ProgressGroup {
+    fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
+        Arc::new(ProgressGroup::add_bar(self, total, label))
+    }
+}
+
 // ---- Recording types for test assertions (feature-gated) ---------------
 
 /// Recording progress operations for test assertions.
@@ -568,6 +618,28 @@ pub mod recording {
         pub fn ops(&self) -> Vec<ProgressOp> {
             self.ops.lock().expect("recording lock").clone()
         }
+    }
+}
+
+// ---- Trait impls for recording types -------------------------------------
+
+#[cfg(feature = "progress")]
+impl ProgressBarApi for recording::RecordingProgressHandle {
+    fn advance(&self, delta: u64) {
+        recording::RecordingProgressHandle::advance(self, delta);
+    }
+    fn finish_success(&self, msg: &str) {
+        recording::RecordingProgressHandle::finish_success(self, msg);
+    }
+    fn finish_error(&self, msg: &str) {
+        recording::RecordingProgressHandle::finish_error(self, msg);
+    }
+}
+
+#[cfg(feature = "progress")]
+impl ProgressGroupApi for recording::RecordingProgressGroup {
+    fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
+        Arc::new(recording::RecordingProgressGroup::add_bar(self, total, label))
     }
 }
 

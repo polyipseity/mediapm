@@ -6,5 +6,6 @@
 
 #[doc(inline)]
 pub use mediapm_utils::progress::{
-    ProgressGroup, ProgressHandle, progress_enabled, set_progress_enabled,
+    ProgressBarApi, ProgressGroup, ProgressGroupApi, ProgressHandle, progress_enabled,
+    set_progress_enabled,
 };

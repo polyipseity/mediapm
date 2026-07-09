@@ -25,7 +25,7 @@ use crate::config::hierarchy_types::{
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
-use crate::output::ProgressGroup;
+use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
 
 use self::metadata::MaterializationLookupContext;
@@ -119,7 +119,7 @@ pub async fn sync_hierarchy(
     _state: &MediaPmState,
     cas: &FileSystemCas,
     verify_materialization: bool,
-    progress_group: Option<&ProgressGroup>,
+    progress_group: Option<&dyn ProgressGroupApi>,
 ) -> Result<MaterializeReport, MediaPmError> {
     let hierarchy_root = &paths.hierarchy_root_dir;
 
@@ -145,7 +145,8 @@ pub async fn sync_hierarchy(
         (None, pg.add_bar(flattened.len() as u64, "materializing"))
     } else {
         let g = ProgressGroup::new();
-        let p = g.add_bar(flattened.len() as u64, "materializing");
+        let p: Arc<dyn ProgressBarApi> =
+            Arc::new(g.add_bar(flattened.len() as u64, "materializing"));
         (Some(g), p)
     };
 
@@ -658,5 +659,40 @@ impl SyncSharedState {
     #[allow(clippy::unused_self)]
     fn notice(&self, message: impl Into<String>) {
         warn!("{}", message.into());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mediapm_utils::progress::recording::RecordingProgressGroup;
+    use tempfile::tempdir;
+
+    /// Injected [`RecordingProgressGroup`] produces no ops when hierarchy is
+    /// empty (early return before any progress bar work).
+    #[tokio::test]
+    async fn sync_hierarchy_with_empty_hierarchy_no_progress_ops() {
+        let root = tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+
+        // Create a CAS at the runtime store path (needed for the CAS parameter,
+        // though it's unused in the empty-hierarchy fast path).
+        let cas_root = paths.runtime_root.join("store");
+        tokio::fs::create_dir_all(&cas_root).await.unwrap();
+        let cas = FileSystemCas::open(&cas_root).await.unwrap();
+
+        let document = MediaPmDocument::default();
+        let state = MediaPmState::default();
+
+        let recording = RecordingProgressGroup::new();
+        let result = sync_hierarchy(&paths, &document, &state, &cas, true, Some(&recording)).await;
+
+        assert!(result.is_ok());
+        let ops = recording.ops();
+        assert!(ops.is_empty(), "empty hierarchy should produce no progress ops, got {ops:?}",);
     }
 }
