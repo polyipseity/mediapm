@@ -99,13 +99,13 @@ pub(crate) async fn reconcile_desired_tools(
     let effective_group: &ProgressGroup =
         owned_group.as_ref().or(progress_group).expect("at least one progress group available");
 
-    for (tool_id, _requirement_value) in desired_tools {
+    for (_i, (tool_id, _requirement_value)) in desired_tools.iter().enumerate() {
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
         // Fetch tool payload, import to CAS, get content map + command.
-        let payload_result =
-            fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group).await;
+        let tool_bar = effective_group.add_bar(0, tool_id);
+        let payload_result = fetch_and_import_tool_payload(cas, tool_id, &cache, &tool_bar).await;
 
         match payload_result {
             Ok(Some(payload)) => {
