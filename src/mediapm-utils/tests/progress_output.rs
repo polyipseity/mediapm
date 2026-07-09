@@ -12,6 +12,7 @@
 //! to fill available width.
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use mediapm_utils::progress::ProgressGroup;
 
 /// Default terminal dimensions for standard tests.
 const H: u16 = 24;
@@ -1508,4 +1509,328 @@ fn worker_surge_with_overflow() {
     o.tick();
     // Still only 3 lines visible.
     assert_eq!(term.contents().lines().count(), 3);
+}
+
+// ── ProgressGroup rendering (fixed-slot, always reuses bottom child) ────────
+
+#[test]
+fn progress_group_with_overall_shows_fixed_height() {
+    // Terminal H=5, W=80 so the full child and overall templates fit.
+    let (mp, term) = mk_with_size(5, 80);
+    let (_group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== with_overall, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("count = {}", lines.len());
+    assert_eq!(lines.len(), 5, "must use exactly 5 lines (terminal height)");
+    for (i, line) in lines[..4].iter().enumerate() {
+        assert!(line.trim().is_empty(), "line {i} should be blank filler but got: {line:?}");
+    }
+    assert!(lines[4].contains("overall"), "overall bar visible: {}", lines[4]);
+    assert!(lines[4].contains("0/10"), "overall shows 0/10: {}", lines[4]);
+}
+
+#[test]
+fn progress_group_add_bar_reuses_bottom_child() {
+    // Terminal H=4, W=80 so the full child and overall templates fit.
+    let (mp, term) = mk_with_size(4, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 3);
+
+    let c1 = group.add_bar(5, "tool1");
+    c1.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== add_bar reuse, after tool1, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("count = {}", lines.len());
+    assert_eq!(lines.len(), 4, "always 4 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank filler");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank filler");
+    assert!(lines[2].contains("tool1"), "line 2 has tool1: {0}", lines[2]);
+    assert!(lines[3].contains("overall"), "line 3 has overall");
+
+    let c2 = group.add_bar(3, "tool2");
+    c2.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== add_bar reuse, after tool2 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 4, "still 4 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank filler");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank filler");
+    assert!(lines[2].contains("tool2"), "line 2 has tool2, not tool1: {0}", lines[2]);
+    assert!(lines[3].contains("overall"), "line 3 has overall");
+}
+
+// No diagnostics below this line — they were removed after confirming
+// the fix.
+
+#[test]
+fn progress_group_no_overall_always_reuses_bottom() {
+    // Terminal H=5, W=80 so the full child template fits.
+    // Use capacity=3 (clamped to MIN_SLOTS=4) so there's 1 unwritten row
+    // at the bottom — this avoids InMemoryTerm trimming blank content
+    // when bars fill the entire terminal height.
+    let (mp, term) = mk_with_size(5, 80);
+    let group = ProgressGroup::with_mp(mp, 3);
+
+    let c1 = group.add_bar(5, "task1");
+    c1.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== no_overall, after task1, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("count = {}", lines.len());
+    // 4 slots (clamped from 3). 3 blanks + 1 active task1.
+    // Bottom slot is line[3].
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0].trim().is_empty());
+    assert!(lines[1].trim().is_empty());
+    assert!(lines[2].trim().is_empty());
+    assert!(lines[3].contains("task1"), "line 3 has task1: {0}", lines[3]);
+
+    let c2 = group.add_bar(3, "task2");
+    c2.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== no_overall, after task2 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0].trim().is_empty());
+    assert!(lines[1].trim().is_empty());
+    assert!(lines[2].trim().is_empty());
+    assert!(lines[3].contains("task2"), "line 3 has task2, not task1: {0}", lines[3]);
+}
+
+#[test]
+fn progress_group_never_changes_bar_count() {
+    // Terminal H=4, W=80 so the full child template fits.
+    let (mp, term) = mk_with_size(4, 80);
+    let group = ProgressGroup::with_mp(mp, 4);
+    for i in 0..30 {
+        let c = group.add_bar(1, &format!("tool{i}"));
+        c.tick();
+    }
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== never_changes_bar_count, 30 add_bar, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("count = {}", lines.len());
+    assert_eq!(lines.len(), 4, "count must never change: 30 add_bar calls, still 4 lines");
+}
+
+#[test]
+fn progress_group_with_overall_add_child_updates_slot() {
+    // Terminal H=5, W=80 so the full child and overall templates fit.
+    // Capacity=5 gives 3 blank lines, then child slot at line[3], overall at line[4].
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+
+    let c1 = group.add_bar(5, "tool1");
+    c1.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== add_child_updates_slot, after tool1, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("count = {}", lines.len());
+    assert_eq!(lines.len(), 5, "always 5 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
+    assert!(lines[3].contains("tool1"), "line 3 has tool1: {0}", lines[3]);
+    assert!(lines[3].contains("0/5"), "line 3 shows 0/5: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
+    assert!(lines[4].contains("0/3"), "line 4 shows 0/3: {0}", lines[4]);
+
+    let c2 = group.add_bar(3, "tool2");
+    c2.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== add_child_updates_slot, after tool2 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5, "still 5 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
+    assert!(lines[3].contains("tool2"), "line 3 has tool2: {0}", lines[3]);
+    assert!(lines[3].contains("0/3"), "line 3 shows 0/3: {0}", lines[3]);
+    assert!(!lines[3].contains("tool1"), "line 3 must not still show tool1: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "line 4 still has overall: {0}", lines[4]);
+}
+
+#[test]
+fn progress_group_with_overall_multiple_children_reuse_slot() {
+    // Terminal H=5, W=80 so the full child and overall templates fit.
+    // Capacity=5, overall at line[4], child slot at line[3].
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+
+    for i in 0..5 {
+        let c = group.add_bar(2, &format!("task{i}"));
+        c.tick();
+        overall.tick();
+    }
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== multiple_children_reuse_slot, 5 children sequentially, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("count = {}", lines.len());
+    assert_eq!(lines.len(), 5, "always 5 lines regardless of children added");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
+    assert!(lines[3].contains("task4"), "line 3 shows the last child (task4): {0}", lines[3]);
+    assert!(lines[3].contains("0/2"), "line 3 shows 0/2: {0}", lines[3]);
+    // Verify no earlier tasks leaked into the display.
+    for i in 0..4 {
+        let earlier = format!("task{i}");
+        assert!(!lines[3].contains(&earlier), "line 3 must not show {earlier}: {0}", lines[3],);
+    }
+    assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
+    assert!(lines[4].contains("0/10"), "line 4 shows 0/10: {0}", lines[4]);
+}
+
+#[test]
+fn progress_group_no_overall_different_capacities() {
+    // Terminal H=6, W=80 so the full child template fits.
+    // Capacity=3 clamped to MIN_SLOTS=4, no overall.
+    // Child slot at line[3] (bottom of the 4-slot pool).
+    // Using H=6 > 4 to avoid InMemoryTerm blank-content trimming.
+    let (mp, term) = mk_with_size(6, 80);
+    let group = ProgressGroup::with_mp(mp, 3); // clamped to 4
+
+    let c1 = group.add_bar(5, "alpha");
+    c1.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== no_overall_cap_3, after alpha, H=6, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("count = {}", lines.len());
+    assert_eq!(lines.len(), 4, "clamped to 4 slots");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
+    assert!(lines[3].contains("alpha"), "line 3 has alpha: {0}", lines[3]);
+    assert!(lines[3].contains("0/5"), "line 3 shows 0/5: {0}", lines[3]);
+
+    let c2 = group.add_bar(3, "beta");
+    c2.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== no_overall_cap_3, after beta ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 4, "still 4 slots");
+    assert!(lines[3].contains("beta"), "line 3 now has beta: {0}", lines[3]);
+    assert!(lines[3].contains("0/3"), "line 3 shows 0/3: {0}", lines[3]);
+    assert!(!lines[3].contains("alpha"), "line 3 must not show alpha: {0}", lines[3]);
+}
+
+#[test]
+fn progress_group_compact_template_below_60_width() {
+    // Terminal W=80 so the full template fits.
+    // (InMemoryTerm width doesn't affect production style selection, which
+    // reads from console::Term::stderr() — the real terminal.)
+    let (mp, term) = mk_with_size(4, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 3);
+
+    let c1 = group.add_bar(5, "tool1");
+    c1.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== compact_template, H=4, W=40 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("count = {}", lines.len());
+    assert_eq!(lines.len(), 4, "always 4 lines at capacity=4");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].contains("tool1"), "line 2 has tool1: {0}", lines[2]);
+    assert!(lines[2].contains("0/5"), "line 2 shows 0/5: {0}", lines[2]);
+    assert!(lines[3].contains("overall"), "line 3 has overall: {0}", lines[3]);
+    assert!(lines[3].contains("0/3"), "line 3 shows 0/3: {0}", lines[3]);
+}
+
+#[test]
+fn progress_group_child_shows_label_and_total() {
+    // Verify that add_bar renders the label and total in the bar.
+    let (mp, term) = mk_with_size(4, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+
+    let c1 = group.add_bar(7, "fetch");
+    c1.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== child_shows_label_and_total, after fetch, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("count = {}", lines.len());
+    assert_eq!(lines.len(), 4, "always 4 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].contains("fetch"), "line 2 shows label fetch: {0}", lines[2]);
+    assert!(lines[2].contains("0/7"), "line 2 shows total 0/7: {0}", lines[2]);
+    assert!(lines[3].contains("overall"), "line 3 has overall: {0}", lines[3]);
+    assert!(lines[3].contains("0/10"), "line 3 shows 0/10: {0}", lines[3]);
+}
+
+#[test]
+fn progress_group_disabled_returns_noop() {
+    // Save and disable progress globally.
+    let prev = mediapm_utils::progress::progress_enabled();
+    mediapm_utils::progress::set_progress_enabled(false);
+
+    // -- with overall --
+    let (mp, term) = mk_with_size(4, 80);
+    let (_group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+    assert_eq!(overall.total(), 0, "overall handle must be no-op when disabled");
+
+    let child = _group.add_bar(5, "child");
+    assert_eq!(child.total(), 0, "child handle must be no-op when disabled");
+
+    child.tick();
+    overall.tick();
+    assert_eq!(term.contents(), "", "no output when progress is disabled");
+
+    // -- without overall --
+    let (mp2, term2) = mk_with_size(4, 80);
+    let group2 = ProgressGroup::with_mp(mp2, 4);
+    let c2 = group2.add_bar(3, "noop");
+    assert_eq!(c2.total(), 0, "child handle must be no-op without overall");
+    c2.tick();
+    assert_eq!(term2.contents(), "", "no output without overall when disabled");
+
+    // Restore for other tests.
+    mediapm_utils::progress::set_progress_enabled(prev);
 }
