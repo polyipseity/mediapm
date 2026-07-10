@@ -1580,11 +1580,11 @@ fn progress_group_add_bar_reuses_bottom_child() {
 #[test]
 fn progress_group_no_overall_always_reuses_bottom() {
     // Terminal H=5, W=80 so the full child template fits.
-    // Use capacity=3 (clamped to MIN_SLOTS=4) so there's 1 unwritten row
-    // at the bottom — this avoids InMemoryTerm trimming blank content
-    // when bars fill the entire terminal height.
+    // Use capacity=4 so there's 1 unwritten row at the bottom
+    // — this avoids InMemoryTerm trimming blank content when bars
+    // fill the entire terminal height.
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 3);
+    let group = ProgressGroup::with_mp(mp, 4);
 
     let c1 = group.add_bar(5, "task1");
     c1.tick();
@@ -1595,7 +1595,7 @@ fn progress_group_no_overall_always_reuses_bottom() {
         eprintln!("line[{i}] = {line:?}");
     }
     eprintln!("count = {}", lines.len());
-    // 4 slots (clamped from 3). task1 at slot[3] (bottom), blanks at lines[0..2].
+    // 4 slots. task1 at slot[3] (bottom), blanks at lines[0..2].
     // task1 at bottom avoids InMemoryTerm trimming → 4 lines.
     assert_eq!(lines.len(), 4);
     assert!(lines[0].trim().is_empty(), "line 0 is blank");
@@ -1728,24 +1728,24 @@ fn progress_group_with_overall_multiple_children_reuse_slot() {
 #[test]
 fn progress_group_no_overall_different_capacities() {
     // Terminal H=6, W=80 so the full child template fits.
-    // Capacity=3 clamped to MIN_SLOTS=4, no overall.
+    // Capacity=4, no overall.
     // Children fill sequentially from line[0].
     // Using H=6 > 4 to avoid InMemoryTerm blank-content trimming.
     let (mp, term) = mk_with_size(6, 80);
-    let group = ProgressGroup::with_mp(mp, 3); // clamped to 4
+    let group = ProgressGroup::with_mp(mp, 4);
 
     let c1 = group.add_bar(5, "alpha");
     c1.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    eprintln!("=== no_overall_cap_3, after alpha, H=6, W=80 ===");
+    eprintln!("=== no_overall_cap_4, after alpha, H=6, W=80 ===");
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
     eprintln!("count = {}", lines.len());
-    // 4 slots (clamped from 3). alpha at slot[3] (bottom), blanks at lines[0..2].
+    // 4 slots. alpha at slot[3] (bottom), blanks at lines[0..2].
     // alpha at bottom avoids InMemoryTerm trimming → 4 lines.
-    assert_eq!(lines.len(), 4, "clamped to 4 slots, 4 lines (child at bottom)");
+    assert_eq!(lines.len(), 4, "4 slots, 4 lines (child at bottom)");
     assert!(lines[0].trim().is_empty(), "line 0 is blank");
     assert!(lines[1].trim().is_empty(), "line 1 is blank");
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
@@ -1756,7 +1756,7 @@ fn progress_group_no_overall_different_capacities() {
     c2.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    eprintln!("=== no_overall_cap_3, after beta ===");
+    eprintln!("=== no_overall_cap_4, after beta ===");
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
@@ -2047,7 +2047,7 @@ fn slot_pool_blank_bars_remain_invisible() {
 #[test]
 fn slot_pool_acquire_returns_bottommost_child() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 4); // clamped to 4
+    let group = ProgressGroup::with_mp(mp, 4); // 4 slots
 
     let c1 = group.add_bar(5, "first");
     c1.tick();
@@ -2501,12 +2501,12 @@ fn child_bar_elapsed_frozen_after_abandon() {
     assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after abandon");
 }
 
-// ── SlotFull behavior ─────────────────────────────────────────────────────
+// ── Orphaned-state overflow behavior ─────────────────────────────────────
 
 #[test]
 fn slot_full_hides_overflow_bars_from_display() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 4); // clamped to MIN_SLOTS=4
+    let group = ProgressGroup::with_mp(mp, 4); // capacity=4
 
     let c1 = group.add_bar(5, "tool-a");
     let c2 = group.add_bar(5, "tool-b");
@@ -2531,7 +2531,7 @@ fn slot_full_hides_overflow_bars_from_display() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    // Capacity 4 (clamped from MIN=4). No overall → all 4 slots used, no blank trailing → 4 lines.
+    // 4 slots, no overall → all 4 used, no blank trailing → 4 lines.
     // tools a-d in display. tool-e has no display slot but is still tracked.
     assert_eq!(lines.len(), 4, "4 lines — 4 display slots, all filled");
     let line_texts: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
@@ -3278,13 +3278,15 @@ fn resize_height_clamps_at_min_slots() {
     overall.tick();
     let before_count = term.contents().lines().count();
 
-    // Shrink to height=1 → should clamp at MIN_SLOTS=4 (removes 2 of 6).
+    // Shrink to height=1 → only 1 line (overall), bar evicted to orphaned.
     dims.set((1, 80));
     overall.tick();
-    let after_count = term.contents().lines().count();
-    eprintln!("=== height clamp min, H=1, before={before_count}, after={after_count} ===");
-    // Should not go below MIN_SLOTS (4).
-    assert!(after_count >= 4, "at least 4 lines after extreme shrink");
+    let after = term.contents();
+    let after_count = after.lines().count();
+    eprintln!("=== height shrink extreme, H=1, before={before_count}, after={after_count} ===");
+    assert_eq!(after_count, 1, "exactly 1 line at H=1 (overall only)");
+    assert!(after.contains("overall"), "overall visible at H=1");
+    assert!(!after.contains("fetch"), "child evicted at H=1");
 }
 
 #[test]
@@ -3415,9 +3417,9 @@ fn resize_height_shrink_then_grow_restores_line_count() {
     assert!(restored.contains("fetch"), "child visible after cycle");
 }
 
-/// Shrink when blank slots exceed `max_remove` — verifies that exactly
-/// `max_remove` blanks are removed and the remaining capacity is clamped
-/// to [`MIN_SLOTS`].
+/// Shrink to H=3 — verifies that the render-slot count matches the
+/// terminal height (3: 2 active bars + overall) and all tracked bars
+/// remain visible.
 #[test]
 fn resize_height_partial_shrink_keeps_active_bars() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
@@ -3436,8 +3438,7 @@ fn resize_height_partial_shrink_keeps_active_bars() {
     c2.tick();
     overall.tick();
 
-    // dims=(3,80) → desired=3.clamp(4,200)=4, max_remove=6-4=2, blanks=3.
-    // Should remove 2 blanks, keep 4 total (2 active + 1 overall + 1 blank).
+    // H=3 → 3 lines (2 active + overall, drained 3 blanks with 1 eviction).
     dims.set((3, 80));
     overall.tick();
     let after = term.contents();
@@ -3445,7 +3446,7 @@ fn resize_height_partial_shrink_keeps_active_bars() {
     for (i, line) in after.lines().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(after.lines().count(), 4, "clamped to MIN_SLOTS after H=3");
+    assert_eq!(after.lines().count(), 3, "3 lines at H=3");
     assert!(after.contains("overall"), "overall visible");
     assert!(after.contains("fetch1"), "fetch1 visible");
     assert!(after.contains("fetch2"), "fetch2 visible");
@@ -3477,8 +3478,187 @@ fn resize_height_with_interleaved_attach() {
     let beta = group.add_bar(5, "beta");
     beta.tick();
     let after_attach = term.contents();
-    // Line count should stay at 4 (MIN_SLOTS clamp).
+    // Line count should stay at 4 (H=4).
     assert_eq!(after_attach.lines().count(), 4, "still 4 lines after attaching beta");
     assert!(after_attach.contains("alpha"), "alpha visible after attach");
     assert!(after_attach.contains("beta"), "beta visible after attach");
+}
+
+/// Shrink from H=5 to H=1 then grow back — verifies that eviction and
+/// reattachment preserve chronological order across the full range.
+#[test]
+fn resize_height_sequence_with_three_bars() {
+    let dims = Arc::new(TestDimensionSource::new((5, 80)));
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        5,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    // Add in order: bar3 (oldest), bar2, bar1 (newest).
+    let bar3 = group.add_bar(7, "bar 3");
+    let bar2 = group.add_bar(5, "bar 2");
+    let bar1 = group.add_bar(3, "bar 1");
+    bar3.tick();
+    bar2.tick();
+    bar1.tick();
+    overall.tick();
+
+    // H=5 → (empty), (bar 3), (bar 2), (bar 1), (overall)
+    let h5 = term.contents();
+    eprintln!("=== sequence 3 bars, H=5 ===");
+    for (i, line) in h5.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h5.lines().count(), 5);
+    assert!(h5.contains("bar 3"), "bar 3 visible at H=5");
+    assert!(h5.contains("bar 2"), "bar 2 visible at H=5");
+    assert!(h5.contains("bar 1"), "bar 1 visible at H=5");
+    assert!(h5.contains("overall"), "overall visible at H=5");
+
+    // H=4 → (bar 3), (bar 2), (bar 1), (overall) — empty slot removed
+    dims.set((4, 80));
+    overall.tick();
+    let h4 = term.contents();
+    eprintln!("=== sequence 3 bars, H=4 ===");
+    for (i, line) in h4.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h4.lines().count(), 4);
+    assert!(h4.contains("bar 3"));
+    assert!(h4.contains("bar 2"));
+    assert!(h4.contains("bar 1"));
+    assert!(h4.contains("overall"));
+
+    // H=3 → (bar 2), (bar 1), (overall) — bar 3 evicted
+    dims.set((3, 80));
+    overall.tick();
+    let h3 = term.contents();
+    eprintln!("=== sequence 3 bars, H=3 ===");
+    for (i, line) in h3.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h3.lines().count(), 3);
+    assert!(!h3.contains("bar 3"), "bar 3 evicted at H=3");
+    assert!(h3.contains("bar 2"));
+    assert!(h3.contains("bar 1"));
+    assert!(h3.contains("overall"));
+
+    // H=2 → (bar 1), (overall) — bar 2 evicted
+    dims.set((2, 80));
+    overall.tick();
+    let h2 = term.contents();
+    eprintln!("=== sequence 3 bars, H=2 ===");
+    for (i, line) in h2.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h2.lines().count(), 2);
+    assert!(!h2.contains("bar 3"), "bar 3 still evicted at H=2");
+    assert!(!h2.contains("bar 2"), "bar 2 evicted at H=2");
+    assert!(h2.contains("bar 1"));
+    assert!(h2.contains("overall"));
+
+    // H=1 → (overall) — bar 1 evicted
+    dims.set((1, 80));
+    overall.tick();
+    let h1 = term.contents();
+    eprintln!("=== sequence 3 bars, H=1 ===");
+    for (i, line) in h1.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h1.lines().count(), 1);
+    assert!(!h1.contains("bar 3"));
+    assert!(!h1.contains("bar 2"));
+    assert!(!h1.contains("bar 1"));
+    assert!(h1.contains("overall"));
+
+    // Grow back to H=4 → bar 3, bar 2, bar 1, overall (reattach in order).
+    // (pop_back LIFO preserves chronological order after prepend-at-0.)
+    dims.set((4, 80));
+    overall.tick();
+    let h4_restored = term.contents();
+    eprintln!("=== sequence 3 bars, restored H=4 ===");
+    for (i, line) in h4_restored.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h4_restored.lines().count(), 4);
+    assert!(h4_restored.contains("bar 3"), "bar 3 reappears on growth");
+    assert!(h4_restored.contains("bar 2"), "bar 2 reappears on growth");
+    assert!(h4_restored.contains("bar 1"), "bar 1 reappears on growth");
+    assert!(h4_restored.contains("overall"));
+}
+
+/// Shrink from H=4 to H=1 (no overall bar) — verifies eviction and
+/// reattachment work correctly without an overall bar.
+#[test]
+fn resize_height_sequence_without_overall() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (mp, term) = mk_with_size(4, 80);
+    let group =
+        ProgressGroup::with_mp_and_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>, true);
+    let bar2 = group.add_bar(5, "bar 2");
+    let bar1 = group.add_bar(3, "bar 1");
+    bar2.tick();
+    bar1.tick();
+
+    // H=4 → (empty), (empty), (bar 2), (bar 1)
+    let h4 = term.contents();
+    eprintln!("=== seq no overall, H=4 ===");
+    for (i, line) in h4.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h4.lines().count(), 4);
+    assert!(h4.contains("bar 2"), "bar 2 visible at H=4");
+    assert!(h4.contains("bar 1"), "bar 1 visible at H=4");
+
+    // H=3 → (empty), (bar 2), (bar 1) — blank removed
+    dims.set((3, 80));
+    bar1.tick();
+    let h3 = term.contents();
+    eprintln!("=== seq no overall, H=3 ===");
+    for (i, line) in h3.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h3.lines().count(), 3);
+    assert!(h3.contains("bar 2"));
+    assert!(h3.contains("bar 1"));
+
+    // H=2 → (bar 2), (bar 1) — blank removed, all active
+    dims.set((2, 80));
+    bar1.tick();
+    let h2 = term.contents();
+    eprintln!("=== seq no overall, H=2 ===");
+    for (i, line) in h2.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h2.lines().count(), 2);
+    assert!(h2.contains("bar 2"));
+    assert!(h2.contains("bar 1"));
+
+    // H=1 → (bar 1) — bar 2 evicted
+    dims.set((1, 80));
+    bar1.tick();
+    let h1 = term.contents();
+    eprintln!("=== seq no overall, H=1 ===");
+    for (i, line) in h1.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h1.lines().count(), 1);
+    assert!(!h1.contains("bar 2"), "bar 2 evicted at H=1");
+    assert!(h1.contains("bar 1"), "bar 1 still visible at H=1");
+
+    // Grow back to H=3 → bar 2, bar 1 (reattach in order)
+    dims.set((3, 80));
+    bar1.tick();
+    let h3_restored = term.contents();
+    eprintln!("=== seq no overall, restored H=3 ===");
+    for (i, line) in h3_restored.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(h3_restored.lines().count(), 3);
+    assert!(h3_restored.contains("bar 2"), "bar 2 reappears on growth");
+    assert!(h3_restored.contains("bar 1"), "bar 1 reappears on growth");
 }

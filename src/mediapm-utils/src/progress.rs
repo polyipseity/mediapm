@@ -720,7 +720,7 @@ mod inner {
         /// derived from terminal height.
         fn new(dim_source: Arc<dyn DimensionSource>) -> Self {
             let (rows, _) = dim_source.dimensions();
-            let cap = (rows as usize).max(1).min(MAX_SLOTS);
+            let cap = (rows as usize).clamp(1, MAX_SLOTS);
             let mut renderer = Self::from_mp(MultiProgress::new(), cap, dim_source);
             renderer.dynamic_height = true;
             renderer
@@ -769,7 +769,7 @@ mod inner {
             dim_source: Arc<dyn DimensionSource>,
         ) -> (Self, Arc<SharedState>) {
             let (rows, _) = dim_source.dimensions();
-            let cap = (rows as usize).max(1).min(MAX_SLOTS);
+            let cap = (rows as usize).clamp(1, MAX_SLOTS);
             let (mut renderer, state) =
                 Self::from_mp_with_overall(MultiProgress::new(), cap, total, label, dim_source);
             renderer.dynamic_height = true;
@@ -987,7 +987,7 @@ mod inner {
 
             // --- Height reactivity ---
             if self.dynamic_height {
-                let desired_cap = (rows as usize).max(1).min(MAX_SLOTS);
+                let desired_cap = (rows as usize).clamp(1, MAX_SLOTS);
                 let current_cap = self.slots.len();
                 if desired_cap > current_cap {
                     // Grow: prepend blank slots at the top, reattaching orphans.
@@ -1078,7 +1078,7 @@ mod inner {
         /// terminal-aware sizing should use [`new()`](Self::new) instead.
         #[must_use]
         pub fn with_mp(mp: MultiProgress, capacity: usize) -> Self {
-            let cap = capacity.max(1).min(MAX_SLOTS);
+            let cap = capacity.clamp(1, MAX_SLOTS);
             if !progress_enabled() {
                 return Self { renderer: None };
             }
@@ -1172,7 +1172,7 @@ mod inner {
             if !progress_enabled() {
                 return (Self { renderer: None }, TrackedHandle::disabled());
             }
-            let cap = capacity.max(1).min(MAX_SLOTS);
+            let cap = capacity.clamp(1, MAX_SLOTS);
             let (renderer, state) = ProgressRenderer::from_mp_with_overall(
                 mp,
                 cap,
@@ -1207,7 +1207,7 @@ mod inner {
             dim_source: Arc<dyn DimensionSource>,
             dynamic_height: bool,
         ) -> Self {
-            let cap = capacity.max(1).min(MAX_SLOTS);
+            let cap = capacity.clamp(1, MAX_SLOTS);
             if !progress_enabled() {
                 return Self { renderer: None };
             }
@@ -1238,7 +1238,7 @@ mod inner {
             if !progress_enabled() {
                 return (Self { renderer: None }, TrackedHandle::disabled());
             }
-            let cap = capacity.max(1).min(MAX_SLOTS);
+            let cap = capacity.clamp(1, MAX_SLOTS);
             let (mut renderer, state) =
                 ProgressRenderer::from_mp_with_overall(mp, cap, total, label, dim_source);
             renderer.dynamic_height = dynamic_height;
