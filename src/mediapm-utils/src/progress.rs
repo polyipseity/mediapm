@@ -1361,6 +1361,8 @@ impl ProgressGroupApi for recording::RecordingProgressTracker {
 #[cfg(test)]
 #[cfg(feature = "progress")]
 mod tests {
+    use std::sync::Arc;
+
     use super::recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
     use super::{
         ProgressGroup, ProgressTracker, TrackStatus, TrackedHandle, progress_enabled,
@@ -1940,5 +1942,106 @@ mod tests {
         assert_eq!(snap.total, 100);
         assert!(matches!(snap.status, TrackStatus::Active));
         set_progress_enabled(prev);
+    }
+
+    #[test]
+    fn progress_group_excess_bars_return_active_handles() {
+        // Fill slots beyond capacity, verify excess handle still tracks.
+        let prev = progress_enabled();
+        set_progress_enabled(true);
+
+        // ProgressGroup::with_overall allocates terminal_height() slots
+        // (clamped to 4-200).  Use a MultiProgress with small term to force
+        // small capacity.
+        let term = indicatif::InMemoryTerm::new(4, 40);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term));
+        let mp = MultiProgress::with_draw_target(target);
+        let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+
+        // 4 slots total → 3 child slots + 1 overall.
+        // Add 5 children → first 3 get slots, last 2 have no display slot.
+        let handles: Vec<_> = (0..5).map(|i| group.add_bar(10, &format!("t{i}"))).collect();
+
+        // All handles must be active (not disabled).
+        for (i, h) in handles.iter().enumerate() {
+            assert_eq!(h.total(), 10, "handle {i} total");
+        }
+
+        // Mutate each — verify state tracking works even without display.
+        for (i, h) in handles.iter().enumerate() {
+            h.advance((i + 1) as u64);
+            h.set_message(&format!("done {i}"));
+        }
+        for (i, h) in handles.iter().enumerate() {
+            let snap = h.snapshot();
+            assert_eq!(snap.position, (i + 1) as u64, "handle {i} position");
+            assert_eq!(snap.message, format!("done {i}"), "handle {i} message");
+        }
+
+        set_progress_enabled(prev);
+    }
+
+    #[test]
+    fn progress_group_manager_finish_and_clear_via_tick_fn() {
+        // finish_and_clear on a ProgressGroup-managed handle (bar=None,
+        // tick_fn=Some) must still mark state as finished.
+        let prev = progress_enabled();
+        set_progress_enabled(true);
+
+        let (_group, overall) = ProgressGroup::with_overall("all", 10);
+        overall.finish_and_clear();
+        let snap = overall.snapshot();
+        assert!(
+            matches!(snap.status, TrackStatus::Finished),
+            "finish_and_clear → Finished, got {:?}",
+            snap.status
+        );
+        assert_eq!(snap.position, 0, "position unchanged before advance");
+
+        // Advance after finish_and_clear is harmless (no crash) but
+        // does update position since advance() does not gate on status.
+        overall.advance(5);
+        assert_eq!(overall.snapshot().position, 5, "advance still works after finish_and_clear");
+
+        set_progress_enabled(prev);
+    }
+
+    #[test]
+    fn tracked_handle_finish_and_clear_disabled_is_noop() {
+        // disabled() handle with finish_and_clear must not panic and
+        // must leave state unchanged.
+        let prev = progress_enabled();
+        set_progress_enabled(false);
+        let h = TrackedHandle::new(10);
+        assert_eq!(h.total(), 0);
+        h.finish_and_clear();
+        assert_eq!(h.total(), 0);
+        set_progress_enabled(prev);
+    }
+
+    #[test]
+    fn progress_group_disabled_add_bar_returns_disabled() {
+        let prev = progress_enabled();
+        set_progress_enabled(false);
+
+        let (g, overall) = ProgressGroup::with_overall("all", 10);
+        assert_eq!(overall.total(), 0, "overall disabled");
+        let child = g.add_bar(42, "child");
+        assert_eq!(child.total(), 0, "child disabled");
+
+        set_progress_enabled(prev);
+    }
+
+    #[test]
+    fn progress_group_api_trait_via_recording() {
+        // Verify RecordingProgressTracker implements ProgressGroupApi
+        // and can be used via the trait.
+        use super::ProgressGroupApi;
+        let tracker: Arc<dyn ProgressGroupApi> = Arc::new(RecordingProgressTracker::new());
+        let bar: Arc<dyn super::ProgressBarApi> = tracker.add_bar(100, "test");
+        assert!(!bar.is_finished(), "recording bar starts unfinished");
+        bar.advance(5);
+        bar.finish_success("ok");
+        assert!(bar.is_finished(), "recording bar is finished");
     }
 }
