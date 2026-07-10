@@ -3376,3 +3376,109 @@ fn resize_then_restore_original() {
     assert!(restored.contains("overall"), "overall visible after restore");
     assert!(restored.contains("fetch"), "child visible after restore");
 }
+
+/// Shrink then grow back — verifies that a shrink–grow cycle preserves the
+/// line count and both tracked bars remain visible.
+#[test]
+fn resize_height_shrink_then_grow_restores_line_count() {
+    let dims = Arc::new(TestDimensionSource::new((6, 80)));
+    let (mp, term) = mk_with_size(6, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        6,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let c1 = group.add_bar(7, "fetch");
+    c1.tick();
+    overall.tick();
+    let original_count = term.contents().lines().count();
+    assert!(original_count >= 6, "at least 6 lines at H=6");
+
+    // Shrink to H=4.
+    dims.set((4, 80));
+    overall.tick();
+    let shrunken_count = term.contents().lines().count();
+    assert!(
+        shrunken_count < original_count,
+        "fewer lines after shrink (was {original_count}, now {shrunken_count})"
+    );
+
+    // Grow back to H=6.
+    dims.set((6, 80));
+    overall.tick();
+    let restored = term.contents();
+    assert_eq!(restored.lines().count(), original_count, "restored line count matches original");
+    assert!(restored.contains("overall"), "overall visible after cycle");
+    assert!(restored.contains("fetch"), "child visible after cycle");
+}
+
+/// Shrink when blank slots exceed `max_remove` — verifies that exactly
+/// `max_remove` blanks are removed and the remaining capacity is clamped
+/// to [`MIN_SLOTS`].
+#[test]
+fn resize_height_partial_shrink_keeps_active_bars() {
+    let dims = Arc::new(TestDimensionSource::new((6, 80)));
+    let (mp, term) = mk_with_size(6, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        6,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let c1 = group.add_bar(7, "fetch1");
+    let c2 = group.add_bar(5, "fetch2");
+    c1.tick();
+    c2.tick();
+    overall.tick();
+
+    // dims=(3,80) → desired=3.clamp(4,200)=4, max_remove=6-4=2, blanks=3.
+    // Should remove 2 blanks, keep 4 total (2 active + 1 overall + 1 blank).
+    dims.set((3, 80));
+    overall.tick();
+    let after = term.contents();
+    eprintln!("=== partial shrink, H=3 ===");
+    for (i, line) in after.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(after.lines().count(), 4, "clamped to MIN_SLOTS after H=3");
+    assert!(after.contains("overall"), "overall visible");
+    assert!(after.contains("fetch1"), "fetch1 visible");
+    assert!(after.contains("fetch2"), "fetch2 visible");
+}
+
+/// Attach a bar, shrink, then attach another bar — verifies that
+/// interleaving attach with resize works correctly.
+#[test]
+fn resize_height_with_interleaved_attach() {
+    let dims = Arc::new(TestDimensionSource::new((5, 80)));
+    let (mp, term) = mk_with_size(5, 80);
+    let group =
+        ProgressGroup::with_mp_and_dim(mp, 5, Arc::clone(&dims) as Arc<dyn DimensionSource>, true);
+    let alpha = group.add_bar(10, "alpha");
+    alpha.tick();
+
+    // Start with 5 lines (no overall bar).
+    let before_count = term.contents().lines().count();
+    assert!(before_count >= 5, "at least 5 lines at H=5");
+
+    // Shrink to H=4 (removes 1 blank at top).
+    dims.set((4, 80));
+    alpha.tick();
+    let after_shrink = term.contents();
+    assert!(after_shrink.lines().count() < before_count, "fewer lines after shrink");
+    assert!(after_shrink.contains("alpha"), "alpha visible after shrink");
+
+    // Attach a second bar.
+    let beta = group.add_bar(5, "beta");
+    beta.tick();
+    let after_attach = term.contents();
+    // Line count should stay at 4 (MIN_SLOTS clamp).
+    assert_eq!(after_attach.lines().count(), 4, "still 4 lines after attaching beta");
+    assert!(after_attach.contains("alpha"), "alpha visible after attach");
+    assert!(after_attach.contains("beta"), "beta visible after attach");
+}
