@@ -2731,6 +2731,294 @@ fn renderer_with_overall_always_bottom() {
     assert!(lines.last().unwrap().contains("overall"), "overall at bottom: {lines:?}");
 }
 
+// ── Regression: child ordering is chronological top-to-bottom ──────────
+
+#[test]
+fn regression_child_order_chronological_top_to_bottom() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+
+    let c1 = group.add_bar(5, "first");
+    let c2 = group.add_bar(5, "second");
+    let c3 = group.add_bar(5, "third");
+    c1.tick();
+    c2.tick();
+    c3.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== regression_child_order_chronological, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // 4 child slots + 1 overall: line[1]=first, line[2]=second, line[3]=third
+    assert_eq!(lines.len(), 5, "always 5 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank: {0}", lines[0]);
+    assert!(lines[1].contains("first"), "line 1 has first: {0}", lines[1]);
+    assert!(lines[1].contains("0/5"), "line 1 shows 0/5: {0}", lines[1]);
+    assert!(lines[2].contains("second"), "line 2 has second: {0}", lines[2]);
+    assert!(lines[2].contains("0/5"), "line 2 shows 0/5: {0}", lines[2]);
+    assert!(lines[3].contains("third"), "line 3 has third: {0}", lines[3]);
+    assert!(lines[3].contains("0/5"), "line 3 shows 0/5: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
+}
+
+// ── Regression: swap slot does not corrupt display ────────────────────
+
+#[test]
+fn regression_swap_slot_does_not_corrupt_display() {
+    // Add 2 children, advance both, add 3rd (triggers shift). Verify all
+    // children have correct positions and values.
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+
+    let c1 = group.add_bar(10, "alpha");
+    let c2 = group.add_bar(10, "beta");
+    c1.advance(3);
+    c2.advance(7);
+    c1.tick();
+    c2.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== swap_slot after 2 children, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5);
+    assert!(lines[0].trim().is_empty(), "line 0 blank: {0}", lines[0]);
+    assert!(lines[1].trim().is_empty(), "line 1 blank: {0}", lines[1]);
+    assert!(lines[2].contains("alpha"), "line 2 alpha: {0}", lines[2]);
+    assert!(lines[2].contains("3/10"), "line 2 alpha 3/10: {0}", lines[2]);
+    assert!(lines[3].contains("beta"), "line 3 beta: {0}", lines[3]);
+    assert!(lines[3].contains("7/10"), "line 3 beta 7/10: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "line 4 overall: {0}", lines[4]);
+
+    // Add 3rd child — triggers slot shift.
+    let c3 = group.add_bar(10, "gamma");
+    c3.advance(5);
+    c3.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== swap_slot after 3 children, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5);
+    // Chronological: alpha shifted up to line[1], beta to line[2], gamma at line[3].
+    assert!(lines[0].trim().is_empty(), "line 0 blank: {0}", lines[0]);
+    assert!(lines[1].contains("alpha"), "line 1 alpha: {0}", lines[1]);
+    assert!(lines[1].contains("3/10"), "line 1 alpha 3/10: {0}", lines[1]);
+    assert!(lines[2].contains("beta"), "line 2 beta: {0}", lines[2]);
+    assert!(lines[2].contains("7/10"), "line 2 beta 7/10: {0}", lines[2]);
+    assert!(lines[3].contains("gamma"), "line 3 gamma: {0}", lines[3]);
+    assert!(lines[3].contains("5/10"), "line 3 gamma 5/10: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "line 4 overall: {0}", lines[4]);
+}
+
+// ── Regression: overall bar never shifts ──────────────────────────────
+
+#[test]
+fn regression_overall_never_shifts() {
+    let (mp, term) = mk_with_size(4, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+
+    // Fill all 3 child slots + overall.
+    let c1 = group.add_bar(1, "a");
+    let c2 = group.add_bar(1, "b");
+    let c3 = group.add_bar(1, "c");
+    overall.advance(3);
+    c1.tick();
+    c2.tick();
+    c3.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== overall_never_shifts after fill, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 4);
+    assert!(
+        lines.last().unwrap().contains("overall"),
+        "overall at bottom: {0}",
+        lines.last().unwrap()
+    );
+
+    // Add more children than capacity.  Overall must stay at bottom.
+    let _ = group.add_bar(1, "d");
+    let _ = group.add_bar(1, "e");
+    overall.advance(2);
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== overall_never_shifts after overflow, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 4, "height never changes");
+    assert!(
+        lines.last().unwrap().contains("overall"),
+        "overall still at bottom after overflow: {0}",
+        lines.last().unwrap()
+    );
+    // Children are visible somewhere.
+    assert!(
+        lines[0].contains("a") || lines[1].contains("a") || lines[2].contains("a"),
+        "'a' visible somewhere"
+    );
+    assert!(
+        lines[0].contains("b") || lines[1].contains("b") || lines[2].contains("b"),
+        "'b' visible somewhere"
+    );
+    assert!(
+        lines[0].contains("c") || lines[1].contains("c") || lines[2].contains("c"),
+        "'c' visible somewhere"
+    );
+}
+
+// ── Regression: finish_and_clear via tick_fn on group-managed handle ────
+
+#[test]
+fn regression_finish_and_clear_with_tick_fn() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+
+    let c1 = group.add_bar(5, "keep");
+    let c2 = group.add_bar(5, "clear");
+    c1.tick();
+    c2.tick();
+    overall.tick();
+
+    // c2 is ProgressGroup-managed so mutating methods go through tick_fn.
+    let _ = c2.finish_and_clear();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== finish_and_clear_with_tick_fn, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // c2's slot is now blank. c1 still visible.
+    assert!(lines.iter().any(|l| l.contains("keep")), "'keep' visible: {lines:?}");
+    // The cleared slot should be blank (line[2] if chronological: [blank, keep, blank, clear, overall]
+    // After clear of c2: slot goes blank. Wait — c2 was at line[3] (newest), now blank.
+    assert!(
+        lines.iter().any(|l| l.trim().is_empty()),
+        "at least one blank line for cleared slot: {lines:?}"
+    );
+    assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
+
+    // Ensure cleared bar is counted as finished — its state should not shift on next add_bar.
+    let c3 = group.add_bar(5, "new");
+    c3.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== finish_and_clear after adding new child, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // Chronological: keep at line[1], new at line[3], line[2] may be blank if clear
+    // wasn't recycled, or new may have reused the cleared slot.
+    // Either way, keep and new are both visible, overall at bottom.
+    assert!(lines.iter().any(|l| l.contains("keep")), "'keep' still visible: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("new")), "'new' visible: {lines:?}");
+    assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
+}
+
+// ── Regression: concurrent set_position/set_message + renderer.tick() ──
+
+#[test]
+fn regression_concurrent_set_and_sync() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 100);
+
+    let c1 = group.add_bar(50, "worker");
+    // Rapid set_position/set_message to exercise tick_fn callback path.
+    for i in 0..20 {
+        c1.set_position(i * 2);
+        c1.set_message(&format!("step {i}"));
+    }
+    c1.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== concurrent_set_and_sync, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // Last set_message should be visible.
+    assert!(lines.iter().any(|l| l.contains("step 19")), "last message visible: {lines:?}");
+    assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
+}
+
+// ── Regression: recycle finished slot after full ──────────────────────
+
+#[test]
+fn regression_recycle_finished_slot_after_full() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
+
+    // Fill all 4 child slots.
+    let children: Vec<_> = (0..4).map(|i| group.add_bar(2, &format!("task{i}"))).collect();
+    for c in &children {
+        c.tick();
+    }
+    overall.advance(4);
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== recycle after fill, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5);
+    assert!(lines[0].contains("task0"), "task0 at line[0]: {0}", lines[0]);
+    assert!(lines[3].contains("task3"), "task3 at line[3]: {0}", lines[3]);
+
+    // Finish and clear task0 — must not panic or corrupt display.
+    children[0].finish_and_clear();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== recycle after finish_and_clear task0, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // task0 slot is now blank or reused.
+    assert!(lines.iter().any(|l| l.contains("task1")), "task1 visible: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("task2")), "task2 visible: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("task3")), "task3 visible: {lines:?}");
+
+    // Add a 5th child — it should reuse the recycled slot.
+    let c4 = group.add_bar(2, "task4");
+    c4.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== recycle after adding task4, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5, "height unchanged");
+    // task4 should be visible somewhere (it reused the finished slot).
+    assert!(lines.iter().any(|l| l.contains("task4")), "task4 visible: {lines:?}");
+    assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
+}
+
 // ── Consumer simulation: materializer with parallel workers ─────────────
 
 #[test]
