@@ -6,4 +6,5 @@
 mod e2e;
 mod int;
 mod progress_elapsed;
+mod progress_resize;
 mod prop;
