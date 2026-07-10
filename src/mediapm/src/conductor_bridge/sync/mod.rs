@@ -245,3 +245,69 @@ pub(crate) async fn reconcile_desired_tools(
 
     Ok(report)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use mediapm_cas::InMemoryCas;
+    use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
+    use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn reconcile_desired_tools_records_progress_ops() {
+        // The function opens a user-level download cache rooted at the OS
+        // cache dir; skip when the cache dir is unavailable (CI containers).
+        if default_mediapm_user_download_cache_root().is_none() {
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let tracker = RecordingProgressTracker::new();
+        let cas = InMemoryCas::default();
+
+        let result = reconcile_desired_tools(
+            &cas,
+            &paths,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            Some(&tracker),
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
+
+        let ops = tracker.ops();
+
+        // The overall progress bar is registered via the tracker, so we see
+        // exactly one AddBar op.
+        let add_bars: Vec<&ProgressOp> =
+            ops.iter().filter(|op| matches!(op, ProgressOp::AddBar { .. })).collect();
+        assert_eq!(
+            add_bars.len(),
+            1,
+            "expected exactly one AddBar op (overall progress), got {add_bars:?}",
+        );
+
+        if let ProgressOp::AddBar { total, label } = &add_bars[0] {
+            assert_eq!(*total, 0, "overall bar total should be 0 (indeterminate)");
+            assert_eq!(label.as_str(), "syncing tools", "overall bar label mismatch");
+        }
+
+        // The overall bar is finished with success after the tool loop.
+        let finish_successes: Vec<&ProgressOp> =
+            ops.iter().filter(|op| matches!(op, ProgressOp::FinishSuccess { .. })).collect();
+        assert_eq!(
+            finish_successes.len(),
+            1,
+            "expected exactly one FinishSuccess op, got {finish_successes:?}",
+        );
+        if let ProgressOp::FinishSuccess { msg } = &finish_successes[0] {
+            assert_eq!(msg.as_str(), "tools synced", "finish message mismatch");
+        }
+    }
+}
