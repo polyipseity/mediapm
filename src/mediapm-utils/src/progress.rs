@@ -209,6 +209,10 @@ mod inner {
         fn is_finished(&self) -> bool {
             self.status.load(Ordering::Relaxed) != 0
         }
+
+        fn is_cleared(&self) -> bool {
+            self.status.load(Ordering::Relaxed) == 5
+        }
     }
 
     /// Data-copy snapshot of a tracked handle's state at one point in time.
@@ -253,13 +257,20 @@ mod inner {
     pub struct TrackedHandle {
         pub(crate) state: Arc<SharedState>,
         pub(crate) bar: Option<ProgressBar>,
+        /// Tick callback for renderer-managed bars.
+        ///
+        /// When `bar` is `None` and this is `Some`, mutating methods call
+        /// `tick()` on the owning renderer instead of writing directly to a
+        /// bar.  This keeps the handle functional after slot swaps that
+        /// would invalidate a cached bar reference.
+        pub(crate) tick_fn: Option<Arc<dyn Fn() + Send + Sync>>,
     }
 
     impl TrackedHandle {
         /// Create a no-op handle (all methods are zero-cost).
         #[must_use]
         pub fn disabled() -> Self {
-            Self { state: Arc::new(SharedState::new(0, "")), bar: None }
+            Self { state: Arc::new(SharedState::new(0, "")), bar: None, tick_fn: None }
         }
 
         /// Create a standalone progress bar (not managed by a [`ProgressGroup`]).
@@ -272,7 +283,7 @@ mod inner {
             let pb = ProgressBar::new(total);
             apply_bar_style(&pb);
             pb.enable_steady_tick(Duration::from_millis(100));
-            Self { state, bar: Some(pb) }
+            Self { state, bar: Some(pb), tick_fn: None }
         }
 
         /// Return the total number of work units (0 = indeterminate).
@@ -286,6 +297,8 @@ mod inner {
             self.state.total.store(total, Ordering::Relaxed);
             if let Some(ref bar) = self.bar {
                 bar.set_length(total);
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -294,6 +307,8 @@ mod inner {
             self.state.position.fetch_add(delta, Ordering::Relaxed);
             if let Some(ref bar) = self.bar {
                 bar.inc(delta);
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -302,6 +317,8 @@ mod inner {
             self.state.position.store(pos, Ordering::Relaxed);
             if let Some(ref bar) = self.bar {
                 bar.set_position(pos);
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -315,6 +332,8 @@ mod inner {
             (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
             if let Some(ref bar) = self.bar {
                 bar.set_message(msg);
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -328,6 +347,8 @@ mod inner {
             (*self.state.prefix.write().expect("shared_state prefix lock")).clone_from(&prefix);
             if let Some(ref bar) = self.bar {
                 bar.set_prefix(prefix);
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -337,6 +358,8 @@ mod inner {
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.finish();
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -352,6 +375,8 @@ mod inner {
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.finish_with_message(msg);
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -367,6 +392,8 @@ mod inner {
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.abandon_with_message(msg);
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -375,10 +402,12 @@ mod inner {
         /// Stops the ticker and marks the bar as hidden. Call this instead of
         /// [`finish`](Self::finish) when the bar should disappear immediately.
         pub fn finish_and_clear(&self) {
-            self.state.status.store(4, Ordering::Relaxed); // Finished
+            self.state.status.store(5, Ordering::Relaxed); // FinishedAndCleared
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.finish_and_clear();
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -388,6 +417,8 @@ mod inner {
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.abandon();
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -405,6 +436,8 @@ mod inner {
                     bar.set_length(snap.total);
                 }
                 bar.tick();
+            } else if let Some(ref tick) = self.tick_fn {
+                tick();
             }
         }
 
@@ -445,7 +478,11 @@ mod inner {
         /// to read the state at any point.
         #[must_use]
         pub fn add_bar(&self, total: u64, label: &str) -> TrackedHandle {
-            TrackedHandle { state: Arc::new(SharedState::new(total, label)), bar: None }
+            TrackedHandle {
+                state: Arc::new(SharedState::new(total, label)),
+                bar: None,
+                tick_fn: None,
+            }
         }
     }
 
@@ -781,6 +818,11 @@ mod inner {
                     slot.bar.set_prefix(snap.prefix.clone());
                     if snap.status == TrackStatus::Active {
                         slot.bar.tick();
+                    } else if source.is_cleared() {
+                        slot.bar.set_style(blank_bar_style());
+                        slot.bar.set_message(" ");
+                        slot.bar.set_prefix("");
+                        slot.bar.disable_steady_tick();
                     } else {
                         slot.bar.disable_steady_tick();
                         match snap.status {
