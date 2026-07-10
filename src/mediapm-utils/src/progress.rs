@@ -54,6 +54,7 @@ pub type ProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
 #[cfg(feature = "progress")]
 mod inner {
     use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
@@ -141,8 +142,6 @@ mod inner {
     const COMPACT_OVERALL_BAR_TEMPLATE: &str =
         "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {pos}/{len} {msg}";
 
-    /// Minimum number of pre-allocated slot bars, even with no terminal.
-    const MIN_SLOTS: usize = 4;
     /// Maximum number of pre-allocated slot bars (safety cap).
     const MAX_SLOTS: usize = 200;
 
@@ -694,10 +693,11 @@ mod inner {
     ///    shifts all existing active children up by one slot.  This preserves
     ///    chronological order top-to-bottom (first-created child at the top
     ///    of the active band, last-created adjacent to the overall bar).
-    /// 2. When all slots are in use, it scans for finished slots to recycle
-    ///    (scanning from the bottom upward so the newest finished slot is
-    ///    reused first).
-    /// 3. If no finished slot is found, returns [`SlotFull`].
+    /// 2. When all slots are occupied by active handles, finished slots are
+    ///    recycled (scanning from the bottom upward).
+    /// 3. When no finished slot can be recycled, the new handle is pushed
+    ///    into [`orphaned_states`](Self::orphaned_states) — it is tracked but
+    ///    has no render slot until the terminal grows.
     /// 4. Finished bars stay visible — their slots are only recycled when
     ///    new handles need display space.
     pub struct ProgressRenderer {
@@ -710,18 +710,17 @@ mod inner {
         /// changes.  `false` when the caller specified an explicit capacity
         /// (e.g. via [`from_mp`](Self::from_mp)).
         dynamic_height: bool,
+        /// Queue of [`SharedState`] handles evicted from render slots during
+        /// height shrink.  Reattached (FIFO) when the terminal grows back.
+        orphaned_states: RefCell<VecDeque<Arc<SharedState>>>,
     }
-
-    /// Error returned when all render slots are occupied by active handles.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct SlotFull;
 
     impl ProgressRenderer {
         /// Pre-allocate blank bars in a fresh [`MultiProgress`] with capacity
         /// derived from terminal height.
         fn new(dim_source: Arc<dyn DimensionSource>) -> Self {
             let (rows, _) = dim_source.dimensions();
-            let cap = (rows as usize).clamp(MIN_SLOTS, MAX_SLOTS);
+            let cap = (rows as usize).max(1).min(MAX_SLOTS);
             let mut renderer = Self::from_mp(MultiProgress::new(), cap, dim_source);
             renderer.dynamic_height = true;
             renderer
@@ -757,6 +756,7 @@ mod inner {
                 dim_source,
                 last_width: None,
                 dynamic_height: false,
+                orphaned_states: RefCell::new(VecDeque::new()),
             }
         }
 
@@ -769,7 +769,7 @@ mod inner {
             dim_source: Arc<dyn DimensionSource>,
         ) -> (Self, Arc<SharedState>) {
             let (rows, _) = dim_source.dimensions();
-            let cap = (rows as usize).clamp(MIN_SLOTS, MAX_SLOTS);
+            let cap = (rows as usize).max(1).min(MAX_SLOTS);
             let (mut renderer, state) =
                 Self::from_mp_with_overall(MultiProgress::new(), cap, total, label, dim_source);
             renderer.dynamic_height = true;
@@ -814,6 +814,7 @@ mod inner {
                     dim_source,
                     last_width: None,
                     dynamic_height: false,
+                    orphaned_states: RefCell::new(VecDeque::new()),
                 },
                 overall_state,
             )
@@ -870,10 +871,19 @@ mod inner {
         /// first-created child at the top of the band, last-created adjacent
         /// to the overall bar.
         ///
-        /// When all slots are occupied by active handles, scans from the
-        /// bottom upward for a finished slot to recycle.  Returns
-        /// [`SlotFull`] when every slot is active.
-        fn attach(&self, state: &Arc<SharedState>) -> Result<(), SlotFull> {
+        /// Attach a tracked state to the next available render slot.
+        ///
+        /// Places the new child at the **bottom** of the active band (just
+        /// above the overall bar when one exists).  Existing active children
+        /// are shifted up by one slot, preserving chronological order:
+        /// first-created child at the top of the band, last-created adjacent
+        /// to the overall bar.
+        ///
+        /// When all slots are occupied by active handles, scans for a
+        /// finished slot to recycle.  When none is available, the handle is
+        /// pushed to [`orphaned_states`] — it remains tracked but has no
+        /// render slot until the terminal grows back.
+        fn attach(&self, state: &Arc<SharedState>) {
             let child_cap = self.slots.len() - usize::from(self.has_overall);
             let bottom = child_cap.saturating_sub(1);
 
@@ -894,7 +904,7 @@ mod inner {
                 // Place new child at the freed bottom slot.
                 self.slots[bottom].source.replace(Some(Arc::clone(state)));
                 self.sync_slot(bottom);
-                return Ok(());
+                return;
             }
 
             // Phase 2: recycle a finished slot (all slots occupied).
@@ -902,10 +912,11 @@ mod inner {
                 if self.slots[i].source.borrow().as_ref().is_none_or(|s| s.is_finished()) {
                     self.slots[i].source.replace(Some(Arc::clone(state)));
                     self.sync_slot(i);
-                    return Ok(());
+                    return;
                 }
             }
-            Err(SlotFull)
+            // Phase 3: no free slot — push to orphaned queue.
+            self.orphaned_states.borrow_mut().push_back(Arc::clone(state));
         }
 
         /// Defensive sync: refresh all render slots from their tracked sources.
@@ -976,33 +987,36 @@ mod inner {
 
             // --- Height reactivity ---
             if self.dynamic_height {
-                let desired_cap = (rows as usize).clamp(MIN_SLOTS, MAX_SLOTS);
+                let desired_cap = (rows as usize).max(1).min(MAX_SLOTS);
                 let current_cap = self.slots.len();
                 if desired_cap > current_cap {
-                    // Grow: prepend blank slots at the top.
+                    // Grow: prepend blank slots at the top, reattaching orphans.
                     for _ in 0..(desired_cap - current_cap) {
                         let pb = ProgressBar::new(0);
                         let bar = self.inner.insert(0, pb);
                         bar.set_style(blank_bar_style());
                         bar.set_message(" ");
                         bar.set_prefix("");
-                        self.slots.insert(0, RenderedSlot { bar, source: RefCell::new(None) });
+                        let slot = RenderedSlot { bar, source: RefCell::new(None) };
+                        if let Some(orphan) = self.orphaned_states.borrow_mut().pop_back() {
+                            slot.source.replace(Some(orphan));
+                        }
+                        self.slots.insert(0, slot);
+                    }
+                    // Sync slots that may have been reattached.
+                    for i in 0..self.slots.len() {
+                        self.sync_slot(i);
                     }
                 } else if desired_cap < current_cap {
-                    // Shrink: drain blank slots from the top.
-                    let overall_slots = usize::from(self.has_overall);
-                    let max_remove = current_cap.saturating_sub(desired_cap);
-                    let mut removed = 0;
-                    let mut i = 0;
-                    while i < self.slots.len().saturating_sub(overall_slots) && removed < max_remove
+                    // Shrink: evict from top until desired capacity is met.
+                    while self.slots.len() > desired_cap
+                        && self.slots.len().saturating_sub(usize::from(self.has_overall)) > 0
                     {
-                        if self.slots[i].source.borrow().is_none() {
-                            self.inner.remove(&self.slots[i].bar);
-                            self.slots.remove(i);
-                            removed += 1;
-                        } else {
-                            i += 1;
+                        if let Some(source) = self.slots[0].source.borrow_mut().take() {
+                            self.orphaned_states.borrow_mut().push_back(source);
                         }
+                        self.inner.remove(&self.slots[0].bar);
+                        self.slots.remove(0);
                     }
                 }
             }
@@ -1032,8 +1046,8 @@ mod inner {
     impl ProgressGroup {
         /// Create a new group with no overall bar.
         ///
-        /// Pre-allocates `max(terminal_height(), 4)` bars so the draw height
-        /// is fixed for the group's lifetime.
+        /// Pre-allocates `max(terminal_height(), 1)` bars so the draw height
+        /// matches the terminal.
         #[must_use]
         pub fn new() -> Self {
             if !progress_enabled() {
@@ -1064,7 +1078,7 @@ mod inner {
         /// terminal-aware sizing should use [`new()`](Self::new) instead.
         #[must_use]
         pub fn with_mp(mp: MultiProgress, capacity: usize) -> Self {
-            let cap = capacity.clamp(MIN_SLOTS, MAX_SLOTS);
+            let cap = capacity.max(1).min(MAX_SLOTS);
             if !progress_enabled() {
                 return Self { renderer: None };
             }
@@ -1082,7 +1096,7 @@ mod inner {
         /// The overall bar shares the same [`{spinner}`] prefix as child bars
         /// so all bars are visually aligned horizontally.
         ///
-        /// Pre-allocates `max(terminal_height(), 4)` bars.  The overall bar
+        /// Pre-allocates `max(terminal_height(), 1)` bars.  The overall bar
         /// occupies the bottom slot; children fill slots sequentially from
         /// the first upward when [`add_bar`] is called.
         ///
@@ -1158,7 +1172,7 @@ mod inner {
             if !progress_enabled() {
                 return (Self { renderer: None }, TrackedHandle::disabled());
             }
-            let cap = capacity.clamp(MIN_SLOTS, MAX_SLOTS);
+            let cap = capacity.max(1).min(MAX_SLOTS);
             let (renderer, state) = ProgressRenderer::from_mp_with_overall(
                 mp,
                 cap,
@@ -1193,7 +1207,7 @@ mod inner {
             dim_source: Arc<dyn DimensionSource>,
             dynamic_height: bool,
         ) -> Self {
-            let cap = capacity.clamp(MIN_SLOTS, MAX_SLOTS);
+            let cap = capacity.max(1).min(MAX_SLOTS);
             if !progress_enabled() {
                 return Self { renderer: None };
             }
@@ -1224,7 +1238,7 @@ mod inner {
             if !progress_enabled() {
                 return (Self { renderer: None }, TrackedHandle::disabled());
             }
-            let cap = capacity.clamp(MIN_SLOTS, MAX_SLOTS);
+            let cap = capacity.max(1).min(MAX_SLOTS);
             let (mut renderer, state) =
                 ProgressRenderer::from_mp_with_overall(mp, cap, total, label, dim_source);
             renderer.dynamic_height = dynamic_height;
@@ -1257,7 +1271,7 @@ mod inner {
             let state = Arc::new(SharedState::new(total, label));
             {
                 let locked = renderer.lock().unwrap();
-                let _ = locked.attach(&state);
+                locked.attach(&state);
             }
             let weak = Arc::downgrade(renderer);
             let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
@@ -1311,7 +1325,7 @@ mod inner {
 #[allow(deprecated)]
 pub use inner::{
     DimensionSource, ProgressGroup, ProgressHandle, ProgressRenderer, ProgressTracker,
-    RealTerminalSource, SlotFull, TestDimensionSource, TrackSnapshot, TrackStatus, TrackedHandle,
+    RealTerminalSource, TestDimensionSource, TrackSnapshot, TrackStatus, TrackedHandle,
     progress_enabled, set_progress_enabled,
 };
 
