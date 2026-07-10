@@ -604,9 +604,12 @@ mod inner {
     ///
     /// # Cursor & recycling
     ///
-    /// 1. [`attach`](Self::attach) advances the cursor sequentially through
-    ///    pre-allocated blank slots.
-    /// 2. When all slots are in use, it scans for finished slots to recycle.
+    /// 1. [`attach`](Self::attach) regresses the cursor sequentially through
+    ///    pre-allocated blank slots, allocating from the bottom upward so the
+    ///    first child appears closest to the overall bar.
+    /// 2. When all slots are in use, it scans for finished slots to recycle
+    ///    (scanning from the bottom upward so the newest finished slot is
+    ///    reused first).
     /// 3. If no finished slot is found, returns [`SlotFull`].
     /// 4. Finished bars stay visible — their slots are only recycled when
     ///    new handles need display space.
@@ -650,7 +653,12 @@ mod inner {
             if let Some(slot) = slots.last() {
                 slot.bar.tick();
             }
-            Self { inner: mp, slots, cursor: Cell::new(0), has_overall: false }
+            Self {
+                inner: mp,
+                slots,
+                cursor: Cell::new(capacity.saturating_sub(1)),
+                has_overall: false,
+            }
         }
 
         /// Pre-allocate `capacity` bars with an overall bar at the bottom,
@@ -694,11 +702,21 @@ mod inner {
                 source: RefCell::new(Some(overall_state)),
                 is_blank: Cell::new(false),
             });
-            (Self { inner: mp, slots, cursor: Cell::new(0), has_overall: true }, overall_handle)
+            (
+                Self {
+                    inner: mp,
+                    slots,
+                    cursor: Cell::new(capacity.saturating_sub(2)),
+                    has_overall: true,
+                },
+                overall_handle,
+            )
         }
 
         /// Attach a tracked state to the next available render slot.
         ///
+        /// Allocates slots from the bottom upward so the first child appears
+        /// closest to the overall bar (or at the bottom for no-overall groups).
         /// Returns the [`ProgressBar`] to use for dual-write updates, or
         /// [`SlotFull`] when every slot is occupied by an active
         /// (unfinished) handle.
@@ -720,12 +738,14 @@ mod inner {
                 slot.bar.set_length(state.total.load(Ordering::Relaxed));
                 slot.bar.reset_elapsed();
                 slot.bar.enable_steady_tick(Duration::from_millis(100));
-                self.cursor.set(cursor + 1);
+                self.cursor.set(cursor.wrapping_sub(1));
                 return Ok(slot.bar.clone());
             }
-            // Step 2: recycle a finished slot (skip overall bar)
+            // Step 2: recycle a finished slot (skip overall bar), scanning
+            // from bottom to top so the slot closest to the overall is reused
+            // first.
             let limit = self.slots.len() - usize::from(self.has_overall);
-            for i in 0..limit {
+            for i in (0..limit).rev() {
                 let slot = &self.slots[i];
                 let is_finished = slot.source.borrow().as_ref().is_none_or(|s| s.is_finished());
                 if is_finished {
