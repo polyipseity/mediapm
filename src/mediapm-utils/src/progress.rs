@@ -53,10 +53,9 @@ pub type ProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
 
 #[cfg(feature = "progress")]
 mod inner {
-    use std::cell::Cell;
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-    use std::sync::{Arc, RwLock};
+    use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
 
     use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -628,22 +627,22 @@ mod inner {
         /// Optional tracking state this slot is currently bound to.
         /// `None` means the slot is blank (unused).
         source: RefCell<Option<Arc<SharedState>>>,
-        /// Whether this slot has never been activated.
-        is_blank: Cell<bool>,
     }
 
     /// Manages a fixed-size grid of [`ProgressBar`] slots in
-    /// [`MultiProgress`] with cursor-based allocation and automatic
+    /// [`MultiProgress`] with shift-based allocation and automatic
     /// recycling of finished slots.
     ///
     /// All slots are pre-allocated at construction so the draw height never
     /// changes — eliminating the root cause of terminal ghosting.
     ///
-    /// # Cursor & recycling
+    /// # Allocation strategy
     ///
-    /// 1. [`attach`](Self::attach) regresses the cursor sequentially through
-    ///    pre-allocated blank slots, allocating from the bottom upward so the
-    ///    first child appears closest to the overall bar.
+    /// 1. [`attach`](Self::attach) places new children into the **bottom** of
+    ///    the active band (just above the overall bar if one exists) and
+    ///    shifts all existing active children up by one slot.  This preserves
+    ///    chronological order top-to-bottom (first-created child at the top
+    ///    of the active band, last-created adjacent to the overall bar).
     /// 2. When all slots are in use, it scans for finished slots to recycle
     ///    (scanning from the bottom upward so the newest finished slot is
     ///    reused first).
@@ -653,7 +652,6 @@ mod inner {
     pub struct ProgressRenderer {
         inner: MultiProgress,
         slots: Vec<RenderedSlot>,
-        cursor: Cell<usize>,
         has_overall: bool,
     }
 
@@ -679,39 +677,30 @@ mod inner {
                 bar.set_style(blank_bar_style());
                 bar.set_message(" ");
                 bar.set_prefix("");
-                slots.push(RenderedSlot {
-                    bar,
-                    source: RefCell::new(None),
-                    is_blank: Cell::new(true),
-                });
+                slots.push(RenderedSlot { bar, source: RefCell::new(None) });
             }
             // Trigger a final draw so all bars are captured by InMemoryTerm
             // even when capacity == terminal height.
             if let Some(slot) = slots.last() {
                 slot.bar.tick();
             }
-            Self {
-                inner: mp,
-                slots,
-                cursor: Cell::new(capacity.saturating_sub(1)),
-                has_overall: false,
-            }
+            Self { inner: mp, slots, has_overall: false }
         }
 
         /// Pre-allocate `capacity` bars with an overall bar at the bottom,
-        /// using a fresh [`MultiProgress`].  Returns `(renderer, overall_handle)`.
-        fn with_overall(capacity: usize, total: u64, label: &str) -> (Self, TrackedHandle) {
+        /// using a fresh [`MultiProgress`].  Returns `(renderer, overall_state)`.
+        fn with_overall(capacity: usize, total: u64, label: &str) -> (Self, Arc<SharedState>) {
             Self::from_mp_with_overall(MultiProgress::new(), capacity, total, label)
         }
 
         /// Pre-allocate `capacity` bars with an overall bar at the bottom,
-        /// using an existing [`MultiProgress`].  Returns `(renderer, overall_handle)`.
+        /// using an existing [`MultiProgress`].  Returns `(renderer, overall_state)`.
         fn from_mp_with_overall(
             mp: MultiProgress,
             capacity: usize,
             total: u64,
             label: &str,
-        ) -> (Self, TrackedHandle) {
+        ) -> (Self, Arc<SharedState>) {
             let mut slots = Vec::with_capacity(capacity);
             for _ in 0..capacity.saturating_sub(1) {
                 let pb = ProgressBar::new(0);
@@ -719,11 +708,7 @@ mod inner {
                 bar.set_style(blank_bar_style());
                 bar.set_message(" ");
                 bar.set_prefix("");
-                slots.push(RenderedSlot {
-                    bar,
-                    source: RefCell::new(None),
-                    is_blank: Cell::new(true),
-                });
+                slots.push(RenderedSlot { bar, source: RefCell::new(None) });
             }
             // Last slot = overall bar.
             let overall_state = Arc::new(SharedState::new(total, label));
@@ -732,72 +717,96 @@ mod inner {
             apply_overall_bar_style(&overall_bar);
             overall_bar.set_prefix(label.to_string());
             overall_bar.enable_steady_tick(Duration::from_millis(100));
-            let overall_handle =
-                TrackedHandle { state: overall_state.clone(), bar: Some(overall_bar.clone()) };
             slots.push(RenderedSlot {
                 bar: overall_bar,
-                source: RefCell::new(Some(overall_state)),
-                is_blank: Cell::new(false),
+                source: RefCell::new(Some(overall_state.clone())),
             });
-            (
-                Self {
-                    inner: mp,
-                    slots,
-                    cursor: Cell::new(capacity.saturating_sub(2)),
-                    has_overall: true,
-                },
-                overall_handle,
-            )
+            (Self { inner: mp, slots, has_overall: true }, overall_state)
+        }
+
+        /// Swap the tracked sources of two render slots without
+        /// simultaneous `RefCell` borrows.
+        #[inline]
+        fn swap_slot_sources(slots: &[RenderedSlot], i: usize, j: usize) {
+            if i == j {
+                return;
+            }
+            let mut tmp = None;
+            {
+                let mut cell = slots[i].source.borrow_mut();
+                std::mem::swap(&mut tmp, &mut *cell);
+            }
+            {
+                let mut cell = slots[j].source.borrow_mut();
+                std::mem::swap(&mut tmp, &mut *cell);
+            }
+            {
+                let mut cell = slots[i].source.borrow_mut();
+                std::mem::swap(&mut tmp, &mut *cell);
+            }
+        }
+
+        /// Re-configure the bar at slot index `i` to reflect its current
+        /// tracked source (or blank state if unbound).
+        fn sync_slot(&self, i: usize) {
+            let slot = &self.slots[i];
+            if let Some(ref source) = *slot.source.borrow() {
+                let snap = source.snapshot();
+                apply_bar_style(&slot.bar);
+                slot.bar.set_prefix(snap.prefix);
+                slot.bar.set_message(snap.message);
+                slot.bar.set_length(snap.total);
+                slot.bar.reset_elapsed();
+                slot.bar.enable_steady_tick(Duration::from_millis(100));
+            } else {
+                slot.bar.set_style(blank_bar_style());
+                slot.bar.set_message(" ");
+                slot.bar.set_prefix("");
+                slot.bar.disable_steady_tick();
+            }
         }
 
         /// Attach a tracked state to the next available render slot.
         ///
-        /// Allocates slots from the bottom upward so the first child appears
-        /// closest to the overall bar (or at the bottom for no-overall groups).
-        /// Returns the [`ProgressBar`] to use for dual-write updates, or
-        /// [`SlotFull`] when every slot is occupied by an active
-        /// (unfinished) handle.
-        fn attach(&self, state: &Arc<SharedState>) -> Result<ProgressBar, SlotFull> {
-            let cursor = self.cursor.get();
-            // Step 1: sequential allocation (skip the overall bar when present)
-            let child_count = self.slots.len() - usize::from(self.has_overall);
-            if cursor < child_count {
-                let slot = &self.slots[cursor];
-                slot.source.replace(Some(Arc::clone(state)));
-                slot.is_blank.set(false);
-                // Configure the bar for active tracking
-                apply_bar_style(&slot.bar);
-                {
-                    let snap = state.snapshot();
-                    slot.bar.set_prefix(snap.prefix);
-                    slot.bar.set_message(snap.message);
+        /// Places the new child at the **bottom** of the active band (just
+        /// above the overall bar when one exists).  Existing active children
+        /// are shifted up by one slot, preserving chronological order:
+        /// first-created child at the top of the band, last-created adjacent
+        /// to the overall bar.
+        ///
+        /// When all slots are occupied by active handles, scans from the
+        /// bottom upward for a finished slot to recycle.  Returns
+        /// [`SlotFull`] when every slot is active.
+        fn attach(&self, state: &Arc<SharedState>) -> Result<(), SlotFull> {
+            let child_cap = self.slots.len() - usize::from(self.has_overall);
+            let bottom = child_cap.saturating_sub(1);
+
+            // Phase 1: shift active band up, place new child at bottom
+            let active =
+                self.slots[..=bottom].iter().filter(|s| s.source.borrow().is_some()).count();
+
+            if active < child_cap {
+                // Shift existing active children up by one slot (ascending
+                // order preserves relative positions).
+                for i in (bottom + 1 - active)..=bottom {
+                    Self::swap_slot_sources(&self.slots, i, i - 1);
                 }
-                slot.bar.set_length(state.total.load(Ordering::Relaxed));
-                slot.bar.reset_elapsed();
-                slot.bar.enable_steady_tick(Duration::from_millis(100));
-                self.cursor.set(cursor.wrapping_sub(1));
-                return Ok(slot.bar.clone());
+                // Sync shifted slots (sources moved to different bars).
+                for i in (bottom.saturating_sub(active))..=bottom {
+                    self.sync_slot(i);
+                }
+                // Place new child at the freed bottom slot.
+                self.slots[bottom].source.replace(Some(Arc::clone(state)));
+                self.sync_slot(bottom);
+                return Ok(());
             }
-            // Step 2: recycle a finished slot (skip overall bar), scanning
-            // from bottom to top so the slot closest to the overall is reused
-            // first.
-            let limit = self.slots.len() - usize::from(self.has_overall);
-            for i in (0..limit).rev() {
-                let slot = &self.slots[i];
-                let is_finished = slot.source.borrow().as_ref().is_none_or(|s| s.is_finished());
-                if is_finished {
-                    slot.source.replace(Some(Arc::clone(state)));
-                    slot.is_blank.set(false);
-                    apply_bar_style(&slot.bar);
-                    {
-                        let snap = state.snapshot();
-                        slot.bar.set_prefix(snap.prefix);
-                        slot.bar.set_message(snap.message);
-                    }
-                    slot.bar.set_length(state.total.load(Ordering::Relaxed));
-                    slot.bar.reset_elapsed();
-                    slot.bar.enable_steady_tick(Duration::from_millis(100));
-                    return Ok(slot.bar.clone());
+
+            // Phase 2: recycle a finished slot (all slots occupied).
+            for i in (0..=bottom).rev() {
+                if self.slots[i].source.borrow().as_ref().is_none_or(|s| s.is_finished()) {
+                    self.slots[i].source.replace(Some(Arc::clone(state)));
+                    self.sync_slot(i);
+                    return Ok(());
                 }
             }
             Err(SlotFull)
@@ -862,7 +871,7 @@ mod inner {
     /// group and all bars added to it are no-ops.
     pub struct ProgressGroup {
         /// `None` when progress is disabled.
-        renderer: Option<ProgressRenderer>,
+        renderer: Option<Arc<Mutex<ProgressRenderer>>>,
     }
 
     impl ProgressGroup {
@@ -876,7 +885,7 @@ mod inner {
                 return Self { renderer: None };
             }
             let cap = (terminal_height() as usize).clamp(MIN_SLOTS, MAX_SLOTS);
-            Self { renderer: Some(ProgressRenderer::new(cap)) }
+            Self { renderer: Some(Arc::new(Mutex::new(ProgressRenderer::new(cap)))) }
         }
 
         /// Create a group from an existing [`MultiProgress`] with a fixed
@@ -891,7 +900,7 @@ mod inner {
             if !progress_enabled() {
                 return Self { renderer: None };
             }
-            Self { renderer: Some(ProgressRenderer::from_mp(mp, cap)) }
+            Self { renderer: Some(Arc::new(Mutex::new(ProgressRenderer::from_mp(mp, cap)))) }
         }
 
         /// Create a group with an overall aggregate bar pinned at the bottom.
@@ -908,7 +917,15 @@ mod inner {
                 return (Self { renderer: None }, TrackedHandle::disabled());
             }
             let cap = (terminal_height() as usize).clamp(MIN_SLOTS, MAX_SLOTS);
-            let (renderer, handle) = ProgressRenderer::with_overall(cap, total, label);
+            let (renderer, state) = ProgressRenderer::with_overall(cap, total, label);
+            let renderer = Arc::new(Mutex::new(renderer));
+            let weak = Arc::downgrade(&renderer);
+            let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
+                if let Some(r) = weak.upgrade() {
+                    r.lock().unwrap().tick();
+                }
+            }));
+            let handle = TrackedHandle { state, bar: None, tick_fn };
             (Self { renderer: Some(renderer) }, handle)
         }
 
@@ -930,7 +947,15 @@ mod inner {
                 return (Self { renderer: None }, TrackedHandle::disabled());
             }
             let cap = capacity.clamp(MIN_SLOTS, MAX_SLOTS);
-            let (renderer, handle) = ProgressRenderer::from_mp_with_overall(mp, cap, total, label);
+            let (renderer, state) = ProgressRenderer::from_mp_with_overall(mp, cap, total, label);
+            let renderer = Arc::new(Mutex::new(renderer));
+            let weak = Arc::downgrade(&renderer);
+            let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
+                if let Some(r) = weak.upgrade() {
+                    r.lock().unwrap().tick();
+                }
+            }));
+            let handle = TrackedHandle { state, bar: None, tick_fn };
             (Self { renderer: Some(renderer) }, handle)
         }
 
@@ -945,8 +970,17 @@ mod inner {
                 return TrackedHandle::disabled();
             };
             let state = Arc::new(SharedState::new(total, label));
-            let bar = renderer.attach(&state).ok();
-            TrackedHandle { state, bar }
+            {
+                let locked = renderer.lock().unwrap();
+                let _ = locked.attach(&state);
+            }
+            let weak = Arc::downgrade(renderer);
+            let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
+                if let Some(r) = weak.upgrade() {
+                    r.lock().unwrap().tick();
+                }
+            }));
+            TrackedHandle { state, bar: None, tick_fn }
         }
 
         /// Block until all bars in the group reach a finished state.
@@ -963,7 +997,7 @@ mod inner {
         /// final state of each bar after work completes.
         pub fn join_and_clear(&self) {
             if let Some(ref renderer) = self.renderer {
-                renderer.clear();
+                renderer.lock().unwrap().clear();
             }
         }
     }
@@ -977,7 +1011,7 @@ mod inner {
     impl Drop for ProgressGroup {
         fn drop(&mut self) {
             if let Some(ref renderer) = self.renderer {
-                renderer.clear();
+                renderer.lock().unwrap().clear();
             }
         }
     }
