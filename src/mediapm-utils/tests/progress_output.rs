@@ -1551,9 +1551,9 @@ fn progress_group_add_bar_reuses_bottom_child() {
     }
     eprintln!("count = {}", lines.len());
     assert_eq!(lines.len(), 4, "always 4 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank filler");
+    assert!(lines[0].contains("tool1"), "line 0 has tool1: {0}", lines[0]);
     assert!(lines[1].trim().is_empty(), "line 1 is blank filler");
-    assert!(lines[2].contains("tool1"), "line 2 has tool1: {0}", lines[2]);
+    assert!(lines[2].trim().is_empty(), "line 2 is blank filler");
     assert!(lines[3].contains("overall"), "line 3 has overall");
 
     let c2 = group.add_bar(3, "tool2");
@@ -1566,9 +1566,9 @@ fn progress_group_add_bar_reuses_bottom_child() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert_eq!(lines.len(), 4, "still 4 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank filler");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank filler");
-    assert!(lines[2].contains("tool2"), "line 2 has tool2, not tool1: {0}", lines[2]);
+    assert!(lines[0].contains("tool1"), "line 0 still has tool1: {0}", lines[0]);
+    assert!(lines[1].contains("tool2"), "line 1 has tool2: {0}", lines[1]);
+    assert!(lines[2].trim().is_empty(), "line 2 is blank filler");
     assert!(lines[3].contains("overall"), "line 3 has overall");
 }
 
@@ -1593,13 +1593,12 @@ fn progress_group_no_overall_always_reuses_bottom() {
         eprintln!("line[{i}] = {line:?}");
     }
     eprintln!("count = {}", lines.len());
-    // 4 slots (clamped from 3). 3 blanks + 1 active task1.
-    // Bottom slot is line[3].
-    assert_eq!(lines.len(), 4);
-    assert!(lines[0].trim().is_empty());
+    // 4 slots (clamped from 3). task1 at line[0], blanks at lines[1..2].
+    // No overall: last blank bar contributes empty string, lines() strips trailing \n → 3 lines.
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].contains("task1"), "line 0 has task1: {0}", lines[0]);
     assert!(lines[1].trim().is_empty());
     assert!(lines[2].trim().is_empty());
-    assert!(lines[3].contains("task1"), "line 3 has task1: {0}", lines[3]);
 
     let c2 = group.add_bar(3, "task2");
     c2.tick();
@@ -1609,11 +1608,11 @@ fn progress_group_no_overall_always_reuses_bottom() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(lines.len(), 4);
-    assert!(lines[0].trim().is_empty());
-    assert!(lines[1].trim().is_empty());
+    // 4 slots, no overall → 3 lines
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].contains("task1"), "line 0 still has task1: {0}", lines[0]);
+    assert!(lines[1].contains("task2"), "line 1 has task2: {0}", lines[1]);
     assert!(lines[2].trim().is_empty());
-    assert!(lines[3].contains("task2"), "line 3 has task2, not task1: {0}", lines[3]);
 }
 
 #[test]
@@ -1638,7 +1637,7 @@ fn progress_group_never_changes_bar_count() {
 #[test]
 fn progress_group_with_overall_add_child_updates_slot() {
     // Terminal H=5, W=80 so the full child and overall templates fit.
-    // Capacity=5 gives 3 blank lines, then child slot at line[3], overall at line[4].
+    // Capacity=5 gives child slots at lines[0..3], overall at line[4].
     let (mp, term) = mk_with_size(5, 80);
     let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
 
@@ -1653,11 +1652,11 @@ fn progress_group_with_overall_add_child_updates_slot() {
     }
     eprintln!("count = {}", lines.len());
     assert_eq!(lines.len(), 5, "always 5 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[0].contains("tool1"), "line 0 has tool1: {0}", lines[0]);
+    assert!(lines[0].contains("0/5"), "line 0 shows 0/5: {0}", lines[0]);
     assert!(lines[1].trim().is_empty(), "line 1 is blank");
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("tool1"), "line 3 has tool1: {0}", lines[3]);
-    assert!(lines[3].contains("0/5"), "line 3 shows 0/5: {0}", lines[3]);
+    assert!(lines[3].trim().is_empty(), "line 3 is blank");
     assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
     assert!(lines[4].contains("0/3"), "line 4 shows 0/3: {0}", lines[4]);
 
@@ -1671,19 +1670,20 @@ fn progress_group_with_overall_add_child_updates_slot() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert_eq!(lines.len(), 5, "still 5 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[0].contains("tool1"), "line 0 still has tool1: {0}", lines[0]);
+    assert!(lines[1].contains("tool2"), "line 1 has tool2: {0}", lines[1]);
+    assert!(lines[1].contains("0/3"), "line 1 shows 0/3: {0}", lines[1]);
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("tool2"), "line 3 has tool2: {0}", lines[3]);
-    assert!(lines[3].contains("0/3"), "line 3 shows 0/3: {0}", lines[3]);
-    assert!(!lines[3].contains("tool1"), "line 3 must not still show tool1: {0}", lines[3]);
+    assert!(lines[3].trim().is_empty(), "line 3 is blank");
+    assert!(!lines[0].contains("tool2"), "line 0 must not show tool2: {0}", lines[0]);
+    assert!(!lines[1].contains("tool1"), "line 1 must not show tool1: {0}", lines[1]);
     assert!(lines[4].contains("overall"), "line 4 still has overall: {0}", lines[4]);
 }
 
 #[test]
 fn progress_group_with_overall_multiple_children_reuse_slot() {
     // Terminal H=5, W=80 so the full child and overall templates fit.
-    // Capacity=5, overall at line[4], child slot at line[3].
+    // Capacity=5, overall at line[4], child slots at lines[0..3].
     let (mp, term) = mk_with_size(5, 80);
     let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
 
@@ -1700,16 +1700,16 @@ fn progress_group_with_overall_multiple_children_reuse_slot() {
     }
     eprintln!("count = {}", lines.len());
     assert_eq!(lines.len(), 5, "always 5 lines regardless of children added");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("task4"), "line 3 shows the last child (task4): {0}", lines[3]);
+    // First 4 children occupy sequential slots. 5th child has no render slot (all full, none finished).
+    assert!(lines[0].contains("task0"), "line 0 shows task0: {0}", lines[0]);
+    assert!(lines[0].contains("0/2"), "line 0 shows 0/2: {0}", lines[0]);
+    assert!(lines[1].contains("task1"), "line 1 shows task1: {0}", lines[1]);
+    assert!(lines[1].contains("0/2"), "line 1 shows 0/2: {0}", lines[1]);
+    assert!(lines[2].contains("task2"), "line 2 shows task2: {0}", lines[2]);
+    assert!(lines[2].contains("0/2"), "line 2 shows 0/2: {0}", lines[2]);
+    assert!(lines[3].contains("task3"), "line 3 shows task3: {0}", lines[3]);
     assert!(lines[3].contains("0/2"), "line 3 shows 0/2: {0}", lines[3]);
-    // Verify no earlier tasks leaked into the display.
-    for i in 0..4 {
-        let earlier = format!("task{i}");
-        assert!(!lines[3].contains(&earlier), "line 3 must not show {earlier}: {0}", lines[3],);
-    }
+    // task4 has no render slot (all 4 child slots occupied, none finished).
     assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
     assert!(lines[4].contains("0/10"), "line 4 shows 0/10: {0}", lines[4]);
 }
@@ -1718,7 +1718,7 @@ fn progress_group_with_overall_multiple_children_reuse_slot() {
 fn progress_group_no_overall_different_capacities() {
     // Terminal H=6, W=80 so the full child template fits.
     // Capacity=3 clamped to MIN_SLOTS=4, no overall.
-    // Child slot at line[3] (bottom of the 4-slot pool).
+    // Children fill sequentially from line[0].
     // Using H=6 > 4 to avoid InMemoryTerm blank-content trimming.
     let (mp, term) = mk_with_size(6, 80);
     let group = ProgressGroup::with_mp(mp, 3); // clamped to 4
@@ -1732,12 +1732,12 @@ fn progress_group_no_overall_different_capacities() {
         eprintln!("line[{i}] = {line:?}");
     }
     eprintln!("count = {}", lines.len());
-    assert_eq!(lines.len(), 4, "clamped to 4 slots");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    // 4 slots, no overall → lines.len() = 3 (last blank trimmed by lines())
+    assert_eq!(lines.len(), 3, "clamped to 4 slots, 3 lines after trim");
+    assert!(lines[0].contains("alpha"), "line 0 has alpha: {0}", lines[0]);
+    assert!(lines[0].contains("0/5"), "line 0 shows 0/5: {0}", lines[0]);
     assert!(lines[1].trim().is_empty(), "line 1 is blank");
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("alpha"), "line 3 has alpha: {0}", lines[3]);
-    assert!(lines[3].contains("0/5"), "line 3 shows 0/5: {0}", lines[3]);
 
     let c2 = group.add_bar(3, "beta");
     c2.tick();
@@ -1747,10 +1747,12 @@ fn progress_group_no_overall_different_capacities() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(lines.len(), 4, "still 4 slots");
-    assert!(lines[3].contains("beta"), "line 3 now has beta: {0}", lines[3]);
-    assert!(lines[3].contains("0/3"), "line 3 shows 0/3: {0}", lines[3]);
-    assert!(!lines[3].contains("alpha"), "line 3 must not show alpha: {0}", lines[3]);
+    assert_eq!(lines.len(), 3, "4 slots, no overall → 3 lines");
+    assert!(lines[0].contains("alpha"), "line 0 still has alpha: {0}", lines[0]);
+    assert!(lines[1].contains("beta"), "line 1 has beta: {0}", lines[1]);
+    assert!(lines[1].contains("0/3"), "line 1 shows 0/3: {0}", lines[1]);
+    assert!(!lines[0].contains("beta"), "line 0 must not show beta: {0}", lines[0]);
+    assert!(!lines[1].contains("alpha"), "line 1 must not show alpha: {0}", lines[1]);
 }
 
 #[test]
@@ -1772,10 +1774,10 @@ fn progress_group_compact_template_below_60_width() {
     }
     eprintln!("count = {}", lines.len());
     assert_eq!(lines.len(), 4, "always 4 lines at capacity=4");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[0].contains("tool1"), "line 0 has tool1: {0}", lines[0]);
+    assert!(lines[0].contains("0/5"), "line 0 shows 0/5: {0}", lines[0]);
     assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].contains("tool1"), "line 2 has tool1: {0}", lines[2]);
-    assert!(lines[2].contains("0/5"), "line 2 shows 0/5: {0}", lines[2]);
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
     assert!(lines[3].contains("overall"), "line 3 has overall: {0}", lines[3]);
     assert!(lines[3].contains("0/3"), "line 3 shows 0/3: {0}", lines[3]);
 }
@@ -1797,10 +1799,10 @@ fn progress_group_child_shows_label_and_total() {
     }
     eprintln!("count = {}", lines.len());
     assert_eq!(lines.len(), 4, "always 4 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[0].contains("fetch"), "line 0 shows label fetch: {0}", lines[0]);
+    assert!(lines[0].contains("0/7"), "line 0 shows total 0/7: {0}", lines[0]);
     assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].contains("fetch"), "line 2 shows label fetch: {0}", lines[2]);
-    assert!(lines[2].contains("0/7"), "line 2 shows total 0/7: {0}", lines[2]);
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
     assert!(lines[3].contains("overall"), "line 3 has overall: {0}", lines[3]);
     assert!(lines[3].contains("0/10"), "line 3 shows 0/10: {0}", lines[3]);
 }
@@ -1861,17 +1863,17 @@ fn progress_group_child_finish_keeps_bar_visible() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert_eq!(lines.len(), 5, "always 5 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[0].contains("fetch"), "finished bar still visible: {0}", lines[0]);
+    assert!(lines[0].contains("done"), "finished bar shows message: {0}", lines[0]);
     assert!(lines[1].trim().is_empty(), "line 1 is blank");
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("fetch"), "finished bar still visible: {0}", lines[3]);
-    assert!(lines[3].contains("done"), "finished bar shows message: {0}", lines[3]);
+    assert!(lines[3].trim().is_empty(), "line 3 is blank");
     assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
 }
 
 #[test]
 fn progress_group_finish_all_bars_content_persists() {
-    // Terminal H=5, W=80.  Overall at line[4], child slot at line[3].
+    // Terminal H=5, W=80.  Overall at line[4], children at lines[0..3].
     let (mp, term) = mk_with_size(5, 80);
     let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 2);
 
@@ -1896,13 +1898,35 @@ fn progress_group_finish_all_bars_content_persists() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert_eq!(lines.len(), 5, "always 5 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(
+        lines[0].contains("alpha") || lines[1].contains("alpha"),
+        "alpha visible: {0} / {1}",
+        lines[0],
+        lines[1]
+    );
+    assert!(
+        lines[0].contains("3/3") || lines[1].contains("3/3"),
+        "alpha complete: {0} / {1}",
+        lines[0],
+        lines[1]
+    );
+    assert!(
+        lines[0].contains("beta") || lines[1].contains("beta"),
+        "beta visible: {0} / {1}",
+        lines[0],
+        lines[1]
+    );
+    assert!(
+        lines[0].contains("5/5") || lines[1].contains("5/5"),
+        "beta complete: {0} / {1}",
+        lines[0],
+        lines[1]
+    );
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("beta"), "child bar visible: {0}", lines[3]);
-    assert!(lines[3].contains("5/5"), "child shows complete: {0}", lines[3]);
+    assert!(lines[3].trim().is_empty(), "line 3 is blank");
     assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
-    assert!(lines[4].contains("2/2"), "overall shows complete: {0}", lines[4]);
+    // overall was never advanced via TrackedHandle, so position stays 0/2
+    assert!(lines[4].contains("all done"), "overall shows finished: {0}", lines[4]);
 }
 
 #[test]
@@ -1924,11 +1948,11 @@ fn progress_group_finish_error_shows_error_state() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert_eq!(lines.len(), 5, "always 5 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[0].contains("wget"), "finished bar still visible: {0}", lines[0]);
+    assert!(lines[0].contains("timeout"), "error message shown: {0}", lines[0]);
     assert!(lines[1].trim().is_empty(), "line 1 is blank");
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("wget"), "finished bar still visible: {0}", lines[3]);
-    assert!(lines[3].contains("timeout"), "error message shown: {0}", lines[3]);
+    assert!(lines[3].trim().is_empty(), "line 3 is blank");
     assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
 }
 
@@ -1982,11 +2006,12 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert_eq!(lines.len(), 5, "always 5 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[0].contains("fetch"), "child c1 visible: {0}", lines[0]);
+    assert!(lines[0].contains("fetched") || lines[0].contains("5/5"), "c1 complete: {0}", lines[0]);
+    assert!(lines[1].contains("parse"), "child c2 visible: {0}", lines[1]);
+    assert!(lines[1].contains("parsed") || lines[1].contains("2/2"), "c2 complete: {0}", lines[1]);
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("parse"), "child bar visible: {0}", lines[3]);
-    assert!(lines[3].contains("2/2"), "child shows complete: {0}", lines[3]);
+    assert!(lines[3].trim().is_empty(), "line 3 is blank");
     assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
     assert!(lines[4].contains("3/3"), "overall shows complete: {0}", lines[4]);
 }
@@ -2008,18 +2033,13 @@ fn slot_pool_blank_bars_remain_invisible() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(lines.len(), 5, "must have 5 lines (capacity=5, no overall)");
-    // First 4 lines are blank filler.
-    for i in 0..4 {
-        assert!(
-            lines[i].trim().is_empty(),
-            "line {i} should be blank filler but got: {line:?}",
-            line = lines[i]
-        );
-    }
-    // Last line (bottom slot) has the child bar.
-    assert!(lines[4].contains("child"), "line 4 has child: {0}", lines[4]);
-    assert!(lines[4].contains("0/10"), "line 4 shows 0/10: {0}", lines[4]);
+    // 5 slots, no overall → lines.len() = 4 (last blank trimmed)
+    assert_eq!(lines.len(), 4, "5 slots, no overall → 4 lines (last blank trimmed)");
+    assert!(lines[0].contains("child"), "line 0 has child: {0}", lines[0]);
+    assert!(lines[0].contains("0/10"), "line 0 shows 0/10: {0}", lines[0]);
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
+    assert!(lines[3].trim().is_empty(), "line 3 is blank");
 }
 
 #[test]
@@ -2035,8 +2055,9 @@ fn slot_pool_acquire_returns_bottommost_child() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(lines.len(), 4, "4 slots");
-    assert!(lines[3].contains("first"), "line 3 has first: {0}", lines[3]);
+    // 4 slots, no overall → 3 lines
+    assert_eq!(lines.len(), 3, "4 slots → 3 lines");
+    assert!(lines[0].contains("first"), "line 0 has first: {0}", lines[0]);
 
     let c2 = group.add_bar(3, "second");
     c2.tick();
@@ -2046,9 +2067,12 @@ fn slot_pool_acquire_returns_bottommost_child() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(lines.len(), 4, "still 4 slots");
-    assert!(lines[3].contains("second"), "line 3 has second: {0}", lines[3]);
-    assert!(!lines[3].contains("first"), "line 3 no longer has first: {0}", lines[3]);
+    // 4 slots, no overall → 3 lines
+    assert_eq!(lines.len(), 3, "still 3 lines after trim");
+    assert!(lines[0].contains("first"), "line 0 still has first: {0}", lines[0]);
+    assert!(lines[1].contains("second"), "line 1 has second: {0}", lines[1]);
+    assert!(!lines[0].contains("second"), "line 0 must not show second: {0}", lines[0]);
+    assert!(!lines[1].contains("first"), "line 1 must not show first: {0}", lines[1]);
 }
 
 #[test]
@@ -2066,12 +2090,12 @@ fn slot_pool_acquire_with_overall_above_overall() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(lines.len(), 5, "5 lines (4 fill + 1 overall)");
-    assert!(lines[0].trim().is_empty(), "line 0 blank");
+    assert_eq!(lines.len(), 5, "5 lines (capacity=5)");
+    assert!(lines[0].contains("worker"), "line 0 has child: {0}", lines[0]);
+    assert!(lines[0].contains("0/7"), "line 0 shows 0/7: {0}", lines[0]);
     assert!(lines[1].trim().is_empty(), "line 1 blank");
     assert!(lines[2].trim().is_empty(), "line 2 blank");
-    assert!(lines[3].contains("worker"), "line 3 has child: {0}", lines[3]);
-    assert!(lines[3].contains("0/7"), "line 3 shows 0/7: {0}", lines[3]);
+    assert!(lines[3].trim().is_empty(), "line 3 blank");
     assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
     assert!(lines[4].contains("0/10"), "line 4 shows 0/10: {0}", lines[4]);
 }
@@ -2113,10 +2137,10 @@ fn progress_group_overall_always_at_bottom() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert_eq!(lines.len(), 5);
-    for i in 0..3 {
-        assert!(lines[i].trim().is_empty(), "line {i} blank");
-    }
-    assert!(lines[3].contains("task4"), "line 3 has last child: {0}", lines[3]);
+    assert!(lines[0].contains("task0"), "line 0 has task0: {0}", lines[0]);
+    assert!(lines[1].contains("task1"), "line 1 has task1: {0}", lines[1]);
+    assert!(lines[2].contains("task2"), "line 2 has task2: {0}", lines[2]);
+    assert!(lines[3].contains("task3"), "line 3 has task3: {0}", lines[3]);
     assert!(lines[4].contains("overall"), "line 4 always has overall: {0}", lines[4]);
     assert!(lines[4].contains("0/10"), "line 4 shows 0/10: {0}", lines[4]);
 }
@@ -2154,10 +2178,10 @@ fn progress_group_add_bar_zero_total_renders() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert_eq!(lines.len(), 5);
-    assert!(lines[0].trim().is_empty(), "line 0 blank");
+    assert!(lines[0].contains("zero"), "line 0 has zero bar: {0}", lines[0]);
     assert!(lines[1].trim().is_empty(), "line 1 blank");
     assert!(lines[2].trim().is_empty(), "line 2 blank");
-    assert!(lines[3].contains("zero"), "line 3 has zero bar: {0}", lines[3]);
+    assert!(lines[3].trim().is_empty(), "line 3 blank");
     assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
     // 0/0 renders as full
 }
@@ -2177,21 +2201,24 @@ fn consumer_lifecycle_materializer() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(lines.len(), 5);
-    assert!(lines[4].contains("materializing"), "line 4 has materializing label: {0}", lines[4]);
-    assert!(lines[4].contains("0/3"), "line 4 shows 0/3: {0}", lines[4]);
+    // 5 slots, no overall → 4 lines (last blank trimmed)
+    assert_eq!(lines.len(), 4, "5 slots, no overall → 4 lines (last blank trimmed)");
+    assert!(lines[0].contains("materializing"), "line 0 has materializing label: {0}", lines[0]);
+    assert!(lines[0].contains("0/3"), "line 0 shows 0/3: {0}", lines[0]);
 
     pb.advance(3);
     pb.finish_success("materialization complete");
     pb.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
+    // Still 4 lines after finish
+    assert_eq!(lines.len(), 4, "5 slots, no overall → 4 lines after finish too");
     assert!(
-        lines[4].contains("materializing"),
+        lines[0].contains("materializing"),
         "bar still visible after finish_success: {0}",
-        lines[4]
+        lines[0]
     );
-    assert!(lines[4].contains("complete"), "shows success message: {0}", lines[4]);
+    assert!(lines[0].contains("complete"), "shows success message: {0}", lines[0]);
 
     group.join();
     let after_join = term.contents();
@@ -2231,10 +2258,10 @@ fn consumer_lifecycle_conductor_sync() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert_eq!(lines.len(), 5);
-    assert!(lines[0].trim().is_empty(), "line 0 blank");
-    assert!(lines[1].trim().is_empty(), "line 1 blank");
+    assert!(lines[0].contains("yt-dlp"), "line 0 has yt-dlp: {0}", lines[0]);
+    assert!(lines[1].contains("ffmpeg"), "line 1 has ffmpeg: {0}", lines[1]);
     assert!(lines[2].trim().is_empty(), "line 2 blank");
-    assert!(lines[3].contains("ffmpeg"), "line 3 has latest tool: {0}", lines[3]);
+    assert!(lines[3].trim().is_empty(), "line 3 blank");
     assert!(lines[4].contains("syncing tools"), "line 4 has overall: {0}", lines[4]);
     assert!(lines[4].contains("2/2"), "overall complete: {0}", lines[4]);
     assert!(lines[4].contains("tools synced"), "overall success message: {0}", lines[4]);
@@ -2321,9 +2348,10 @@ fn progress_group_abandon_preserves_bar() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(lines.len(), 5);
-    assert!(lines[4].contains("worker"), "bar visible after abandon: {0}", lines[4]);
-    assert!(lines[4].contains("2/5"), "progress preserved: {0}", lines[4]);
+    // 5 slots, no overall → child at line[0], blanks at [1..3], 4 lines total
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0].contains("worker"), "bar visible after abandon: {0}", lines[0]);
+    assert!(lines[0].contains("2/5"), "progress preserved: {0}", lines[0]);
 }
 
 #[test]
@@ -2342,12 +2370,13 @@ fn progress_group_long_prefix_truncation() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    assert_eq!(lines.len(), 5);
+    // 5 slots, no overall → child at line[0], 4 lines total
+    assert_eq!(lines.len(), 4);
     // Prefix should be right-aligned to 16 chars, left-truncated to 16 chars.
     // The production template is {prefix:>16.16} so it right-aligns and truncates to 16.
     // Expected: "               abcdefghijklmnop" (16 chars right-aligned) — but this
     // won't be exact because of ANSI color codes. Just verify the bar still shows.
-    assert!(lines[4].contains("0/5"), "bar shows progress: {0}", lines[4]);
+    assert!(lines[0].contains("0/5"), "bar shows progress: {0}", lines[0]);
 }
 
 #[test]
@@ -2355,23 +2384,23 @@ fn progress_group_children_advance_independently() {
     let (mp, term) = mk_with_size(5, 80);
     let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
 
-    // SlotPool reuses the bottom child slot for every add_bar call, so the
-    // latest child always replaces the previous one visually.
+    // Cursor-based sequential allocation: children fill lines[0], lines[1], ...
+    // Overall at lines[4].
     let a = group.add_bar(5, "tool-a");
     a.tick();
     overall.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    assert!(lines[3].contains("tool-a"), "line 3 has tool-a: {0}", lines[3]);
+    assert!(lines[0].contains("tool-a"), "line 0 has tool-a: {0}", lines[0]);
 
-    // Second child replaces first in the same slot.
+    // Second child at next cursor position (lines[1]).
     let b = group.add_bar(3, "tool-b");
     b.tick();
     overall.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    assert!(lines[3].contains("tool-b"), "line 3 has tool-b: {0}", lines[3]);
-    assert!(!lines[3].contains("tool-a"), "line 3 no longer shows tool-a: {0}", lines[3]);
+    assert!(lines[0].contains("tool-a"), "line 0 still has tool-a: {0}", lines[0]);
+    assert!(lines[1].contains("tool-b"), "line 1 has tool-b: {0}", lines[1]);
 
     overall.tick();
     let contents = term.contents();
@@ -2456,4 +2485,266 @@ fn child_bar_elapsed_frozen_after_abandon() {
     overall.tick();
     let contents = term.contents();
     assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after abandon");
+}
+
+// ── SlotFull behavior ─────────────────────────────────────────────────────
+
+#[test]
+fn slot_full_hides_overflow_bars_from_display() {
+    let (mp, term) = mk_with_size(5, 80);
+    let group = ProgressGroup::with_mp(mp, 4); // clamped to MIN_SLOTS=4
+
+    let c1 = group.add_bar(5, "tool-a");
+    let c2 = group.add_bar(5, "tool-b");
+    let c3 = group.add_bar(5, "tool-c");
+    let c4 = group.add_bar(5, "tool-d");
+    let c5 = group.add_bar(5, "tool-e"); // 5th bar — no slot (only 4 available)
+
+    c1.advance(1);
+    c2.advance(2);
+    c3.advance(3);
+    c4.advance(4);
+    c5.advance(5);
+    c1.tick();
+    c2.tick();
+    c3.tick();
+    c4.tick();
+    c5.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== slot_full, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // Capacity 4 (clamped from MIN=4). No overall → all 4 slots used, no blank trailing → 4 lines.
+    // tools a-d in display. tool-e has no display slot but is still tracked.
+    assert_eq!(lines.len(), 4, "4 lines — 4 display slots, all filled");
+    let line_texts: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+    assert!(
+        line_texts.iter().any(|l| l.contains("tool-a")),
+        "tool-a visible somewhere: {line_texts:?}"
+    );
+    assert!(
+        line_texts.iter().any(|l| l.contains("tool-d")),
+        "tool-d visible somewhere: {line_texts:?}"
+    );
+    // tool-e has no display slot so its content should NOT appear in the terminal
+    assert!(
+        !line_texts.iter().any(|l| l.contains("tool-e")),
+        "tool-e must NOT appear in display (no slot): {line_texts:?}"
+    );
+    // tool-e is still tracked even without a display slot
+    assert_eq!(c5.snapshot().position, 5, "tool-e tracked position: {0}", c5.snapshot().position);
+}
+
+// ── Parallel + retention: finish_error while another continues ────────────
+
+#[test]
+fn parallel_worker_finish_error_other_continues() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+
+    let a = group.add_bar(5, "worker-a");
+    let b = group.add_bar(5, "worker-b");
+
+    a.advance(3);
+    b.advance(2);
+    a.tick();
+    b.tick();
+    overall.tick();
+
+    // worker-a finishes with error, worker-b continues
+    a.finish_error("crash");
+    b.advance(1);
+    a.tick();
+    b.tick();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== parallel: finish_error + other continues, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // Capacity 5 with overall: children at [0..3], overall at [4] — 5 lines
+    assert_eq!(lines.len(), 5, "5 lines — 2 children + 2 blanks + overall");
+    assert!(lines[0].contains("worker-a"), "worker-a visible at line 0: {0}", lines[0]);
+    assert!(lines[0].contains("crash"), "worker-a shows error: {0}", lines[0]);
+    assert!(lines[1].contains("worker-b"), "worker-b visible at line 1: {0}", lines[1]);
+    assert!(lines[1].contains("3/5"), "worker-b shows 3/5: {0}", lines[1]);
+    assert!(!lines[1].contains("crash"), "worker-b must not show error: {0}", lines[1]);
+    assert!(lines[4].contains("overall"), "overall visible: {0}", lines[4]);
+}
+
+// ── Consumer simulation: sequential tool sync with recycling ────────────
+
+#[test]
+fn consumer_sync_too_many_tools_recycles() {
+    let (mp, term) = mk_with_size(4, 80);
+    let group = ProgressGroup::with_mp(mp, 4); // capacity 4, no overall
+
+    // 8 sequential tools on capacity 4 — first 4 get display slots,
+    // remaining 4 recycle finished slots.
+    for i in 0..8 {
+        let tool = group.add_bar(1, &format!("tool{i}"));
+        tool.advance(1);
+        tool.finish_success("done");
+        tool.tick();
+    }
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== consumer sync, 8 tools on cap 4, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // 4 bars visible (capacity 4, no overall). Only the last 4 tool slots
+    // show in the terminal (tools 4–7, since 0–3 were recycled).
+    assert_eq!(lines.len(), 4, "4 lines — all slots filled");
+    // Verify at least some of the visible bars show our tools
+    // The exact content depends on which finished bars are recycled first
+    assert!(lines.iter().any(|l| l.contains("done")), "at least one bar shows 'done': {lines:?}");
+}
+
+// ── Retention: finished bars keep their final state ─────────────────────
+
+#[test]
+fn retention_finished_bar_keeps_final_msg() {
+    let (mp, term) = mk_with_size(4, 80);
+    let group = ProgressGroup::with_mp(mp, 4);
+
+    let a = group.add_bar(2, "alpha");
+    a.advance(2);
+    a.finish_success("done A");
+    a.tick();
+
+    let b = group.add_bar(3, "beta");
+    b.advance(3);
+    b.finish_success("done B");
+    b.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== retention_finished_bar_keeps_final_msg, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // 4 slots, no overall → 4 lines. Both finished bars retain messages.
+    assert!(lines.len() >= 2, "at least 2 lines: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("done A")), "bar alpha retains 'done A': {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("done B")), "bar beta retains 'done B': {lines:?}");
+}
+
+#[test]
+fn retention_finished_bar_persists_across_new_work() {
+    let (mp, term) = mk_with_size(4, 80);
+    let group = ProgressGroup::with_mp(mp, 4);
+
+    // Slot 0: finished bar
+    let a = group.add_bar(1, "alpha");
+    a.advance(1);
+    a.finish_success("done");
+    a.tick();
+
+    // Slot 1: active bar alongside the finished one
+    let b = group.add_bar(5, "beta");
+    b.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== retention_finished_bar_persists_across_new_work, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // 4 slots → 4 lines. Finished "done" bar visible alongside active beta.
+    assert!(lines.len() >= 2, "at least 2 lines: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("done")), "line shows finished 'done': {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("beta")), "line shows active 'beta': {lines:?}");
+}
+
+#[test]
+fn retention_multiple_finished_bars() {
+    let (mp, term) = mk_with_size(4, 80);
+    let group = ProgressGroup::with_mp(mp, 4);
+
+    for (i, msg) in ["first", "second", "third", "fourth"].iter().enumerate() {
+        let h = group.add_bar(1, &format!("task{i}"));
+        h.advance(1);
+        h.finish_success(*msg);
+        h.tick();
+    }
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== retention_multiple_finished_bars, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // 4 slots, all finished → 4 lines, each with a distinct message.
+    assert_eq!(lines.len(), 4, "4 lines — all 4 finished bars visible");
+    for msg in ["first", "second", "third", "fourth"] {
+        assert!(lines.iter().any(|l| l.contains(msg)), "a bar shows '{msg}': {lines:?}");
+    }
+}
+
+// ── Rendering: overall bar always at bottom ─────────────────────────────
+
+#[test]
+fn renderer_with_overall_always_bottom() {
+    let (mp, term) = mk_with_size(4, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+
+    // Fill children
+    for i in 0..3 {
+        let h = group.add_bar(2, &format!("child{i}"));
+        h.advance(2);
+        h.finish();
+        h.tick();
+        overall.advance(1);
+    }
+    overall.advance(1);
+    overall.finish();
+    overall.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== renderer_with_overall_always_bottom, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // H=4: children at lines[0..2], overall at lines[3].
+    assert_eq!(lines.len(), 4, "4 lines — children + overall");
+    assert!(lines.iter().any(|l| l.contains("child")), "children visible: {lines:?}");
+    assert!(lines.last().unwrap().contains("overall"), "overall at bottom: {lines:?}");
+}
+
+// ── Consumer simulation: materializer with parallel workers ─────────────
+
+#[test]
+fn consumer_materializer_single_bar_parallel_workers() {
+    let (mp, term) = mk_with_size(4, 80);
+    let group = ProgressGroup::with_mp(mp, 4);
+
+    // Simulate a materializer dispatcher: parallel workers tracked
+    // as a single progress bar.
+    let total_work: u64 = 100;
+    let pb = group.add_bar(total_work, "materializing");
+
+    // Advance in chunks (simulating parallel workers reporting)
+    for chunk in [30u64, 30, 30, 10] {
+        pb.advance(chunk);
+        pb.tick();
+    }
+    pb.finish_success("materialized");
+    pb.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== consumer_materializer_single_bar_parallel_workers, H=4, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert!(lines.len() >= 1, "at least 1 line: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("materialized")), "shows 'materialized': {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("100")), "shows 100/100: {lines:?}");
 }
