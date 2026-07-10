@@ -11,7 +11,10 @@ pub mod report;
 
 // No imports needed at this level — submodules handle their own.
 
-pub use progress::{ProgressBarApi, ProgressGroup, ProgressGroupApi, TrackedHandle};
+pub use progress::{
+    DimensionSource, ProgressBarApi, ProgressGroup, ProgressGroupApi, TestDimensionSource,
+    TrackedHandle,
+};
 pub use report::{
     StatusIcon, print_error, print_heading, print_hint, print_result, print_status_report,
     print_warning,
