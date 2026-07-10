@@ -668,7 +668,13 @@ impl SyncSharedState {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::config::hierarchy_types::{
+        HierarchyNode, HierarchyNodeKind, HierarchyPath, PlaylistFormat, SanitizeNamesConfig,
+    };
+    use crate::config::source_types::{MediaSourceSpec, MediaStep, MediaStepTool};
     use mediapm_utils::progress::recording::RecordingProgressTracker;
     use tempfile::tempdir;
 
@@ -694,5 +700,73 @@ mod tests {
         assert!(result.is_ok());
         let ops = recording.ops();
         assert!(ops.is_empty(), "empty hierarchy should produce no progress ops, got {ops:?}",);
+    }
+
+    /// Injected [`RecordingProgressTracker`] records progress ops when
+    /// hierarchy has one media entry (even when the source has no variant
+    /// hashes — the entry is still processed and advance is called).
+    #[tokio::test]
+    async fn sync_hierarchy_with_single_media_produces_progress_ops() {
+        let root = tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+
+        let cas_root = paths.runtime_root.join("store");
+        tokio::fs::create_dir_all(&cas_root).await.unwrap();
+        let cas = FileSystemCas::open(&cas_root).await.unwrap();
+
+        let document = MediaPmDocument {
+            media: BTreeMap::from([(
+                "src1".into(),
+                MediaSourceSpec {
+                    steps: vec![MediaStep {
+                        tool: MediaStepTool::Import,
+                        input_variants: vec![],
+                        output_variants: BTreeMap::from([(
+                            "default".into(),
+                            serde_json::json!({"kind": "primary"}),
+                        )]),
+                        options: BTreeMap::new(),
+                    }],
+                    ..MediaSourceSpec::default()
+                },
+            )]),
+            hierarchy: vec![HierarchyNode {
+                path: HierarchyPath::simple("test_file"),
+                kind: HierarchyNodeKind::Media,
+                id: None,
+                media_id: Some("src1".into()),
+                variant: Some("default".into()),
+                variants: vec![],
+                rename_files: vec![],
+                format: PlaylistFormat::M3u8,
+                ids: vec![],
+                sanitize_names: SanitizeNamesConfig::Inherit,
+                children: vec![],
+            }],
+            ..MediaPmDocument::default()
+        };
+        let state = MediaPmState::default();
+
+        let recording = RecordingProgressTracker::new();
+        let result = sync_hierarchy(&paths, &document, &state, &cas, true, Some(&recording)).await;
+
+        assert!(result.is_ok(), "sync_hierarchy should succeed: {result:?}");
+        let ops = recording.ops();
+        assert!(!ops.is_empty(), "non-empty hierarchy should produce progress ops, got {ops:?}");
+        // Expect: AddBar (materializing), Advance, FinishSuccess or FinishError
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                mediapm_utils::progress::recording::ProgressOp::AddBar { .. }
+            )),
+            "expected AddBar op: {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                mediapm_utils::progress::recording::ProgressOp::Advance { .. }
+            )),
+            "expected Advance op: {ops:?}"
+        );
     }
 }
