@@ -13,6 +13,7 @@ pub(crate) mod provision;
 pub(crate) mod tool_config;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use mediapm_cas::CasApi;
 use mediapm_conductor::ToolRuntime;
@@ -34,7 +35,7 @@ use crate::conductor_bridge::sync::tool_config::{
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
 use crate::config::defaults;
 use crate::error::MediaPmError;
-use crate::output::ProgressGroup;
+use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
 use crate::tools::downloader::ToolDownloadCache;
 
@@ -65,7 +66,7 @@ pub(crate) async fn reconcile_desired_tools(
     desired_tools: &BTreeMap<String, serde_json::Value>,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
     check_tag_updates: bool,
-    progress_group: Option<&ProgressGroup>,
+    progress_group: Option<&dyn ProgressGroupApi>,
 ) -> Result<ToolSyncReport, MediaPmError> {
     let mut report = ToolSyncReport::default();
 
@@ -90,14 +91,18 @@ pub(crate) async fn reconcile_desired_tools(
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = desired_tools.len() as u64;
-    let (owned_group, pb) = if let Some(pg) = progress_group {
-        (None, pg.add_bar(total_tools, "syncing tools"))
-    } else {
-        let (g, p) = ProgressGroup::with_overall("syncing tools", total_tools);
-        (Some(g), p)
-    };
-    let effective_group: &ProgressGroup =
-        owned_group.as_ref().or(progress_group).expect("at least one progress group available");
+    let (owned_group, pb): (Option<ProgressGroup>, Arc<dyn ProgressBarApi>) =
+        if let Some(pg) = progress_group {
+            (None, pg.add_bar(total_tools, "syncing tools"))
+        } else {
+            let (g, p) = ProgressGroup::with_overall("syncing tools", total_tools);
+            (Some(g), Arc::new(p))
+        };
+    let effective_group: &dyn ProgressGroupApi = owned_group
+        .as_ref()
+        .map(|g| g as &dyn ProgressGroupApi)
+        .or(progress_group)
+        .expect("at least one progress group available");
 
     for (_i, (tool_id, _requirement_value)) in desired_tools.iter().enumerate() {
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
@@ -105,7 +110,8 @@ pub(crate) async fn reconcile_desired_tools(
 
         // Fetch tool payload, import to CAS, get content map + command.
         let tool_bar = effective_group.add_bar(0, tool_id);
-        let payload_result = fetch_and_import_tool_payload(cas, tool_id, &cache, &tool_bar).await;
+        let payload_result =
+            fetch_and_import_tool_payload(cas, tool_id, &cache, Arc::clone(&tool_bar)).await;
 
         match payload_result {
             Ok(Some(payload)) => {

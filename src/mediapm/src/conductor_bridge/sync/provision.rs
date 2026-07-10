@@ -26,8 +26,10 @@ use bytes::Bytes;
 use mediapm_cas::CasApi;
 use zip::write::SimpleFileOptions;
 
+use std::sync::Arc;
+
 use crate::error::MediaPmError;
-use crate::output::TrackedHandle;
+use crate::output::ProgressBarApi;
 use crate::tools::catalog::{ARCHIVE_BINARY, tool_catalog_entry};
 use crate::tools::downloader::{
     ToolDownloadCache, extract_archive, fetch_bytes_from_candidates, resolve_download_plan,
@@ -53,8 +55,8 @@ pub(super) struct FetchedToolPayload {
 /// per-OS temp directory, imports files to CAS with `./{os}/` key prefixes,
 /// and builds an OS-conditional command-selector template.
 ///
-/// `progress_handle` is a [`TrackedHandle`] whose message, total, and
-/// position are updated per-OS download to show per-tool progress.
+/// `progress_handle` is an [`Arc<dyn ProgressBarApi>`] whose message, total,
+/// and position are updated per-OS download to show per-tool progress.
 ///
 /// Returns `Ok(None)` when the tool has no catalog entry or is an internal
 /// launcher.
@@ -62,7 +64,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
     tool_id: &str,
     cache: &ToolDownloadCache,
-    progress_handle: &TrackedHandle,
+    progress_handle: Arc<dyn ProgressBarApi>,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     let Some(entry) = tool_catalog_entry(tool_id) else {
         tracing::warn!("tool {tool_id}: no catalog entry found, skipping provisioning");
@@ -94,7 +96,7 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     for (os, action) in &plan.per_os_actions {
         let os_label = os.as_str();
-        progress_handle.set_message(os_label.to_string());
+        progress_handle.set_message(os_label);
 
         // ── download (per-OS cache key) ────────────────────────────────
         let cache_key = format!("{}_{}_{}", entry.id, os_label, entry.latest);
@@ -102,8 +104,8 @@ pub(super) async fn fetch_and_import_tool_payload(
             cached
         } else {
             let cb: DownloadProgressCallback = {
-                let pb = progress_handle.clone();
-                std::sync::Arc::new(move |snap| {
+                let pb = Arc::clone(&progress_handle);
+                Arc::new(move |snap| {
                     if let Some(total) = snap.total_bytes {
                         pb.set_total(total);
                     }

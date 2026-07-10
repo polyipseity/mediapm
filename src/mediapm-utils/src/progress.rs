@@ -1044,6 +1044,14 @@ pub trait ProgressBarApi: Send + Sync {
     fn snapshot(&self) -> TrackSnapshot;
     /// Returns `true` if the handle has been finished/abandoned.
     fn is_finished(&self) -> bool;
+    /// Mark the bar as finished (keeps it visible).
+    fn finish(&self);
+    /// Set the message shown after the bar.
+    fn set_message(&self, msg: &str);
+    /// Jump to an absolute position.
+    fn set_position(&self, pos: u64);
+    /// Change the total mid-flight for dynamic workloads.
+    fn set_total(&self, total: u64);
 }
 
 #[cfg(feature = "progress")]
@@ -1062,6 +1070,18 @@ impl ProgressBarApi for TrackedHandle {
     }
     fn is_finished(&self) -> bool {
         TrackedHandle::is_finished(self)
+    }
+    fn finish(&self) {
+        TrackedHandle::finish(self);
+    }
+    fn set_message(&self, msg: &str) {
+        TrackedHandle::set_message(self, msg);
+    }
+    fn set_position(&self, pos: u64) {
+        TrackedHandle::set_position(self, pos);
+    }
+    fn set_total(&self, total: u64) {
+        TrackedHandle::set_total(self, total);
     }
 }
 
@@ -1346,6 +1366,18 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
                     | recording::ProgressOp::Abandon
             )
         })
+    }
+    fn finish(&self) {
+        recording::RecordingTrackedHandle::finish(self);
+    }
+    fn set_message(&self, msg: &str) {
+        recording::RecordingTrackedHandle::set_message(self, msg);
+    }
+    fn set_position(&self, pos: u64) {
+        recording::RecordingTrackedHandle::set_position(self, pos);
+    }
+    fn set_total(&self, total: u64) {
+        recording::RecordingTrackedHandle::set_total(self, total);
     }
 }
 
