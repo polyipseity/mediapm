@@ -994,8 +994,10 @@ mod inner {
                     let max_remove = current_cap.saturating_sub(desired_cap);
                     let mut removed = 0;
                     let mut i = 0;
-                    while i < current_cap.saturating_sub(overall_slots) && removed < max_remove {
+                    while i < self.slots.len().saturating_sub(overall_slots) && removed < max_remove
+                    {
                         if self.slots[i].source.borrow().is_none() {
+                            self.inner.remove(&self.slots[i].bar);
                             self.slots.remove(i);
                             removed += 1;
                         } else {

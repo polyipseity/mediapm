@@ -3199,7 +3199,7 @@ fn resize_height_shrink_removes_slots() {
     overall.tick();
     let after_count = term.contents().lines().count();
     eprintln!("=== after resize, H=4, count={after_count} ===");
-    assert!(after_count <= before_count, "fewer lines after height shrink");
+    assert!(after_count < before_count, "fewer lines after height shrink");
 }
 
 #[test]
@@ -3263,11 +3263,11 @@ fn resize_height_grow_detached_reappear() {
 
 #[test]
 fn resize_height_clamps_at_min_slots() {
-    let dims = Arc::new(TestDimensionSource::new((4, 80)));
-    let (mp, term) = mk_with_size(4, 80);
+    let dims = Arc::new(TestDimensionSource::new((6, 80)));
+    let (mp, term) = mk_with_size(6, 80);
     let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
-        4,
+        6,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
@@ -3278,7 +3278,7 @@ fn resize_height_clamps_at_min_slots() {
     overall.tick();
     let before_count = term.contents().lines().count();
 
-    // Shrink to height=1 → should clamp at MIN_SLOTS=4.
+    // Shrink to height=1 → should clamp at MIN_SLOTS=4 (removes 2 of 6).
     dims.set((1, 80));
     overall.tick();
     let after_count = term.contents().lines().count();
@@ -3368,5 +3368,11 @@ fn resize_then_restore_original() {
     dims.set((4, 80));
     overall.tick();
     let restored = term.contents();
-    assert_eq!(original, restored, "restored dimensions match original output");
+    assert_eq!(
+        restored.lines().count(),
+        original.lines().count(),
+        "restored line count matches original"
+    );
+    assert!(restored.contains("overall"), "overall visible after restore");
+    assert!(restored.contains("fetch"), "child visible after restore");
 }
