@@ -27,7 +27,7 @@ use mediapm_cas::CasApi;
 use zip::write::SimpleFileOptions;
 
 use crate::error::MediaPmError;
-use crate::output::ProgressHandle;
+use crate::output::TrackedHandle;
 use crate::tools::catalog::{ARCHIVE_BINARY, tool_catalog_entry};
 use crate::tools::downloader::{
     ToolDownloadCache, extract_archive, fetch_bytes_from_candidates, resolve_download_plan,
@@ -53,7 +53,7 @@ pub(super) struct FetchedToolPayload {
 /// per-OS temp directory, imports files to CAS with `./{os}/` key prefixes,
 /// and builds an OS-conditional command-selector template.
 ///
-/// `progress_handle` is a [`ProgressHandle`] whose message, total, and
+/// `progress_handle` is a [`TrackedHandle`] whose message, total, and
 /// position are updated per-OS download to show per-tool progress.
 ///
 /// Returns `Ok(None)` when the tool has no catalog entry or is an internal
@@ -62,7 +62,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
     tool_id: &str,
     cache: &ToolDownloadCache,
-    progress_handle: &ProgressHandle,
+    progress_handle: &TrackedHandle,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     let Some(entry) = tool_catalog_entry(tool_id) else {
         tracing::warn!("tool {tool_id}: no catalog entry found, skipping provisioning");

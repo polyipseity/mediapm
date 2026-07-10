@@ -669,10 +669,10 @@ impl SyncSharedState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mediapm_utils::progress::recording::RecordingProgressGroup;
+    use mediapm_utils::progress::recording::RecordingProgressTracker;
     use tempfile::tempdir;
 
-    /// Injected [`RecordingProgressGroup`] produces no ops when hierarchy is
+    /// Injected [`RecordingProgressTracker`] produces no ops when hierarchy is
     /// empty (early return before any progress bar work).
     #[tokio::test]
     async fn sync_hierarchy_with_empty_hierarchy_no_progress_ops() {
@@ -688,7 +688,7 @@ mod tests {
         let document = MediaPmDocument::default();
         let state = MediaPmState::default();
 
-        let recording = RecordingProgressGroup::new();
+        let recording = RecordingProgressTracker::new();
         let result = sync_hierarchy(&paths, &document, &state, &cas, true, Some(&recording)).await;
 
         assert!(result.is_ok());
