@@ -38,6 +38,7 @@ applyTo: "src/**/*.rs"
 - `src/mediapm/` (mediapm application crate)
   - media-facing API
   - CLI shell and composition over conductor + CAS
+- When adding a new crate directory under `src/` or `src/mediapm-conductor-builtins/`, create `AGENTS.md` with crate-local guidance (follow existing sibling patterns) and update the repository shape list in root `AGENTS.md`.
 
 ## All-platform download principle (tool payloads)
 
@@ -77,6 +78,11 @@ Avoid `#[path = "..."]` for routine in-crate module/test wiring unless there is 
   - storage fan-out and hash identity behavior stay deterministic,
   - orchestration runtime constants (RPC timeouts, disk-pressure thresholds) are centralized in `src/mediapm-cas/src/orchestration/config.rs` so clients and actor implementations remain aligned,
   - concurrent batch operations over hash collections use the `batch_concurrent_map!` macro (defined in `src/mediapm-cas/src/api.rs`) for consistent `FuturesUnordered` + index-ordering behavior across `exists_many`, `get_many`, `info_many`, and `get_constraint_many`.
+  - `set_constraint_batch` Patch arm uses `continue` (not `return Err`) when `target_hash` is absent from the index — `push_reverse_diff_hints` creates Patch ops for literal-derived hashes never stored in CAS,
+  - WAL Delete re-materializes dependent deltas before physical removal: scan ObjectStore for `Delta { base_hash == hash }`, decode VCDIFF, store as Full, then delete; synchronous within Delete processing,
+  - FileJournal checkpoint replay uses `>` not `>=`; lock order is tokio mutex first then std mutex; V3+ prefix `CASDLT`, legacy V1/V2 prefix `MDCASD`; active segment → sealed at 64 MiB → cleanup after checkpoint passes,
+  - CAS index/filesystem desync risk: `exists()`/`exists_many()` are index-only and cannot see orphaned files; startup orphan scan, filesystem fallback in `exists()`, and bidirectional consistency check are the fix strategy,
+  - Rust 1.95+ native `File::lock()`/`File::try_lock()` for CAS filesystem locking (use `std::fs::TryLockError::WouldBlock` for contention; no `fs4::FileExt` import needed for locks; `fs4::available_space()` still needed for disk space queries),
 - `conductor` should keep deterministic planning/keying logic explicit and testable. Conductor-specific invariants to preserve in `src/mediapm-conductor/**`:
   - `conductor.ncl` (user intent) and `conductor.generated.ncl` (machine-managed state) remain separate ownership surfaces,
   - persisted builtin tool entries stay strict (`kind`, `name`, `version` only),
@@ -96,6 +102,9 @@ Avoid `#[path = "..."]` for routine in-crate module/test wiring unless there is 
   - every hash referenced by `tool_configs.<tool>.content_map` must also be present in top-level `external_data`,
   - absolute/escaping paths are rejected,
   - when cached `${step_output...}` CAS payloads fail integrity checks, conductor may auto-recover only for pure workflows by warning, dropping affected cached instances, deleting corrupt hashes, and retrying once; impure workflows fail without auto-retry.
+  - tool-content cache pruning is explicit-call-only (`prune_expired_entries()`); no automatic prune on access — eviction policy is the caller's responsibility,
+  - `${env.VAR_NAME}` input-binding segments are expanded at execution time in the step worker; persisted orchestration state only keeps hashes and does not serialize resolved plain content,
+  - directory-form tool content-map entries are cached under runtime root's `tools/` directory (derived from `runtime_tmp_dir.parent().join("tools")`), with 24h stale-entry eviction and cached payload reuse,
 - `mediapm` should compose CAS and conductor APIs rather than bypassing them. For `mediapm` runtime paths, preserve these invariants:
   - crate-level error taxonomy remains centralized in `src/mediapm/src/error.rs` and is re-exported via `lib.rs`,
   - media tagger implementation remains under `src/mediapm/src/builtins/media_tagger.rs` (do not reintroduce a second root-level `src/mediapm/src/media_tagger.rs`),
@@ -108,8 +117,9 @@ Avoid `#[path = "..."]` for routine in-crate module/test wiring unless there is 
   - persisted machine-managed `state.ncl` schema keeps explicit top-level numeric `version` markers and one top-level `state` payload field,
   - `mediapm.ncl` wire-version dispatch and migrations live under `src/mediapm/src/config/versions/` with version-specific wire envelopes in `vN.rs`,
   - machine-managed state wire-version dispatch and migrations live under `src/mediapm/src/config/versions/` with version-specific wire envelopes in `vN.rs`,
+  - `mediapm tool add` should load `mediapm.ncl` without cross-field validation so existing inherit dependency selectors do not block bootstrap of missing managed tools,
   - default materialized output root is the topmost `mediapm.ncl` directory itself (no implicit `library/` folder),
-  - mediapm-managed materialized outputs are marked read-only after sync commit; runtime may clear read-only only for managed replacement/removal operations,
+  - mediapm-managed materialized outputs are marked read-only after sync commit; runtime may clear read-only only for managed replacement/removal operations; on macOS (and other BSDs), stale managed-path removal must also clear user/system immutable flags (`UF_IMMUTABLE`/`SF_IMMUTABLE`) via `libc::chflags` before chmod-based readonly clearing, or `remove_file()` fails with `EACCES`,
   - when `mediapm` invokes conductor, grouped conductor runtime-storage defaults also target effective `mediapm_dir` (`conductor_dir = <mediapm_dir>`, `conductor_state_config = <mediapm_dir>/state.conductor.ncl`, `cas_store_dir = <mediapm_dir>/store`) with inherited env-name defaults matching conductor host defaults; managed tool-config env-vars should not redundantly restate those inherited names,
   - `mediapm` workflow execution must pass grouped runtime-storage paths derived from effective runtime path resolution so volatile state writes do not regress to standalone `.conductor/state.ncl` defaults,
   - relative `runtime.hierarchy_root_dir` resolves relative to the topmost `mediapm.ncl` directory,

@@ -82,6 +82,9 @@ When running full-sync demos, verify:
 - **Timing expectations**:
   - `mediapm_demo` (local transcode): ~5–15 seconds.
   - `mediapm_demo_online` (yt-dlp + transcode): ~15–45 seconds (network dependent).
+  - The online demo resets only its artifact root; it preserves `.mediapm/cache` so repeated runs reuse tool and media-tagger caches.
+  - For manual online demo runs, use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=600` and `env -u TMPDIR` as needed to extend the timeout and avoid temp-directory interference.
+  - Metadata-only ffmpeg extraction can be tuned with `-probesize 32k -analyzeduration 0` for dramatic speedups (e.g., ffmetadata export drops from ~5s to ~0.02s).
 
 ## Required test qualities
 
@@ -136,6 +139,10 @@ For newcomers with no codebase context:
 - Private helper functions/constants without docs in touched files.
 - Tests that only check "it runs" without asserting durable behavior.
 - Silent behavior changes without corresponding test updates.
+
+## StoreLocked pattern for tests opening CAS twice
+
+`FileSystemCas::open()` acquires an exclusive flock on `{root}/lock`. If a test opens CAS at `cas_root` and later passes `&cas_root` to `sync_hierarchy()` (which opens the same store internally), the second open hits `CasError::StoreLocked`. Fix: `drop(cas)` before `sync_hierarchy()`, then reopen with `FileSystemCas::open(&cas_root).await` if CAS is needed after sync. The same pattern applies to `ToolDownloadCache::open()` at the global cache path — defer until provisioning is actually needed.
 
 ## Validation commands
 
