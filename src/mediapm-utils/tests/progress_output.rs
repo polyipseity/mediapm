@@ -11,8 +11,10 @@
 //! with progress chars `█░` at terminal width 40.  The `{wide_bar}` auto-sizes
 //! to fill available width.
 
+use std::sync::Arc;
+
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use mediapm_utils::progress::ProgressGroup;
+use mediapm_utils::progress::{DimensionSource, ProgressGroup, TestDimensionSource};
 
 /// Default terminal dimensions for standard tests.
 const H: u16 = 24;
@@ -3048,4 +3050,323 @@ fn consumer_materializer_single_bar_parallel_workers() {
     assert!(lines.len() >= 1, "at least 1 line: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("materialized")), "shows 'materialized': {lines:?}");
     assert!(lines.iter().any(|l| l.contains("100")), "shows 100/100: {lines:?}");
+}
+
+// ── Terminal resize reactivity ──────────────────────────────────────────────
+
+#[test]
+fn resize_width_wide_to_narrow_changes_output() {
+    let dims = Arc::new(TestDimensionSource::new((H, 80)));
+    let (mp, term) = mk_with_size(H, 80);
+    let (_group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        5,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        false,
+    );
+    let contents_wide = term.contents();
+    eprintln!("=== width wide_to_narrow, before resize (wide) ===");
+    for (i, line) in contents_wide.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+
+    dims.set((H, 40));
+    overall.tick();
+    let contents_narrow = term.contents();
+    eprintln!("=== after resize (narrow) ===");
+    for (i, line) in contents_narrow.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+
+    // Content should differ after resize (different bar templates).
+    assert_ne!(contents_wide, contents_narrow, "output changes after width resize");
+}
+
+#[test]
+fn resize_width_narrow_to_wide_restores_content() {
+    let dims = Arc::new(TestDimensionSource::new((H, 40)));
+    let (mp, term) = mk_with_size(H, 40);
+    let (_group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        5,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        false,
+    );
+    let contents_narrow = term.contents();
+    eprintln!("=== width narrow_to_wide, before resize (narrow) ===");
+    for (i, line) in contents_narrow.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+
+    dims.set((H, 80));
+    overall.tick();
+    let contents_wide = term.contents();
+    eprintln!("=== after resize (wide) ===");
+    for (i, line) in contents_wide.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_ne!(contents_narrow, contents_wide, "output changes after width resize");
+}
+
+#[test]
+fn resize_width_noop_same_width_no_change() {
+    let dims = Arc::new(TestDimensionSource::new((H, W)));
+    let (mp, term) = mk_with_size(H, W);
+    let (_group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        5,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        false,
+    );
+    let before = term.contents();
+    let before_lines = before.lines().count();
+
+    dims.set((H, W));
+    overall.tick();
+    let after = term.contents();
+    let after_lines = after.lines().count();
+    // Same width → same number of lines, same bar template structure.
+    // Content differs slightly because the spinner animates between ticks.
+    assert_eq!(before_lines, after_lines, "same line count after noop width resize");
+    assert!(before.contains("overall"), "overall visible before");
+    assert!(after.contains("overall"), "overall visible after");
+    // Both representations show time and count fields.
+    assert!(before.contains("00:00"), "time before");
+    assert!(after.contains("00:00"), "time after");
+}
+
+#[test]
+fn resize_height_grow_adds_slots() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (mp, term) = mk_with_size(6, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        4,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    {
+        let c1 = group.add_bar(7, "fetch");
+        c1.tick();
+        overall.tick();
+    }
+    eprintln!("=== height grow, before resize, H=4 ===");
+    let before = term.contents();
+    for (i, line) in before.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    let before_count = before.lines().count();
+
+    dims.set((6, 80));
+    overall.tick();
+    let after = term.contents();
+    eprintln!("=== after resize, H=6 ===");
+    for (i, line) in after.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    let after_count = after.lines().count();
+    assert!(after_count > before_count, "more lines after height growth");
+}
+
+#[test]
+fn resize_height_shrink_removes_slots() {
+    let dims = Arc::new(TestDimensionSource::new((6, 80)));
+    let (mp, term) = mk_with_size(6, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        6,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let c1 = group.add_bar(7, "fetch");
+    c1.tick();
+    overall.tick();
+
+    let before_count = term.contents().lines().count();
+    eprintln!("=== height shrink, before resize, H=6, count={before_count} ===");
+
+    dims.set((4, 80));
+    overall.tick();
+    let after_count = term.contents().lines().count();
+    eprintln!("=== after resize, H=4, count={after_count} ===");
+    assert!(after_count <= before_count, "fewer lines after height shrink");
+}
+
+#[test]
+fn resize_height_shrink_protects_overall() {
+    let dims = Arc::new(TestDimensionSource::new((6, 80)));
+    let (mp, term) = mk_with_size(6, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        6,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let c1 = group.add_bar(7, "fetch");
+    c1.tick();
+    overall.tick();
+    let before = term.contents();
+    eprintln!("=== height shrink_protects, before ===");
+    for (i, line) in before.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert!(before.lines().any(|l| l.contains("overall")), "overall visible before resize");
+
+    dims.set((4, 80));
+    overall.tick();
+    let after = term.contents();
+    eprintln!("=== after shrink ===");
+    for (i, line) in after.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert!(after.lines().any(|l| l.contains("overall")), "overall still visible after shrink");
+}
+
+#[test]
+fn resize_height_grow_detached_reappear() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (mp, term) = mk_with_size(6, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        4,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let c1 = group.add_bar(7, "fetch");
+    c1.tick();
+    overall.tick();
+
+    dims.set((6, 80));
+    overall.tick();
+    let after = term.contents();
+    eprintln!("=== height grow_detached, after resize, H=6 ===");
+    for (i, line) in after.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert!(after.lines().any(|l| l.contains("fetch")), "child still visible after growth");
+    assert!(after.lines().any(|l| l.contains("overall")), "overall visible after growth");
+}
+
+#[test]
+fn resize_height_clamps_at_min_slots() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (mp, term) = mk_with_size(4, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        4,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let c1 = group.add_bar(7, "fetch");
+    c1.tick();
+    overall.tick();
+    let before_count = term.contents().lines().count();
+
+    // Shrink to height=1 → should clamp at MIN_SLOTS=4.
+    dims.set((1, 80));
+    overall.tick();
+    let after_count = term.contents().lines().count();
+    eprintln!("=== height clamp min, H=1, before={before_count}, after={after_count} ===");
+    // Should not go below MIN_SLOTS (4).
+    assert!(after_count >= 4, "at least 4 lines after extreme shrink");
+}
+
+#[test]
+fn resize_height_clamps_at_max_slots() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (mp, term) = mk_with_size(10, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        4,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let c1 = group.add_bar(7, "fetch");
+    c1.tick();
+    overall.tick();
+
+    // Grow to huge height → should clamp at MAX_SLOTS=200.
+    dims.set((999, 80));
+    overall.tick();
+    let after_count = term.contents().lines().count();
+    eprintln!("=== height clamp max, H=999, after={after_count} ===");
+    // Should not have 999 lines — clamped to MAX_SLOTS.
+    assert!(after_count <= 200, "at most 200 lines after extreme growth (got {after_count})");
+}
+
+#[test]
+fn resize_both_dimensions() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (mp, term) = mk_with_size(6, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        4,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let c1 = group.add_bar(7, "fetch");
+    c1.tick();
+    overall.tick();
+    let before = term.contents();
+
+    // Change both width and height at once.
+    dims.set((6, 40));
+    overall.tick();
+    let after = term.contents();
+    eprintln!("=== both dims, before ===");
+    for (i, line) in before.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    eprintln!("=== after (H=6, W=40) ===");
+    for (i, line) in after.lines().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_ne!(before, after, "output changes when both dimensions change");
+}
+
+#[test]
+fn resize_then_restore_original() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (mp, term) = mk_with_size(6, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        4,
+        "overall",
+        10,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let c1 = group.add_bar(7, "fetch");
+    c1.tick();
+    overall.tick();
+    let original = term.contents();
+
+    // Grow.
+    dims.set((6, 40));
+    overall.tick();
+    // Restore.
+    dims.set((4, 80));
+    overall.tick();
+    let restored = term.contents();
+    assert_eq!(original, restored, "restored dimensions match original output");
 }
