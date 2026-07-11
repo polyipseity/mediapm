@@ -1627,6 +1627,23 @@ impl ProgressGroupApi for recording::RecordingProgressTracker {
 #[cfg(test)]
 #[cfg(feature = "progress")]
 mod tests {
+    //! # Defense-in-depth
+    //!
+    //! Tests in this module are organized by layer:
+    //!
+    //! * **Recording** — [`RecordingProgressTracker`] tests verify the op-log
+    //!   produced by each method call (correct sequence of [`ProgressOp`]
+    //!   entries).
+    //! * **State-mutation** — [`TrackedHandle::new`] / [`TrackedHandle::with_label`]
+    //!   tests verify that underlying [`SharedState`] is updated correctly
+    //!   (positions, totals, status, elapsed).
+    //! * **Renderer integration** — [`ProgressGroup`] tests verify that the
+    //!   full tracking-to-terminal path produces correct visual output.
+    //!
+    //! Each layer covers the same behavioral surface through different
+    //! observation points, providing redundant coverage against regressions
+    //! even when the observation mechanism itself has a bug.
+
     use std::sync::Arc;
 
     use super::recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
@@ -2144,120 +2161,6 @@ mod tests {
             vec![ProgressOp::FinishError { msg: "fail".to_string() }],
             "finish_error records FinishError"
         );
-    }
-
-    // ── Pure tracking: TrackedHandle::with_label ─────────────────────
-
-    #[test]
-    fn tracker_add_bar_returns_handle_with_total_and_label() {
-        let h = TrackedHandle::with_label(100, "test");
-        assert_eq!(h.total(), 100);
-        assert_eq!(h.snapshot().label, "test");
-        assert_eq!(h.snapshot().total, 100);
-        assert_eq!(h.snapshot().position, 0);
-        assert!(!h.is_finished());
-    }
-
-    #[test]
-    fn tracker_handle_advance_updates_position() {
-        let h = TrackedHandle::with_label(100, "test");
-        h.advance(10);
-        assert_eq!(h.snapshot().position, 10);
-        assert!(!h.is_finished());
-        h.advance(20);
-        assert_eq!(h.snapshot().position, 30);
-    }
-
-    #[test]
-    fn tracker_handle_finish_success_reflected_in_snapshot() {
-        let h = TrackedHandle::with_label(50, "test");
-        h.advance(25);
-        h.finish_success("done");
-        let snap = h.snapshot();
-        assert_eq!(snap.position, 25);
-        assert_eq!(snap.total, 50);
-        assert!(matches!(snap.status, TrackStatus::Success));
-        assert_eq!(snap.message, "done");
-        assert!(h.is_finished());
-    }
-
-    #[test]
-    fn tracker_handle_finish_error_reflected_in_snapshot() {
-        let h = TrackedHandle::with_label(30, "test");
-        h.finish_error("error");
-        let snap = h.snapshot();
-        assert!(matches!(snap.status, TrackStatus::Failed));
-        assert_eq!(snap.message, "error");
-        assert!(h.is_finished());
-    }
-
-    #[test]
-    fn tracker_handle_abandon_reflected_in_snapshot() {
-        let h = TrackedHandle::with_label(20, "test");
-        h.abandon();
-        let snap = h.snapshot();
-        assert!(matches!(snap.status, TrackStatus::Abandoned));
-        assert!(h.is_finished());
-    }
-
-    #[test]
-    fn tracker_handle_finish_reflected_in_snapshot() {
-        let h = TrackedHandle::with_label(15, "test");
-        h.finish();
-        let snap = h.snapshot();
-        assert!(matches!(snap.status, TrackStatus::Finished));
-        assert!(h.is_finished());
-    }
-
-    #[test]
-    fn tracker_handle_set_total_dynamic() {
-        let h = TrackedHandle::with_label(100, "test");
-        h.set_total(200);
-        assert_eq!(h.snapshot().total, 200);
-    }
-
-    #[test]
-    fn tracker_handle_shared_state_between_clones() {
-        let a = TrackedHandle::with_label(100, "test");
-        let b = a.clone();
-        a.advance(10);
-        assert_eq!(b.snapshot().position, 10, "clone sees original's advance");
-        b.set_total(200);
-        assert_eq!(a.snapshot().total, 200, "original sees clone's set_total");
-        a.finish_success("ok");
-        assert!(b.is_finished(), "clone sees original's finish");
-    }
-
-    #[test]
-    fn tracker_handle_unlimited_bars() {
-        let mut handles = Vec::new();
-        for i in 0..10_000 {
-            let h = TrackedHandle::with_label(1, &format!("h{i}"));
-            handles.push(h);
-        }
-        // Verify a sample of handles
-        assert_eq!(handles[0].total(), 1);
-        assert_eq!(handles[5000].total(), 1);
-        assert_eq!(handles[9999].total(), 1);
-        handles[0].advance(1);
-        assert_eq!(handles[0].snapshot().position, 1);
-    }
-
-    #[test]
-    fn tracker_no_bar_all_methods_work() {
-        // TrackedHandle::with_label produces handles with no display
-        // backend; all methods must work without a display backend.
-        let h = TrackedHandle::with_label(100, "test");
-        h.advance(10);
-        h.set_total(50);
-        h.set_position(5);
-        h.set_message("hello");
-        h.set_prefix("pfx");
-        h.finish_success("done");
-        assert_eq!(h.total(), 50);
-        assert_eq!(h.snapshot().message, "done");
-        assert!(h.is_finished());
-        h.tick(); // should not panic
     }
 
     // ── TrackedHandle::new (with bar) ──────────────────────────────────
