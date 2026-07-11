@@ -77,7 +77,17 @@ fn ins_bar(mp: &MultiProgress, before: &ProgressBar, total: u64, prefix: &str) -
     mp.insert_before(before, pb)
 }
 
-// ── Single bar lifecycle ─────────────────────────────────────────────────────
+// ── Single bar lifecycle: raw indicatif (bypasses TrackedHandle/SharedState) ─
+//
+// These tests use the `add_bar()` helper that creates an indicatif
+// `ProgressBar` with test template `T` (which includes `[{elapsed_precise}]`).
+// They exercise indicatif rendering directly — NOT the production
+// `TrackedHandle`/`SharedState`/elapsed-injection path.
+// For the equivalent production code path, see the "Child bar elapsed" and
+// "ProgressGroup rendering" sections below.
+//
+// These tests remain useful for verifying indicatif behavior (bar width,
+// progress chars, prefix alignment, finish_and_clear).
 
 #[test]
 fn single_bar_empty_after_creation() {
