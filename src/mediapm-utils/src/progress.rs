@@ -142,6 +142,11 @@ mod inner {
     const COMPACT_OVERALL_BAR_TEMPLATE: &str =
         "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {pos}/{len} {msg}";
 
+    const DONE_BAR_TEMPLATE: &str = "{spinner:.dim} {prefix:>16.16} [{elapsed_precise}] {wide_bar:.white/dim} {pos}/{len} {msg}";
+
+    const COMPACT_DONE_BAR_TEMPLATE: &str =
+        "{spinner:.dim} {prefix:>16.16} [{elapsed_precise}] {pos}/{len} {msg}";
+
     /// Maximum number of pre-allocated slot bars (safety cap).
     const MAX_SLOTS: usize = 200;
 
@@ -185,6 +190,27 @@ mod inner {
             pb.set_style(compact_bar_style());
         } else {
             pb.set_style(child_bar_style());
+        }
+    }
+
+    fn done_bar_style() -> ProgressStyle {
+        ProgressStyle::with_template(DONE_BAR_TEMPLATE)
+            .expect("invalid done bar template")
+            .progress_chars("█░")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    }
+
+    fn compact_done_bar_style() -> ProgressStyle {
+        ProgressStyle::with_template(COMPACT_DONE_BAR_TEMPLATE)
+            .expect("invalid compact done bar template")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    }
+
+    fn apply_done_bar_style(pb: &ProgressBar, width: u16) {
+        if width < 60 {
+            pb.set_style(compact_done_bar_style());
+        } else {
+            pb.set_style(done_bar_style());
         }
     }
 
@@ -855,11 +881,17 @@ mod inner {
             if let Some(ref source) = *slot.source.borrow() {
                 let snap = source.snapshot();
                 let (_, cols) = self.dim_source.dimensions();
-                apply_bar_style(&slot.bar, cols);
+                let is_overall = self.has_overall && i == self.slots.len() - 1;
+                if is_overall {
+                    apply_overall_bar_style(&slot.bar, cols);
+                } else if snap.status != TrackStatus::Active {
+                    apply_done_bar_style(&slot.bar, cols);
+                } else {
+                    apply_bar_style(&slot.bar, cols);
+                }
                 slot.bar.set_prefix(snap.prefix);
                 slot.bar.set_message(snap.message);
                 slot.bar.set_length(snap.total);
-                slot.bar.reset_elapsed();
                 slot.bar.enable_steady_tick(Duration::from_millis(100));
             } else {
                 slot.bar.set_style(blank_bar_style());
@@ -906,10 +938,12 @@ mod inner {
                 // Sync shifted slots (sources moved to different bars).
                 for i in (bottom.saturating_sub(active))..=bottom {
                     self.sync_slot(i);
+                    self.slots[i].bar.reset_elapsed();
                 }
                 // Place new child at the freed bottom slot.
                 self.slots[bottom].source.replace(Some(Arc::clone(state)));
                 self.sync_slot(bottom);
+                self.slots[bottom].bar.reset_elapsed();
                 return;
             }
 
@@ -918,6 +952,7 @@ mod inner {
                 if self.slots[i].source.borrow().as_ref().is_none_or(|s| s.is_finished()) {
                     self.slots[i].source.replace(Some(Arc::clone(state)));
                     self.sync_slot(i);
+                    self.slots[i].bar.reset_elapsed();
                     return;
                 }
             }
@@ -925,13 +960,19 @@ mod inner {
             self.orphaned_states.borrow_mut().push_back(Arc::clone(state));
         }
 
-        /// Defensive sync: refresh all render slots from their tracked sources.
+        /// Fast tick for child bars — no extra redraw for active bars.
         ///
-        /// Called automatically via each bar's steady tick.  Corrects any
-        /// drift between tracking state and display for edge cases where
-        /// state was updated without bar access.
-        pub fn tick(&mut self) {
-            self.maybe_adjust_for_resize();
+        /// When this renderer has an overall bar, resize reactivity is
+        /// skipped since the overall bar's [`tick`](Self::tick) handles it.
+        /// Without an overall bar, resize is checked so that child-driven
+        /// groups still respond to terminal dimension changes.
+        fn tick_light(&mut self) {
+            if !self.has_overall {
+                // Child-driven groups (no overall bar) still need resize
+                // reactivity since no other tick path triggers it.
+                self.maybe_adjust_for_resize();
+            }
+            let (_, cols) = self.dim_source.dimensions();
             for slot in &self.slots {
                 if let Some(ref source) = *slot.source.borrow() {
                     let snap = source.snapshot();
@@ -940,7 +981,8 @@ mod inner {
                     slot.bar.set_message(snap.message.clone());
                     slot.bar.set_prefix(snap.prefix.clone());
                     if snap.status == TrackStatus::Active {
-                        slot.bar.tick();
+                        // Setters above already triggered a redraw via
+                        // update_estimate_and_draw; no explicit tick() needed.
                     } else if source.is_cleared() {
                         slot.bar.set_style(blank_bar_style());
                         slot.bar.set_message(" ");
@@ -948,6 +990,55 @@ mod inner {
                         slot.bar.disable_steady_tick();
                     } else {
                         slot.bar.disable_steady_tick();
+                        apply_done_bar_style(&slot.bar, cols);
+                        match snap.status {
+                            TrackStatus::Success => {
+                                slot.bar.finish_with_message(snap.message.clone());
+                            }
+                            TrackStatus::Failed => {
+                                slot.bar.abandon_with_message(snap.message.clone());
+                            }
+                            TrackStatus::Abandoned => {
+                                slot.bar.abandon();
+                            }
+                            _ => {
+                                slot.bar.finish();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Defensive sync: refresh all render slots from their tracked sources.
+        ///
+        /// Called on the overall bar's tick.  Includes resize reactivity and
+        /// full style re-application.  For lighter per-child updates see
+        /// [`tick_light`](Self::tick_light).
+        pub fn tick(&mut self) {
+            self.maybe_adjust_for_resize();
+            let (_, cols) = self.dim_source.dimensions();
+            for (i, slot) in self.slots.iter().enumerate() {
+                if let Some(ref source) = *slot.source.borrow() {
+                    let snap = source.snapshot();
+                    slot.bar.set_position(snap.position);
+                    slot.bar.set_length(snap.total);
+                    slot.bar.set_message(snap.message.clone());
+                    slot.bar.set_prefix(snap.prefix.clone());
+                    if snap.status == TrackStatus::Active {
+                        // Setters above already triggered a redraw; no tick() needed.
+                    } else if source.is_cleared() {
+                        slot.bar.set_style(blank_bar_style());
+                        slot.bar.set_message(" ");
+                        slot.bar.set_prefix("");
+                        slot.bar.disable_steady_tick();
+                    } else {
+                        slot.bar.disable_steady_tick();
+                        if self.has_overall && i == self.slots.len() - 1 {
+                            apply_overall_bar_style(&slot.bar, cols);
+                        } else {
+                            apply_done_bar_style(&slot.bar, cols);
+                        }
                         match snap.status {
                             TrackStatus::Success => {
                                 slot.bar.finish_with_message(snap.message.clone());
@@ -1305,7 +1396,7 @@ mod inner {
             let weak = Arc::downgrade(renderer);
             let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
                 if let Some(r) = weak.upgrade() {
-                    r.lock().unwrap().tick();
+                    r.lock().unwrap().tick_light();
                 }
             }));
             TrackedHandle { state, bar: None, tick_fn }
