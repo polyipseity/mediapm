@@ -10,7 +10,7 @@
 //!
 //! | Layer | Types | Dependencies |
 //! |---|---|---|
-//! | **Tracking** (unlimited) | [`TrackedHandle`], [`ProgressTracker`] | None (pure state) |
+//! | **Tracking** (unlimited) | [`TrackedHandle`] | None (pure state) |
 //! | **Rendering** (terminal-limited) | [`ProgressGroup`] | `indicatif` (behind feature) |
 //! | **Recording** (testing) | [`recording::RecordingTrackedHandle`], [`recording::RecordingProgressTracker`] | None behind feature |
 //!
@@ -21,7 +21,6 @@
 //! | [`DownloadProgressSnapshot`] | ✅ | ✅ |
 //! | [`ProgressCallback`] | ✅ | ✅ |
 //! | [`TrackedHandle`] | ❌ | ✅ |
-//! | [`ProgressTracker`] | ❌ | ✅ |
 //! | [`ProgressGroup`] | ❌ | ✅ |
 //! | [`ProgressRenderer`] | ❌ | ✅ |
 //! | (no global toggle) | — | — |
@@ -361,6 +360,17 @@ mod inner {
             Self { state }
         }
 
+        /// Create a standalone progress handle with a label (no display
+        /// backend).
+        ///
+        /// This is a convenience wrapper over [`new`](Self::new) that sets
+        /// the initial label.
+        #[must_use]
+        pub fn with_label(total: u64, label: &str) -> Self {
+            let state = Arc::new(SharedState::new(total, label));
+            Self { state }
+        }
+
         /// Return the total number of work units (0 = indeterminate).
         #[must_use]
         pub fn total(&self) -> u64 {
@@ -469,39 +479,7 @@ mod inner {
         }
     }
 
-    // ---- ProgressTracker (pure tracking factory) --------------------------
-
-    /// Pure tracking factory that creates [`TrackedHandle`]s with no display
-    /// dependency.
-    ///
-    /// Every handle returned by [`add_bar`](Self::add_bar) tracks state but
-    /// has no visual output.  Use [`ProgressGroup`] when
-    /// you need both tracking and display.
-    pub struct ProgressTracker;
-
-    impl ProgressTracker {
-        /// Create a new tracking factory.
-        #[must_use]
-        pub fn new() -> Self {
-            Self
-        }
-
-        /// Add a tracked bar with no display.
-        ///
-        /// Returns a [`TrackedHandle`] whose methods update shared state but
-        /// produce no terminal output.  Use [`snapshot()`](TrackedHandle::snapshot)
-        /// to read the state at any point.
-        #[must_use]
-        pub fn add_bar(&self, total: u64, label: &str) -> TrackedHandle {
-            TrackedHandle { state: Arc::new(SharedState::new(total, label)) }
-        }
-    }
-
-    impl Default for ProgressTracker {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
+    // ---- (ProgressTracker removed: use TrackedHandle::with_label) -----
 
     // ---- ProgressRenderer + ProgressGroup (rendering + combined) ----------
 
@@ -1228,8 +1206,8 @@ mod inner {
 
 #[cfg(feature = "progress")]
 pub use inner::{
-    DimensionSource, ProgressGroup, ProgressRenderer, ProgressTracker, RealTerminalSource,
-    TestDimensionSource, TrackSnapshot, TrackStatus, TrackedHandle,
+    DimensionSource, ProgressGroup, ProgressRenderer, RealTerminalSource, TestDimensionSource,
+    TrackSnapshot, TrackStatus, TrackedHandle,
 };
 
 #[cfg(feature = "progress")]
@@ -1652,7 +1630,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
-    use super::{ProgressGroup, ProgressTracker, TrackStatus, TrackedHandle};
+    use super::{ProgressGroup, TrackStatus, TrackedHandle};
     use indicatif::MultiProgress;
 
     #[test]
@@ -2168,12 +2146,11 @@ mod tests {
         );
     }
 
-    // ── Pure tracking: ProgressTracker ─────────────────────────────────
+    // ── Pure tracking: TrackedHandle::with_label ─────────────────────
 
     #[test]
     fn tracker_add_bar_returns_handle_with_total_and_label() {
-        let t = ProgressTracker::new();
-        let h = t.add_bar(100, "test");
+        let h = TrackedHandle::with_label(100, "test");
         assert_eq!(h.total(), 100);
         assert_eq!(h.snapshot().label, "test");
         assert_eq!(h.snapshot().total, 100);
@@ -2183,8 +2160,7 @@ mod tests {
 
     #[test]
     fn tracker_handle_advance_updates_position() {
-        let t = ProgressTracker::new();
-        let h = t.add_bar(100, "test");
+        let h = TrackedHandle::with_label(100, "test");
         h.advance(10);
         assert_eq!(h.snapshot().position, 10);
         assert!(!h.is_finished());
@@ -2194,8 +2170,7 @@ mod tests {
 
     #[test]
     fn tracker_handle_finish_success_reflected_in_snapshot() {
-        let t = ProgressTracker::new();
-        let h = t.add_bar(50, "test");
+        let h = TrackedHandle::with_label(50, "test");
         h.advance(25);
         h.finish_success("done");
         let snap = h.snapshot();
@@ -2208,8 +2183,7 @@ mod tests {
 
     #[test]
     fn tracker_handle_finish_error_reflected_in_snapshot() {
-        let t = ProgressTracker::new();
-        let h = t.add_bar(30, "test");
+        let h = TrackedHandle::with_label(30, "test");
         h.finish_error("error");
         let snap = h.snapshot();
         assert!(matches!(snap.status, TrackStatus::Failed));
@@ -2219,8 +2193,7 @@ mod tests {
 
     #[test]
     fn tracker_handle_abandon_reflected_in_snapshot() {
-        let t = ProgressTracker::new();
-        let h = t.add_bar(20, "test");
+        let h = TrackedHandle::with_label(20, "test");
         h.abandon();
         let snap = h.snapshot();
         assert!(matches!(snap.status, TrackStatus::Abandoned));
@@ -2229,8 +2202,7 @@ mod tests {
 
     #[test]
     fn tracker_handle_finish_reflected_in_snapshot() {
-        let t = ProgressTracker::new();
-        let h = t.add_bar(15, "test");
+        let h = TrackedHandle::with_label(15, "test");
         h.finish();
         let snap = h.snapshot();
         assert!(matches!(snap.status, TrackStatus::Finished));
@@ -2239,16 +2211,14 @@ mod tests {
 
     #[test]
     fn tracker_handle_set_total_dynamic() {
-        let t = ProgressTracker::new();
-        let h = t.add_bar(100, "test");
+        let h = TrackedHandle::with_label(100, "test");
         h.set_total(200);
         assert_eq!(h.snapshot().total, 200);
     }
 
     #[test]
     fn tracker_handle_shared_state_between_clones() {
-        let t = ProgressTracker::new();
-        let a = t.add_bar(100, "test");
+        let a = TrackedHandle::with_label(100, "test");
         let b = a.clone();
         a.advance(10);
         assert_eq!(b.snapshot().position, 10, "clone sees original's advance");
@@ -2260,10 +2230,9 @@ mod tests {
 
     #[test]
     fn tracker_handle_unlimited_bars() {
-        let t = ProgressTracker::new();
         let mut handles = Vec::new();
         for i in 0..10_000 {
-            let h = t.add_bar(1, &format!("h{i}"));
+            let h = TrackedHandle::with_label(1, &format!("h{i}"));
             handles.push(h);
         }
         // Verify a sample of handles
@@ -2276,10 +2245,9 @@ mod tests {
 
     #[test]
     fn tracker_no_bar_all_methods_work() {
-        // ProgressTracker produces handles with bar: None; all methods must
-        // work without a display backend.
-        let t = ProgressTracker::new();
-        let h = t.add_bar(100, "test");
+        // TrackedHandle::with_label produces handles with no display
+        // backend; all methods must work without a display backend.
+        let h = TrackedHandle::with_label(100, "test");
         h.advance(10);
         h.set_total(50);
         h.set_position(5);
