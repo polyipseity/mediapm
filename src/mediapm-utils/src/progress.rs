@@ -421,6 +421,7 @@ mod inner {
         /// Mark the bar as finished (keeps it visible).
         pub fn finish(&self) {
             self.state.status.store(4, Ordering::Relaxed); // Finished
+            self.state.mark_finished();
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.finish();
@@ -436,6 +437,7 @@ mod inner {
             self.state.status.store(1, Ordering::Relaxed); // Success
             let msg: String = msg.into();
             (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
+            self.state.mark_finished();
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.finish_with_message(msg);
@@ -451,6 +453,7 @@ mod inner {
             self.state.status.store(2, Ordering::Relaxed); // Failed
             let msg: String = msg.into();
             (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
+            self.state.mark_finished();
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.abandon_with_message(msg);
@@ -463,6 +466,7 @@ mod inner {
         /// [`finish`](Self::finish) when the bar should disappear immediately.
         pub fn finish_and_clear(&self) {
             self.state.status.store(5, Ordering::Relaxed); // FinishedAndCleared
+            self.state.mark_finished();
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.finish_and_clear();
@@ -472,6 +476,7 @@ mod inner {
         /// Abandon the bar — leaves it visible but stops all updates.
         pub fn abandon(&self) {
             self.state.status.store(3, Ordering::Relaxed); // Abandoned
+            self.state.mark_finished();
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.abandon();
