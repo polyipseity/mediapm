@@ -58,7 +58,7 @@ mod inner {
     use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
@@ -237,6 +237,8 @@ mod inner {
         message: RwLock<String>,
         prefix: RwLock<String>,
         status: AtomicU8,
+        start_time: Instant,
+        finished_elapsed: RwLock<Option<Duration>>,
     }
 
     impl SharedState {
@@ -248,6 +250,8 @@ mod inner {
                 message: RwLock::new(String::new()),
                 prefix: RwLock::new(label.to_string()),
                 status: AtomicU8::new(0),
+                start_time: Instant::now(),
+                finished_elapsed: RwLock::new(None),
             }
         }
 
@@ -265,7 +269,25 @@ mod inner {
                     3 => TrackStatus::Abandoned,
                     _ => TrackStatus::Finished,
                 },
+                elapsed: self.elapsed(),
             }
+        }
+
+        fn elapsed(&self) -> Duration {
+            if let Some(frozen) =
+                *self.finished_elapsed.read().expect("shared_state finished_elapsed lock")
+            {
+                frozen
+            } else {
+                self.start_time.elapsed()
+            }
+        }
+
+        #[allow(dead_code)]
+        fn mark_finished(&self) {
+            let elapsed = self.start_time.elapsed();
+            *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") =
+                Some(elapsed);
         }
 
         fn is_finished(&self) -> bool {
@@ -292,6 +314,8 @@ mod inner {
         pub prefix: String,
         /// Current status.
         pub status: TrackStatus,
+        /// Elapsed time since the handle was created (frozen on finish).
+        pub elapsed: Duration,
     }
 
     // ---- TrackedHandle ----------------------------------------------------
@@ -1692,6 +1716,7 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
             message: String::new(),
             prefix: String::new(),
             status: TrackStatus::Active,
+            elapsed: std::time::Duration::default(),
         }
     }
     fn is_finished(&self) -> bool {
