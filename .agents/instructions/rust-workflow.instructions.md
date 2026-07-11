@@ -152,15 +152,9 @@ SKIP=cargo-test git commit -m "message"
   - `cargo run --package mediapm --example mediapm_demo_online`
 - All examples must follow this convention; enforce it during code review.
 
-## Docstring completion bar
+## Docstring requirements
 
-- When editing `*.rs`, treat documentation as part of definition-of-done.
-- For touched files, document:
-  - module purpose (`//!`),
-  - top-level constants and types,
-  - helper functions and internal state structures,
-  - tests with explicit guarantee statements.
-- Avoid shallow docs that only rename symbols; write newcomer-oriented explanations that clarify intent and boundaries.
+See `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` for Rustdoc/docstring depth requirements (module-level `//!`, item-level `///`, invariants, side effects, and error behavior for all touched items).
 
 ## Lint suppression policy
 
@@ -184,8 +178,4 @@ SKIP=cargo-test git commit -m "message"
 
 ## CLI/API parity contract
 
-- For crates that expose both a CLI binary and a library API, keep behavior parity as an explicit invariant:
-  - new CLI operations should route through library/API entry points,
-  - API validation and failure semantics should match CLI-backed behavior,
-  - CLI-only ergonomic sugar is acceptable, capability gaps are not.
-- When adding or renaming CLI operations, update tests so parser behavior and API-backed execution paths are both covered.
+See `AGENTS.md` ("CLI and API Parity" section) for the canonical parity contract. New CLI operations should route through library/API entry points, and capability gaps between CLI and API are not acceptable.

@@ -152,13 +152,13 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - Do not regress to bootstrap assumptions (single-crate `src/main.rs` with only minimal `Cargo.toml` + `rust-toolchain.toml`). This repository is a multi-member Rust workspace with crate members under `src/`.
 - When docs mention `application`, `configuration`, `domain`, `infrastructure`, and `support`, treat them as conceptual layering terms unless matching directories are explicitly introduced in the workspace.
 - Before writing stack-specific guidance, inspect concrete evidence such as manifests, lockfiles, source tree layout, scripts, CI workflows, editor settings, and dedicated config files.
-- For Rust edits, treat detailed docstrings as mandatory in touched files: document public and private items (`//!` + `///`) with semantics, invariants, and side-effect notes, not just name restatements.
+- See `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` for Rustdoc/docstring depth requirements.
 - When you detect a real stack, add instructions for it carefully and thoroughly in a narrow, well-named instruction file whose `description` and `applyTo` target the relevant files.
 - Prefer linking to canonical config files instead of copying large policy blocks into multiple customization files.
 - Keep customization files narrowly scoped: repo-wide defaults in `AGENTS.md`, detailed file-specific guidance in `.agents/instructions/`.
 - Commit headers must use Conventional Commits with mandatory scope (`type(scope): subject`). Do not use crate/tool-prefixed headers like `mediapm: ...`, `conductor: ...`, `cas: ...`, or similar `<name>:` forms; put crate/tool identity in `scope` instead.
 - Prefer updating `AGENTS.md` and `.agents/instructions/*.instructions.md` directly for durable repository policy. Do not keep long-lived policy only in `/memories/repo/`; if temporary repo memory notes are used, merge them into instruction files and remove them.
-- When splitting one Rust module into multiple files, adopt folder-module layout consistently: move `foo.rs` to `foo/mod.rs`, place sibling modules in `foo/*.rs`, and place unit tests as `#[cfg(test)]` blocks inline in the source file they test. If the inline block exceeds ~300 lines, split into a themed sibling file `foo_<theme>.rs` declared with `#[cfg(test)] mod foo_<theme>;`. Avoid keeping both `foo.rs` and `foo/mod.rs`, and avoid `#[path = "..."]` for routine in-crate module/test placement.
+- See `.agents/instructions/rust-workflow.instructions.md` for module split conventions.
 - Do not deliberately rename examples/tests solely to force workspace-wide unique target names. Shared canonical names (for example `demo`) are allowed; when running examples, use package-qualified invocations to disambiguate.
 - Preserve mirrored prompt content between `.agents/prompts/` and `.opencode/commands/` when both copies exist.
 - Respect the repository newline policy: Markdown and shell scripts use LF; PowerShell and batch scripts use CRLF.

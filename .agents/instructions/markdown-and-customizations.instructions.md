@@ -32,12 +32,7 @@ See `.agents/instructions/stack-and-tooling-detection.instructions.md` for the c
 
 ## Customization frontmatter
 
-- Every `.instructions.md` and `.prompt.md` file must keep valid YAML frontmatter between `---` markers.
-- Quote `description` values, especially when they contain colons or commas.
-- Make `description` keyword-rich and phrase it like "Use when ..." so the agent can discover the file.
-- Keep `applyTo` globs as narrow as practical; avoid broad wildcards unless the rule truly applies everywhere.
-- Use a stable, human-readable `name` that matches the file's primary purpose.
-- For prompt files, preserve `argument-hint` fields and `${input:...}` placeholders exactly unless you are intentionally changing the interface.
+Every `.instructions.md` and `.prompt.md` file must keep valid YAML frontmatter between `---` markers. Follow the frontmatter conventions in global `workspace-guidance.instructions.md` (`description`, `name`, `applyTo` with appropriate values). For prompt files, preserve `argument-hint` fields and `${input:...}` placeholders exactly unless you are intentionally changing the interface.
 
 ## Mirrored prompt files
 
