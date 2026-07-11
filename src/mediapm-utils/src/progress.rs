@@ -1471,6 +1471,7 @@ impl ProgressGroupApi for ProgressGroup {
 #[allow(clippy::missing_panics_doc)]
 pub mod recording {
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     /// Recorded progress operation for test assertions.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1553,7 +1554,12 @@ pub mod recording {
                 .lock()
                 .expect("recording lock")
                 .push(ProgressOp::AddBar { total, label: label.to_string() });
-            RecordingTrackedHandle { ops: self.ops.clone(), total: Some(total) }
+            RecordingTrackedHandle {
+                ops: self.ops.clone(),
+                total: Some(total),
+                start_time: Instant::now(),
+                finished_elapsed: Arc::new(Mutex::new(None)),
+            }
         }
 
         /// Return a snapshot of all recorded operations.
@@ -1580,6 +1586,8 @@ pub mod recording {
     pub struct RecordingTrackedHandle {
         ops: Arc<Mutex<Vec<ProgressOp>>>,
         total: Option<u64>,
+        start_time: Instant,
+        finished_elapsed: Arc<Mutex<Option<Duration>>>,
     }
 
     impl RecordingTrackedHandle {
@@ -1588,7 +1596,12 @@ pub mod recording {
         /// The handle has its own private operation log.
         #[must_use]
         pub fn new(total: u64) -> Self {
-            Self { ops: Arc::new(Mutex::new(Vec::new())), total: Some(total) }
+            Self {
+                ops: Arc::new(Mutex::new(Vec::new())),
+                total: Some(total),
+                start_time: Instant::now(),
+                finished_elapsed: Arc::new(Mutex::new(None)),
+            }
         }
 
         /// Create a disabled (no-op) recording handle.
@@ -1597,7 +1610,12 @@ pub mod recording {
         /// [`total`](RecordingTrackedHandle::total) as 0.
         #[must_use]
         pub fn disabled() -> Self {
-            Self { ops: Arc::new(Mutex::new(Vec::new())), total: None }
+            Self {
+                ops: Arc::new(Mutex::new(Vec::new())),
+                total: None,
+                start_time: Instant::now(),
+                finished_elapsed: Arc::new(Mutex::new(None)),
+            }
         }
 
         /// Return the total number of work units (0 = indeterminate/disabled).
@@ -1642,6 +1660,7 @@ pub mod recording {
         /// Mark the handle as finished.
         pub fn finish(&self) {
             self.ops.lock().expect("recording lock").push(ProgressOp::Finish);
+            self.mark_finished();
         }
 
         /// Mark as finished with a success message.
@@ -1650,6 +1669,7 @@ pub mod recording {
                 .lock()
                 .expect("recording lock")
                 .push(ProgressOp::FinishSuccess { msg: msg.into() });
+            self.mark_finished();
         }
 
         /// Mark as finished with an error message.
@@ -1658,16 +1678,19 @@ pub mod recording {
                 .lock()
                 .expect("recording lock")
                 .push(ProgressOp::FinishError { msg: msg.into() });
+            self.mark_finished();
         }
 
         /// Finish and clear from display.
         pub fn finish_and_clear(&self) {
             self.ops.lock().expect("recording lock").push(ProgressOp::FinishAndClear);
+            self.mark_finished();
         }
 
         /// Abandon — leaves visible but stops updates.
         pub fn abandon(&self) {
             self.ops.lock().expect("recording lock").push(ProgressOp::Abandon);
+            self.mark_finished();
         }
 
         /// Return a snapshot of recorded operations for this handle.
@@ -1677,6 +1700,27 @@ pub mod recording {
         #[must_use]
         pub fn ops(&self) -> Vec<ProgressOp> {
             self.ops.lock().expect("recording lock").clone()
+        }
+
+        /// Return the elapsed duration (frozen after first finish method call).
+        #[must_use]
+        pub(crate) fn snapshot_elapsed(&self) -> Duration {
+            if let Some(frozen) =
+                *self.finished_elapsed.lock().expect("recording finished_elapsed lock")
+            {
+                frozen
+            } else {
+                self.start_time.elapsed()
+            }
+        }
+
+        /// Capture the elapsed time if not already captured (idempotent).
+        fn mark_finished(&self) {
+            let mut elapsed =
+                self.finished_elapsed.lock().expect("recording finished_elapsed lock");
+            if elapsed.is_none() {
+                *elapsed = Some(self.start_time.elapsed());
+            }
         }
     }
 }
@@ -1695,7 +1739,6 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
         recording::RecordingTrackedHandle::finish_error(self, msg);
     }
     fn snapshot(&self) -> TrackSnapshot {
-        // Recording handles don't maintain SharedState, return basic snapshot
         TrackSnapshot {
             position: 0,
             total: self.total(),
@@ -1703,7 +1746,7 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
             message: String::new(),
             prefix: String::new(),
             status: TrackStatus::Active,
-            elapsed: std::time::Duration::default(),
+            elapsed: recording::RecordingTrackedHandle::snapshot_elapsed(self),
         }
     }
     fn is_finished(&self) -> bool {
@@ -1903,6 +1946,72 @@ mod tests {
         h.finish_and_clear();
         h.abandon();
         assert_eq!(h.ops(), vec![ProgressOp::FinishAndClear, ProgressOp::Abandon]);
+    }
+
+    // ---- RecordingTrackedHandle elapsed ----------------------------------
+
+    #[test]
+    fn recording_handle_elapsed_starts_near_zero() {
+        let h = RecordingTrackedHandle::new(100);
+        let elapsed = h.snapshot_elapsed();
+        assert!(elapsed.as_millis() < 100, "elapsed should start near zero, got {elapsed:?}");
+    }
+
+    #[test]
+    fn recording_handle_elapsed_frozen_after_finish() {
+        let h = RecordingTrackedHandle::new(100);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.finish();
+        let frozen = h.snapshot_elapsed();
+        assert!(
+            frozen.as_millis() >= 5,
+            "elapsed should capture time until finish, got {frozen:?}"
+        );
+        // Verify the value stays frozen on subsequent reads.
+        let frozen2 = h.snapshot_elapsed();
+        assert_eq!(frozen, frozen2, "elapsed should be frozen after finish");
+    }
+
+    #[test]
+    fn recording_handle_elapsed_frozen_after_finish_success() {
+        let h = RecordingTrackedHandle::new(100);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.finish_success("ok");
+        let frozen = h.snapshot_elapsed();
+        assert!(
+            frozen.as_millis() >= 5,
+            "elapsed should capture time until finish_success, got {frozen:?}"
+        );
+        let frozen2 = h.snapshot_elapsed();
+        assert_eq!(frozen, frozen2, "elapsed should be frozen after finish_success");
+    }
+
+    #[test]
+    fn recording_handle_elapsed_frozen_after_finish_error() {
+        let h = RecordingTrackedHandle::new(100);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.finish_error("err");
+        let frozen = h.snapshot_elapsed();
+        assert!(
+            frozen.as_millis() >= 5,
+            "elapsed should capture time until finish_error, got {frozen:?}"
+        );
+        let frozen2 = h.snapshot_elapsed();
+        assert_eq!(frozen, frozen2, "elapsed should be frozen after finish_error");
+    }
+
+    #[test]
+    fn recording_handle_elapsed_frozen_after_abandon() {
+        let h = RecordingTrackedHandle::new(100);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.abandon();
+        let frozen = h.snapshot_elapsed();
+        assert!(
+            frozen.as_millis() >= 5,
+            "elapsed should capture time until abandon, got {frozen:?}"
+        );
+        let frozen2 = h.snapshot_elapsed();
+        assert_eq!(frozen, frozen2, "elapsed should be frozen after abandon");
     }
 
     #[test]
