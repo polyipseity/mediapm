@@ -22,23 +22,7 @@ applyTo: "src/**/*.rs"
 - Use type-level modeling (newtypes/strong enums/constrained constructors) so invalid states are hard to represent.
 - Resolve `Option` at the configuration boundary (serde deserialization): domain types use plain values with serde defaults, not `Option<T>`. Optional semantics are resolved at the very boundary — absent config keys produce a default; downstream code never handles `Option`. This avoids propagating `Option` handling through most of the codebase. All serde defaults are centralized in `src/mediapm/src/config/defaults.rs` — field-level `#[serde(default = "...")]` must reference a `defaults::` function, not inline literals.
 
-## Module layout (source of truth)
-
-- `src/mediapm-cas/` (CAS)
-  - identity/hash model
-  - CAS async API contracts
-  - storage/index/constraint behavior
-  - topology visualization rendering/execution helpers
-- `src/mediapm-conductor/` (Conductor)
-  - orchestration state model
-  - deterministic instance-key and merge logic
-  - workflow execution contracts
-- `src/mediapm-conductor-builtins/*/` (conductor built-ins)
-  - versioned built-in tool contracts and runtime implementations such as `echo`, `fs`, `import`, `export`, `archive`
-- `src/mediapm/` (mediapm application crate)
-  - media-facing API
-  - CLI shell and composition over conductor + CAS
-- When adding a new crate directory under `src/` or `src/mediapm-conductor-builtins/`, create `AGENTS.md` with crate-local guidance (follow existing sibling patterns) and update the repository shape list in root `AGENTS.md`.
+See `src/mediapm-conductor/AGENTS.md`, `src/mediapm-conductor-builtins/*/AGENTS.md`, `src/mediapm/AGENTS.md`, and `src/mediapm-cas/AGENTS.md` for per-crate guidance and the root `AGENTS.md`'s "Repository Shape" section for the crate directory listing.
 
 ## All-platform download principle (tool payloads)
 
@@ -53,15 +37,7 @@ applyTo: "src/**/*.rs"
 - Never filter by host OS in the provisioner; always iterate
   [`ResolvedDownloadPlan::per_os_actions`] unconditionally.
 
-If you introduce a new file, place it in the crate that owns that concern. Avoid re-introducing flat `src/*.rs` module sprawl at workspace root.
-
-When splitting one Rust module into multiple files under `src/`, prefer folder-module layout:
-
-- move `foo.rs` to `foo/mod.rs`,
-- place sibling module files in `foo/*.rs`,
-- place unit tests as `#[cfg(test)]` blocks inline in the source file they test. If the inline block exceeds ~300 lines, split into a themed sibling file `foo_<theme>.rs` declared with `#[cfg(test)] mod foo_<theme>;`.
-
-Avoid `#[path = "..."]` for routine in-crate module/test wiring unless there is a narrow, documented reason.
+See `.agents/instructions/rust-workflow.instructions.md` for module split conventions.
 
 ## Conceptual layering terms
 
@@ -142,14 +118,13 @@ Avoid `#[path = "..."]` for routine in-crate module/test wiring unless there is 
   - managed media-tool step `options` must stay value-centric: values represent option payloads (not raw CLI option-name tokens); runtime command templates expand values into CLI arguments via conductor conditional + unpack syntax and must omit both option key and option value when the configured value is empty,
   - option values are scalar strings by default; ordered string-list values are only valid for `option_args`, `leading_args`, and `trailing_args`,
   - for generated boolean-style media option inputs, runtime templates must treat only the exact value `"true"` as enabled and treat every other value as disabled,
-  - managed `media-tagger` defaults should keep `strict_identification = "true"` unless callers explicitly override it, should keep `write_all_tags = "true"`, `write_all_images = "true"`, `save_images_to_tags = "true"`, `enable_tag_saving = "true"`, `clear_existing_tags = "false"`, `preserve_images = "false"`, `release_ars = "true"`, `caa_approved_only = "false"`, `ca_providers = "caa_release,url_relationships,caa_release_group"`, `caa_image_types = "all,-matrix/runout,-raw/unedited,-watermark"`, `caa_image_size = "full"`, and should default `cover_art_slot_count = 16` (then clamp to ffmpeg auxiliary-slot availability during workflow synthesis),
   - when `media-tagger` runs on the AcoustID lookup path (no explicit recording MBID override), missing/empty AcoustID credentials must fail immediately; key sources remain CLI `--acoustid-api-key` or `ACOUSTID_API_KEY`, and provided-credential lookup/auth failures surface as runtime errors; for `mediapm sync` workflow execution, include `ACOUSTID_API_KEY` in `runtime.inherited_env_vars` when relying on environment-key lookup,
   - `yt-dlp` non-primary artifact families (for example subtitles, thumbnails, descriptions, infojson, comments, links, chapter splits, and playlist sidecars) are exposed via `output_variants`; description/infojson should bind to file captures while folder families map to artifact-capture outputs in generated tool/workflow specs; aggregated downloader synthesis must keep one shared yt-dlp call for multiple requested output families while isolating artifact bundles through regex folder captures, and any internal filename post-edit marker used for disambiguation must be removed via regex-capture rename semantics before user-visible outputs,
   - yt-dlp output-variant synthesis must apply explicit sidecar toggles per variant kind so primary/sandbox variants do not capture unrelated sidecar families,
   - playlist-only output variants must keep explicit gating so single-item runs with `no_playlist = true` cannot capture playlist sidecar artifacts,
   - hierarchy directory entries may define ordered `rename_files = [{ pattern, replacement }, ...]` regex rewrites that apply to extracted folder file members; file hierarchy targets must keep `rename_files` empty,
   - hierarchy flattening validation allows same-path entries when they have different `rename_files` rules, since `rename_files` produce distinct final output filenames at materialization time; the materializer uses isolated staging directories per entry for multi-entry deduplication,
-  - managed media tool defaults should stay quality- and metadata-preserving: `yt-dlp` defaults to `bestvideo*+bestaudio/best` plus enabled metadata, `sub_langs = "all"`, unified subtitle writes enabled by default (`write_subs = "true"`, mapped to manual + automatic subtitle toggles) while broad translated subtitle pressure should still be reduced using precise `options.sub_langs` selectors and optional `options.sleep_subtitles`. Keep this mitigation anchored to documented upstream incidents in `https://github.com/yt-dlp/yt-dlp/issues/13831#issuecomment-3875360390` and `https://github.com/yt-dlp/yt-dlp/issues/13831#issuecomment-3712613129`: broad translated subtitle requests are the highest-risk path for `HTTP 429`, focused subtitle requests are usually lower risk, and extractor-args translation-skip knobs are not a reliable substitute for precise language selectors, and highest-quality single-thumbnail capture (`write_thumbnail = "true"`, `write_all_thumbnails = "false"`), `ffmpeg` defaults to metadata-preserving copy behavior, `rsgain` defaults to single-track true-peak normalization with direct `custom`-mode execution while keeping container/stream layout by default (not audio-only output), and `media-tagger` defaults should maximize broad MusicBrainz/Picard-compatible metadata population while preserving existing source metadata unless overridden by media-tagger values; cover-art selection should keep one highest-quality payload per distinct CAA artwork entry (original image preferred, thumbnail fallback allowed), emit deterministic attachment slot artifacts for ffmpeg `attached_pic` mapping, and keep emitted `coverart_*` metadata keys synchronized with Picard cover-art behavior documented in `https://github.com/metabrainz/picard/blob/master/picard/coverart/image.py`. Picard defaults `embed_only_one_front_image = "true"`; mediapm intentionally defaults `embed_only_one_front_image = "false"` so selected non-front CAA image kinds can also be embedded,
+  - See `src/mediapm/AGENTS.md` for managed-tool default settings (yt-dlp, ffmpeg, rsgain, media-tagger).
   - output-variant values are object-driven across managed tools: `kind` defines default file-vs-folder capture behavior and optional `capture_kind` (`file`/`folder`) may override that default,
   - yt-dlp output-variant `langs` is only a capture-filter hint for subtitle-family artifacts; downloader language selection remains step-option owned via `options.sub_langs`,
   - do not document or rely on a separate dedicated per-variant output-folder configuration model,
@@ -236,14 +211,7 @@ Avoid `#[path = "..."]` for routine in-crate module/test wiring unless there is 
 - All caches in CAS and downstream should be TTL-based, not bounded by entry count. This avoids memory-pressure tuning loops and keeps behavior predictable under varying DB sizes.
 - CAS-specific cache details (integrity cache TTL, verified-content in-memory cache) are documented in `src/mediapm-cas/AGENTS.md`.
 
-## Documentation requirements for Rust code
-
-When you add or change public APIs in `src/`:
-
-- Add module-level `//!` docs describing purpose and boundaries.
-- Add `///` docs for public structs/enums/functions and key public fields.
-- Explain invariants and side effects, not just what types are called.
-- Prefer newcomer-readable docs over shorthand internal jargon.
+See `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` for Rustdoc/docstring depth requirements.
 
 ## pulsebar rendering contract
 
@@ -281,9 +249,3 @@ CAS integrity verification ensures stored objects have not been corrupted on rea
 - Conductor workflow bars use the format: `<name> · <N/total> · <step-id>` for single-step levels, and `<name> · <N-M/total> · <step-id>, <step-id2>[, +K more]` for multi-step levels.
 - Use `N/total` (not `N-N/total`) when first == last (single-step level).
 - Do not add prefixes like "running " or wrap step ids in `step '...'` quotes — they are redundant noise.
-
-## Validation checklist after Rust edits
-
-See `.agents/instructions/rust-workflow.instructions.md` for the canonical development and pre-submission validation workflow. The `prek.toml` hooks enforce formatting, linting, and testing automatically on commit and push.
-
-If you intentionally change behavior, update tests and docs in the same change. Use `.agents/instructions/spec-development-index.instructions.md` to find the relevant per-crate `AGENTS.md` for any affected contracts, invariants, or edge cases.
