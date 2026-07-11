@@ -1519,8 +1519,8 @@ fn worker_surge_with_overflow() {
 fn progress_group_with_overall_shows_fixed_height() {
     // Terminal H=5, W=80 so the full child and overall templates fit.
     let (mp, term) = mk_with_size(5, 80);
-    let (_group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
-    overall.tick();
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== with_overall, H=5, W=80 ===");
@@ -1540,11 +1540,10 @@ fn progress_group_with_overall_shows_fixed_height() {
 fn progress_group_add_bar_reuses_bottom_child() {
     // Terminal H=4, W=80 so the full child and overall templates fit.
     let (mp, term) = mk_with_size(4, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 3);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 3);
 
-    let c1 = group.add_bar(5, "tool1");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(5, "tool1");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== add_bar reuse, after tool1, H=4, W=80 ===");
@@ -1558,9 +1557,8 @@ fn progress_group_add_bar_reuses_bottom_child() {
     assert!(lines[2].contains("tool1"), "line 2 has tool1: {0}", lines[2]);
     assert!(lines[3].contains("overall"), "line 3 has overall");
 
-    let c2 = group.add_bar(3, "tool2");
-    c2.tick();
-    overall.tick();
+    let _c2 = group.add_bar(3, "tool2");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== add_bar reuse, after tool2 ===");
@@ -1586,8 +1584,8 @@ fn progress_group_no_overall_always_reuses_bottom() {
     let (mp, term) = mk_with_size(5, 80);
     let group = ProgressGroup::with_mp(mp, 4);
 
-    let c1 = group.add_bar(5, "task1");
-    c1.tick();
+    let _c1 = group.add_bar(5, "task1");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== no_overall, after task1, H=5, W=80 ===");
@@ -1603,8 +1601,7 @@ fn progress_group_no_overall_always_reuses_bottom() {
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
     assert!(lines[3].contains("task1"), "line 3 has task1: {0}", lines[3]);
 
-    let c2 = group.add_bar(3, "task2");
-    c2.tick();
+    let _c2 = group.add_bar(3, "task2");
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== no_overall, after task2 ===");
@@ -1625,8 +1622,8 @@ fn progress_group_never_changes_bar_count() {
     let (mp, term) = mk_with_size(4, 80);
     let group = ProgressGroup::with_mp(mp, 4);
     for i in 0..30 {
-        let c = group.add_bar(1, &format!("tool{i}"));
-        c.tick();
+        let _c = group.add_bar(1, &format!("tool{i}"));
+        group.tick();
     }
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -1645,11 +1642,10 @@ fn progress_group_with_overall_add_child_updates_slot() {
     // Chronological: first child occupies slot[3], second shifts it to slot[2]
     // and takes slot[3].
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
 
-    let c1 = group.add_bar(5, "tool1");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(5, "tool1");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== add_child_updates_slot, after tool1, H=5, W=80 ===");
@@ -1666,9 +1662,8 @@ fn progress_group_with_overall_add_child_updates_slot() {
     assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
     assert!(lines[4].contains("0/3"), "line 4 shows 0/3: {0}", lines[4]);
 
-    let c2 = group.add_bar(3, "tool2");
-    c2.tick();
-    overall.tick();
+    let _c2 = group.add_bar(3, "tool2");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== add_child_updates_slot, after tool2 ===");
@@ -1695,12 +1690,11 @@ fn progress_group_with_overall_multiple_children_reuse_slot() {
     // earlier children up and takes slot[3].  After 4 children: task0 at
     // slot[0], task1 at slot[1], task2 at slot[2], task3 at slot[3].
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
 
     for i in 0..5 {
-        let c = group.add_bar(2, &format!("task{i}"));
-        c.tick();
-        overall.tick();
+        let _c = group.add_bar(2, &format!("task{i}"));
+        group.tick();
     }
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -1734,8 +1728,8 @@ fn progress_group_no_overall_different_capacities() {
     let (mp, term) = mk_with_size(6, 80);
     let group = ProgressGroup::with_mp(mp, 4);
 
-    let c1 = group.add_bar(5, "alpha");
-    c1.tick();
+    let _c1 = group.add_bar(5, "alpha");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== no_overall_cap_4, after alpha, H=6, W=80 ===");
@@ -1752,8 +1746,7 @@ fn progress_group_no_overall_different_capacities() {
     assert!(lines[3].contains("alpha"), "line 3 has alpha: {0}", lines[3]);
     assert!(lines[3].contains("0/5"), "line 3 shows 0/5: {0}", lines[3]);
 
-    let c2 = group.add_bar(3, "beta");
-    c2.tick();
+    let _c2 = group.add_bar(3, "beta");
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== no_overall_cap_4, after beta ===");
@@ -1777,11 +1770,10 @@ fn progress_group_compact_template_below_60_width() {
     // (InMemoryTerm width doesn't affect production style selection, which
     // reads from console::Term::stderr() — the real terminal.)
     let (mp, term) = mk_with_size(4, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 3);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 3);
 
-    let c1 = group.add_bar(5, "tool1");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(5, "tool1");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== compact_template, H=4, W=40 ===");
@@ -1802,11 +1794,10 @@ fn progress_group_compact_template_below_60_width() {
 fn progress_group_child_shows_label_and_total() {
     // Verify that add_bar renders the label and total in the bar.
     let (mp, term) = mk_with_size(4, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
 
-    let c1 = group.add_bar(7, "fetch");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== child_shows_label_and_total, after fetch, H=4, W=80 ===");
@@ -1827,14 +1818,13 @@ fn progress_group_child_shows_label_and_total() {
 fn progress_group_disabled_returns_noop() {
     // -- with overall --
     let (_mp, term) = mk_with_size(4, 80);
-    let (_group, overall) = (ProgressGroup::disabled(), TrackedHandle::disabled());
+    let (group, overall) = (ProgressGroup::disabled(), TrackedHandle::disabled());
     assert_eq!(overall.total(), 0, "overall handle must be no-op when disabled");
 
-    let child = _group.add_bar(5, "child");
+    let child = group.add_bar(5, "child");
     assert_eq!(child.total(), 0, "child handle must be no-op when disabled");
 
-    child.tick();
-    overall.tick();
+    group.tick();
     assert_eq!(term.contents(), "", "no output when progress is disabled");
 
     // -- without overall --
@@ -1842,7 +1832,7 @@ fn progress_group_disabled_returns_noop() {
     let group2 = ProgressGroup::disabled();
     let c2 = group2.add_bar(3, "noop");
     assert_eq!(c2.total(), 0, "child handle must be no-op without overall");
-    c2.tick();
+    group2.tick();
     assert_eq!(term2.contents(), "", "no output without overall when disabled");
 }
 
@@ -1856,15 +1846,13 @@ fn progress_group_disabled_returns_noop() {
 fn progress_group_child_finish_keeps_bar_visible() {
     // Terminal H=5, W=80 so the full child and overall templates fit.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
 
     let c = group.add_bar(5, "fetch");
-    c.tick();
-    overall.tick();
+    group.tick();
     // Finish the child — it must remain visible in the terminal.
     c.finish_success("done");
-    c.tick();
-    overall.tick();
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== child_finish_keeps_bar_visible, H=5, W=80 ===");
@@ -1891,16 +1879,12 @@ fn progress_group_finish_all_bars_content_persists() {
     let c2 = group.add_bar(5, "beta");
     c1.advance(3);
     c2.advance(5);
-    c1.tick();
-    c2.tick();
-    overall.tick();
+    group.tick();
     // Finish all bars.
     c1.finish_success("done");
     c2.finish_success("ok");
     overall.finish_success("all done");
-    c1.tick();
-    c2.tick();
-    overall.tick();
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== finish_all_bars_content_persists, H=5, W=80 ===");
@@ -1924,14 +1908,12 @@ fn progress_group_finish_all_bars_content_persists() {
 fn progress_group_finish_error_shows_error_state() {
     // Terminal H=5, W=80.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
 
     let c = group.add_bar(5, "wget");
-    c.tick();
-    overall.tick();
+    group.tick();
     c.finish_error("timeout");
-    c.tick();
-    overall.tick();
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== finish_error_shows_error_state, H=5, W=80 ===");
@@ -1952,12 +1934,11 @@ fn progress_group_finish_error_shows_error_state() {
 fn progress_group_join_and_clear_removes_bars() {
     // Terminal H=5, W=80.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
 
     let c = group.add_bar(5, "fetch");
     c.finish_success("done");
-    c.tick();
-    overall.tick();
+    group.tick();
     // join_and_clear collapses blank reserved slots but keeps non-blank bars.
     group.join_and_clear();
     let contents = term.contents();
@@ -1982,19 +1963,17 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
 
     let c1 = group.add_bar(5, "fetch");
     c1.advance(5);
-    c1.tick();
-    overall.tick();
+    group.tick();
     c1.finish_success("fetched");
 
     let c2 = group.add_bar(2, "parse");
     c2.advance(2);
-    c2.tick();
-    overall.tick();
+    group.tick();
     c2.finish_success("parsed");
 
     overall.advance(3);
     overall.finish_success("all done");
-    overall.tick();
+    group.tick();
     // group.join() would be called here — it's a no-op.
 
     let contents = term.contents();
@@ -2023,8 +2002,8 @@ fn slot_pool_blank_bars_remain_invisible() {
     let group = ProgressGroup::with_mp(mp, 5);
 
     // Add a child bar so we can verify only 5 lines total.
-    let c = group.add_bar(10, "child");
-    c.tick();
+    let _c = group.add_bar(10, "child");
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2048,8 +2027,8 @@ fn slot_pool_acquire_returns_bottommost_child() {
     let (mp, term) = mk_with_size(5, 80);
     let group = ProgressGroup::with_mp(mp, 4); // 4 slots
 
-    let c1 = group.add_bar(5, "first");
-    c1.tick();
+    let _c1 = group.add_bar(5, "first");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== acquire returns bottommost: after first, H=5, W=80 ===");
@@ -2063,8 +2042,7 @@ fn slot_pool_acquire_returns_bottommost_child() {
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
     assert!(lines[3].contains("first"), "line 3 has first: {0}", lines[3]);
 
-    let c2 = group.add_bar(3, "second");
-    c2.tick();
+    let _c2 = group.add_bar(3, "second");
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== after second ===");
@@ -2084,11 +2062,10 @@ fn slot_pool_acquire_returns_bottommost_child() {
 #[test]
 fn slot_pool_acquire_with_overall_above_overall() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
 
-    let c = group.add_bar(7, "worker");
-    c.tick();
-    overall.tick();
+    let _c = group.add_bar(7, "worker");
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2113,8 +2090,8 @@ fn progress_group_height_never_grows_with_many_bars() {
     let group = ProgressGroup::with_mp(mp, 4);
 
     for i in 0..20 {
-        let c = group.add_bar(1, &format!("t{i}"));
-        c.tick();
+        let _c = group.add_bar(1, &format!("t{i}"));
+        group.tick();
     }
 
     let contents = term.contents();
@@ -2129,12 +2106,11 @@ fn progress_group_height_never_grows_with_many_bars() {
 #[test]
 fn progress_group_overall_always_at_bottom() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
 
     for i in 0..5 {
-        let c = group.add_bar(2, &format!("task{i}"));
-        c.tick();
-        overall.tick();
+        let _c = group.add_bar(2, &format!("task{i}"));
+        group.tick();
     }
 
     let contents = term.contents();
@@ -2156,12 +2132,11 @@ fn progress_group_overall_always_at_bottom() {
 #[test]
 fn progress_group_join_preserves_all_content() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
 
     let c = group.add_bar(3, "fetch");
     c.advance(3);
-    c.tick();
-    overall.tick();
+    group.tick();
 
     let before = term.contents();
     group.join();
@@ -2173,11 +2148,10 @@ fn progress_group_join_preserves_all_content() {
 #[test]
 fn progress_group_add_bar_zero_total_renders() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 0);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 0);
 
-    let c = group.add_bar(0, "zero");
-    c.tick();
-    overall.tick();
+    let _c = group.add_bar(0, "zero");
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2203,7 +2177,7 @@ fn consumer_lifecycle_materializer() {
     let total = 3u64;
     let pb = group.add_bar(total, "materializing");
 
-    pb.tick();
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== materializer: initial, H=5, W=80 ===");
@@ -2221,7 +2195,7 @@ fn consumer_lifecycle_materializer() {
 
     pb.advance(3);
     pb.finish_success("materialization complete");
-    pb.tick();
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     // Still 5 lines after finish
@@ -2248,20 +2222,18 @@ fn consumer_lifecycle_conductor_sync() {
     t1.set_message("downloading");
     t1.advance(1);
     t1.finish();
-    t1.tick();
     overall.advance(1);
-    overall.tick();
+    group.tick();
 
     // Tool 2
     let t2 = group.add_bar(0, "ffmpeg");
     t2.advance(1);
     t2.finish();
-    t2.tick();
     overall.advance(1);
-    overall.tick();
+    group.tick();
 
     overall.finish_success("tools synced");
-    overall.tick();
+    group.tick();
     group.join();
 
     let contents = term.contents();
@@ -2290,7 +2262,6 @@ fn consumer_lifecycle_conductor_cli() {
     pb.set_total(3);
 
     pb.set_position(1);
-    pb.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== conductor CLI lifecycle: step 1/3 ===");
@@ -2305,7 +2276,6 @@ fn consumer_lifecycle_conductor_cli() {
 
     pb.set_position(3);
     pb.finish();
-    pb.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     assert!(lines[3].contains("steps"), "bar still visible after finish: {0}", lines[3]);
@@ -2317,16 +2287,14 @@ fn consumer_lifecycle_conductor_cli() {
 #[test]
 fn progress_group_finish_and_clear_child_keeps_others() {
     let (mp, term) = mk_with_size(4, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
 
     let c1 = group.add_bar(3, "alpha");
     c1.advance(3);
-    c1.tick();
-    overall.tick();
+    group.tick();
 
     c1.finish_and_clear();
-    c1.tick();
-    overall.tick();
+    group.tick();
 
     // Overall must still be visible.
     let contents = term.contents();
@@ -2349,10 +2317,9 @@ fn progress_group_abandon_preserves_bar() {
 
     let c = group.add_bar(5, "worker");
     c.advance(2);
-    c.tick();
+    group.tick();
 
     c.abandon();
-    c.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2373,8 +2340,8 @@ fn progress_group_long_prefix_truncation() {
 
     // Prefix > 16 chars — production uses {prefix:>16.16}
     let long_prefix = "abcdefghijklmnopqrstuvwxyz"; // 26 chars
-    let c = group.add_bar(5, long_prefix);
-    c.tick();
+    let _c = group.add_bar(5, long_prefix);
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2394,28 +2361,26 @@ fn progress_group_long_prefix_truncation() {
 #[test]
 fn progress_group_children_advance_independently() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
 
     // Chronological allocation: tool-a at slot[3] (just above overall).
     // Second child shifts tool-a up to slot[2] and takes slot[3].
     // Overall at slot[4].
-    let a = group.add_bar(5, "tool-a");
-    a.tick();
-    overall.tick();
+    let _a = group.add_bar(5, "tool-a");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     assert!(lines[3].contains("tool-a"), "line 3 has tool-a: {0}", lines[3]);
 
     // Second child shifts tool-a up, takes last slot before overall.
-    let b = group.add_bar(3, "tool-b");
-    b.tick();
-    overall.tick();
+    let _b = group.add_bar(3, "tool-b");
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     assert!(lines[2].contains("tool-a"), "line 2 still has tool-a: {0}", lines[2]);
     assert!(lines[3].contains("tool-b"), "line 3 has tool-b: {0}", lines[3]);
 
-    overall.tick();
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     assert!(lines[4].contains("overall"), "overall visible: {0}", lines[4]);
@@ -2426,10 +2391,9 @@ fn progress_group_children_advance_independently() {
 #[test]
 fn child_bar_elapsed_starts_at_zero() {
     let (mp, term) = mk();
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
-    let child = group.add_bar(3, "tool-a");
-    child.tick();
-    overall.tick();
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let _child = group.add_bar(3, "tool-a");
+    group.tick();
     let contents = term.contents();
     assert!(contents.contains("[00:00:00]"), "elapsed must start at 0, got:\n{contents}");
     assert!(contents.contains("tool-a"), "tool-a must appear");
@@ -2440,12 +2404,11 @@ fn child_bar_elapsed_starts_at_zero() {
 #[test]
 fn child_bar_elapsed_frozen_after_finish() {
     let (mp, term) = mk();
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
     let child = group.add_bar(3, "tool-a");
     child.set_position(3);
     child.finish();
-    child.tick();
-    overall.tick();
+    group.tick();
     let contents = term.contents();
     assert!(
         contents.contains("[00:00:00]"),
@@ -2459,12 +2422,11 @@ fn child_bar_elapsed_frozen_after_finish() {
 #[test]
 fn child_bar_elapsed_frozen_after_finish_success() {
     let (mp, term) = mk();
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
     let child = group.add_bar(3, "tool-a");
     child.set_position(3);
     child.finish_success("done");
-    child.tick();
-    overall.tick();
+    group.tick();
     let contents = term.contents();
     assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after finish_success");
     assert!(contents.contains("done"), "success message must appear");
@@ -2475,12 +2437,11 @@ fn child_bar_elapsed_frozen_after_finish_success() {
 #[test]
 fn child_bar_elapsed_frozen_after_finish_error() {
     let (mp, term) = mk();
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
     let child = group.add_bar(3, "tool-a");
     child.set_position(1);
     child.finish_error("fail");
-    child.tick();
-    overall.tick();
+    group.tick();
     let contents = term.contents();
     assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after finish_error");
 }
@@ -2490,12 +2451,11 @@ fn child_bar_elapsed_frozen_after_finish_error() {
 #[test]
 fn child_bar_elapsed_frozen_after_abandon() {
     let (mp, term) = mk();
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
     let child = group.add_bar(3, "tool-a");
     child.set_position(2);
     child.abandon();
-    child.tick();
-    overall.tick();
+    group.tick();
     let contents = term.contents();
     assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after abandon");
 }
@@ -2518,11 +2478,7 @@ fn slot_full_hides_overflow_bars_from_display() {
     c3.advance(3);
     c4.advance(4);
     c5.advance(5);
-    c1.tick();
-    c2.tick();
-    c3.tick();
-    c4.tick();
-    c5.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2556,23 +2512,19 @@ fn slot_full_hides_overflow_bars_from_display() {
 #[test]
 fn parallel_worker_finish_error_other_continues() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
 
     let a = group.add_bar(5, "worker-a");
     let b = group.add_bar(5, "worker-b");
 
     a.advance(3);
     b.advance(2);
-    a.tick();
-    b.tick();
-    overall.tick();
+    group.tick();
 
     // worker-a finishes with error, worker-b continues
     a.finish_error("crash");
     b.advance(1);
-    a.tick();
-    b.tick();
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2604,7 +2556,7 @@ fn consumer_sync_too_many_tools_recycles() {
         let tool = group.add_bar(1, &format!("tool{i}"));
         tool.advance(1);
         tool.finish_success("done");
-        tool.tick();
+        group.tick();
     }
 
     let contents = term.contents();
@@ -2631,12 +2583,12 @@ fn retention_finished_bar_keeps_final_msg() {
     let a = group.add_bar(2, "alpha");
     a.advance(2);
     a.finish_success("done A");
-    a.tick();
+    group.tick();
 
     let b = group.add_bar(3, "beta");
     b.advance(3);
     b.finish_success("done B");
-    b.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2659,11 +2611,10 @@ fn retention_finished_bar_persists_across_new_work() {
     let a = group.add_bar(1, "alpha");
     a.advance(1);
     a.finish_success("done");
-    a.tick();
+    group.tick();
 
     // Slot 1: active bar alongside the finished one
-    let b = group.add_bar(5, "beta");
-    b.tick();
+    let _b = group.add_bar(5, "beta");
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== retention_finished_bar_persists_across_new_work, H=4, W=80 ===");
@@ -2685,7 +2636,7 @@ fn retention_multiple_finished_bars() {
         let h = group.add_bar(1, &format!("task{i}"));
         h.advance(1);
         h.finish_success(*msg);
-        h.tick();
+        group.tick();
     }
 
     let contents = term.contents();
@@ -2713,12 +2664,11 @@ fn renderer_with_overall_always_bottom() {
         let h = group.add_bar(2, &format!("child{i}"));
         h.advance(2);
         h.finish();
-        h.tick();
         overall.advance(1);
     }
     overall.advance(1);
     overall.finish();
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2737,15 +2687,12 @@ fn renderer_with_overall_always_bottom() {
 #[test]
 fn regression_child_order_chronological_top_to_bottom() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
 
-    let c1 = group.add_bar(5, "first");
-    let c2 = group.add_bar(5, "second");
-    let c3 = group.add_bar(5, "third");
-    c1.tick();
-    c2.tick();
-    c3.tick();
-    overall.tick();
+    let _c1 = group.add_bar(5, "first");
+    let _c2 = group.add_bar(5, "second");
+    let _c3 = group.add_bar(5, "third");
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2772,15 +2719,13 @@ fn regression_swap_slot_does_not_corrupt_display() {
     // Add 2 children, advance both, add 3rd (triggers shift). Verify all
     // children have correct positions and values.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
 
     let c1 = group.add_bar(10, "alpha");
     let c2 = group.add_bar(10, "beta");
     c1.advance(3);
     c2.advance(7);
-    c1.tick();
-    c2.tick();
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2800,8 +2745,7 @@ fn regression_swap_slot_does_not_corrupt_display() {
     // Add 3rd child — triggers slot shift.
     let c3 = group.add_bar(10, "gamma");
     c3.advance(5);
-    c3.tick();
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2829,14 +2773,11 @@ fn regression_overall_never_shifts() {
     let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
 
     // Fill all 3 child slots + overall.
-    let c1 = group.add_bar(1, "a");
-    let c2 = group.add_bar(1, "b");
-    let c3 = group.add_bar(1, "c");
+    let _c1 = group.add_bar(1, "a");
+    let _c2 = group.add_bar(1, "b");
+    let _c3 = group.add_bar(1, "c");
     overall.advance(3);
-    c1.tick();
-    c2.tick();
-    c3.tick();
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2855,7 +2796,7 @@ fn regression_overall_never_shifts() {
     let _ = group.add_bar(1, "d");
     let _ = group.add_bar(1, "e");
     overall.advance(2);
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2889,17 +2830,15 @@ fn regression_overall_never_shifts() {
 #[test]
 fn regression_finish_and_clear_with_tick_fn() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
 
-    let c1 = group.add_bar(5, "keep");
+    let _c1 = group.add_bar(5, "keep");
     let c2 = group.add_bar(5, "clear");
-    c1.tick();
-    c2.tick();
-    overall.tick();
+    group.tick();
 
     // c2 is ProgressGroup-managed so mutating methods go through tick_fn.
     let _ = c2.finish_and_clear();
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2918,9 +2857,8 @@ fn regression_finish_and_clear_with_tick_fn() {
     assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
 
     // Ensure cleared bar is counted as finished — its state should not shift on next add_bar.
-    let c3 = group.add_bar(5, "new");
-    c3.tick();
-    overall.tick();
+    let _c3 = group.add_bar(5, "new");
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2941,7 +2879,7 @@ fn regression_finish_and_clear_with_tick_fn() {
 #[test]
 fn regression_concurrent_set_and_sync() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 100);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 100);
 
     let c1 = group.add_bar(50, "worker");
     // Rapid set_position/set_message to exercise tick_fn callback path.
@@ -2949,8 +2887,7 @@ fn regression_concurrent_set_and_sync() {
         c1.set_position(i * 2);
         c1.set_message(&format!("step {i}"));
     }
-    c1.tick();
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2972,11 +2909,9 @@ fn regression_recycle_finished_slot_after_full() {
 
     // Fill all 4 child slots.
     let children: Vec<_> = (0..4).map(|i| group.add_bar(2, &format!("task{i}"))).collect();
-    for c in &children {
-        c.tick();
-    }
+    for _c in &children {}
     overall.advance(4);
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2990,7 +2925,7 @@ fn regression_recycle_finished_slot_after_full() {
 
     // Finish and clear task0 — must not panic or corrupt display.
     children[0].finish_and_clear();
-    overall.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -3004,9 +2939,8 @@ fn regression_recycle_finished_slot_after_full() {
     assert!(lines.iter().any(|l| l.contains("task3")), "task3 visible: {lines:?}");
 
     // Add a 5th child — it should reuse the recycled slot.
-    let c4 = group.add_bar(2, "task4");
-    c4.tick();
-    overall.tick();
+    let _c4 = group.add_bar(2, "task4");
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -3035,10 +2969,10 @@ fn consumer_materializer_single_bar_parallel_workers() {
     // Advance in chunks (simulating parallel workers reporting)
     for chunk in [30u64, 30, 30, 10] {
         pb.advance(chunk);
-        pb.tick();
+        group.tick();
     }
     pb.finish_success("materialized");
-    pb.tick();
+    group.tick();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -3057,7 +2991,7 @@ fn consumer_materializer_single_bar_parallel_workers() {
 fn resize_width_wide_to_narrow_changes_output() {
     let dims = Arc::new(TestDimensionSource::new((H, 80)));
     let (mp, term) = mk_with_size(H, 80);
-    let (_group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         5,
         "overall",
@@ -3072,7 +3006,7 @@ fn resize_width_wide_to_narrow_changes_output() {
     }
 
     dims.set((H, 40));
-    overall.tick();
+    group.tick();
     let contents_narrow = term.contents();
     eprintln!("=== after resize (narrow) ===");
     for (i, line) in contents_narrow.lines().enumerate() {
@@ -3087,7 +3021,7 @@ fn resize_width_wide_to_narrow_changes_output() {
 fn resize_width_narrow_to_wide_restores_content() {
     let dims = Arc::new(TestDimensionSource::new((H, 40)));
     let (mp, term) = mk_with_size(H, 40);
-    let (_group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         5,
         "overall",
@@ -3102,7 +3036,7 @@ fn resize_width_narrow_to_wide_restores_content() {
     }
 
     dims.set((H, 80));
-    overall.tick();
+    group.tick();
     let contents_wide = term.contents();
     eprintln!("=== after resize (wide) ===");
     for (i, line) in contents_wide.lines().enumerate() {
@@ -3115,7 +3049,7 @@ fn resize_width_narrow_to_wide_restores_content() {
 fn resize_width_noop_same_width_no_change() {
     let dims = Arc::new(TestDimensionSource::new((H, W)));
     let (mp, term) = mk_with_size(H, W);
-    let (_group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         5,
         "overall",
@@ -3127,7 +3061,7 @@ fn resize_width_noop_same_width_no_change() {
     let before_lines = before.lines().count();
 
     dims.set((H, W));
-    overall.tick();
+    group.tick();
     let after = term.contents();
     let after_lines = after.lines().count();
     // Same width → same number of lines, same bar template structure.
@@ -3144,7 +3078,7 @@ fn resize_width_noop_same_width_no_change() {
 fn resize_height_grow_adds_slots() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         4,
         "overall",
@@ -3153,9 +3087,8 @@ fn resize_height_grow_adds_slots() {
         true,
     );
     {
-        let c1 = group.add_bar(7, "fetch");
-        c1.tick();
-        overall.tick();
+        let _c1 = group.add_bar(7, "fetch");
+        group.tick();
     }
     eprintln!("=== height grow, before resize, H=4 ===");
     let before = term.contents();
@@ -3165,7 +3098,7 @@ fn resize_height_grow_adds_slots() {
     let before_count = before.lines().count();
 
     dims.set((6, 80));
-    overall.tick();
+    group.tick();
     let after = term.contents();
     eprintln!("=== after resize, H=6 ===");
     for (i, line) in after.lines().enumerate() {
@@ -3179,7 +3112,7 @@ fn resize_height_grow_adds_slots() {
 fn resize_height_shrink_removes_slots() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         6,
         "overall",
@@ -3187,15 +3120,14 @@ fn resize_height_shrink_removes_slots() {
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
         true,
     );
-    let c1 = group.add_bar(7, "fetch");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
 
     let before_count = term.contents().lines().count();
     eprintln!("=== height shrink, before resize, H=6, count={before_count} ===");
 
     dims.set((4, 80));
-    overall.tick();
+    group.tick();
     let after_count = term.contents().lines().count();
     eprintln!("=== after resize, H=4, count={after_count} ===");
     assert!(after_count < before_count, "fewer lines after height shrink");
@@ -3205,7 +3137,7 @@ fn resize_height_shrink_removes_slots() {
 fn resize_height_shrink_protects_overall() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         6,
         "overall",
@@ -3213,9 +3145,8 @@ fn resize_height_shrink_protects_overall() {
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
         true,
     );
-    let c1 = group.add_bar(7, "fetch");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
     let before = term.contents();
     eprintln!("=== height shrink_protects, before ===");
     for (i, line) in before.lines().enumerate() {
@@ -3224,7 +3155,7 @@ fn resize_height_shrink_protects_overall() {
     assert!(before.lines().any(|l| l.contains("overall")), "overall visible before resize");
 
     dims.set((4, 80));
-    overall.tick();
+    group.tick();
     let after = term.contents();
     eprintln!("=== after shrink ===");
     for (i, line) in after.lines().enumerate() {
@@ -3237,7 +3168,7 @@ fn resize_height_shrink_protects_overall() {
 fn resize_height_grow_detached_reappear() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         4,
         "overall",
@@ -3245,12 +3176,11 @@ fn resize_height_grow_detached_reappear() {
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
         true,
     );
-    let c1 = group.add_bar(7, "fetch");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
 
     dims.set((6, 80));
-    overall.tick();
+    group.tick();
     let after = term.contents();
     eprintln!("=== height grow_detached, after resize, H=6 ===");
     for (i, line) in after.lines().enumerate() {
@@ -3264,7 +3194,7 @@ fn resize_height_grow_detached_reappear() {
 fn resize_height_clamps_at_min_slots() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         6,
         "overall",
@@ -3272,14 +3202,13 @@ fn resize_height_clamps_at_min_slots() {
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
         true,
     );
-    let c1 = group.add_bar(7, "fetch");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
     let before_count = term.contents().lines().count();
 
     // Shrink to height=1 → only 1 line (overall), bar evicted to orphaned.
     dims.set((1, 80));
-    overall.tick();
+    group.tick();
     let after = term.contents();
     let after_count = after.lines().count();
     eprintln!("=== height shrink extreme, H=1, before={before_count}, after={after_count} ===");
@@ -3292,7 +3221,7 @@ fn resize_height_clamps_at_min_slots() {
 fn resize_height_clamps_at_max_slots() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(10, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         4,
         "overall",
@@ -3300,13 +3229,12 @@ fn resize_height_clamps_at_max_slots() {
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
         true,
     );
-    let c1 = group.add_bar(7, "fetch");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
 
     // Grow to huge height → should clamp at MAX_SLOTS=200.
     dims.set((999, 80));
-    overall.tick();
+    group.tick();
     let after_count = term.contents().lines().count();
     eprintln!("=== height clamp max, H=999, after={after_count} ===");
     // Should not have 999 lines — clamped to MAX_SLOTS.
@@ -3317,7 +3245,7 @@ fn resize_height_clamps_at_max_slots() {
 fn resize_both_dimensions() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         4,
         "overall",
@@ -3325,14 +3253,13 @@ fn resize_both_dimensions() {
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
         true,
     );
-    let c1 = group.add_bar(7, "fetch");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
     let before = term.contents();
 
     // Change both width and height at once.
     dims.set((6, 40));
-    overall.tick();
+    group.tick();
     let after = term.contents();
     eprintln!("=== both dims, before ===");
     for (i, line) in before.lines().enumerate() {
@@ -3349,7 +3276,7 @@ fn resize_both_dimensions() {
 fn resize_then_restore_original() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         4,
         "overall",
@@ -3357,17 +3284,16 @@ fn resize_then_restore_original() {
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
         true,
     );
-    let c1 = group.add_bar(7, "fetch");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
     let original = term.contents();
 
     // Grow.
     dims.set((6, 40));
-    overall.tick();
+    group.tick();
     // Restore.
     dims.set((4, 80));
-    overall.tick();
+    group.tick();
     let restored = term.contents();
     assert_eq!(
         restored.lines().count(),
@@ -3384,7 +3310,7 @@ fn resize_then_restore_original() {
 fn resize_height_shrink_then_grow_restores_line_count() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         6,
         "overall",
@@ -3392,15 +3318,14 @@ fn resize_height_shrink_then_grow_restores_line_count() {
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
         true,
     );
-    let c1 = group.add_bar(7, "fetch");
-    c1.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
     let original_count = term.contents().lines().count();
     assert!(original_count >= 6, "at least 6 lines at H=6");
 
     // Shrink to H=4.
     dims.set((4, 80));
-    overall.tick();
+    group.tick();
     let shrunken_count = term.contents().lines().count();
     assert!(
         shrunken_count < original_count,
@@ -3409,7 +3334,7 @@ fn resize_height_shrink_then_grow_restores_line_count() {
 
     // Grow back to H=6.
     dims.set((6, 80));
-    overall.tick();
+    group.tick();
     let restored = term.contents();
     assert_eq!(restored.lines().count(), original_count, "restored line count matches original");
     assert!(restored.contains("overall"), "overall visible after cycle");
@@ -3423,7 +3348,7 @@ fn resize_height_shrink_then_grow_restores_line_count() {
 fn resize_height_partial_shrink_keeps_active_bars() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         6,
         "overall",
@@ -3431,15 +3356,13 @@ fn resize_height_partial_shrink_keeps_active_bars() {
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
         true,
     );
-    let c1 = group.add_bar(7, "fetch1");
-    let c2 = group.add_bar(5, "fetch2");
-    c1.tick();
-    c2.tick();
-    overall.tick();
+    let _c1 = group.add_bar(7, "fetch1");
+    let _c2 = group.add_bar(5, "fetch2");
+    group.tick();
 
     // H=3 → 3 lines (2 active + overall, drained 3 blanks with 1 eviction).
     dims.set((3, 80));
-    overall.tick();
+    group.tick();
     let after = term.contents();
     eprintln!("=== partial shrink, H=3 ===");
     for (i, line) in after.lines().enumerate() {
@@ -3459,8 +3382,7 @@ fn resize_height_with_interleaved_attach() {
     let (mp, term) = mk_with_size(5, 80);
     let group =
         ProgressGroup::with_mp_and_dim(mp, 5, Arc::clone(&dims) as Arc<dyn DimensionSource>, true);
-    let alpha = group.add_bar(10, "alpha");
-    alpha.tick();
+    let _alpha = group.add_bar(10, "alpha");
 
     // Start with 5 lines (no overall bar).
     let before_count = term.contents().lines().count();
@@ -3468,14 +3390,15 @@ fn resize_height_with_interleaved_attach() {
 
     // Shrink to H=4 (removes 1 blank at top).
     dims.set((4, 80));
-    alpha.tick();
+    group.tick();
     let after_shrink = term.contents();
     assert!(after_shrink.lines().count() < before_count, "fewer lines after shrink");
     assert!(after_shrink.contains("alpha"), "alpha visible after shrink");
+    group.tick();
 
     // Attach a second bar.
-    let beta = group.add_bar(5, "beta");
-    beta.tick();
+    let _beta = group.add_bar(5, "beta");
+    group.tick();
     let after_attach = term.contents();
     // Line count should stay at 4 (H=4).
     assert_eq!(after_attach.lines().count(), 4, "still 4 lines after attaching beta");
@@ -3489,7 +3412,7 @@ fn resize_height_with_interleaved_attach() {
 fn resize_height_sequence_with_three_bars() {
     let dims = Arc::new(TestDimensionSource::new((5, 80)));
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
         mp,
         5,
         "overall",
@@ -3498,13 +3421,10 @@ fn resize_height_sequence_with_three_bars() {
         true,
     );
     // Add in order: bar3 (oldest), bar2, bar1 (newest).
-    let bar3 = group.add_bar(7, "bar 3");
-    let bar2 = group.add_bar(5, "bar 2");
-    let bar1 = group.add_bar(3, "bar 1");
-    bar3.tick();
-    bar2.tick();
-    bar1.tick();
-    overall.tick();
+    let _bar3 = group.add_bar(7, "bar 3");
+    let _bar2 = group.add_bar(5, "bar 2");
+    let _bar1 = group.add_bar(3, "bar 1");
+    group.tick();
 
     // H=5 → (empty), (bar 3), (bar 2), (bar 1), (overall)
     let h5 = term.contents();
@@ -3520,7 +3440,7 @@ fn resize_height_sequence_with_three_bars() {
 
     // H=4 → (bar 3), (bar 2), (bar 1), (overall) — empty slot removed
     dims.set((4, 80));
-    overall.tick();
+    group.tick();
     let h4 = term.contents();
     eprintln!("=== sequence 3 bars, H=4 ===");
     for (i, line) in h4.lines().enumerate() {
@@ -3534,7 +3454,7 @@ fn resize_height_sequence_with_three_bars() {
 
     // H=3 → (bar 2), (bar 1), (overall) — bar 3 evicted
     dims.set((3, 80));
-    overall.tick();
+    group.tick();
     let h3 = term.contents();
     eprintln!("=== sequence 3 bars, H=3 ===");
     for (i, line) in h3.lines().enumerate() {
@@ -3548,7 +3468,7 @@ fn resize_height_sequence_with_three_bars() {
 
     // H=2 → (bar 1), (overall) — bar 2 evicted
     dims.set((2, 80));
-    overall.tick();
+    group.tick();
     let h2 = term.contents();
     eprintln!("=== sequence 3 bars, H=2 ===");
     for (i, line) in h2.lines().enumerate() {
@@ -3562,7 +3482,7 @@ fn resize_height_sequence_with_three_bars() {
 
     // H=1 → (overall) — bar 1 evicted
     dims.set((1, 80));
-    overall.tick();
+    group.tick();
     let h1 = term.contents();
     eprintln!("=== sequence 3 bars, H=1 ===");
     for (i, line) in h1.lines().enumerate() {
@@ -3577,7 +3497,7 @@ fn resize_height_sequence_with_three_bars() {
     // Grow back to H=4 → bar 3, bar 2, bar 1, overall (reattach in order).
     // (pop_back LIFO preserves chronological order after prepend-at-0.)
     dims.set((4, 80));
-    overall.tick();
+    group.tick();
     let h4_restored = term.contents();
     eprintln!("=== sequence 3 bars, restored H=4 ===");
     for (i, line) in h4_restored.lines().enumerate() {
@@ -3598,10 +3518,8 @@ fn resize_height_sequence_without_overall() {
     let (mp, term) = mk_with_size(4, 80);
     let group =
         ProgressGroup::with_mp_and_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>, true);
-    let bar2 = group.add_bar(5, "bar 2");
-    let bar1 = group.add_bar(3, "bar 1");
-    bar2.tick();
-    bar1.tick();
+    let _bar2 = group.add_bar(5, "bar 2");
+    let _bar1 = group.add_bar(3, "bar 1");
 
     // H=4 → (empty), (empty), (bar 2), (bar 1)
     let h4 = term.contents();
@@ -3615,7 +3533,7 @@ fn resize_height_sequence_without_overall() {
 
     // H=3 → (empty), (bar 2), (bar 1) — blank removed
     dims.set((3, 80));
-    bar1.tick();
+    group.tick();
     let h3 = term.contents();
     eprintln!("=== seq no overall, H=3 ===");
     for (i, line) in h3.lines().enumerate() {
@@ -3627,7 +3545,7 @@ fn resize_height_sequence_without_overall() {
 
     // H=2 → (bar 2), (bar 1) — blank removed, all active
     dims.set((2, 80));
-    bar1.tick();
+    group.tick();
     let h2 = term.contents();
     eprintln!("=== seq no overall, H=2 ===");
     for (i, line) in h2.lines().enumerate() {
@@ -3639,7 +3557,7 @@ fn resize_height_sequence_without_overall() {
 
     // H=1 → (bar 1) — bar 2 evicted
     dims.set((1, 80));
-    bar1.tick();
+    group.tick();
     let h1 = term.contents();
     eprintln!("=== seq no overall, H=1 ===");
     for (i, line) in h1.lines().enumerate() {
@@ -3651,7 +3569,7 @@ fn resize_height_sequence_without_overall() {
 
     // Grow back to H=3 → bar 2, bar 1 (reattach in order)
     dims.set((3, 80));
-    bar1.tick();
+    group.tick();
     let h3_restored = term.contents();
     eprintln!("=== seq no overall, restored H=3 ===");
     for (i, line) in h3_restored.lines().enumerate() {

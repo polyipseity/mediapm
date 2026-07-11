@@ -57,6 +57,7 @@ mod inner {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
+    use std::thread;
     use std::time::Duration;
 
     use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -318,20 +319,13 @@ mod inner {
     pub struct TrackedHandle {
         pub(crate) state: Arc<SharedState>,
         pub(crate) bar: Option<ProgressBar>,
-        /// Tick callback for renderer-managed bars.
-        ///
-        /// When `bar` is `None` and this is `Some`, mutating methods call
-        /// `tick()` on the owning renderer instead of writing directly to a
-        /// bar.  This keeps the handle functional after slot swaps that
-        /// would invalidate a cached bar reference.
-        pub(crate) tick_fn: Option<Arc<dyn Fn() + Send + Sync>>,
     }
 
     impl TrackedHandle {
         /// Create a no-op handle (all methods are zero-cost).
         #[must_use]
         pub fn disabled() -> Self {
-            Self { state: Arc::new(SharedState::new(0, "")), bar: None, tick_fn: None }
+            Self { state: Arc::new(SharedState::new(0, "")), bar: None }
         }
 
         /// Create a standalone progress bar (not managed by a [`ProgressGroup`]).
@@ -341,7 +335,7 @@ mod inner {
             let pb = ProgressBar::new(total);
             apply_bar_style(&pb, terminal_width());
             pb.enable_steady_tick(Duration::from_millis(100));
-            Self { state, bar: Some(pb), tick_fn: None }
+            Self { state, bar: Some(pb) }
         }
 
         /// Return the total number of work units (0 = indeterminate).
@@ -355,8 +349,6 @@ mod inner {
             self.state.total.store(total, Ordering::Relaxed);
             if let Some(ref bar) = self.bar {
                 bar.set_length(total);
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -365,8 +357,6 @@ mod inner {
             self.state.position.fetch_add(delta, Ordering::Relaxed);
             if let Some(ref bar) = self.bar {
                 bar.inc(delta);
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -375,8 +365,6 @@ mod inner {
             self.state.position.store(pos, Ordering::Relaxed);
             if let Some(ref bar) = self.bar {
                 bar.set_position(pos);
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -390,8 +378,6 @@ mod inner {
             (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
             if let Some(ref bar) = self.bar {
                 bar.set_message(msg);
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -405,8 +391,6 @@ mod inner {
             (*self.state.prefix.write().expect("shared_state prefix lock")).clone_from(&prefix);
             if let Some(ref bar) = self.bar {
                 bar.set_prefix(prefix);
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -416,8 +400,6 @@ mod inner {
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.finish();
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -433,8 +415,6 @@ mod inner {
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.finish_with_message(msg);
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -450,8 +430,6 @@ mod inner {
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.abandon_with_message(msg);
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -464,8 +442,6 @@ mod inner {
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.finish_and_clear();
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -475,8 +451,6 @@ mod inner {
             if let Some(ref bar) = self.bar {
                 bar.disable_steady_tick();
                 bar.abandon();
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -494,8 +468,6 @@ mod inner {
                     bar.set_length(snap.total);
                 }
                 bar.tick();
-            } else if let Some(ref tick) = self.tick_fn {
-                tick();
             }
         }
 
@@ -536,11 +508,7 @@ mod inner {
         /// to read the state at any point.
         #[must_use]
         pub fn add_bar(&self, total: u64, label: &str) -> TrackedHandle {
-            TrackedHandle {
-                state: Arc::new(SharedState::new(total, label)),
-                bar: None,
-                tick_fn: None,
-            }
+            TrackedHandle { state: Arc::new(SharedState::new(total, label)), bar: None }
         }
     }
 
@@ -940,61 +908,9 @@ mod inner {
             self.orphaned_states.borrow_mut().push_back(Arc::clone(state));
         }
 
-        /// Fast tick for child bars — no extra redraw for active bars.
-        ///
-        /// When this renderer has an overall bar, resize reactivity is
-        /// skipped since the overall bar's [`tick`](Self::tick) handles it.
-        /// Without an overall bar, resize is checked so that child-driven
-        /// groups still respond to terminal dimension changes.
-        fn tick_light(&mut self) {
-            if !self.has_overall {
-                // Child-driven groups (no overall bar) still need resize
-                // reactivity since no other tick path triggers it.
-                self.maybe_adjust_for_resize();
-            }
-            let (_, cols) = self.dim_source.dimensions();
-            for slot in &self.slots {
-                if let Some(ref source) = *slot.source.borrow() {
-                    let snap = source.snapshot();
-                    slot.bar.set_position(snap.position);
-                    slot.bar.set_length(snap.total);
-                    slot.bar.set_message(snap.message.clone());
-                    slot.bar.set_prefix(snap.prefix.clone());
-                    if snap.status == TrackStatus::Active {
-                        // Setters above already triggered a redraw via
-                        // update_estimate_and_draw; no explicit tick() needed.
-                    } else if source.is_cleared() {
-                        slot.bar.set_style(blank_bar_style());
-                        slot.bar.set_message(" ");
-                        slot.bar.set_prefix("");
-                        slot.bar.disable_steady_tick();
-                    } else {
-                        slot.bar.disable_steady_tick();
-                        apply_done_bar_style(&slot.bar, cols);
-                        match snap.status {
-                            TrackStatus::Success => {
-                                slot.bar.finish_with_message(snap.message.clone());
-                            }
-                            TrackStatus::Failed => {
-                                slot.bar.abandon_with_message(snap.message.clone());
-                            }
-                            TrackStatus::Abandoned => {
-                                slot.bar.abandon();
-                            }
-                            _ => {
-                                slot.bar.finish();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         /// Defensive sync: refresh all render slots from their tracked sources.
         ///
-        /// Called on the overall bar's tick.  Includes resize reactivity and
-        /// full style re-application.  For lighter per-child updates see
-        /// [`tick_light`](Self::tick_light).
+        /// Includes resize reactivity and full style re-application.
         pub fn tick(&mut self) {
             self.maybe_adjust_for_resize();
             let (_, cols) = self.dim_source.dimensions();
@@ -1140,6 +1056,10 @@ mod inner {
     pub struct ProgressGroup {
         /// `None` when progress is disabled.
         renderer: Option<Arc<Mutex<ProgressRenderer>>>,
+        /// Daemon ticker thread driving renders at 50 ms intervals.
+        /// Holds a `Weak` reference to the renderer — exits cleanly
+        /// when the renderer is dropped.
+        _ticker: Option<thread::JoinHandle<()>>,
     }
 
     impl ProgressGroup {
@@ -1149,27 +1069,38 @@ mod inner {
         /// Useful in tests where progress is not needed.
         #[must_use]
         pub fn disabled() -> Self {
-            Self { renderer: None }
+            Self { renderer: None, _ticker: None }
         }
 
         /// Create a new group with no overall bar.
         ///
         /// Pre-allocates `max(terminal_height(), 1)` bars so the draw height
         /// matches the terminal.
+        ///
+        /// # Panics
+        ///
+        /// Panics when the internal `Mutex` is poisoned (another thread
+        /// panicked while holding the lock).
         #[must_use]
         pub fn new() -> Self {
-            Self {
-                renderer: Some(Arc::new(Mutex::new(ProgressRenderer::new(Arc::new(
-                    RealTerminalSource,
-                ))))),
-            }
+            let renderer =
+                Some(Arc::new(Mutex::new(ProgressRenderer::new(Arc::new(RealTerminalSource)))));
+            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
+            Self { renderer, _ticker: ticker }
         }
 
         /// Create a new group with an injectable dimension source
         /// (for tests using [`InMemoryTerm`](indicatif::InMemoryTerm)).
+        ///
+        /// # Panics
+        ///
+        /// Panics when the internal `Mutex` is poisoned (another thread
+        /// panicked while holding the lock).
         #[must_use]
         pub fn new_with_dim(dim_source: Arc<dyn DimensionSource>) -> Self {
-            Self { renderer: Some(Arc::new(Mutex::new(ProgressRenderer::new(dim_source)))) }
+            let renderer = Some(Arc::new(Mutex::new(ProgressRenderer::new(dim_source))));
+            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
+            Self { renderer, _ticker: ticker }
         }
 
         /// Create a group from an existing [`MultiProgress`] with a fixed
@@ -1178,16 +1109,21 @@ mod inner {
         /// The `capacity` controls how many [`ProgressBar`] slots are
         /// pre-allocated.  All slots are initially blank.  Callers that want
         /// terminal-aware sizing should use [`new()`](Self::new) instead.
+        ///
+        /// # Panics
+        ///
+        /// Panics when the internal `Mutex` is poisoned (another thread
+        /// panicked while holding the lock).
         #[must_use]
         pub fn with_mp(mp: MultiProgress, capacity: usize) -> Self {
             let cap = capacity.clamp(1, MAX_SLOTS);
-            Self {
-                renderer: Some(Arc::new(Mutex::new(ProgressRenderer::from_mp(
-                    mp,
-                    cap,
-                    Arc::new(RealTerminalSource),
-                )))),
-            }
+            let renderer = Some(Arc::new(Mutex::new(ProgressRenderer::from_mp(
+                mp,
+                cap,
+                Arc::new(RealTerminalSource),
+            ))));
+            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
+            Self { renderer, _ticker: ticker }
         }
 
         /// Create a group with an overall aggregate bar pinned at the bottom.
@@ -1208,14 +1144,9 @@ mod inner {
             let (renderer, state) =
                 ProgressRenderer::with_overall(total, label, Arc::new(RealTerminalSource));
             let renderer = Arc::new(Mutex::new(renderer));
-            let weak = Arc::downgrade(&renderer);
-            let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
-                if let Some(r) = weak.upgrade() {
-                    r.lock().unwrap().tick();
-                }
-            }));
-            let handle = TrackedHandle { state, bar: None, tick_fn };
-            (Self { renderer: Some(renderer) }, handle)
+            let ticker = Some(Self::spawn_ticker(&renderer));
+            let handle = TrackedHandle { state, bar: None };
+            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
         /// Create a group with an overall bar and an injectable dimension
@@ -1233,14 +1164,9 @@ mod inner {
         ) -> (Self, TrackedHandle) {
             let (renderer, state) = ProgressRenderer::with_overall(total, label, dim_source);
             let renderer = Arc::new(Mutex::new(renderer));
-            let weak = Arc::downgrade(&renderer);
-            let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
-                if let Some(r) = weak.upgrade() {
-                    r.lock().unwrap().tick();
-                }
-            }));
-            let handle = TrackedHandle { state, bar: None, tick_fn };
-            (Self { renderer: Some(renderer) }, handle)
+            let ticker = Some(Self::spawn_ticker(&renderer));
+            let handle = TrackedHandle { state, bar: None };
+            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
         /// Create a group from an existing [`MultiProgress`] with an overall
@@ -1271,14 +1197,9 @@ mod inner {
                 Arc::new(RealTerminalSource),
             );
             let renderer = Arc::new(Mutex::new(renderer));
-            let weak = Arc::downgrade(&renderer);
-            let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
-                if let Some(r) = weak.upgrade() {
-                    r.lock().unwrap().tick();
-                }
-            }));
-            let handle = TrackedHandle { state, bar: None, tick_fn };
-            (Self { renderer: Some(renderer) }, handle)
+            let ticker = Some(Self::spawn_ticker(&renderer));
+            let handle = TrackedHandle { state, bar: None };
+            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
         /// Create a group from an existing [`MultiProgress`] with a fixed
@@ -1290,6 +1211,11 @@ mod inner {
         ///
         /// Set `dynamic_height` to `true` when the slot count should be
         /// adjusted on terminal height changes (used by auto-sized groups).
+        ///
+        /// # Panics
+        ///
+        /// Panics when the internal `Mutex` is poisoned (another thread
+        /// panicked while holding the lock).
         #[must_use]
         pub fn with_mp_and_dim(
             mp: MultiProgress,
@@ -1300,7 +1226,9 @@ mod inner {
             let cap = capacity.clamp(1, MAX_SLOTS);
             let mut renderer = ProgressRenderer::from_mp(mp, cap, dim_source);
             renderer.dynamic_height = dynamic_height;
-            Self { renderer: Some(Arc::new(Mutex::new(renderer))) }
+            let renderer = Some(Arc::new(Mutex::new(renderer)));
+            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
+            Self { renderer, _ticker: ticker }
         }
 
         /// Create a group with an overall aggregate bar pinned at the bottom,
@@ -1327,14 +1255,9 @@ mod inner {
                 ProgressRenderer::from_mp_with_overall(mp, cap, total, label, dim_source);
             renderer.dynamic_height = dynamic_height;
             let renderer = Arc::new(Mutex::new(renderer));
-            let weak = Arc::downgrade(&renderer);
-            let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
-                if let Some(r) = weak.upgrade() {
-                    r.lock().unwrap().tick();
-                }
-            }));
-            let handle = TrackedHandle { state, bar: None, tick_fn };
-            (Self { renderer: Some(renderer) }, handle)
+            let ticker = Some(Self::spawn_ticker(&renderer));
+            let handle = TrackedHandle { state, bar: None };
+            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
         /// Add a child bar to the group.
@@ -1357,13 +1280,7 @@ mod inner {
                 let locked = renderer.lock().unwrap();
                 locked.attach(&state);
             }
-            let weak = Arc::downgrade(renderer);
-            let tick_fn: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
-                if let Some(r) = weak.upgrade() {
-                    r.lock().unwrap().tick_light();
-                }
-            }));
-            TrackedHandle { state, bar: None, tick_fn }
+            TrackedHandle { state, bar: None }
         }
 
         /// Block until all bars in the group reach a finished state.
@@ -1391,6 +1308,38 @@ mod inner {
             if let Some(ref renderer) = self.renderer {
                 renderer.lock().unwrap().finalize();
             }
+        }
+
+        /// Force a render sync (used in tests with
+        /// [`InMemoryTerm`](indicatif::InMemoryTerm) where the timer
+        /// thread does not run).
+        ///
+        /// # Panics
+        ///
+        /// Panics when the internal `Mutex` is poisoned (another thread
+        /// panicked while holding the lock).
+        pub fn tick(&self) {
+            if let Some(ref renderer) = self.renderer {
+                renderer.lock().unwrap().tick();
+            }
+        }
+
+        /// Spawn a daemon thread that drives render updates at 50 ms
+        /// intervals.  Holds a `Weak` reference so the thread exits
+        /// cleanly when the renderer is dropped.
+        ///
+        /// # Panics
+        ///
+        /// Panics when the internal `Mutex` is poisoned (another thread
+        /// panicked while holding the lock).
+        fn spawn_ticker(renderer: &Arc<Mutex<ProgressRenderer>>) -> thread::JoinHandle<()> {
+            let weak = Arc::downgrade(renderer);
+            thread::spawn(move || {
+                while let Some(r) = weak.upgrade() {
+                    r.lock().unwrap().tick();
+                    thread::sleep(Duration::from_millis(50));
+                }
+            })
         }
     }
 
