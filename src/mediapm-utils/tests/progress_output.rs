@@ -2489,6 +2489,100 @@ fn child_bar_elapsed_frozen_after_abandon() {
     );
 }
 
+// ── Elapsed preservation: orphan-reattach ─────────────────────────────────
+
+#[test]
+fn orphan_reattach_preserves_elapsed() {
+    let dims = Arc::new(TestDimensionSource::new((3, 80)));
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+        mp,
+        4,
+        "overall",
+        5,
+        Arc::clone(&dims) as Arc<dyn DimensionSource>,
+        true,
+    );
+    let _child = group.add_bar(10, "worker");
+
+    // Tick to show the bar with initial elapsed.
+    group.tick();
+    let before = term.contents();
+    let before_lines: Vec<&str> = before.lines().collect();
+    let worker_before =
+        before_lines.iter().find(|l| l.contains("worker")).expect("worker visible before shrink");
+    assert!(
+        worker_before.contains("[00:00:00]"),
+        "worker shows elapsed before orphan: {worker_before}"
+    );
+
+    // Shrink height to orphan the worker bar (only room for overall).
+    dims.set((1, 80));
+    group.tick();
+    let after_shrink = term.contents();
+    assert!(!after_shrink.contains("worker"), "worker orphaned after shrink");
+
+    // Grow height to reattach the worker bar.
+    dims.set((4, 80));
+    group.tick();
+    let after_grow = term.contents();
+    let grow_lines: Vec<&str> = after_grow.lines().collect();
+    let worker_after =
+        grow_lines.iter().find(|l| l.contains("worker")).expect("worker reattached after grow");
+    assert!(
+        worker_after.contains("[00:00:00]"),
+        "worker elapsed preserved after reattach: {worker_after}"
+    );
+}
+
+// ── Elapsed preservation: slot shift ──────────────────────────────────────
+
+#[test]
+fn slot_shift_preserves_elapsed() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+
+    let _a = group.add_bar(10, "alpha");
+    group.tick();
+
+    // Add bar B — shifts A up one slot.
+    let _b = group.add_bar(5, "beta");
+    group.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    let alpha_line = lines.iter().find(|l| l.contains("alpha")).expect("alpha visible after shift");
+    let beta_line = lines.iter().find(|l| l.contains("beta")).expect("beta visible after shift");
+
+    assert!(
+        alpha_line.contains("[00:00:00]"),
+        "alpha shows elapsed after slot shift: {alpha_line}"
+    );
+    assert!(beta_line.contains("[00:00:00]"), "beta shows elapsed: {beta_line}");
+}
+
+// ── Regression: no duplicate elapsed template ─────────────────────────────
+
+#[test]
+fn no_duplicate_elapsed_template_in_child_output() {
+    // If a production template accidentally re-introduces {elapsed_precise}
+    // alongside the message-injected elapsed, each bar line would show two
+    // `[HH:MM:SS]` timestamps.  Verify at most one per line.
+    let (mp, term) = mk();
+    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let _child = group.add_bar(3, "tool-a");
+    group.tick();
+
+    let contents = term.contents();
+    for line in contents.lines() {
+        let count = line.chars().filter(|&c| c == '[').count();
+        assert!(
+            count <= 1,
+            "each line should have at most one '[' (elapsed), got {count}: {line:?}"
+        );
+    }
+}
+
 // ── Orphaned-state overflow behavior ─────────────────────────────────────
 
 #[test]
