@@ -328,43 +328,37 @@ mod inner {
     ///
     /// Cloning creates another reference to the same underlying tracking
     /// state — all clones share state and advancing any one of them updates
-    /// both the tracking state and the display (when attached to a render
-    /// slot).
+    /// the shared state that both clones reference.
     ///
     /// To create a no-op handle, use [`TrackedHandle::disabled`].
     /// All mutating methods on a disabled handle are zero-cost and do nothing.
     ///
     /// # Separation of concerns
     ///
-    /// [`TrackedHandle`] bundles two independent concerns:
-    /// - **Tracking state** (`Arc<SharedState>`): always present, no display
-    ///   dependency.  Read via [`snapshot()`](Self::snapshot).
-    /// - **Display bar** (`Option<ProgressBar>`): present only when attached
-    ///   to a render slot.  All mutating methods perform dual-write: they
-    ///   update tracking state unconditionally and forward to the display
-    ///   bar when one exists.
+    /// [`TrackedHandle`] manages **tracking state only** (`Arc<SharedState>`).
+    /// The display bar is managed separately by [`ProgressRenderer`], which
+    /// reads tracking state from the same `Arc<SharedState>` — mutating
+    /// methods update state once and the renderer picks up changes
+    /// asynchronously.
     #[derive(Clone)]
     pub struct TrackedHandle {
         pub(crate) state: Arc<SharedState>,
-        pub(crate) bar: Option<ProgressBar>,
     }
 
     impl TrackedHandle {
         /// Create a no-op handle (all methods are zero-cost).
         #[must_use]
         pub fn disabled() -> Self {
-            Self { state: Arc::new(SharedState::new(0, "")), bar: None }
+            Self { state: Arc::new(SharedState::new(0, "")) }
         }
 
         /// Create a standalone progress handle (not managed by a
         /// [`ProgressGroup`]) with no display backend.
         ///
-        /// The returned handle has `bar: None` — all mutations update shared
-        /// state only.  Use [`snapshot()`](Self::snapshot) to read the state.
         #[must_use]
         pub fn new(total: u64) -> Self {
             let state = Arc::new(SharedState::new(total, ""));
-            Self { state, bar: None }
+            Self { state }
         }
 
         /// Return the total number of work units (0 = indeterminate).
@@ -458,16 +452,8 @@ mod inner {
         /// timers don't fire).
         #[doc(hidden)]
         pub fn tick(&self) {
-            if let Some(ref bar) = self.bar {
-                let snap = self.state.snapshot();
-                bar.set_prefix(snap.prefix);
-                bar.set_message(snap.message);
-                bar.set_position(snap.position);
-                if snap.total > 0 {
-                    bar.set_length(snap.total);
-                }
-                bar.tick();
-            }
+            // No display bar owned by TrackedHandle — the renderer
+            // pulls from SharedState asynchronously.
         }
 
         /// Return a data-copy snapshot of the current tracking state.
@@ -488,8 +474,8 @@ mod inner {
     /// Pure tracking factory that creates [`TrackedHandle`]s with no display
     /// dependency.
     ///
-    /// Every handle returned by [`add_bar`](Self::add_bar) has `bar: None` —
-    /// it tracks state but has no visual output.  Use [`ProgressGroup`] when
+    /// Every handle returned by [`add_bar`](Self::add_bar) tracks state but
+    /// has no visual output.  Use [`ProgressGroup`] when
     /// you need both tracking and display.
     pub struct ProgressTracker;
 
@@ -507,7 +493,7 @@ mod inner {
         /// to read the state at any point.
         #[must_use]
         pub fn add_bar(&self, total: u64, label: &str) -> TrackedHandle {
-            TrackedHandle { state: Arc::new(SharedState::new(total, label)), bar: None }
+            TrackedHandle { state: Arc::new(SharedState::new(total, label)) }
         }
     }
 
@@ -1027,7 +1013,7 @@ mod inner {
                 ProgressRenderer::with_overall(total, label, Arc::new(RealTerminalSource));
             let renderer = Arc::new(Mutex::new(renderer));
             let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state, bar: None };
+            let handle = TrackedHandle { state };
             (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
@@ -1047,7 +1033,7 @@ mod inner {
             let (renderer, state) = ProgressRenderer::with_overall(total, label, dim_source);
             let renderer = Arc::new(Mutex::new(renderer));
             let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state, bar: None };
+            let handle = TrackedHandle { state };
             (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
@@ -1080,7 +1066,7 @@ mod inner {
             );
             let renderer = Arc::new(Mutex::new(renderer));
             let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state, bar: None };
+            let handle = TrackedHandle { state };
             (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
@@ -1138,7 +1124,7 @@ mod inner {
             renderer.dynamic_height = dynamic_height;
             let renderer = Arc::new(Mutex::new(renderer));
             let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state, bar: None };
+            let handle = TrackedHandle { state };
             (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
@@ -1162,7 +1148,7 @@ mod inner {
                 let locked = renderer.lock().unwrap();
                 locked.attach(&state);
             }
-            TrackedHandle { state, bar: None }
+            TrackedHandle { state }
         }
 
         /// Block until all bars in the group reach a finished state.
