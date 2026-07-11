@@ -1,5 +1,4 @@
 //! Progress bar output tests — exact terminal screen matching.
-#![allow(deprecated)]
 //!
 //! Every test captures the **full terminal contents** via
 //! [`indicatif::InMemoryTerm::contents`] and compares against the exact expected
@@ -3114,13 +3113,12 @@ fn consumer_materializer_single_bar_parallel_workers() {
 fn resize_width_wide_to_narrow_changes_output() {
     let dims = Arc::new(TestDimensionSource::new((H, 80)));
     let (mp, term) = mk_with_size(H, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::fixed_with_overall_and_dim(
         mp,
         5,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        false,
     );
     let contents_wide = term.contents();
     eprintln!("=== width wide_to_narrow, before resize (wide) ===");
@@ -3144,13 +3142,12 @@ fn resize_width_wide_to_narrow_changes_output() {
 fn resize_width_narrow_to_wide_restores_content() {
     let dims = Arc::new(TestDimensionSource::new((H, 40)));
     let (mp, term) = mk_with_size(H, 40);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::fixed_with_overall_and_dim(
         mp,
         5,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        false,
     );
     let contents_narrow = term.contents();
     eprintln!("=== width narrow_to_wide, before resize (narrow) ===");
@@ -3172,13 +3169,12 @@ fn resize_width_narrow_to_wide_restores_content() {
 fn resize_width_noop_same_width_no_change() {
     let dims = Arc::new(TestDimensionSource::new((H, W)));
     let (mp, term) = mk_with_size(H, W);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::fixed_with_overall_and_dim(
         mp,
         5,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        false,
     );
     let before = term.contents();
     let before_lines = before.lines().count();
@@ -3258,13 +3254,12 @@ fn resize_height_shrink_removes_slots() {
 fn resize_height_shrink_protects_overall() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         6,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -3289,13 +3284,12 @@ fn resize_height_shrink_protects_overall() {
 fn resize_height_grow_detached_reappear() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         4,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -3341,13 +3335,12 @@ fn resize_height_clamps_at_min_slots() {
 fn resize_height_clamps_at_max_slots() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(10, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         4,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -3365,13 +3358,12 @@ fn resize_height_clamps_at_max_slots() {
 fn resize_both_dimensions() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         4,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -3396,13 +3388,12 @@ fn resize_both_dimensions() {
 fn resize_then_restore_original() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         4,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -3498,8 +3489,7 @@ fn resize_height_partial_shrink_keeps_active_bars() {
 fn resize_height_with_interleaved_attach() {
     let dims = Arc::new(TestDimensionSource::new((5, 80)));
     let (mp, term) = mk_with_size(5, 80);
-    let group =
-        ProgressGroup::with_mp_and_dim(mp, 5, Arc::clone(&dims) as Arc<dyn DimensionSource>, true);
+    let group = ProgressGroup::fixed_with_dim(mp, 5, Arc::clone(&dims) as Arc<dyn DimensionSource>);
     let _alpha = group.add_bar(10, "alpha");
 
     // Start with 5 lines (no overall bar).
@@ -3633,8 +3623,7 @@ fn resize_height_sequence_with_three_bars() {
 fn resize_height_sequence_without_overall() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(4, 80);
-    let group =
-        ProgressGroup::with_mp_and_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>, true);
+    let group = ProgressGroup::fixed_with_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>);
     let _bar2 = group.add_bar(5, "bar 2");
     let _bar1 = group.add_bar(3, "bar 1");
 
