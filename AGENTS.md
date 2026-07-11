@@ -120,18 +120,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - Verify the relevant manifests, scripts, workflow files, and local configs exist before you run or document toolchain commands.
 - Detect install, build, test, lint, format, type-check, and release commands from actual repository files instead of assuming a default stack.
 - For Rust workflows, treat `Cargo.toml`, `.cargo/config.toml`, `rust-toolchain.toml`, `.github/workflows/ci.yml`, and `.agents/instructions/rust-workflow.instructions.md` as source-of-truth inputs for validation commands and expectations.
-- Prefer targeted cargo validation by default for faster feedback:
-  - run selective individual tests for touched behavior (`cargo test -p <crate> <test_name>`)
-  - use focused crate builds (`cargo build-pkg <crate>`) when compile coverage is needed
-  - avoid package-wide test churn during normal development loops
-  - see `.cargo/config.toml` for available aliases and convenience shortcuts
-- During normal development loops, run only selective tests/builds and avoid full-suite churn.
-- Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` during normal development loops; `prek.toml` commit hooks already enforce those gates on commit.
-- Use full-workspace validation only for pre-push checks and CI:
-  - `cargo fmt-check` (checks formatting on all files)
-  - `cargo clippy-all` (lints entire workspace)
-  - `cargo test-all` (tests entire workspace)
-  - Note: these are intentionally slow; use targeted commands during development
+- See `.agents/instructions/rust-workflow.instructions.md` for the canonical validation workflow: selective tests during development, demo runs before completion, full-workspace checks via `prek.toml` hooks.
 - When a language, framework, task runner, or test system is clearly present, add or refine focused instruction files for it rather than stuffing detailed rules into `AGENTS.md`.
 - Keep CI, editor automation, prompt examples, and instruction files aligned with the commands and configs that are actually present in the repository.
 

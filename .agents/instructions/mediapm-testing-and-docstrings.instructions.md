@@ -146,10 +146,4 @@ For newcomers with no codebase context:
 
 ## Validation commands
 
-See `.agents/instructions/rust-workflow.instructions.md` for the canonical validation workflow (selective tests during development, demo runs before completion, full-workspace checks via `prek.toml` commit hooks).
-
-Before finishing work that touches tests or APIs:
-
-- `cargo test-pkg <crate>` (affected crate testing)
-- `cargo build-pkg <crate>` (affected crate build)
-- Run both demos in sequence: `cargo run --package mediapm --example mediapm_demo` and `cargo run --package mediapm --example mediapm_demo_online`
+See `.agents/instructions/rust-workflow.instructions.md` for the canonical validation workflow. Before finishing work that touches tests or APIs, run both demos in sequence: `cargo run --package mediapm --example mediapm_demo` and `cargo run --package mediapm --example mediapm_demo_online`.
