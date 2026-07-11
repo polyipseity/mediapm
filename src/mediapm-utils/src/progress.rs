@@ -210,10 +210,6 @@ mod inner {
         }
     }
 
-    fn terminal_width() -> u16 {
-        console::Term::stderr().size().1
-    }
-
     fn blank_bar_style() -> ProgressStyle {
         ProgressStyle::with_template("{wide_msg}").expect("invalid blank bar template")
     }
@@ -518,130 +514,6 @@ mod inner {
     impl Default for ProgressTracker {
         fn default() -> Self {
             Self::new()
-        }
-    }
-
-    // ---- ProgressHandle (deprecated alias) --------------------------------
-
-    /// Handle to one progress bar.
-    ///
-    /// This type is retained as a deprecated alias for backward compatibility.
-    /// New code should use [`TrackedHandle`] instead.
-    #[derive(Clone)]
-    #[deprecated(since = "0.1.0", note = "renamed to TrackedHandle")]
-    pub struct ProgressHandle {
-        pub(crate) inner: Option<ProgressBar>,
-    }
-
-    #[allow(deprecated)]
-    impl ProgressHandle {
-        /// Create a no-op handle (all methods are zero-cost).
-        #[must_use]
-        pub fn disabled() -> Self {
-            Self { inner: None }
-        }
-
-        /// Create a standalone progress bar (not managed by a [`ProgressGroup`]).
-        #[must_use]
-        pub fn new(total: u64) -> Self {
-            let pb = ProgressBar::new(total);
-            apply_bar_style(&pb, terminal_width());
-            pb.enable_steady_tick(Duration::from_millis(100));
-            Self { inner: Some(pb) }
-        }
-
-        /// Return the total number of work units (0 = indeterminate).
-        #[must_use]
-        pub fn total(&self) -> u64 {
-            self.inner.as_ref().and_then(ProgressBar::length).unwrap_or(0)
-        }
-
-        /// Change the total mid-flight for dynamic workloads.
-        pub fn set_total(&self, total: u64) {
-            if let Some(ref inner) = self.inner {
-                inner.set_length(total);
-            }
-        }
-
-        /// Advance the bar by `delta` work units.
-        pub fn advance(&self, delta: u64) {
-            if let Some(ref inner) = self.inner {
-                inner.inc(delta);
-            }
-        }
-
-        /// Jump to an absolute position.
-        pub fn set_position(&self, pos: u64) {
-            if let Some(ref inner) = self.inner {
-                inner.set_position(pos);
-            }
-        }
-
-        /// Set the message shown after the bar (e.g. "materializing").
-        pub fn set_message(&self, msg: impl Into<String>) {
-            if let Some(ref inner) = self.inner {
-                inner.set_message(msg.into());
-            }
-        }
-
-        /// Set the prefix shown before the bar.
-        pub fn set_prefix(&self, prefix: impl Into<String>) {
-            if let Some(ref inner) = self.inner {
-                inner.set_prefix(prefix.into());
-            }
-        }
-
-        /// Mark the bar as finished (keeps it visible).
-        pub fn finish(&self) {
-            if let Some(ref inner) = self.inner {
-                inner.disable_steady_tick();
-                inner.finish();
-            }
-        }
-
-        /// Mark as finished with a success message (keeps it visible).
-        pub fn finish_success(&self, msg: impl Into<String>) {
-            if let Some(ref inner) = self.inner {
-                inner.disable_steady_tick();
-                inner.finish_with_message(msg.into());
-            }
-        }
-
-        /// Mark as finished with an error message (keeps it visible).
-        pub fn finish_error(&self, msg: impl Into<String>) {
-            if let Some(ref inner) = self.inner {
-                inner.disable_steady_tick();
-                inner.abandon_with_message(msg.into());
-            }
-        }
-
-        /// Finish and clear the bar from the display.
-        ///
-        /// Stops the ticker and marks the bar as hidden. Call this instead of
-        /// [`finish`](Self::finish) when the bar should disappear immediately.
-        pub fn finish_and_clear(&self) {
-            if let Some(ref inner) = self.inner {
-                inner.disable_steady_tick();
-                inner.finish_and_clear();
-            }
-        }
-
-        /// Abandon the bar — leaves it visible but stops all updates.
-        pub fn abandon(&self) {
-            if let Some(ref inner) = self.inner {
-                inner.disable_steady_tick();
-                inner.abandon();
-            }
-        }
-
-        /// Force a redraw (useful in test environments with
-        /// [`InMemoryTerm`](indicatif::InMemoryTerm) where steady tick
-        /// timers don't fire).
-        #[doc(hidden)]
-        pub fn tick(&self) {
-            if let Some(ref inner) = self.inner {
-                inner.tick();
-            }
         }
     }
 
@@ -1369,10 +1241,9 @@ mod inner {
 }
 
 #[cfg(feature = "progress")]
-#[allow(deprecated)]
 pub use inner::{
-    DimensionSource, ProgressGroup, ProgressHandle, ProgressRenderer, ProgressTracker,
-    RealTerminalSource, TestDimensionSource, TrackSnapshot, TrackStatus, TrackedHandle,
+    DimensionSource, ProgressGroup, ProgressRenderer, ProgressTracker, RealTerminalSource,
+    TestDimensionSource, TrackSnapshot, TrackStatus, TrackedHandle,
 };
 
 #[cfg(feature = "progress")]

@@ -3,7 +3,7 @@
 //!
 //! # Submodules
 //!
-//! * [`progress`] — progress bars with [`ProgressGroup`] and [`ProgressHandle`]
+//! * [`progress`] — progress bars with [`ProgressGroup`]
 //! * [`report`] — result lines with status icons via [`print_result`] and friends
 
 pub mod progress;
