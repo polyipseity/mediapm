@@ -26,7 +26,6 @@ Every user-facing line in mediapm CLI tools follows precise conventions for cons
 |---|---|---|
 | `indicatif` 0.17 | Progress bar rendering | `ProgressBar`, `MultiProgress`, `ProgressStyle`, `HumanBytes`, `HumanCount` |
 | `console` 0.15 | Terminal detection & styling | `Term::stderr().size()` for width detection, `style()` for ANSI coloring |
-| `pulsebar` | **Do not use** — removed, replaced by indicatif | — |
 
 Do not add `owo-colors`, `colored`, `termion`, or other styling crates. `console::style()` is the single styling entry point.
 

@@ -1,7 +1,7 @@
 ---
 description: "Use when implementing features that span multiple crates, when you need to find which AGENTS.md covers a specific contract or invariant, or after deleting crate-specifications.md and elaboration-pass-edge-cases.md."
 name: "Specification Development Index"
-applyTo: "AGENTS.md, src/**/AGENTS.md, .agents/instructions/**/*.md"
+applyTo: "src/mediapm-cas/AGENTS.md, src/mediapm-conductor/AGENTS.md, src/mediapm-conductor-builtins/AGENTS.md, src/mediapm/AGENTS.md"
 ---
 
 # Specification Development Index
