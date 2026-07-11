@@ -28,15 +28,7 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, README.md, .agents/**/*.md, .opencode/**/
 
 ## Detection-first customization updates
 
-- When creating or revising stack-specific guidance, inspect repository evidence before you write rules:
-  - manifests and dependency metadata
-  - lockfiles
-  - compiler, linter, formatter, and test configs
-  - CI workflows and local scripts
-  - source tree layout and representative files
-- Do not hard-code language, framework, package-manager, or test-runner rules unless the repository contains concrete evidence for them.
-- Once a stack is detected, add instructions for it carefully and thoroughly in a focused file instead of sprinkling partial guidance across unrelated docs.
-- If no stack can be proven from files on disk, document the repo as uninitialized or stack-agnostic rather than guessing.
+See `.agents/instructions/stack-and-tooling-detection.instructions.md` for the canonical guidance on detecting languages, frameworks, build systems, and validation workflows from concrete repository files.
 
 ## Customization frontmatter
 

@@ -37,9 +37,8 @@ This file is the replacement for the deleted monolithic `.agents/instructions/cr
 | `.agents/instructions/commit-message-policy.instructions.md`            | Conventional Commit scope rules, crate-prefix header ban                                                 |
 | `.agents/instructions/markdown-and-customizations.instructions.md`      | Markdown formatting rules, YAML frontmatter patterns, repo linking conventions                           |
 | `.agents/instructions/scripts-and-permissions.instructions.md`          | Script placement, cross-platform runtime detection, permission expectations                              |
-| `.agents/instructions/tooling-and-validation-detection.instructions.md` | Repository tooling detection: build, test, lint, CI workflow commands                                    |
+| `.agents/instructions/stack-and-tooling-detection.instructions.md`      | Stack and tooling detection: languages, frameworks, build commands, validation workflows                 |
 | `.agents/instructions/versioning-and-migration.instructions.md`         | Versioned structs, wire formats, DeltaState bridges                                                      |
-| `.agents/instructions/language-and-stack-detection.instructions.md`     | Language/framework detection from concrete files                                                         |
 
 ## Quick Reference: Where to Look
 
