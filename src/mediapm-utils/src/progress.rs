@@ -361,14 +361,15 @@ mod inner {
             Self { state: Arc::new(SharedState::new(0, "")), bar: None }
         }
 
-        /// Create a standalone progress bar (not managed by a [`ProgressGroup`]).
+        /// Create a standalone progress handle (not managed by a
+        /// [`ProgressGroup`]) with no display backend.
+        ///
+        /// The returned handle has `bar: None` — all mutations update shared
+        /// state only.  Use [`snapshot()`](Self::snapshot) to read the state.
         #[must_use]
         pub fn new(total: u64) -> Self {
             let state = Arc::new(SharedState::new(total, ""));
-            let pb = ProgressBar::new(total);
-            apply_bar_style(&pb, terminal_width());
-            pb.enable_steady_tick(Duration::from_millis(100));
-            Self { state, bar: Some(pb) }
+            Self { state, bar: None }
         }
 
         /// Return the total number of work units (0 = indeterminate).
@@ -380,25 +381,16 @@ mod inner {
         /// Change the total mid-flight for dynamic workloads.
         pub fn set_total(&self, total: u64) {
             self.state.total.store(total, Ordering::Relaxed);
-            if let Some(ref bar) = self.bar {
-                bar.set_length(total);
-            }
         }
 
         /// Advance the bar by `delta` work units.
         pub fn advance(&self, delta: u64) {
             self.state.position.fetch_add(delta, Ordering::Relaxed);
-            if let Some(ref bar) = self.bar {
-                bar.inc(delta);
-            }
         }
 
         /// Jump to an absolute position.
         pub fn set_position(&self, pos: u64) {
             self.state.position.store(pos, Ordering::Relaxed);
-            if let Some(ref bar) = self.bar {
-                bar.set_position(pos);
-            }
         }
 
         /// Set the message shown after the bar (e.g. "materializing").
@@ -409,9 +401,6 @@ mod inner {
         pub fn set_message(&self, msg: impl Into<String>) {
             let msg: String = msg.into();
             (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
-            if let Some(ref bar) = self.bar {
-                bar.set_message(msg);
-            }
         }
 
         /// Set the prefix shown before the bar.
@@ -422,19 +411,12 @@ mod inner {
         pub fn set_prefix(&self, prefix: impl Into<String>) {
             let prefix: String = prefix.into();
             (*self.state.prefix.write().expect("shared_state prefix lock")).clone_from(&prefix);
-            if let Some(ref bar) = self.bar {
-                bar.set_prefix(prefix);
-            }
         }
 
         /// Mark the bar as finished (keeps it visible).
         pub fn finish(&self) {
             self.state.status.store(4, Ordering::Relaxed); // Finished
             self.state.mark_finished();
-            if let Some(ref bar) = self.bar {
-                bar.disable_steady_tick();
-                bar.finish();
-            }
         }
 
         /// Mark as finished with a success message (keeps it visible).
@@ -447,10 +429,6 @@ mod inner {
             let msg: String = msg.into();
             (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
             self.state.mark_finished();
-            if let Some(ref bar) = self.bar {
-                bar.disable_steady_tick();
-                bar.finish_with_message(msg);
-            }
         }
 
         /// Mark as finished with an error message (keeps it visible).
@@ -463,10 +441,6 @@ mod inner {
             let msg: String = msg.into();
             (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
             self.state.mark_finished();
-            if let Some(ref bar) = self.bar {
-                bar.disable_steady_tick();
-                bar.abandon_with_message(msg);
-            }
         }
 
         /// Finish and clear the bar from the display.
@@ -476,20 +450,12 @@ mod inner {
         pub fn finish_and_clear(&self) {
             self.state.status.store(5, Ordering::Relaxed); // FinishedAndCleared
             self.state.mark_finished();
-            if let Some(ref bar) = self.bar {
-                bar.disable_steady_tick();
-                bar.finish_and_clear();
-            }
         }
 
         /// Abandon the bar — leaves it visible but stops all updates.
         pub fn abandon(&self) {
             self.state.status.store(3, Ordering::Relaxed); // Abandoned
             self.state.mark_finished();
-            if let Some(ref bar) = self.bar {
-                bar.disable_steady_tick();
-                bar.abandon();
-            }
         }
 
         /// Force a redraw (useful in test environments with
