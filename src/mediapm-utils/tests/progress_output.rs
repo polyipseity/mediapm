@@ -2405,8 +2405,9 @@ fn child_bar_elapsed_starts_at_zero() {
     let _child = group.add_bar(3, "tool-a");
     group.tick();
     let contents = term.contents();
-    assert!(contents.contains("[00:00:00]"), "elapsed must start at 0, got:\n{contents}");
-    assert!(contents.contains("tool-a"), "tool-a must appear");
+    let lines: Vec<&str> = contents.lines().collect();
+    let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
+    assert!(tool_line.contains("[00:00:00]"), "tool-a line should show 0 elapsed: {tool_line}");
 }
 
 // ── Child bar elapsed: frozen after finish ─────────────────────────────────
@@ -2420,11 +2421,13 @@ fn child_bar_elapsed_frozen_after_finish() {
     child.finish();
     group.tick();
     let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
     assert!(
-        contents.contains("[00:00:00]"),
-        "elapsed must stay at 0 after finish, got:\n{contents}"
+        tool_line.contains("[00:00:00]"),
+        "tool-a line should show 0 elapsed after finish: {tool_line}"
     );
-    assert!(contents.contains("3/3"), "bar must show final position 3/3");
+    assert!(tool_line.contains("3/3"), "tool-a line should show final position: {tool_line}");
 }
 
 // ── Child bar elapsed: frozen after finish_success ─────────────────────────
@@ -2438,8 +2441,13 @@ fn child_bar_elapsed_frozen_after_finish_success() {
     child.finish_success("done");
     group.tick();
     let contents = term.contents();
-    assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after finish_success");
-    assert!(contents.contains("done"), "success message must appear");
+    let lines: Vec<&str> = contents.lines().collect();
+    let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
+    assert!(
+        tool_line.contains("[00:00:00]"),
+        "tool-a line should show 0 elapsed after finish_success: {tool_line}"
+    );
+    assert!(tool_line.contains("done"), "tool-a line should show success message: {tool_line}");
 }
 
 // ── Child bar elapsed: frozen after finish_error ───────────────────────────
@@ -2453,7 +2461,13 @@ fn child_bar_elapsed_frozen_after_finish_error() {
     child.finish_error("fail");
     group.tick();
     let contents = term.contents();
-    assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after finish_error");
+    let lines: Vec<&str> = contents.lines().collect();
+    let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
+    assert!(
+        tool_line.contains("[00:00:00]"),
+        "tool-a line should show 0 elapsed after finish_error: {tool_line}"
+    );
+    assert!(tool_line.contains("fail"), "tool-a line should show error message: {tool_line}");
 }
 
 // ── Child bar elapsed: frozen after abandon ────────────────────────────────
@@ -2467,7 +2481,12 @@ fn child_bar_elapsed_frozen_after_abandon() {
     child.abandon();
     group.tick();
     let contents = term.contents();
-    assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after abandon");
+    let lines: Vec<&str> = contents.lines().collect();
+    let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
+    assert!(
+        tool_line.contains("[00:00:00]"),
+        "tool-a line should show 0 elapsed after abandon: {tool_line}"
+    );
 }
 
 // ── Orphaned-state overflow behavior ─────────────────────────────────────
