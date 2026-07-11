@@ -948,14 +948,6 @@ mod inner {
             Self { renderer, _ticker: ticker }
         }
 
-        /// Create a new group with an injectable dimension source.
-        ///
-        /// This is a deprecated alias for [`auto_with_dim`](Self::auto_with_dim).
-        #[deprecated(since = "0.1.0", note = "renamed to `auto_with_dim`")]
-        pub fn new_with_dim(dim_source: Arc<dyn DimensionSource>) -> Self {
-            Self::auto_with_dim(dim_source)
-        }
-
         /// Create a group from an existing [`MultiProgress`] with a fixed
         /// number of pre-allocated slots.
         ///
@@ -1083,21 +1075,6 @@ mod inner {
             Self { renderer, _ticker: ticker }
         }
 
-        /// Create a group from an existing [`MultiProgress`] with a fixed
-        /// number of pre-allocated slots and an injectable dimension source.
-        ///
-        /// This is a deprecated alias for
-        /// [`fixed_with_dim`](Self::fixed_with_dim).
-        #[deprecated(since = "0.1.0", note = "renamed to `fixed_with_dim`")]
-        pub fn with_mp_and_dim(
-            mp: MultiProgress,
-            capacity: usize,
-            dim_source: Arc<dyn DimensionSource>,
-            _dynamic_height: bool,
-        ) -> Self {
-            Self::fixed_with_dim(mp, capacity, dim_source)
-        }
-
         /// Create a group with an overall aggregate bar pinned at the bottom,
         /// from an existing [`MultiProgress`] with a pre-allocated matching
         /// capacity and an injectable dimension source.
@@ -1157,24 +1134,6 @@ mod inner {
             let ticker = Some(Self::spawn_ticker(&renderer));
             let handle = TrackedHandle { state };
             (Self { renderer: Some(renderer), _ticker: ticker }, handle)
-        }
-
-        /// Create a group with an overall aggregate bar pinned at the
-        /// bottom, from an existing [`MultiProgress`] with a fixed number of
-        /// pre-allocated slots and an injectable dimension source.
-        ///
-        /// This is a deprecated alias for
-        /// [`fixed_with_overall_and_dim`](Self::fixed_with_overall_and_dim).
-        #[deprecated(since = "0.1.0", note = "renamed to `fixed_with_overall_and_dim`")]
-        pub fn with_mp_and_overall_and_dim(
-            mp: MultiProgress,
-            capacity: usize,
-            label: &str,
-            total: u64,
-            dim_source: Arc<dyn DimensionSource>,
-            _dynamic_height: bool,
-        ) -> (Self, TrackedHandle) {
-            Self::fixed_with_overall_and_dim(mp, capacity, label, total, dim_source)
         }
 
         /// Add a child bar to the group.
