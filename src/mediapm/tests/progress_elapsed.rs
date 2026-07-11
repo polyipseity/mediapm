@@ -17,8 +17,7 @@ fn mk() -> (MultiProgress, InMemoryTerm) {
 fn consumer_child_bar_elapsed_starts_at_zero() {
     let (mp, term) = mk();
     let group = ProgressGroup::with_mp(mp, 4);
-    let child = group.add_bar(5, "tool-a");
-    child.tick();
+    let _ = group.add_bar(5, "tool-a");
     let contents = term.contents();
     assert!(contents.contains("[00:00:00]"), "elapsed must start at 0, got:\n{contents}");
 }
@@ -30,7 +29,7 @@ fn consumer_child_bar_elapsed_frozen_after_finish() {
     let child = group.add_bar(5, "tool-a");
     child.set_position(5);
     child.finish();
-    child.tick();
+    group.tick();
     let contents = term.contents();
     assert!(
         contents.contains("[00:00:00]"),
@@ -46,7 +45,7 @@ fn consumer_child_bar_elapsed_frozen_after_finish_success() {
     let child = group.add_bar(5, "tool-a");
     child.set_position(5);
     child.finish_success("ok");
-    child.tick();
+    group.tick();
     let contents = term.contents();
     assert!(
         contents.contains("[00:00:00]"),
@@ -62,7 +61,6 @@ fn consumer_child_bar_elapsed_frozen_after_finish_error() {
     let child = group.add_bar(5, "tool-a");
     child.set_position(2);
     child.finish_error("fail");
-    child.tick();
     let contents = term.contents();
     assert!(
         contents.contains("[00:00:00]"),
@@ -77,7 +75,6 @@ fn consumer_child_bar_elapsed_frozen_after_abandon() {
     let child = group.add_bar(5, "tool-a");
     child.set_position(3);
     child.abandon();
-    child.tick();
     let contents = term.contents();
     assert!(
         contents.contains("[00:00:00]"),
