@@ -14,7 +14,7 @@ Every user-facing line in mediapm CLI tools follows precise conventions for cons
 |---|---|---|---|
 | `mediapm_utils::progress::DownloadProgressSnapshot` | `mediapm-utils` | always | All crates |
 | `mediapm_utils::progress::ProgressCallback` | `mediapm-utils` | always | All crates |
-| `mediapm_utils::progress::{ProgressGroup, ProgressHandle}` | `mediapm-utils` | `progress` | Crates with indicatif |
+| `mediapm_utils::progress::{ProgressGroup, TrackedHandle}` | `mediapm-utils` | `progress` | Crates with indicatif |
 | `mediapm_utils::progress::{set_progress_enabled, format_bytes, ...}` | `mediapm-utils` | `progress` | Crates with indicatif |
 | `crate::output::report::{StatusIcon, print_result, ...}` | `mediapm` | `cli` | `mediapm` crate only |
 
@@ -49,7 +49,7 @@ Used at the conductor library boundary. The conductor library's `run_workflow` a
 ### Core types
 
 - `ProgressGroup` — wraps `MultiProgress`. Created via `ProgressGroup::new()` (no overall bar) or `ProgressGroup::with_overall(label, total)` (pins an aggregate bar at the bottom).
-- `ProgressHandle` — wraps `ProgressBar`. Clones share state. Methods: `advance(delta)`, `set_position(pos)`, `set_message(msg)`, `set_prefix(prefix)`, `set_total(total)`, `total()`, `finish()`, `finish_success(msg)`, `finish_error(msg)`, `abandon()`.
+- `TrackedHandle` — wraps `Arc<SharedState>` with optional `ProgressBar`. Clones share state. Methods: `advance(delta)`, `set_position(pos)`, `set_message(msg)`, `set_prefix(prefix)`, `set_total(total)`, `total()`, `finish()`, `finish_success(msg)`, `finish_error(msg)`, `finish_and_clear()`, `abandon()`, `snapshot()`, `is_finished()`. `ProgressHandle` is a deprecated alias.
 
 ### Construction
 
@@ -109,7 +109,7 @@ Suppressed automatically when stderr is not a TTY or when `--quiet` / `MEDIAPM_Q
 
 ### Spinner animation
 
-Every progress bar created through `ProgressHandle::new()`, `ProgressGroup::with_overall()`, or `ProgressGroup::add_bar()` automatically enables a steady tick at 100 ms intervals, which keeps the spinner animating even during long periods without position updates (e.g., slow downloads). No manual `tick()` calls are needed.
+Every progress bar created through `TrackedHandle::new()`, `ProgressGroup::with_overall()`, or `ProgressGroup::add_bar()` automatically enables a steady tick at 100 ms intervals, which keeps the spinner animating even during long periods without position updates (e.g., slow downloads). No manual `tick()` calls are needed.
 
 ### Cleaning up progress bars
 
@@ -117,10 +117,10 @@ All progress bars **must** be finalized after the operation completes:
 
 ```rust
 pb.finish_success("done");
-group.join_and_clear();   // clears bars from terminal, then group drops draw thread
+group.join();   // keeps final state visible, then group drops draw thread
 ```
 
-`join_and_clear()` clears the bars from the terminal and prevents residual progress artifacts from appearing in subsequent output. Callers should ensure all bars are in a finished state first (via `finish()`, `finish_success()`, or `finish_error()`). The draw thread terminates when the group is dropped at end of scope.
+Prefer `join()` to let users read the final state of each bar before it disappears. It keeps finished bars visible until the group goes out of scope. Use `join_and_clear()` only when the terminal must be cleared before subsequent output (e.g., before printing a result line). Callers should ensure all bars are in a finished state first (via `finish()`, `finish_success()`, or `finish_error()`). The draw thread terminates when the group is dropped at end of scope.
 
 ### Formatting helpers
 
@@ -277,10 +277,10 @@ let pb = group.add_bar(flattened.len() as u64, "materializing");
 // ... spawn concurrent tasks, each calling pb.advance(1) ...
 
 pb.finish_success("materialization complete");
-group.join_and_clear();
+group.join();
 ```
 
-No overall bar is used in the materializer. The group is discarded after `join_and_clear()`.
+No overall bar is used in the materializer. The group is discarded after `join()`.
 
 ## Adding new result output
 
