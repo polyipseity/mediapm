@@ -1965,12 +1965,18 @@ fn progress_group_join_and_clear_removes_bars() {
     c.finish_success("done");
     c.tick();
     overall.tick();
-    // join_and_clear must remove all bars from the terminal.
+    // join_and_clear collapses blank reserved slots but keeps non-blank bars.
     group.join_and_clear();
     let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== join_and_clear_removes_bars, H=5, W=80 ===");
-    eprintln!("contents = {contents:?}");
-    assert!(contents.is_empty(), "expected empty terminal after join_and_clear, got: {contents:?}");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 2, "2 bars remain (fetch + overall)");
+    assert!(lines[0].contains("fetch"), "fetch bar visible: {0}", lines[0]);
+    assert!(lines[0].contains("done"), "fetch done: {0}", lines[0]);
+    assert!(lines[1].contains("overall"), "overall bar visible: {0}", lines[1]);
 }
 
 #[test]

@@ -53,7 +53,7 @@ pub type ProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
 
 #[cfg(feature = "progress")]
 mod inner {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
@@ -713,6 +713,10 @@ mod inner {
         /// Queue of [`SharedState`] handles evicted from render slots during
         /// height shrink.  Reattached (FIFO) when the terminal grows back.
         orphaned_states: RefCell<VecDeque<Arc<SharedState>>>,
+        /// Guard against double-`finalize` from both
+        /// [`join_and_clear`](Self::join_and_clear) and
+        /// [`Drop`](Drop).
+        finalized: Cell<bool>,
     }
 
     impl ProgressRenderer {
@@ -757,6 +761,7 @@ mod inner {
                 last_width: None,
                 dynamic_height: false,
                 orphaned_states: RefCell::new(VecDeque::new()),
+                finalized: Cell::new(false),
             }
         }
 
@@ -815,6 +820,7 @@ mod inner {
                     last_width: None,
                     dynamic_height: false,
                     orphaned_states: RefCell::new(VecDeque::new()),
+                    finalized: Cell::new(false),
                 },
                 overall_state,
             )
@@ -1022,9 +1028,32 @@ mod inner {
             }
         }
 
-        /// Clear the terminal display.
-        fn clear(&self) {
-            self.inner.clear().ok();
+        /// Remove blank (unbound) reserved slots from [`MultiProgress`] and
+        /// trigger a final draw so that only the non-blank finished bars
+        /// remain visible in the terminal and in scrollback.
+        ///
+        /// This is intended as a replacement for [`clear()`](Self::clear)
+        /// when the caller wants the final state of progress bars to
+        /// persist in scrollback without empty reserved lines.
+        ///
+        /// Safe to call multiple times — only the first call has any effect.
+        fn finalize(&self) {
+            if self.finalized.replace(true) {
+                return;
+            }
+            // Remove all blank (unbound) slots from MultiProgress.
+            for slot in &self.slots {
+                if slot.source.borrow().is_none() {
+                    self.inner.remove(&slot.bar);
+                }
+            }
+            // Trigger one final draw with the reduced bar set.
+            for slot in &self.slots {
+                if slot.source.borrow().is_some() {
+                    slot.bar.tick();
+                    break;
+                }
+            }
         }
     }
 
@@ -1291,9 +1320,13 @@ mod inner {
 
         /// Clear the terminal display after all bars are done.
         ///
-        /// Removes the progress bars from the terminal entirely.  Prefer
-        /// [`join()`](Self::join) to keep bars visible so users can read the
-        /// final state of each bar after work completes.
+        /// Remove blank reserved slots and keep only the non-blank finished
+        /// bars visible.  Unlike the name suggests, this does **not** clear
+        /// the terminal display — it collapses blank reserved slots so that
+        /// scrollback shows only meaningful progress bars.
+        ///
+        /// Prefer [`join()`](Self::join) to keep bars fully visible without
+        /// the collapsing step.
         ///
         /// # Panics
         ///
@@ -1301,7 +1334,7 @@ mod inner {
         /// panicked while holding the lock).
         pub fn join_and_clear(&self) {
             if let Some(ref renderer) = self.renderer {
-                renderer.lock().unwrap().clear();
+                renderer.lock().unwrap().finalize();
             }
         }
     }
@@ -1315,7 +1348,7 @@ mod inner {
     impl Drop for ProgressGroup {
         fn drop(&mut self) {
             if let Some(ref renderer) = self.renderer {
-                renderer.lock().unwrap().clear();
+                renderer.lock().unwrap().finalize();
             }
         }
     }
