@@ -1,4 +1,5 @@
 //! Progress bar output tests — exact terminal screen matching.
+#![allow(deprecated)]
 //!
 //! Every test captures the **full terminal contents** via
 //! [`indicatif::InMemoryTerm::contents`] and compares against the exact expected
@@ -2495,13 +2496,12 @@ fn child_bar_elapsed_frozen_after_abandon() {
 fn orphan_reattach_preserves_elapsed() {
     let dims = Arc::new(TestDimensionSource::new((3, 80)));
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         4,
         "overall",
         5,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _child = group.add_bar(10, "worker");
 
@@ -3201,13 +3201,12 @@ fn resize_width_noop_same_width_no_change() {
 fn resize_height_grow_adds_slots() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         4,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     {
         let _c1 = group.add_bar(7, "fetch");
@@ -3235,13 +3234,12 @@ fn resize_height_grow_adds_slots() {
 fn resize_height_shrink_removes_slots() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         6,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -3317,13 +3315,12 @@ fn resize_height_grow_detached_reappear() {
 fn resize_height_clamps_at_min_slots() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         6,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -3433,13 +3430,12 @@ fn resize_then_restore_original() {
 fn resize_height_shrink_then_grow_restores_line_count() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         6,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -3471,13 +3467,12 @@ fn resize_height_shrink_then_grow_restores_line_count() {
 fn resize_height_partial_shrink_keeps_active_bars() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         6,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     let _c1 = group.add_bar(7, "fetch1");
     let _c2 = group.add_bar(5, "fetch2");
@@ -3535,13 +3530,12 @@ fn resize_height_with_interleaved_attach() {
 fn resize_height_sequence_with_three_bars() {
     let dims = Arc::new(TestDimensionSource::new((5, 80)));
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
         mp,
         5,
         "overall",
         10,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        true,
     );
     // Add in order: bar3 (oldest), bar2, bar1 (newest).
     let _bar3 = group.add_bar(7, "bar 3");

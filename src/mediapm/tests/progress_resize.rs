@@ -22,10 +22,9 @@ fn mk_with_size(h: u16, w: u16) -> (MultiProgress, InMemoryTerm) {
 fn sync_hierarchy_height_change() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let group =
-        ProgressGroup::with_mp_and_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>, true);
-    let child = group.add_bar(10, "materialize");
-    child.tick();
+    let group = ProgressGroup::fixed_with_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>);
+    let _child = group.add_bar(10, "materialize");
+    group.tick();
 
     let initial = term.contents();
     eprintln!("=== sync_hierarchy, H=4 ===");
@@ -36,7 +35,7 @@ fn sync_hierarchy_height_change() {
     let initial_count = initial.lines().count();
 
     dims.set((6, 80));
-    child.tick();
+    group.tick();
     let after = term.contents();
     eprintln!("=== after resize, H=6 ===");
     for (i, line) in after.lines().enumerate() {
@@ -57,13 +56,12 @@ fn sync_hierarchy_height_change() {
 fn reconcile_desired_tools_width_change() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(4, 80);
-    let (_group, overall) = ProgressGroup::with_mp_and_overall_and_dim(
+    let (group, _overall) = ProgressGroup::fixed_with_overall_and_dim(
         mp,
         4,
         "syncing tools",
         5,
         Arc::clone(&dims) as Arc<dyn DimensionSource>,
-        false,
     );
     let contents_wide = term.contents();
     eprintln!("=== reconcile_tools, W=80 ===");
@@ -73,7 +71,7 @@ fn reconcile_desired_tools_width_change() {
     assert!(contents_wide.contains("syncing tools"), "overall visible");
 
     dims.set((4, 40));
-    overall.tick();
+    group.tick();
     let contents_narrow = term.contents();
     eprintln!("=== after resize, W=40 ===");
     for (i, line) in contents_narrow.lines().enumerate() {
@@ -92,23 +90,22 @@ fn reconcile_desired_tools_width_change() {
 fn sync_hierarchy_complex_resize_scenario() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let group =
-        ProgressGroup::with_mp_and_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>, true);
-    let child = group.add_bar(10, "materialize");
-    child.tick();
+    let group = ProgressGroup::fixed_with_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>);
+    let _child = group.add_bar(10, "materialize");
+    group.tick();
     let original = term.contents();
     assert!(original.contains("materialize"), "child visible at start");
 
     // Grow height.
     dims.set((6, 80));
-    child.tick();
+    group.tick();
     let grown = term.contents();
     assert!(grown.contains("materialize"), "child visible after growth");
     assert!(grown.lines().count() > original.lines().count(), "more lines after growth");
 
     // Restore original dimensions.
     dims.set((4, 80));
-    child.tick();
+    group.tick();
     let restored = term.contents();
     assert!(restored.contains("materialize"), "child visible after restore");
     // Width is unchanged so the content should match original modulo spinner.

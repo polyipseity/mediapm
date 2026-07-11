@@ -943,10 +943,18 @@ mod inner {
         /// Panics when the internal `Mutex` is poisoned (another thread
         /// panicked while holding the lock).
         #[must_use]
-        pub fn new_with_dim(dim_source: Arc<dyn DimensionSource>) -> Self {
+        pub fn auto_with_dim(dim_source: Arc<dyn DimensionSource>) -> Self {
             let renderer = Some(Arc::new(Mutex::new(ProgressRenderer::new(dim_source))));
             let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
             Self { renderer, _ticker: ticker }
+        }
+
+        /// Create a new group with an injectable dimension source.
+        ///
+        /// This is a deprecated alias for [`auto_with_dim`](Self::auto_with_dim).
+        #[deprecated(since = "0.1.0", note = "renamed to `auto_with_dim`")]
+        pub fn new_with_dim(dim_source: Arc<dyn DimensionSource>) -> Self {
+            Self::auto_with_dim(dim_source)
         }
 
         /// Create a group from an existing [`MultiProgress`] with a fixed
@@ -1055,55 +1063,119 @@ mod inner {
         /// — pass a [`TestDimensionSource`] configured to match the virtual
         /// terminal size so resize reactivity uses the right dimensions.
         ///
-        /// Set `dynamic_height` to `true` when the slot count should be
-        /// adjusted on terminal height changes (used by auto-sized groups).
+        /// The slot count is adjusted on terminal height changes (dynamic
+        /// height).
         ///
         /// # Panics
         ///
         /// Panics when the internal `Mutex` is poisoned (another thread
         /// panicked while holding the lock).
         #[must_use]
+        pub fn fixed_with_dim(
+            mp: MultiProgress,
+            capacity: usize,
+            dim_source: Arc<dyn DimensionSource>,
+        ) -> Self {
+            let cap = capacity.clamp(1, MAX_SLOTS);
+            let mut renderer = ProgressRenderer::from_mp(mp, cap, dim_source);
+            renderer.dynamic_height = true;
+            let renderer = Some(Arc::new(Mutex::new(renderer)));
+            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
+            Self { renderer, _ticker: ticker }
+        }
+
+        /// Create a group from an existing [`MultiProgress`] with a fixed
+        /// number of pre-allocated slots and an injectable dimension source.
+        ///
+        /// This is a deprecated alias for
+        /// [`fixed_with_dim`](Self::fixed_with_dim).
+        #[deprecated(since = "0.1.0", note = "renamed to `fixed_with_dim`")]
         pub fn with_mp_and_dim(
             mp: MultiProgress,
             capacity: usize,
             dim_source: Arc<dyn DimensionSource>,
-            dynamic_height: bool,
+            _dynamic_height: bool,
         ) -> Self {
+            Self::fixed_with_dim(mp, capacity, dim_source)
+        }
+
+        /// Create a group with an overall aggregate bar pinned at the bottom,
+        /// from an existing [`MultiProgress`] with a pre-allocated matching
+        /// capacity and an injectable dimension source.
+        ///
+        /// The slot count automatically adjusts on terminal height changes
+        /// (dynamic height).  See also
+        /// [`fixed_with_overall_and_dim`](Self::fixed_with_overall_and_dim) for
+        /// the fixed-height variant.
+        ///
+        /// # Panics
+        ///
+        /// Panics when the internal `Mutex` is poisoned (another thread
+        /// panicked while holding the lock).
+        #[must_use]
+        pub fn auto_with_overall_and_dim(
+            mp: MultiProgress,
+            capacity: usize,
+            label: &str,
+            total: u64,
+            dim_source: Arc<dyn DimensionSource>,
+        ) -> (Self, TrackedHandle) {
             let cap = capacity.clamp(1, MAX_SLOTS);
-            let mut renderer = ProgressRenderer::from_mp(mp, cap, dim_source);
-            renderer.dynamic_height = dynamic_height;
-            let renderer = Some(Arc::new(Mutex::new(renderer)));
-            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
-            Self { renderer, _ticker: ticker }
+            let (mut renderer, state) =
+                ProgressRenderer::from_mp_with_overall(mp, cap, total, label, dim_source);
+            renderer.dynamic_height = true;
+            let renderer = Arc::new(Mutex::new(renderer));
+            let ticker = Some(Self::spawn_ticker(&renderer));
+            let handle = TrackedHandle { state };
+            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
         /// Create a group with an overall aggregate bar pinned at the bottom,
         /// from an existing [`MultiProgress`] with a fixed number of
         /// pre-allocated slots and an injectable dimension source.
         ///
-        /// See [`with_mp_and_dim`](Self::with_mp_and_dim) for motivation.
+        /// The slot count stays fixed (no terminal height adaptation).  See
+        /// [`auto_with_overall_and_dim`](Self::auto_with_overall_and_dim) for
+        /// the dynamic-height variant.
         ///
         /// # Panics
         ///
         /// Panics when the internal `Mutex` is poisoned (another thread
         /// panicked while holding the lock).
         #[must_use]
+        pub fn fixed_with_overall_and_dim(
+            mp: MultiProgress,
+            capacity: usize,
+            label: &str,
+            total: u64,
+            dim_source: Arc<dyn DimensionSource>,
+        ) -> (Self, TrackedHandle) {
+            let cap = capacity.clamp(1, MAX_SLOTS);
+            let (mut renderer, state) =
+                ProgressRenderer::from_mp_with_overall(mp, cap, total, label, dim_source);
+            renderer.dynamic_height = false;
+            let renderer = Arc::new(Mutex::new(renderer));
+            let ticker = Some(Self::spawn_ticker(&renderer));
+            let handle = TrackedHandle { state };
+            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
+        }
+
+        /// Create a group with an overall aggregate bar pinned at the
+        /// bottom, from an existing [`MultiProgress`] with a fixed number of
+        /// pre-allocated slots and an injectable dimension source.
+        ///
+        /// This is a deprecated alias for
+        /// [`fixed_with_overall_and_dim`](Self::fixed_with_overall_and_dim).
+        #[deprecated(since = "0.1.0", note = "renamed to `fixed_with_overall_and_dim`")]
         pub fn with_mp_and_overall_and_dim(
             mp: MultiProgress,
             capacity: usize,
             label: &str,
             total: u64,
             dim_source: Arc<dyn DimensionSource>,
-            dynamic_height: bool,
+            _dynamic_height: bool,
         ) -> (Self, TrackedHandle) {
-            let cap = capacity.clamp(1, MAX_SLOTS);
-            let (mut renderer, state) =
-                ProgressRenderer::from_mp_with_overall(mp, cap, total, label, dim_source);
-            renderer.dynamic_height = dynamic_height;
-            let renderer = Arc::new(Mutex::new(renderer));
-            let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state };
-            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
+            Self::fixed_with_overall_and_dim(mp, capacity, label, total, dim_source)
         }
 
         /// Add a child bar to the group.
