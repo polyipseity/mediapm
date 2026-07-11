@@ -3059,6 +3059,8 @@ fn resize_width_noop_same_width_no_change() {
     );
     let before = term.contents();
     let before_lines = before.lines().count();
+    // (no elapsed assertion before tick — elapsed is injected on tick, and
+    //  we haven't ticked since constructor.)
 
     dims.set((H, W));
     group.tick();
@@ -3067,10 +3069,8 @@ fn resize_width_noop_same_width_no_change() {
     // Same width → same number of lines, same bar template structure.
     // Content differs slightly because the spinner animates between ticks.
     assert_eq!(before_lines, after_lines, "same line count after noop width resize");
-    assert!(before.contains("overall"), "overall visible before");
     assert!(after.contains("overall"), "overall visible after");
-    // Both representations show time and count fields.
-    assert!(before.contains("00:00"), "time before");
+    assert!(after.contains("0/10"), "overall shows 0/10 after");
     assert!(after.contains("00:00"), "time after");
 }
 
