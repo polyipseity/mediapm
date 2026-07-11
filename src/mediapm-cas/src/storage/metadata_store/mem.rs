@@ -24,6 +24,15 @@ use super::{MetadataEntry, MetadataStore};
 /// Constraint data is stored in a separate [`DashMap`] from object metadata.
 /// See [`MetadataStore::get_constraint`] — returns empty set (no `Option`).
 ///
+/// # Bases-preservation invariant
+///
+/// [`put`](MetadataStore::put) stores object metadata only and does **not**
+/// touch constraint bases. This is by design — `CasStore::put()` writes
+/// metadata entries without knowing about constraint state, so constraint
+/// bases must never be modified or wiped by `put()`. The BG engine WAL
+/// consumer also preserves this separation by handling [`WalEntry::Constraint`]
+/// independently from `WalEntry::Put`/`WalEntry::PutLarge`.
+///
 /// Delta-base reverse index (`dependents`) is maintained on [`put`](MetadataStore::put)
 /// and [`delete`](MetadataStore::delete) so [`list_dependents`](MetadataStore::list_dependents)
 /// is O(1) instead of O(N).
