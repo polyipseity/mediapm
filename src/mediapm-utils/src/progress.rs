@@ -915,12 +915,10 @@ mod inner {
                 // Sync shifted slots (sources moved to different bars).
                 for i in (bottom.saturating_sub(active))..=bottom {
                     self.sync_slot(i);
-                    self.slots[i].bar.reset_elapsed();
                 }
                 // Place new child at the freed bottom slot.
                 self.slots[bottom].source.replace(Some(Arc::clone(state)));
                 self.sync_slot(bottom);
-                self.slots[bottom].bar.reset_elapsed();
                 return;
             }
 
@@ -929,7 +927,6 @@ mod inner {
                 if self.slots[i].source.borrow().as_ref().is_none_or(|s| s.is_finished()) {
                     self.slots[i].source.replace(Some(Arc::clone(state)));
                     self.sync_slot(i);
-                    self.slots[i].bar.reset_elapsed();
                     return;
                 }
             }
