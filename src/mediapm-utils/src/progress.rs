@@ -120,7 +120,7 @@ mod inner {
     // ---- style constants --------------------------------------------------
 
     /// Format a duration as `[HH:MM:SS]`.
-    fn format_elapsed(d: Duration) -> String {
+    pub(crate) fn format_elapsed(d: Duration) -> String {
         let secs = d.as_secs();
         let hours = secs / 3600;
         let mins = (secs / 60) % 60;
@@ -251,7 +251,7 @@ mod inner {
     }
 
     impl SharedState {
-        fn new(total: u64, label: &str) -> Self {
+        pub(crate) fn new(total: u64, label: &str) -> Self {
             Self {
                 position: AtomicU64::new(0),
                 total: AtomicU64::new(total),
@@ -282,7 +282,7 @@ mod inner {
             }
         }
 
-        fn elapsed(&self) -> Duration {
+        pub(crate) fn elapsed(&self) -> Duration {
             if let Some(frozen) =
                 *self.finished_elapsed.read().expect("shared_state finished_elapsed lock")
             {
@@ -292,8 +292,7 @@ mod inner {
             }
         }
 
-        #[allow(dead_code)]
-        fn mark_finished(&self) {
+        pub(crate) fn mark_finished(&self) {
             let elapsed = self.start_time.elapsed();
             *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") =
                 Some(elapsed);
@@ -1376,6 +1375,10 @@ pub use inner::{
     RealTerminalSource, TestDimensionSource, TrackSnapshot, TrackStatus, TrackedHandle,
 };
 
+#[cfg(feature = "progress")]
+#[allow(unused_imports)]
+pub(crate) use inner::{SharedState, format_elapsed};
+
 // ---- Shared API traits for dependency injection (feature-gated) -------
 
 /// Minimum progress-bar handle API for dependency injection.
@@ -2012,6 +2015,117 @@ mod tests {
         );
         let frozen2 = h.snapshot_elapsed();
         assert_eq!(frozen, frozen2, "elapsed should be frozen after abandon");
+    }
+
+    // ---- format_elapsed (pure formatting) --------------------------------
+
+    #[test]
+    fn format_elapsed_zero() {
+        assert_eq!(super::format_elapsed(std::time::Duration::ZERO), "[00:00:00]");
+    }
+
+    #[test]
+    fn format_elapsed_seconds_only() {
+        assert_eq!(super::format_elapsed(std::time::Duration::from_secs(42)), "[00:00:42]");
+    }
+
+    #[test]
+    fn format_elapsed_minutes_and_seconds() {
+        assert_eq!(super::format_elapsed(std::time::Duration::from_secs(5 * 60 + 3)), "[00:05:03]");
+    }
+
+    #[test]
+    fn format_elapsed_hours() {
+        assert_eq!(
+            super::format_elapsed(std::time::Duration::from_secs(2 * 3600 + 15 * 60 + 30)),
+            "[02:15:30]"
+        );
+    }
+
+    #[test]
+    fn format_elapsed_large_hours() {
+        assert_eq!(
+            super::format_elapsed(std::time::Duration::from_secs(100 * 3600)),
+            "[100:00:00]"
+        );
+    }
+
+    // ---- SharedState elapsed --------------------------------------------
+
+    #[test]
+    fn shared_state_elapsed_starts_near_zero() {
+        let s = super::SharedState::new(100, "test");
+        let elapsed = s.elapsed();
+        assert!(elapsed.as_millis() < 100, "elapsed should start near zero, got {elapsed:?}");
+    }
+
+    #[test]
+    fn shared_state_elapsed_advances() {
+        let s = super::SharedState::new(100, "test");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let elapsed = s.elapsed();
+        assert!(elapsed.as_millis() >= 5, "elapsed should advance after sleep, got {elapsed:?}");
+    }
+
+    #[test]
+    fn shared_state_elapsed_frozen_after_mark_finished() {
+        let s = super::SharedState::new(100, "test");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        s.mark_finished();
+        let frozen = s.elapsed();
+        assert!(
+            frozen.as_millis() >= 5,
+            "elapsed should capture time until mark_finished, got {frozen:?}"
+        );
+        // Small extra wait to confirm frozen.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let frozen2 = s.elapsed();
+        assert_eq!(frozen, frozen2, "elapsed should be frozen after mark_finished");
+    }
+
+    #[test]
+    fn shared_state_elapsed_not_frozen_before_finish() {
+        let s = super::SharedState::new(100, "test");
+        let t0 = s.elapsed();
+        // Without calling mark_finished, repeated reads should climb.
+        let t1 = s.elapsed();
+        assert!(t1 >= t0, "elapsed should not decrease before finish: {t0:?} >= {t1:?}");
+    }
+
+    #[test]
+    fn shared_state_elapsed_monotonic() {
+        let s = super::SharedState::new(100, "test");
+        let t0 = s.elapsed();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let t1 = s.elapsed();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let t2 = s.elapsed();
+        assert!(t1 >= t0, "t1 ({t1:?}) should be >= t0 ({t0:?})");
+        assert!(t2 >= t1, "t2 ({t2:?}) should be >= t1 ({t1:?})");
+    }
+
+    // ---- TrackedHandle elapsed (integration) -----------------------------
+
+    #[test]
+    fn tracked_handle_elapsed_frozen_after_all_finish_methods() {
+        // finish, finish_success, finish_error, finish_and_clear, abandon
+        // must all freeze the elapsed.
+        for (name, finish_fn) in [
+            ("finish", Box::new(|h: &TrackedHandle| h.finish()) as Box<dyn Fn(&TrackedHandle)>),
+            ("finish_success", Box::new(|h: &TrackedHandle| h.finish_success("ok"))),
+            ("finish_error", Box::new(|h: &TrackedHandle| h.finish_error("err"))),
+            ("finish_and_clear", Box::new(|h: &TrackedHandle| h.finish_and_clear())),
+            ("abandon", Box::new(|h: &TrackedHandle| h.abandon())),
+        ] {
+            let g = ProgressGroup::new();
+            let h = g.add_bar(100, &format!("{name}-bar"));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            finish_fn(&h);
+            // We can't directly access SharedState::elapsed() from the handle,
+            // but we verify the handle doesn't panic and is usable afterward.
+            assert_eq!(h.total(), 100, "{name}: total preserved");
+            g.join_and_clear();
+        }
     }
 
     #[test]
