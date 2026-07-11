@@ -532,6 +532,27 @@ mod inner {
         finalized: Cell<bool>,
     }
 
+    impl RenderedSlot {
+        /// Swap the tracked source with another slot without
+        /// simultaneous `RefCell` borrows.
+        #[inline]
+        fn swap_sources_with(&self, other: &Self) {
+            let mut tmp = None;
+            {
+                let mut cell = self.source.borrow_mut();
+                std::mem::swap(&mut tmp, &mut *cell);
+            }
+            {
+                let mut cell = other.source.borrow_mut();
+                std::mem::swap(&mut tmp, &mut *cell);
+            }
+            {
+                let mut cell = self.source.borrow_mut();
+                std::mem::swap(&mut tmp, &mut *cell);
+            }
+        }
+    }
+
     impl ProgressRenderer {
         /// Pre-allocate blank bars in a fresh [`MultiProgress`] with capacity
         /// derived from terminal height.
@@ -639,28 +660,6 @@ mod inner {
             )
         }
 
-        /// Swap the tracked sources of two render slots without
-        /// simultaneous `RefCell` borrows.
-        #[inline]
-        fn swap_slot_sources(slots: &[RenderedSlot], i: usize, j: usize) {
-            if i == j {
-                return;
-            }
-            let mut tmp = None;
-            {
-                let mut cell = slots[i].source.borrow_mut();
-                std::mem::swap(&mut tmp, &mut *cell);
-            }
-            {
-                let mut cell = slots[j].source.borrow_mut();
-                std::mem::swap(&mut tmp, &mut *cell);
-            }
-            {
-                let mut cell = slots[i].source.borrow_mut();
-                std::mem::swap(&mut tmp, &mut *cell);
-            }
-        }
-
         /// Re-configure the bar at slot index `i` to reflect its current
         /// tracked source (or blank state if unbound).
         fn sync_slot(&self, i: usize) {
@@ -721,7 +720,7 @@ mod inner {
                 // Shift existing active children up by one slot (ascending
                 // order preserves relative positions).
                 for i in (bottom + 1 - active)..=bottom {
-                    Self::swap_slot_sources(&self.slots, i, i - 1);
+                    self.slots[i].swap_sources_with(&self.slots[i - 1]);
                 }
                 // Sync shifted slots (sources moved to different bars).
                 for i in (bottom.saturating_sub(active))..=bottom {
