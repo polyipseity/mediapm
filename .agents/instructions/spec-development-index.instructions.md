@@ -38,7 +38,6 @@ This file is the replacement for the deleted monolithic `.agents/instructions/cr
 | `.agents/instructions/markdown-and-customizations.instructions.md`      | Markdown formatting rules, YAML frontmatter patterns, repo linking conventions                           |
 | `.agents/instructions/scripts-and-permissions.instructions.md`          | Script placement, cross-platform runtime detection, permission expectations                              |
 | `.agents/instructions/tooling-and-validation-detection.instructions.md` | Repository tooling detection: build, test, lint, CI workflow commands                                    |
-| `.agents/instructions/tool-content-cache-refactoring.instructions.md`   | ToolContentCache extraction from StepWorkerExecutor                                                      |
 | `.agents/instructions/versioning-and-migration.instructions.md`         | Versioned structs, wire formats, DeltaState bridges                                                      |
 | `.agents/instructions/language-and-stack-detection.instructions.md`     | Language/framework detection from concrete files                                                         |
 

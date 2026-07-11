@@ -8,7 +8,7 @@ applyTo: "scripts/**"
 
 ## Scope and template state
 
-- Keep repo-level helper scripts in `scripts/`; the directory may currently contain only `.gitkeep` until a downstream setup adds real scripts.
+- Keep repo-level helper scripts in `scripts/`; the directory contains `build.rs` and `cargo-bin/`.
 - Do not scatter contributor-facing or CI-facing automation across random folders when `scripts/` is the intended home.
 
 ## Placement and naming

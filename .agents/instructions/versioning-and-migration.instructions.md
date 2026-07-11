@@ -1,6 +1,6 @@
 ---
-name: "Struct versioning and migration protocol"
 description: "Use when adding versioned structs, wire formats, DeltaState bridges, or version migrations anywhere in src/."
+name: "Struct versioning and migration protocol"
 applyTo: "src/**/*.rs"
 ---
 
