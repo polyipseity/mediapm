@@ -119,20 +119,29 @@ mod inner {
 
     // ---- style constants --------------------------------------------------
 
-    const CHILD_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {msg} ({eta})";
+    /// Format a duration as `[HH:MM:SS]`.
+    fn format_elapsed(d: Duration) -> String {
+        let secs = d.as_secs();
+        let hours = secs / 3600;
+        let mins = (secs / 60) % 60;
+        let secs = secs % 60;
+        format!("[{:02}:{:02}:{:02}]", hours, mins, secs)
+    }
 
-    const OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {wide_bar:.green/dim} {pos}/{len} {msg}";
+    const CHILD_BAR_TEMPLATE: &str =
+        "{spinner:.green} {prefix:>16.16} {wide_bar:.cyan/blue} {pos}/{len} {msg}";
 
-    const COMPACT_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {pos}/{len} {msg}";
+    const OVERALL_BAR_TEMPLATE: &str =
+        "{spinner:.green} {prefix:>16.16} {wide_bar:.green/dim} {pos}/{len} {msg}";
 
-    const COMPACT_OVERALL_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>16.16} [{elapsed_precise}] {pos}/{len} {msg}";
+    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {pos}/{len} {msg}";
 
-    const DONE_BAR_TEMPLATE: &str = "{spinner:.dim} {prefix:>16.16} [{elapsed_precise}] {wide_bar:.white/dim} {pos}/{len} {msg}";
+    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {pos}/{len} {msg}";
 
-    const COMPACT_DONE_BAR_TEMPLATE: &str =
-        "{spinner:.dim} {prefix:>16.16} [{elapsed_precise}] {pos}/{len} {msg}";
+    const DONE_BAR_TEMPLATE: &str =
+        "{spinner:.dim} {prefix:>16.16} {wide_bar:.white/dim} {pos}/{len} {msg}";
+
+    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.dim} {prefix:>16.16} {pos}/{len} {msg}";
 
     /// Maximum number of pre-allocated slot bars (safety cap).
     const MAX_SLOTS: usize = 200;
@@ -867,7 +876,8 @@ mod inner {
                     apply_bar_style(&slot.bar, cols);
                 }
                 slot.bar.set_prefix(snap.prefix);
-                slot.bar.set_message(snap.message);
+                let elapsed_msg = format!("{} {}", format_elapsed(snap.elapsed), snap.message);
+                slot.bar.set_message(elapsed_msg);
                 slot.bar.set_length(snap.total);
                 slot.bar.enable_steady_tick(Duration::from_millis(100));
             } else {
@@ -943,9 +953,10 @@ mod inner {
             for (i, slot) in self.slots.iter().enumerate() {
                 if let Some(ref source) = *slot.source.borrow() {
                     let snap = source.snapshot();
+                    let elapsed_msg = format!("{} {}", format_elapsed(snap.elapsed), snap.message);
                     slot.bar.set_position(snap.position);
                     slot.bar.set_length(snap.total);
-                    slot.bar.set_message(snap.message.clone());
+                    slot.bar.set_message(elapsed_msg);
                     slot.bar.set_prefix(snap.prefix.clone());
                     if snap.status == TrackStatus::Active {
                         // Setters above already triggered a redraw; no tick() needed.
@@ -963,10 +974,18 @@ mod inner {
                         }
                         match snap.status {
                             TrackStatus::Success => {
-                                slot.bar.finish_with_message(snap.message.clone());
+                                slot.bar.finish_with_message(format!(
+                                    "{} {}",
+                                    format_elapsed(snap.elapsed),
+                                    snap.message,
+                                ));
                             }
                             TrackStatus::Failed => {
-                                slot.bar.abandon_with_message(snap.message.clone());
+                                slot.bar.abandon_with_message(format!(
+                                    "{} {}",
+                                    format_elapsed(snap.elapsed),
+                                    snap.message,
+                                ));
                             }
                             TrackStatus::Abandoned => {
                                 slot.bar.abandon();
