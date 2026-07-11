@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use mediapm_utils::progress::{DimensionSource, ProgressGroup, TestDimensionSource};
+use mediapm_utils::progress::{DimensionSource, ProgressGroup, TestDimensionSource, TrackedHandle};
 
 /// Default terminal dimensions for standard tests.
 const H: u16 = 24;
@@ -1825,13 +1825,9 @@ fn progress_group_child_shows_label_and_total() {
 
 #[test]
 fn progress_group_disabled_returns_noop() {
-    // Save and disable progress globally.
-    let prev = mediapm_utils::progress::progress_enabled();
-    mediapm_utils::progress::set_progress_enabled(false);
-
     // -- with overall --
-    let (mp, term) = mk_with_size(4, 80);
-    let (_group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+    let (_mp, term) = mk_with_size(4, 80);
+    let (_group, overall) = (ProgressGroup::disabled(), TrackedHandle::disabled());
     assert_eq!(overall.total(), 0, "overall handle must be no-op when disabled");
 
     let child = _group.add_bar(5, "child");
@@ -1842,15 +1838,12 @@ fn progress_group_disabled_returns_noop() {
     assert_eq!(term.contents(), "", "no output when progress is disabled");
 
     // -- without overall --
-    let (mp2, term2) = mk_with_size(4, 80);
-    let group2 = ProgressGroup::with_mp(mp2, 4);
+    let (_mp2, term2) = mk_with_size(4, 80);
+    let group2 = ProgressGroup::disabled();
     let c2 = group2.add_bar(3, "noop");
     assert_eq!(c2.total(), 0, "child handle must be no-op without overall");
     c2.tick();
     assert_eq!(term2.contents(), "", "no output without overall when disabled");
-
-    // Restore for other tests.
-    mediapm_utils::progress::set_progress_enabled(prev);
 }
 
 // ── Bar visibility after finish ─────────────────────────────────────────────

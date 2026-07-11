@@ -23,7 +23,7 @@ Crate: `mediapm-utils`
 
 ## Optional `progress` feature
 
-- When enabled, pulls in `indicatif` + `console` and provides `ProgressGroup`, `ProgressHandle`, `format_bytes`, `format_count`, `set_progress_enabled`, `progress_enabled`.
+- When enabled, pulls in `indicatif` + `console` and provides `ProgressGroup`, `ProgressHandle`, `format_bytes`, `format_count`.
 - `DownloadProgressSnapshot` and `ProgressCallback` are **always** available (no feature gate).
 - The conductor *library* must NOT depend on this feature — it uses `Fn` callbacks instead.
 - The conductor *CLI binary* and the `mediapm` crate enable this feature.

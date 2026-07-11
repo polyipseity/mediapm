@@ -24,7 +24,7 @@
 //! | [`ProgressTracker`] | ❌ | ✅ |
 //! | [`ProgressGroup`] | ❌ | ✅ |
 //! | [`ProgressRenderer`] | ❌ | ✅ |
-//! | [`set_progress_enabled`] / [`progress_enabled`] | ❌ | ✅ |
+//! | (no global toggle) | — | — |
 //! | [`recording::RecordingProgressTracker`] | ❌ | ✅ |
 //! | [`recording::RecordingTrackedHandle`] | ❌ | ✅ |
 //! | [`recording::ProgressOp`] | ❌ | ✅ |
@@ -55,7 +55,7 @@ pub type ProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
 mod inner {
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
 
@@ -114,20 +114,6 @@ mod inner {
         fn dimensions(&self) -> (u16, u16) {
             *self.dims.lock().unwrap()
         }
-    }
-
-    // ---- global toggle ----------------------------------------------------
-
-    static PROGRESS_ENABLED: AtomicBool = AtomicBool::new(true);
-
-    /// Globally enable or disable progress bar output.
-    pub fn set_progress_enabled(enabled: bool) {
-        PROGRESS_ENABLED.store(enabled, Ordering::Relaxed);
-    }
-
-    /// Returns whether progress bar output is currently enabled.
-    pub fn progress_enabled() -> bool {
-        PROGRESS_ENABLED.load(Ordering::Relaxed)
     }
 
     // ---- style constants --------------------------------------------------
@@ -316,8 +302,8 @@ mod inner {
     /// both the tracking state and the display (when attached to a render
     /// slot).
     ///
-    /// When progress is globally disabled (see [`set_progress_enabled`]), the
-    /// handle is a no-op — all methods are zero-cost and do nothing.
+    /// To create a no-op handle, use [`TrackedHandle::disabled`].
+    /// All mutating methods on a disabled handle are zero-cost and do nothing.
     ///
     /// # Separation of concerns
     ///
@@ -351,9 +337,6 @@ mod inner {
         /// Create a standalone progress bar (not managed by a [`ProgressGroup`]).
         #[must_use]
         pub fn new(total: u64) -> Self {
-            if !progress_enabled() {
-                return Self::disabled();
-            }
             let state = Arc::new(SharedState::new(total, ""));
             let pb = ProgressBar::new(total);
             apply_bar_style(&pb, terminal_width());
@@ -590,9 +573,6 @@ mod inner {
         /// Create a standalone progress bar (not managed by a [`ProgressGroup`]).
         #[must_use]
         pub fn new(total: u64) -> Self {
-            if !progress_enabled() {
-                return Self::disabled();
-            }
             let pb = ProgressBar::new(total);
             apply_bar_style(&pb, terminal_width());
             pb.enable_steady_tick(Duration::from_millis(100));
@@ -1156,23 +1136,28 @@ mod inner {
     /// at construction time.  The draw height never changes, which eliminates
     /// ghosting from bar-count changes.
     ///
-    /// When progress is globally disabled (see [`set_progress_enabled`]), the
-    /// group and all bars added to it are no-ops.
+    /// To create a no-op group, use [`ProgressGroup::disabled`].
     pub struct ProgressGroup {
         /// `None` when progress is disabled.
         renderer: Option<Arc<Mutex<ProgressRenderer>>>,
     }
 
     impl ProgressGroup {
+        /// Create a no-op group that produces no terminal output.
+        ///
+        /// All bars added via [`add_bar`] return [`TrackedHandle::disabled`].
+        /// Useful in tests where progress is not needed.
+        #[must_use]
+        pub fn disabled() -> Self {
+            Self { renderer: None }
+        }
+
         /// Create a new group with no overall bar.
         ///
         /// Pre-allocates `max(terminal_height(), 1)` bars so the draw height
         /// matches the terminal.
         #[must_use]
         pub fn new() -> Self {
-            if !progress_enabled() {
-                return Self { renderer: None };
-            }
             Self {
                 renderer: Some(Arc::new(Mutex::new(ProgressRenderer::new(Arc::new(
                     RealTerminalSource,
@@ -1184,9 +1169,6 @@ mod inner {
         /// (for tests using [`InMemoryTerm`](indicatif::InMemoryTerm)).
         #[must_use]
         pub fn new_with_dim(dim_source: Arc<dyn DimensionSource>) -> Self {
-            if !progress_enabled() {
-                return Self { renderer: None };
-            }
             Self { renderer: Some(Arc::new(Mutex::new(ProgressRenderer::new(dim_source)))) }
         }
 
@@ -1199,9 +1181,6 @@ mod inner {
         #[must_use]
         pub fn with_mp(mp: MultiProgress, capacity: usize) -> Self {
             let cap = capacity.clamp(1, MAX_SLOTS);
-            if !progress_enabled() {
-                return Self { renderer: None };
-            }
             Self {
                 renderer: Some(Arc::new(Mutex::new(ProgressRenderer::from_mp(
                     mp,
@@ -1226,9 +1205,6 @@ mod inner {
         /// panicked while holding the lock).
         #[must_use]
         pub fn with_overall(label: &str, total: u64) -> (Self, TrackedHandle) {
-            if !progress_enabled() {
-                return (Self { renderer: None }, TrackedHandle::disabled());
-            }
             let (renderer, state) =
                 ProgressRenderer::with_overall(total, label, Arc::new(RealTerminalSource));
             let renderer = Arc::new(Mutex::new(renderer));
@@ -1255,9 +1231,6 @@ mod inner {
             total: u64,
             dim_source: Arc<dyn DimensionSource>,
         ) -> (Self, TrackedHandle) {
-            if !progress_enabled() {
-                return (Self { renderer: None }, TrackedHandle::disabled());
-            }
             let (renderer, state) = ProgressRenderer::with_overall(total, label, dim_source);
             let renderer = Arc::new(Mutex::new(renderer));
             let weak = Arc::downgrade(&renderer);
@@ -1289,9 +1262,6 @@ mod inner {
             label: &str,
             total: u64,
         ) -> (Self, TrackedHandle) {
-            if !progress_enabled() {
-                return (Self { renderer: None }, TrackedHandle::disabled());
-            }
             let cap = capacity.clamp(1, MAX_SLOTS);
             let (renderer, state) = ProgressRenderer::from_mp_with_overall(
                 mp,
@@ -1328,9 +1298,6 @@ mod inner {
             dynamic_height: bool,
         ) -> Self {
             let cap = capacity.clamp(1, MAX_SLOTS);
-            if !progress_enabled() {
-                return Self { renderer: None };
-            }
             let mut renderer = ProgressRenderer::from_mp(mp, cap, dim_source);
             renderer.dynamic_height = dynamic_height;
             Self { renderer: Some(Arc::new(Mutex::new(renderer))) }
@@ -1355,9 +1322,6 @@ mod inner {
             dim_source: Arc<dyn DimensionSource>,
             dynamic_height: bool,
         ) -> (Self, TrackedHandle) {
-            if !progress_enabled() {
-                return (Self { renderer: None }, TrackedHandle::disabled());
-            }
             let cap = capacity.clamp(1, MAX_SLOTS);
             let (mut renderer, state) =
                 ProgressRenderer::from_mp_with_overall(mp, cap, total, label, dim_source);
@@ -1450,7 +1414,6 @@ mod inner {
 pub use inner::{
     DimensionSource, ProgressGroup, ProgressHandle, ProgressRenderer, ProgressTracker,
     RealTerminalSource, TestDimensionSource, TrackSnapshot, TrackStatus, TrackedHandle,
-    progress_enabled, set_progress_enabled,
 };
 
 // ---- Shared API traits for dependency injection (feature-gated) -------
@@ -1825,46 +1788,12 @@ mod tests {
     use std::sync::Arc;
 
     use super::recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
-    use super::{
-        ProgressGroup, ProgressTracker, TrackStatus, TrackedHandle, progress_enabled,
-        set_progress_enabled,
-    };
+    use super::{ProgressGroup, ProgressTracker, TrackStatus, TrackedHandle};
     use indicatif::MultiProgress;
 
-    // ---- PROGRESS_ENABLED wiring -----------------------------------------
-    //
-    // All toggle-dependent assertions live in one test to avoid races on the
-    // global `PROGRESS_ENABLED` `AtomicBool` across parallel test threads.
-
     #[test]
-    fn progress_enabled_toggle_affects_construction() {
-        let prev = progress_enabled();
-
-        // --- disabled ---
-        set_progress_enabled(false);
-        let h = TrackedHandle::new(100);
-        assert_eq!(h.total(), 0, "disabled handle reports 0 total");
-        let g = ProgressGroup::new();
-        let ch = g.add_bar(50, "child");
-        assert_eq!(ch.total(), 0);
-        let (_og, oh) = ProgressGroup::with_overall("all", 300);
-        assert_eq!(oh.total(), 0);
-        g.join_and_clear();
-
-        // All mutation methods are no-ops on a disabled handle
-        h.advance(10);
-        h.set_total(50);
-        h.set_position(5);
-        h.set_message("hi");
-        h.set_prefix("pfx");
-        h.finish();
-        h.finish_success("ok");
-        h.finish_error("err");
-        h.finish_and_clear();
-        h.abandon();
-
-        // --- enabled ---
-        set_progress_enabled(true);
+    fn progress_enabled_no_global_toggle() {
+        // Constructors always produce enabled handles.
         let h = TrackedHandle::new(100);
         assert_eq!(h.total(), 100, "enabled handle reports initial total");
         let g = ProgressGroup::new();
@@ -1882,7 +1811,23 @@ mod tests {
         h.set_prefix("pfx");
         h.finish();
 
-        set_progress_enabled(prev);
+        // Disabled handles can still be created explicitly.
+        let dh = TrackedHandle::disabled();
+        assert_eq!(dh.total(), 0, "disabled handle reports 0 total");
+        let dg = ProgressGroup::disabled();
+        let dch = dg.add_bar(50, "child");
+        assert_eq!(dch.total(), 0);
+        // All mutation methods are no-ops on a disabled handle
+        dh.advance(10);
+        dh.set_total(50);
+        dh.set_position(5);
+        dh.set_message("hi");
+        dh.set_prefix("pfx");
+        dh.finish();
+        dh.finish_success("ok");
+        dh.finish_error("err");
+        dh.finish_and_clear();
+        dh.abandon();
     }
 
     #[test]
@@ -2001,24 +1946,18 @@ mod tests {
 
     #[test]
     fn progress_group_new_creates_handle() {
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let g = ProgressGroup::new();
         let h = g.add_bar(42, "child");
         assert!(h.total() > 0, "enabled handle must have total > 0");
         assert_eq!(h.total(), 42);
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn progress_group_with_overall_creates_both() {
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let (g, overall) = ProgressGroup::with_overall("all", 100);
         assert_eq!(overall.total(), 100, "overall bar must have total == 100");
         let child = g.add_bar(50, "child");
         assert_eq!(child.total(), 50, "child bar must have total == 50");
-        set_progress_enabled(prev);
     }
 
     #[test]
@@ -2047,8 +1986,6 @@ mod tests {
 
     #[test]
     fn progress_group_join_and_clear_does_not_panic() {
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         // Non-empty group
         let g = ProgressGroup::new();
         let _h = g.add_bar(10, "a");
@@ -2059,29 +1996,17 @@ mod tests {
         let g = ProgressGroup::new();
         g.join();
         g.join_and_clear();
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn progress_group_disabled_construction() {
-        let prev = progress_enabled();
-        set_progress_enabled(false);
-
-        let g1 = ProgressGroup::new();
+        let g1 = ProgressGroup::disabled();
         let h1 = g1.add_bar(50, "c1");
         assert_eq!(h1.total(), 0);
 
-        let g2 = ProgressGroup::with_mp(MultiProgress::new(), 4);
-        let h2 = g2.add_bar(30, "c2");
+        // disabled + explicit disabled handle pair for with-overall patterns.
+        let (_g2, h2) = (ProgressGroup::disabled(), TrackedHandle::disabled());
         assert_eq!(h2.total(), 0);
-
-        let (_g3, h3) = ProgressGroup::with_overall("all", 200);
-        assert_eq!(h3.total(), 0);
-
-        let (_g4, h4) = ProgressGroup::with_mp_and_overall(MultiProgress::new(), 4, "all2", 300);
-        assert_eq!(h4.total(), 0);
-
-        set_progress_enabled(prev);
     }
 
     #[test]
@@ -2102,8 +2027,6 @@ mod tests {
     #[test]
     fn progress_group_join_leaves_handles_intact() {
         // join() is a no-op — handles must still be usable afterward.
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let g = ProgressGroup::new();
         let h = g.add_bar(42, "child");
         h.advance(10);
@@ -2111,15 +2034,12 @@ mod tests {
         h.finish_success("done");
         g.join();
         assert_eq!(h.total(), 50, "handle total preserved after join");
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn progress_group_finish_success_and_error_preserve_group() {
         // Finish calls on a handle must preserve the total and the group must
         // remain functional (join() must not panic).
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let g = ProgressGroup::new();
         let h = g.add_bar(10, "test");
         h.finish_success("completed");
@@ -2128,7 +2048,6 @@ mod tests {
         h.finish_error("timed out");
         assert_eq!(h.total(), 10, "handle total preserved after finish_error");
         g.join(); // join must not panic on any state
-        set_progress_enabled(prev);
     }
 
     // ── recording_handle_set_message_and_prefix_ops ──
@@ -2336,62 +2255,45 @@ mod tests {
 
     #[test]
     fn tracked_handle_new_creates_handle_with_total() {
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let h = TrackedHandle::new(50);
         assert_eq!(h.total(), 50);
         assert_eq!(h.snapshot().position, 0);
         assert!(!h.is_finished());
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn tracked_handle_new_advance_and_snapshot() {
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let h = TrackedHandle::new(100);
         h.advance(42);
         let snap = h.snapshot();
         assert_eq!(snap.position, 42);
         assert_eq!(snap.total, 100);
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn tracked_handle_is_finished_after_finish_success() {
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let h = TrackedHandle::new(10);
         assert!(!h.is_finished());
         h.finish_success("ok");
         assert!(h.is_finished());
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn tracked_handle_is_finished_after_finish_error() {
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let h = TrackedHandle::new(10);
         h.finish_error("err");
         assert!(h.is_finished());
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn tracked_handle_is_finished_after_abandon() {
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let h = TrackedHandle::new(10);
         h.abandon();
         assert!(h.is_finished());
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn tracked_handle_snapshot_fields_match() {
-        let prev = progress_enabled();
-        set_progress_enabled(true);
         let h = TrackedHandle::new(100);
         h.set_prefix("pfx");
         h.set_message("msg");
@@ -2402,14 +2304,11 @@ mod tests {
         assert_eq!(snap.position, 7);
         assert_eq!(snap.total, 100);
         assert!(matches!(snap.status, TrackStatus::Active));
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn progress_group_excess_bars_return_active_handles() {
         // Fill slots beyond capacity, verify excess handle still tracks.
-        let prev = progress_enabled();
-        set_progress_enabled(true);
 
         // ProgressGroup::with_overall allocates terminal_height() slots
         // (clamped to 4-200).  Use a MultiProgress with small term to force
@@ -2438,16 +2337,12 @@ mod tests {
             assert_eq!(snap.position, (i + 1) as u64, "handle {i} position");
             assert_eq!(snap.message, format!("done {i}"), "handle {i} message");
         }
-
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn progress_group_manager_finish_and_clear_via_tick_fn() {
         // finish_and_clear on a ProgressGroup-managed handle (bar=None,
         // tick_fn=Some) must still mark state as finished.
-        let prev = progress_enabled();
-        set_progress_enabled(true);
 
         let (_group, overall) = ProgressGroup::with_overall("all", 10);
         overall.finish_and_clear();
@@ -2463,34 +2358,23 @@ mod tests {
         // does update position since advance() does not gate on status.
         overall.advance(5);
         assert_eq!(overall.snapshot().position, 5, "advance still works after finish_and_clear");
-
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn tracked_handle_finish_and_clear_disabled_is_noop() {
         // disabled() handle with finish_and_clear must not panic and
         // must leave state unchanged.
-        let prev = progress_enabled();
-        set_progress_enabled(false);
-        let h = TrackedHandle::new(10);
+        let h = TrackedHandle::disabled();
         assert_eq!(h.total(), 0);
         h.finish_and_clear();
         assert_eq!(h.total(), 0);
-        set_progress_enabled(prev);
     }
 
     #[test]
     fn progress_group_disabled_add_bar_returns_disabled() {
-        let prev = progress_enabled();
-        set_progress_enabled(false);
-
-        let (g, overall) = ProgressGroup::with_overall("all", 10);
-        assert_eq!(overall.total(), 0, "overall disabled");
+        let g = ProgressGroup::disabled();
         let child = g.add_bar(42, "child");
         assert_eq!(child.total(), 0, "child disabled");
-
-        set_progress_enabled(prev);
     }
 
     #[test]
