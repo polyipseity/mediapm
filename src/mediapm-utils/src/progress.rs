@@ -839,18 +839,22 @@ mod inner {
                     let elapsed_str = format_elapsed(snap.elapsed);
 
                     // Compute EMA-smoothed rate, always shown for active bars.
+                    // Rate is only recomputed when position actually changes.
                     let rate_str = if snap.status == TrackStatus::Active {
-                        let now = Instant::now();
-                        let dt =
-                            now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
-                        if dt > 0.001 {
-                            #[allow(clippy::cast_precision_loss)]
-                            let current =
-                                (snap.position - self.slots_timing[i].prev_position) as f64 / dt;
-                            self.slots_timing[i].rate =
-                                self.slots_timing[i].rate * 0.9 + current * 0.1;
-                            self.slots_timing[i].prev_position = snap.position;
-                            self.slots_timing[i].prev_instant = now;
+                        if snap.position != self.slots_timing[i].prev_position {
+                            let now = Instant::now();
+                            let dt =
+                                now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
+                            if dt > 0.001 {
+                                #[allow(clippy::cast_precision_loss)]
+                                let current = (snap.position - self.slots_timing[i].prev_position)
+                                    as f64
+                                    / dt;
+                                self.slots_timing[i].rate =
+                                    self.slots_timing[i].rate * 0.9 + current * 0.1;
+                                self.slots_timing[i].prev_position = snap.position;
+                                self.slots_timing[i].prev_instant = now;
+                            }
                         }
                         Some(format_rate(self.slots_timing[i].rate))
                     } else {
