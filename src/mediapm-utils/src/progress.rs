@@ -170,25 +170,43 @@ mod inner {
         }
     }
 
+    /// Format a count with SI suffix: `0`, `999`, `1.2k`, `12.3k`, `123k`, `1.2M`, `12.3M`.
+    #[allow(clippy::cast_precision_loss)]
+    pub(crate) fn format_count(n: u64) -> String {
+        if n >= 1_000_000_000 {
+            format!("{:.1}G", n as f64 / 1_000_000_000.0)
+        } else if n >= 1_000_000 {
+            let v = n as f64 / 1_000_000.0;
+            if v < 10.0 { format!("{v:.1}M") } else { format!("{v:.0}M") }
+        } else if n >= 1_000 {
+            let v = n as f64 / 1_000.0;
+            if v < 10.0 { format!("{v:.1}k") } else { format!("{v:.0}k") }
+        } else {
+            n.to_string()
+        }
+    }
+
     const CHILD_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:<16.16} {wide_bar:.blue/dim} {msg:<25.50}";
+        "{spinner:.green} {prefix:>16.16} {wide_bar:.yellow/dim} {msg:<25.50.yellow}";
 
     const OVERALL_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:<16.16} {wide_bar:.cyan/dim} {msg:<25.50}";
+        "{spinner:.green} {prefix:>16.16} {wide_bar:.magenta/dim} {msg:<25.50.magenta}";
 
-    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:<16.16} {msg:<8.30}";
+    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {msg:<8.30.yellow}";
 
-    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:<16.16} {msg:<8.30}";
+    const COMPACT_OVERALL_BAR_TEMPLATE: &str =
+        "{spinner:.green} {prefix:>16.16} {msg:<8.30.magenta}";
 
     const DONE_BAR_TEMPLATE: &str =
-        "{spinner:.white/.dim} {prefix:<16.16} {wide_bar:.green/dim} {msg:<25.50}";
+        "{spinner:.white/.dim} {prefix:>16.16} {wide_bar:.green/dim} {msg:<25.50.green/.dim}";
 
-    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.white/.dim} {prefix:<16.16} {msg:<8.30}";
+    const COMPACT_DONE_BAR_TEMPLATE: &str =
+        "{spinner:.white/.dim} {prefix:>16.16} {msg:<8.30.green/.dim}";
 
     const FAILED_BAR_TEMPLATE: &str =
-        "{spinner:.red} {prefix:<16.16} {wide_bar:.red/dim} {msg:<25.50}";
+        "{spinner:.red} {prefix:>16.16} {wide_bar:.red/dim} {msg:<25.50.red}";
 
-    const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:<16.16} {msg:<8.30}";
+    const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>16.16} {msg:<8.30.red}";
 
     /// Maximum number of pre-allocated slot bars (safety cap).
     const MAX_SLOTS: usize = 200;
@@ -741,10 +759,12 @@ mod inner {
                 }
                 slot.bar.set_prefix(snap.prefix);
                 let elapsed_str = format_elapsed(snap.elapsed);
+                let count_str = format_count(snap.position);
+                let total_str = format_count(snap.total);
                 let msg = if snap.message.is_empty() {
-                    format!(" {}/{} {elapsed_str}", snap.position, snap.total)
+                    format!(" {count_str}/{total_str} {elapsed_str}")
                 } else {
-                    format!(" {}/{} {elapsed_str} {}", snap.position, snap.total, snap.message)
+                    format!(" {count_str}/{total_str} {elapsed_str} {}", snap.message)
                 };
                 slot.bar.set_message(msg);
                 slot.bar.set_length(snap.total);
@@ -850,7 +870,9 @@ mod inner {
                     };
 
                     // Build msg: pos/len  elapsed  [rate]  [user_message]
-                    let mut msg = format!(" {}/{} {elapsed_str}", snap.position, snap.total);
+                    let count_str = format_count(snap.position);
+                    let total_str = format_count(snap.total);
+                    let mut msg = format!(" {count_str}/{total_str} {elapsed_str}");
                     if let Some(ref rate) = rate_str {
                         msg.push(' ');
                         msg.push_str(rate);
@@ -883,14 +905,14 @@ mod inner {
                         match snap.status {
                             TrackStatus::Success => {
                                 slot.bar.finish_with_message(format!(
-                                    " {}/{} {elapsed_str} {}",
-                                    snap.position, snap.total, snap.message,
+                                    " {count_str}/{total_str} {elapsed_str} {}",
+                                    snap.message,
                                 ));
                             }
                             TrackStatus::Failed => {
                                 slot.bar.abandon_with_message(format!(
-                                    " {}/{} {elapsed_str} {}",
-                                    snap.position, snap.total, snap.message,
+                                    " {count_str}/{total_str} {elapsed_str} {}",
+                                    snap.message,
                                 ));
                             }
                             TrackStatus::Abandoned => {
