@@ -2048,6 +2048,149 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
     assert!(lines[4].contains("3/3"), "overall shows complete: {0}", lines[4]);
 }
 
+// ── Finalize (join_and_clear) behavior ──
+//
+// These tests verify the `Renderer::finalize()` path exercised by
+// `ProgressGroup::join_and_clear()`.  The critical invariants:
+// - **Finished bars (including overall) survive** finalize (Problem 2 from v3→v4).
+// - **Active bars are untouched** by finalize.
+// - **Empty finalize** (no children, only overall) does not panic.
+// - **Idempotent finish** — calling tick() twice on finished bars is safe.
+
+#[test]
+fn progress_group_overall_finish_and_join_clear_persists() {
+    // Terminal H=5, W=80.  Full templates, 3 slots (2 child + 1 overall).
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(3)
+        .with_overall("overall", 3)
+        .build_with_overall();
+
+    let c = group.add_bar(5, "fetch");
+    c.advance(5);
+    group.tick();
+    c.finish_success();
+    overall.advance(3);
+    overall.finish_success();
+    group.tick();
+    // join_and_clear triggers finalize: finishes non-Active bars, removes
+    // blank slots, then draws.  Finished overall must persist in output.
+    group.join_and_clear();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== overall_finish_and_join_clear_persists, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // 2 bars remain (fetch + overall), blanks removed.
+    assert_eq!(lines.len(), 2, "2 bars after finalize (fetch + overall)");
+    assert!(lines[0].contains("fetch"), "line 0 shows fetch: {0}", lines[0]);
+    assert!(lines[0].contains("5/5"), "line 0 shows 5/5: {0}", lines[0]);
+    assert!(lines[1].contains("overall"), "line 1 shows overall: {0}", lines[1]);
+    assert!(lines[1].contains("3/3"), "line 1 shows 3/3: {0}", lines[1]);
+}
+
+#[test]
+fn progress_group_active_bars_survive_join_and_clear() {
+    // Terminal H=5, W=80.  Active bars must remain styled and visible
+    // after finalize removes blank slots.
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(3)
+        .with_overall("overall", 3)
+        .build_with_overall();
+
+    let _c = group.add_bar(5, "alpha");
+    // alpha is Active — never finished.
+    group.tick();
+    // join_and_clear runs finalize; Active bars are skipped by the
+    // non-Active guard but should remain visible after blank removal.
+    group.join_and_clear();
+    group.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== active_bars_survive_join_and_clear, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    // 2 bars remain (alpha + overall), blanks removed.
+    assert_eq!(lines.len(), 2, "2 bars after finalize (alpha + overall)");
+    assert!(lines[0].contains("alpha"), "line 0 shows alpha: {0}", lines[0]);
+    assert!(lines[0].contains("0/5"), "line 0 shows 0/5: {0}", lines[0]);
+    // Active bar has rate visible.
+    assert!(
+        lines[0].contains("/s")
+            || lines[0].contains("/m")
+            || lines[0].contains("/d")
+            || lines[0].contains("/h"),
+        "active bar shows rate: {0}",
+        lines[0],
+    );
+    // No brackets on active bar.
+    assert!(!lines[0].contains("[F]"), "no [F] on active: {0}", lines[0]);
+    assert!(!lines[0].contains("[A]"), "no [A] on active: {0}", lines[0]);
+    assert!(!lines[0].contains("[S]"), "no [S] on active: {0}", lines[0]);
+    assert!(lines[1].contains("overall"), "line 1 shows overall: {0}", lines[1]);
+    assert!(lines[1].contains("0/3"), "line 1 shows 0/3: {0}", lines[1]);
+    // Overall is also active (not finished).
+    assert!(!lines[1].contains("[S]"), "no [S] on active overall: {0}", lines[1]);
+}
+
+#[test]
+fn progress_group_empty_finalize_no_crash() {
+    // Terminal H=3, W=80.  Only overall, no children.
+    let (mp, term) = mk_with_size(3, 80);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(3)
+        .with_overall("overall", 1)
+        .build_with_overall();
+
+    // No children added — all slots except overall are blank.
+    group.tick();
+    // join_and_clear removes blank bars and triggers final draw.
+    // Must not panic when MultiProgress has zero bound bars left.
+    group.join_and_clear();
+    let contents = term.contents();
+    eprintln!("=== empty_finalize_no_crash, H=3, W=80 ===");
+    eprintln!("contents = {contents:?}");
+    // At minimum the overall bar must survive.
+    assert!(contents.contains("overall"), "overall survives empty finalize: {contents:?}");
+}
+
+#[test]
+fn finish_slot_idempotent() {
+    // Double tick on a finished bar must not panic or corrupt state.
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(3)
+        .with_overall("overall", 3)
+        .build_with_overall();
+
+    let c = group.add_bar(5, "fetch");
+    c.advance(5);
+    group.tick();
+    c.finish_success();
+    // First tick triggers finish_slot via tick() → non-Active guard.
+    group.tick();
+    let contents_after_first = term.contents();
+    // Second tick calls finish_slot again on the same finished slot.
+    group.tick();
+    let contents_after_second = term.contents();
+    eprintln!("=== finish_slot_idempotent, H=5, W=80 ===");
+    eprintln!("after first tick = {contents_after_first:?}");
+    eprintln!("after second tick = {contents_after_second:?}");
+    // Output should be structurally similar (same line count, same bars).
+    let lines_first: Vec<&str> = contents_after_first.lines().collect();
+    let lines_second: Vec<&str> = contents_after_second.lines().collect();
+    assert_eq!(lines_first.len(), lines_second.len(), "same line count on second tick");
+    // fetch bar is at index 1 (index 0 is empty from InMemoryTerm's leading \n).
+    assert!(lines_second[1].contains("5/5"), "fetch still shows 5/5: {0}", lines_second[1]);
+}
+
 // ── Slot pool / rendering tests ──
 
 #[test]
