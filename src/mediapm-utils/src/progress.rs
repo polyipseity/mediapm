@@ -589,6 +589,9 @@ mod inner {
         /// Optional tracking state this slot is currently bound to.
         /// `None` means the slot is blank (unused).
         source: RefCell<Option<Arc<SharedState>>>,
+        /// Whether `bar.enable_steady_tick` has been called.
+        /// Guards against redundant stop-and-replace cycles.
+        steady_tick: Cell<bool>,
     }
 
     /// Manages a fixed-size grid of [`ProgressBar`] slots in
@@ -665,7 +668,11 @@ mod inner {
                 bar.set_style(blank_bar_style());
                 bar.set_message(" ");
                 bar.set_prefix("");
-                slots.push(RenderedSlot { bar, source: RefCell::new(None) });
+                slots.push(RenderedSlot {
+                    bar,
+                    source: RefCell::new(None),
+                    steady_tick: Cell::new(false),
+                });
             }
             // Trigger a final draw so all bars are captured by InMemoryTerm
             // even when capacity == terminal height.
@@ -702,7 +709,11 @@ mod inner {
                 bar.set_style(blank_bar_style());
                 bar.set_message(" ");
                 bar.set_prefix("");
-                slots.push(RenderedSlot { bar, source: RefCell::new(None) });
+                slots.push(RenderedSlot {
+                    bar,
+                    source: RefCell::new(None),
+                    steady_tick: Cell::new(false),
+                });
             }
             // Last slot = overall bar.
             let overall_state = Arc::new(SharedState::new(total, label));
@@ -715,6 +726,7 @@ mod inner {
             slots.push(RenderedSlot {
                 bar: overall_bar,
                 source: RefCell::new(Some(overall_state.clone())),
+                steady_tick: Cell::new(true),
             });
             let slots_timing = (0..capacity).map(|_| SlotTiming::new()).collect();
             (
@@ -759,12 +771,18 @@ mod inner {
                 slot.bar.set_message(msg);
                 slot.bar.set_length(snap.total);
                 slot.bar.set_position(snap.position);
-                slot.bar.enable_steady_tick(Duration::from_millis(100));
+                if !slot.steady_tick.get() {
+                    slot.bar.enable_steady_tick(Duration::from_millis(100));
+                    slot.steady_tick.set(true);
+                }
             } else {
                 slot.bar.set_style(blank_bar_style());
                 slot.bar.set_message(" ");
                 slot.bar.set_prefix("");
-                slot.bar.disable_steady_tick();
+                if slot.steady_tick.get() {
+                    slot.bar.disable_steady_tick();
+                    slot.steady_tick.set(false);
+                }
             }
         }
 
@@ -883,7 +901,10 @@ mod inner {
                         slot.bar.set_style(blank_bar_style());
                         slot.bar.set_message(" ");
                         slot.bar.set_prefix("");
-                        slot.bar.disable_steady_tick();
+                        if slot.steady_tick.get() {
+                            slot.bar.disable_steady_tick();
+                            slot.steady_tick.set(false);
+                        }
                     } else {
                         self.finish_slot(i, snap.status);
                     }
@@ -909,7 +930,10 @@ mod inner {
                 TrackStatus::Failed | TrackStatus::Abandoned => slot.bar.abandon(),
                 _ => slot.bar.finish(),
             }
-            slot.bar.disable_steady_tick();
+            if slot.steady_tick.get() {
+                slot.bar.disable_steady_tick();
+                slot.steady_tick.set(false);
+            }
             slot.bar.tick();
         }
 
@@ -949,7 +973,11 @@ mod inner {
                         bar.set_style(blank_bar_style());
                         bar.set_message(" ");
                         bar.set_prefix("");
-                        let slot = RenderedSlot { bar, source: RefCell::new(None) };
+                        let slot = RenderedSlot {
+                            bar,
+                            source: RefCell::new(None),
+                            steady_tick: Cell::new(false),
+                        };
                         if let Some(orphan) = self.orphaned_states.borrow_mut().pop_back() {
                             slot.source.replace(Some(orphan));
                         }
