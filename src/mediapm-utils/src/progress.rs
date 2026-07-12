@@ -237,13 +237,16 @@ mod inner {
         s
     }
 
-    /// Build prefix: bare prefix for normal states, colored bracket + prefix
-    /// for failed/abandoned.
+    /// Build prefix: always starts with ANSI reset to clear any SGR state
+    /// from preceding template fields (e.g. `{spinner:.green}`).
+    /// Normal states return just the prefix; failed/abandoned add a colored
+    /// bracket before the prefix.
     pub(super) fn build_prefix(status: TrackStatus, prefix: &str) -> String {
+        let reset = "\x1b[0m";
         match status {
-            TrackStatus::Failed => format!("\x1b[31m[F]\x1b[0m {prefix}"),
-            TrackStatus::Abandoned => format!("\x1b[33m[A]\x1b[0m {prefix}"),
-            _ => prefix.to_string(),
+            TrackStatus::Failed => format!("{reset}\x1b[31m[F]\x1b[0m {prefix}"),
+            TrackStatus::Abandoned => format!("{reset}\x1b[33m[A]\x1b[0m {prefix}"),
+            _ => format!("{reset}{prefix}"),
         }
     }
 
@@ -2361,13 +2364,13 @@ mod tests {
     #[test]
     fn build_prefix_failed() {
         let result = super::inner::build_prefix(super::TrackStatus::Failed, "wget");
-        assert_eq!(result, "\x1b[31m[F]\x1b[0m wget");
+        assert_eq!(result, "\x1b[0m\x1b[31m[F]\x1b[0m wget");
     }
 
     #[test]
     fn build_prefix_abandoned() {
         let result = super::inner::build_prefix(super::TrackStatus::Abandoned, "wget");
-        assert_eq!(result, "\x1b[33m[A]\x1b[0m wget");
+        assert_eq!(result, "\x1b[0m\x1b[33m[A]\x1b[0m wget");
     }
 
     #[test]
@@ -2376,7 +2379,24 @@ mod tests {
             [super::TrackStatus::Active, super::TrackStatus::Success, super::TrackStatus::Finished]
         {
             let result = super::inner::build_prefix(status, "child");
-            assert_eq!(result, "child");
+            assert_eq!(result, "\x1b[0mchild");
+        }
+    }
+
+    #[test]
+    fn build_prefix_always_starts_with_reset() {
+        for status in [
+            super::TrackStatus::Active,
+            super::TrackStatus::Failed,
+            super::TrackStatus::Abandoned,
+            super::TrackStatus::Success,
+            super::TrackStatus::Finished,
+        ] {
+            let result = super::inner::build_prefix(status, "foo");
+            assert!(
+                result.starts_with("\x1b[0m"),
+                "{status:?}: expected \\x1b[0m prefix, got {result:?}"
+            );
         }
     }
 
