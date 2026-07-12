@@ -171,19 +171,24 @@ mod inner {
     }
 
     const CHILD_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>16.16} {wide_bar:.cyan/blue} {msg:>25.50}";
+        "{spinner:.green} {prefix:<16.16} {wide_bar:.blue/dim} {msg:<25.50}";
 
     const OVERALL_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>16.16} {wide_bar:.green/dim} {msg:>25.50}";
+        "{spinner:.green} {prefix:<16.16} {wide_bar:.cyan/dim} {msg:<25.50}";
 
-    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {msg:>8.30}";
+    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:<16.16} {msg:<8.30}";
 
-    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {msg:>8.30}";
+    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:<16.16} {msg:<8.30}";
 
     const DONE_BAR_TEMPLATE: &str =
-        "{spinner:.dim} {prefix:>16.16} {wide_bar:.white/dim} {msg:>25.50}";
+        "{spinner:.white/.dim} {prefix:<16.16} {wide_bar:.green/dim} {msg:<25.50}";
 
-    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.dim} {prefix:>16.16} {msg:>8.30}";
+    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.white/.dim} {prefix:<16.16} {msg:<8.30}";
+
+    const FAILED_BAR_TEMPLATE: &str =
+        "{spinner:.red} {prefix:<16.16} {wide_bar:.red/dim} {msg:<25.50}";
+
+    const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:<16.16} {msg:<8.30}";
 
     /// Maximum number of pre-allocated slot bars (safety cap).
     const MAX_SLOTS: usize = 200;
@@ -244,11 +249,32 @@ mod inner {
             .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
     }
 
+    fn failed_bar_style() -> ProgressStyle {
+        ProgressStyle::with_template(FAILED_BAR_TEMPLATE)
+            .expect("invalid failed bar template")
+            .progress_chars("█░")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    }
+
+    fn compact_failed_bar_style() -> ProgressStyle {
+        ProgressStyle::with_template(COMPACT_FAILED_BAR_TEMPLATE)
+            .expect("invalid compact failed bar template")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    }
+
     fn apply_done_bar_style(pb: &ProgressBar, width: u16) {
         if width < 60 {
             pb.set_style(compact_done_bar_style());
         } else {
             pb.set_style(done_bar_style());
+        }
+    }
+
+    fn apply_failed_bar_style(pb: &ProgressBar, width: u16) {
+        if width < 60 {
+            pb.set_style(compact_failed_bar_style());
+        } else {
+            pb.set_style(failed_bar_style());
         }
     }
 
@@ -706,6 +732,8 @@ mod inner {
                 let is_overall = self.has_overall && i == self.slots.len() - 1;
                 if is_overall {
                     apply_overall_bar_style(&slot.bar, cols);
+                } else if snap.status == TrackStatus::Failed {
+                    apply_failed_bar_style(&slot.bar, cols);
                 } else if snap.status != TrackStatus::Active {
                     apply_done_bar_style(&slot.bar, cols);
                 } else {
@@ -847,6 +875,8 @@ mod inner {
                         slot.bar.disable_steady_tick();
                         if self.has_overall && i == self.slots.len() - 1 {
                             apply_overall_bar_style(&slot.bar, cols);
+                        } else if snap.status == TrackStatus::Failed {
+                            apply_failed_bar_style(&slot.bar, cols);
                         } else {
                             apply_done_bar_style(&slot.bar, cols);
                         }
