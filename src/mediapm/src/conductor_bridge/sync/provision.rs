@@ -96,8 +96,6 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     for (os, action) in &plan.per_os_actions {
         let os_label = os.as_str();
-        progress_handle.set_message(os_label);
-
         // ── download (per-OS cache key) ────────────────────────────────
         let cache_key = format!("{}_{}_{}", entry.id, os_label, entry.latest);
         let bytes = if let Some(cached) = cache.lookup_bytes(&cache_key).await {

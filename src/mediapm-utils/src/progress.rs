@@ -187,29 +187,65 @@ mod inner {
     }
 
     const CHILD_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>16.16} {wide_bar:.yellow/dim} {msg:<25.50.yellow}";
+        "{spinner:.green} {prefix:>20.20} {wide_bar:.yellow/dim} {msg:<25.50}";
 
     const OVERALL_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>16.16} {wide_bar:.magenta/dim} {msg:<25.50.magenta}";
+        "{spinner:.green} {prefix:>20.20} {wide_bar:.magenta/dim} {msg:<25.50}";
 
-    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {msg:<8.30.yellow}";
+    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>20.20} {msg:<8.30}";
 
-    const COMPACT_OVERALL_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>16.16} {msg:<8.30.magenta}";
+    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>20.20} {msg:<8.30}";
 
     const DONE_BAR_TEMPLATE: &str =
-        "{spinner:.white/.dim} {prefix:>16.16} {wide_bar:.green/dim} {msg:<25.50.green/.dim}";
+        "{spinner:.white/.dim} {prefix:>20.20} {wide_bar:.green/dim} {msg:<25.50}";
 
-    const COMPACT_DONE_BAR_TEMPLATE: &str =
-        "{spinner:.white/.dim} {prefix:>16.16} {msg:<8.30.green/.dim}";
+    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.white/.dim} {prefix:>20.20} {msg:<8.30}";
 
     const FAILED_BAR_TEMPLATE: &str =
-        "{spinner:.red} {prefix:>16.16} {wide_bar:.red/dim} {msg:<25.50.red}";
+        "{spinner:.red} {prefix:>20.20} {wide_bar:.red/dim} {msg:<25.50}";
 
-    const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>16.16} {msg:<8.30.red}";
+    const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>20.20} {msg:<8.30}";
 
     /// Maximum number of pre-allocated slot bars (safety cap).
     const MAX_SLOTS: usize = 200;
+
+    /// ANSI SGR foreground color code matching the `{wide_bar}` template color.
+    fn bar_color_code(status: TrackStatus, is_overall: bool) -> &'static str {
+        match status {
+            TrackStatus::Failed => "31",
+            TrackStatus::Abandoned | TrackStatus::Success | TrackStatus::Finished => "32",
+            TrackStatus::Active if is_overall => "35",
+            TrackStatus::Active => "33",
+        }
+    }
+
+    /// Build the `{msg}` string: colored count/total + uncolored rate + uncolored elapsed.
+    fn build_right_msg(
+        color_code: &str,
+        count_str: &str,
+        total_str: &str,
+        elapsed_str: &str,
+        rate_str: Option<&str>,
+    ) -> String {
+        let mut s = format!(" \x1b[{color_code}m{count_str}/{total_str}\x1b[0m");
+        if let Some(rate) = rate_str {
+            s.push(' ');
+            s.push_str(rate);
+        }
+        s.push(' ');
+        s.push_str(elapsed_str);
+        s
+    }
+
+    /// Build prefix: bare prefix for normal states, colored bracket + prefix
+    /// for failed/abandoned.
+    fn build_prefix(status: TrackStatus, prefix: &str) -> String {
+        match status {
+            TrackStatus::Failed => format!("\x1b[31m[F]\x1b[0m {prefix}"),
+            TrackStatus::Abandoned => format!("\x1b[33m[A]\x1b[0m {prefix}"),
+            _ => prefix.to_string(),
+        }
+    }
 
     fn child_bar_style() -> ProgressStyle {
         ProgressStyle::with_template(CHILD_BAR_TEMPLATE)
@@ -325,7 +361,6 @@ mod inner {
         position: AtomicU64,
         total: AtomicU64,
         label: RwLock<String>,
-        message: RwLock<String>,
         prefix: RwLock<String>,
         status: AtomicU8,
         start_time: Instant,
@@ -338,7 +373,6 @@ mod inner {
                 position: AtomicU64::new(0),
                 total: AtomicU64::new(total),
                 label: RwLock::new(label.to_string()),
-                message: RwLock::new(String::new()),
                 prefix: RwLock::new(label.to_string()),
                 status: AtomicU8::new(0),
                 start_time: Instant::now(),
@@ -351,7 +385,6 @@ mod inner {
                 position: self.position.load(Ordering::Relaxed),
                 total: self.total.load(Ordering::Relaxed),
                 label: self.label.read().expect("shared_state label lock").clone(),
-                message: self.message.read().expect("shared_state message lock").clone(),
                 prefix: self.prefix.read().expect("shared_state prefix lock").clone(),
                 status: match self.status.load(Ordering::Relaxed) {
                     0 => TrackStatus::Active,
@@ -398,8 +431,6 @@ mod inner {
         pub total: u64,
         /// Display label.
         pub label: String,
-        /// Status message (shown after the bar).
-        pub message: String,
         /// Prefix (shown before the bar).
         pub prefix: String,
         /// Current status.
@@ -479,16 +510,6 @@ mod inner {
             self.state.position.store(pos, Ordering::Relaxed);
         }
 
-        /// Set the message shown after the bar (e.g. "materializing").
-        ///
-        /// # Panics
-        ///
-        /// Panics if the shared-state `RwLock` is poisoned.
-        pub fn set_message(&self, msg: impl Into<String>) {
-            let msg: String = msg.into();
-            (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
-        }
-
         /// Set the prefix shown before the bar.
         ///
         /// # Panics
@@ -505,27 +526,15 @@ mod inner {
             self.state.mark_finished();
         }
 
-        /// Mark as finished with a success message (keeps it visible).
-        ///
-        /// # Panics
-        ///
-        /// Panics if the shared-state `RwLock` is poisoned.
-        pub fn finish_success(&self, msg: impl Into<String>) {
+        /// Mark the bar as finished successfully (keeps it visible).
+        pub fn finish_success(&self) {
             self.state.status.store(1, Ordering::Relaxed); // Success
-            let msg: String = msg.into();
-            (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
             self.state.mark_finished();
         }
 
-        /// Mark as finished with an error message (keeps it visible).
-        ///
-        /// # Panics
-        ///
-        /// Panics if the shared-state `RwLock` is poisoned.
-        pub fn finish_error(&self, msg: impl Into<String>) {
+        /// Mark the bar as finished with an error (keeps it visible).
+        pub fn finish_error(&self) {
             self.state.status.store(2, Ordering::Relaxed); // Failed
-            let msg: String = msg.into();
-            (*self.state.message.write().expect("shared_state message lock")).clone_from(&msg);
             self.state.mark_finished();
         }
 
@@ -757,15 +766,12 @@ mod inner {
                 } else {
                     apply_bar_style(&slot.bar, cols);
                 }
-                slot.bar.set_prefix(snap.prefix);
+                slot.bar.set_prefix(build_prefix(snap.status, &snap.prefix));
                 let elapsed_str = format_elapsed(snap.elapsed);
                 let count_str = format_count(snap.position);
                 let total_str = format_count(snap.total);
-                let msg = if snap.message.is_empty() {
-                    format!(" {count_str}/{total_str} {elapsed_str}")
-                } else {
-                    format!(" {count_str}/{total_str} {elapsed_str} {}", snap.message)
-                };
+                let color_code = bar_color_code(snap.status, is_overall);
+                let msg = build_right_msg(color_code, &count_str, &total_str, &elapsed_str, None);
                 slot.bar.set_message(msg);
                 slot.bar.set_length(snap.total);
                 slot.bar.set_position(snap.position);
@@ -842,13 +848,12 @@ mod inner {
         /// Includes resize reactivity and full style re-application.
         pub fn tick(&mut self) {
             self.maybe_adjust_for_resize();
-            let (_, cols) = self.dim_source.dimensions();
             for (i, slot) in self.slots.iter().enumerate() {
                 if let Some(ref source) = *slot.source.borrow() {
                     let snap = source.snapshot();
                     let elapsed_str = format_elapsed(snap.elapsed);
 
-                    // Compute EMA-smoothed rate for active bars.
+                    // Compute EMA-smoothed rate, always shown for active bars.
                     let rate_str = if snap.status == TrackStatus::Active {
                         let now = Instant::now();
                         let dt =
@@ -861,31 +866,28 @@ mod inner {
                                 self.slots_timing[i].rate * 0.9 + current * 0.1;
                             self.slots_timing[i].prev_position = snap.position;
                             self.slots_timing[i].prev_instant = now;
-                            Some(format_rate(self.slots_timing[i].rate))
-                        } else {
-                            None
                         }
+                        Some(format_rate(self.slots_timing[i].rate))
                     } else {
                         None
                     };
 
-                    // Build msg: pos/len  elapsed  [rate]  [user_message]
                     let count_str = format_count(snap.position);
                     let total_str = format_count(snap.total);
-                    let mut msg = format!(" {count_str}/{total_str} {elapsed_str}");
-                    if let Some(ref rate) = rate_str {
-                        msg.push(' ');
-                        msg.push_str(rate);
-                    }
-                    if !snap.message.is_empty() {
-                        msg.push(' ');
-                        msg.push_str(&snap.message);
-                    }
+                    let is_overall = self.has_overall && i == self.slots.len() - 1;
+                    let color_code = bar_color_code(snap.status, is_overall);
+                    let msg = build_right_msg(
+                        color_code,
+                        &count_str,
+                        &total_str,
+                        &elapsed_str,
+                        rate_str.as_deref(),
+                    );
 
                     slot.bar.set_position(snap.position);
                     slot.bar.set_length(snap.total);
                     slot.bar.set_message(msg);
-                    slot.bar.set_prefix(snap.prefix.clone());
+                    slot.bar.set_prefix(build_prefix(snap.status, &snap.prefix));
                     if snap.status == TrackStatus::Active {
                         // Setters above already triggered a redraw; no tick() needed.
                     } else if source.is_cleared() {
@@ -894,34 +896,20 @@ mod inner {
                         slot.bar.set_prefix("");
                         slot.bar.disable_steady_tick();
                     } else {
-                        slot.bar.disable_steady_tick();
+                        // Finish ordering: style → finish/abandon → disable tick → force final draw.
                         if self.has_overall && i == self.slots.len() - 1 {
-                            apply_overall_bar_style(&slot.bar, cols);
+                            slot.bar.set_style(overall_bar_style());
                         } else if snap.status == TrackStatus::Failed {
-                            apply_failed_bar_style(&slot.bar, cols);
+                            slot.bar.set_style(failed_bar_style());
                         } else {
-                            apply_done_bar_style(&slot.bar, cols);
+                            slot.bar.set_style(done_bar_style());
                         }
                         match snap.status {
-                            TrackStatus::Success => {
-                                slot.bar.finish_with_message(format!(
-                                    " {count_str}/{total_str} {elapsed_str} {}",
-                                    snap.message,
-                                ));
-                            }
-                            TrackStatus::Failed => {
-                                slot.bar.abandon_with_message(format!(
-                                    " {count_str}/{total_str} {elapsed_str} {}",
-                                    snap.message,
-                                ));
-                            }
-                            TrackStatus::Abandoned => {
-                                slot.bar.abandon();
-                            }
-                            _ => {
-                                slot.bar.finish();
-                            }
+                            TrackStatus::Failed | TrackStatus::Abandoned => slot.bar.abandon(),
+                            _ => slot.bar.finish(),
                         }
+                        slot.bar.disable_steady_tick();
+                        slot.bar.tick();
                     }
                 }
             }
@@ -1301,18 +1289,16 @@ pub(crate) use inner::{SharedState, format_elapsed, format_rate};
 pub trait ProgressBarApi: Send + Sync {
     /// Advance the bar by `delta` work units.
     fn advance(&self, delta: u64);
-    /// Mark as finished with a success message.
-    fn finish_success(&self, msg: &str);
-    /// Mark as finished with an error message.
-    fn finish_error(&self, msg: &str);
+    /// Mark the bar as finished successfully.
+    fn finish_success(&self);
+    /// Mark the bar as finished with an error.
+    fn finish_error(&self);
     /// Return a data-copy snapshot of the tracking state.
     fn snapshot(&self) -> TrackSnapshot;
     /// Returns `true` if the handle has been finished/abandoned.
     fn is_finished(&self) -> bool;
     /// Mark the bar as finished (keeps it visible).
     fn finish(&self);
-    /// Set the message shown after the bar.
-    fn set_message(&self, msg: &str);
     /// Jump to an absolute position.
     fn set_position(&self, pos: u64);
     /// Change the total mid-flight for dynamic workloads.
@@ -1324,11 +1310,11 @@ impl ProgressBarApi for TrackedHandle {
     fn advance(&self, delta: u64) {
         TrackedHandle::advance(self, delta);
     }
-    fn finish_success(&self, msg: &str) {
-        TrackedHandle::finish_success(self, msg);
+    fn finish_success(&self) {
+        TrackedHandle::finish_success(self);
     }
-    fn finish_error(&self, msg: &str) {
-        TrackedHandle::finish_error(self, msg);
+    fn finish_error(&self) {
+        TrackedHandle::finish_error(self);
     }
     fn snapshot(&self) -> TrackSnapshot {
         TrackedHandle::snapshot(self)
@@ -1338,9 +1324,6 @@ impl ProgressBarApi for TrackedHandle {
     }
     fn finish(&self) {
         TrackedHandle::finish(self);
-    }
-    fn set_message(&self, msg: &str) {
-        TrackedHandle::set_message(self, msg);
     }
     fn set_position(&self, pos: u64) {
         TrackedHandle::set_position(self, pos);
@@ -1411,11 +1394,6 @@ pub mod recording {
             /// Absolute position to jump to.
             pos: u64,
         },
-        /// `set_message(msg)` was called.
-        SetMessage {
-            /// Message text.
-            msg: String,
-        },
         /// `set_prefix(prefix)` was called.
         SetPrefix {
             /// Prefix text.
@@ -1423,16 +1401,10 @@ pub mod recording {
         },
         /// `finish()` was called.
         Finish,
-        /// `finish_success(msg)` was called.
-        FinishSuccess {
-            /// Success message.
-            msg: String,
-        },
-        /// `finish_error(msg)` was called.
-        FinishError {
-            /// Error message.
-            msg: String,
-        },
+        /// `finish_success()` was called.
+        FinishSuccess,
+        /// `finish_error()` was called.
+        FinishError,
         /// `finish_and_clear()` was called.
         FinishAndClear,
         /// `abandon()` was called.
@@ -1554,14 +1526,6 @@ pub mod recording {
             self.ops.lock().expect("recording lock").push(ProgressOp::SetPosition { pos });
         }
 
-        /// Set the message.
-        pub fn set_message(&self, msg: impl Into<String>) {
-            self.ops
-                .lock()
-                .expect("recording lock")
-                .push(ProgressOp::SetMessage { msg: msg.into() });
-        }
-
         /// Set the prefix.
         pub fn set_prefix(&self, prefix: impl Into<String>) {
             self.ops
@@ -1576,21 +1540,15 @@ pub mod recording {
             self.mark_finished();
         }
 
-        /// Mark as finished with a success message.
-        pub fn finish_success(&self, msg: impl Into<String>) {
-            self.ops
-                .lock()
-                .expect("recording lock")
-                .push(ProgressOp::FinishSuccess { msg: msg.into() });
+        /// Mark as finished with success.
+        pub fn finish_success(&self) {
+            self.ops.lock().expect("recording lock").push(ProgressOp::FinishSuccess);
             self.mark_finished();
         }
 
-        /// Mark as finished with an error message.
-        pub fn finish_error(&self, msg: impl Into<String>) {
-            self.ops
-                .lock()
-                .expect("recording lock")
-                .push(ProgressOp::FinishError { msg: msg.into() });
+        /// Mark as finished with an error.
+        pub fn finish_error(&self) {
+            self.ops.lock().expect("recording lock").push(ProgressOp::FinishError);
             self.mark_finished();
         }
 
@@ -1645,32 +1603,30 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     fn advance(&self, delta: u64) {
         recording::RecordingTrackedHandle::advance(self, delta);
     }
-    fn finish_success(&self, msg: &str) {
-        recording::RecordingTrackedHandle::finish_success(self, msg);
+    fn finish_success(&self) {
+        recording::RecordingTrackedHandle::finish_success(self);
     }
-    fn finish_error(&self, msg: &str) {
-        recording::RecordingTrackedHandle::finish_error(self, msg);
+    fn finish_error(&self) {
+        recording::RecordingTrackedHandle::finish_error(self);
     }
     fn snapshot(&self) -> TrackSnapshot {
         TrackSnapshot {
             position: 0,
             total: self.total(),
             label: String::new(),
-            message: String::new(),
             prefix: String::new(),
             status: TrackStatus::Active,
             elapsed: recording::RecordingTrackedHandle::snapshot_elapsed(self),
         }
     }
     fn is_finished(&self) -> bool {
-        // Check the ops log for any finish-type operation
         let ops = self.ops();
         ops.iter().any(|op| {
             matches!(
                 op,
                 recording::ProgressOp::Finish
-                    | recording::ProgressOp::FinishSuccess { .. }
-                    | recording::ProgressOp::FinishError { .. }
+                    | recording::ProgressOp::FinishSuccess
+                    | recording::ProgressOp::FinishError
                     | recording::ProgressOp::FinishAndClear
                     | recording::ProgressOp::Abandon
             )
@@ -1678,9 +1634,6 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     }
     fn finish(&self) {
         recording::RecordingTrackedHandle::finish(self);
-    }
-    fn set_message(&self, msg: &str) {
-        recording::RecordingTrackedHandle::set_message(self, msg);
     }
     fn set_position(&self, pos: u64) {
         recording::RecordingTrackedHandle::set_position(self, pos);
@@ -1741,7 +1694,6 @@ mod tests {
         assert_eq!(h.total(), 200);
         h.advance(10);
         h.set_position(20);
-        h.set_message("msg");
         h.set_prefix("pfx");
         h.finish();
 
@@ -1755,11 +1707,10 @@ mod tests {
         dh.advance(10);
         dh.set_total(50);
         dh.set_position(5);
-        dh.set_message("hi");
         dh.set_prefix("pfx");
         dh.finish();
-        dh.finish_success("ok");
-        dh.finish_error("err");
+        dh.finish_success();
+        dh.finish_error();
         dh.finish_and_clear();
         dh.abandon();
     }
@@ -1771,11 +1722,10 @@ mod tests {
         h.advance(10);
         h.set_total(50);
         h.set_position(5);
-        h.set_message("hi");
         h.set_prefix("pfx");
         h.finish();
-        h.finish_success("ok");
-        h.finish_error("err");
+        h.finish_success();
+        h.finish_error();
         h.finish_and_clear();
         h.abandon();
     }
@@ -1807,7 +1757,6 @@ mod tests {
         h.set_total(200);
         h.advance(5);
         h.set_position(10);
-        h.set_message("hello");
         h.set_prefix("pfx");
         h.finish();
 
@@ -1817,7 +1766,6 @@ mod tests {
                 ProgressOp::SetTotal { total: 200 },
                 ProgressOp::Advance { delta: 5 },
                 ProgressOp::SetPosition { pos: 10 },
-                ProgressOp::SetMessage { msg: "hello".into() },
                 ProgressOp::SetPrefix { prefix: "pfx".into() },
                 ProgressOp::Finish,
             ]
@@ -1859,15 +1807,9 @@ mod tests {
     #[test]
     fn recording_handle_finish_success_and_error() {
         let h = RecordingTrackedHandle::new(10);
-        h.finish_success("ok!");
-        h.finish_error("oh no");
-        assert_eq!(
-            h.ops(),
-            vec![
-                ProgressOp::FinishSuccess { msg: "ok!".into() },
-                ProgressOp::FinishError { msg: "oh no".into() },
-            ]
-        );
+        h.finish_success();
+        h.finish_error();
+        assert_eq!(h.ops(), vec![ProgressOp::FinishSuccess, ProgressOp::FinishError,]);
     }
 
     #[test]
@@ -1906,7 +1848,7 @@ mod tests {
     fn recording_handle_elapsed_frozen_after_finish_success() {
         let h = RecordingTrackedHandle::new(100);
         std::thread::sleep(std::time::Duration::from_millis(10));
-        h.finish_success("ok");
+        h.finish_success();
         let frozen = h.snapshot_elapsed();
         assert!(
             frozen.as_millis() >= 5,
@@ -1920,7 +1862,7 @@ mod tests {
     fn recording_handle_elapsed_frozen_after_finish_error() {
         let h = RecordingTrackedHandle::new(100);
         std::thread::sleep(std::time::Duration::from_millis(10));
-        h.finish_error("err");
+        h.finish_error();
         let frozen = h.snapshot_elapsed();
         assert!(
             frozen.as_millis() >= 5,
@@ -2085,8 +2027,8 @@ mod tests {
         // must all freeze the elapsed.
         for (name, finish_fn) in [
             ("finish", Box::new(|h: &TrackedHandle| h.finish()) as Box<dyn Fn(&TrackedHandle)>),
-            ("finish_success", Box::new(|h: &TrackedHandle| h.finish_success("ok"))),
-            ("finish_error", Box::new(|h: &TrackedHandle| h.finish_error("err"))),
+            ("finish_success", Box::new(|h: &TrackedHandle| h.finish_success())),
+            ("finish_error", Box::new(|h: &TrackedHandle| h.finish_error())),
             ("finish_and_clear", Box::new(|h: &TrackedHandle| h.finish_and_clear())),
             ("abandon", Box::new(|h: &TrackedHandle| h.abandon())),
         ] {
@@ -2171,11 +2113,11 @@ mod tests {
         // Verify that finish_success / finish_error don't produce
         // FinishAndClear or Abandon operations (which would clear the bar).
         let h = RecordingTrackedHandle::new(10);
-        h.finish_success("done");
-        h.finish_error("fail");
+        h.finish_success();
+        h.finish_error();
         for op in h.ops() {
             match op {
-                ProgressOp::FinishSuccess { .. } | ProgressOp::FinishError { .. } => {}
+                ProgressOp::FinishSuccess | ProgressOp::FinishError => {}
                 other => panic!("unexpected op: {other:?}"),
             }
         }
@@ -2188,7 +2130,7 @@ mod tests {
         let h = g.add_bar(42, "child");
         h.advance(10);
         h.set_total(50);
-        h.finish_success("done");
+        h.finish_success();
         g.join();
         assert_eq!(h.total(), 50, "handle total preserved after join");
     }
@@ -2199,28 +2141,12 @@ mod tests {
         // remain functional (join() must not panic).
         let g = ProgressGroup::builder().build();
         let h = g.add_bar(10, "test");
-        h.finish_success("completed");
+        h.finish_success();
         assert_eq!(h.total(), 10, "handle total preserved after finish_success");
         // Second finish on the same slot must not corrupt state.
-        h.finish_error("timed out");
+        h.finish_error();
         assert_eq!(h.total(), 10, "handle total preserved after finish_error");
         g.join(); // join must not panic on any state
-    }
-
-    // ── recording_handle_set_message_and_prefix_ops ──
-
-    #[test]
-    fn recording_handle_set_message_and_prefix_ops() {
-        let h = RecordingTrackedHandle::new(10);
-        h.set_message("hello");
-        h.set_prefix("pfx");
-        assert_eq!(
-            h.ops(),
-            vec![
-                ProgressOp::SetMessage { msg: "hello".to_string() },
-                ProgressOp::SetPrefix { prefix: "pfx".to_string() },
-            ]
-        );
     }
 
     // ── recording_group_add_bar_multiple_groups_independent ──
@@ -2268,20 +2194,16 @@ mod tests {
         assert_eq!(h.ops(), vec![ProgressOp::Finish], "finish() records Finish");
 
         let h2 = RecordingTrackedHandle::new(5);
-        h2.finish_success("ok");
+        h2.finish_success();
         assert_eq!(
             h2.ops(),
-            vec![ProgressOp::FinishSuccess { msg: "ok".to_string() }],
+            vec![ProgressOp::FinishSuccess],
             "finish_success records FinishSuccess"
         );
 
         let h3 = RecordingTrackedHandle::new(5);
-        h3.finish_error("fail");
-        assert_eq!(
-            h3.ops(),
-            vec![ProgressOp::FinishError { msg: "fail".to_string() }],
-            "finish_error records FinishError"
-        );
+        h3.finish_error();
+        assert_eq!(h3.ops(), vec![ProgressOp::FinishError], "finish_error records FinishError");
     }
 
     // ── TrackedHandle::new (with bar) ──────────────────────────────────
@@ -2307,14 +2229,14 @@ mod tests {
     fn tracked_handle_is_finished_after_finish_success() {
         let h = TrackedHandle::new(10);
         assert!(!h.is_finished());
-        h.finish_success("ok");
+        h.finish_success();
         assert!(h.is_finished());
     }
 
     #[test]
     fn tracked_handle_is_finished_after_finish_error() {
         let h = TrackedHandle::new(10);
-        h.finish_error("err");
+        h.finish_error();
         assert!(h.is_finished());
     }
 
@@ -2329,11 +2251,9 @@ mod tests {
     fn tracked_handle_snapshot_fields_match() {
         let h = TrackedHandle::new(100);
         h.set_prefix("pfx");
-        h.set_message("msg");
         h.advance(7);
         let snap = h.snapshot();
         assert_eq!(snap.prefix, "pfx");
-        assert_eq!(snap.message, "msg");
         assert_eq!(snap.position, 7);
         assert_eq!(snap.total, 100);
         assert!(matches!(snap.status, TrackStatus::Active));
@@ -2367,12 +2287,10 @@ mod tests {
         // Mutate each — verify state tracking works even without display.
         for (i, h) in handles.iter().enumerate() {
             h.advance((i + 1) as u64);
-            h.set_message(&format!("done {i}"));
         }
         for (i, h) in handles.iter().enumerate() {
             let snap = h.snapshot();
             assert_eq!(snap.position, (i + 1) as u64, "handle {i} position");
-            assert_eq!(snap.message, format!("done {i}"), "handle {i} message");
         }
     }
 
@@ -2424,7 +2342,7 @@ mod tests {
         let bar: Arc<dyn super::ProgressBarApi> = tracker.add_bar(100, "test");
         assert!(!bar.is_finished(), "recording bar starts unfinished");
         bar.advance(5);
-        bar.finish_success("ok");
+        bar.finish_success();
         assert!(bar.is_finished(), "recording bar is finished");
     }
 }

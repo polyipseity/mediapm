@@ -41,14 +41,14 @@ fn consumer_child_bar_elapsed_frozen_after_finish_success() {
     let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
     let child = group.add_bar(5, "tool-a");
     child.set_position(5);
-    child.finish_success("ok");
+    child.finish_success();
     group.tick();
     let contents = term.contents();
     assert!(
         contents.contains("0s"),
         "elapsed must stay at 0 after finish_success, got:\n{contents}"
     );
-    assert!(contents.contains("ok"), "success message must appear");
+    assert!(contents.contains("5/5"), "final position must appear");
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn consumer_child_bar_elapsed_frozen_after_finish_error() {
     let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
     let child = group.add_bar(5, "tool-a");
     child.set_position(2);
-    child.finish_error("fail");
+    child.finish_error();
     let contents = term.contents();
     assert!(contents.contains("0s"), "elapsed must stay at 0 after finish_error, got:\n{contents}");
 }

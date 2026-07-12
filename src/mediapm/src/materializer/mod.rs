@@ -196,9 +196,9 @@ pub async fn sync_hierarchy(
     }
 
     if materialize_error.is_some() {
-        pb.finish_error("materialization failed");
+        pb.finish_error();
     } else {
-        pb.finish_success("materialization complete");
+        pb.finish_success();
     }
     if let Some(g) = owned_group {
         g.join();

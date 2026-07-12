@@ -213,7 +213,7 @@ pub(crate) async fn reconcile_desired_tools(
         pb.advance(1);
     }
 
-    pb.finish_success("tools synced");
+    pb.finish_success();
     if let Some(g) = owned_group {
         g.join();
     }
@@ -309,8 +309,9 @@ mod tests {
             1,
             "expected exactly one FinishSuccess op, got {finish_successes:?}",
         );
-        if let ProgressOp::FinishSuccess { msg } = &finish_successes[0] {
-            assert_eq!(msg.as_str(), "tools synced", "finish message mismatch");
-        }
+        assert!(
+            matches!(&finish_successes[0], ProgressOp::FinishSuccess { .. }),
+            "expected FinishSuccess"
+        );
     }
 }

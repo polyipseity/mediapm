@@ -1889,7 +1889,7 @@ fn progress_group_child_finish_keeps_bar_visible() {
     let c = group.add_bar(5, "fetch");
     group.tick();
     // Finish the child — it must remain visible in the terminal.
-    c.finish_success("done");
+    c.finish_success();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -1903,7 +1903,7 @@ fn progress_group_child_finish_keeps_bar_visible() {
     assert!(lines[1].trim().is_empty(), "line 1 is blank");
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
     assert!(lines[3].contains("fetch"), "line 3 has fetch: {0}", lines[3]);
-    assert!(lines[3].contains("done"), "line 3 has done: {0}", lines[3]);
+    assert!(lines[3].contains("0/5"), "line 3 shows position: {0}", lines[3]);
     assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
 }
 
@@ -1923,9 +1923,9 @@ fn progress_group_finish_all_bars_content_persists() {
     c2.advance(5);
     group.tick();
     // Finish all bars.
-    c1.finish_success("done");
-    c2.finish_success("ok");
-    overall.finish_success("all done");
+    c1.finish_success();
+    c2.finish_success();
+    overall.finish_success();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -1943,7 +1943,7 @@ fn progress_group_finish_all_bars_content_persists() {
     assert!(lines[3].contains("5/5"), "line 3 shows beta complete: {0}", lines[3]);
     assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
     // overall was never advanced via TrackedHandle, so position stays 0/2
-    assert!(lines[4].contains("all done"), "overall shows finished: {0}", lines[4]);
+    assert!(lines[4].contains("0/2"), "overall shows 0/2: {0}", lines[4]);
 }
 
 #[test]
@@ -1958,7 +1958,7 @@ fn progress_group_finish_error_shows_error_state() {
 
     let c = group.add_bar(5, "wget");
     group.tick();
-    c.finish_error("timeout");
+    c.finish_error();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -1972,7 +1972,7 @@ fn progress_group_finish_error_shows_error_state() {
     assert!(lines[1].trim().is_empty(), "line 1 is blank");
     assert!(lines[2].trim().is_empty(), "line 2 is blank");
     assert!(lines[3].contains("wget"), "line 3 has wget: {0}", lines[3]);
-    assert!(lines[3].contains("timeout"), "line 3 has timeout: {0}", lines[3]);
+    assert!(lines[3].contains("[F]"), "line 3 has error state: {0}", lines[3]);
     assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
 }
 
@@ -1987,7 +1987,7 @@ fn progress_group_join_and_clear_removes_bars() {
         .build_with_overall();
 
     let c = group.add_bar(5, "fetch");
-    c.finish_success("done");
+    c.finish_success();
     group.tick();
     // join_and_clear collapses blank reserved slots but keeps non-blank bars.
     group.join_and_clear();
@@ -1999,7 +1999,7 @@ fn progress_group_join_and_clear_removes_bars() {
     }
     assert_eq!(lines.len(), 2, "2 bars remain (fetch + overall)");
     assert!(lines[0].contains("fetch"), "fetch bar visible: {0}", lines[0]);
-    assert!(lines[0].contains("done"), "fetch done: {0}", lines[0]);
+    assert!(lines[0].contains("0/5"), "fetch shows 0/5: {0}", lines[0]);
     assert!(lines[1].contains("overall"), "overall bar visible: {0}", lines[1]);
 }
 
@@ -2018,15 +2018,15 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
     let c1 = group.add_bar(5, "fetch");
     c1.advance(5);
     group.tick();
-    c1.finish_success("fetched");
+    c1.finish_success();
 
     let c2 = group.add_bar(2, "parse");
     c2.advance(2);
     group.tick();
-    c2.finish_success("parsed");
+    c2.finish_success();
 
     overall.advance(3);
-    overall.finish_success("all done");
+    overall.finish_success();
     group.tick();
     // group.join() would be called here — it's a no-op.
 
@@ -2264,7 +2264,7 @@ fn consumer_lifecycle_materializer() {
     assert!(lines[4].contains("0/3"), "line 4 shows 0/3: {0}", lines[4]);
 
     pb.advance(3);
-    pb.finish_success("materialization complete");
+    pb.finish_success();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2275,7 +2275,7 @@ fn consumer_lifecycle_materializer() {
         "bar still visible after finish_success: {0}",
         lines[4]
     );
-    assert!(lines[4].contains("complete"), "shows success message: {0}", lines[4]);
+    assert!(lines[4].contains("3/3"), "shows 3/3 complete: {0}", lines[4]);
 
     group.join();
     let after_join = term.contents();
@@ -2293,7 +2293,6 @@ fn consumer_lifecycle_conductor_sync() {
 
     // Tool 1
     let t1 = group.add_bar(0, "yt-dlp");
-    t1.set_message("downloading");
     t1.advance(1);
     t1.finish();
     overall.advance(1);
@@ -2306,7 +2305,7 @@ fn consumer_lifecycle_conductor_sync() {
     overall.advance(1);
     group.tick();
 
-    overall.finish_success("tools synced");
+    overall.finish_success();
     group.tick();
     group.join();
 
@@ -2324,7 +2323,6 @@ fn consumer_lifecycle_conductor_sync() {
     assert!(lines[3].contains("ffmpeg"), "line 3 has ffmpeg: {0}", lines[3]);
     assert!(lines[4].contains("syncing tools"), "line 4 has overall: {0}", lines[4]);
     assert!(lines[4].contains("2/2"), "overall complete: {0}", lines[4]);
-    assert!(lines[4].contains("tools synced"), "overall success message: {0}", lines[4]);
 }
 
 #[test]
@@ -2532,7 +2530,7 @@ fn child_bar_elapsed_frozen_after_finish_success() {
         .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(3);
-    child.finish_success("done");
+    child.finish_success();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2541,7 +2539,7 @@ fn child_bar_elapsed_frozen_after_finish_success() {
         tool_line.contains("0s"),
         "tool-a line should show 0 elapsed after finish_success: {tool_line}"
     );
-    assert!(tool_line.contains("done"), "tool-a line should show success message: {tool_line}");
+    assert!(tool_line.contains("3/3"), "tool-a line should show 3/3: {tool_line}");
 }
 
 // ── Child bar elapsed: frozen after finish_error ───────────────────────────
@@ -2558,7 +2556,7 @@ fn child_bar_elapsed_frozen_after_finish_error() {
         .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(1);
-    child.finish_error("fail");
+    child.finish_error();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -2567,7 +2565,7 @@ fn child_bar_elapsed_frozen_after_finish_error() {
         tool_line.contains("0s"),
         "tool-a line should show 0 elapsed after finish_error: {tool_line}"
     );
-    assert!(tool_line.contains("fail"), "tool-a line should show error message: {tool_line}");
+    assert!(tool_line.contains("[F]"), "tool-a line should show error message: {tool_line}");
 }
 
 // ── Child bar elapsed: frozen after abandon ────────────────────────────────
@@ -2755,7 +2753,7 @@ fn parallel_worker_finish_error_other_continues() {
     group.tick();
 
     // worker-a finishes with error, worker-b continues
-    a.finish_error("crash");
+    a.finish_error();
     b.advance(1);
     group.tick();
 
@@ -2769,7 +2767,7 @@ fn parallel_worker_finish_error_other_continues() {
     // Chronological: worker-a (first) at slot[2], worker-b (second) at slot[3].
     assert_eq!(lines.len(), 5, "5 lines — 2 children + 2 blanks + overall");
     assert!(lines[2].contains("worker-a"), "worker-a visible at line 2: {0}", lines[2]);
-    assert!(lines[2].contains("crash"), "worker-a shows error: {0}", lines[2]);
+    assert!(lines[2].contains("[F]"), "worker-a shows error: {0}", lines[2]);
     assert!(lines[3].contains("worker-b"), "worker-b visible at line 3: {0}", lines[3]);
     assert!(lines[3].contains("3/5"), "worker-b shows 3/5: {0}", lines[3]);
     assert!(!lines[3].contains("crash"), "worker-b must not show error: {0}", lines[3]);
@@ -2788,7 +2786,7 @@ fn consumer_sync_too_many_tools_recycles() {
     for i in 0..8 {
         let tool = group.add_bar(1, &format!("tool{i}"));
         tool.advance(1);
-        tool.finish_success("done");
+        tool.finish_success();
         group.tick();
     }
 
@@ -2803,7 +2801,7 @@ fn consumer_sync_too_many_tools_recycles() {
     assert_eq!(lines.len(), 4, "4 lines — all slots filled");
     // Verify at least some of the visible bars show our tools
     // The exact content depends on which finished bars are recycled first
-    assert!(lines.iter().any(|l| l.contains("done")), "at least one bar shows 'done': {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("1/1")), "at least one bar shows 1/1: {lines:?}");
 }
 
 // ── Retention: finished bars keep their final state ─────────────────────
@@ -2815,12 +2813,12 @@ fn retention_finished_bar_keeps_final_msg() {
 
     let a = group.add_bar(2, "alpha");
     a.advance(2);
-    a.finish_success("done A");
+    a.finish_success();
     group.tick();
 
     let b = group.add_bar(3, "beta");
     b.advance(3);
-    b.finish_success("done B");
+    b.finish_success();
     group.tick();
 
     let contents = term.contents();
@@ -2829,10 +2827,14 @@ fn retention_finished_bar_keeps_final_msg() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    // 4 slots, no overall → 4 lines. Both finished bars retain messages.
+    // 4 slots, no overall → 4 lines. Both finished bars retain success status.
     assert!(lines.len() >= 2, "at least 2 lines: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("done A")), "bar alpha retains 'done A': {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("done B")), "bar beta retains 'done B': {lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("2/2") || l.contains("3/3")),
+        "bars show position: {lines:?}"
+    );
+    assert!(lines.iter().any(|l| l.contains("alpha")), "bar alpha visible: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("beta")), "bar beta visible: {lines:?}");
 }
 
 #[test]
@@ -2843,7 +2845,7 @@ fn retention_finished_bar_persists_across_new_work() {
     // Slot 0: finished bar
     let a = group.add_bar(1, "alpha");
     a.advance(1);
-    a.finish_success("done");
+    a.finish_success();
     group.tick();
 
     // Slot 1: active bar alongside the finished one
@@ -2854,9 +2856,9 @@ fn retention_finished_bar_persists_across_new_work() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    // 4 slots → 4 lines. Finished "done" bar visible alongside active beta.
+    // 4 slots → 4 lines. Finished bar (1/1) visible alongside active beta.
     assert!(lines.len() >= 2, "at least 2 lines: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("done")), "line shows finished 'done': {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("1/1")), "line shows finished alpha at 1/1: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("beta")), "line shows active 'beta': {lines:?}");
 }
 
@@ -2865,10 +2867,10 @@ fn retention_multiple_finished_bars() {
     let (mp, term) = mk_with_size(4, 80);
     let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
 
-    for (i, msg) in ["first", "second", "third", "fourth"].iter().enumerate() {
+    for (i, _msg) in ["first", "second", "third", "fourth"].iter().enumerate() {
         let h = group.add_bar(1, &format!("task{i}"));
         h.advance(1);
-        h.finish_success(*msg);
+        h.finish_success();
         group.tick();
     }
 
@@ -2878,10 +2880,14 @@ fn retention_multiple_finished_bars() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    // 4 slots, all finished → 4 lines, each with a distinct message.
+    // 4 slots, all finished → 4 lines, each with its task name.
     assert_eq!(lines.len(), 4, "4 lines — all 4 finished bars visible");
-    for msg in ["first", "second", "third", "fourth"] {
-        assert!(lines.iter().any(|l| l.contains(msg)), "a bar shows '{msg}': {lines:?}");
+    for (i, _msg) in ["first", "second", "third", "fourth"].iter().enumerate() {
+        let task_name = format!("task{i}");
+        assert!(
+            lines.iter().any(|l| l.contains(&task_name)),
+            "a bar shows '{task_name}': {lines:?}"
+        );
     }
 }
 
@@ -3142,7 +3148,6 @@ fn regression_concurrent_set_and_sync() {
     // Rapid set_position/set_message to exercise tick_fn callback path.
     for i in 0..20 {
         c1.set_position(i * 2);
-        c1.set_message(&format!("step {i}"));
     }
     group.tick();
 
@@ -3152,8 +3157,7 @@ fn regression_concurrent_set_and_sync() {
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
     }
-    // Last set_message should be visible.
-    assert!(lines.iter().any(|l| l.contains("step 19")), "last message visible: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("38/50")), "position 38/50 visible: {lines:?}");
     assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
 }
 
@@ -3232,7 +3236,7 @@ fn consumer_materializer_single_bar_parallel_workers() {
         pb.advance(chunk);
         group.tick();
     }
-    pb.finish_success("materialized");
+    pb.finish_success();
     group.tick();
 
     let contents = term.contents();
@@ -3242,8 +3246,7 @@ fn consumer_materializer_single_bar_parallel_workers() {
         eprintln!("line[{i}] = {line:?}");
     }
     assert!(lines.len() >= 1, "at least 1 line: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("materialized")), "shows 'materialized': {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("100")), "shows 100/100: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("100/100")), "shows 100/100: {lines:?}");
 }
 
 // ── Terminal resize reactivity ──────────────────────────────────────────────
