@@ -210,7 +210,7 @@ mod inner {
     const MAX_SLOTS: usize = 200;
 
     /// ANSI SGR foreground color code matching the `{wide_bar}` template color.
-    fn bar_color_code(status: TrackStatus, is_overall: bool) -> &'static str {
+    pub(super) fn bar_color_code(status: TrackStatus, is_overall: bool) -> &'static str {
         match status {
             TrackStatus::Failed => "31",
             TrackStatus::Abandoned | TrackStatus::Success | TrackStatus::Finished => "32",
@@ -220,7 +220,7 @@ mod inner {
     }
 
     /// Build the `{msg}` string: colored count/total + uncolored rate + uncolored elapsed.
-    fn build_right_msg(
+    pub(super) fn build_right_msg(
         color_code: &str,
         count_str: &str,
         total_str: &str,
@@ -239,7 +239,7 @@ mod inner {
 
     /// Build prefix: bare prefix for normal states, colored bracket + prefix
     /// for failed/abandoned.
-    fn build_prefix(status: TrackStatus, prefix: &str) -> String {
+    pub(super) fn build_prefix(status: TrackStatus, prefix: &str) -> String {
         match status {
             TrackStatus::Failed => format!("\x1b[31m[F]\x1b[0m {prefix}"),
             TrackStatus::Abandoned => format!("\x1b[33m[A]\x1b[0m {prefix}"),
@@ -2344,5 +2344,82 @@ mod tests {
         bar.advance(5);
         bar.finish_success();
         assert!(bar.is_finished(), "recording bar is finished");
+    }
+
+    // ── Color helpers (ANSI escape code generation) ─────────────────────
+
+    #[test]
+    fn bar_color_code_active_child() {
+        assert_eq!(super::inner::bar_color_code(super::TrackStatus::Active, false), "33");
+    }
+
+    #[test]
+    fn bar_color_code_active_overall() {
+        assert_eq!(super::inner::bar_color_code(super::TrackStatus::Active, true), "35");
+    }
+
+    #[test]
+    fn bar_color_code_failed() {
+        assert_eq!(super::inner::bar_color_code(super::TrackStatus::Failed, false), "31");
+        assert_eq!(super::inner::bar_color_code(super::TrackStatus::Failed, true), "31");
+    }
+
+    #[test]
+    fn bar_color_code_abandoned() {
+        assert_eq!(super::inner::bar_color_code(super::TrackStatus::Abandoned, false), "32");
+    }
+
+    #[test]
+    fn bar_color_code_success_and_finished() {
+        for status in [super::TrackStatus::Success, super::TrackStatus::Finished] {
+            assert_eq!(super::inner::bar_color_code(status, false), "32");
+        }
+    }
+
+    #[test]
+    fn build_prefix_failed() {
+        let result = super::inner::build_prefix(super::TrackStatus::Failed, "wget");
+        assert_eq!(result, "\x1b[31m[F]\x1b[0m wget");
+    }
+
+    #[test]
+    fn build_prefix_abandoned() {
+        let result = super::inner::build_prefix(super::TrackStatus::Abandoned, "wget");
+        assert_eq!(result, "\x1b[33m[A]\x1b[0m wget");
+    }
+
+    #[test]
+    fn build_prefix_normal_states() {
+        for status in
+            [super::TrackStatus::Active, super::TrackStatus::Success, super::TrackStatus::Finished]
+        {
+            let result = super::inner::build_prefix(status, "child");
+            assert_eq!(result, "child");
+        }
+    }
+
+    #[test]
+    fn build_right_msg_with_rate() {
+        let result = super::inner::build_right_msg("33", "0", "5", "0s", Some("0/d"));
+        assert_eq!(result, " \x1b[33m0/5\x1b[0m 0/d 0s");
+        assert!(result.ends_with("0/d 0s"), "rate/elapsed at end: {result:?}");
+    }
+
+    #[test]
+    fn build_right_msg_without_rate() {
+        let result = super::inner::build_right_msg("32", "5", "5", "1s", None);
+        assert_eq!(result, " \x1b[32m5/5\x1b[0m 1s");
+    }
+
+    #[test]
+    fn build_right_msg_different_color_codes() {
+        for (code, status_name) in [("31", "failed"), ("33", "child"), ("35", "overall")] {
+            let result = super::inner::build_right_msg(code, "1", "2", "3s", None);
+            assert!(
+                result.contains(&format!("\x1b[{code}m")),
+                "{status_name} should use code {code}: {result:?}"
+            );
+            assert!(result.contains("1/2"), "{status_name} count/total absent: {result:?}");
+        }
     }
 }
