@@ -144,7 +144,7 @@ pub async fn sync_hierarchy(
     let (owned_group, pb) = if let Some(pg) = progress_group {
         (None, pg.add_bar(flattened.len() as u64, "materializing"))
     } else {
-        let g = ProgressGroup::new();
+        let g = ProgressGroup::builder().dynamic_height(true).build();
         let p: Arc<dyn ProgressBarApi> =
             Arc::new(g.add_bar(flattened.len() as u64, "materializing"));
         (Some(g), p)

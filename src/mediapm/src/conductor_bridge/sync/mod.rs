@@ -95,7 +95,10 @@ pub(crate) async fn reconcile_desired_tools(
         if let Some(pg) = progress_group {
             (None, pg.add_bar(total_tools, "syncing tools"))
         } else {
-            let (g, p) = ProgressGroup::with_overall("syncing tools", total_tools);
+            let (g, p) = ProgressGroup::builder()
+                .dynamic_height(true)
+                .with_overall("syncing tools", total_tools)
+                .build_with_overall();
             (Some(g), Arc::new(p))
         };
     let effective_group: &dyn ProgressGroupApi = owned_group

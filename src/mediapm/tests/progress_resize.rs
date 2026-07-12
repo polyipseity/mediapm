@@ -22,7 +22,12 @@ fn mk_with_size(h: u16, w: u16) -> (MultiProgress, InMemoryTerm) {
 fn sync_hierarchy_height_change() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let group = ProgressGroup::fixed_with_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build();
     let _child = group.add_bar(10, "materialize");
     group.tick();
 
@@ -56,13 +61,13 @@ fn sync_hierarchy_height_change() {
 fn reconcile_desired_tools_width_change() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(4, 80);
-    let (group, _overall) = ProgressGroup::fixed_with_overall_and_dim(
-        mp,
-        4,
-        "syncing tools",
-        5,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("syncing tools", 5)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(false)
+        .build_with_overall();
     let contents_wide = term.contents();
     eprintln!("=== reconcile_tools, W=80 ===");
     for (i, line) in contents_wide.lines().enumerate() {
@@ -90,7 +95,12 @@ fn reconcile_desired_tools_width_change() {
 fn sync_hierarchy_complex_resize_scenario() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let group = ProgressGroup::fixed_with_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build();
     let _child = group.add_bar(10, "materialize");
     group.tick();
     let original = term.contents();

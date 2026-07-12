@@ -118,29 +118,72 @@ mod inner {
 
     // ---- style constants --------------------------------------------------
 
-    /// Format a duration as `[HH:MM:SS]`.
+    /// Format a duration compactly: `0s`, `3s`, `42s`, `1m35s`, `12m4s`, `2h15m`, `1d8h`, `30d`.
     pub(crate) fn format_elapsed(d: Duration) -> String {
-        let secs = d.as_secs();
-        let hours = secs / 3600;
-        let mins = (secs / 60) % 60;
-        let secs = secs % 60;
-        format!("[{hours:02}:{mins:02}:{secs:02}]")
+        let total_secs = d.as_secs();
+        if total_secs == 0 {
+            return "0s".into();
+        }
+        let secs = total_secs % 60;
+        let total_mins = total_secs / 60;
+        if total_mins == 0 {
+            return format!("{secs}s");
+        }
+        let mins = total_mins % 60;
+        let total_hours = total_mins / 60;
+        if total_hours == 0 {
+            if secs > 0 {
+                return format!("{total_mins}m{secs}s");
+            }
+            return format!("{total_mins}m");
+        }
+        let hours = total_hours % 24;
+        let days = total_hours / 24;
+        if days == 0 {
+            if mins > 0 {
+                return format!("{total_hours}h{mins}m");
+            }
+            return format!("{total_hours}h");
+        }
+        if hours > 0 {
+            return format!("{days}d{hours}h");
+        }
+        format!("{days}d")
+    }
+
+    /// Format a rate (units/second) compactly: `3.5/s`, `42/s`, `1.2k/s`, `123k/s`, `3.5M/s`.
+    pub(crate) fn format_rate(rate: f64) -> String {
+        if rate >= 1_000_000.0 {
+            let v = rate / 1_000_000.0;
+            if v < 10.0 { format!("{v:.1}M/s") } else { format!("{v:.0}M/s") }
+        } else if rate >= 1_000.0 {
+            let v = rate / 1_000.0;
+            if v < 10.0 { format!("{v:.1}k/s") } else { format!("{v:.0}k/s") }
+        } else if rate >= 1.0 {
+            if rate < 10.0 { format!("{rate:.1}/s") } else { format!("{rate:.0}/s") }
+        } else if rate * 60.0 >= 1.0 {
+            format!("{:.0}/m", rate * 60.0)
+        } else if rate * 3600.0 >= 1.0 {
+            format!("{:.0}/h", rate * 3600.0)
+        } else {
+            format!("{:.0}/d", rate * 86400.0)
+        }
     }
 
     const CHILD_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>16.16} {wide_bar:.cyan/blue} {pos}/{len} {msg}";
+        "{spinner:.green} {prefix:>16.16} {wide_bar:.cyan/blue} {msg:>25.50}";
 
     const OVERALL_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>16.16} {wide_bar:.green/dim} {pos}/{len} {msg}";
+        "{spinner:.green} {prefix:>16.16} {wide_bar:.green/dim} {msg:>25.50}";
 
-    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {pos}/{len} {msg}";
+    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {msg:>8.30}";
 
-    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {pos}/{len} {msg}";
+    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>16.16} {msg:>8.30}";
 
     const DONE_BAR_TEMPLATE: &str =
-        "{spinner:.dim} {prefix:>16.16} {wide_bar:.white/dim} {pos}/{len} {msg}";
+        "{spinner:.dim} {prefix:>16.16} {wide_bar:.white/dim} {msg:>25.50}";
 
-    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.dim} {prefix:>16.16} {pos}/{len} {msg}";
+    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.dim} {prefix:>16.16} {msg:>8.30}";
 
     /// Maximum number of pre-allocated slot bars (safety cap).
     const MAX_SLOTS: usize = 200;
@@ -530,6 +573,21 @@ mod inner {
         /// [`join_and_clear`](Self::join_and_clear) and
         /// [`Drop`](Drop).
         finalized: Cell<bool>,
+        /// EMA-smoothed rate tracking, one entry per slot.
+        slots_timing: Vec<SlotTiming>,
+    }
+
+    /// EMA-smoothed rate tracking for a render slot.
+    struct SlotTiming {
+        prev_position: u64,
+        prev_instant: Instant,
+        rate: f64,
+    }
+
+    impl SlotTiming {
+        fn new() -> Self {
+            Self { prev_position: 0, prev_instant: Instant::now(), rate: 0.0 }
+        }
     }
 
     impl RenderedSlot {
@@ -554,16 +612,6 @@ mod inner {
     }
 
     impl ProgressRenderer {
-        /// Pre-allocate blank bars in a fresh [`MultiProgress`] with capacity
-        /// derived from terminal height.
-        fn new(dim_source: Arc<dyn DimensionSource>) -> Self {
-            let (rows, _) = dim_source.dimensions();
-            let cap = (rows as usize).clamp(1, MAX_SLOTS);
-            let mut renderer = Self::from_mp(MultiProgress::new(), cap, dim_source);
-            renderer.dynamic_height = true;
-            renderer
-        }
-
         /// Pre-allocate `capacity` blank bars in an existing [`MultiProgress`].
         fn from_mp(
             mp: MultiProgress,
@@ -587,6 +635,7 @@ mod inner {
             if let Some(slot) = slots.last() {
                 slot.bar.tick();
             }
+            let slots_timing = (0..capacity).map(|_| SlotTiming::new()).collect();
             Self {
                 inner: mp,
                 slots,
@@ -596,23 +645,8 @@ mod inner {
                 dynamic_height: false,
                 orphaned_states: RefCell::new(VecDeque::new()),
                 finalized: Cell::new(false),
+                slots_timing,
             }
-        }
-
-        /// Pre-allocate bars with an overall bar at the bottom, using a fresh
-        /// [`MultiProgress`] with capacity derived from terminal height.
-        /// Returns `(renderer, overall_state)`.
-        fn with_overall(
-            total: u64,
-            label: &str,
-            dim_source: Arc<dyn DimensionSource>,
-        ) -> (Self, Arc<SharedState>) {
-            let (rows, _) = dim_source.dimensions();
-            let cap = (rows as usize).clamp(1, MAX_SLOTS);
-            let (mut renderer, state) =
-                Self::from_mp_with_overall(MultiProgress::new(), cap, total, label, dim_source);
-            renderer.dynamic_height = true;
-            (renderer, state)
         }
 
         /// Pre-allocate `capacity` bars with an overall bar at the bottom,
@@ -645,6 +679,7 @@ mod inner {
                 bar: overall_bar,
                 source: RefCell::new(Some(overall_state.clone())),
             });
+            let slots_timing = (0..capacity).map(|_| SlotTiming::new()).collect();
             (
                 Self {
                     inner: mp,
@@ -655,6 +690,7 @@ mod inner {
                     dynamic_height: false,
                     orphaned_states: RefCell::new(VecDeque::new()),
                     finalized: Cell::new(false),
+                    slots_timing,
                 },
                 overall_state,
             )
@@ -676,9 +712,15 @@ mod inner {
                     apply_bar_style(&slot.bar, cols);
                 }
                 slot.bar.set_prefix(snap.prefix);
-                let elapsed_msg = format!("{} {}", format_elapsed(snap.elapsed), snap.message);
-                slot.bar.set_message(elapsed_msg);
+                let elapsed_str = format_elapsed(snap.elapsed);
+                let msg = if snap.message.is_empty() {
+                    format!(" {}/{} {elapsed_str}", snap.position, snap.total)
+                } else {
+                    format!(" {}/{} {elapsed_str} {}", snap.position, snap.total, snap.message)
+                };
+                slot.bar.set_message(msg);
                 slot.bar.set_length(snap.total);
+                slot.bar.set_position(snap.position);
                 slot.bar.enable_steady_tick(Duration::from_millis(100));
             } else {
                 slot.bar.set_style(blank_bar_style());
@@ -708,7 +750,7 @@ mod inner {
         /// finished slot to recycle.  When none is available, the handle is
         /// pushed to [`orphaned_states`] — it remains tracked but has no
         /// render slot until the terminal grows back.
-        fn attach(&self, state: &Arc<SharedState>) {
+        fn attach(&mut self, state: &Arc<SharedState>) {
             let child_cap = self.slots.len() - usize::from(self.has_overall);
             let bottom = child_cap.saturating_sub(1);
 
@@ -721,6 +763,7 @@ mod inner {
                 // order preserves relative positions).
                 for i in (bottom + 1 - active)..=bottom {
                     self.slots[i].swap_sources_with(&self.slots[i - 1]);
+                    self.slots_timing.swap(i, i - 1);
                 }
                 // Sync shifted slots (sources moved to different bars).
                 for i in (bottom.saturating_sub(active))..=bottom {
@@ -728,6 +771,7 @@ mod inner {
                 }
                 // Place new child at the freed bottom slot.
                 self.slots[bottom].source.replace(Some(Arc::clone(state)));
+                self.slots_timing[bottom] = SlotTiming::new();
                 self.sync_slot(bottom);
                 return;
             }
@@ -736,6 +780,7 @@ mod inner {
             for i in (0..=bottom).rev() {
                 if self.slots[i].source.borrow().as_ref().is_none_or(|s| s.is_finished()) {
                     self.slots[i].source.replace(Some(Arc::clone(state)));
+                    self.slots_timing[i] = SlotTiming::new();
                     self.sync_slot(i);
                     return;
                 }
@@ -753,10 +798,43 @@ mod inner {
             for (i, slot) in self.slots.iter().enumerate() {
                 if let Some(ref source) = *slot.source.borrow() {
                     let snap = source.snapshot();
-                    let elapsed_msg = format!("{} {}", format_elapsed(snap.elapsed), snap.message);
+                    let elapsed_str = format_elapsed(snap.elapsed);
+
+                    // Compute EMA-smoothed rate for active bars.
+                    let rate_str = if snap.status == TrackStatus::Active {
+                        let now = Instant::now();
+                        let dt =
+                            now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
+                        if dt > 0.001 {
+                            #[allow(clippy::cast_precision_loss)]
+                            let current =
+                                (snap.position - self.slots_timing[i].prev_position) as f64 / dt;
+                            self.slots_timing[i].rate =
+                                self.slots_timing[i].rate * 0.9 + current * 0.1;
+                            self.slots_timing[i].prev_position = snap.position;
+                            self.slots_timing[i].prev_instant = now;
+                            Some(format_rate(self.slots_timing[i].rate))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Build msg: pos/len  elapsed  [rate]  [user_message]
+                    let mut msg = format!(" {}/{} {elapsed_str}", snap.position, snap.total);
+                    if let Some(ref rate) = rate_str {
+                        msg.push(' ');
+                        msg.push_str(rate);
+                    }
+                    if !snap.message.is_empty() {
+                        msg.push(' ');
+                        msg.push_str(&snap.message);
+                    }
+
                     slot.bar.set_position(snap.position);
                     slot.bar.set_length(snap.total);
-                    slot.bar.set_message(elapsed_msg);
+                    slot.bar.set_message(msg);
                     slot.bar.set_prefix(snap.prefix.clone());
                     if snap.status == TrackStatus::Active {
                         // Setters above already triggered a redraw; no tick() needed.
@@ -775,16 +853,14 @@ mod inner {
                         match snap.status {
                             TrackStatus::Success => {
                                 slot.bar.finish_with_message(format!(
-                                    "{} {}",
-                                    format_elapsed(snap.elapsed),
-                                    snap.message,
+                                    " {}/{} {elapsed_str} {}",
+                                    snap.position, snap.total, snap.message,
                                 ));
                             }
                             TrackStatus::Failed => {
                                 slot.bar.abandon_with_message(format!(
-                                    "{} {}",
-                                    format_elapsed(snap.elapsed),
-                                    snap.message,
+                                    " {}/{} {elapsed_str} {}",
+                                    snap.position, snap.total, snap.message,
                                 ));
                             }
                             TrackStatus::Abandoned => {
@@ -840,6 +916,7 @@ mod inner {
                             slot.source.replace(Some(orphan));
                         }
                         self.slots.insert(0, slot);
+                        self.slots_timing.insert(0, SlotTiming::new());
                     }
                     // Sync slots that may have been reattached.
                     for i in 0..self.slots.len() {
@@ -855,6 +932,7 @@ mod inner {
                         }
                         self.inner.remove(&self.slots[0].bar);
                         self.slots.remove(0);
+                        self.slots_timing.remove(0);
                     }
                 }
             }
@@ -907,7 +985,141 @@ mod inner {
         _ticker: Option<thread::JoinHandle<()>>,
     }
 
+    // ---- ProgressGroupBuilder -------------------------------------------------
+
+    /// Builder for [`ProgressGroup`] with optional configuration.
+    ///
+    /// # Defaults
+    ///
+    /// | Field | Default |
+    /// |---|---|
+    /// | `mp` | `None` (creates a fresh [`MultiProgress`]) |
+    /// | `dim_source` | [`RealTerminalSource`] |
+    /// | `overall` | `None` (no overall bar) |
+    /// | `capacity` | `None` (derived from terminal height via `dim_source`) |
+    /// | `dynamic_height` | `true` |
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let group = ProgressGroup::builder().build();
+    /// let (group, overall) = ProgressGroup::builder().with_overall("sync", 10).build_with_overall();
+    /// ```
+    #[derive(Clone)]
+    pub struct ProgressGroupBuilder {
+        mp: Option<MultiProgress>,
+        dim_source: Arc<dyn DimensionSource>,
+        overall: Option<(String, u64)>,
+        capacity: Option<usize>,
+        dynamic_height: bool,
+    }
+
+    impl Default for ProgressGroupBuilder {
+        fn default() -> Self {
+            Self {
+                mp: None,
+                dim_source: Arc::new(RealTerminalSource),
+                overall: None,
+                capacity: None,
+                dynamic_height: false,
+            }
+        }
+    }
+
+    impl ProgressGroupBuilder {
+        /// Use an existing [`MultiProgress`] instead of creating a fresh one.
+        #[must_use]
+        pub fn with_multi_progress(mut self, mp: MultiProgress) -> Self {
+            self.mp = Some(mp);
+            self
+        }
+
+        /// Use an injectable dimension source (for tests).
+        #[must_use]
+        pub fn with_dim_source(mut self, dim_source: Arc<dyn DimensionSource>) -> Self {
+            self.dim_source = dim_source;
+            self
+        }
+
+        /// Add an overall aggregate bar pinned at the bottom.
+        #[must_use]
+        pub fn with_overall(mut self, label: &str, total: u64) -> Self {
+            self.overall = Some((label.to_string(), total));
+            self
+        }
+
+        /// Set the exact slot capacity (clamped to `[1, MAX_SLOTS]`).
+        /// When `None` (default), capacity is derived from terminal height.
+        #[must_use]
+        pub fn capacity(mut self, n: usize) -> Self {
+            self.capacity = Some(n);
+            self
+        }
+
+        /// Enable or disable dynamic height adaptation (default: `true`).
+        #[must_use]
+        pub fn dynamic_height(mut self, enabled: bool) -> Self {
+            self.dynamic_height = enabled;
+            self
+        }
+
+        /// Build a group without an overall bar.
+        ///
+        /// # Panics
+        ///
+        /// Panics if [`with_overall`](Self::with_overall) was called — use
+        /// [`build_with_overall`](Self::build_with_overall) instead.
+        /// Panics when the internal `Mutex` is poisoned.
+        #[must_use]
+        pub fn build(self) -> ProgressGroup {
+            assert!(
+                self.overall.is_none(),
+                "use build_with_overall() when with_overall() was called"
+            );
+            let cap = self.capacity.unwrap_or_else(|| {
+                let (rows, _) = self.dim_source.dimensions();
+                (rows as usize).clamp(1, MAX_SLOTS)
+            });
+            let mp = self.mp.unwrap_or_default();
+            let mut renderer = ProgressRenderer::from_mp(mp, cap, self.dim_source);
+            renderer.dynamic_height = self.dynamic_height;
+            let renderer = Some(Arc::new(Mutex::new(renderer)));
+            let ticker = Some(ProgressGroup::spawn_ticker(renderer.as_ref().unwrap()));
+            ProgressGroup { renderer, _ticker: ticker }
+        }
+
+        /// Build a group with an overall aggregate bar.
+        ///
+        /// # Panics
+        ///
+        /// Panics if [`with_overall`](Self::with_overall) was not called.
+        /// Panics when the internal `Mutex` is poisoned.
+        #[must_use]
+        pub fn build_with_overall(self) -> (ProgressGroup, TrackedHandle) {
+            let (label, total) =
+                self.overall.expect("with_overall() must be called before build_with_overall()");
+            let cap = self.capacity.unwrap_or_else(|| {
+                let (rows, _) = self.dim_source.dimensions();
+                (rows as usize).clamp(1, MAX_SLOTS)
+            });
+            let mp = self.mp.unwrap_or_default();
+            let (mut renderer, state) =
+                ProgressRenderer::from_mp_with_overall(mp, cap, total, &label, self.dim_source);
+            renderer.dynamic_height = self.dynamic_height;
+            let renderer = Arc::new(Mutex::new(renderer));
+            let ticker = Some(ProgressGroup::spawn_ticker(&renderer));
+            let handle = TrackedHandle { state };
+            (ProgressGroup { renderer: Some(renderer), _ticker: ticker }, handle)
+        }
+    }
+
     impl ProgressGroup {
+        /// Create a builder for configuring a [`ProgressGroup`].
+        #[must_use]
+        pub fn builder() -> ProgressGroupBuilder {
+            ProgressGroupBuilder::default()
+        }
+
         /// Create a no-op group that produces no terminal output.
         ///
         /// All bars added via [`add_bar`] return [`TrackedHandle::disabled`].
@@ -915,225 +1127,6 @@ mod inner {
         #[must_use]
         pub fn disabled() -> Self {
             Self { renderer: None, _ticker: None }
-        }
-
-        /// Create a new group with no overall bar.
-        ///
-        /// Pre-allocates `max(terminal_height(), 1)` bars so the draw height
-        /// matches the terminal.
-        ///
-        /// # Panics
-        ///
-        /// Panics when the internal `Mutex` is poisoned (another thread
-        /// panicked while holding the lock).
-        #[must_use]
-        pub fn new() -> Self {
-            let renderer =
-                Some(Arc::new(Mutex::new(ProgressRenderer::new(Arc::new(RealTerminalSource)))));
-            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
-            Self { renderer, _ticker: ticker }
-        }
-
-        /// Create a new group with an injectable dimension source
-        /// (for tests using [`InMemoryTerm`](indicatif::InMemoryTerm)).
-        ///
-        /// # Panics
-        ///
-        /// Panics when the internal `Mutex` is poisoned (another thread
-        /// panicked while holding the lock).
-        #[must_use]
-        pub fn auto_with_dim(dim_source: Arc<dyn DimensionSource>) -> Self {
-            let renderer = Some(Arc::new(Mutex::new(ProgressRenderer::new(dim_source))));
-            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
-            Self { renderer, _ticker: ticker }
-        }
-
-        /// Create a group from an existing [`MultiProgress`] with a fixed
-        /// number of pre-allocated slots.
-        ///
-        /// The `capacity` controls how many [`ProgressBar`] slots are
-        /// pre-allocated.  All slots are initially blank.  Callers that want
-        /// terminal-aware sizing should use [`new()`](Self::new) instead.
-        ///
-        /// # Panics
-        ///
-        /// Panics when the internal `Mutex` is poisoned (another thread
-        /// panicked while holding the lock).
-        #[must_use]
-        pub fn with_mp(mp: MultiProgress, capacity: usize) -> Self {
-            let cap = capacity.clamp(1, MAX_SLOTS);
-            let renderer = Some(Arc::new(Mutex::new(ProgressRenderer::from_mp(
-                mp,
-                cap,
-                Arc::new(RealTerminalSource),
-            ))));
-            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
-            Self { renderer, _ticker: ticker }
-        }
-
-        /// Create a group with an overall aggregate bar pinned at the bottom.
-        ///
-        /// The overall bar shares the same [`{spinner}`] prefix as child bars
-        /// so all bars are visually aligned horizontally.
-        ///
-        /// Pre-allocates `max(terminal_height(), 1)` bars.  The overall bar
-        /// occupies the bottom slot; children fill slots sequentially from
-        /// the first upward when [`add_bar`] is called.
-        ///
-        /// # Panics
-        ///
-        /// Panics when the internal `Mutex` is poisoned (another thread
-        /// panicked while holding the lock).
-        #[must_use]
-        pub fn with_overall(label: &str, total: u64) -> (Self, TrackedHandle) {
-            let (renderer, state) =
-                ProgressRenderer::with_overall(total, label, Arc::new(RealTerminalSource));
-            let renderer = Arc::new(Mutex::new(renderer));
-            let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state };
-            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
-        }
-
-        /// Create a group with an overall bar and an injectable dimension
-        /// source (for tests using [`InMemoryTerm`](indicatif::InMemoryTerm)).
-        ///
-        /// # Panics
-        ///
-        /// Panics when the internal `Mutex` is poisoned (another thread
-        /// panicked while holding the lock).
-        #[must_use]
-        pub fn with_overall_and_dim(
-            label: &str,
-            total: u64,
-            dim_source: Arc<dyn DimensionSource>,
-        ) -> (Self, TrackedHandle) {
-            let (renderer, state) = ProgressRenderer::with_overall(total, label, dim_source);
-            let renderer = Arc::new(Mutex::new(renderer));
-            let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state };
-            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
-        }
-
-        /// Create a group from an existing [`MultiProgress`] with an overall
-        /// aggregate bar pinned at the bottom and a fixed number of
-        /// pre-allocated slots.
-        ///
-        /// The `capacity` controls how many [`ProgressBar`] slots are
-        /// pre-allocated (including the overall bar itself).  See
-        /// [`with_overall`](Self::with_overall) for semantics.
-        ///
-        /// # Panics
-        ///
-        /// Panics when the internal `Mutex` is poisoned (another thread
-        /// panicked while holding the lock).
-        #[must_use]
-        pub fn with_mp_and_overall(
-            mp: MultiProgress,
-            capacity: usize,
-            label: &str,
-            total: u64,
-        ) -> (Self, TrackedHandle) {
-            let cap = capacity.clamp(1, MAX_SLOTS);
-            let (renderer, state) = ProgressRenderer::from_mp_with_overall(
-                mp,
-                cap,
-                total,
-                label,
-                Arc::new(RealTerminalSource),
-            );
-            let renderer = Arc::new(Mutex::new(renderer));
-            let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state };
-            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
-        }
-
-        /// Create a group from an existing [`MultiProgress`] with a fixed
-        /// number of pre-allocated slots and an injectable dimension source.
-        ///
-        /// Useful in tests that use [`InMemoryTerm`](indicatif::InMemoryTerm)
-        /// — pass a [`TestDimensionSource`] configured to match the virtual
-        /// terminal size so resize reactivity uses the right dimensions.
-        ///
-        /// The slot count is adjusted on terminal height changes (dynamic
-        /// height).
-        ///
-        /// # Panics
-        ///
-        /// Panics when the internal `Mutex` is poisoned (another thread
-        /// panicked while holding the lock).
-        #[must_use]
-        pub fn fixed_with_dim(
-            mp: MultiProgress,
-            capacity: usize,
-            dim_source: Arc<dyn DimensionSource>,
-        ) -> Self {
-            let cap = capacity.clamp(1, MAX_SLOTS);
-            let mut renderer = ProgressRenderer::from_mp(mp, cap, dim_source);
-            renderer.dynamic_height = true;
-            let renderer = Some(Arc::new(Mutex::new(renderer)));
-            let ticker = Some(Self::spawn_ticker(renderer.as_ref().unwrap()));
-            Self { renderer, _ticker: ticker }
-        }
-
-        /// Create a group with an overall aggregate bar pinned at the bottom,
-        /// from an existing [`MultiProgress`] with a pre-allocated matching
-        /// capacity and an injectable dimension source.
-        ///
-        /// The slot count automatically adjusts on terminal height changes
-        /// (dynamic height).  See also
-        /// [`fixed_with_overall_and_dim`](Self::fixed_with_overall_and_dim) for
-        /// the fixed-height variant.
-        ///
-        /// # Panics
-        ///
-        /// Panics when the internal `Mutex` is poisoned (another thread
-        /// panicked while holding the lock).
-        #[must_use]
-        pub fn auto_with_overall_and_dim(
-            mp: MultiProgress,
-            capacity: usize,
-            label: &str,
-            total: u64,
-            dim_source: Arc<dyn DimensionSource>,
-        ) -> (Self, TrackedHandle) {
-            let cap = capacity.clamp(1, MAX_SLOTS);
-            let (mut renderer, state) =
-                ProgressRenderer::from_mp_with_overall(mp, cap, total, label, dim_source);
-            renderer.dynamic_height = true;
-            let renderer = Arc::new(Mutex::new(renderer));
-            let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state };
-            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
-        }
-
-        /// Create a group with an overall aggregate bar pinned at the bottom,
-        /// from an existing [`MultiProgress`] with a fixed number of
-        /// pre-allocated slots and an injectable dimension source.
-        ///
-        /// The slot count stays fixed (no terminal height adaptation).  See
-        /// [`auto_with_overall_and_dim`](Self::auto_with_overall_and_dim) for
-        /// the dynamic-height variant.
-        ///
-        /// # Panics
-        ///
-        /// Panics when the internal `Mutex` is poisoned (another thread
-        /// panicked while holding the lock).
-        #[must_use]
-        pub fn fixed_with_overall_and_dim(
-            mp: MultiProgress,
-            capacity: usize,
-            label: &str,
-            total: u64,
-            dim_source: Arc<dyn DimensionSource>,
-        ) -> (Self, TrackedHandle) {
-            let cap = capacity.clamp(1, MAX_SLOTS);
-            let (mut renderer, state) =
-                ProgressRenderer::from_mp_with_overall(mp, cap, total, label, dim_source);
-            renderer.dynamic_height = false;
-            let renderer = Arc::new(Mutex::new(renderer));
-            let ticker = Some(Self::spawn_ticker(&renderer));
-            let handle = TrackedHandle { state };
-            (Self { renderer: Some(renderer), _ticker: ticker }, handle)
         }
 
         /// Add a child bar to the group.
@@ -1153,7 +1146,7 @@ mod inner {
             };
             let state = Arc::new(SharedState::new(total, label));
             {
-                let locked = renderer.lock().unwrap();
+                let mut locked = renderer.lock().unwrap();
                 locked.attach(&state);
             }
             TrackedHandle { state }
@@ -1221,7 +1214,7 @@ mod inner {
 
     impl Default for ProgressGroup {
         fn default() -> Self {
-            Self::new()
+            Self::builder().build()
         }
     }
 
@@ -1242,7 +1235,7 @@ pub use inner::{
 
 #[cfg(feature = "progress")]
 #[allow(unused_imports)]
-pub(crate) use inner::{SharedState, format_elapsed};
+pub(crate) use inner::{SharedState, format_elapsed, format_rate};
 
 // ---- Shared API traits for dependency injection (feature-gated) -------
 
@@ -1685,10 +1678,10 @@ mod tests {
         // Constructors always produce enabled handles.
         let h = TrackedHandle::new(100);
         assert_eq!(h.total(), 100, "enabled handle reports initial total");
-        let g = ProgressGroup::new();
+        let g = ProgressGroup::builder().build();
         let ch = g.add_bar(50, "child");
         assert_eq!(ch.total(), 50);
-        let (_og, oh) = ProgressGroup::with_overall("all", 300);
+        let (_og, oh) = ProgressGroup::builder().with_overall("all", 300).build_with_overall();
         assert_eq!(oh.total(), 300);
         g.join_and_clear();
 
@@ -1903,33 +1896,79 @@ mod tests {
 
     #[test]
     fn format_elapsed_zero() {
-        assert_eq!(super::format_elapsed(std::time::Duration::ZERO), "[00:00:00]");
+        assert_eq!(super::format_elapsed(std::time::Duration::ZERO), "0s");
     }
 
     #[test]
     fn format_elapsed_seconds_only() {
-        assert_eq!(super::format_elapsed(std::time::Duration::from_secs(42)), "[00:00:42]");
+        assert_eq!(super::format_elapsed(std::time::Duration::from_secs(42)), "42s");
     }
 
     #[test]
     fn format_elapsed_minutes_and_seconds() {
-        assert_eq!(super::format_elapsed(std::time::Duration::from_secs(5 * 60 + 3)), "[00:05:03]");
+        assert_eq!(super::format_elapsed(std::time::Duration::from_secs(5 * 60 + 3)), "5m3s");
     }
 
     #[test]
     fn format_elapsed_hours() {
         assert_eq!(
             super::format_elapsed(std::time::Duration::from_secs(2 * 3600 + 15 * 60 + 30)),
-            "[02:15:30]"
+            "2h15m"
         );
     }
 
     #[test]
     fn format_elapsed_large_hours() {
-        assert_eq!(
-            super::format_elapsed(std::time::Duration::from_secs(100 * 3600)),
-            "[100:00:00]"
-        );
+        assert_eq!(super::format_elapsed(std::time::Duration::from_secs(100 * 3600)), "4d4h");
+    }
+
+    // ---- format_rate (pure formatting) -----------------------------------
+
+    #[test]
+    fn format_rate_zero() {
+        assert_eq!(super::format_rate(0.0), "0/d");
+    }
+
+    #[test]
+    fn format_rate_slow() {
+        assert_eq!(super::format_rate(0.000_1), "9/d");
+    }
+
+    #[test]
+    fn format_rate_per_minute() {
+        // 0.02/s = 1.2/m
+        assert_eq!(super::format_rate(0.02), "1/m");
+    }
+
+    #[test]
+    fn format_rate_per_hour() {
+        // 0.000_5/s = 1.8/h
+        assert_eq!(super::format_rate(0.000_5), "2/h");
+    }
+
+    #[test]
+    fn format_rate_single_digit() {
+        assert_eq!(super::format_rate(3.5), "3.5/s");
+    }
+
+    #[test]
+    fn format_rate_double_digit() {
+        assert_eq!(super::format_rate(42.0), "42/s");
+    }
+
+    #[test]
+    fn format_rate_thousands_single() {
+        assert_eq!(super::format_rate(1_200.0), "1.2k/s");
+    }
+
+    #[test]
+    fn format_rate_thousands_double() {
+        assert_eq!(super::format_rate(123_000.0), "123k/s");
+    }
+
+    #[test]
+    fn format_rate_millions() {
+        assert_eq!(super::format_rate(3_500_000.0), "3.5M/s");
     }
 
     // ---- SharedState elapsed --------------------------------------------
@@ -1999,7 +2038,7 @@ mod tests {
             ("finish_and_clear", Box::new(|h: &TrackedHandle| h.finish_and_clear())),
             ("abandon", Box::new(|h: &TrackedHandle| h.abandon())),
         ] {
-            let g = ProgressGroup::new();
+            let g = ProgressGroup::builder().build();
             let h = g.add_bar(100, &format!("{name}-bar"));
             std::thread::sleep(std::time::Duration::from_millis(10));
             finish_fn(&h);
@@ -2012,7 +2051,7 @@ mod tests {
 
     #[test]
     fn progress_group_new_creates_handle() {
-        let g = ProgressGroup::new();
+        let g = ProgressGroup::builder().build();
         let h = g.add_bar(42, "child");
         assert!(h.total() > 0, "enabled handle must have total > 0");
         assert_eq!(h.total(), 42);
@@ -2020,7 +2059,7 @@ mod tests {
 
     #[test]
     fn progress_group_with_overall_creates_both() {
-        let (g, overall) = ProgressGroup::with_overall("all", 100);
+        let (g, overall) = ProgressGroup::builder().with_overall("all", 100).build_with_overall();
         assert_eq!(overall.total(), 100, "overall bar must have total == 100");
         let child = g.add_bar(50, "child");
         assert_eq!(child.total(), 50, "child bar must have total == 50");
@@ -2053,13 +2092,13 @@ mod tests {
     #[test]
     fn progress_group_join_and_clear_does_not_panic() {
         // Non-empty group
-        let g = ProgressGroup::new();
+        let g = ProgressGroup::builder().build();
         let _h = g.add_bar(10, "a");
         g.join();
         g.join_and_clear();
 
         // Empty group
-        let g = ProgressGroup::new();
+        let g = ProgressGroup::builder().build();
         g.join();
         g.join_and_clear();
     }
@@ -2093,7 +2132,7 @@ mod tests {
     #[test]
     fn progress_group_join_leaves_handles_intact() {
         // join() is a no-op — handles must still be usable afterward.
-        let g = ProgressGroup::new();
+        let g = ProgressGroup::builder().build();
         let h = g.add_bar(42, "child");
         h.advance(10);
         h.set_total(50);
@@ -2106,7 +2145,7 @@ mod tests {
     fn progress_group_finish_success_and_error_preserve_group() {
         // Finish calls on a handle must preserve the total and the group must
         // remain functional (join() must not panic).
-        let g = ProgressGroup::new();
+        let g = ProgressGroup::builder().build();
         let h = g.add_bar(10, "test");
         h.finish_success("completed");
         assert_eq!(h.total(), 10, "handle total preserved after finish_success");
@@ -2258,7 +2297,11 @@ mod tests {
         let term = indicatif::InMemoryTerm::new(4, 40);
         let target = indicatif::ProgressDrawTarget::term_like(Box::new(term));
         let mp = MultiProgress::with_draw_target(target);
-        let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+        let (group, _overall) = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .capacity(4)
+            .with_overall("overall", 10)
+            .build_with_overall();
 
         // 4 slots total → 3 child slots + 1 overall.
         // Add 5 children → first 3 get slots, last 2 have no display slot.
@@ -2286,7 +2329,8 @@ mod tests {
         // finish_and_clear on a ProgressGroup-managed handle (bar=None,
         // tick_fn=Some) must still mark state as finished.
 
-        let (_group, overall) = ProgressGroup::with_overall("all", 10);
+        let (_group, overall) =
+            ProgressGroup::builder().with_overall("all", 10).build_with_overall();
         overall.finish_and_clear();
         let snap = overall.snapshot();
         assert!(

@@ -282,7 +282,8 @@ async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
     let conductor = ensure_conductor().await?;
 
     use mediapm_utils::progress::ProgressGroup;
-    let (_group, pb) = ProgressGroup::with_overall("steps", 0);
+    let (_group, pb) =
+        ProgressGroup::builder().dynamic_height(true).with_overall("steps", 0).build_with_overall();
     let pb2 = pb.clone();
 
     let options = RunWorkflowOptions {

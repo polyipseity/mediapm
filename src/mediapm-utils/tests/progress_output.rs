@@ -1529,7 +1529,11 @@ fn worker_surge_with_overflow() {
 fn progress_group_with_overall_shows_fixed_height() {
     // Terminal H=5, W=80 so the full child and overall templates fit.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .build_with_overall();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -1550,7 +1554,11 @@ fn progress_group_with_overall_shows_fixed_height() {
 fn progress_group_add_bar_reuses_bottom_child() {
     // Terminal H=4, W=80 so the full child and overall templates fit.
     let (mp, term) = mk_with_size(4, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 3);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 3)
+        .build_with_overall();
 
     let _c1 = group.add_bar(5, "tool1");
     group.tick();
@@ -1592,7 +1600,7 @@ fn progress_group_no_overall_always_reuses_bottom() {
     // — this avoids InMemoryTerm trimming blank content when bars
     // fill the entire terminal height.
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 4);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
 
     let _c1 = group.add_bar(5, "task1");
     group.tick();
@@ -1630,7 +1638,7 @@ fn progress_group_no_overall_always_reuses_bottom() {
 fn progress_group_never_changes_bar_count() {
     // Terminal H=4, W=80 so the full child template fits.
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::with_mp(mp, 4);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
     for i in 0..30 {
         let _c = group.add_bar(1, &format!("tool{i}"));
         group.tick();
@@ -1652,7 +1660,11 @@ fn progress_group_with_overall_add_child_updates_slot() {
     // Chronological: first child occupies slot[3], second shifts it to slot[2]
     // and takes slot[3].
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 3)
+        .build_with_overall();
 
     let _c1 = group.add_bar(5, "tool1");
     group.tick();
@@ -1700,7 +1712,11 @@ fn progress_group_with_overall_multiple_children_reuse_slot() {
     // earlier children up and takes slot[3].  After 4 children: task0 at
     // slot[0], task1 at slot[1], task2 at slot[2], task3 at slot[3].
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     for i in 0..5 {
         let _c = group.add_bar(2, &format!("task{i}"));
@@ -1736,7 +1752,7 @@ fn progress_group_no_overall_different_capacities() {
     // Children fill sequentially from line[0].
     // Using H=6 > 4 to avoid InMemoryTerm blank-content trimming.
     let (mp, term) = mk_with_size(6, 80);
-    let group = ProgressGroup::with_mp(mp, 4);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
 
     let _c1 = group.add_bar(5, "alpha");
     group.tick();
@@ -1780,7 +1796,11 @@ fn progress_group_compact_template_below_60_width() {
     // (InMemoryTerm width doesn't affect production style selection, which
     // reads from console::Term::stderr() — the real terminal.)
     let (mp, term) = mk_with_size(4, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 3);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 3)
+        .build_with_overall();
 
     let _c1 = group.add_bar(5, "tool1");
     group.tick();
@@ -1804,7 +1824,11 @@ fn progress_group_compact_template_below_60_width() {
 fn progress_group_child_shows_label_and_total() {
     // Verify that add_bar renders the label and total in the bar.
     let (mp, term) = mk_with_size(4, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -1856,7 +1880,11 @@ fn progress_group_disabled_returns_noop() {
 fn progress_group_child_finish_keeps_bar_visible() {
     // Terminal H=5, W=80 so the full child and overall templates fit.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 3)
+        .build_with_overall();
 
     let c = group.add_bar(5, "fetch");
     group.tick();
@@ -1883,7 +1911,11 @@ fn progress_group_child_finish_keeps_bar_visible() {
 fn progress_group_finish_all_bars_content_persists() {
     // Terminal H=5, W=80.  Overall at line[4], children at lines[0..3].
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 2);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 2)
+        .build_with_overall();
 
     let c1 = group.add_bar(3, "alpha");
     let c2 = group.add_bar(5, "beta");
@@ -1918,7 +1950,11 @@ fn progress_group_finish_all_bars_content_persists() {
 fn progress_group_finish_error_shows_error_state() {
     // Terminal H=5, W=80.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 5)
+        .build_with_overall();
 
     let c = group.add_bar(5, "wget");
     group.tick();
@@ -1944,7 +1980,11 @@ fn progress_group_finish_error_shows_error_state() {
 fn progress_group_join_and_clear_removes_bars() {
     // Terminal H=5, W=80.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 3)
+        .build_with_overall();
 
     let c = group.add_bar(5, "fetch");
     c.finish_success("done");
@@ -1969,7 +2009,11 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
     // create group with overall, do sequential work, finish children,
     // finish overall, then join.  All bars must remain visible.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 3)
+        .build_with_overall();
 
     let c1 = group.add_bar(5, "fetch");
     c1.advance(5);
@@ -2009,7 +2053,7 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
 #[test]
 fn slot_pool_blank_bars_remain_invisible() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 5);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(5).build();
 
     // Add a child bar so we can verify only 5 lines total.
     let _c = group.add_bar(10, "child");
@@ -2035,7 +2079,7 @@ fn slot_pool_blank_bars_remain_invisible() {
 #[test]
 fn slot_pool_acquire_returns_bottommost_child() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 4); // 4 slots
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build(); // 4 slots
 
     let _c1 = group.add_bar(5, "first");
     group.tick();
@@ -2072,7 +2116,11 @@ fn slot_pool_acquire_returns_bottommost_child() {
 #[test]
 fn slot_pool_acquire_with_overall_above_overall() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     let _c = group.add_bar(7, "worker");
     group.tick();
@@ -2097,7 +2145,7 @@ fn slot_pool_acquire_with_overall_above_overall() {
 #[test]
 fn progress_group_height_never_grows_with_many_bars() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::with_mp(mp, 4);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
 
     for i in 0..20 {
         let _c = group.add_bar(1, &format!("t{i}"));
@@ -2116,7 +2164,11 @@ fn progress_group_height_never_grows_with_many_bars() {
 #[test]
 fn progress_group_overall_always_at_bottom() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     for i in 0..5 {
         let _c = group.add_bar(2, &format!("task{i}"));
@@ -2142,7 +2194,11 @@ fn progress_group_overall_always_at_bottom() {
 #[test]
 fn progress_group_join_preserves_all_content() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 5)
+        .build_with_overall();
 
     let c = group.add_bar(3, "fetch");
     c.advance(3);
@@ -2158,7 +2214,11 @@ fn progress_group_join_preserves_all_content() {
 #[test]
 fn progress_group_add_bar_zero_total_renders() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 0);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 0)
+        .build_with_overall();
 
     let _c = group.add_bar(0, "zero");
     group.tick();
@@ -2182,7 +2242,7 @@ fn progress_group_add_bar_zero_total_renders() {
 #[test]
 fn consumer_lifecycle_materializer() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 5);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(5).build();
 
     let total = 3u64;
     let pb = group.add_bar(total, "materializing");
@@ -2225,7 +2285,11 @@ fn consumer_lifecycle_materializer() {
 #[test]
 fn consumer_lifecycle_conductor_sync() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "syncing tools", 2);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("syncing tools", 2)
+        .build_with_overall();
 
     // Tool 1
     let t1 = group.add_bar(0, "yt-dlp");
@@ -2266,7 +2330,11 @@ fn consumer_lifecycle_conductor_sync() {
 #[test]
 fn consumer_lifecycle_conductor_cli() {
     let (mp, term) = mk_with_size(4, 80);
-    let (group, pb) = ProgressGroup::with_mp_and_overall(mp, 4, "steps", 0);
+    let (group, pb) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("steps", 0)
+        .build_with_overall();
 
     // Simulate step_progress callback: set_total(N) then set_position(1..N)
     pb.set_total(3);
@@ -2297,7 +2365,11 @@ fn consumer_lifecycle_conductor_cli() {
 #[test]
 fn progress_group_finish_and_clear_child_keeps_others() {
     let (mp, term) = mk_with_size(4, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 5)
+        .build_with_overall();
 
     let c1 = group.add_bar(3, "alpha");
     c1.advance(3);
@@ -2323,7 +2395,7 @@ fn progress_group_finish_and_clear_child_keeps_others() {
 #[test]
 fn progress_group_abandon_preserves_bar() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 5);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(5).build();
 
     let c = group.add_bar(5, "worker");
     c.advance(2);
@@ -2346,7 +2418,7 @@ fn progress_group_abandon_preserves_bar() {
 #[test]
 fn progress_group_long_prefix_truncation() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 5);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(5).build();
 
     // Prefix > 16 chars — production uses {prefix:>16.16}
     let long_prefix = "abcdefghijklmnopqrstuvwxyz"; // 26 chars
@@ -2371,7 +2443,11 @@ fn progress_group_long_prefix_truncation() {
 #[test]
 fn progress_group_children_advance_independently() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     // Chronological allocation: tool-a at slot[3] (just above overall).
     // Second child shifts tool-a up to slot[2] and takes slot[3].
@@ -2401,13 +2477,19 @@ fn progress_group_children_advance_independently() {
 #[test]
 fn child_bar_elapsed_starts_at_zero() {
     let (mp, term) = mk();
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let dims = Arc::new(TestDimensionSource::new((H, W)));
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .capacity(4)
+        .with_overall("overall", 5)
+        .build_with_overall();
     let _child = group.add_bar(3, "tool-a");
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
-    assert!(tool_line.contains("[00:00:00]"), "tool-a line should show 0 elapsed: {tool_line}");
+    assert!(tool_line.contains("0s"), "tool-a line should show 0 elapsed: {tool_line}");
 }
 
 // ── Child bar elapsed: frozen after finish ─────────────────────────────────
@@ -2415,7 +2497,13 @@ fn child_bar_elapsed_starts_at_zero() {
 #[test]
 fn child_bar_elapsed_frozen_after_finish() {
     let (mp, term) = mk();
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let dims = Arc::new(TestDimensionSource::new((H, W)));
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .capacity(4)
+        .with_overall("overall", 5)
+        .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(3);
     child.finish();
@@ -2424,7 +2512,7 @@ fn child_bar_elapsed_frozen_after_finish() {
     let lines: Vec<&str> = contents.lines().collect();
     let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
     assert!(
-        tool_line.contains("[00:00:00]"),
+        tool_line.contains("0s"),
         "tool-a line should show 0 elapsed after finish: {tool_line}"
     );
     assert!(tool_line.contains("3/3"), "tool-a line should show final position: {tool_line}");
@@ -2435,7 +2523,13 @@ fn child_bar_elapsed_frozen_after_finish() {
 #[test]
 fn child_bar_elapsed_frozen_after_finish_success() {
     let (mp, term) = mk();
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let dims = Arc::new(TestDimensionSource::new((H, W)));
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .capacity(4)
+        .with_overall("overall", 5)
+        .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(3);
     child.finish_success("done");
@@ -2444,7 +2538,7 @@ fn child_bar_elapsed_frozen_after_finish_success() {
     let lines: Vec<&str> = contents.lines().collect();
     let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
     assert!(
-        tool_line.contains("[00:00:00]"),
+        tool_line.contains("0s"),
         "tool-a line should show 0 elapsed after finish_success: {tool_line}"
     );
     assert!(tool_line.contains("done"), "tool-a line should show success message: {tool_line}");
@@ -2455,7 +2549,13 @@ fn child_bar_elapsed_frozen_after_finish_success() {
 #[test]
 fn child_bar_elapsed_frozen_after_finish_error() {
     let (mp, term) = mk();
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let dims = Arc::new(TestDimensionSource::new((H, W)));
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .capacity(4)
+        .with_overall("overall", 5)
+        .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(1);
     child.finish_error("fail");
@@ -2464,7 +2564,7 @@ fn child_bar_elapsed_frozen_after_finish_error() {
     let lines: Vec<&str> = contents.lines().collect();
     let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
     assert!(
-        tool_line.contains("[00:00:00]"),
+        tool_line.contains("0s"),
         "tool-a line should show 0 elapsed after finish_error: {tool_line}"
     );
     assert!(tool_line.contains("fail"), "tool-a line should show error message: {tool_line}");
@@ -2475,7 +2575,13 @@ fn child_bar_elapsed_frozen_after_finish_error() {
 #[test]
 fn child_bar_elapsed_frozen_after_abandon() {
     let (mp, term) = mk();
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let dims = Arc::new(TestDimensionSource::new((H, W)));
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .capacity(4)
+        .with_overall("overall", 5)
+        .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(2);
     child.abandon();
@@ -2484,7 +2590,7 @@ fn child_bar_elapsed_frozen_after_abandon() {
     let lines: Vec<&str> = contents.lines().collect();
     let tool_line = lines.iter().find(|l| l.contains("tool-a")).expect("tool-a line must exist");
     assert!(
-        tool_line.contains("[00:00:00]"),
+        tool_line.contains("0s"),
         "tool-a line should show 0 elapsed after abandon: {tool_line}"
     );
 }
@@ -2495,13 +2601,13 @@ fn child_bar_elapsed_frozen_after_abandon() {
 fn orphan_reattach_preserves_elapsed() {
     let dims = Arc::new(TestDimensionSource::new((3, 80)));
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        4,
-        "overall",
-        5,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 5)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _child = group.add_bar(10, "worker");
 
     // Tick to show the bar with initial elapsed.
@@ -2510,10 +2616,7 @@ fn orphan_reattach_preserves_elapsed() {
     let before_lines: Vec<&str> = before.lines().collect();
     let worker_before =
         before_lines.iter().find(|l| l.contains("worker")).expect("worker visible before shrink");
-    assert!(
-        worker_before.contains("[00:00:00]"),
-        "worker shows elapsed before orphan: {worker_before}"
-    );
+    assert!(worker_before.contains("0s"), "worker shows elapsed before orphan: {worker_before}");
 
     // Shrink height to orphan the worker bar (only room for overall).
     dims.set((1, 80));
@@ -2528,10 +2631,7 @@ fn orphan_reattach_preserves_elapsed() {
     let grow_lines: Vec<&str> = after_grow.lines().collect();
     let worker_after =
         grow_lines.iter().find(|l| l.contains("worker")).expect("worker reattached after grow");
-    assert!(
-        worker_after.contains("[00:00:00]"),
-        "worker elapsed preserved after reattach: {worker_after}"
-    );
+    assert!(worker_after.contains("0s"), "worker elapsed preserved after reattach: {worker_after}");
 }
 
 // ── Elapsed preservation: slot shift ──────────────────────────────────────
@@ -2539,7 +2639,11 @@ fn orphan_reattach_preserves_elapsed() {
 #[test]
 fn slot_shift_preserves_elapsed() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 5)
+        .build_with_overall();
 
     let _a = group.add_bar(10, "alpha");
     group.tick();
@@ -2553,11 +2657,8 @@ fn slot_shift_preserves_elapsed() {
     let alpha_line = lines.iter().find(|l| l.contains("alpha")).expect("alpha visible after shift");
     let beta_line = lines.iter().find(|l| l.contains("beta")).expect("beta visible after shift");
 
-    assert!(
-        alpha_line.contains("[00:00:00]"),
-        "alpha shows elapsed after slot shift: {alpha_line}"
-    );
-    assert!(beta_line.contains("[00:00:00]"), "beta shows elapsed: {beta_line}");
+    assert!(alpha_line.contains("0s"), "alpha shows elapsed after slot shift: {alpha_line}");
+    assert!(beta_line.contains("0s"), "beta shows elapsed: {beta_line}");
 }
 
 // ── Regression: no duplicate elapsed template ─────────────────────────────
@@ -2568,7 +2669,13 @@ fn no_duplicate_elapsed_template_in_child_output() {
     // alongside the message-injected elapsed, each bar line would show two
     // `[HH:MM:SS]` timestamps.  Verify at most one per line.
     let (mp, term) = mk();
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let dims = Arc::new(TestDimensionSource::new((H, W)));
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .capacity(4)
+        .with_overall("overall", 5)
+        .build_with_overall();
     let _child = group.add_bar(3, "tool-a");
     group.tick();
 
@@ -2587,7 +2694,7 @@ fn no_duplicate_elapsed_template_in_child_output() {
 #[test]
 fn slot_full_hides_overflow_bars_from_display() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::with_mp(mp, 4); // capacity=4
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build(); // capacity=4
 
     let c1 = group.add_bar(5, "tool-a");
     let c2 = group.add_bar(5, "tool-b");
@@ -2634,7 +2741,11 @@ fn slot_full_hides_overflow_bars_from_display() {
 #[test]
 fn parallel_worker_finish_error_other_continues() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     let a = group.add_bar(5, "worker-a");
     let b = group.add_bar(5, "worker-b");
@@ -2670,7 +2781,7 @@ fn parallel_worker_finish_error_other_continues() {
 #[test]
 fn consumer_sync_too_many_tools_recycles() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::with_mp(mp, 4); // capacity 4, no overall
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build(); // capacity 4, no overall
 
     // 8 sequential tools on capacity 4 — first 4 get display slots,
     // remaining 4 recycle finished slots.
@@ -2700,7 +2811,7 @@ fn consumer_sync_too_many_tools_recycles() {
 #[test]
 fn retention_finished_bar_keeps_final_msg() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::with_mp(mp, 4);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
 
     let a = group.add_bar(2, "alpha");
     a.advance(2);
@@ -2727,7 +2838,7 @@ fn retention_finished_bar_keeps_final_msg() {
 #[test]
 fn retention_finished_bar_persists_across_new_work() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::with_mp(mp, 4);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
 
     // Slot 0: finished bar
     let a = group.add_bar(1, "alpha");
@@ -2752,7 +2863,7 @@ fn retention_finished_bar_persists_across_new_work() {
 #[test]
 fn retention_multiple_finished_bars() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::with_mp(mp, 4);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
 
     for (i, msg) in ["first", "second", "third", "fourth"].iter().enumerate() {
         let h = group.add_bar(1, &format!("task{i}"));
@@ -2779,7 +2890,11 @@ fn retention_multiple_finished_bars() {
 #[test]
 fn renderer_with_overall_always_bottom() {
     let (mp, term) = mk_with_size(4, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     // Fill children
     for i in 0..3 {
@@ -2809,7 +2924,11 @@ fn renderer_with_overall_always_bottom() {
 #[test]
 fn regression_child_order_chronological_top_to_bottom() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     let _c1 = group.add_bar(5, "first");
     let _c2 = group.add_bar(5, "second");
@@ -2841,7 +2960,11 @@ fn regression_swap_slot_does_not_corrupt_display() {
     // Add 2 children, advance both, add 3rd (triggers shift). Verify all
     // children have correct positions and values.
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 10);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     let c1 = group.add_bar(10, "alpha");
     let c2 = group.add_bar(10, "beta");
@@ -2892,7 +3015,11 @@ fn regression_swap_slot_does_not_corrupt_display() {
 #[test]
 fn regression_overall_never_shifts() {
     let (mp, term) = mk_with_size(4, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 10);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .build_with_overall();
 
     // Fill all 3 child slots + overall.
     let _c1 = group.add_bar(1, "a");
@@ -2952,7 +3079,11 @@ fn regression_overall_never_shifts() {
 #[test]
 fn regression_finish_and_clear_with_tick_fn() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 3)
+        .build_with_overall();
 
     let _c1 = group.add_bar(5, "keep");
     let c2 = group.add_bar(5, "clear");
@@ -3001,7 +3132,11 @@ fn regression_finish_and_clear_with_tick_fn() {
 #[test]
 fn regression_concurrent_set_and_sync() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 100);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 100)
+        .build_with_overall();
 
     let c1 = group.add_bar(50, "worker");
     // Rapid set_position/set_message to exercise tick_fn callback path.
@@ -3027,7 +3162,11 @@ fn regression_concurrent_set_and_sync() {
 #[test]
 fn regression_recycle_finished_slot_after_full() {
     let (mp, term) = mk_with_size(5, 80);
-    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 5)
+        .build_with_overall();
 
     // Fill all 4 child slots.
     let children: Vec<_> = (0..4).map(|i| group.add_bar(2, &format!("task{i}"))).collect();
@@ -3081,7 +3220,7 @@ fn regression_recycle_finished_slot_after_full() {
 #[test]
 fn consumer_materializer_single_bar_parallel_workers() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::with_mp(mp, 4);
+    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
 
     // Simulate a materializer dispatcher: parallel workers tracked
     // as a single progress bar.
@@ -3113,13 +3252,13 @@ fn consumer_materializer_single_bar_parallel_workers() {
 fn resize_width_wide_to_narrow_changes_output() {
     let dims = Arc::new(TestDimensionSource::new((H, 80)));
     let (mp, term) = mk_with_size(H, 80);
-    let (group, _overall) = ProgressGroup::fixed_with_overall_and_dim(
-        mp,
-        5,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(false)
+        .build_with_overall();
     let contents_wide = term.contents();
     eprintln!("=== width wide_to_narrow, before resize (wide) ===");
     for (i, line) in contents_wide.lines().enumerate() {
@@ -3142,13 +3281,13 @@ fn resize_width_wide_to_narrow_changes_output() {
 fn resize_width_narrow_to_wide_restores_content() {
     let dims = Arc::new(TestDimensionSource::new((H, 40)));
     let (mp, term) = mk_with_size(H, 40);
-    let (group, _overall) = ProgressGroup::fixed_with_overall_and_dim(
-        mp,
-        5,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(false)
+        .build_with_overall();
     let contents_narrow = term.contents();
     eprintln!("=== width narrow_to_wide, before resize (narrow) ===");
     for (i, line) in contents_narrow.lines().enumerate() {
@@ -3169,13 +3308,13 @@ fn resize_width_narrow_to_wide_restores_content() {
 fn resize_width_noop_same_width_no_change() {
     let dims = Arc::new(TestDimensionSource::new((H, W)));
     let (mp, term) = mk_with_size(H, W);
-    let (group, _overall) = ProgressGroup::fixed_with_overall_and_dim(
-        mp,
-        5,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(false)
+        .build_with_overall();
     let before = term.contents();
     let before_lines = before.lines().count();
     // (no elapsed assertion before tick — elapsed is injected on tick, and
@@ -3190,20 +3329,20 @@ fn resize_width_noop_same_width_no_change() {
     assert_eq!(before_lines, after_lines, "same line count after noop width resize");
     assert!(after.contains("overall"), "overall visible after");
     assert!(after.contains("0/10"), "overall shows 0/10 after");
-    assert!(after.contains("00:00"), "time after");
+    assert!(after.contains("0s"), "time after");
 }
 
 #[test]
 fn resize_height_grow_adds_slots() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        4,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     {
         let _c1 = group.add_bar(7, "fetch");
         group.tick();
@@ -3230,13 +3369,13 @@ fn resize_height_grow_adds_slots() {
 fn resize_height_shrink_removes_slots() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        6,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(6)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
 
@@ -3254,13 +3393,13 @@ fn resize_height_shrink_removes_slots() {
 fn resize_height_shrink_protects_overall() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        6,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(6)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
     let before = term.contents();
@@ -3284,13 +3423,13 @@ fn resize_height_shrink_protects_overall() {
 fn resize_height_grow_detached_reappear() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        4,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
 
@@ -3309,13 +3448,13 @@ fn resize_height_grow_detached_reappear() {
 fn resize_height_clamps_at_min_slots() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        6,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(6)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
     let before_count = term.contents().lines().count();
@@ -3335,13 +3474,13 @@ fn resize_height_clamps_at_min_slots() {
 fn resize_height_clamps_at_max_slots() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(10, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        4,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
 
@@ -3358,13 +3497,13 @@ fn resize_height_clamps_at_max_slots() {
 fn resize_both_dimensions() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        4,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
     let before = term.contents();
@@ -3388,13 +3527,13 @@ fn resize_both_dimensions() {
 fn resize_then_restore_original() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        4,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
     let original = term.contents();
@@ -3421,13 +3560,13 @@ fn resize_then_restore_original() {
 fn resize_height_shrink_then_grow_restores_line_count() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        6,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(6)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
     let original_count = term.contents().lines().count();
@@ -3458,13 +3597,13 @@ fn resize_height_shrink_then_grow_restores_line_count() {
 fn resize_height_partial_shrink_keeps_active_bars() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        6,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(6)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     let _c1 = group.add_bar(7, "fetch1");
     let _c2 = group.add_bar(5, "fetch2");
     group.tick();
@@ -3489,7 +3628,12 @@ fn resize_height_partial_shrink_keeps_active_bars() {
 fn resize_height_with_interleaved_attach() {
     let dims = Arc::new(TestDimensionSource::new((5, 80)));
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::fixed_with_dim(mp, 5, Arc::clone(&dims) as Arc<dyn DimensionSource>);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build();
     let _alpha = group.add_bar(10, "alpha");
 
     // Start with 5 lines (no overall bar).
@@ -3520,13 +3664,13 @@ fn resize_height_with_interleaved_attach() {
 fn resize_height_sequence_with_three_bars() {
     let dims = Arc::new(TestDimensionSource::new((5, 80)));
     let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = ProgressGroup::auto_with_overall_and_dim(
-        mp,
-        5,
-        "overall",
-        10,
-        Arc::clone(&dims) as Arc<dyn DimensionSource>,
-    );
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
     // Add in order: bar3 (oldest), bar2, bar1 (newest).
     let _bar3 = group.add_bar(7, "bar 3");
     let _bar2 = group.add_bar(5, "bar 2");
@@ -3623,7 +3767,12 @@ fn resize_height_sequence_with_three_bars() {
 fn resize_height_sequence_without_overall() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::fixed_with_dim(mp, 4, Arc::clone(&dims) as Arc<dyn DimensionSource>);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build();
     let _bar2 = group.add_bar(5, "bar 2");
     let _bar1 = group.add_bar(3, "bar 1");
 
