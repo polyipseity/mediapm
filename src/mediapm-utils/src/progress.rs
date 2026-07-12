@@ -643,26 +643,7 @@ mod inner {
         }
     }
 
-    impl RenderedSlot {
-        /// Swap the tracked source with another slot without
-        /// simultaneous `RefCell` borrows.
-        #[inline]
-        fn swap_sources_with(&self, other: &Self) {
-            let mut tmp = None;
-            {
-                let mut cell = self.source.borrow_mut();
-                std::mem::swap(&mut tmp, &mut *cell);
-            }
-            {
-                let mut cell = other.source.borrow_mut();
-                std::mem::swap(&mut tmp, &mut *cell);
-            }
-            {
-                let mut cell = self.source.borrow_mut();
-                std::mem::swap(&mut tmp, &mut *cell);
-            }
-        }
-    }
+    impl RenderedSlot {}
 
     impl ProgressRenderer {
         /// Pre-allocate `capacity` blank bars in an existing [`MultiProgress`].
@@ -816,7 +797,8 @@ mod inner {
                 // Shift existing active children up by one slot (ascending
                 // order preserves relative positions).
                 for i in (bottom + 1 - active)..=bottom {
-                    self.slots[i].swap_sources_with(&self.slots[i - 1]);
+                    let (left, right) = self.slots.split_at_mut(i);
+                    std::mem::swap(&mut left[left.len() - 1].source, &mut right[0].source);
                     self.slots_timing.swap(i, i - 1);
                 }
                 // Sync shifted slots (sources moved to different bars).
