@@ -2481,6 +2481,7 @@ fn consumer_lifecycle_conductor_cli() {
     pb.set_total(3);
 
     pb.set_position(1);
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
     eprintln!("=== conductor CLI lifecycle: step 1/3 ===");
@@ -2495,8 +2496,13 @@ fn consumer_lifecycle_conductor_cli() {
 
     pb.set_position(3);
     pb.finish();
+    group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== conductor CLI lifecycle: after finish ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
     assert!(lines[3].contains("steps"), "bar still visible after finish: {0}", lines[3]);
 
     group.join();
