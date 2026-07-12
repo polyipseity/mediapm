@@ -881,23 +881,32 @@ mod inner {
                         slot.bar.set_prefix("");
                         slot.bar.disable_steady_tick();
                     } else {
-                        // Finish ordering: style → finish/abandon → disable tick → force final draw.
-                        if self.has_overall && i == self.slots.len() - 1 {
-                            slot.bar.set_style(overall_bar_style());
-                        } else if snap.status == TrackStatus::Failed {
-                            slot.bar.set_style(failed_bar_style());
-                        } else {
-                            slot.bar.set_style(done_bar_style());
-                        }
-                        match snap.status {
-                            TrackStatus::Failed | TrackStatus::Abandoned => slot.bar.abandon(),
-                            _ => slot.bar.finish(),
-                        }
-                        slot.bar.disable_steady_tick();
-                        slot.bar.tick();
+                        self.finish_slot(i, snap.status);
                     }
                 }
             }
+        }
+
+        /// Apply finish/abandon visual state to a completed slot.
+        ///
+        /// Sets the correct style for the slot's terminal status, calls
+        /// `bar.finish()` or `bar.abandon()`, disables steady tick, and
+        /// forces a final render.
+        fn finish_slot(&self, i: usize, status: TrackStatus) {
+            let slot = &self.slots[i];
+            if self.has_overall && i == self.slots.len() - 1 {
+                slot.bar.set_style(overall_bar_style());
+            } else if status == TrackStatus::Failed {
+                slot.bar.set_style(failed_bar_style());
+            } else {
+                slot.bar.set_style(done_bar_style());
+            }
+            match status {
+                TrackStatus::Failed | TrackStatus::Abandoned => slot.bar.abandon(),
+                _ => slot.bar.finish(),
+            }
+            slot.bar.disable_steady_tick();
+            slot.bar.tick();
         }
 
         /// Respond to terminal dimension changes since the last tick.
@@ -975,6 +984,17 @@ mod inner {
         fn finalize(&self) {
             if self.finalized.replace(true) {
                 return;
+            }
+            // Finish all bound bars that have reached a terminal state
+            // before removing blank slots, so the final draw captures
+            // every bar's finished visual state.
+            for (i, slot) in self.slots.iter().enumerate() {
+                let status = slot.source.borrow().as_ref().map(|s| s.snapshot().status);
+                if let Some(status) = status
+                    && status != TrackStatus::Active
+                {
+                    self.finish_slot(i, status);
+                }
             }
             // Remove all blank (unbound) slots from MultiProgress.
             for slot in &self.slots {
