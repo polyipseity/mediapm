@@ -572,15 +572,6 @@ mod inner {
             self.state.mark_finished();
         }
 
-        /// Force a redraw (useful in test environments with
-        /// [`InMemoryTerm`](indicatif::InMemoryTerm) where steady tick
-        /// timers don't fire).
-        #[doc(hidden)]
-        pub fn tick(&self) {
-            // No display bar owned by TrackedHandle — the renderer
-            // pulls from SharedState asynchronously.
-        }
-
         /// Return a data-copy snapshot of the current tracking state.
         #[must_use]
         pub fn snapshot(&self) -> TrackSnapshot {
@@ -605,9 +596,6 @@ mod inner {
         /// Optional tracking state this slot is currently bound to.
         /// `None` means the slot is blank (unused).
         source: RefCell<Option<Arc<SharedState>>>,
-        /// Whether `bar.enable_steady_tick` has been called.
-        /// Guards against redundant stop-and-replace cycles.
-        steady_tick: Cell<bool>,
     }
 
     /// Manages a fixed-size grid of [`ProgressBar`] slots in
@@ -687,11 +675,7 @@ mod inner {
                 bar.set_style(blank_bar_style());
                 bar.set_message(" ");
                 bar.set_prefix("");
-                slots.push(RenderedSlot {
-                    bar,
-                    source: RefCell::new(None),
-                    steady_tick: Cell::new(false),
-                });
+                slots.push(RenderedSlot { bar, source: RefCell::new(None) });
             }
             // Trigger a final draw so all bars are captured by InMemoryTerm
             // even when capacity == terminal height.
@@ -728,11 +712,7 @@ mod inner {
                 bar.set_style(blank_bar_style());
                 bar.set_message(" ");
                 bar.set_prefix("");
-                slots.push(RenderedSlot {
-                    bar,
-                    source: RefCell::new(None),
-                    steady_tick: Cell::new(false),
-                });
+                slots.push(RenderedSlot { bar, source: RefCell::new(None) });
             }
             // Last slot = overall bar.
             let overall_state = Arc::new(SharedState::new(total, label));
@@ -741,11 +721,9 @@ mod inner {
             let (_, cols) = dim_source.dimensions();
             apply_overall_bar_style(&overall_bar, cols);
             overall_bar.set_prefix(label.to_string());
-            overall_bar.enable_steady_tick(Duration::from_millis(100));
             slots.push(RenderedSlot {
                 bar: overall_bar,
                 source: RefCell::new(Some(overall_state.clone())),
-                steady_tick: Cell::new(true),
             });
             let slots_timing = (0..capacity).map(|_| SlotTiming::new()).collect();
             (
@@ -791,18 +769,10 @@ mod inner {
                 slot.bar.set_message(msg);
                 slot.bar.set_length(snap.total);
                 slot.bar.set_position(snap.position);
-                if !slot.steady_tick.get() {
-                    slot.bar.enable_steady_tick(Duration::from_millis(100));
-                    slot.steady_tick.set(true);
-                }
             } else {
                 slot.bar.set_style(blank_bar_style());
                 slot.bar.set_message(" ");
                 slot.bar.set_prefix("");
-                if slot.steady_tick.get() {
-                    slot.bar.disable_steady_tick();
-                    slot.steady_tick.set(false);
-                }
             }
         }
 
@@ -915,15 +885,11 @@ mod inner {
 
                     self.sync_snapshot_to_bar(i, &snap, &rate_str, eta_str.as_deref());
                     if snap.status == TrackStatus::Active {
-                        // Setters above already triggered a redraw; no tick() needed.
+                        slot.bar.tick();
                     } else if source.is_cleared() {
                         slot.bar.set_style(blank_bar_style());
                         slot.bar.set_message(" ");
                         slot.bar.set_prefix("");
-                        if slot.steady_tick.get() {
-                            slot.bar.disable_steady_tick();
-                            slot.steady_tick.set(false);
-                        }
                     } else {
                         self.finish_slot(i, snap.status);
                     }
@@ -985,10 +951,6 @@ mod inner {
                 TrackStatus::Failed | TrackStatus::Abandoned => slot.bar.abandon(),
                 _ => slot.bar.finish(),
             }
-            if slot.steady_tick.get() {
-                slot.bar.disable_steady_tick();
-                slot.steady_tick.set(false);
-            }
             slot.bar.tick();
         }
 
@@ -1028,11 +990,7 @@ mod inner {
                         bar.set_style(blank_bar_style());
                         bar.set_message(" ");
                         bar.set_prefix("");
-                        let slot = RenderedSlot {
-                            bar,
-                            source: RefCell::new(None),
-                            steady_tick: Cell::new(false),
-                        };
+                        let slot = RenderedSlot { bar, source: RefCell::new(None) };
                         if let Some(orphan) = self.orphaned_states.borrow_mut().pop_back() {
                             slot.source.replace(Some(orphan));
                         }
