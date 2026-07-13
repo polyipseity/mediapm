@@ -1,26 +1,17 @@
-//! Tool presets, builtins, and builtin registry.
+//! Tool presets, provider, builtins, and builtin registry.
 //!
 //! This module organizes every tool preset and builtin tool that conductor
 //! can discover or invoke.
 //!
 //! - **Tool presets** (feature `tool-presets`) — managed executable tool
-//!   catalog entries and provisioning via [`catalog`], [`model`],
-//!   [`resolver`], and [`provision`].
+//!   preset configuration via [`preset`] and 3-phase provisioning via
+//!   [`provider`].
 //! - **Builtins** — always-compiled crates (`echo`, `fs`, `import`,
 //!   `archive`, `export`) registered in [`ALL_BUILTINS`] and discoverable
 //!   via [`registered_builtin_ids`].
 
-pub mod catalog;
-
-#[cfg(feature = "tool-presets")]
-pub mod model;
 pub mod preset;
-#[cfg(feature = "tool-presets")]
 pub mod provider;
-#[cfg(feature = "tool-presets")]
-pub mod provision;
-#[cfg(feature = "tool-presets")]
-pub mod resolver;
 
 use std::collections::HashSet;
 
