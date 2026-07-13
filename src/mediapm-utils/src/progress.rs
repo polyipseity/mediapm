@@ -231,24 +231,26 @@ mod inner {
     /// Build the `{msg}` string: colored count/total + uncolored elapsed +
     /// uncolored rate + optional uncolored eta.
     ///
-    /// When running:    `" {color}{count}/{total}{reset} {elapsed} {rate} {eta}"`
-    /// When not running: `" {color}{count}/{total}{reset} {elapsed} {rate}"`
+    /// When running:    `" {color}{count}/{total}{reset} {elapsed} {rate} [{eta}]"`
+    /// When not running: `" {color}{count}/{total}{reset} {elapsed}"`
     pub(super) fn build_right_msg(
         color_code: &str,
         count_str: &str,
         total_str: &str,
         elapsed_str: &str,
-        rate_str: &str,
+        rate_str: Option<&str>,
         eta_str: Option<&str>,
     ) -> String {
         let mut s = format!(" \x1b[{color_code}m{count_str}/{total_str}\x1b[0m");
         s.push(' ');
         s.push_str(elapsed_str);
-        s.push(' ');
-        s.push_str(rate_str);
-        if let Some(eta) = eta_str {
+        if let Some(rate) = rate_str {
             s.push(' ');
-            s.push_str(eta);
+            s.push_str(rate);
+            if let Some(eta) = eta_str {
+                s.push(' ');
+                s.push_str(eta);
+            }
         }
         s
     }
@@ -648,14 +650,11 @@ mod inner {
         prev_position: u64,
         prev_instant: Instant,
         rate: f64,
-        /// Last computed rate, persisted even after the bar leaves Active
-        /// so the finished display can still show a rate value.
-        last_rate: f64,
     }
 
     impl SlotTiming {
         fn new() -> Self {
-            Self { prev_position: 0, prev_instant: Instant::now(), rate: 0.0, last_rate: 0.0 }
+            Self { prev_position: 0, prev_instant: Instant::now(), rate: 0.0 }
         }
     }
 
@@ -800,8 +799,23 @@ mod inner {
                 let count_str = format_count(snap.position);
                 let total_str = format_count(snap.total);
                 let color_code = bar_color_code(snap.status, is_overall);
-                let msg =
-                    build_right_msg(color_code, &count_str, &total_str, &elapsed_str, "0/d", None);
+                let rate_str: Option<String> = if snap.status == TrackStatus::Active {
+                    if self.slots_timing[i].rate > 0.0 {
+                        Some(format_rate(self.slots_timing[i].rate))
+                    } else {
+                        Some("0/d".into())
+                    }
+                } else {
+                    None
+                };
+                let msg = build_right_msg(
+                    color_code,
+                    &count_str,
+                    &total_str,
+                    &elapsed_str,
+                    rate_str.as_deref(),
+                    None,
+                );
                 slot.bar.set_message(msg);
                 slot.bar.set_length(snap.total);
                 slot.bar.set_position(snap.position);
@@ -883,9 +897,9 @@ mod inner {
                 if let Some(ref source) = *slot.source.borrow() {
                     let snap = source.snapshot();
 
-                    // Compute EMA-smoothed rate, always shown for active bars.
+                    // Compute EMA-smoothed rate for display in active bars only.
                     // Rate is only recomputed when position actually changes.
-                    let rate_str = if snap.status == TrackStatus::Active {
+                    let rate_str: Option<String> = if snap.status == TrackStatus::Active {
                         if snap.position != self.slots_timing[i].prev_position {
                             let now = Instant::now();
                             let dt =
@@ -901,10 +915,9 @@ mod inner {
                                 self.slots_timing[i].prev_instant = now;
                             }
                         }
-                        self.slots_timing[i].last_rate = self.slots_timing[i].rate;
-                        format_rate(self.slots_timing[i].rate)
+                        Some(format_rate(self.slots_timing[i].rate))
                     } else {
-                        format_rate(self.slots_timing[i].last_rate)
+                        None
                     };
 
                     // Compute ETA for active bars with known total and
@@ -921,7 +934,7 @@ mod inner {
                         None
                     };
 
-                    self.sync_snapshot_to_bar(i, &snap, &rate_str, eta_str.as_deref());
+                    self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), eta_str.as_deref());
                     if snap.status == TrackStatus::Active {
                         slot.bar.tick();
                     } else if source.is_cleared() {
@@ -947,7 +960,7 @@ mod inner {
             &self,
             i: usize,
             snap: &TrackSnapshot,
-            rate_str: &str,
+            rate_str: Option<&str>,
             eta_str: Option<&str>,
         ) {
             let slot = &self.slots[i];
@@ -1094,8 +1107,7 @@ mod inner {
                 if let Some(ref snap) = snap
                     && snap.status != TrackStatus::Active
                 {
-                    let rate_str = format_rate(self.slots_timing[i].last_rate);
-                    self.sync_snapshot_to_bar(i, snap, &rate_str, None);
+                    self.sync_snapshot_to_bar(i, snap, None, None);
                     self.finish_slot(i, snap.status);
                 }
             }
@@ -2525,8 +2537,8 @@ mod tests {
 
     #[test]
     fn build_right_msg_with_rate() {
-        // rate_str always present, no eta
-        let result = super::inner::build_right_msg("33", "0", "5", "0s", "0/d", None);
+        // rate_str present, no eta
+        let result = super::inner::build_right_msg("33", "0", "5", "0s", Some("0/d"), None);
         assert_eq!(result, " \x1b[33m0/5\x1b[0m 0s 0/d");
         assert!(result.ends_with("0s 0/d"), "expected elapsed then rate at end: {result:?}");
     }
@@ -2534,7 +2546,7 @@ mod tests {
     #[test]
     fn build_right_msg_with_rate_and_eta() {
         // rate_str + eta_str
-        let result = super::inner::build_right_msg("33", "0", "5", "0s", "0/d", Some("5s"));
+        let result = super::inner::build_right_msg("33", "0", "5", "0s", Some("0/d"), Some("5s"));
         assert_eq!(result, " \x1b[33m0/5\x1b[0m 0s 0/d 5s");
         assert!(result.ends_with("0s 0/d 5s"), "expected elapsed rate eta at end: {result:?}");
     }
@@ -2542,7 +2554,7 @@ mod tests {
     #[test]
     fn build_right_msg_different_color_codes() {
         for (code, status_name) in [("31", "failed"), ("33", "child"), ("35", "overall")] {
-            let result = super::inner::build_right_msg(code, "1", "2", "3s", "0/d", None);
+            let result = super::inner::build_right_msg(code, "1", "2", "3s", Some("0/d"), None);
             assert!(
                 result.contains(&format!("\x1b[{code}m")),
                 "{status_name} should use code {code}: {result:?}"
