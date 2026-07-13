@@ -141,6 +141,48 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
 **User-level cache**: `<os-cache-dir>/mediapm/cache/` (30-day eviction) — shared download cache distinct from workspace tool cache.
 
+### Adding a New Managed Tool
+
+Follow this spec-first, test-first workflow:
+
+1. **Spec first** — Document the tool's contract in `src/mediapm/AGENTS.md`:
+   - Source URL scheme and supported OSes
+   - Companion dependencies (if any)
+   - Input/output contracts for the workflow step
+   - Any special runtime requirements (sandbox, env vars)
+
+2. **Test first** — Write tests before implementation:
+   - Unit tests for the tool's source descriptors (URLs per OS) in `tools/provider/<tool>.rs`
+   - Unit tests for the preset builder in `tools/preset/<tool>.rs`
+   - Unit tests for the workflow synthesis in `tools/workflows/<tool>.rs`
+   - Integration test case in `tests/int/all_platform.rs`
+
+3. **Implement provider** — Create `tools/provider/<tool>.rs`:
+   - Define per-OS `SourceProducer::Fetch` entries with download URLs
+   - Register in `tools/provider/mod.rs` dispatch table
+
+4. **Implement preset** — Create `tools/preset/<tool>.rs`:
+   - Define `pub(crate) fn apply(...) -> (ToolSpec, ToolRuntime)`
+   - Set correct `impure`, `content_map`, `command_selector`, and `slot_limits`
+   - Register in `tools/preset/mod.rs` dispatch table
+
+5. **Implement workflow** — Create (or extend) `tools/workflows/<tool>.rs`:
+   - Define `build_<tool>_command()`, `build_<tool>_inputs()`, `build_<tool>_outputs()`, `build_<tool>_defaults()`
+   - Define `build_<tool>_spec()` composing the above into a full `ToolSpec`
+   - Add `step_<tool>()` synthesizer and register in the step dispatch
+
+6. **Register everywhere**:
+   - Add to `is_known_tool_id()` in `tools/mod.rs`
+   - Add to `tools/mod.rs` module declarations (`pub(crate) mod <tool>;`)
+   - Add to the managed tool table above
+   - Add config defaults in `config/defaults.rs` if needed
+   - Add CLI test cases in `main.rs` tests (route parsing)
+
+7. **Integration test** — Verify end-to-end:
+   - Provider resolves the correct URLs per OS
+   - Preset produces valid `ToolSpec` with non-empty command/inputs/outputs
+   - Workflow step synthesizes correct command-line tokens
+
 ## Materialization
 
 Direct CAS→output-path writes; no staging commit. Materialized paths marked read-only after sync. Link fallback order configurable in `runtime.materialization_preference_order` (default: hardlink → symlink → reflink → copy). NFD filenames enforced; reserved path chars rejected. ZIP extraction under `<mediapm_dir>/tmp/`.
