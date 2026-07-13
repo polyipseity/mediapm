@@ -47,6 +47,37 @@ pub struct DownloadProgressSnapshot {
 pub type ProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
 
 // ---------------------------------------------------------------------------
+// Provider progress types (always available)
+// ---------------------------------------------------------------------------
+
+/// Which provider phase is currently active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderPhase {
+    /// Phase 1: resolving metadata and sources.
+    Resolve,
+    /// Phase 2: fetching or generating bytes.
+    Fetch,
+    /// Phase 3: postprocessing (extract, repack, CAS import).
+    Postprocess,
+}
+
+/// Snapshot of provider progress at one point in time across all three phases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderProgressSnapshot {
+    /// Current phase.
+    pub phase: ProviderPhase,
+    /// Items completed vs total `(completed, total)`.
+    /// Phase 1: sources resolved; Phase 2: files fetched; Phase 3: entries postprocessed.
+    pub items: (u64, u64),
+    /// Bytes completed vs total `(completed, total)`.
+    /// Phase 1: `(0, 0)`; Phase 2: downloaded bytes; Phase 3: CAS-imported bytes.
+    pub bytes: (u64, u64),
+}
+
+/// Callback invoked with provider progress snapshots during tool provisioning.
+pub type ProviderProgressCallback = Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync>;
+
+// ---------------------------------------------------------------------------
 // Graphical progress bar types (only with `progress` feature)
 // ---------------------------------------------------------------------------
 
