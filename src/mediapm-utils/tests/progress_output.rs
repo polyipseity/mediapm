@@ -12,6 +12,8 @@
 //! to fill available width.
 
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use mediapm_utils::progress::{DimensionSource, ProgressGroup, TestDimensionSource, TrackedHandle};
@@ -52,6 +54,34 @@ fn style_from(template: &str) -> ProgressStyle {
 /// at the default terminal size (H=24, W=40).
 fn mk() -> (MultiProgress, InMemoryTerm) {
     mk_with_size(H, W)
+}
+
+/// Poll the terminal until the expected number of lines appear.
+///
+/// Defensive against InMemoryTerm timing races where concurrent draw
+/// writes from steady tickers can produce transient screen states.
+/// Prints the last captured output on any attempt.
+fn poll_lines(group: &ProgressGroup, term: &InMemoryTerm, expected: usize) -> Vec<String> {
+    for attempt in 0..20 {
+        group.tick();
+        let contents = term.contents();
+        let lines: Vec<String> = contents.lines().map(String::from).collect();
+        if lines.len() == expected || attempt >= 19 {
+            if lines.len() != expected {
+                eprintln!(
+                    "=== poll_lines expected {expected} lines, got {} after {attempt} attempts ===",
+                    lines.len()
+                );
+                for (i, line) in lines.iter().enumerate() {
+                    eprintln!("line[{i}] = {line:?}");
+                }
+            }
+            return lines;
+        }
+        group.tick();
+        thread::sleep(Duration::from_millis(10));
+    }
+    unreachable!()
 }
 
 /// Create a [`MultiProgress`] + [`InMemoryTerm`] pair at a custom size.
@@ -3090,8 +3120,7 @@ fn regression_child_order_chronological_top_to_bottom() {
     let _c3 = group.add_bar(5, "third");
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
+    let lines = poll_lines(&group, &term, 5);
     eprintln!("=== regression_child_order_chronological, H=5, W=80 ===");
     for (i, line) in lines.iter().enumerate() {
         eprintln!("line[{i}] = {line:?}");
