@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 
 /// User-agent string sent in HTTP requests by mediapm tools/downloaders.
+#[allow(dead_code)]
 pub const MEDIAPM_USER_AGENT: &str = concat!("mediapm/", env!("CARGO_PKG_VERSION"));
 
 /// Canonical global directory paths for one user profile.
