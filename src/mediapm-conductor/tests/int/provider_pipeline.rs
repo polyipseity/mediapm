@@ -131,10 +131,10 @@ async fn fetch_echo_is_cached_idempotently() {
 // ---------------------------------------------------------------------------
 
 /// Postprocessing echo launchers produces a content map with one entry per OS
-/// (binary format → `{os_label}/{tool_id}` keys) and a multi-OS command
-/// selector.
+/// (binary format → `{os_label}/{tool_id}` keys) and an `os_exec_paths` map
+/// with one entry per OS.
 #[tokio::test]
-async fn postprocess_echo_produces_correct_content_map_and_selector() {
+async fn postprocess_echo_produces_correct_content_map_and_os_exec_paths() {
     let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
@@ -156,25 +156,19 @@ async fn postprocess_echo_produces_correct_content_map_and_selector() {
         );
     }
 
-    // Command selector: multi-OS template expression
-    assert!(
-        result.command_selector.starts_with("${context.os == \""),
-        "selector should be a template expression: {:?}",
-        result.command_selector,
-    );
+    // os_exec_paths: one entry per OS
+    assert_eq!(result.os_exec_paths.len() as u64, ECHO_OS_COUNT, "os_exec_paths size");
     for os in ECHO_OS_LABELS {
-        let fragment = format!("{os}/echo");
         assert!(
-            result.command_selector.contains(&fragment),
-            "selector should contain {fragment:?}: {:?}",
-            result.command_selector,
+            result.os_exec_paths.contains_key(*os),
+            "os_exec_paths should contain OS {os:?}, got keys: {:?}",
+            result.os_exec_paths.keys().collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            result.os_exec_paths[*os], "echo",
+            "os_exec_paths for {os:?} should be \"echo\"",
         );
     }
-    assert!(
-        result.command_selector.ends_with('}'),
-        "selector should end with '}}': {:?}",
-        result.command_selector,
-    );
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::tools::helpers::build_os_conditional_selector;
 use crate::{
     InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
 };
@@ -10,10 +11,11 @@ use crate::{
 #[must_use]
 pub fn apply(
     content_map: BTreeMap<String, String>,
-    command_selector: &str,
+    os_exec_paths: &BTreeMap<String, String>,
 ) -> (ToolSpec, ToolRuntime) {
+    let command_path = build_os_conditional_selector(os_exec_paths);
     let command = vec![
-        command_selector.to_string(),
+        command_path,
         "${*inputs.leading_args}".to_string(),
         "${*inputs.pattern}".to_string(),
         "${*inputs.replacement}".to_string(),

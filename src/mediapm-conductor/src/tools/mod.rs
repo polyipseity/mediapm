@@ -10,6 +10,7 @@
 //!   `archive`, `export`) registered in [`ALL_BUILTINS`] and discoverable
 //!   via [`registered_builtin_ids`].
 
+pub mod helpers;
 pub mod preset;
 pub mod provider;
 

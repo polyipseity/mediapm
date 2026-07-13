@@ -23,7 +23,6 @@ use mediapm_utils::progress::ProviderProgressCallback;
 // Archive format constants (private — inferred internally in phase 3)
 // ---------------------------------------------------------------------------
 
-const ARCHIVE_BINARY: &str = "binary";
 const ARCHIVE_ZIP: &str = "zip";
 const ARCHIVE_TAR_GZ: &str = "tar.gz";
 const ARCHIVE_TAR_XZ: &str = "tar.xz";
@@ -99,17 +98,17 @@ pub struct DownloadedSources {
     pub entries: Vec<DownloadedSource>,
 }
 
-/// Phase 3 output: final content map and command selector for a tool.
+/// Phase 3 output: final content map and per-OS executable paths for a tool.
 #[derive(Debug, Clone)]
 pub struct ProvisionResult {
     /// Content map: sandbox-relative path → CAS hash hex string.
     /// For archive formats the key is a trailing-slash directory entry
-    /// (`{os}/`); for binary format it is a file-level entry (`{os}/{tool_id}`).
+    /// (`{os}/`); for binary format it is a file-level entry (`{os}/{filename}`).
     pub content_map: BTreeMap<String, String>,
-    /// Sandbox-relative path to the main executable, emitted as a
-    /// `${context.os == "…" ? …/… : …}` template expression when multiple
-    /// platforms are provisioned.
-    pub command_selector: String,
+    /// Per-OS executable path (without OS prefix, e.g. `"sd-x86_64-linux"`).
+    /// Used by the preset layer to build the command template via
+    /// [`build_os_conditional_selector`](super::helpers::build_os_conditional_selector).
+    pub os_exec_paths: BTreeMap<String, String>,
 }
 
 // ██████████████████████████████████████████████████████████████████████████████
@@ -306,14 +305,15 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 // ██████████████████████████████████████████████████████████████████████████████
 
 /// Postprocesses downloaded sources: extract archives, import to CAS, build
-/// content map and command selector.
+/// content map and per-OS executable paths.
 ///
 /// For archive formats (ZIP, tar.gz, tar.xz) the extracted directory is
 /// repacked into a single uncompressed ZIP and imported to CAS, producing
-/// a single trailing-slash content-map key (`{os}/`). For binary format the
-/// file is imported as a file-level entry (`{os}/{tool_id}`).
+/// a single trailing-slash content-map key (`{os}/`). For binary/launcher
+/// format the data is directly CAS-imported as a file-level entry
+/// (`{os}/{filename}`).
 ///
-/// Archive format is inferred from the URL extension or content magic bytes.
+/// Archive format is inferred from the URL extension.
 ///
 /// # Errors
 ///
@@ -335,19 +335,35 @@ pub async fn postprocess_tool_sources(
     })?;
 
     let mut content_map: BTreeMap<String, String> = BTreeMap::new();
-    let mut per_os_exec: BTreeMap<String, String> = BTreeMap::new();
+    let mut os_exec_paths: BTreeMap<String, String> = BTreeMap::new();
     let total = downloaded.entries.len() as u64;
 
     for (idx, source) in downloaded.entries.iter().enumerate() {
         let os_label = &source.os;
         let os_dir = temp_root.path().join(os_label);
 
-        // Infer archive format from URL or treat as binary for launcher scripts.
-        let archive_format = match &source.producer {
+        let (archive_format, filename) = match &source.producer {
             SourceProducer::Fetch { urls } => {
-                infer_archive_format(urls.first().map_or("", |s| s.as_str()))
+                let url = urls.first().map_or("", |s| s.as_str());
+                let fmt = infer_archive_format(url);
+                let fname = if fmt.is_some() {
+                    // Archive — filename unused in process_single_source
+                    String::new()
+                } else {
+                    // Binary — derive filename from URL basename
+                    url.split('/')
+                        .filter(|s| !s.is_empty())
+                        .next_back()
+                        .unwrap_or(&downloaded.tool_id)
+                        .to_string()
+                };
+                (fmt, fname)
             }
-            SourceProducer::GenerateLauncher { .. } => ARCHIVE_BINARY,
+            SourceProducer::GenerateLauncher { .. } => {
+                // Launcher scripts are treated as binary format with
+                // filename = tool_id.
+                (None, downloaded.tool_id.clone())
+            }
         };
 
         let (os_cm, exec_path) = process_single_source(
@@ -356,12 +372,13 @@ pub async fn postprocess_tool_sources(
             os_label,
             &downloaded.tool_id,
             &os_dir,
+            &filename,
             cas,
         )
         .await?;
 
         content_map.extend(os_cm);
-        per_os_exec.insert(os_label.to_string(), exec_path);
+        os_exec_paths.insert(os_label.clone(), exec_path);
 
         if let Some(cb) = progress_cb.as_ref() {
             cb(mediapm_utils::progress::ProviderProgressSnapshot {
@@ -372,86 +389,62 @@ pub async fn postprocess_tool_sources(
         }
     }
 
-    let command_selector = build_os_conditional_selector(&per_os_exec);
-
-    Ok(ProvisionResult { content_map, command_selector })
+    Ok(ProvisionResult { content_map, os_exec_paths })
 }
 
 /// Infers archive format from a URL's file extension.
+///
+/// Returns `Some(format)` for recognized archive extensions, or `None` for
+/// binary/launcher payloads.
 #[cfg(feature = "tool-presets")]
-fn infer_archive_format(url: &str) -> &'static str {
+fn infer_archive_format(url: &str) -> Option<&'static str> {
     let url_path = url.split('?').next().unwrap_or(url);
     let filename = url_path.trim_end_matches('/').split('/').next_back().unwrap_or(url_path);
     if filename.ends_with(".tar.xz") {
-        ARCHIVE_TAR_XZ
+        Some(ARCHIVE_TAR_XZ)
     } else if filename.ends_with(".tar.gz") || filename.ends_with(".tgz") {
-        ARCHIVE_TAR_GZ
+        Some(ARCHIVE_TAR_GZ)
     } else if filename.ends_with(".zip") || filename == "zip" {
-        ARCHIVE_ZIP
+        Some(ARCHIVE_ZIP)
     } else {
-        // No recognized extension or bare name → binary
-        ARCHIVE_BINARY
+        // No recognized extension → binary (not an archive)
+        None
     }
 }
 
-/// Processes one downloaded source: extract, repack, CAS import.
+/// Processes one downloaded source: extract archives or import binaries to CAS.
+///
+/// For archive formats (ZIP, tar.gz, tar.xz): extract → find executable →
+/// repack to uncompressed ZIP → CAS import → single trailing-slash content
+/// key (`{os}/`).
+///
+/// For binary/launcher format: CAS-import bytes directly using the given
+/// `filename` (URL basename for Fetch sources, `tool_id` for launchers).
+/// Returns file-level content key (`{os}/{filename}`).
 #[cfg(feature = "tool-presets")]
 async fn process_single_source(
     bytes: &[u8],
-    archive_format: &str,
+    archive_format: Option<&str>,
     os_label: &str,
     tool_id: &str,
     os_dir: &std::path::Path,
+    filename: &str,
     cas: &impl mediapm_cas::CasApi,
 ) -> Result<(BTreeMap<String, String>, String), crate::error::ConductorError> {
     use crate::error::ConductorError;
     use bytes::Bytes;
 
-    std::fs::create_dir_all(os_dir).map_err(|source| {
-        ConductorError::io(
-            &format!("creating temp directory for {os_label} tool extraction"),
-            os_dir,
-            source,
-        )
-    })?;
-
-    extract_archive(bytes, archive_format, os_dir)?;
-
-    // ── binary-format rename ───────────────────────────────────────
-    // `extract_binary` writes with a generic "tool"/"tool.exe" name; rename
-    // to the actual `tool_id` so the downstream read finds the right file.
-    if archive_format == ARCHIVE_BINARY {
-        let generic_name = if cfg!(target_os = "windows") { "tool.exe" } else { "tool" };
-        let generic_path = os_dir.join(generic_name);
-        let tool_path = os_dir.join(tool_id);
-        if generic_path != tool_path && generic_path.exists() {
-            std::fs::rename(&generic_path, &tool_path).map_err(|source| {
-                ConductorError::io(
-                    &format!("renaming generic binary to '{tool_id}'"),
-                    &generic_path,
-                    source,
-                )
-            })?;
-        }
-    }
-
-    if archive_format == ARCHIVE_BINARY {
-        // ── binary format: single file entry ────────────────────────
-        let tool_path = os_dir.join(tool_id);
-        let file_bytes = std::fs::read(&tool_path).map_err(|source| {
+    if archive_format.is_some() {
+        // ── Archive format ────────────────────────────────────────────
+        std::fs::create_dir_all(os_dir).map_err(|source| {
             ConductorError::io(
-                &format!("reading binary '{tool_id}' for CAS import"),
-                &tool_path,
+                &format!("creating temp directory for {os_label} tool extraction"),
+                os_dir,
                 source,
             )
         })?;
-        let hash = cas.put(Bytes::from(file_bytes)).await.map_err(|e| ConductorError::Cas(e))?;
-        let key = format!("{os_label}/{tool_id}");
-        let mut cm = BTreeMap::new();
-        cm.insert(key, hash.to_hex());
-        Ok((cm, tool_id.to_string()))
-    } else {
-        // ── archive format: pack OS directory, single dir entry ─────
+        extract_archive(bytes, archive_format, os_dir)?;
+
         let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
 
         let zip_bytes = pack_directory_to_uncompressed_zip_bytes(os_dir)?;
@@ -460,6 +453,16 @@ async fn process_single_source(
         let mut cm = BTreeMap::new();
         cm.insert(key, hash.to_hex());
         Ok((cm, exec_path))
+    } else {
+        // ── Binary/launcher format ───────────────────────────────────
+        // CAS-import bytes directly; filename is the URL basename
+        // (for Fetch sources) or tool_id (for launcher scripts).
+        let hash =
+            cas.put(Bytes::from(bytes.to_vec())).await.map_err(|e| ConductorError::Cas(e))?;
+        let key = format!("{os_label}/{filename}");
+        let mut cm = BTreeMap::new();
+        cm.insert(key, hash.to_hex());
+        Ok((cm, filename.to_string()))
     }
 }
 
@@ -468,19 +471,27 @@ async fn process_single_source(
 // ---------------------------------------------------------------------------
 
 /// Extracts archive bytes to the given directory based on archive format.
+///
+/// `format` must be `Some(ARCHIVE_ZIP)`, `Some(ARCHIVE_TAR_GZ)`, or
+/// `Some(ARCHIVE_TAR_XZ)`. Binary payloads are not extracted through this
+/// function — they bypass to direct CAS import.
 #[cfg(feature = "tool-presets")]
 fn extract_archive(
     bytes: &[u8],
-    format: &str,
+    format: Option<&str>,
     target_dir: &std::path::Path,
 ) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
     match format {
-        ARCHIVE_ZIP => extract_zip(bytes, target_dir),
-        ARCHIVE_TAR_GZ => extract_tar_gz(bytes, target_dir),
-        ARCHIVE_TAR_XZ => extract_tar_xz(bytes, target_dir),
-        ARCHIVE_BINARY => extract_binary(bytes, target_dir),
-        other => Err(ConductorError::Workflow(format!("unsupported archive format: {other}"))),
+        Some(ARCHIVE_ZIP) => extract_zip(bytes, target_dir),
+        Some(ARCHIVE_TAR_GZ) => extract_tar_gz(bytes, target_dir),
+        Some(ARCHIVE_TAR_XZ) => extract_tar_xz(bytes, target_dir),
+        Some(other) => {
+            Err(ConductorError::Workflow(format!("unsupported archive format: {other}")))
+        }
+        None => Err(ConductorError::Workflow(
+            "extract_archive called with None format (binary payload)".to_string(),
+        )),
     }
 }
 
@@ -535,25 +546,6 @@ fn extract_tar_xz(
     let decoder = xz2::read::XzDecoder::new(bytes);
     let mut archive = tar::Archive::new(decoder);
     archive.unpack(target_dir).map_err(|e| ConductorError::io("extract tar.xz", target_dir, e))
-}
-
-#[cfg(feature = "tool-presets")]
-fn extract_binary(
-    bytes: &[u8],
-    target_dir: &std::path::Path,
-) -> Result<(), crate::error::ConductorError> {
-    use crate::error::ConductorError;
-    let exe_name = if cfg!(target_os = "windows") { "tool.exe" } else { "tool" };
-    let out_path = target_dir.join(exe_name);
-    std::fs::write(&out_path, bytes)
-        .map_err(|e| ConductorError::io("write binary payload", &out_path, e))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| ConductorError::io("set permissions", &out_path, e))?;
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -675,28 +667,6 @@ fn find_file_relative(
     None
 }
 
-/// Builds a `${context.os == "linux" ? linux/sd : context.os == "macos" ? macos/sd : windows/sd}`
-/// template string from the per-OS executable suffix map.
-///
-/// When only one OS is provisioned the template collapses to a plain path.
-#[cfg(feature = "tool-presets")]
-fn build_os_conditional_selector(per_os_exec: &BTreeMap<String, String>) -> String {
-    if per_os_exec.is_empty() {
-        return String::new();
-    }
-    let mut iter = per_os_exec.iter();
-    let (first_os, first_path) = iter.next().expect("non-empty per_os_exec");
-    if per_os_exec.len() == 1 {
-        return format!("{first_os}/{first_path}");
-    }
-    let mut result = format!("${{context.os == \"{first_os}\" ? {first_os}/{first_path}");
-    for (os, path) in iter.by_ref() {
-        result.push_str(&format!(" : context.os == \"{os}\" ? {os}/{path}"));
-    }
-    result.push('}');
-    result
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -766,51 +736,12 @@ mod tests {
 
     #[test]
     fn infer_format_from_url_extension() {
-        assert_eq!(infer_archive_format("https://example.com/tool.tar.xz"), ARCHIVE_TAR_XZ);
-        assert_eq!(infer_archive_format("https://example.com/tool.tar.gz"), ARCHIVE_TAR_GZ);
-        assert_eq!(infer_archive_format("https://example.com/tool.tgz"), ARCHIVE_TAR_GZ);
-        assert_eq!(infer_archive_format("https://example.com/tool.zip"), ARCHIVE_ZIP);
-        assert_eq!(infer_archive_format("https://example.com/tool"), ARCHIVE_BINARY);
-        assert_eq!(infer_archive_format("https://example.com/tool.exe"), ARCHIVE_BINARY);
-    }
-
-    // ── build_os_conditional_selector ─────────────────────────────────
-
-    #[test]
-    fn selector_empty_map_returns_empty_string() {
-        assert_eq!(build_os_conditional_selector(&BTreeMap::new()), "");
-    }
-
-    #[test]
-    fn selector_single_os_returns_plain_path() {
-        let mut map: BTreeMap<String, String> = BTreeMap::new();
-        map.insert("linux".into(), "sd".into());
-        assert_eq!(build_os_conditional_selector(&map), "linux/sd");
-    }
-
-    #[test]
-    fn selector_two_oses_produces_template() {
-        let mut map: BTreeMap<String, String> = BTreeMap::new();
-        map.insert("linux".into(), "sd".into());
-        map.insert("macos".into(), "sd".into());
-        let result = build_os_conditional_selector(&map);
-        assert!(result.starts_with("${context.os == \""));
-        assert!(result.contains("linux/sd"));
-        assert!(result.contains("macos/sd"));
-        assert!(result.ends_with('}'));
-    }
-
-    #[test]
-    fn selector_three_oses_produces_full_template() {
-        let mut map: BTreeMap<String, String> = BTreeMap::new();
-        map.insert("linux".into(), "sd".into());
-        map.insert("macos".into(), "sd".into());
-        map.insert("windows".into(), "sd.exe".into());
-        let result = build_os_conditional_selector(&map);
-        assert!(result.contains("linux/sd"));
-        assert!(result.contains("macos/sd"));
-        assert!(result.contains("windows/sd.exe"));
-        assert!(result.starts_with("${context.os == \"linux\""));
+        assert_eq!(infer_archive_format("https://example.com/tool.tar.xz"), Some(ARCHIVE_TAR_XZ));
+        assert_eq!(infer_archive_format("https://example.com/tool.tar.gz"), Some(ARCHIVE_TAR_GZ));
+        assert_eq!(infer_archive_format("https://example.com/tool.tgz"), Some(ARCHIVE_TAR_GZ));
+        assert_eq!(infer_archive_format("https://example.com/tool.zip"), Some(ARCHIVE_ZIP));
+        assert_eq!(infer_archive_format("https://example.com/tool"), None);
+        assert_eq!(infer_archive_format("https://example.com/tool.exe"), None);
     }
 
     // ── find_file_relative ────────────────────────────────────────────
@@ -874,7 +805,7 @@ mod tests {
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
         let (cmap, exec) =
-            process_single_source(&zip, ARCHIVE_ZIP, "linux", "sd", os_dir.path(), &cas)
+            process_single_source(&zip, Some(ARCHIVE_ZIP), "linux", "sd", os_dir.path(), "", &cas)
                 .await
                 .unwrap();
         assert_eq!(cmap.len(), 1);
@@ -887,10 +818,17 @@ mod tests {
         let tgz = synthetic_tar_gz(&[("sd", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
-        let (cmap, exec) =
-            process_single_source(&tgz, ARCHIVE_TAR_GZ, "macos", "sd", os_dir.path(), &cas)
-                .await
-                .unwrap();
+        let (cmap, exec) = process_single_source(
+            &tgz,
+            Some(ARCHIVE_TAR_GZ),
+            "macos",
+            "sd",
+            os_dir.path(),
+            "",
+            &cas,
+        )
+        .await
+        .unwrap();
         assert_eq!(cmap.len(), 1);
         assert!(cmap.contains_key("macos/"));
         assert_eq!(exec, "sd");
@@ -901,10 +839,17 @@ mod tests {
         let txz = synthetic_tar_xz(&[("sd.exe", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
-        let (cmap, exec) =
-            process_single_source(&txz, ARCHIVE_TAR_XZ, "windows", "sd", os_dir.path(), &cas)
-                .await
-                .unwrap();
+        let (cmap, exec) = process_single_source(
+            &txz,
+            Some(ARCHIVE_TAR_XZ),
+            "windows",
+            "sd",
+            os_dir.path(),
+            "",
+            &cas,
+        )
+        .await
+        .unwrap();
         assert_eq!(cmap.len(), 1);
         assert!(cmap.contains_key("windows/"));
         assert_eq!(exec, "sd.exe");
@@ -917,10 +862,11 @@ mod tests {
         let launcher_bytes = generate_launcher_script("linux", "echo@v1");
         let (cmap, exec) = process_single_source(
             &launcher_bytes,
-            ARCHIVE_BINARY,
+            None,
             "linux",
             "echo",
             os_dir.path(),
+            "echo",
             &cas,
         )
         .await
@@ -966,32 +912,21 @@ mod tests {
     fn extract_zip_rejects_tar_xz_bytes() {
         let txz = synthetic_tar_xz(&[("x", &[0u8; 4])]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract_archive(&txz, ARCHIVE_ZIP, dir.path()).is_err());
+        assert!(extract_archive(&txz, Some(ARCHIVE_ZIP), dir.path()).is_err());
     }
 
     #[test]
     fn extract_tar_gz_rejects_zip_bytes() {
         let zip = synthetic_zip(&[("x", &[0u8; 4])]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract_archive(&zip, ARCHIVE_TAR_GZ, dir.path()).is_err());
+        assert!(extract_archive(&zip, Some(ARCHIVE_TAR_GZ), dir.path()).is_err());
     }
 
     #[test]
     fn extract_tar_xz_rejects_zip_bytes() {
         let zip = synthetic_zip(&[("x", &[0u8; 4])]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract_archive(&zip, ARCHIVE_TAR_XZ, dir.path()).is_err());
-    }
-
-    #[test]
-    fn extract_binary_writes_bytes_as_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let data = b"binary content";
-        extract_archive(data, ARCHIVE_BINARY, dir.path()).unwrap();
-        let exe_name = if cfg!(target_os = "windows") { "tool.exe" } else { "tool" };
-        let path = dir.path().join(exe_name);
-        assert!(path.exists());
-        assert_eq!(std::fs::read(path).unwrap(), data);
+        assert!(extract_archive(&zip, Some(ARCHIVE_TAR_XZ), dir.path()).is_err());
     }
 
     // ── pack_directory_to_uncompressed_zip_bytes ──────────────────────
@@ -1015,6 +950,7 @@ mod tests {
 
     // ── Property-based tests (proptest) ───────────────────────────────
 
+    use super::super::helpers::build_os_conditional_selector;
     use proptest::prelude::*;
 
     proptest! {
@@ -1036,11 +972,11 @@ mod tests {
             let url = format!("https://example.com/{stem}{ext}");
             let result = infer_archive_format(&url);
             if ext == ".tar.xz" {
-                assert_eq!(result, ARCHIVE_TAR_XZ);
+                assert_eq!(result, Some(ARCHIVE_TAR_XZ));
             } else if ext == ".tar.gz" || ext == ".tgz" {
-                assert_eq!(result, ARCHIVE_TAR_GZ);
+                assert_eq!(result, Some(ARCHIVE_TAR_GZ));
             } else if ext == ".zip" {
-                assert_eq!(result, ARCHIVE_ZIP);
+                assert_eq!(result, Some(ARCHIVE_ZIP));
             }
         }
 

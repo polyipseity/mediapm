@@ -2,15 +2,22 @@
 
 use std::collections::BTreeMap;
 
+use crate::tools::helpers::build_os_conditional_selector;
 use crate::{OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec};
 
 /// Builds the [`ToolSpec`] and [`ToolRuntime`] for `export`.
 #[must_use]
-pub fn apply() -> (ToolSpec, ToolRuntime) {
+pub fn apply(os_exec_paths: &BTreeMap<String, String>) -> (ToolSpec, ToolRuntime) {
+    let command_path = build_os_conditional_selector(os_exec_paths);
+    let command = if command_path.is_empty() {
+        vec!["${executable}".into(), "${*inputs.args}".into()]
+    } else {
+        vec![command_path, "${*inputs.args}".into()]
+    };
     let spec = ToolSpec {
         name: "export".into(),
         kind: crate::ToolKindSpec::Executable {
-            command: vec!["${executable}".into(), "${*inputs.args}".into()],
+            command,
             env_vars: BTreeMap::new(),
             success_codes: vec![0],
         },
