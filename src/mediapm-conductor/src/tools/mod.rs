@@ -14,6 +14,9 @@ pub mod catalog;
 
 #[cfg(feature = "tool-presets")]
 pub mod model;
+pub mod preset;
+#[cfg(feature = "tool-presets")]
+pub mod provider;
 #[cfg(feature = "tool-presets")]
 pub mod provision;
 #[cfg(feature = "tool-presets")]

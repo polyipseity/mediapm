@@ -1,0 +1,29 @@
+//! Provider for the `fs` builtin tool.
+
+use super::{ResolvedSource, ResolvedToolFetch, SourceProducer};
+
+/// Returns the resolved tool fetch for `fs`.
+#[must_use]
+pub fn sources() -> ResolvedToolFetch {
+    ResolvedToolFetch {
+        tool_id: "fs".to_string(),
+        sources: vec![
+            ResolvedSource {
+                os: "windows".to_string(),
+                producer: SourceProducer::GenerateLauncher { builtin_id: "fs@v1".to_string() },
+                expected_size: None,
+            },
+            ResolvedSource {
+                os: "linux".to_string(),
+                producer: SourceProducer::GenerateLauncher { builtin_id: "fs@v1".to_string() },
+                expected_size: None,
+            },
+            ResolvedSource {
+                os: "macos".to_string(),
+                producer: SourceProducer::GenerateLauncher { builtin_id: "fs@v1".to_string() },
+                expected_size: None,
+            },
+        ],
+        total_items: 3,
+    }
+}
