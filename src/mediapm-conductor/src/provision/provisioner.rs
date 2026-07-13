@@ -373,4 +373,55 @@ mod tests {
         );
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn provisioned_tool_guard_holds_shared_lock_prevents_prune() {
+        use std::collections::{BTreeMap, HashSet};
+        use std::sync::Arc;
+
+        use bytes::Bytes;
+        use mediapm_cas::{CasApi, Hash, InMemoryCas};
+
+        use crate::provision::ProvisionCache;
+
+        let tools_dir = tempfile::tempdir().unwrap();
+        let cas = Arc::new(InMemoryCas::new());
+
+        // Put some content in the CAS.
+        let content = b"tool binary content";
+        let hash = Hash::from_content(content);
+        cas.put(Bytes::from(content.to_vec())).await.unwrap();
+
+        // Build content map with one file entry.
+        let mut content_map = BTreeMap::new();
+        content_map.insert("my-file".to_string(), hash);
+
+        // Create provision cache.
+        let cache = ProvisionCache::new(tools_dir.path().to_path_buf(), cas, None);
+
+        // Materialize the tool. This acquires a shared lock on the entry.
+        let guard = cache.materialize("test-tool", &content_map).await.unwrap();
+
+        let entry_dir = tools_dir.path().join("test-tool");
+        assert!(entry_dir.exists(), "entry should exist after materialize");
+
+        // While the guard holds a shared lock, retain_only should NOT be able
+        // to exclusively lock and remove the entry.
+        let empty_set: HashSet<String> = HashSet::new();
+        cache.retain_only(&empty_set).await.unwrap();
+        assert!(
+            entry_dir.exists(),
+            "entry should survive retain_only while guard holds shared lock"
+        );
+
+        // Drop the guard to release the shared lock.
+        drop(guard);
+
+        // Now retain_only should succeed in exclusively locking and removing the entry.
+        cache.retain_only(&empty_set).await.unwrap();
+        assert!(
+            !entry_dir.exists(),
+            "entry should be removed after guard is dropped and retain_only runs"
+        );
+    }
 }
