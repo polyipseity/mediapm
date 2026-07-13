@@ -115,6 +115,12 @@ Get up and running in minutes:
 
 See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool provisioning reference, conductor integration boundary, and example policy.
 
+## SDD/TDD compliance
+
+- Spec-to-test coverage is tracked in `memories/session/spec-test-coverage.md`. Update it when spec items or tests change.
+- All new features follow spec-first, test-first implementation per `.agents/instructions/sdd-tdd-workflow.instructions.md`.
+- High-priority test gaps must be closed before feature work in the same area.
+
 ## Build and Test
 
 - Verify the relevant manifests, scripts, workflow files, and local configs exist before you run or document toolchain commands.
@@ -180,4 +186,5 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - `.agents/instructions/toml.instructions.md` — TOML formatting and file-specific conventions
 - `.agents/instructions/spec-development-index.instructions.md` — index linking to per-crate AGENTS.md for all specification and edge-case content (replaces the deleted `crate-specifications.md` and `elaboration-pass-edge-cases.md`)
 - `src/mediapm-cas/AGENTS.md`, `src/mediapm-conductor/AGENTS.md`, `src/mediapm/AGENTS.md` — crate-level detailed behavioral contracts
+- `memories/session/spec-test-coverage.md` — spec-to-test coverage matrix (SDD/TDD compliance tracking)
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`, `.agents/.markdownlint.jsonc` — formatting and line-ending rules
