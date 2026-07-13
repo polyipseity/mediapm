@@ -13,14 +13,14 @@ use crate::error::ConductorError;
 
 use super::extract::{ExtractPaths, extract_sync, fetch_all_cas_entries};
 use super::helpers::{
-    copy_directory_recursive, ensure_payload_tree_user_execute_bits, now_unix_seconds,
-    persist_cache_metadata, sanitize_tool_id,
+    ensure_payload_tree_user_execute_bits, now_unix_seconds, persist_cache_metadata,
+    sanitize_tool_id,
 };
 use super::retain::{prune_expired_entries, retain_only_tool_dirs};
 use super::types::{CleanupGuard, Metadata, ProvisionedTool};
 use super::{
-    DEFAULT_MAX_CONCURRENT, FOREIGN_PLATFORM_DIRS, LOCK_FILE_NAME, METADATA_FILE_NAME,
-    PAYLOAD_DIR_NAME, PRUNE_COOLDOWN_SECONDS, PRUNE_MARKER_FILE_NAME, VERSION,
+    DEFAULT_MAX_CONCURRENT, LOCK_FILE_NAME, METADATA_FILE_NAME, PAYLOAD_DIR_NAME,
+    PRUNE_COOLDOWN_SECONDS, PRUNE_MARKER_FILE_NAME, VERSION,
 };
 
 /// A persistent managed-tool provisioning cache with CAS-backed
@@ -149,89 +149,6 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         }
     }
 
-    /// Same as [`link_to_sandbox`] but accepts an explicit list of foreign
-    /// platform directory names, making it testable without depending on
-    /// the compile-time `#[cfg]` constants.
-    #[allow(clippy::similar_names)]
-    pub fn link_to_sandbox_filtered(
-        payload_dir: &Path,
-        sandbox_dir: &Path,
-        foreign_platform_dirs: &[&str],
-    ) -> Result<(), String> {
-        if !payload_dir.exists() {
-            return Err(format!(
-                "tool-content cache payload directory '{}' does not exist",
-                payload_dir.display()
-            ));
-        }
-
-        fs::create_dir_all(sandbox_dir).map_err(|err| {
-            format!("creating sandbox directory '{}' failed: {err}", sandbox_dir.display())
-        })?;
-
-        let entries = fs::read_dir(payload_dir).map_err(|err| {
-            format!("reading payload directory '{}' failed: {err}", payload_dir.display())
-        })?;
-
-        for entry in entries {
-            let entry =
-                entry.map_err(|err| format!("reading payload directory entry failed: {err}"))?;
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy();
-            let path = entry.path();
-            let target_path = sandbox_dir.join(&file_name);
-
-            let file_type = entry.file_type().map_err(|err| {
-                format!("reading file type for '{}' failed: {err}", path.display())
-            })?;
-
-            // Skip top-level directories that belong to a foreign platform.
-            if file_type.is_dir() && foreign_platform_dirs.contains(&name.as_ref()) {
-                continue;
-            }
-
-            if file_type.is_dir() {
-                copy_directory_recursive(&path, &target_path)?;
-            } else {
-                if let Some(parent) = target_path.parent() {
-                    fs::create_dir_all(parent).map_err(|err| {
-                        format!("creating parent directory '{}' failed: {err}", parent.display())
-                    })?;
-                }
-                if fs::hard_link(&path, &target_path).is_ok() {
-                    continue;
-                }
-                fs::copy(&path, &target_path).map_err(|err| {
-                    format!(
-                        "copying '{}' to '{}' failed: {err}",
-                        path.display(),
-                        target_path.display()
-                    )
-                })?;
-                let source_permissions = fs::metadata(&path)
-                    .map_err(|err| {
-                        format!("reading permissions for '{}' failed: {err}", path.display())
-                    })?
-                    .permissions();
-                fs::set_permissions(&target_path, source_permissions).map_err(|err| {
-                    format!("setting permissions on '{}' failed: {err}", target_path.display())
-                })?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Links or copies files from `payload_dir` to `sandbox_dir`, skipping
-    /// foreign-platform directories determined by compile-time `#[cfg]`.
-    ///
-    /// This is a thin wrapper around [`link_to_sandbox_filtered`] that
-    /// passes the host-specific [`FOREIGN_PLATFORM_DIRS`].
-    #[allow(clippy::similar_names)]
-    pub fn link_to_sandbox(payload_dir: &Path, sandbox_dir: &Path) -> Result<(), String> {
-        Self::link_to_sandbox_filtered(payload_dir, sandbox_dir, FOREIGN_PLATFORM_DIRS)
-    }
-
     /// Removes provisioned entries that have not been used within the TTL.
     ///
     /// Only entries that are not currently locked are removed — active
@@ -239,7 +156,7 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
     ///
     /// # Errors
     /// Returns [`ConductorError`] if filesystem operations fail during pruning.
-    pub async fn prune(&self) -> Result<(), ConductorError> {
+    pub async fn prune_expired(&self) -> Result<(), ConductorError> {
         let now = now_unix_seconds();
         self.prune_internal(now).await
     }
@@ -398,9 +315,7 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
 mod tests {
     use std::path::PathBuf;
 
-    use mediapm_cas::InMemoryCas;
-
-    use super::ProvisionCache;
+    use crate::provision::helpers::link_to_sandbox_filtered;
 
     #[test]
     fn link_to_sandbox_filtered_skips_foreign_platform_dirs() {
@@ -413,12 +328,7 @@ mod tests {
             std::fs::write(dir.join("tool"), "content").unwrap();
         }
 
-        ProvisionCache::<InMemoryCas>::link_to_sandbox_filtered(
-            payload.path(),
-            sandbox.path(),
-            &["linux"],
-        )
-        .unwrap();
+        link_to_sandbox_filtered(payload.path(), sandbox.path(), &["linux"]).unwrap();
 
         assert!(!sandbox.path().join("linux").exists(), "foreign platform dir was linked");
         assert!(sandbox.path().join("macos").exists(), "native platform dir was skipped");
@@ -436,12 +346,7 @@ mod tests {
             std::fs::write(dir.join("tool"), "content").unwrap();
         }
 
-        ProvisionCache::<InMemoryCas>::link_to_sandbox_filtered(
-            payload.path(),
-            sandbox.path(),
-            &[],
-        )
-        .unwrap();
+        link_to_sandbox_filtered(payload.path(), sandbox.path(), &[]).unwrap();
 
         assert!(sandbox.path().join("linux").exists());
         assert!(sandbox.path().join("windows").exists());
@@ -452,12 +357,7 @@ mod tests {
         let payload = tempfile::tempdir().unwrap();
         let sandbox = tempfile::tempdir().unwrap();
 
-        ProvisionCache::<InMemoryCas>::link_to_sandbox_filtered(
-            payload.path(),
-            sandbox.path(),
-            &["linux"],
-        )
-        .unwrap();
+        link_to_sandbox_filtered(payload.path(), sandbox.path(), &["linux"]).unwrap();
 
         assert!(sandbox.path().exists());
         assert!(sandbox.path().read_dir().unwrap().next().is_none());
@@ -466,7 +366,7 @@ mod tests {
     #[test]
     fn link_to_sandbox_filtered_nonexistent_payload_errors() {
         let sandbox = tempfile::tempdir().unwrap();
-        let result = ProvisionCache::<InMemoryCas>::link_to_sandbox_filtered(
+        let result = link_to_sandbox_filtered(
             &PathBuf::from("/nonexistent/payload"),
             sandbox.path(),
             &["linux"],

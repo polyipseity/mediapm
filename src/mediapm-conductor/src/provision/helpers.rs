@@ -228,6 +228,88 @@ pub(crate) fn now_unix_seconds() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
+/// Links or copies files from `payload_dir` to `sandbox_dir`, skipping
+/// foreign-platform directories determined by caller-specified list.
+///
+/// # Errors
+/// Returns `Err` with a description if I/O operations fail.
+pub fn link_to_sandbox_filtered(
+    payload_dir: &Path,
+    sandbox_dir: &Path,
+    foreign_platform_dirs: &[&str],
+) -> Result<(), String> {
+    if !payload_dir.exists() {
+        return Err(format!(
+            "tool-content cache payload directory '{}' does not exist",
+            payload_dir.display()
+        ));
+    }
+
+    fs::create_dir_all(sandbox_dir).map_err(|err| {
+        format!("creating sandbox directory '{}' failed: {err}", sandbox_dir.display())
+    })?;
+
+    let entries = fs::read_dir(payload_dir).map_err(|err| {
+        format!("reading payload directory '{}' failed: {err}", payload_dir.display())
+    })?;
+
+    for entry in entries {
+        let entry =
+            entry.map_err(|err| format!("reading payload directory entry failed: {err}"))?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        let path = entry.path();
+        let target_path = sandbox_dir.join(&file_name);
+
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("reading file type for '{}' failed: {err}", path.display()))?;
+
+        // Skip top-level directories that belong to a foreign platform.
+        if file_type.is_dir() && foreign_platform_dirs.contains(&name.as_ref()) {
+            continue;
+        }
+
+        if file_type.is_dir() {
+            copy_directory_recursive(&path, &target_path)?;
+        } else {
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent).map_err(|err| {
+                    format!("creating parent directory '{}' failed: {err}", parent.display())
+                })?;
+            }
+            if fs::hard_link(&path, &target_path).is_ok() {
+                continue;
+            }
+            fs::copy(&path, &target_path).map_err(|err| {
+                format!("copying '{}' to '{}' failed: {err}", path.display(), target_path.display())
+            })?;
+            let source_permissions = fs::metadata(&path)
+                .map_err(|err| {
+                    format!("reading permissions for '{}' failed: {err}", path.display())
+                })?
+                .permissions();
+            fs::set_permissions(&target_path, source_permissions).map_err(|err| {
+                format!("setting permissions on '{}' failed: {err}", target_path.display())
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Links or copies files from `payload_dir` to `sandbox_dir`, skipping
+/// foreign-platform directories determined by compile-time `#[cfg]`.
+///
+/// This is a thin wrapper around [`link_to_sandbox_filtered`] that
+/// passes the host-specific [`super::FOREIGN_PLATFORM_DIRS`].
+///
+/// # Errors
+/// Returns `Err` with a description if I/O operations fail.
+pub fn link_to_sandbox(payload_dir: &Path, sandbox_dir: &Path) -> Result<(), String> {
+    link_to_sandbox_filtered(payload_dir, sandbox_dir, super::FOREIGN_PLATFORM_DIRS)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

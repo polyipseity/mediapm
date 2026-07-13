@@ -39,8 +39,10 @@ mod provisioner;
 mod retain;
 mod types;
 
+pub use helpers::{link_to_sandbox, link_to_sandbox_filtered};
 pub use provisioner::ProvisionCache;
 pub use retain::retain_only_tool_dirs;
+pub(crate) use types::Metadata;
 pub use types::ProvisionedTool;
 
 /// Per-entry payload directory name (relative to the entry directory).

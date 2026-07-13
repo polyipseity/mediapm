@@ -5,13 +5,16 @@
 //! implemented by [`SimpleConductor`].
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use mediapm_cas::CasApi;
 use serde::{Deserialize, Serialize};
 
 use crate::defaults;
 use crate::error::ConductorError;
+use crate::provision::Metadata;
 use crate::provision::helpers::sanitize_tool_id;
+use crate::provision::{METADATA_FILE_NAME, ProvisionCache};
 
 // ---------------------------------------------------------------------------
 // Runtime storage paths
@@ -201,12 +204,15 @@ impl Default for RunWorkflowOptions {
 // ---------------------------------------------------------------------------
 
 /// Result of resolving a managed tool's executable from the filesystem CAS.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ManagedToolExecutableResolution {
     /// Absolute path to the resolved executable.
     pub executable_path: PathBuf,
     /// The tool's content map hash that was resolved.
     pub content_hash: mediapm_cas::Hash,
+    /// RAII guard holding a shared advisory lock on the provisioned entry.
+    /// Keeps the entry alive (prevents pruning) until the caller drops this struct.
+    pub(crate) _guard: Option<crate::provision::ProvisionedTool>,
 }
 
 /// Resolves a managed tool's executable path from a `FilesystemCas`.
@@ -221,11 +227,13 @@ pub struct ManagedToolExecutableResolution {
 pub async fn resolve_managed_tool_executable_with_filesystem_cas(
     tool_id: &str,
     conductor_tools_dir: &Path,
-    _cas: &mediapm_cas::FileSystemCas,
+    cas: &mediapm_cas::FileSystemCas,
 ) -> Result<ManagedToolExecutableResolution, ConductorError> {
-    // Ensure the tool content is extracted in the tools directory.
+    let cache = ProvisionCache::new(conductor_tools_dir.to_path_buf(), Arc::new(cas.clone()), None);
+
+    // Read metadata.json to get the stored content_map.
     let tool_dir = conductor_tools_dir.join(sanitize_tool_id(tool_id));
-    let metadata_path = tool_dir.join("metadata.json");
+    let metadata_path = tool_dir.join(METADATA_FILE_NAME);
 
     if !metadata_path.exists() {
         return Err(ConductorError::Workflow(format!(
@@ -237,34 +245,65 @@ pub async fn resolve_managed_tool_executable_with_filesystem_cas(
     let metadata_bytes = tokio::fs::read(&metadata_path)
         .await
         .map_err(|e| ConductorError::io("read tool metadata", metadata_path.clone(), e))?;
-    let metadata: serde_json::Value = serde_json::from_slice(&metadata_bytes)
+    let metadata: Metadata = serde_json::from_slice(&metadata_bytes)
         .map_err(|e| ConductorError::Serialization(e.to_string()))?;
 
-    let content_hash_str =
-        metadata.get("content_hash").and_then(serde_json::Value::as_str).ok_or_else(|| {
-            ConductorError::Workflow(format!("tool '{tool_id}' metadata missing content_hash"))
-        })?;
-    let content_hash: mediapm_cas::Hash = content_hash_str.parse().map_err(|_| {
-        ConductorError::Workflow(format!(
-            "tool '{tool_id}' has invalid content_hash: {content_hash_str}"
-        ))
+    // Get the content_hash for backward compatibility — use the first
+    // non-empty key's hash.
+    let content_hash = metadata
+        .content_map
+        .values()
+        .next()
+        .copied()
+        .unwrap_or_else(|| mediapm_cas::Hash::from_bytes([0u8; 32]));
+
+    // Call ProvisionCache::materialize to get an RAII-guarded tool entry.
+    let guard = cache.materialize(tool_id, &metadata.content_map).await?;
+
+    // Find the first executable file in the payload dir, skipping foreign
+    // platform dirs.
+    let executable_path = find_executable_in_payload(guard.as_ref()).ok_or_else(|| {
+        ConductorError::Workflow(format!("tool '{tool_id}' has no executable in payload directory"))
     })?;
 
-    // Find the executable in the payload directory.
-    let payload_dir = tool_dir.join("payload");
-    if !payload_dir.is_dir() {
-        return Err(ConductorError::Workflow(format!("tool '{tool_id}' has no payload directory")));
-    }
+    Ok(ManagedToolExecutableResolution { executable_path, content_hash, _guard: Some(guard) })
+}
 
-    let executable_path = payload_dir.join(if cfg!(windows) { "index.exe" } else { "index" });
-    if !executable_path.exists() {
-        return Err(ConductorError::Workflow(format!(
-            "tool '{tool_id}' has no executable at expected path: {}",
-            executable_path.display()
-        )));
-    }
+/// Finds an executable file in the provisioned payload directory, skipping
+/// foreign-platform directories.
+fn find_executable_in_payload(payload_dir: &Path) -> Option<PathBuf> {
+    use crate::provision::FOREIGN_PLATFORM_DIRS;
 
-    Ok(ManagedToolExecutableResolution { executable_path, content_hash })
+    let entries = std::fs::read_dir(payload_dir).ok()?;
+    for entry in entries {
+        let entry = entry.ok()?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if entry.file_type().ok().map_or(false, |t| t.is_dir()) {
+            if FOREIGN_PLATFORM_DIRS.contains(&name.as_ref()) {
+                continue;
+            }
+            // Search inside this directory for an executable.
+            if let Some(found) = find_first_file_in_dir(&entry.path()) {
+                return Some(found);
+            }
+        } else if entry.file_type().ok().map_or(false, |t| t.is_file()) {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
+/// Finds the first regular file in a directory.
+fn find_first_file_in_dir(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries {
+        let entry = entry.ok()?;
+        if entry.file_type().ok().map_or(false, |t| t.is_file()) {
+            return Some(entry.path());
+        }
+    }
+    None
 }
 
 #[cfg(test)]

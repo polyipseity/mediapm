@@ -6,8 +6,7 @@
 //! 2. The explicit `link_to_sandbox_filtered` API works with caller-specified
 //!    foreign dirs.
 
-use mediapm_cas::InMemoryCas;
-use mediapm_conductor::provision::ProvisionCache;
+use mediapm_conductor::provision::{link_to_sandbox, link_to_sandbox_filtered};
 use tempfile::tempdir;
 
 /// Helper: creates a payload directory with subdirectories for all three
@@ -31,8 +30,7 @@ fn payload_with_all_platforms() -> (tempfile::TempDir, tempfile::TempDir) {
 fn link_to_sandbox_preserves_native_platform_only() {
     let (payload, sandbox) = payload_with_all_platforms();
 
-    ProvisionCache::<InMemoryCas>::link_to_sandbox(payload.path(), sandbox.path())
-        .expect("link_to_sandbox should succeed");
+    link_to_sandbox(payload.path(), sandbox.path()).expect("link_to_sandbox should succeed");
 
     // The current OS's directory is always present; non-native dirs are
     // filtered out by the cfg-dependent FOREIGN_PLATFORM_DIRS constant.
@@ -70,12 +68,8 @@ fn link_to_sandbox_explicit_filter_works() {
     }
 
     // Exclude "linux" explicitly — it should not appear in the sandbox.
-    ProvisionCache::<InMemoryCas>::link_to_sandbox_filtered(
-        payload.path(),
-        sandbox.path(),
-        &["linux"],
-    )
-    .expect("link_to_sandbox_filtered should succeed");
+    link_to_sandbox_filtered(payload.path(), sandbox.path(), &["linux"])
+        .expect("link_to_sandbox_filtered should succeed");
 
     assert!(!sandbox.path().join("linux").exists(), "linux should be filtered out");
     assert!(sandbox.path().join("windows").exists(), "windows should be present");
@@ -88,7 +82,7 @@ fn link_to_sandbox_empty_payload_creates_empty_sandbox() {
     let payload = tempdir().expect("tempdir for payload");
     let sandbox = tempdir().expect("tempdir for sandbox");
 
-    ProvisionCache::<InMemoryCas>::link_to_sandbox(payload.path(), sandbox.path())
+    link_to_sandbox(payload.path(), sandbox.path())
         .expect("link_to_sandbox on empty payload should succeed");
 
     assert!(sandbox.path().exists(), "sandbox dir should exist");
@@ -106,7 +100,7 @@ fn link_to_sandbox_nonexistent_payload_errors() {
     let sandbox = tempdir().expect("tempdir for sandbox");
     let nonexistent = payload.path().join("does-not-exist");
 
-    let result = ProvisionCache::<InMemoryCas>::link_to_sandbox(&nonexistent, sandbox.path());
+    let result = link_to_sandbox(&nonexistent, sandbox.path());
 
     assert!(result.is_err(), "link_to_sandbox should error on nonexistent payload");
     assert!(result.unwrap_err().contains("does not exist"));
