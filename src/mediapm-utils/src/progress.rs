@@ -151,6 +151,15 @@ mod inner {
         format!("{days}d")
     }
 
+    /// Format an ETA (seconds remaining) compactly: `5s`, `42s`, `1m35s`, `2h15m`, `1d8h`.
+    /// Returns `"?"` when rate is zero or negative.
+    pub(crate) fn format_eta(eta_secs: f64) -> String {
+        if !eta_secs.is_finite() || eta_secs <= 0.0 {
+            return "?".into();
+        }
+        format_elapsed(Duration::from_secs_f64(eta_secs))
+    }
+
     /// Format a rate (units/second) compactly: `3.5/s`, `42/s`, `1.2k/s`, `123k/s`, `3.5M/s`.
     pub(crate) fn format_rate(rate: f64) -> String {
         if rate >= 1_000_000.0 {
@@ -219,21 +228,28 @@ mod inner {
         }
     }
 
-    /// Build the `{msg}` string: colored count/total + uncolored rate + uncolored elapsed.
+    /// Build the `{msg}` string: colored count/total + uncolored elapsed +
+    /// uncolored rate + optional uncolored eta.
+    ///
+    /// When running:    `" {color}{count}/{total}{reset} {elapsed} {rate} {eta}"`
+    /// When not running: `" {color}{count}/{total}{reset} {elapsed} {rate}"`
     pub(super) fn build_right_msg(
         color_code: &str,
         count_str: &str,
         total_str: &str,
         elapsed_str: &str,
-        rate_str: Option<&str>,
+        rate_str: &str,
+        eta_str: Option<&str>,
     ) -> String {
         let mut s = format!(" \x1b[{color_code}m{count_str}/{total_str}\x1b[0m");
-        if let Some(rate) = rate_str {
-            s.push(' ');
-            s.push_str(rate);
-        }
         s.push(' ');
         s.push_str(elapsed_str);
+        s.push(' ');
+        s.push_str(rate_str);
+        if let Some(eta) = eta_str {
+            s.push(' ');
+            s.push_str(eta);
+        }
         s
     }
 
@@ -641,11 +657,14 @@ mod inner {
         prev_position: u64,
         prev_instant: Instant,
         rate: f64,
+        /// Last computed rate, persisted even after the bar leaves Active
+        /// so the finished display can still show a rate value.
+        last_rate: f64,
     }
 
     impl SlotTiming {
         fn new() -> Self {
-            Self { prev_position: 0, prev_instant: Instant::now(), rate: 0.0 }
+            Self { prev_position: 0, prev_instant: Instant::now(), rate: 0.0, last_rate: 0.0 }
         }
     }
 
@@ -767,7 +786,8 @@ mod inner {
                 let count_str = format_count(snap.position);
                 let total_str = format_count(snap.total);
                 let color_code = bar_color_code(snap.status, is_overall);
-                let msg = build_right_msg(color_code, &count_str, &total_str, &elapsed_str, None);
+                let msg =
+                    build_right_msg(color_code, &count_str, &total_str, &elapsed_str, "0/d", None);
                 slot.bar.set_message(msg);
                 slot.bar.set_length(snap.total);
                 slot.bar.set_position(snap.position);
@@ -873,12 +893,27 @@ mod inner {
                                 self.slots_timing[i].prev_instant = now;
                             }
                         }
-                        Some(format_rate(self.slots_timing[i].rate))
+                        self.slots_timing[i].last_rate = self.slots_timing[i].rate;
+                        format_rate(self.slots_timing[i].rate)
+                    } else {
+                        format_rate(self.slots_timing[i].last_rate)
+                    };
+
+                    // Compute ETA for active bars with known total and
+                    // non-zero rate.
+                    let eta_str = if snap.status == TrackStatus::Active
+                        && snap.total > snap.position
+                        && self.slots_timing[i].rate > 0.0
+                    {
+                        #[allow(clippy::cast_precision_loss)]
+                        let remaining =
+                            (snap.total - snap.position) as f64 / self.slots_timing[i].rate;
+                        Some(format_eta(remaining))
                     } else {
                         None
                     };
 
-                    self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref());
+                    self.sync_snapshot_to_bar(i, &snap, &rate_str, eta_str.as_deref());
                     if snap.status == TrackStatus::Active {
                         // Setters above already triggered a redraw; no tick() needed.
                     } else if source.is_cleared() {
@@ -904,14 +939,27 @@ mod inner {
         /// Does **not** change the bar's style — callers manage style
         /// independently via [`finish_slot`](Self::finish_slot) or
         /// explicit `set_style` calls during attach/resize.
-        fn sync_snapshot_to_bar(&self, i: usize, snap: &TrackSnapshot, rate_str: Option<&str>) {
+        fn sync_snapshot_to_bar(
+            &self,
+            i: usize,
+            snap: &TrackSnapshot,
+            rate_str: &str,
+            eta_str: Option<&str>,
+        ) {
             let slot = &self.slots[i];
             let is_overall = self.has_overall && i == self.slots.len() - 1;
             let count_str = format_count(snap.position);
             let total_str = format_count(snap.total);
             let elapsed_str = format_elapsed(snap.elapsed);
             let color_code = bar_color_code(snap.status, is_overall);
-            let msg = build_right_msg(color_code, &count_str, &total_str, &elapsed_str, rate_str);
+            let msg = build_right_msg(
+                color_code,
+                &count_str,
+                &total_str,
+                &elapsed_str,
+                rate_str,
+                eta_str,
+            );
 
             slot.bar.set_prefix(build_prefix(snap.status, &snap.prefix));
             slot.bar.set_message(msg);
@@ -1033,7 +1081,8 @@ mod inner {
                 if let Some(ref snap) = snap
                     && snap.status != TrackStatus::Active
                 {
-                    self.sync_snapshot_to_bar(i, snap, None);
+                    let rate_str = format_rate(self.slots_timing[i].last_rate);
+                    self.sync_snapshot_to_bar(i, snap, &rate_str, None);
                     self.finish_slot(i, snap.status);
                 }
             }
@@ -2463,21 +2512,24 @@ mod tests {
 
     #[test]
     fn build_right_msg_with_rate() {
-        let result = super::inner::build_right_msg("33", "0", "5", "0s", Some("0/d"));
-        assert_eq!(result, " \x1b[33m0/5\x1b[0m 0/d 0s");
-        assert!(result.ends_with("0/d 0s"), "rate/elapsed at end: {result:?}");
+        // rate_str always present, no eta
+        let result = super::inner::build_right_msg("33", "0", "5", "0s", "0/d", None);
+        assert_eq!(result, " \x1b[33m0/5\x1b[0m 0s 0/d");
+        assert!(result.ends_with("0s 0/d"), "expected elapsed then rate at end: {result:?}");
     }
 
     #[test]
-    fn build_right_msg_without_rate() {
-        let result = super::inner::build_right_msg("32", "5", "5", "1s", None);
-        assert_eq!(result, " \x1b[32m5/5\x1b[0m 1s");
+    fn build_right_msg_with_rate_and_eta() {
+        // rate_str + eta_str
+        let result = super::inner::build_right_msg("33", "0", "5", "0s", "0/d", Some("5s"));
+        assert_eq!(result, " \x1b[33m0/5\x1b[0m 0s 0/d 5s");
+        assert!(result.ends_with("0s 0/d 5s"), "expected elapsed rate eta at end: {result:?}");
     }
 
     #[test]
     fn build_right_msg_different_color_codes() {
         for (code, status_name) in [("31", "failed"), ("33", "child"), ("35", "overall")] {
-            let result = super::inner::build_right_msg(code, "1", "2", "3s", None);
+            let result = super::inner::build_right_msg(code, "1", "2", "3s", "0/d", None);
             assert!(
                 result.contains(&format!("\x1b[{code}m")),
                 "{status_name} should use code {code}: {result:?}"
