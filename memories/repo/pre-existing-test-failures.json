@@ -29,6 +29,15 @@
       "impact": "Flaky failure under parallel execution.",
       "first_seen": "pre-session (at or before commit 1459727)",
       "notes": "Passes reliably with --test-threads=1 isolation."
+    },
+    {
+      "test_id": "e2e::cycle::circular_dependency_raises_cycle_error",
+      "crate": "mediapm-conductor",
+      "manifestation": "Same ractor registry race: TestConductor registers 'conductor' actor globally.",
+      "root_cause": "Same ractor registry race as lifecycle/bootstrap tests. New test added this session, but root cause is pre-existing.",
+      "impact": "Flaky failure under parallel execution; passes reliably with --test-threads=1.",
+      "first_seen": "current session (new test, pre-existing race)",
+      "notes": "Added in Phase C. Confirmed passes in isolation."
     }
   ],
   "fixed_this_session": [
@@ -37,7 +46,7 @@
       "crate": "mediapm-conductor",
       "manifestation": "Nickel contract violation on external_data/depends_on null values after v1→v2 migration",
       "root_cause": "v1→v2 migration produced `null` for absent fields (external_data, depends_on) but v2 contract expected arrays/records. Fixed by producing `{}`/`[]` instead of `null` in v2.ncl.",
-      "fix_commit": "current session (uncommitted)"
+      "fix_commit": "78b45c3 (Phase C)"
     }
   ]
 }
