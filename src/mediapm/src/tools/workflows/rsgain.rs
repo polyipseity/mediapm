@@ -14,6 +14,8 @@ use mediapm_conductor::{
     WorkflowStepSpec,
 };
 
+use mediapm_conductor::tools::helpers::build_os_conditional_selector;
+
 use crate::conductor_bridge::constants::*;
 use crate::config::{MediaSourceSpec, MediaStep};
 
@@ -323,12 +325,13 @@ fn build_rsgain_default_input_defaults() -> BTreeMap<String, InputBinding> {
 #[must_use]
 pub(crate) fn build_rsgain_spec(
     content_map: BTreeMap<String, String>,
-    command_path: &str,
+    os_exec_paths: &BTreeMap<String, String>,
 ) -> (ToolSpec, ToolRuntime) {
+    let command_path = build_os_conditional_selector(os_exec_paths);
     assemble_tool_spec(
         "rsgain",
         content_map,
-        build_rsgain_command(command_path),
+        build_rsgain_command(&command_path),
         build_rsgain_inputs(),
         build_rsgain_outputs(),
         build_rsgain_default_input_defaults(),
@@ -377,5 +380,13 @@ mod tests {
             command.iter().any(|c| c.contains("input_extension")),
             "expected input_extension conditionals"
         );
+    }
+
+    #[test]
+    fn build_rsgain_spec_uses_os_exec_paths() {
+        let content_map = BTreeMap::new();
+        let os_exec_paths = BTreeMap::from([("linux".into(), "rsgain".into())]);
+        let (_spec, runtime) = build_rsgain_spec(content_map, &os_exec_paths);
+        assert!(!runtime.impure);
     }
 }

@@ -13,8 +13,8 @@ use crate::tools::workflows;
 #[must_use]
 pub(crate) fn apply(
     content_map: BTreeMap<String, String>,
-    command_selector: &str,
+    os_exec_paths: &BTreeMap<String, String>,
     slot_limits: FfmpegSlotLimits,
 ) -> (ToolSpec, ToolRuntime) {
-    workflows::ffmpeg::build_ffmpeg_spec(content_map, command_selector, slot_limits)
+    workflows::ffmpeg::build_ffmpeg_spec(content_map, os_exec_paths, slot_limits)
 }

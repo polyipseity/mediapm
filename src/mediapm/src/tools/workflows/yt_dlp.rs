@@ -12,6 +12,8 @@ use mediapm_conductor::{
     WorkflowStepSpec,
 };
 
+use mediapm_conductor::tools::helpers::build_os_conditional_selector;
+
 use crate::conductor_bridge::constants::*;
 use crate::config::{DecodedOutputVariantConfig, MediaSourceSpec, MediaStep};
 
@@ -472,12 +474,13 @@ fn build_yt_dlp_default_input_defaults() -> BTreeMap<String, InputBinding> {
 #[must_use]
 pub(crate) fn build_yt_dlp_spec(
     content_map: BTreeMap<String, String>,
-    command_path: &str,
+    os_exec_paths: &BTreeMap<String, String>,
 ) -> (ToolSpec, ToolRuntime) {
+    let command_path = build_os_conditional_selector(os_exec_paths);
     assemble_tool_spec(
         "yt-dlp",
         content_map,
-        build_yt_dlp_command(command_path),
+        build_yt_dlp_command(&command_path),
         build_yt_dlp_inputs(),
         build_yt_dlp_outputs(),
         build_yt_dlp_default_input_defaults(),
@@ -581,7 +584,8 @@ mod tests {
     #[test]
     fn build_yt_dlp_spec_sets_impure_and_concurrency() {
         let content_map = BTreeMap::new();
-        let (_spec, runtime) = build_yt_dlp_spec(content_map, "yt-dlp");
+        let os_exec_paths = BTreeMap::from([("linux".into(), "yt-dlp".into())]);
+        let (_spec, runtime) = build_yt_dlp_spec(content_map, &os_exec_paths);
         assert!(runtime.impure);
         assert_eq!(runtime.max_concurrent_calls, 1);
         assert_eq!(runtime.max_retries, 1);

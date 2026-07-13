@@ -139,7 +139,7 @@ pub(crate) async fn reconcile_desired_tools(
                 let (spec, runtime) = build_tool_spec(
                     tool_id,
                     payload.content_map,
-                    &payload.command_selector,
+                    &payload.os_exec_paths,
                     ffmpeg_limits,
                 );
 

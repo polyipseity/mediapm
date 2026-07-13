@@ -14,6 +14,8 @@ use mediapm_conductor::{
     WorkflowStepSpec,
 };
 
+use mediapm_conductor::tools::helpers::build_os_conditional_selector;
+
 use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
 use crate::config::{DecodedOutputVariantConfig, MediaSourceSpec, MediaStep};
 
@@ -606,14 +608,15 @@ fn build_ffmpeg_default_input_defaults(
 #[must_use]
 pub(crate) fn build_ffmpeg_spec(
     content_map: BTreeMap<String, String>,
-    command_path: &str,
+    os_exec_paths: &BTreeMap<String, String>,
     slot_limits: FfmpegSlotLimits,
 ) -> (ToolSpec, ToolRuntime) {
+    let command_path = build_os_conditional_selector(os_exec_paths);
     super::spec::assemble_tool_spec(
         "ffmpeg",
         content_map,
         build_ffmpeg_command(
-            command_path,
+            &command_path,
             slot_limits.max_input_slots,
             slot_limits.max_output_slots,
         ),
@@ -694,9 +697,10 @@ mod tests {
     fn build_ffmpeg_spec_sets_runtime_defaults() {
         use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
         let content_map = BTreeMap::new();
+        let os_exec_paths = BTreeMap::from([("linux".into(), "ffmpeg".into())]);
         let (_spec, runtime) = build_ffmpeg_spec(
             content_map,
-            "ffmpeg",
+            &os_exec_paths,
             FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 },
         );
         assert_eq!(runtime.max_concurrent_calls, 0);

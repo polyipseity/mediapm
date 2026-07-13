@@ -12,7 +12,7 @@ use crate::tools::workflows;
 #[must_use]
 pub(crate) fn apply(
     content_map: BTreeMap<String, String>,
-    command_selector: &str,
+    os_exec_paths: &BTreeMap<String, String>,
 ) -> (ToolSpec, ToolRuntime) {
-    workflows::yt_dlp::build_yt_dlp_spec(content_map, command_selector)
+    workflows::yt_dlp::build_yt_dlp_spec(content_map, os_exec_paths)
 }

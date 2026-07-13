@@ -26,10 +26,10 @@ use crate::tools::provider;
 pub(super) struct FetchedToolPayload {
     /// Content map: sandbox-relative path → CAS hash hex string.
     pub(super) content_map: BTreeMap<String, String>,
-    /// Sandbox-relative path to the main executable, emitted as a
-    /// `${context.os == "…" ? ./…/… : …}` template expression when multiple
-    /// platforms are provisioned.
-    pub(super) command_selector: String,
+    /// Per-OS executable path map (OS label → relative executable path
+    /// without OS prefix). Passed to the preset layer to build the command
+    /// selector template.
+    pub(super) os_exec_paths: BTreeMap<String, String>,
 }
 
 /// Fetches a tool payload for **all** platforms, extracts each to a
@@ -81,7 +81,7 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     Ok(Some(FetchedToolPayload {
         content_map: result.content_map,
-        command_selector: result.command_selector,
+        os_exec_paths: result.os_exec_paths,
     }))
 }
 

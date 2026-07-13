@@ -13,6 +13,8 @@ use mediapm_conductor::{
     WorkflowStepSpec,
 };
 
+use mediapm_conductor::tools::helpers::build_os_conditional_selector;
+
 use crate::conductor_bridge::constants::*;
 use crate::config::{MediaSourceSpec, MediaStep};
 
@@ -291,12 +293,13 @@ fn build_media_tagger_default_input_defaults() -> BTreeMap<String, InputBinding>
 #[must_use]
 pub(crate) fn build_media_tagger_spec(
     content_map: BTreeMap<String, String>,
-    command_path: &str,
+    os_exec_paths: &BTreeMap<String, String>,
 ) -> (ToolSpec, ToolRuntime) {
+    let command_path = build_os_conditional_selector(os_exec_paths);
     assemble_tool_spec(
         "media-tagger",
         content_map,
-        build_media_tagger_command(command_path),
+        build_media_tagger_command(&command_path),
         build_media_tagger_inputs(),
         build_media_tagger_outputs(),
         build_media_tagger_default_input_defaults(),
@@ -357,7 +360,8 @@ mod tests {
     #[test]
     fn build_media_tagger_spec_sets_impure() {
         let content_map = BTreeMap::new();
-        let (_spec, runtime) = build_media_tagger_spec(content_map, "media-tagger");
+        let os_exec_paths = BTreeMap::from([("linux".into(), "media-tagger".into())]);
+        let (_spec, runtime) = build_media_tagger_spec(content_map, &os_exec_paths);
         assert!(runtime.impure);
     }
 }

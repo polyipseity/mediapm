@@ -25,20 +25,20 @@ use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
 pub(crate) fn apply_preset(
     tool_name: &str,
     content_map: BTreeMap<String, String>,
-    command_selector: &str,
+    os_exec_paths: &BTreeMap<String, String>,
     slot_limits: FfmpegSlotLimits,
 ) -> (ToolSpec, ToolRuntime) {
     match tool_name {
         n if n.eq_ignore_ascii_case("ffmpeg") => {
-            ffmpeg::apply(content_map, command_selector, slot_limits)
+            ffmpeg::apply(content_map, os_exec_paths, slot_limits)
         }
-        n if n.eq_ignore_ascii_case("yt-dlp") => yt_dlp::apply(content_map, command_selector),
-        n if n.eq_ignore_ascii_case("deno") => deno::apply(content_map, command_selector),
-        n if n.eq_ignore_ascii_case("rsgain") => rsgain::apply(content_map, command_selector),
+        n if n.eq_ignore_ascii_case("yt-dlp") => yt_dlp::apply(content_map, os_exec_paths),
+        n if n.eq_ignore_ascii_case("deno") => deno::apply(content_map, os_exec_paths),
+        n if n.eq_ignore_ascii_case("rsgain") => rsgain::apply(content_map, os_exec_paths),
         n if n.eq_ignore_ascii_case("media-tagger") => {
-            media_tagger::apply(content_map, command_selector)
+            media_tagger::apply(content_map, os_exec_paths)
         }
-        n if n.eq_ignore_ascii_case("sd") => sd::apply(content_map, command_selector),
+        n if n.eq_ignore_ascii_case("sd") => sd::apply(content_map, os_exec_paths),
         _ => panic!("unknown managed tool: {tool_name}"),
     }
 }
@@ -51,9 +51,10 @@ mod tests {
     #[test]
     fn apply_preset_routes_all_managed_tools() {
         let empty_map = BTreeMap::new();
+        let empty_paths = BTreeMap::new();
         let defaults = FfmpegSlotLimits::default();
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "sd"] {
-            let (spec, _runtime) = apply_preset(name, empty_map.clone(), "", defaults);
+            let (spec, _runtime) = apply_preset(name, empty_map.clone(), &empty_paths, defaults);
             assert!(
                 !spec.inputs.is_empty() || !spec.outputs.is_empty(),
                 "tool {name}: should have at least one input or output"
@@ -71,6 +72,6 @@ mod tests {
     #[should_panic(expected = "unknown managed tool")]
     fn apply_preset_rejects_unknown_tool() {
         let defaults = FfmpegSlotLimits::default();
-        let _ = apply_preset("nonexistent-tool", BTreeMap::new(), "", defaults);
+        let _ = apply_preset("nonexistent-tool", BTreeMap::new(), &BTreeMap::new(), defaults);
     }
 }

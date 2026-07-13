@@ -35,10 +35,10 @@ pub(crate) fn resolve_ffmpeg_slot_limits(max_input: u32, max_output: u32) -> Ffm
 pub(crate) fn build_tool_spec(
     tool_name: &str,
     content_map: BTreeMap<String, String>,
-    command_path: &str,
+    os_exec_paths: &BTreeMap<String, String>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> (ToolSpec, ToolRuntime) {
-    preset::apply_preset(tool_name, content_map, command_path, ffmpeg_slot_limits)
+    preset::apply_preset(tool_name, content_map, os_exec_paths, ffmpeg_slot_limits)
 }
 
 #[cfg(test)]
@@ -55,8 +55,9 @@ mod tests {
         let limits = FfmpegSlotLimits::default();
 
         for tool_name in &["deno", "yt-dlp", "ffmpeg", "rsgain", "media-tagger", "sd"] {
+            let os_exec_paths = BTreeMap::from([("linux".into(), (*tool_name).to_string())]);
             let (spec, runtime) =
-                build_tool_spec(tool_name, content_map.clone(), tool_name, limits);
+                build_tool_spec(tool_name, content_map.clone(), &os_exec_paths, limits);
             assert_eq!(spec.name, *tool_name);
             assert_eq!(runtime.content_map, content_map);
         }
@@ -69,23 +70,26 @@ mod tests {
         let content_map = BTreeMap::new();
         let limits = FfmpegSlotLimits::default();
 
+        let yt_os = BTreeMap::from([("linux".into(), "yt-dlp".into())]);
         let yt_dlp_outputs =
-            build_tool_spec("yt-dlp", content_map.clone(), "yt-dlp", limits).0.outputs;
+            build_tool_spec("yt-dlp", content_map.clone(), &yt_os, limits).0.outputs;
         assert_eq!(
             yt_dlp_outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:downloads",
             "yt-dlp sandbox folder"
         );
 
+        let mt_os = BTreeMap::from([("linux".into(), "media-tagger".into())]);
         let mt_outputs =
-            build_tool_spec("media-tagger", content_map.clone(), "media-tagger", limits).0.outputs;
+            build_tool_spec("media-tagger", content_map.clone(), &mt_os, limits).0.outputs;
         assert_eq!(
             mt_outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:coverart",
             "media-tagger sandbox folder"
         );
 
         for tool_name in &["ffmpeg", "rsgain", "sd", "deno"] {
+            let os_exec_paths = BTreeMap::from([("linux".into(), (*tool_name).to_string())]);
             let outputs =
-                build_tool_spec(tool_name, content_map.clone(), tool_name, limits).0.outputs;
+                build_tool_spec(tool_name, content_map.clone(), &os_exec_paths, limits).0.outputs;
             assert_eq!(
                 outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:inputs",
                 "{tool_name} sandbox folder"

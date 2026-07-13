@@ -10,6 +10,8 @@ use mediapm_conductor::{
     InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
 };
 
+use mediapm_conductor::tools::helpers::build_os_conditional_selector;
+
 use crate::conductor_bridge::constants::{
     INPUT_CONTENT, INPUT_LEADING_ARGS, INPUT_SD_PATTERN, INPUT_SD_REPLACEMENT, INPUT_TRAILING_ARGS,
     OUTPUT_CONTENT, OUTPUT_SANDBOX_ARTIFACTS,
@@ -134,12 +136,13 @@ fn build_sd_default_input_defaults() -> BTreeMap<String, InputBinding> {
 #[must_use]
 pub(crate) fn build_sd_spec(
     content_map: BTreeMap<String, String>,
-    command_path: &str,
+    os_exec_paths: &BTreeMap<String, String>,
 ) -> (ToolSpec, ToolRuntime) {
+    let command_path = build_os_conditional_selector(os_exec_paths);
     assemble_tool_spec(
         "sd",
         content_map,
-        build_sd_command(command_path),
+        build_sd_command(&command_path),
         build_sd_inputs(),
         build_sd_outputs(),
         build_sd_default_input_defaults(),
@@ -198,7 +201,8 @@ mod tests {
         content_map.insert("macos/sd".into(), "def".into());
         content_map.insert("windows/sd.exe".into(), "ghi".into());
 
-        let (_spec, runtime) = build_sd_spec(content_map.clone(), "sd");
+        let os_exec_paths = BTreeMap::from([("linux".into(), "sd".into())]);
+        let (_spec, runtime) = build_sd_spec(content_map.clone(), &os_exec_paths);
 
         assert_eq!(runtime.content_map.len(), 3);
         assert_eq!(runtime.content_map["linux/sd"], "abc");
@@ -209,18 +213,20 @@ mod tests {
     #[test]
     fn build_sd_spec_returns_executable_kind() {
         let content_map = BTreeMap::new();
-        let (spec, _runtime) = build_sd_spec(content_map, "sd");
+        let os_exec_paths = BTreeMap::from([("linux".into(), "sd".into())]);
+        let (spec, _runtime) = build_sd_spec(content_map, &os_exec_paths);
         let mediapm_conductor::ToolKindSpec::Executable { command, .. } = &spec.kind else {
             panic!("expected Executable kind");
         };
-        assert_eq!(command.first().unwrap(), "sd");
+        assert_eq!(command.first().unwrap(), "linux/sd");
         assert_eq!(spec.name, "sd");
     }
 
     #[test]
     fn build_sd_spec_sets_impure_false() {
         let content_map = BTreeMap::new();
-        let (_spec, runtime) = build_sd_spec(content_map, "sd");
+        let os_exec_paths = BTreeMap::from([("linux".into(), "sd".into())]);
+        let (_spec, runtime) = build_sd_spec(content_map, &os_exec_paths);
         assert!(!runtime.impure);
     }
 }
