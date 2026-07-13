@@ -63,4 +63,5 @@ zip.workspace = true
 
 [dev-dependencies]
 indicatif = { workspace = true, features = ["in_memory"] }
+proptest.workspace = true
 same-file.workspace = true

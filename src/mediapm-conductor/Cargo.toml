@@ -55,6 +55,9 @@ reqwest = { workspace = true, optional = true, features = ["json", "stream"] }
 xz2 = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
 
+[dev-dependencies]
+proptest.workspace = true
+
 [[bin]]
 name = "mediapm-conductor"
 path = "src/main.rs"

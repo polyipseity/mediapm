@@ -87,6 +87,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 zip = { version = "8.6.0", default-features = false, features = [
 	"deflate-flate2-zlib-rs",
 ] }
+proptest = "1"
 
 [workspace.metadata.bin]
 cargo-binstall = { version = "1.19.1" }
