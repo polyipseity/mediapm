@@ -113,7 +113,7 @@ Get up and running in minutes:
   - Hierarchy directory entries may define optional ordered `rename_files = [{ pattern, replacement }, ...]` regex rewrites that apply to extracted folder file members; file hierarchy targets must keep `rename_files` empty.
   - Managed executable materialization keeps all-platform `content_map` keys (`windows/`, `linux/`, `macos/`, or shared `./` for platform-identical payloads) and uses `${context.os == "<target>" ? ... | ...}` command selectors.
 
-See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool provisioning catalog, conductor integration boundary, and example policy.
+See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool provisioning reference, conductor integration boundary, and example policy.
 
 ## Build and Test
 

@@ -49,11 +49,11 @@ materializer/              — CAS→filesystem materialization
   playlist.rs              —   Playlist generation (M3U8, PLS, XSPF, WPL, ASX)
   zip.rs                   —   ZIP folder extraction
 
-tools/                     — Managed tool catalog + workflow synthesis
-  mod.rs                   —   Module router
+tools/                     — Managed tool preset/provider + workflow synthesis
+  mod.rs                   —   Module router, is_known_tool_id()
   downloader.rs            —   ToolDownloadCache type alias (re-exports from conductor)
-  catalog/                 —   Built-in catalog: deno, ffmpeg, media_tagger, rsgain, yt_dlp
-  workflows/               —   Step synthesis: ffmpeg, media_tagger, rsgain, yt_dlp, yt_dlp_inputs
+  preset/                  —   ToolSpec/ToolRuntime builders: deno, ffmpeg, media_tagger, rsgain, sd, yt_dlp
+  provider/                —   Source descriptors (URLs per OS): deno, ffmpeg, media_tagger, rsgain, sd, yt_dlp
   workflows/               —   Step synthesis: ffmpeg, media_tagger, rsgain, yt_dlp, yt_dlp_inputs
 
 builtins/                  — Native tool implementations
@@ -124,7 +124,7 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
 ## Managed Tool Provisioning
 
-6 managed tools with built-in catalog entries:
+6 managed tools with preset/provider entries:
 
 | Tool | Source | Companions |
 |------|--------|-----------|

@@ -107,10 +107,15 @@ This repository follows the design principle that conductor builtins are the "co
 
 All other domain logic remains external tooling or mediapm workflow behavior.
 
-For portable string-manipulation tasks in workflows, prefer provisioning `sd` via the `tool-presets` feature (`mediapm_conductor::tools::catalog::sd::entry()`) instead of platform-specific shell tools (`sed`, PowerShell regex one-offs, etc.).
+For portable string-manipulation tasks in workflows, prefer provisioning `sd` via the `tool-presets` feature (`mediapm_conductor::tools::preset::sd::apply()` / `provider::sd::resolve_tool_fetch()`) instead of platform-specific shell tools (`sed`, PowerShell regex one-offs, etc.).
 Use `sd` for deterministic text rewrites where possible so workflow behavior stays consistent across Windows/Linux/macOS runners.
 
-Tool catalog entries use the all-platform `ToolCatalogEntry` model under `src/mediapm-conductor/src/tools/catalog/` (for example `catalog/sd.rs`) with re-exports in `catalog/mod.rs`. Each entry defines per-OS download URLs and archive formats for all three supported platforms (`windows`, `linux`, `macos`).
+Tool provisioning uses a two-module architecture in `src/mediapm-conductor/src/tools/`:
+
+- `preset/` — Per-tool `ToolSpec`/`ToolRuntime` builders (configuration/declarative intent)
+- `provider/` — Three-phase pipeline (resolve → fetch → postprocess) handling download, archive extraction, and CAS import
+
+Source definitions use `SourceProducer::Fetch` (URL-based download) for managed tools and `SourceProducer::GenerateLauncher` (inline launcher script) for builtins. Each entry defines per-OS download URLs for all three supported platforms (`windows`, `linux`, `macos`).
 
 Tool preset download invariants:
 
