@@ -84,3 +84,43 @@ pub(super) async fn fetch_and_import_tool_payload(
         command_selector: result.command_selector,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use mediapm_cas::storage::in_memory::new_in_memory_cas;
+    use mediapm_conductor::cache_user_level::UserLevelCache;
+    use mediapm_utils::progress::recording::RecordingTrackedHandle;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// Helper to create the minimal dependencies for tests that exercise
+    /// paths not reaching the cache or CAS (unknown tool, no-sources tool).
+    async fn test_deps() -> (impl CasApi, ToolDownloadCache, Arc<dyn ProgressBarApi>, TempDir) {
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path()).await.expect("cache open");
+        let progress: Arc<dyn ProgressBarApi> = Arc::new(RecordingTrackedHandle::new(0));
+        (cas, cache, progress, tmp)
+    }
+
+    #[tokio::test]
+    async fn fetch_and_import_rejects_unknown_tool() {
+        let (cas, cache, progress, _tmp) = test_deps().await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "nonexistent-tool", &cache, progress).await;
+        assert!(result.is_err(), "unknown tool should return an error");
+    }
+
+    #[tokio::test]
+    async fn fetch_and_import_media_tagger_returns_none() {
+        let (cas, cache, progress, _tmp) = test_deps().await;
+        let result = fetch_and_import_tool_payload(&cas, "media-tagger", &cache, progress).await;
+        match result {
+            Ok(None) => {} // expected: no sources → None
+            other => panic!("media-tagger should return Ok(None), got {other:?}"),
+        }
+    }
+}

@@ -42,3 +42,35 @@ pub(crate) fn apply_preset(
         _ => panic!("unknown managed tool: {tool_name}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
+
+    #[test]
+    fn apply_preset_routes_all_managed_tools() {
+        let empty_map = BTreeMap::new();
+        let defaults = FfmpegSlotLimits::default();
+        for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "sd"] {
+            let (spec, _runtime) = apply_preset(name, empty_map.clone(), "", defaults);
+            assert!(
+                !spec.inputs.is_empty() || !spec.outputs.is_empty(),
+                "tool {name}: should have at least one input or output"
+            );
+            // All managed tools are Executable kind.
+            assert!(
+                matches!(spec.kind, mediapm_conductor::ToolKindSpec::Executable { .. }),
+                "tool {name}: expected Executable kind, got {kind:?}",
+                kind = spec.kind
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown managed tool")]
+    fn apply_preset_rejects_unknown_tool() {
+        let defaults = FfmpegSlotLimits::default();
+        let _ = apply_preset("nonexistent-tool", BTreeMap::new(), "", defaults);
+    }
+}

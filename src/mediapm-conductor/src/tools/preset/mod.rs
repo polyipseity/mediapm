@@ -34,3 +34,34 @@ pub fn apply_preset(
         _ => panic!("unknown managed tool: {tool_name}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ToolKindSpec;
+
+    #[test]
+    fn apply_preset_routes_all_registered_tools() {
+        let empty_map = BTreeMap::new();
+        for name in &["sd", "echo", "archive", "export", "fs", "import"] {
+            let (spec, _runtime) = apply_preset(name, empty_map.clone(), "");
+            assert!(
+                !spec.inputs.is_empty() || !spec.outputs.is_empty(),
+                "tool {name}: should have at least one input or output"
+            );
+            // All tools produce Executable kind (builtins route through
+            // `${executable}` placeholder).
+            assert!(
+                matches!(spec.kind, ToolKindSpec::Executable { .. }),
+                "tool {name}: expected Executable kind, got {kind:?}",
+                kind = spec.kind
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown managed tool")]
+    fn apply_preset_rejects_unknown_tool() {
+        let _ = apply_preset("nonexistent-tool", BTreeMap::new(), "");
+    }
+}
