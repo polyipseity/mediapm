@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use mediapm_conductor::{ToolRuntime, ToolSpec};
 
-use crate::tools::workflows;
+use crate::tools::preset;
 
 /// ffmpeg slot-limit configuration derived from tool requirements.
 #[derive(Debug, Clone, Copy, Default)]
@@ -31,34 +31,14 @@ pub(crate) fn resolve_ffmpeg_slot_limits(max_input: u32, max_output: u32) -> Ffm
 }
 
 /// Builds a full [`ToolSpec`] and [`ToolRuntime`] for one managed tool by
-/// delegating to the appropriate per-tool workflow module.
+/// delegating to the appropriate per-tool preset.
 pub(crate) fn build_tool_spec(
     tool_name: &str,
     content_map: BTreeMap<String, String>,
     command_path: &str,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> (ToolSpec, ToolRuntime) {
-    match tool_name {
-        n if n.eq_ignore_ascii_case("deno") => {
-            workflows::deno::build_deno_spec(content_map, command_path)
-        }
-        n if n.eq_ignore_ascii_case("yt-dlp") => {
-            workflows::yt_dlp::build_yt_dlp_spec(content_map, command_path)
-        }
-        n if n.eq_ignore_ascii_case("ffmpeg") => {
-            workflows::ffmpeg::build_ffmpeg_spec(content_map, command_path, ffmpeg_slot_limits)
-        }
-        n if n.eq_ignore_ascii_case("rsgain") => {
-            workflows::rsgain::build_rsgain_spec(content_map, command_path)
-        }
-        n if n.eq_ignore_ascii_case("media-tagger") => {
-            workflows::media_tagger::build_media_tagger_spec(content_map, command_path)
-        }
-        n if n.eq_ignore_ascii_case("sd") => {
-            workflows::sd::build_sd_spec(content_map, command_path)
-        }
-        _ => panic!("unknown managed tool: {tool_name}"),
-    }
+    preset::apply_preset(tool_name, content_map, command_path, ffmpeg_slot_limits)
 }
 
 #[cfg(test)]

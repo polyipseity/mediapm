@@ -28,7 +28,7 @@ use crate::materializer;
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
-use crate::tools::catalog::tool_catalog_entry;
+use crate::tools::is_known_tool_id;
 
 use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaStepInvalidationSummary,
@@ -549,9 +549,9 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         if tool_id.is_empty() {
             return Err(MediaPmError::Workflow("tool id must not be empty".to_string()));
         }
-        if tool_catalog_entry(tool_id).is_none() {
+        if !is_known_tool_id(tool_id) {
             return Err(MediaPmError::Workflow(format!(
-                "tool '{tool_id}' is not in the built-in catalog"
+                "tool '{tool_id}' is not in the built-in tool registry"
             )));
         }
 

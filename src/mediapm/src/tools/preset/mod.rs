@@ -1,0 +1,44 @@
+//! Managed-tool preset dispatcher.
+//!
+//! Routes tool names to the appropriate per-tool spec builder, delegating
+//! to [`crate::tools::workflows`] for the actual spec construction.
+
+pub(crate) mod deno;
+pub(crate) mod ffmpeg;
+pub(crate) mod media_tagger;
+pub(crate) mod rsgain;
+pub(crate) mod sd;
+pub(crate) mod yt_dlp;
+
+use std::collections::BTreeMap;
+
+use mediapm_conductor::{ToolRuntime, ToolSpec};
+
+use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
+
+/// Builds a [`ToolSpec`] and [`ToolRuntime`] for the named managed tool.
+///
+/// # Panics
+///
+/// Panics if `tool_name` is not a recognized managed tool.
+#[must_use]
+pub(crate) fn apply_preset(
+    tool_name: &str,
+    content_map: BTreeMap<String, String>,
+    command_selector: &str,
+    slot_limits: FfmpegSlotLimits,
+) -> (ToolSpec, ToolRuntime) {
+    match tool_name {
+        n if n.eq_ignore_ascii_case("ffmpeg") => {
+            ffmpeg::apply(content_map, command_selector, slot_limits)
+        }
+        n if n.eq_ignore_ascii_case("yt-dlp") => yt_dlp::apply(content_map, command_selector),
+        n if n.eq_ignore_ascii_case("deno") => deno::apply(content_map, command_selector),
+        n if n.eq_ignore_ascii_case("rsgain") => rsgain::apply(content_map, command_selector),
+        n if n.eq_ignore_ascii_case("media-tagger") => {
+            media_tagger::apply(content_map, command_selector)
+        }
+        n if n.eq_ignore_ascii_case("sd") => sd::apply(content_map, command_selector),
+        _ => panic!("unknown managed tool: {tool_name}"),
+    }
+}
