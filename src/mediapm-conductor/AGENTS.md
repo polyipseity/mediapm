@@ -95,6 +95,34 @@ Dual-file ownership model summary:
 - `conductor.generated.ncl` is machine-owned operational state such as content maps and machine-derived runtime metadata.
 - Conductor embeds Nickel evaluation in-process (`nickel-lang-core`) and does not delegate schema evaluation to an out-of-process secondary interpreter.
 
+## Cache Architecture (Separation of Concerns)
+
+The conductor crate uses two distinct caching layers with different responsibilities:
+
+### `Cache` / `UserLevelDriveCache`
+
+- **Type**: Generic key→bytes store backed by a local `FileSystemCas` + JSON index.
+- **Location**: User-level cache directory (per-user, shared across projects).
+- **TTL**: Configurable per instance (30 days for tool binaries, 1 day for metadata).
+- **Purpose**: Download deduplication — avoids re-downloading identical payloads across tool versions and projects.
+- **Key**: Download URI.
+- **API**: `store_bytes(uri, bytes)` / `lookup_bytes(uri)` / `touch(uri)`.
+- **Does NOT**: manage extraction, content maps, or RAII lifecycle.
+- **Module**: `src/mediapm-conductor/src/cache.rs` and `cache_user_level.rs`.
+
+### `ProvisionCache`
+
+- **Type**: Per-tool extraction cache with CAS-backed materialization.
+- **Location**: Workspace-scoped `<tools_dir>/<sanitized_tool_id>/`.
+- **TTL**: 24 hours since last use (refreshed on every `materialize` call).
+- **Purpose**: Single-flight extraction and materialization of tool content maps into ready-to-execute directory trees.
+- **Key**: Tool id (filesystem-sanitized).
+- **API**: `materialize(tool_id, content_map) → ProvisionedTool (RAII guard)`, `prune_expired()`, `retain_only()`.
+- **Extra**: Platform filtering via `link_to_sandbox(payload_dir, sandbox_dir)` to exclude foreign-platform directories.
+- **Module**: `src/mediapm-conductor/src/provision/`.
+
+**Hard rule**: These two caches are never interchangeable. The `Cache` layer stores raw downloaded bytes keyed by URI; the `ProvisionCache` layer stores extracted tool trees keyed by tool id. Downstream code must not bypass `ProvisionCache` to read from `tools_dir/` directly.
+
 ## Conductor Builtin Tool Strategy
 
 This repository follows the design principle that conductor builtins are the "connective tissue" for bootstrapping and cross-platform consistency. The official baseline set is:
@@ -113,7 +141,7 @@ Use `sd` for deterministic text rewrites where possible so workflow behavior sta
 Tool provisioning uses a two-module architecture in `src/mediapm-conductor/src/tools/`:
 
 - `preset/` — Per-tool `ToolSpec`/`ToolRuntime` builders (configuration/declarative intent)
-- `provider/` — Three-phase pipeline (resolve → fetch → postprocess) handling download, archive extraction, and CAS import
+- `provider/` — Three-phase pipeline (resolve → fetch → postprocess) handling download, archive extraction, binary CAS-import, and content-map construction. Postprocess returns `ProvisionResult { content_map, os_exec_paths }`.
 
 Source definitions use `SourceProducer::Fetch` (URL-based download) for managed tools and `SourceProducer::GenerateLauncher` (inline launcher script) for builtins. Each entry defines per-OS download URLs for all three supported platforms (`windows`, `linux`, `macos`).
 
@@ -121,6 +149,8 @@ Tool preset download invariants:
 
 - All platform payloads are provisioned into content-addressed storage/content maps; there is no host-platform-only download path.
 - Runtime command selection stays selector-driven via `${context.os == ...}` conditionals so the correct executable is chosen at execution time without changing the downloaded payload set.
+
+The `os_exec_paths` map (OS label → relative executable path) replaces the old `command_selector` string. The shared helper `build_os_conditional_selector(os_exec_paths)` in `tools::helpers` produces `${context.os == ...}` template expressions used by the preset layer. For archive payloads, the `os_exec_paths` value is the binary path relative to the extracted directory (e.g., `"sd"`); for binary payloads, it is the URL-derived filename (e.g., `"sd-x86_64-linux"`).
 
 ## Tool Schema and Runtime Invariants
 
@@ -327,15 +357,17 @@ Guidance:
 - Regex folder capture (`folder_regex`) may resolve zero to many paths; zero matches are valid.
 - `folder_regex` capture rename expansions (capture-group based) must remain deterministic and fail fast on post-rename path collisions.
 
-## Tool-Content Cache
+## Tool-Content Cache (ProvisionCache)
 
 The tool-content cache lives at `<conductor_tools_dir>/` (default `<conductor_dir>/tools/`, overridable via `--conductor-tools-dir` on the CLI or `RuntimeStoragePaths.conductor_tools_dir` in the API).
 
 **This cache is owned exclusively by the conductor crate.** No other crate (`mediapm`, etc.) may read from or write to it.
 
-Design invariants (implemented in `src/mediapm-conductor/src/tool_cache/mod.rs`):
+Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 - **Cache key**: the tool id from the conductor config (the map key in `tools`), sanitized to a filesystem-safe name. One cache entry per tool id: `<conductor_tools_dir>/<sanitized_tool_id>/`.
+
+- **RAII guard**: `ProvisionCache::materialize` returns a `ProvisionedTool` that holds a shared advisory lock on the entry until dropped. This prevents pruning while the entry is in use.
 
 - **Cache-hit check**: `<entry>/metadata.json` stores the complete `tool_content_map` (`BTreeMap<String, Hash>`) alongside a version sentinel and a last-used Unix timestamp. A cache hit requires the stored map to equal the current map exactly; any change in keys or hashes causes a miss and triggers full re-extraction.
 
@@ -343,11 +375,11 @@ Design invariants (implemented in `src/mediapm-conductor/src/tool_cache/mod.rs`)
 
 - **Bundled tool content**: bundle dependency payload bytes into one managed tool record only for mediapm **same-step companion** dependencies (for example `yt-dlp` companions such as `ffmpeg`/`deno`). For mediapm **cross-step** dependencies (for example media-workflow steps selecting a separate dependency tool id), keep payload bytes in the dependency tool's own `tool_content_map`; do not inline those bytes into the requesting step tool. In all cases, do not model runtime lookups by pointing one tool at another tool's cache entry directory; each step reads only its own `payload/` tree as runtime source of truth.
 
-- **TTL**: cache entries expire after 24 hours of non-use. Last-used time is refreshed on every cache hit. `ToolContentCache::prune` is called best-effort at the start of each `ToolContentCache::materialize` call; prune errors are logged and ignored.
+- **TTL**: cache entries expire after 24 hours of non-use. Last-used time is refreshed on every cache hit. `ProvisionCache::prune_expired` is called best-effort at the start of each `ProvisionCache::materialize` call; prune errors are logged and ignored.
 
-- **Sandbox materialization**: step workers hard-link (with copy fallback) files from `<entry>/payload/` into the per-step sandbox cwd via `ToolContentCache::link_to_sandbox`.
+- **Expiry pruning**: `ProvisionCache::prune_expired` (formerly `prune`) is the explicit public API; a cooldown-gated auto-prune also runs at `materialize` call time.
 
-When modifying the cache implementation, keep all three public API methods (`materialize`, `link_to_sandbox`, `prune`) in `src/mediapm-conductor/src/tool_cache/mod.rs` and their callers in `step_worker/mod.rs`.
+- **Sandbox materialization**: step workers hard-link (with copy fallback) files from `<entry>/payload/` into the per-step sandbox cwd via the free function `link_to_sandbox(payload_dir, sandbox_dir)` in `provision::helpers` (re-exported from `provision`).
 
 ## Versioned Schema Editing Policy
 
@@ -445,9 +477,9 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 │  ┌─────────────────────────────▼────────────────────────┐     │
 │  │  Execution Layer                                      │     │
 │  │  ┌──────────┐  ┌──────────┐  ┌───────────┐           │     │
-│  │  │ Process  │  │ Builtin  │  │ Tool      │           │     │
-│  │  │ Runner   │  │ Dispatch │  │ Content   │           │     │
-│  │  │          │  │          │  │ Cache     │           │     │
+│  │  │ Process  │  │ Builtin  │  │ Provision │           │     │
+│  │  │ Runner   │  │ Dispatch │  │ Cache     │           │     │
+│  │  │          │  │          │  │           │           │     │
 │  │  └────┬─────┘  └────┬─────┘  └─────┬─────┘           │     │
 │  └───────┼──────────────┼──────────────┼─────────────────┘     │
 │          │              │              │                        │

@@ -136,6 +136,7 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 | `sd` | GitHub Releases | — |
 
 **Provisioning paths**: `<mediapm_dir>/tools/<tool-id>/payload/<os>/`
+**Provision result**: `ProvisionResult { content_map, os_exec_paths }` — the `os_exec_paths` map drives `${context.os == ...}` command selectors in workflow specs. Binary tool filenames are derived from download URLs.
 
 **Tool defaults**: yt-dlp max_concurrent_calls=1, max_retries=1; rsgain album=false; media-tagger ca_providers broad, caa_image_types excluding matrix/watermark.
 
@@ -182,6 +183,15 @@ Follow this spec-first, test-first workflow:
    - Provider resolves the correct URLs per OS
    - Preset produces valid `ToolSpec` with non-empty command/inputs/outputs
    - Workflow step synthesizes correct command-line tokens
+
+## Cache Domain Separation
+
+MediaPM interacts with two distinct caching layers:
+
+1. **User-level download cache** (`Cache` / `UserLevelCache`): `<os-cache-dir>/mediapm/cache/`. Stores raw downloaded bytes keyed by download URI. 30-day TTL. Used by the provider pipeline to avoid re-downloading identical payloads.
+2. **Workspace-scoped provision cache** (`ProvisionCache`): `<mediapm_dir>/tools/<tool-id>/`. Stores extracted tool trees keyed by tool id. 24-hour TTL. Used by the conductor bridge to materialize tool content maps for reconciliation.
+
+**Hard boundary**: The download cache and provision cache are never interchangeable. Do not read from `<mediapm_dir>/tools/` directly; always go through `ProvisionCache::materialize`.
 
 ## Materialization
 
