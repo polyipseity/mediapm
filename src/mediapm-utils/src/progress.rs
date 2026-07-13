@@ -854,7 +854,6 @@ mod inner {
             for (i, slot) in self.slots.iter().enumerate() {
                 if let Some(ref source) = *slot.source.borrow() {
                     let snap = source.snapshot();
-                    let elapsed_str = format_elapsed(snap.elapsed);
 
                     // Compute EMA-smoothed rate, always shown for active bars.
                     // Rate is only recomputed when position actually changes.
@@ -879,22 +878,7 @@ mod inner {
                         None
                     };
 
-                    let count_str = format_count(snap.position);
-                    let total_str = format_count(snap.total);
-                    let is_overall = self.has_overall && i == self.slots.len() - 1;
-                    let color_code = bar_color_code(snap.status, is_overall);
-                    let msg = build_right_msg(
-                        color_code,
-                        &count_str,
-                        &total_str,
-                        &elapsed_str,
-                        rate_str.as_deref(),
-                    );
-
-                    slot.bar.set_position(snap.position);
-                    slot.bar.set_length(snap.total);
-                    slot.bar.set_message(msg);
-                    slot.bar.set_prefix(build_prefix(snap.status, &snap.prefix));
+                    self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref());
                     if snap.status == TrackStatus::Active {
                         // Setters above already triggered a redraw; no tick() needed.
                     } else if source.is_cleared() {
@@ -910,6 +894,29 @@ mod inner {
                     }
                 }
             }
+        }
+
+        /// Apply a snapshot's position/length/message/prefix to the
+        /// indicatif bar at slot `i`.  This is the single place where
+        /// `SharedState` is pushed to indicatif — both the daemon ticker
+        /// and [`finalize`](Self::finalize) call through here.
+        ///
+        /// Does **not** change the bar's style — callers manage style
+        /// independently via [`finish_slot`](Self::finish_slot) or
+        /// explicit `set_style` calls during attach/resize.
+        fn sync_snapshot_to_bar(&self, i: usize, snap: &TrackSnapshot, rate_str: Option<&str>) {
+            let slot = &self.slots[i];
+            let is_overall = self.has_overall && i == self.slots.len() - 1;
+            let count_str = format_count(snap.position);
+            let total_str = format_count(snap.total);
+            let elapsed_str = format_elapsed(snap.elapsed);
+            let color_code = bar_color_code(snap.status, is_overall);
+            let msg = build_right_msg(color_code, &count_str, &total_str, &elapsed_str, rate_str);
+
+            slot.bar.set_prefix(build_prefix(snap.status, &snap.prefix));
+            slot.bar.set_message(msg);
+            slot.bar.set_length(snap.total);
+            slot.bar.set_position(snap.position);
         }
 
         /// Apply finish/abandon visual state to a completed slot.
@@ -1017,15 +1024,17 @@ mod inner {
             if self.finalized.replace(true) {
                 return;
             }
-            // Finish all bound bars that have reached a terminal state
-            // before removing blank slots, so the final draw captures
-            // every bar's finished visual state.
+            // Finish all bound bars that have reached a terminal state:
+            // sync their final state FIRST (so position/total/elapsed/message
+            // is up-to-date), then call finish_slot which applies the done
+            // visual style.
             for (i, slot) in self.slots.iter().enumerate() {
-                let status = slot.source.borrow().as_ref().map(|s| s.snapshot().status);
-                if let Some(status) = status
-                    && status != TrackStatus::Active
+                let snap = slot.source.borrow().as_ref().map(|s| s.snapshot());
+                if let Some(ref snap) = snap
+                    && snap.status != TrackStatus::Active
                 {
-                    self.finish_slot(i, status);
+                    self.sync_snapshot_to_bar(i, snap, None);
+                    self.finish_slot(i, snap.status);
                 }
             }
             // Remove all blank (unbound) slots from MultiProgress.
