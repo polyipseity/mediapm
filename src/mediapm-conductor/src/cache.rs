@@ -416,4 +416,78 @@ mod tests {
         let retrieved_after = cache.lookup_bytes(key).await;
         assert_eq!(retrieved_after, Some(payload), "fresh entry must survive prune");
     }
+
+    /// Verifies that querying a non-existent key returns None.
+    #[tokio::test]
+    async fn lookup_bytes_nonexistent_key_returns_none() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
+                .await
+                .expect("open cache");
+        let retrieved = cache.lookup_bytes("no-such-key").await;
+        assert!(retrieved.is_none(), "nonexistent key must return None");
+    }
+
+    /// Verifies that storing a second value under the same key overwrites the
+    /// first and that the new payload is returned on lookup.
+    #[tokio::test]
+    async fn store_bytes_overwrite_updates_payload() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
+                .await
+                .expect("open cache");
+        let key = "overwrite-key";
+        cache.store_bytes(key, b"first-value").await;
+        cache.store_bytes(key, b"second-value").await;
+        let retrieved = cache.lookup_bytes(key).await;
+        assert_eq!(retrieved, Some(b"second-value".to_vec()), "second store must overwrite first");
+    }
+
+    /// Verifies that prune removes entries whose TTL has expired (TTL = 0).
+    #[tokio::test]
+    async fn prune_expired_removes_expired_entries() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // Use zero TTL so entries expire immediately.
+        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
+            .await
+            .expect("open cache");
+        let key = "expiring-key";
+        cache.store_bytes(key, b"ephemeral").await;
+        // Entry was stored with last_access = now; with TTL = 0, cutoff = now,
+        // so the entry is eligible for pruning on the first prune call.
+        let report = cache.prune_expired_entries().await.expect("prune should succeed");
+        assert!(report.removed_entries >= 1, "expired entry must be pruned");
+        let retrieved = cache.lookup_bytes(key).await;
+        assert!(retrieved.is_none(), "pruned entry must not be retrievable");
+    }
+
+    /// Verifies that prune_expired_entries on a fresh empty cache does not
+    /// crash or error.
+    #[tokio::test]
+    async fn prune_on_empty_cache_does_not_crash() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
+                .await
+                .expect("open cache");
+        let report =
+            cache.prune_expired_entries().await.expect("prune on empty cache must succeed");
+        assert_eq!(report.removed_entries, 0, "no entries in empty cache");
+        assert_eq!(report.removed_payloads, 0, "no payloads in empty cache");
+    }
+
+    /// Verifies that storing empty bytes is a no-op (entry_count unchanged).
+    #[tokio::test]
+    async fn store_empty_bytes_does_not_create_entry() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
+                .await
+                .expect("open cache");
+        cache.store_bytes("empty-key", b"").await;
+        assert_eq!(cache.entry_count(), 0, "empty payload must not create an entry");
+        assert!(cache.lookup_bytes("empty-key").await.is_none(), "empty key must not be findable");
+    }
 }
