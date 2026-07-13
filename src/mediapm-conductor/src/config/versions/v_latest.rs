@@ -463,11 +463,15 @@ pub(crate) struct WorkflowSpecLatest {
 /// Latest persisted external data entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ExternalDataEntryLatest {
-    /// CAS hash of the external blob.
-    pub(crate) hash: mediapm_cas::Hash,
+    /// CAS hash of the external blob (redundant with map key; kept for
+    /// compatibility).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) hash: Option<mediapm_cas::Hash>,
     /// Human-readable description.
+    #[serde(default)]
     pub(crate) description: String,
     /// Save policy for this blob.
+    #[serde(rename = "save")]
     pub(crate) save_mode: OutputPolicyLatest,
 }
 
@@ -549,7 +553,7 @@ impl From<NickelDocument> for NickelEnvelopeLatest {
                     (
                         hash,
                         ExternalDataEntryLatest {
-                            hash,
+                            hash: Some(hash),
                             description: entry.description,
                             save_mode: match entry.save_mode {
                                 crate::state::OutputSaveMode::Saved => {

@@ -146,6 +146,7 @@ in
 # ||| External data content reference: a CAS-addressed blob with
 # ||| metadata describing how to persist it.
 let ExternalContentRefV2 = {
+  hash | String | optional,
   description | String | optional,
   save
     | std.contract.any_of [
@@ -324,7 +325,7 @@ let migrate_v1_to_v2_fn = fun data =>
                       {},
                   outputs = mapped_outputs,
                   max_retries = null,
-                  depends_on = if std.record.has_field "depends_on" step then step.depends_on else null,
+                  depends_on = if std.record.has_field "depends_on" step then step.depends_on else [],
                 }
               )
             else
@@ -349,7 +350,7 @@ let migrate_v1_to_v2_fn = fun data =>
     if std.record.has_field "external_data" data then
       data.external_data
     else
-      null
+      {}
   in
   {
     version = 2,

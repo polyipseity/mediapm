@@ -249,6 +249,42 @@ impl NickelDocument {
             runtime: self.runtime.clone(),
         }
     }
+
+    /// Validates that every CAS hash referenced in any tool's content_map has
+    /// a corresponding entry in `external_data`.
+    ///
+    /// This enforces the `content_map ⊆ external_data` invariant that
+    /// prevents CAS GC from pruning hashes that tools actively depend on.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConductorError::Workflow` with a message listing all
+    /// content-map hashes that are missing from `external_data`.
+    pub(crate) fn validate_external_data_invariant(&self) -> Result<(), ConductorError> {
+        let mut missing: Vec<String> = Vec::new();
+
+        for (tool_name, spec) in &self.tools {
+            for (path, value) in &spec.runtime.content_map {
+                if let Ok(hash) = value.parse::<Hash>() {
+                    if !self.external_data.contains_key(&hash) {
+                        missing.push(format!(
+                            "tool '{tool_name}' content_map entry '{path}' references hash \
+                             {hash} which is not declared in external_data"
+                        ));
+                    }
+                }
+            }
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(ConductorError::Workflow(format!(
+                "content_map references hashes not in external_data: {}",
+                missing.join("; ")
+            )))
+        }
+    }
 }
 
 /// Returns true when one external-data description marks managed tool content.
@@ -365,5 +401,119 @@ mod tests {
         let doc = NickelDocument::default();
         assert!(doc.tools.is_empty());
         assert!(doc.workflows.is_empty());
+    }
+
+    /// Verifies `validate_external_data_invariant` passes when all
+    /// content-map hashes have matching external_data entries.
+    #[test]
+    fn validate_external_data_invariant_passes_when_all_hashes_covered() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let doc = NickelDocument {
+            tools: BTreeMap::from([(
+                "tool-a".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Executable {
+                        command: vec!["tool-a".to_string()],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    name: "tool-a".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([("file.bin".to_string(), hash_a.to_string())]),
+                        ..ToolRuntime::default()
+                    },
+                },
+            )]),
+            workflows: vec![],
+            runtime: crate::config::ConductorRuntimeConfig::default(),
+            external_data: BTreeMap::from([(
+                hash_a,
+                super::super::ExternalDataEntry {
+                    description: "test payload".to_string(),
+                    save_mode: crate::state::OutputSaveMode::Saved,
+                },
+            )]),
+        };
+
+        assert!(doc.validate_external_data_invariant().is_ok());
+    }
+
+    /// Verifies `validate_external_data_invariant` fails when a tool's
+    /// content_map references a hash not declared in external_data.
+    #[test]
+    fn validate_external_data_invariant_rejects_missing_hash() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let hash_b = Hash::from_content(b"payload-b");
+        let doc = NickelDocument {
+            tools: BTreeMap::from([(
+                "tool-a".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Executable {
+                        command: vec!["tool-a".to_string()],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    name: "tool-a".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([
+                            ("file-a.bin".to_string(), hash_a.to_string()),
+                            ("file-b.bin".to_string(), hash_b.to_string()),
+                        ]),
+                        ..ToolRuntime::default()
+                    },
+                },
+            )]),
+            workflows: vec![],
+            runtime: crate::config::ConductorRuntimeConfig::default(),
+            // Only hash_a is declared — hash_b is missing.
+            external_data: BTreeMap::from([(
+                hash_a,
+                super::super::ExternalDataEntry {
+                    description: "test payload".to_string(),
+                    save_mode: crate::state::OutputSaveMode::Saved,
+                },
+            )]),
+        };
+
+        let err = doc.validate_external_data_invariant().unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("not in external_data"), "error should mention missing hash: {msg}");
+        assert!(msg.contains(hash_b.to_string().as_str()), "error should mention hash_b: {msg}");
+    }
+
+    /// Verifies `validate_external_data_invariant` ignores non-hash
+    /// content_map values (inline descriptions, base64).
+    #[test]
+    fn validate_external_data_invariant_skips_non_hash_values() {
+        let doc = NickelDocument {
+            tools: BTreeMap::from([(
+                "echo".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+                    name: "echo".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "payload.txt".to_string(),
+                            "not-a-hash".to_string(),
+                        )]),
+                        ..ToolRuntime::default()
+                    },
+                },
+            )]),
+            workflows: vec![],
+            runtime: crate::config::ConductorRuntimeConfig::default(),
+            external_data: BTreeMap::new(),
+        };
+
+        assert!(doc.validate_external_data_invariant().is_ok());
     }
 }

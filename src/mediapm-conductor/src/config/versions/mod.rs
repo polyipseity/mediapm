@@ -83,7 +83,9 @@ pub fn decode_document(bytes: &[u8]) -> Result<crate::config::NickelDocument, Co
     let envelope: v_latest::NickelEnvelopeLatest =
         evaluate_document_source(source, "configuration document")?;
 
-    Ok(envelope.into())
+    let doc: crate::config::NickelDocument = envelope.into();
+    doc.validate_external_data_invariant()?;
+    Ok(doc)
 }
 
 /// Evaluates one Nickel source through the full migration pipeline and returns
@@ -105,7 +107,9 @@ pub(crate) fn compile_configuration_source(
         )));
     }
 
-    Ok(envelope.into())
+    let doc: crate::config::NickelDocument = envelope.into();
+    doc.validate_external_data_invariant()?;
+    Ok(doc)
 }
 
 /// Evaluates one Nickel source through the full migration pipeline for
