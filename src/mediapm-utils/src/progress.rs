@@ -596,6 +596,9 @@ mod inner {
         /// Optional tracking state this slot is currently bound to.
         /// `None` means the slot is blank (unused).
         source: RefCell<Option<Arc<SharedState>>>,
+        /// Cached last values pushed to the bar, used to skip redundant
+        /// indicatif calls and reduce terminal flicker.
+        cache: SlotCache,
     }
 
     /// Manages a fixed-size grid of [`ProgressBar`] slots in
@@ -656,6 +659,30 @@ mod inner {
         }
     }
 
+    /// Cached last values pushed to a bar, used to skip redundant indicatif
+    /// setter calls and reduce terminal flicker.
+    struct SlotCache {
+        /// Last position sent to `set_position`.
+        position: Cell<u64>,
+        /// Last total sent to `set_length`.
+        total: Cell<u64>,
+        /// Last message sent to `set_message`.
+        msg: RefCell<String>,
+        /// Last prefix sent to `set_prefix`.
+        prefix: RefCell<String>,
+    }
+
+    impl SlotCache {
+        fn new() -> Self {
+            Self {
+                position: Cell::new(u64::MAX),
+                total: Cell::new(u64::MAX),
+                msg: RefCell::new(String::new()),
+                prefix: RefCell::new(String::new()),
+            }
+        }
+    }
+
     impl RenderedSlot {}
 
     impl ProgressRenderer {
@@ -675,7 +702,11 @@ mod inner {
                 bar.set_style(blank_bar_style());
                 bar.set_message(" ");
                 bar.set_prefix("");
-                slots.push(RenderedSlot { bar, source: RefCell::new(None) });
+                slots.push(RenderedSlot {
+                    bar,
+                    source: RefCell::new(None),
+                    cache: SlotCache::new(),
+                });
             }
             // Trigger a final draw so all bars are captured by InMemoryTerm
             // even when capacity == terminal height.
@@ -712,7 +743,11 @@ mod inner {
                 bar.set_style(blank_bar_style());
                 bar.set_message(" ");
                 bar.set_prefix("");
-                slots.push(RenderedSlot { bar, source: RefCell::new(None) });
+                slots.push(RenderedSlot {
+                    bar,
+                    source: RefCell::new(None),
+                    cache: SlotCache::new(),
+                });
             }
             // Last slot = overall bar.
             let overall_state = Arc::new(SharedState::new(total, label));
@@ -724,6 +759,7 @@ mod inner {
             slots.push(RenderedSlot {
                 bar: overall_bar,
                 source: RefCell::new(Some(overall_state.clone())),
+                cache: SlotCache::new(),
             });
             let slots_timing = (0..capacity).map(|_| SlotTiming::new()).collect();
             (
@@ -819,6 +855,7 @@ mod inner {
                 // Place new child at the freed bottom slot.
                 self.slots[bottom].source.replace(Some(Arc::clone(state)));
                 self.slots_timing[bottom] = SlotTiming::new();
+                self.slots[bottom].cache = SlotCache::new();
                 self.sync_slot(bottom);
                 return;
             }
@@ -828,6 +865,7 @@ mod inner {
                 if self.slots[i].source.borrow().as_ref().is_none_or(|s| s.is_finished()) {
                     self.slots[i].source.replace(Some(Arc::clone(state)));
                     self.slots_timing[i] = SlotTiming::new();
+                    self.slots[i].cache = SlotCache::new();
                     self.sync_slot(i);
                     return;
                 }
@@ -927,10 +965,23 @@ mod inner {
                 eta_str,
             );
 
-            slot.bar.set_prefix(build_prefix(snap.status, &snap.prefix));
-            slot.bar.set_message(msg);
-            slot.bar.set_length(snap.total);
-            slot.bar.set_position(snap.position);
+            let new_prefix = build_prefix(snap.status, &snap.prefix);
+            if new_prefix != *slot.cache.prefix.borrow() {
+                slot.bar.set_prefix(new_prefix.clone());
+                *slot.cache.prefix.borrow_mut() = new_prefix;
+            }
+            if msg != *slot.cache.msg.borrow() {
+                slot.bar.set_message(msg.clone());
+                *slot.cache.msg.borrow_mut() = msg;
+            }
+            if snap.total != slot.cache.total.get() {
+                slot.bar.set_length(snap.total);
+                slot.cache.total.set(snap.total);
+            }
+            if snap.position != slot.cache.position.get() {
+                slot.bar.set_position(snap.position);
+                slot.cache.position.set(snap.position);
+            }
         }
 
         /// Apply finish/abandon visual state to a completed slot.
@@ -990,7 +1041,11 @@ mod inner {
                         bar.set_style(blank_bar_style());
                         bar.set_message(" ");
                         bar.set_prefix("");
-                        let slot = RenderedSlot { bar, source: RefCell::new(None) };
+                        let slot = RenderedSlot {
+                            bar,
+                            source: RefCell::new(None),
+                            cache: SlotCache::new(),
+                        };
                         if let Some(orphan) = self.orphaned_states.borrow_mut().pop_back() {
                             slot.source.replace(Some(orphan));
                         }
