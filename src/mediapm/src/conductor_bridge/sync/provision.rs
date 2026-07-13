@@ -101,7 +101,9 @@ mod tests {
     async fn test_deps() -> (impl CasApi, ToolDownloadCache, Arc<dyn ProgressBarApi>, TempDir) {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path()).await.expect("cache open");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
         let progress: Arc<dyn ProgressBarApi> = Arc::new(RecordingTrackedHandle::new(0));
         (cas, cache, progress, tmp)
     }

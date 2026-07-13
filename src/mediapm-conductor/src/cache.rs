@@ -64,18 +64,6 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Opens (or bootstraps) one cache root with default index file and default
-    /// TTL (30 days).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open(root: &Path) -> Result<Self, ConductorError> {
-        Self::open_with_index_file_name_and_ttl(root, DEFAULT_INDEX_FILE_NAME, ENTRY_TTL_SECONDS)
-            .await
-    }
-
     /// Opens one cache root and binds this handle to a specific index file
     /// with a custom TTL.
     ///
@@ -137,7 +125,6 @@ impl Cache {
             self.remove_index_entry(key);
             return None;
         };
-        self.touch_index_entry(key, hash);
         Some(bytes.to_vec())
     }
 
@@ -162,7 +149,7 @@ impl Cache {
     }
 
     /// Updates `last_access_unix_seconds` for a key without changing its hash.
-    pub fn refresh_last_used(&self, key: &str) {
+    pub fn touch(&self, key: &str) {
         let Ok(mut index) = self.index.lock() else {
             return;
         };
@@ -415,7 +402,10 @@ mod tests {
     #[tokio::test]
     async fn cache_round_trips_bytes_by_logical_key() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache = Cache::open(root.path()).await.expect("open cache");
+        let cache =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
+                .await
+                .expect("open cache");
         let payload = b"shared-cache".to_vec();
         let key = "test-tool-v1.0.0";
         cache.store_bytes(key, &payload).await;

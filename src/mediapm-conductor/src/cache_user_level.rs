@@ -1,11 +1,12 @@
 //! User-level download cache wrapper.
 //!
-//! A thin domain wrapper around the generic [`Cache`] that anchors the cache
+//! A thin newtype wrapper around the generic [`Cache`] that anchors the cache
 //! root at a user-level directory (OS cache dir).
 
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use crate::cache::{Cache, CachePruneReport};
+use crate::cache::Cache;
 use crate::error::ConductorError;
 
 /// Returns the default user-scoped cache root for conductor standalone
@@ -25,35 +26,65 @@ pub fn default_mediapm_user_download_cache_root() -> Option<PathBuf> {
     dirs::cache_dir().map(|root| root.join("mediapm").join("cache"))
 }
 
-/// User-level download cache backed by the generic [`Cache`] engine.
+/// User-level download cache wrapping the generic Cache engine.
 ///
-/// This type exists so the downloader works with a semantically meaningful
-/// domain type.  All methods delegate to the inner [`Cache`].
+/// This is a thin newtype. All Cache methods are accessible via Deref.
+/// Consumers open separate instances for different cache domains:
+///
+/// - `open_tool_cache()` — tool binary payloads (30 day TTL, tools.json)
+/// - `open_metadata_cache()` — metadata/version-check payloads (1 day TTL,
+///   tool_metadata.json)
+/// - `open(root, name, ttl)` — fully custom
 #[derive(Clone)]
 pub struct UserLevelCache(Cache);
 
+impl Deref for UserLevelCache {
+    type Target = Cache;
+    fn deref(&self) -> &Cache {
+        &self.0
+    }
+}
+
 impl UserLevelCache {
-    /// Opens (or bootstraps) the user-level cache at `root` with the default
-    /// TTL (30 days).
+    /// Opens at the default user-level root with tools.json index and 30 day
+    /// TTL.
     ///
     /// # Errors
     ///
     /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open(root: &Path) -> Result<Self, ConductorError> {
-        Cache::open_with_index_file_name_and_ttl(root, "tools.json", 30 * 24 * 60 * 60)
+    /// fails or the default cache root cannot be determined.
+    pub async fn open_tool_cache() -> Result<Self, ConductorError> {
+        let root = default_user_download_cache_root().ok_or_else(|| {
+            ConductorError::Workflow("could not determine default tool cache root".to_string())
+        })?;
+        Cache::open_with_index_file_name_and_ttl(&root, "tools.json", 30 * 24 * 60 * 60)
             .await
             .map(Self)
     }
 
-    /// Opens the user-level cache at `root` with a custom TTL and a specific
-    /// index file.
+    /// Opens at the default user-level root with tool_metadata.json index and
+    /// 1 day TTL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
+    /// fails or the default cache root cannot be determined.
+    pub async fn open_metadata_cache() -> Result<Self, ConductorError> {
+        let root = default_user_download_cache_root().ok_or_else(|| {
+            ConductorError::Workflow("could not determine default metadata cache root".to_string())
+        })?;
+        Cache::open_with_index_file_name_and_ttl(&root, "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .map(Self)
+    }
+
+    /// Opens at an explicit root with custom index file and TTL.
     ///
     /// # Errors
     ///
     /// Returns [`ConductorError`] when filesystem preparation or CAS opening
     /// fails.
-    pub async fn open_with_index_file_name_and_ttl(
+    pub async fn open(
         root: &Path,
         index_file_name: &str,
         entry_ttl_seconds: u64,
@@ -61,38 +92,6 @@ impl UserLevelCache {
         Cache::open_with_index_file_name_and_ttl(root, index_file_name, entry_ttl_seconds)
             .await
             .map(Self)
-    }
-
-    /// Opens a `tool_metadata.json` cache with 1-day TTL.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open_metadata_cache(root: &Path) -> Result<Self, ConductorError> {
-        Self::open_with_index_file_name_and_ttl(root, "tool_metadata.json", 24 * 60 * 60).await
-    }
-
-    #[must_use]
-    pub async fn lookup_bytes(&self, cache_key: &str) -> Option<Vec<u8>> {
-        self.0.lookup_bytes(cache_key).await
-    }
-
-    pub async fn store_bytes(&self, cache_key: &str, payload: &[u8]) {
-        self.0.store_bytes(cache_key, payload).await;
-    }
-
-    #[must_use]
-    pub fn entry_count(&self) -> usize {
-        self.0.entry_count()
-    }
-
-    pub fn refresh_last_used(&self, key: &str) {
-        self.0.refresh_last_used(key);
-    }
-
-    pub async fn prune_expired_entries(&self) -> Result<CachePruneReport, ConductorError> {
-        self.0.prune_expired_entries().await
     }
 }
 
@@ -141,7 +140,9 @@ mod tests {
     #[tokio::test]
     async fn cache_round_trips_bytes_by_logical_key() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache = UserLevelCache::open(root.path()).await.expect("open cache");
+        let cache = UserLevelCache::open(root.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("open cache");
         let payload = b"shared-download-cache".to_vec();
         let key = "test-tool-v1.0.0";
         cache.store_bytes(key, &payload).await;

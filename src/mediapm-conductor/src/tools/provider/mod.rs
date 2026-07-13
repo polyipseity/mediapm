@@ -180,8 +180,9 @@ pub async fn fetch_tool_sources(
     for source in &fetch.sources {
         match &source.producer {
             SourceProducer::Fetch { urls } => {
-                let cache_key = format!("{}_{}", fetch.tool_id, source.os);
-                let bytes = if let Some(cached) = cache.lookup_bytes(&cache_key).await {
+                let cache_key = &urls[0];
+                let bytes = if let Some(cached) = cache.lookup_bytes(cache_key).await {
+                    cache.touch(cache_key);
                     cached
                 } else {
                     let downloaded = fetch_bytes_from_candidates(
@@ -193,7 +194,7 @@ pub async fn fetch_tool_sources(
                         total,
                     )
                     .await?;
-                    cache.store_bytes(&cache_key, &downloaded).await;
+                    cache.store_bytes(cache_key, &downloaded).await;
                     downloaded
                 };
                 entries.push(DownloadedSource {

@@ -72,7 +72,9 @@ async fn fetch_echo_produces_launcher_scripts_via_cache() {
     let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
 
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
-    let cache = UserLevelCache::open(cache_root.path()).await.expect("open UserLevelCache");
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+        .await
+        .expect("open UserLevelCache");
 
     let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo sources");
 
@@ -110,7 +112,9 @@ async fn fetch_echo_produces_launcher_scripts_via_cache() {
 async fn fetch_echo_is_cached_idempotently() {
     let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
-    let cache = UserLevelCache::open(cache_root.path()).await.expect("open UserLevelCache");
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+        .await
+        .expect("open UserLevelCache");
 
     let first = fetch_tool_sources(&fetch, &cache, None).await.expect("first fetch");
     let second = fetch_tool_sources(&fetch, &cache, None).await.expect("second fetch");
@@ -133,7 +137,9 @@ async fn fetch_echo_is_cached_idempotently() {
 async fn postprocess_echo_produces_correct_content_map_and_selector() {
     let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
-    let cache = UserLevelCache::open(cache_root.path()).await.expect("open UserLevelCache");
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+        .await
+        .expect("open UserLevelCache");
     let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo");
     let cas = InMemoryCas::default();
 
@@ -181,7 +187,9 @@ async fn postprocess_echo_produces_correct_content_map_and_selector() {
 async fn full_pipeline_echo_all_hashes_retrievable_from_cas() {
     let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
-    let cache = UserLevelCache::open(cache_root.path()).await.expect("open UserLevelCache");
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+        .await
+        .expect("open UserLevelCache");
     let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo");
     let cas = InMemoryCas::default();
 

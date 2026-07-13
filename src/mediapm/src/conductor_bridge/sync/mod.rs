@@ -85,7 +85,7 @@ pub(crate) async fn reconcile_desired_tools(
     let cache_root = default_mediapm_user_download_cache_root().ok_or_else(|| {
         MediaPmError::Workflow("could not determine default tool cache root".to_string())
     })?;
-    let cache = ToolDownloadCache::open(&cache_root)
+    let cache = ToolDownloadCache::open(&cache_root, "tools.json", 30 * 24 * 60 * 60)
         .await
         .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
 
