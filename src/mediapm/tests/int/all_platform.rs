@@ -101,7 +101,7 @@ async fn external_tool_command_uses_context_os_selector() -> Result<(), mediapm:
     let os_keys: [&str; 3] = ["linux", "macos", "windows"];
 
     for (tool_id, spec) in &doc.tools {
-        let Some(ToolKindSpec::Executable { command, .. }) = &spec.kind else {
+        let ToolKindSpec::Executable { command, .. } = &spec.kind else {
             continue; // builtins don't use executable commands
         };
         if command.is_empty() || command[0].is_empty() {
