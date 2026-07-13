@@ -126,9 +126,6 @@ enum ImportCommand {
         /// Process name override.
         #[arg(long)]
         process_name: Option<String>,
-        /// Use a built-in tool preset.
-        #[arg(long)]
-        preset: Option<CommonExecutableTool>,
     },
 }
 
@@ -169,12 +166,6 @@ enum ToolCommand {
     },
     /// List configured tools with their binary presence status.
     List,
-}
-
-/// Well-known tool presets for `import tool --preset`.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub(crate) enum CommonExecutableTool {
-    Sd,
 }
 
 /// Global conductor runtime initialized once per process.
@@ -349,7 +340,7 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
 
 async fn cmd_import(args: ImportArgs) -> Result<(), ConductorError> {
     match args.command {
-        ImportCommand::Tool { path: Some(p), name, process_name, preset: None } => {
+        ImportCommand::Tool { path: Some(p), name, process_name } => {
             let conductor = ensure_conductor().await?;
             let (hash_map, _count) = crate::cli_tools::import_directory_to_content_map(
                 conductor.cas().as_ref(),
@@ -370,13 +361,6 @@ async fn cmd_import(args: ImportArgs) -> Result<(), ConductorError> {
                 executable.as_deref(),
                 content_map,
             )?;
-        }
-        ImportCommand::Tool { path, name, process_name, preset: Some(_) } => {
-            // Tool-preset download requires the `tool-presets` Cargo feature.
-            let _ = (path, name, process_name);
-            return Err(ConductorError::Workflow(
-                "tool preset import requires the `tool-presets` feature".to_string(),
-            ));
         }
         ImportCommand::Tool { .. } => {
             return Err(ConductorError::Workflow(
