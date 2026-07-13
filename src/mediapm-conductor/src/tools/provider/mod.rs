@@ -995,4 +995,105 @@ mod tests {
         names.sort();
         assert_eq!(names, vec!["a.txt", "sub/b.txt"]);
     }
+
+    // ── Property-based tests (proptest) ───────────────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `infer_archive_format` is deterministic: same input always yields
+        /// the same output.
+        #[test]
+        fn infer_archive_format_deterministic(url: String) {
+            let result1 = infer_archive_format(&url);
+            let result2 = infer_archive_format(&url);
+            assert_eq!(result1, result2);
+        }
+
+        /// URLs with recognised extensions are classified correctly.
+        #[test]
+        fn infer_archive_format_known_patterns(
+            stem in "[a-z]+",
+            ext in ".tar.xz|.tar.gz|.tgz|.zip",
+        ) {
+            let url = format!("https://example.com/{stem}{ext}");
+            let result = infer_archive_format(&url);
+            if ext == ".tar.xz" {
+                assert_eq!(result, ARCHIVE_TAR_XZ);
+            } else if ext == ".tar.gz" || ext == ".tgz" {
+                assert_eq!(result, ARCHIVE_TAR_GZ);
+            } else if ext == ".zip" {
+                assert_eq!(result, ARCHIVE_ZIP);
+            }
+        }
+
+        /// `build_os_conditional_selector` includes every OS/path entry.
+        #[test]
+        fn build_os_conditional_selector_roundtrip(
+            entries in prop::collection::btree_map(
+                "(linux|macos|windows)".prop_filter("OS must be non-empty", |s| !s.is_empty()),
+                "[a-zA-Z0-9._/-]+",
+                0..4,
+            )
+        ) {
+            let selector = build_os_conditional_selector(&entries);
+            if entries.is_empty() {
+                assert_eq!(selector, "", "empty map should produce empty string");
+                return Ok(());
+            }
+            for (os, path) in &entries {
+                let expected_fragment = format!("{os}/{path}");
+                assert!(
+                    selector.contains(&expected_fragment),
+                    "selector {selector:?} should contain {expected_fragment:?}"
+                );
+            }
+            if entries.len() == 1 {
+                // Single entry collapses to a plain path (no template wrapper).
+                let (os, path) = entries.iter().next().unwrap();
+                assert_eq!(selector, format!("{os}/{path}"));
+            } else {
+                assert!(selector.starts_with("${context.os == \""),
+                    "multi-OS selector should start with template syntax: {selector:?}");
+                assert!(selector.ends_with('}'),
+                    "multi-OS selector should end with '}}': {selector:?}");
+            }
+        }
+
+        /// `find_file_relative` symmetry: if a file exists at `{dir}/{path}`,
+        /// searching for its name finds it, and the returned relative path
+        /// resolves back to the absolute path when joined with root.
+        #[test]
+        fn find_file_relative_symmetry(
+            _dir_name in "[a-z]{1,8}",
+            file_name in "[a-z]{1,8}\\.txt",
+            depth in 0..3usize,
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+
+            // Build nested directory structure up to `depth`.
+            let mut sub_path = std::path::PathBuf::new();
+            for i in 0..depth {
+                sub_path.push(format!("sub{i}"));
+            }
+            let target_dir = root.join(&sub_path);
+            std::fs::create_dir_all(&target_dir).unwrap();
+
+            // Create the target file.
+            let abs_file_path = target_dir.join(&file_name);
+            std::fs::write(&abs_file_path, b"content").unwrap();
+
+            // Search for it.
+            let found = find_file_relative(root, root, &file_name);
+            prop_assert!(found.is_some(),
+                "file {:?} at {:?} should be found under {:?}", file_name, abs_file_path, root);
+
+            let relative = found.unwrap();
+            // The relative path + root should equal the absolute file path.
+            let reconstructed = root.join(&relative);
+            prop_assert_eq!(reconstructed.clone(), abs_file_path.clone(),
+                "reconstructed path {:?} should match {:?}", reconstructed, abs_file_path);
+        }
+    }
 }

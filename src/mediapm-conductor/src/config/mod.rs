@@ -517,4 +517,39 @@ mod tests {
         let binding: InputBinding = serde_json::from_str("[]").expect("deserialize empty array");
         assert_eq!(binding, InputBinding::Vec(vec![]));
     }
+
+    // ── Property-based tests (proptest) ───────────────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `ImpureTimestamp::from_unix_nanos` → `as_unix_nanos` is lossless.
+        #[test]
+        fn impure_timestamp_roundtrip_proptest(nanos: u64) {
+            let ts = ImpureTimestamp::from_unix_nanos(u128::from(nanos));
+            let restored = ts.as_unix_nanos();
+            prop_assert_eq!(u128::from(nanos), restored,
+                "ImpureTimestamp roundtrip failed for nanos={:?}", nanos);
+        }
+
+        /// `OutputPolicy` round-trips through serde_json without data loss.
+        #[test]
+        fn output_policy_serde_roundtrip(policy: OutputPolicy) {
+            let json = serde_json::to_string(&policy).expect("serialize");
+            let back: OutputPolicy = serde_json::from_str(&json).expect("deserialize");
+            prop_assert_eq!(policy, back,
+                "OutputPolicy serde roundtrip failed: {:?} -> {:?} -> {:?}", policy, json, back);
+        }
+    }
+
+    impl proptest::arbitrary::Arbitrary for OutputPolicy {
+        type Parameters = ();
+        type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+        fn arbitrary_with(_: ()) -> Self::Strategy {
+            use proptest::strategy::Strategy;
+            prop_oneof![any::<bool>().prop_map(OutputPolicy::Bool), Just(OutputPolicy::Full),]
+                .boxed()
+        }
+    }
 }
