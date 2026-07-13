@@ -88,3 +88,55 @@ async fn external_tool_command_is_non_empty() -> Result<(), mediapm::MediaPmErro
 
     Ok(())
 }
+
+#[tokio::test]
+async fn external_tool_command_uses_context_os_selector() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    service.sync_tools().await?;
+
+    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
+        .expect("conductor.generated.ncl should be readable");
+    let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
+    let os_keys: [&str; 3] = ["linux", "macos", "windows"];
+
+    for (tool_id, spec) in &doc.tools {
+        let Some(ToolKindSpec::Executable { command, .. }) = &spec.kind else {
+            continue; // builtins don't use executable commands
+        };
+        if command.is_empty() || command[0].is_empty() {
+            continue;
+        }
+
+        // Count how many OS-specific payload directories the tool has.
+        let os_entry_count: usize = spec
+            .runtime
+            .content_map
+            .keys()
+            .filter(|k| os_keys.iter().any(|os| k.starts_with(os)))
+            .count();
+
+        if os_entry_count > 1 {
+            // Multi-OS tools should use the Nickel conditional selector.
+            let first_cmd = &command[0];
+            assert!(
+                first_cmd.starts_with("${context.os == \""),
+                "tool {tool_id}: multi-OS command should start with conditional selector, got: {first_cmd:}"
+            );
+            assert!(
+                first_cmd.ends_with('}'),
+                "tool {tool_id}: multi-OS command should end with '}}', got: {first_cmd:}"
+            );
+        } else if os_entry_count == 1 {
+            // Single-OS tools should have a plain <os>/<path> format.
+            let first_cmd = &command[0];
+            let has_os_prefix = os_keys.iter().any(|os| first_cmd.starts_with(&format!("{os}/")));
+            assert!(
+                has_os_prefix || first_cmd.starts_with("${context.os == \""),
+                "tool {tool_id}: single-OS command should start with <os>/ or conditional, got: {first_cmd:}"
+            );
+        }
+    }
+
+    Ok(())
+}
