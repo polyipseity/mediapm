@@ -416,6 +416,24 @@ async fn process_single_source(
 
     extract_archive(bytes, archive_format, os_dir)?;
 
+    // ── binary-format rename ───────────────────────────────────────
+    // `extract_binary` writes with a generic "tool"/"tool.exe" name; rename
+    // to the actual `tool_id` so the downstream read finds the right file.
+    if archive_format == ARCHIVE_BINARY {
+        let generic_name = if cfg!(target_os = "windows") { "tool.exe" } else { "tool" };
+        let generic_path = os_dir.join(generic_name);
+        let tool_path = os_dir.join(tool_id);
+        if generic_path != tool_path && generic_path.exists() {
+            std::fs::rename(&generic_path, &tool_path).map_err(|source| {
+                ConductorError::io(
+                    &format!("renaming generic binary to '{tool_id}'"),
+                    &generic_path,
+                    source,
+                )
+            })?;
+        }
+    }
+
     if archive_format == ARCHIVE_BINARY {
         // ── binary format: single file entry ────────────────────────
         let tool_path = os_dir.join(tool_id);
@@ -896,8 +914,6 @@ mod tests {
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
         let launcher_bytes = generate_launcher_script("linux", "echo@v1");
-        // Write the binary to os_dir/tool_id (simulating extract_binary)
-        std::fs::write(os_dir.path().join("echo"), &launcher_bytes).unwrap();
         let (cmap, exec) = process_single_source(
             &launcher_bytes,
             ARCHIVE_BINARY,

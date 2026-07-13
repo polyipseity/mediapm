@@ -16,3 +16,6 @@ mod schema_sync;
 /// Platform filtering: cfg-derived FOREIGN_PLATFORM_DIRS correctness and
 /// the explicit link_to_sandbox_filtered API.
 mod platform_filtering;
+
+/// Provider pipeline: resolve → fetch → postprocess for tool provisioning.
+mod provider_pipeline;
