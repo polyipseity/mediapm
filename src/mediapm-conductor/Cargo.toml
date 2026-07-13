@@ -18,6 +18,7 @@ cli = [
   "fetch",
 ]
 fetch = ["mediapm-conductor-builtin-import/fetch"]
+proptest = []
 tool-presets = ["dep:flate2", "dep:tar", "dep:reqwest", "dep:zip", "dep:xz2", "mediapm-utils/progress"]
 
 [lints]

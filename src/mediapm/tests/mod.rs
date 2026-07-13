@@ -7,4 +7,5 @@ mod e2e;
 mod int;
 mod progress_elapsed;
 mod progress_resize;
+#[cfg(feature = "proptest")]
 mod prop;

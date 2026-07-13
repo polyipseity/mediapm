@@ -1,6 +1,6 @@
 # Spec-to-Test Coverage Matrix
 
-Last updated: 2026-07-13
+Last updated: 2025-07-18
 
 Status markers: 🟢 = covered by test(s), 🟡 = partially covered, 🔴 = no test.
 
@@ -84,7 +84,7 @@ Status markers: 🟢 = covered by test(s), 🟡 = partially covered, 🔴 = no t
 | ID | Spec Item | Status | Test File(s) |
 |----|-----------|--------|-------------|
 | COND-A.1 | Three-document config model | 🟢 | `bootstrap.rs`, `schema_sync.rs` |
-| COND-A.2 | All docs must have version markers | 🟢 | `decode_migration.rs` |
+| COND-A.2 | All docs must have version markers | 🟢 | `decode_migration.rs`, `external_data_and_validation.rs`: document_without_version_field_produces_error |
 | COND-A.3 | conductor.ncl is user-edited, not machine-mutated | 🟢 | Config tests |
 | COND-A.4 | conductor.generated.ncl is machine-managed | 🟢 | Config tests |
 | COND-A.5 | Host-specific inherited env defaults | 🟢 | Config tests |
@@ -161,11 +161,11 @@ Status markers: 🟢 = covered by test(s), 🟡 = partially covered, 🔴 = no t
 | COND-H.5 | ZIP member selectors | 🟢 | Input resolution tests |
 | COND-H.6 | Builtin steps load ALL inputs in Pass 2 | 🟢 | Input resolution tests |
 | COND-I.1 | External data retrieval failure (N.1) | 🔴 | No dedicated test |
-| COND-I.2 | DAG cycle detection (N.2) | 🔴 | No dedicated test (marked "Add test" in spec) |
-| COND-I.3 | Missing external data execution (N.3) | 🔴 | No dedicated test |
+| COND-I.2 | DAG cycle detection (N.2) | � | `cycle.rs` e2e: circular_dependency_raises_cycle_error |
+| COND-I.3 | Missing external data execution (N.3) | � | `external_data_and_validation.rs`: missing_external_data_rejected_at_decode_time |
 | COND-I.4 | Document merging conflict (N.4) | 🟢 | Config merge tests |
 | COND-I.5 | Actor panic/message loss (N.5) | 🔴 | No dedicated test (marked "Add test" in spec) |
-| COND-I.6 | Version marker absence (N.6) | 🔴 | No dedicated test (marked "Add test" in spec) |
+| COND-I.6 | Version marker absence (N.6) | � | `external_data_and_validation.rs`: document_without_version_field_produces_error |
 | COND-I.7 | GC during active execution (N.8) | 🟢 | `gc.rs` |
 | COND-I.8 | Instance TTL change between runs (N.8) | 🟢 | `gc.rs` |
 | COND-I.9 | GC with zero instances (N.8) | 🟢 | `gc.rs` |
@@ -193,7 +193,7 @@ Status markers: 🟢 = covered by test(s), 🟡 = partially covered, 🔴 = no t
 | COND-K.2 | All GC paths converge | 🟢 | `gc.rs` + `lifecycle.rs` |
 | COND-K.3 | gc_sweep AtomicBool guard | 🟢 | `gc.rs` |
 | COND-K.4 | Root set computation | 🟢 | `gc.rs` |
-| COND-K.5 | content_map ⊆ external_data invariant | 🟢 | Decode-time enforcement |
+| COND-K.5 | content_map ⊆ external_data invariant | 🟢 | `external_data_and_validation.rs`: valid_document_with_external_data_decodes, missing_external_data_rejected_at_decode_time |
 | COND-K.6 | Non-root delta base deletion safe | 🟢 | CAS tests |
 | COND-K.7 | Background GC waits for gc_initialized | 🟢 | Background loop tests |
 | COND-L.1 | WorkflowStepEvent via UnboundedSender | 🟢 | Progress event tests |

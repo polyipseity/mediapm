@@ -16,6 +16,7 @@ cli = [
   "mediapm-conductor/cli",
 ]
 media-tagger = ["dep:chromaprint-next", "dep:musicbrainz_rs", "dep:ffmetadata"]
+proptest = []
 
 [lints]
 workspace = true

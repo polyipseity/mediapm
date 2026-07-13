@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "last_updated": "2025-07-18",
+  "description": "Test failures that exist independently of any session's changes. These must be verified periodically and excluded from CI pass/fail gates.",
+  "failures": [
+    {
+      "test_id": "e2e::workflow::deterministic_workflow_hits_cache_on_second_run",
+      "crate": "mediapm-conductor",
+      "manifestation": "second run executes step instead of cache hit (executed_steps=1, cached_steps=0)",
+      "root_cause": "Unknown — persists even with --test-threads=1 isolation. Likely a cache-key computation mismatch or state not persisting across runs.",
+      "impact": "Blocks verification of repeated-run cache behavior in e2e tests.",
+      "first_seen": "pre-session (at or before commit 1459727)",
+      "notes": "Not related to ractor registry race — fails even in complete isolation."
+    },
+    {
+      "test_id": "e2e::lifecycle::workflow_lifecycle_cache_gc_tool_update",
+      "crate": "mediapm-conductor",
+      "manifestation": "Internal('failed to spawn conductor actor: Actor 'conductor' is already registered')",
+      "root_cause": "Ractor actor-registry race: TestConductor::new() creates an actor named 'conductor' that conflicts when multiple tests run concurrently. Each TestConductor instance registers an actor with the same global name in ractor's registry.",
+      "impact": "Flaky failure under parallel test execution. All conductor e2e/int tests using TestConductor are susceptible.",
+      "first_seen": "pre-session (at or before commit 1459727)",
+      "notes": "Mitigated by --test-threads=1, but the workflow e2e test still fails for a different reason even in isolation."
+    },
+    {
+      "test_id": "int::bootstrap::run_workflow_bootstraps_missing_documents",
+      "crate": "mediapm-conductor",
+      "manifestation": "Internal('failed to spawn conductor actor: Actor 'conductor' is already registered')",
+      "root_cause": "Same ractor registry race as lifecycle test.",
+      "impact": "Flaky failure under parallel execution.",
+      "first_seen": "pre-session (at or before commit 1459727)",
+      "notes": "Passes reliably with --test-threads=1 isolation."
+    }
+  ],
+  "fixed_this_session": [
+    {
+      "test_id": "int::bootstrap::run_workflow_rejects_fractional_success_codes",
+      "crate": "mediapm-conductor",
+      "manifestation": "Nickel contract violation on external_data/depends_on null values after v1→v2 migration",
+      "root_cause": "v1→v2 migration produced `null` for absent fields (external_data, depends_on) but v2 contract expected arrays/records. Fixed by producing `{}`/`[]` instead of `null` in v2.ncl.",
+      "fix_commit": "current session (uncommitted)"
+    }
+  ]
+}
