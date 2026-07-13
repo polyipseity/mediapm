@@ -676,7 +676,7 @@ fn find_file_relative(
 mod tests {
     use std::io::Write;
 
-    use mediapm_cas::InMemoryCas;
+    use mediapm_cas::{CasApi, Hash, InMemoryCas};
 
     use super::*;
 
@@ -874,6 +874,46 @@ mod tests {
         assert_eq!(cmap.len(), 1);
         assert!(cmap.contains_key("linux/echo"));
         assert_eq!(exec, "echo");
+    }
+
+    /// Tests that a binary download (non-archive) with a URL-derived filename
+    /// different from the tool id is CAS-imported correctly and that the
+    /// content-map hash points to retrievable original bytes.
+    #[tokio::test]
+    async fn process_binary_with_url_derived_filename_cas_roundtrip() {
+        let cas = InMemoryCas::default();
+        let os_dir = tempfile::tempdir().unwrap();
+        let binary_content = b"mock-binary-content-for-cas-test";
+        let tool_id = "my-tool";
+        let filename = "my-tool-v1.2.3"; // URL-derived, differs from tool_id
+        let (cmap, exec) = process_single_source(
+            binary_content,
+            None, // no archive format → binary path
+            "linux",
+            tool_id,
+            os_dir.path(),
+            filename,
+            &cas,
+        )
+        .await
+        .expect("process_single_source should succeed for binary");
+        assert_eq!(cmap.len(), 1, "binary import must produce exactly one content_map entry");
+        let cmap_key = format!("linux/{filename}");
+        let hash_hex = cmap.get(&cmap_key).unwrap_or_else(|| {
+            panic!(
+                "content_map should contain key '{cmap_key}', got keys: {:?}",
+                cmap.keys().collect::<Vec<_>>()
+            )
+        });
+        // Verify the hash in content_map resolves back to the original bytes.
+        let hash = hash_hex.parse::<Hash>().expect("content_map hash must be valid hash string");
+        let retrieved = cas.get(hash).await.expect("CAS must contain the hash from content_map");
+        assert_eq!(
+            retrieved.to_vec(),
+            binary_content,
+            "CAS round-trip: stored bytes must match original binary content"
+        );
+        assert_eq!(exec, filename, "executable should be URL-derived filename for binary format");
     }
 
     // ── generate_launcher_script ──────────────────────────────────────
