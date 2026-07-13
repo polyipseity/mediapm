@@ -14,7 +14,7 @@ http_client.rs             — Shared reqwest::Client (OnceLock)
 global.rs                  — MediaPmGlobalPaths, MEDIAPM_USER_AGENT
 paths.rs                   — MediaPmPaths (17 fields), MediaPmPathOverrides
 source_metadata.rs         — Online/local metadata probes
-hierarchy.rs               — Hierarchy preset builders, node mutation
+hierarchy.rs               — Hierarchy node mutation
 metadata_cache.rs          — JSON metadata cache, TTL-based expiry
 service.rs                 — MediaPmService<Cas> orchestration
 service_standalone.rs      — Standalone helpers (document loading, path resolution)
@@ -51,9 +51,9 @@ materializer/              — CAS→filesystem materialization
 
 tools/                     — Managed tool catalog + workflow synthesis
   mod.rs                   —   Module router
-  models.rs                —   Download plan types, tool identity models
-  downloader.rs            —   ToolDownloadCache, multi-platform download, cache, materialization
-  catalog/                 —   Built-in catalog: deno, ffmpeg, media_tagger, rsgain, sd, yt_dlp
+  downloader.rs            —   ToolDownloadCache type alias (re-exports from conductor)
+  catalog/                 —   Built-in catalog: deno, ffmpeg, media_tagger, rsgain, yt_dlp
+  workflows/               —   Step synthesis: ffmpeg, media_tagger, rsgain, yt_dlp, yt_dlp_inputs
   workflows/               —   Step synthesis: ffmpeg, media_tagger, rsgain, yt_dlp, yt_dlp_inputs
 
 builtins/                  — Native tool implementations

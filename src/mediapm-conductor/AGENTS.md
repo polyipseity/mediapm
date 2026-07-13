@@ -107,16 +107,15 @@ This repository follows the design principle that conductor builtins are the "co
 
 All other domain logic remains external tooling or mediapm workflow behavior.
 
-For portable string-manipulation tasks in workflows, prefer provisioning `sd` via conductor tool preset import (`import tool --preset sd`) instead of platform-specific shell tools (`sed`, PowerShell regex one-offs, etc.).
+For portable string-manipulation tasks in workflows, prefer provisioning `sd` via the `tool-presets` feature (`mediapm_conductor::tools::catalog::sd::entry()`) instead of platform-specific shell tools (`sed`, PowerShell regex one-offs, etc.).
 Use `sd` for deterministic text rewrites where possible so workflow behavior stays consistent across Windows/Linux/macOS runners.
 
-Common executable tool presets must use one module file per preset under `src/mediapm-conductor/src/tools/` (for example `tools/preset_sd.rs`) with registry/dispatch kept in `tools/mod.rs`; avoid re-centralizing preset implementation logic in `api.rs`.
+Tool catalog entries use the all-platform `ToolCatalogEntry` model under `src/mediapm-conductor/src/tools/catalog/` (for example `catalog/sd.rs`) with re-exports in `catalog/mod.rs`. Each entry defines per-OS download URLs and archive formats for all three supported platforms (`windows`, `linux`, `macos`).
 
-Tool preset download invariant:
+Tool preset download invariants:
 
-- executable tool presets are never host-platform-only downloads;
-- preset installation must always provision all supported platform payloads (`windows`, `linux`, `macos`) into content-addressed storage/content maps;
-- runtime command selection must stay selector-driven via `${context.os == ...}` conditionals so the correct executable is chosen at execution time without changing the downloaded preset payload set.
+- All platform payloads are provisioned into content-addressed storage/content maps; there is no host-platform-only download path.
+- Runtime command selection stays selector-driven via `${context.os == ...}` conditionals so the correct executable is chosen at execution time without changing the downloaded payload set.
 
 ## Tool Schema and Runtime Invariants
 
