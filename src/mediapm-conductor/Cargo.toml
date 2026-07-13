@@ -18,7 +18,7 @@ cli = [
   "fetch",
 ]
 fetch = ["mediapm-conductor-builtin-import/fetch"]
-tool-presets = ["dep:flate2", "dep:tar", "dep:reqwest", "dep:zip"]
+tool-presets = ["dep:flate2", "dep:tar", "dep:reqwest", "dep:zip", "dep:xz2", "mediapm-utils/progress"]
 
 [lints]
 workspace = true
@@ -51,7 +51,8 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["json", "stream"] }
+xz2 = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
 
 [[bin]]
