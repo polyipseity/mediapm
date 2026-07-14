@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use mediapm_cas::CasApi;
 use mediapm_conductor::tools::provider::{fetch_tool_sources, postprocess_tool_sources};
-use mediapm_utils::progress::{ProviderPhase, ProviderProgressCallback};
+use mediapm_utils::progress::{ProgressBarApi, ProviderPhase, ProviderProgressCallback};
 
 use crate::error::MediaPmError;
 use crate::output::ProgressGroupApi;
@@ -38,8 +38,10 @@ pub(super) struct FetchedToolPayload {
 ///
 /// `group` provides 3 phase-agnostic progress bars per tool (resolve, fetch,
 /// postprocess). Routes [`ProviderProgressSnapshot`] callbacks to the matching
-/// bar by `snap.phase` only — the bridge does not interpret items or bytes
-/// semantics.
+/// bar by `snap.phase`. Item counters are displayed via `set_prefix`; byte
+/// counters drive bar position (`set_position`/`set_total`). The bridge does
+/// not interpret the meaning of items or bytes — it only relays the values
+/// to the bar.
 ///
 /// Returns `Ok(None)` when the tool has no provider sources (internal
 /// launcher, no external download needed).
@@ -71,10 +73,14 @@ pub(super) async fn fetch_and_import_tool_payload(
     let progress_cb: Option<ProviderProgressCallback> = {
         Some(Arc::new(move |snap| match snap.phase {
             ProviderPhase::Fetch => {
-                fetch_bar_cb.set_position(snap.items.0);
+                fetch_bar_cb.set_prefix(&format!("{}/{}", snap.items.0, snap.items.1));
+                fetch_bar_cb.set_position(snap.bytes.0);
+                fetch_bar_cb.set_total(snap.bytes.1);
             }
             ProviderPhase::Postprocess => {
-                postprocess_bar_cb.set_position(snap.items.0);
+                postprocess_bar_cb.set_prefix(&format!("{}/{}", snap.items.0, snap.items.1));
+                postprocess_bar_cb.set_position(snap.bytes.0);
+                postprocess_bar_cb.set_total(snap.bytes.1);
             }
             ProviderPhase::Resolve => {}
         }))
