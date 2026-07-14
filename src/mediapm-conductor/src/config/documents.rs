@@ -516,4 +516,194 @@ mod tests {
 
         assert!(doc.validate_external_data_invariant().is_ok());
     }
+
+    /// Verifies `merge_documents` with an empty list returns a default document.
+    #[test]
+    fn merge_documents_empty_list() {
+        let doc = merge_documents(&[]).unwrap();
+        assert!(doc.tools.is_empty());
+        assert!(doc.workflows.is_empty());
+    }
+
+    /// Verifies `merge_documents` with one source passes through its tool.
+    #[test]
+    fn merge_documents_single_passthrough() {
+        let doc = NickelDocument {
+            tools: BTreeMap::from([(
+                "echo".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+                    name: "echo".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime::default(),
+                },
+            )]),
+            ..NickelDocument::default()
+        };
+        let source = SourceDocument { path: PathBuf::from("/dummy/a.ncl"), document: doc };
+        let result = merge_documents(&[source]).unwrap();
+        assert!(result.tools.contains_key("echo"));
+    }
+
+    /// Verifies `merge_documents` merges two documents with disjoint tool sets.
+    #[test]
+    fn merge_documents_disjoint_tools_merge() {
+        let doc1 = NickelDocument {
+            tools: BTreeMap::from([(
+                "tool-a".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+                    name: "tool-a".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime::default(),
+                },
+            )]),
+            ..NickelDocument::default()
+        };
+        let doc2 = NickelDocument {
+            tools: BTreeMap::from([(
+                "tool-b".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+                    name: "tool-b".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime::default(),
+                },
+            )]),
+            ..NickelDocument::default()
+        };
+        let source1 = SourceDocument { path: PathBuf::from("/dummy/a.ncl"), document: doc1 };
+        let source2 = SourceDocument { path: PathBuf::from("/dummy/b.ncl"), document: doc2 };
+        let result = merge_documents(&[source1, source2]).unwrap();
+        assert!(result.tools.contains_key("tool-a"));
+        assert!(result.tools.contains_key("tool-b"));
+    }
+
+    /// Verifies `merge_documents` rejects duplicate tool names with a merge-conflict error.
+    #[test]
+    fn merge_documents_duplicate_tool_rejected() {
+        let spec = ToolSpec {
+            kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+            name: "echo".to_string(),
+            inputs: BTreeMap::new(),
+            default_inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            runtime: ToolRuntime::default(),
+        };
+        let doc1 = NickelDocument {
+            tools: BTreeMap::from([("echo".to_string(), spec.clone())]),
+            ..NickelDocument::default()
+        };
+        let doc2 = NickelDocument {
+            tools: BTreeMap::from([("echo".to_string(), spec)]),
+            ..NickelDocument::default()
+        };
+        let source1 = SourceDocument { path: PathBuf::from("/dummy/a.ncl"), document: doc1 };
+        let source2 = SourceDocument { path: PathBuf::from("/dummy/b.ncl"), document: doc2 };
+        let err = merge_documents(&[source1, source2]).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("merge conflicts"), "error should mention merge conflicts: {msg}");
+        assert!(msg.contains("tool 'echo'"), "error should mention tool name: {msg}");
+        assert!(msg.contains("defined in"), "error should mention duplicate tool: {msg}");
+    }
+
+    /// Verifies `merge_documents` rejects duplicate workflow names with a merge-conflict error.
+    #[test]
+    fn merge_documents_duplicate_workflow_rejected() {
+        let workflow = WorkflowSpec {
+            name: "w".to_string(),
+            display_name: String::new(),
+            description: String::new(),
+            impure: false,
+            steps: vec![],
+        };
+        let doc1 =
+            NickelDocument { workflows: vec![workflow.clone()], ..NickelDocument::default() };
+        let doc2 = NickelDocument { workflows: vec![workflow], ..NickelDocument::default() };
+        let source1 = SourceDocument { path: PathBuf::from("/dummy/a.ncl"), document: doc1 };
+        let source2 = SourceDocument { path: PathBuf::from("/dummy/b.ncl"), document: doc2 };
+        let err = merge_documents(&[source1, source2]).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("merge conflicts"), "error should mention merge conflicts: {msg}");
+        assert!(msg.contains("workflow 'w'"), "error should mention workflow name: {msg}");
+        assert!(msg.contains("defined in"), "error should mention duplicate workflow: {msg}");
+    }
+
+    /// Verifies `collect_config_content_hashes` returns an empty set for empty inputs.
+    #[test]
+    fn collect_config_content_hashes_empty_tools() {
+        let hashes = collect_config_content_hashes(&BTreeMap::new(), &BTreeMap::new());
+        assert!(hashes.is_empty());
+    }
+
+    /// Verifies `collect_config_content_hashes` deduplicates the same hash across tools.
+    #[test]
+    fn collect_config_content_hashes_deduplicates_across_tools() {
+        let hash_a = Hash::from_content(b"same-payload");
+        let tools = BTreeMap::from([
+            (
+                "tool-a".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Executable {
+                        command: vec!["tool-a".to_string()],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    name: "tool-a".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([("file.bin".to_string(), hash_a.to_string())]),
+                        ..ToolRuntime::default()
+                    },
+                },
+            ),
+            (
+                "tool-b".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Executable {
+                        command: vec!["tool-b".to_string()],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    name: "tool-b".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "other.bin".to_string(),
+                            hash_a.to_string(),
+                        )]),
+                        ..ToolRuntime::default()
+                    },
+                },
+            ),
+        ]);
+        let hashes = collect_config_content_hashes(&tools, &BTreeMap::new());
+        assert_eq!(hashes.len(), 1);
+    }
+
+    /// Verifies `collect_config_content_hashes` includes external-data keys.
+    #[test]
+    fn collect_config_content_hashes_includes_external_data_keys() {
+        let hash_a = Hash::from_content(b"external-payload");
+        let external_data = BTreeMap::from([(
+            hash_a,
+            super::super::ExternalDataEntry {
+                description: "external data".to_string(),
+                save_mode: crate::state::OutputSaveMode::Saved,
+            },
+        )]);
+        let hashes = collect_config_content_hashes(&BTreeMap::new(), &external_data);
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains(&hash_a));
+    }
 }

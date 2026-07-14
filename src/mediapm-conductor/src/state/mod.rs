@@ -159,3 +159,52 @@ impl Default for OrchestrationState {
         Self::new_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_persistence_flags_save_requires_both() {
+        assert_eq!(
+            merge_persistence_flags(
+                PersistenceFlags { save: true, force_full: false },
+                PersistenceFlags { save: true, force_full: false },
+            ),
+            PersistenceFlags { save: true, force_full: false },
+        );
+        assert_eq!(
+            merge_persistence_flags(
+                PersistenceFlags { save: false, force_full: false },
+                PersistenceFlags { save: true, force_full: false },
+            ),
+            PersistenceFlags { save: false, force_full: false },
+        );
+    }
+
+    #[test]
+    fn merge_persistence_flags_force_full_uses_or() {
+        assert_eq!(
+            merge_persistence_flags(
+                PersistenceFlags { save: false, force_full: false },
+                PersistenceFlags { save: false, force_full: false },
+            ),
+            PersistenceFlags { save: false, force_full: false },
+        );
+        assert_eq!(
+            merge_persistence_flags(
+                PersistenceFlags { save: false, force_full: true },
+                PersistenceFlags { save: false, force_full: false },
+            ),
+            PersistenceFlags { save: false, force_full: true },
+        );
+    }
+
+    #[test]
+    fn merge_persistence_flags_default_merge() {
+        let flags =
+            merge_persistence_flags(PersistenceFlags::default(), PersistenceFlags::default());
+        assert!(!flags.save);
+        assert!(!flags.force_full);
+    }
+}

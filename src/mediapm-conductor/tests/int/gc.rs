@@ -102,3 +102,17 @@ fn run_conductor_gc_evicts_all_when_empty_referenced() {
         "empty referenced set with zero TTL evicts everything"
     );
 }
+
+/// GC with non-zero TTL keeps instances within the grace period.
+#[test]
+fn run_conductor_gc_within_ttl_preserves_unreferenced() {
+    let mut state = OrchestrationState {
+        tool_call_instances: BTreeMap::from([("fresh".to_string(), sample_instance("fresh"))]),
+        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: ImpureTimestamp::now() },
+        ..OrchestrationState::new_empty()
+    };
+    // sample_instance has last_referenced = 0 (unix epoch).
+    // TTL = 10^18 seconds is far larger than any real test duration.
+    state.run_conductor_gc(&BTreeSet::new(), 1_000_000_000_000_000);
+    assert!(state.tool_call_instances.contains_key("fresh"), "instance within TTL should survive");
+}

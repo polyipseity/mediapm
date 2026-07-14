@@ -137,3 +137,68 @@ fn merge_output_specs(
     }
     merged
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::config::{OutputCaptureSpec, SaveMode};
+
+    use super::merge_output_specs;
+
+    fn spec(name: &str, capture: &str) -> (String, OutputCaptureSpec) {
+        (
+            name.to_string(),
+            OutputCaptureSpec {
+                name: name.to_string(),
+                capture: capture.to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: false,
+            },
+        )
+    }
+
+    #[test]
+    fn merge_output_specs_step_overrides_tool() {
+        let merged = merge_output_specs(
+            &BTreeMap::from([spec("r", "stdout")]),
+            &BTreeMap::from([spec("r", "stderr")]),
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged["r"].capture, "stderr");
+    }
+
+    #[test]
+    fn merge_output_specs_appends_new() {
+        let merged = merge_output_specs(
+            &BTreeMap::from([spec("a", "stdout")]),
+            &BTreeMap::from([spec("b", "stderr")]),
+        );
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merge_output_specs_empty_tool_uses_step() {
+        let merged = merge_output_specs(&BTreeMap::new(), &BTreeMap::from([spec("x", "stdout")]));
+        assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn merge_output_specs_empty_step_uses_tool() {
+        let merged =
+            merge_output_specs(&BTreeMap::from([spec("y", "process_code")]), &BTreeMap::new());
+        assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn merge_output_specs_partial_override() {
+        let merged = merge_output_specs(
+            &BTreeMap::from([spec("a", "stdout"), spec("b", "stderr")]),
+            &BTreeMap::from([spec("a", "file:out.txt")]),
+        );
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged["a"].capture, "file:out.txt");
+        assert_eq!(merged["b"].capture, "stderr");
+    }
+}
