@@ -112,9 +112,8 @@ pub(crate) async fn reconcile_desired_tools(
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
         // Fetch tool payload, import to CAS, get content map + command.
-        let tool_bar = effective_group.add_bar(0, tool_id);
         let payload_result =
-            fetch_and_import_tool_payload(cas, tool_id, &cache, Arc::clone(&tool_bar)).await;
+            fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group).await;
 
         match payload_result {
             Ok(Some(payload)) => {
