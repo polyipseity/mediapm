@@ -17,7 +17,7 @@ use mediapm_conductor::tools::provider::{fetch_tool_sources, postprocess_tool_so
 use mediapm_utils::progress::{ProviderPhase, ProviderProgressCallback};
 
 use crate::error::MediaPmError;
-use crate::output::{ProgressBarApi, ProgressGroupApi};
+use crate::output::ProgressGroupApi;
 use crate::tools::downloader::ToolDownloadCache;
 use crate::tools::provider;
 
@@ -36,8 +36,10 @@ pub(super) struct FetchedToolPayload {
 /// per-OS temp directory, imports files to CAS with `./{os}/` key prefixes,
 /// and builds an OS-conditional command-selector template.
 ///
-/// `group` provides per-epoch progress bars: 1 fetch-items bar, N fetch-bytes
-/// bars (one per OS source), and 1 postprocess bar — each monotonic.
+/// `group` provides 3 phase-agnostic progress bars per tool (resolve, fetch,
+/// postprocess). Routes [`ProviderProgressSnapshot`] callbacks to the matching
+/// bar by `snap.phase` only — the bridge does not interpret items or bytes
+/// semantics.
 ///
 /// Returns `Ok(None)` when the tool has no provider sources (internal
 /// launcher, no external download needed).
@@ -48,35 +50,31 @@ pub(super) async fn fetch_and_import_tool_payload(
     group: &dyn ProgressGroupApi,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
+    let resolve_bar = group.add_bar(1, &format!("{tool_id} [resolve]"));
     let fetch = provider::resolve_tool_fetch(tool_id, None, None)
         .await
         .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")))?;
+    resolve_bar.finish();
 
     if fetch.sources.is_empty() {
         // No sources to fetch (internal launcher tool like media-tagger).
         return Ok(None);
     }
 
-    // Create per-epoch progress bars: 1 fetch-items, N fetch-bytes, 1 postprocess.
+    // Create 2 more phase-agnostic progress bars (fetch, postprocess).
     let total = fetch.sources.len() as u64;
-    let fetch_items_bar = group.add_bar(total, &format!("{tool_id} [fetch]"));
-    let fetch_bytes_bars: Vec<Arc<dyn ProgressBarApi>> =
-        fetch.sources.iter().map(|s| group.add_bar(0, &format!("{tool_id} [{}]", s.os))).collect();
+    let fetch_bar = group.add_bar(total, &format!("{tool_id} [fetch]"));
     let postprocess_bar = group.add_bar(total, &format!("{tool_id} [process]"));
 
-    let (fi, fb, pp) = (fetch_items_bar.clone(), fetch_bytes_bars.clone(), postprocess_bar.clone());
+    let fetch_bar_cb = fetch_bar.clone();
+    let postprocess_bar_cb = postprocess_bar.clone();
     let progress_cb: Option<ProviderProgressCallback> = {
         Some(Arc::new(move |snap| match snap.phase {
             ProviderPhase::Fetch => {
-                fi.set_position(snap.items.0);
-                let idx = snap.items.0.saturating_sub(1) as usize;
-                if let Some(bb) = fb.get(idx) {
-                    bb.set_total(snap.bytes.1);
-                    bb.set_position(snap.bytes.0);
-                }
+                fetch_bar_cb.set_position(snap.items.0);
             }
             ProviderPhase::Postprocess => {
-                pp.set_position(snap.items.0);
+                postprocess_bar_cb.set_position(snap.items.0);
             }
             ProviderPhase::Resolve => {}
         }))
@@ -93,10 +91,7 @@ pub(super) async fn fetch_and_import_tool_payload(
         .await
         .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: postprocess failed: {e}")))?;
 
-    fetch_items_bar.finish();
-    for bb in &fetch_bytes_bars {
-        bb.finish();
-    }
+    fetch_bar.finish();
     postprocess_bar.finish();
 
     Ok(Some(FetchedToolPayload {
