@@ -937,7 +937,9 @@ mod inner {
                                 now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
                             if dt > 0.001 {
                                 #[allow(clippy::cast_precision_loss)]
-                                let current = (snap.position - self.slots_timing[i].prev_position)
+                                let current = (snap
+                                    .position
+                                    .saturating_sub(self.slots_timing[i].prev_position))
                                     as f64
                                     / dt;
                                 self.slots_timing[i].rate =
@@ -1337,7 +1339,7 @@ mod inner {
             };
             let state = Arc::new(SharedState::new(total, label));
             {
-                let mut locked = renderer.lock().unwrap();
+                let mut locked = renderer.lock().unwrap_or_else(|e| e.into_inner());
                 locked.attach(&state);
             }
             TrackedHandle { state }
@@ -1366,7 +1368,7 @@ mod inner {
         /// panicked while holding the lock).
         pub fn join_and_clear(&self) {
             if let Some(ref renderer) = self.renderer {
-                renderer.lock().unwrap().finalize();
+                renderer.lock().unwrap_or_else(|e| e.into_inner()).finalize();
             }
         }
 
@@ -1380,7 +1382,7 @@ mod inner {
         /// panicked while holding the lock).
         pub fn tick(&self) {
             if let Some(ref renderer) = self.renderer {
-                renderer.lock().unwrap().tick();
+                renderer.lock().unwrap_or_else(|e| e.into_inner()).tick();
             }
         }
 
@@ -1396,7 +1398,10 @@ mod inner {
             let weak = Arc::downgrade(renderer);
             thread::spawn(move || {
                 while let Some(r) = weak.upgrade() {
-                    r.lock().unwrap().tick();
+                    let Ok(mut guard) = r.lock() else {
+                        break;
+                    };
+                    guard.tick();
                     thread::sleep(Duration::from_millis(50));
                 }
             })
@@ -1412,7 +1417,7 @@ mod inner {
     impl Drop for ProgressGroup {
         fn drop(&mut self) {
             if let Some(ref renderer) = self.renderer {
-                renderer.lock().unwrap().finalize();
+                renderer.lock().unwrap_or_else(|e| e.into_inner()).finalize();
             }
         }
     }
