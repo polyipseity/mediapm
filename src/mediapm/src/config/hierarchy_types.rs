@@ -806,3 +806,171 @@ pub fn collect_playlist_media_index(
 
     Ok(index)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_node() -> HierarchyNode {
+        HierarchyNode {
+            path: HierarchyPath::default(),
+            kind: HierarchyNodeKind::Folder,
+            id: None,
+            media_id: None,
+            variant: None,
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::M3u8,
+            ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Inherit,
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn flatten_empty_hierarchy_returns_empty_vec() {
+        let result = flatten_hierarchy_nodes_for_runtime(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn flatten_single_media_node() {
+        let nodes = vec![HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("video"),
+            media_id: Some("vid1".into()),
+            variant: Some("1080p".into()),
+            ..base_node()
+        }];
+        let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path_components, vec!["video".to_string()]);
+        assert_eq!(result[0].entry.media_id, "vid1");
+        assert_eq!(result[0].entry.variants, vec!["1080p".to_string()]);
+        assert_eq!(result[0].entry.kind, HierarchyEntryKind::Media);
+    }
+
+    #[test]
+    fn flatten_single_media_folder_node() {
+        let nodes = vec![HierarchyNode {
+            kind: HierarchyNodeKind::MediaFolder,
+            path: HierarchyPath::simple("folder"),
+            media_id: Some("mf1".into()),
+            variants: vec!["v1".into(), "v2".into()],
+            ..base_node()
+        }];
+        let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path_components, vec!["folder".to_string()]);
+        assert_eq!(result[0].entry.media_id, "mf1");
+        assert_eq!(result[0].entry.variants, vec!["v1".to_string(), "v2".to_string()]);
+        assert_eq!(result[0].entry.kind, HierarchyEntryKind::MediaFolder);
+    }
+
+    #[test]
+    fn flatten_folder_with_children() {
+        let child1 = HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("ep1"),
+            media_id: Some("ep1".into()),
+            variant: Some("hq".into()),
+            ..base_node()
+        };
+        let child2 = HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("ep2"),
+            media_id: Some("ep2".into()),
+            variant: Some("hq".into()),
+            ..base_node()
+        };
+        let nodes = vec![HierarchyNode {
+            path: HierarchyPath::simple("series"),
+            kind: HierarchyNodeKind::Folder,
+            children: vec![child1, child2],
+            ..base_node()
+        }];
+        let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].path_components, vec!["series".to_string(), "ep1".to_string()]);
+        assert_eq!(result[1].path_components, vec!["series".to_string(), "ep2".to_string()]);
+    }
+
+    #[test]
+    fn flatten_nested_folder_media() {
+        let media = HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("c"),
+            media_id: Some("c1".into()),
+            variant: Some("hq".into()),
+            ..base_node()
+        };
+        let inner = HierarchyNode {
+            path: HierarchyPath::simple("b"),
+            kind: HierarchyNodeKind::Folder,
+            children: vec![media],
+            ..base_node()
+        };
+        let nodes = vec![HierarchyNode {
+            path: HierarchyPath::simple("a"),
+            kind: HierarchyNodeKind::Folder,
+            children: vec![inner],
+            ..base_node()
+        }];
+        let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].path_components,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn flatten_playlist_node() {
+        let nodes = vec![HierarchyNode {
+            kind: HierarchyNodeKind::Playlist,
+            path: HierarchyPath::simple("playlist1"),
+            ..base_node()
+        }];
+        let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].entry.kind, HierarchyEntryKind::Playlist);
+        assert_eq!(result[0].entry.media_id, "");
+    }
+
+    #[test]
+    fn flatten_media_without_media_id_errors() {
+        let nodes = vec![HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("orphan"),
+            media_id: None,
+            variant: Some("hq".into()),
+            ..base_node()
+        }];
+        let err = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap_err();
+        assert!(err.to_string().contains("media node must define media_id"));
+    }
+
+    #[test]
+    fn flatten_path_inheritance() {
+        let child = HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("c"),
+            media_id: Some("c1".into()),
+            variant: Some("hq".into()),
+            ..base_node()
+        };
+        // HierarchyPath::from("a/b") splits by '/' → vec!["a", "b"]
+        let nodes = vec![HierarchyNode {
+            path: HierarchyPath::from("a/b"),
+            kind: HierarchyNodeKind::Folder,
+            children: vec![child],
+            ..base_node()
+        }];
+        let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].path_components,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+}

@@ -227,4 +227,65 @@ mod tests {
         let retrieved = cache2.get("persist-key");
         assert_eq!(retrieved, Some(serde_json::json!({"key": "value"})));
     }
+
+    #[test]
+    fn overwrite_updates_value() {
+        let dir = TempDir::new().expect("temp dir");
+        let cache = MetadataCache::open(dir.path());
+        cache.set("k".to_string(), serde_json::json!("v1"));
+        cache.set("k".to_string(), serde_json::json!("v2"));
+        let retrieved = cache.get("k");
+        assert_eq!(retrieved, Some(serde_json::json!("v2")));
+    }
+
+    #[test]
+    fn large_value_round_trips() {
+        let dir = TempDir::new().expect("temp dir");
+        let value = serde_json::json!((0..1000).collect::<Vec<i32>>());
+        {
+            let cache = MetadataCache::open(dir.path());
+            cache.set("large".to_string(), value.clone());
+            cache.flush().expect("flush");
+        }
+        let cache = MetadataCache::open(dir.path());
+        let retrieved = cache.get("large");
+        assert_eq!(retrieved, Some(value));
+    }
+
+    #[test]
+    fn corrupt_file_starts_empty() {
+        let dir = TempDir::new().expect("temp dir");
+        let cache_file = dir.path().join("metadata.cache.json");
+        fs::write(&cache_file, "not valid json").expect("write corrupt file");
+        let cache = MetadataCache::open(dir.path());
+        assert_eq!(cache.entry_count(), 0);
+    }
+
+    #[test]
+    fn multiple_entries_independent() {
+        let dir = TempDir::new().expect("temp dir");
+        let cache = MetadataCache::open(dir.path());
+        for i in 0..5 {
+            cache.set(format!("key{i}"), serde_json::json!({"index": i}));
+        }
+        for i in 0..5 {
+            let retrieved = cache.get(&format!("key{i}"));
+            assert_eq!(retrieved, Some(serde_json::json!({"index": i})));
+        }
+    }
+
+    #[test]
+    fn flush_then_set_does_not_lose_new_values() {
+        let dir = TempDir::new().expect("temp dir");
+        {
+            let cache = MetadataCache::open(dir.path());
+            cache.set("k1".to_string(), serde_json::json!("flushed"));
+            cache.flush().expect("first flush");
+            cache.set("k2".to_string(), serde_json::json!("unflushed"));
+            // Drop flushes again, persisting both.
+        }
+        let cache = MetadataCache::open(dir.path());
+        assert_eq!(cache.get("k1"), Some(serde_json::json!("flushed")));
+        assert_eq!(cache.get("k2"), Some(serde_json::json!("unflushed")));
+    }
 }

@@ -386,3 +386,112 @@ fn is_rejected_char(ch: char) -> bool {
 pub(super) fn now_unix_seconds() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_components_valid_path() {
+        let components = vec!["normal".to_string(), "file".to_string()];
+        let result = validate_components(&components).unwrap();
+        assert_eq!(result, vec!["normal".to_string(), "file".to_string()]);
+    }
+
+    #[test]
+    fn validate_components_empty_component() {
+        let components = vec!["".to_string()];
+        let err = validate_components(&components).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn validate_components_dot_component() {
+        let components = vec![".".to_string()];
+        let err = validate_components(&components).unwrap_err();
+        assert!(err.to_string().contains("must not be '.' or '..'"));
+    }
+
+    #[test]
+    fn validate_components_dotdot_component() {
+        let components = vec!["..".to_string()];
+        let err = validate_components(&components).unwrap_err();
+        assert!(err.to_string().contains("must not be '.' or '..'"));
+    }
+
+    #[test]
+    fn validate_components_reserved_less_than() {
+        let components = vec!["a<b".to_string()];
+        let err = validate_components(&components).unwrap_err();
+        assert!(err.to_string().contains("forbidden characters"));
+    }
+
+    #[test]
+    fn validate_components_reserved_question() {
+        let components = vec!["a?b".to_string()];
+        let err = validate_components(&components).unwrap_err();
+        assert!(err.to_string().contains("forbidden characters"));
+    }
+
+    #[test]
+    fn validate_components_nfc_fails_nfd_check() {
+        // "café" in NFC (\u{00e9}) is not NFD-normalized.
+        // NFD form is "cafe\u{0301}" (e + combining acute accent).
+        let components = vec!["caf\u{00e9}".to_string()];
+        let err = validate_components(&components).unwrap_err();
+        assert!(err.to_string().contains("not NFD-normalized"));
+    }
+
+    #[test]
+    fn sanitize_path_component_replaces_reserved() {
+        let replacements = BTreeMap::from([('<', '_'), ('>', '_')]);
+        let result = sanitize_path_component("a<b>c", &replacements);
+        assert_eq!(result, "a_b_c");
+    }
+
+    #[test]
+    fn sanitize_path_component_passes_through_normal() {
+        let result = sanitize_path_component("hello", &BTreeMap::new());
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn sanitize_and_validate_components_disabled() {
+        let components = vec!["a<b".to_string()];
+        let err = sanitize_and_validate_components(
+            &components,
+            &SanitizeNamesConfig::Disabled,
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("forbidden characters"));
+    }
+
+    #[test]
+    fn sanitize_and_validate_components_enabled() {
+        let components = vec!["a<b".to_string()];
+        let replacements = BTreeMap::from([('<', '_')]);
+        let result = sanitize_and_validate_components(
+            &components,
+            &SanitizeNamesConfig::Enabled,
+            &replacements,
+        )
+        .unwrap();
+        assert_eq!(result, vec!["a_b".to_string()]);
+    }
+
+    #[test]
+    fn check_nfd_source_passes_nfd() {
+        // "e\u{0301}" is NFD-normalized (e + combining acute accent).
+        let components = vec!["e\u{0301}normal".to_string()];
+        let result = check_nfd_source(&components);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_nfd_source_rejects_nfc() {
+        let components = vec!["caf\u{00e9}".to_string()];
+        let err = check_nfd_source(&components).unwrap_err();
+        assert!(err.to_string().contains("must be NFD-normalized"));
+    }
+}
