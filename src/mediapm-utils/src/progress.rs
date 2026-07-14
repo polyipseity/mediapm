@@ -227,24 +227,24 @@ mod inner {
     }
 
     const CHILD_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>20.20} {wide_bar:.yellow/dim} {msg:<25.50}";
+        "{spinner:.green} {prefix:>25.25} {wide_bar:.yellow/dim} {msg:<30.60}";
 
     const OVERALL_BAR_TEMPLATE: &str =
-        "{spinner:.green} {prefix:>20.20} {wide_bar:.magenta/dim} {msg:<25.50}";
+        "{spinner:.green} {prefix:>25.25} {wide_bar:.magenta/dim} {msg:<30.60}";
 
-    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>20.20} {msg:<8.30}";
+    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>25.25} {msg:<12.40}";
 
-    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>20.20} {msg:<8.30}";
+    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>25.25} {msg:<12.40}";
 
     const DONE_BAR_TEMPLATE: &str =
-        "{spinner:.white/.dim} {prefix:>20.20} {wide_bar:.green/dim} {msg:<25.50}";
+        "{spinner:.white/.dim} {prefix:>25.25} {wide_bar:.green/dim} {msg:<30.60}";
 
-    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.white/.dim} {prefix:>20.20} {msg:<8.30}";
+    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.white/.dim} {prefix:>25.25} {msg:<12.40}";
 
     const FAILED_BAR_TEMPLATE: &str =
-        "{spinner:.red} {prefix:>20.20} {wide_bar:.red/dim} {msg:<25.50}";
+        "{spinner:.red} {prefix:>25.25} {wide_bar:.red/dim} {msg:<30.60}";
 
-    const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>20.20} {msg:<8.30}";
+    const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>25.25} {msg:<12.40}";
 
     /// Maximum number of pre-allocated slot bars (safety cap).
     const MAX_SLOTS: usize = 200;
