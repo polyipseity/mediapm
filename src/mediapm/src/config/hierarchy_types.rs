@@ -1132,3 +1132,83 @@ mod tests {
         );
     }
 }
+
+// ── Property-based tests (proptest) ───────────────────────────────
+
+#[cfg(feature = "proptest")]
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::BTreeSet;
+
+    proptest! {
+        /// Every resolved variant must be a member of the available variants set.
+        #[test]
+        fn result_is_subset_of_available_variants(
+            available in proptest::collection::btree_set("[a-z]+", 1..10),
+            selectors in proptest::collection::vec("[a-z]+", 0..5),
+        ) {
+            let result = expand_variant_selectors(&selectors, &available);
+            if let Ok(resolved) = result {
+                for variant in &resolved {
+                    prop_assert!(available.contains(variant),
+                        "variant '{variant}' not in available set");
+                }
+            }
+        }
+
+        /// The result must never contain the same variant twice.
+        #[test]
+        fn result_has_no_duplicates(
+            available in proptest::collection::btree_set("[a-z]+", 1..10),
+            selectors in proptest::collection::vec("[a-z]+", 0..5),
+        ) {
+            let result = expand_variant_selectors(&selectors, &available);
+            if let Ok(resolved) = result {
+                let mut seen = BTreeSet::new();
+                for variant in &resolved {
+                    prop_assert!(seen.insert(variant.clone()),
+                        "duplicate variant '{variant}'");
+                }
+            }
+        }
+
+        /// An empty selector string always produces an error.
+        #[test]
+        fn error_on_empty_selector(
+            available in proptest::collection::btree_set("[a-z]+", 1..5),
+            non_empty_selectors in proptest::collection::vec("[a-z]+", 0..3),
+        ) {
+            let mut selectors = non_empty_selectors;
+            selectors.push(String::new());
+            let result = expand_variant_selectors(&selectors, &available);
+            prop_assert!(result.is_err(), "expected error for empty selector");
+        }
+
+        /// Same inputs always produce the same output (determinism).
+        #[test]
+        fn deterministic_results(
+            available in proptest::collection::btree_set("[a-z]+", 1..10),
+            selectors in proptest::collection::vec("[a-z]+", 0..5),
+        ) {
+            let result1 = expand_variant_selectors(&selectors, &available);
+            let result2 = expand_variant_selectors(&selectors, &available);
+            prop_assert_eq!(result1, result2, "determinism violation");
+        }
+
+        /// When `default` is not available and selectors reference unknown
+        /// variants, the result is always an error.
+        #[test]
+        fn result_respects_available_variants_when_no_default(
+            available in proptest::collection::btree_set("[a-m][a-z]{1,5}", 1..5)
+                .prop_filter("available must not contain 'default'", |s| !s.contains("default")),
+            selectors in proptest::collection::vec("[n-z][a-z]{1,5}", 1..5),
+        ) {
+            // Guarantee: selector chars [n-z] cannot match available chars [a-m].
+            let result = expand_variant_selectors(&selectors, &available);
+            prop_assert!(result.is_err(),
+                "expected error when no default available and selectors reference unknown variants");
+        }
+    }
+}

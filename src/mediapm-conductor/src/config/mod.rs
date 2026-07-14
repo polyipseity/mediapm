@@ -540,6 +540,34 @@ mod tests {
             prop_assert_eq!(policy, back,
                 "OutputPolicy serde roundtrip failed: {:?} -> {:?} -> {:?}", policy, json, back);
         }
+
+        /// `SaveMode` conversion to/from `SaveModeLatest` is lossless.
+        #[test]
+        fn save_mode_conversion_roundtrip(mode: SaveMode) {
+            let latest: super::versions::v_latest::SaveModeLatest = match mode {
+                SaveMode::True => super::versions::v_latest::SaveModeLatest::True,
+                SaveMode::False => super::versions::v_latest::SaveModeLatest::False,
+                SaveMode::Full => super::versions::v_latest::SaveModeLatest::Full,
+            };
+            let back = match latest {
+                super::versions::v_latest::SaveModeLatest::True => SaveMode::True,
+                super::versions::v_latest::SaveModeLatest::False => SaveMode::False,
+                super::versions::v_latest::SaveModeLatest::Full => SaveMode::Full,
+            };
+            prop_assert_eq!(mode, back,
+                "SaveMode roundtrip failed for mode={:?}", mode);
+        }
+
+        /// `OutputCaptureSpec` round-trips through serde_json without data loss.
+        #[test]
+        fn output_capture_spec_serde_roundtrip(spec: OutputCaptureSpec) {
+            let json = serde_json::to_string(&spec).expect("serialize");
+            let back: OutputCaptureSpec = serde_json::from_str(&json).expect("deserialize");
+            let spec_debug = format!("{spec:?}");
+            let back_debug = format!("{back:?}");
+            prop_assert_eq!(spec, back,
+                "OutputCaptureSpec serde roundtrip failed: {} -> {} -> {}", spec_debug, json, back_debug);
+        }
     }
 
     impl proptest::arbitrary::Arbitrary for OutputPolicy {
@@ -549,6 +577,30 @@ mod tests {
         fn arbitrary_with(_: ()) -> Self::Strategy {
             use proptest::strategy::Strategy;
             prop_oneof![any::<bool>().prop_map(OutputPolicy::Bool), Just(OutputPolicy::Full),]
+                .boxed()
+        }
+    }
+
+    impl proptest::arbitrary::Arbitrary for SaveMode {
+        type Parameters = ();
+        type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+        fn arbitrary_with(_: ()) -> Self::Strategy {
+            use proptest::strategy::Strategy;
+            prop_oneof![Just(SaveMode::True), Just(SaveMode::False), Just(SaveMode::Full),].boxed()
+        }
+    }
+
+    impl proptest::arbitrary::Arbitrary for OutputCaptureSpec {
+        type Parameters = ();
+        type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+        fn arbitrary_with(_: ()) -> Self::Strategy {
+            use proptest::strategy::Strategy;
+            (any::<String>(), any::<String>(), any::<SaveMode>(), any::<bool>(), any::<bool>())
+                .prop_map(|(name, capture, save, allow_empty, include_topmost_folder)| {
+                    OutputCaptureSpec { name, capture, save, allow_empty, include_topmost_folder }
+                })
                 .boxed()
         }
     }
