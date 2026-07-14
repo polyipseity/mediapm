@@ -203,7 +203,7 @@ Status markers: 🟢 = covered by test(s), 🟡 = partially covered, 🔴 = no t
 
 | ID | Spec Item | Status | Test File(s) |
 |----|-----------|--------|-------------|
-| COND-P.1 | Per-tool progress uses 5 epoch bars (fetch-items, N×fetch-bytes, postprocess) | 🟢 | `provision.rs` compile/type-check (early-return tests) |
+| COND-P.1 | Per-tool progress uses 3 phase bars (resolve, fetch, postprocess) | 🟢 | `provision.rs` compile/type-check + 159 lib tests pass |
 | COND-P.2 | Each epoch bar position is monotonic (no regression) | 🟡 | Architectural fix by design; verified by COND-P.3 |
 | COND-P.3 | Rate computation tolerates non-monotonic position (`saturating_sub`) | 🟢 | `progress.rs` `rate_computation_handles_non_monotonic_position` |
 | COND-P.4 | Poisoned mutex in ProgressGroup methods doesn't abort | 🟢 | Code review (trivial idiom `unwrap_or_else(\|e\| e.into_inner())`) |
