@@ -198,6 +198,15 @@ Status markers: 🟢 = covered by test(s), 🟡 = partially covered, 🔴 = no t
 | COND-K.7 | Background GC waits for gc_initialized | 🟢 | Background loop tests |
 | COND-L.1 | WorkflowStepEvent via UnboundedSender | 🟢 | Progress event tests |
 | COND-L.2 | total_steps computation | 🟢 | Coordinator tests |
+
+## Progress system (mediapm-utils + mediapm)
+
+| ID | Spec Item | Status | Test File(s) |
+|----|-----------|--------|-------------|
+| COND-P.1 | Per-tool progress uses 5 epoch bars (fetch-items, N×fetch-bytes, postprocess) | 🟢 | `provision.rs` compile/type-check (early-return tests) |
+| COND-P.2 | Each epoch bar position is monotonic (no regression) | 🟡 | Architectural fix by design; verified by COND-P.3 |
+| COND-P.3 | Rate computation tolerates non-monotonic position (`saturating_sub`) | 🟢 | `progress.rs` `rate_computation_handles_non_monotonic_position` |
+| COND-P.4 | Poisoned mutex in ProgressGroup methods doesn't abort | 🟢 | Code review (trivial idiom `unwrap_or_else(\|e\| e.into_inner())`) |
 | COND-L.3 | Completed steps local counter | 🟢 | Coordinator tests |
 | COND-L.4 | Per-worker Vec bounds | 🟢 | Renderer tests |
 | COND-L.5 | 75 ms settle delay | 🟡 | Implicit in progress bar tests |
