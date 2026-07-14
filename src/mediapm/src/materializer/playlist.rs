@@ -228,3 +228,90 @@ fn render_asx(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     output.push_str("</asx>\n");
     output.into_bytes()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn single_entry() -> RenderedPlaylistEntry {
+        RenderedPlaylistEntry { id: "track1".to_string(), path: "dir/track1.mp3".to_string() }
+    }
+
+    #[test]
+    fn m3u8_renders() {
+        let entries = &[single_entry()];
+        let output = generate_playlist_bytes(entries, PlaylistFormat::M3u8);
+        let s = String::from_utf8(output).unwrap();
+        assert!(s.contains("#EXTM3U"));
+        assert!(s.contains("#EXTINF:-1,track1"));
+        assert!(s.contains("dir/track1.mp3"));
+    }
+
+    #[test]
+    fn pls_renders() {
+        let entries = &[single_entry()];
+        let output = generate_playlist_bytes(entries, PlaylistFormat::Pls);
+        let s = String::from_utf8(output).unwrap();
+        assert!(s.contains("[playlist]"));
+        assert!(s.contains("NumberOfEntries=1"));
+        assert!(s.contains("File1=dir/track1.mp3"));
+        assert!(s.contains("Title1=track1"));
+        assert!(s.contains("Version=2"));
+    }
+
+    #[test]
+    fn xspf_renders() {
+        let entries = &[single_entry()];
+        let output = generate_playlist_bytes(entries, PlaylistFormat::Xspf);
+        let s = String::from_utf8(output).unwrap();
+        assert!(s.contains("<?xml"));
+        assert!(s.contains("<playlist"));
+        assert!(s.contains("<trackList>"));
+        assert!(s.contains("<location>dir/track1.mp3</location>"));
+        assert!(s.contains("<title>track1</title>"));
+    }
+
+    #[test]
+    fn wpl_renders() {
+        let entries = &[single_entry()];
+        let output = generate_playlist_bytes(entries, PlaylistFormat::Wpl);
+        let s = String::from_utf8(output).unwrap();
+        assert!(s.contains("<?wpl"));
+        assert!(s.contains("<smil>"));
+        assert!(s.contains("<seq>"));
+        assert!(s.contains("<media src=\"dir/track1.mp3\"/>"));
+    }
+
+    #[test]
+    fn asx_renders() {
+        let entries = &[single_entry()];
+        let output = generate_playlist_bytes(entries, PlaylistFormat::Asx);
+        let s = String::from_utf8(output).unwrap();
+        assert!(s.contains("<asx"));
+        assert!(s.contains("<entry>"));
+        assert!(s.contains("<ref href=\"dir/track1.mp3\"/>"));
+    }
+
+    #[test]
+    fn empty_entries() {
+        let output = generate_playlist_bytes(&[], PlaylistFormat::M3u8);
+        let s = String::from_utf8(output).unwrap();
+        assert!(s.contains("#EXTM3U"));
+        assert!(!s.contains("#EXTINF"));
+    }
+
+    #[test]
+    fn multiple_entries() {
+        let entries = &[
+            RenderedPlaylistEntry { id: "a".to_string(), path: "p1.mp3".to_string() },
+            RenderedPlaylistEntry { id: "b".to_string(), path: "p2.mp3".to_string() },
+            RenderedPlaylistEntry { id: "c".to_string(), path: "p3.mp3".to_string() },
+        ];
+        let output = generate_playlist_bytes(entries, PlaylistFormat::Pls);
+        let s = String::from_utf8(output).unwrap();
+        assert!(s.contains("NumberOfEntries=3"));
+        assert!(s.contains("File1=p1.mp3"));
+        assert!(s.contains("File2=p2.mp3"));
+        assert!(s.contains("File3=p3.mp3"));
+    }
+}

@@ -152,3 +152,66 @@ fn apply_entry_rename_rules(path: &Path, rules: &[CompiledFolderRenameRule]) -> 
         None => PathBuf::from(renamed),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::FileOptions;
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(&mut buffer);
+        for (name, data) in entries {
+            zip.start_file::<&str, ()>(*name, FileOptions::default()).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+        buffer.into_inner()
+    }
+
+    #[test]
+    fn extract_empty_zip() {
+        let data = make_zip(&[]);
+        let result = extract_zip_folder_variant_bytes(&data, &[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn extract_single_file() {
+        let data = make_zip(&[("test.txt", b"hello")]);
+        let result = extract_zip_folder_variant_bytes(&data, &[]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, PathBuf::from("test.txt"));
+        assert_eq!(result[0].1, b"hello");
+    }
+
+    #[test]
+    fn extract_nested_files() {
+        let data = make_zip(&[("dir/a.txt", b"aaa"), ("dir/sub/b.txt", b"bbb")]);
+        let result = extract_zip_folder_variant_bytes(&data, &[]).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].0, PathBuf::from("dir/a.txt"));
+        assert_eq!(result[0].1, b"aaa");
+        assert_eq!(result[1].0, PathBuf::from("dir/sub/b.txt"));
+        assert_eq!(result[1].1, b"bbb");
+    }
+
+    #[test]
+    fn compile_invalid_regex() {
+        let rules = &[HierarchyFolderRenameRule {
+            pattern: "[invalid".to_string(),
+            replacement: "x".to_string(),
+        }];
+        let err = compile_hierarchy_folder_rename_rules(rules).unwrap_err();
+        assert!(err.to_string().contains("invalid folder rename pattern"));
+    }
+
+    #[test]
+    fn non_zip_returns_error() {
+        let data = b"this is not a zip file";
+        let result = extract_zip_folder_variant_bytes(data, &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed to open ZIP archive"));
+    }
+}

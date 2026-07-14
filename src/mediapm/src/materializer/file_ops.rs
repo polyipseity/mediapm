@@ -241,3 +241,54 @@ pub(super) async fn materialize_file_from_cas_with_order(
         failures.join("; ")
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use mediapm_cas::CasApi;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn materialize_with_copy_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();
+        let content = b"hello materializer";
+        let hash = cas.put(Bytes::from_static(content)).await.unwrap();
+
+        let dest = dir.path().join("output.txt");
+        let mut notices = Vec::new();
+        materialize_file_from_cas_with_order(
+            &cas,
+            hash,
+            &dest,
+            "output.txt",
+            &[MaterializationMethod::Copy],
+            &mut notices,
+        )
+        .await
+        .unwrap();
+
+        assert!(dest.exists());
+        let actual = tokio::fs::read_to_string(&dest).await.unwrap();
+        assert_eq!(actual, "hello materializer");
+        assert!(notices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn attempt_materialization_copy_without_source_works() {
+        let dir = TempDir::new().unwrap();
+        let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();
+        let content = b"direct copy";
+        let hash = cas.put(Bytes::from_static(content)).await.unwrap();
+        let dest = dir.path().join("direct_copy.txt");
+
+        attempt_materialization_method(MaterializationMethod::Copy, &cas, hash, None, &dest)
+            .await
+            .unwrap();
+
+        assert!(dest.exists());
+        let actual = tokio::fs::read_to_string(&dest).await.unwrap();
+        assert_eq!(actual, "direct copy");
+    }
+}

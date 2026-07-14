@@ -390,6 +390,7 @@ pub(super) fn now_unix_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn validate_components_valid_path() {
@@ -493,5 +494,74 @@ mod tests {
         let components = vec!["caf\u{00e9}".to_string()];
         let err = check_nfd_source(&components).unwrap_err();
         assert!(err.to_string().contains("must be NFD-normalized"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Read-only marking and removal
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn readonly_file() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, b"data").unwrap();
+
+        ensure_managed_path_readonly(&file_path).unwrap();
+
+        assert!(file_path.metadata().unwrap().permissions().readonly());
+    }
+
+    #[test]
+    fn readonly_directory() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("subdir");
+        std::fs::create_dir(&sub).unwrap();
+        let child = sub.join("child.txt");
+        std::fs::write(&child, b"child").unwrap();
+
+        ensure_managed_path_readonly(&sub).unwrap();
+
+        assert!(sub.metadata().unwrap().permissions().readonly());
+        assert!(child.metadata().unwrap().permissions().readonly());
+    }
+
+    #[test]
+    fn remove_file() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("toremove.txt");
+        std::fs::write(&file_path, b"data").unwrap();
+
+        remove_path(&file_path).unwrap();
+
+        assert!(!file_path.exists());
+    }
+
+    #[test]
+    fn remove_dir() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("subdir");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.txt"), b"a").unwrap();
+        std::fs::write(sub.join("b.txt"), b"b").unwrap();
+
+        remove_path(&sub).unwrap();
+
+        assert!(!sub.exists());
+    }
+
+    #[test]
+    fn remove_readonly_file() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("readonly_remove.txt");
+        std::fs::write(&file_path, b"data").unwrap();
+
+        // Mark as readonly first.
+        let mut perms = file_path.metadata().unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&file_path, perms).unwrap();
+
+        // Should still be removable.
+        remove_path(&file_path).unwrap();
+        assert!(!file_path.exists());
     }
 }
