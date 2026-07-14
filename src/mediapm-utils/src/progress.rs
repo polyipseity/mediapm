@@ -1459,6 +1459,8 @@ pub trait ProgressBarApi: Send + Sync {
     fn set_position(&self, pos: u64);
     /// Change the total mid-flight for dynamic workloads.
     fn set_total(&self, total: u64);
+    /// Set the prefix shown before the bar.
+    fn set_prefix(&self, prefix: &str);
 }
 
 #[cfg(feature = "progress")]
@@ -1486,6 +1488,9 @@ impl ProgressBarApi for TrackedHandle {
     }
     fn set_total(&self, total: u64) {
         TrackedHandle::set_total(self, total);
+    }
+    fn set_prefix(&self, prefix: &str) {
+        TrackedHandle::set_prefix(self, prefix);
     }
 }
 
@@ -1796,6 +1801,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     }
     fn set_total(&self, total: u64) {
         recording::RecordingTrackedHandle::set_total(self, total);
+    }
+    fn set_prefix(&self, prefix: &str) {
+        recording::RecordingTrackedHandle::set_prefix(self, prefix);
     }
 }
 
