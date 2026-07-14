@@ -85,12 +85,96 @@ pub type ProviderProgressCallback = Arc<dyn Fn(ProviderProgressSnapshot) + Send 
 mod inner {
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+    use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike};
+
+    // ---- BufferedTerm: suppress terminal writes from property setters ----
+
+    /// Wraps [`console::Term`] to suppress terminal writes when
+    /// `buffer_enabled` is `true`.  Used by [`ProgressRenderer`] to ensure
+    /// the 50 ms daemon ticker is the sole draw authority — property setters
+    /// (called from [`sync_snapshot_to_bar`]) never write to the terminal
+    /// directly.
+    ///
+    /// When buffering is active, all write/clear/move operations are no-ops.
+    /// [`width`](Self::width) and [`height`](Self::height) always delegate to
+    /// the inner terminal (needed for correct layout in
+    /// `draw_to_term`).
+    #[derive(Debug)]
+    pub(crate) struct BufferedTerm {
+        inner: console::Term,
+        buffer_enabled: Arc<AtomicBool>,
+    }
+
+    impl TermLike for BufferedTerm {
+        fn width(&self) -> u16 {
+            self.inner.width()
+        }
+
+        fn height(&self) -> u16 {
+            self.inner.height()
+        }
+
+        fn write_line(&self, s: &str) -> std::io::Result<()> {
+            if self.buffer_enabled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.inner.write_line(s)
+        }
+
+        fn write_str(&self, s: &str) -> std::io::Result<()> {
+            if self.buffer_enabled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.inner.write_str(s)
+        }
+
+        fn clear_line(&self) -> std::io::Result<()> {
+            if self.buffer_enabled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.inner.clear_line()
+        }
+
+        fn flush(&self) -> std::io::Result<()> {
+            if self.buffer_enabled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.inner.flush()
+        }
+
+        fn move_cursor_up(&self, n: usize) -> std::io::Result<()> {
+            if self.buffer_enabled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.inner.move_cursor_up(n)
+        }
+
+        fn move_cursor_down(&self, n: usize) -> std::io::Result<()> {
+            if self.buffer_enabled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.inner.move_cursor_down(n)
+        }
+
+        fn move_cursor_left(&self, n: usize) -> std::io::Result<()> {
+            if self.buffer_enabled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.inner.move_cursor_left(n)
+        }
+
+        fn move_cursor_right(&self, n: usize) -> std::io::Result<()> {
+            if self.buffer_enabled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.inner.move_cursor_right(n)
+        }
+    }
 
     // ---- dimension source (injectable for tests) -------------------------
 
@@ -674,6 +758,10 @@ mod inner {
         finalized: Cell<bool>,
         /// EMA-smoothed rate tracking, one entry per slot.
         slots_timing: Vec<SlotTiming>,
+        /// When `Some`, property-setter terminal writes are suppressed
+        /// during [`tick`](Self::tick).  `None` when the user provided
+        /// their own [`MultiProgress`] (tests via `InMemoryTerm`).
+        buffer_enabled: Option<Arc<AtomicBool>>,
     }
 
     /// EMA-smoothed rate tracking for a render slot.
@@ -721,6 +809,7 @@ mod inner {
             mp: MultiProgress,
             capacity: usize,
             dim_source: Arc<dyn DimensionSource>,
+            buffer_enabled: Option<Arc<AtomicBool>>,
         ) -> Self {
             let mut slots = Vec::with_capacity(capacity);
             for _ in 0..capacity {
@@ -754,6 +843,7 @@ mod inner {
                 orphaned_states: RefCell::new(VecDeque::new()),
                 finalized: Cell::new(false),
                 slots_timing,
+                buffer_enabled,
             }
         }
 
@@ -765,6 +855,7 @@ mod inner {
             total: u64,
             label: &str,
             dim_source: Arc<dyn DimensionSource>,
+            buffer_enabled: Option<Arc<AtomicBool>>,
         ) -> (Self, Arc<SharedState>) {
             let mut slots = Vec::with_capacity(capacity);
             for _ in 0..capacity.saturating_sub(1) {
@@ -803,6 +894,7 @@ mod inner {
                     orphaned_states: RefCell::new(VecDeque::new()),
                     finalized: Cell::new(false),
                     slots_timing,
+                    buffer_enabled,
                 },
                 overall_state,
             )
@@ -914,7 +1006,20 @@ mod inner {
         /// Defensive sync: refresh all render slots from their tracked sources.
         ///
         /// Includes resize reactivity and full style re-application.
+        ///
+        /// When [`buffer_enabled`](Self::buffer_enabled) is `Some` (production),
+        /// property-setter terminal writes are suppressed during the update
+        /// loop, then exactly one draw is released at the end.  This ensures
+        /// the 50 ms daemon ticker is the sole draw authority and eliminates
+        /// flicker from burst writes.
         pub fn tick(&mut self) {
+            // Step 1: Enable buffering — all property-setter draws become
+            // no-ops through BufferedTerm.
+            if let Some(ref flag) = self.buffer_enabled {
+                flag.store(true, Ordering::Release);
+            }
+
+            // Step 2: Existing update logic (unchanged).
             self.maybe_adjust_for_resize();
             for (i, slot) in self.slots.iter().enumerate() {
                 if let Some(ref source) = *slot.source.borrow() {
@@ -968,6 +1073,20 @@ mod inner {
                         slot.bar.set_prefix("");
                     } else {
                         self.finish_slot(i, snap.status);
+                    }
+                }
+            }
+
+            // Step 3: Disable buffering and draw ONCE.
+            if let Some(ref flag) = self.buffer_enabled {
+                flag.store(false, Ordering::Release);
+                // Trigger one real draw: pick the first bound bar and tick
+                // it.  This single draw writes ALL bars because
+                // MultiState::draw() collects all members' draw states.
+                for slot in &self.slots {
+                    if slot.source.borrow().is_some() {
+                        slot.bar.tick();
+                        break;
                     }
                 }
             }
@@ -1265,8 +1384,21 @@ mod inner {
                 let (rows, _) = self.dim_source.dimensions();
                 (rows as usize).clamp(1, MAX_SLOTS)
             });
-            let mp = self.mp.unwrap_or_default();
-            let mut renderer = ProgressRenderer::from_mp(mp, cap, self.dim_source);
+            let (mp, buffer_enabled) = match self.mp {
+                Some(mp) => (mp, None),
+                None => {
+                    let flag = Arc::new(AtomicBool::new(false));
+                    let term = BufferedTerm {
+                        inner: console::Term::stderr(),
+                        buffer_enabled: flag.clone(),
+                    };
+                    let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(
+                        Box::new(term),
+                    ));
+                    (mp, Some(flag))
+                }
+            };
+            let mut renderer = ProgressRenderer::from_mp(mp, cap, self.dim_source, buffer_enabled);
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Some(Arc::new(Mutex::new(renderer)));
             let ticker = Some(ProgressGroup::spawn_ticker(renderer.as_ref().unwrap()));
@@ -1287,9 +1419,28 @@ mod inner {
                 let (rows, _) = self.dim_source.dimensions();
                 (rows as usize).clamp(1, MAX_SLOTS)
             });
-            let mp = self.mp.unwrap_or_default();
-            let (mut renderer, state) =
-                ProgressRenderer::from_mp_with_overall(mp, cap, total, &label, self.dim_source);
+            let (mp, buffer_enabled) = match self.mp {
+                Some(mp) => (mp, None),
+                None => {
+                    let flag = Arc::new(AtomicBool::new(false));
+                    let term = BufferedTerm {
+                        inner: console::Term::stderr(),
+                        buffer_enabled: flag.clone(),
+                    };
+                    let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(
+                        Box::new(term),
+                    ));
+                    (mp, Some(flag))
+                }
+            };
+            let (mut renderer, state) = ProgressRenderer::from_mp_with_overall(
+                mp,
+                cap,
+                total,
+                &label,
+                self.dim_source,
+                buffer_enabled,
+            );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Arc::new(Mutex::new(renderer));
             let ticker = Some(ProgressGroup::spawn_ticker(&renderer));
