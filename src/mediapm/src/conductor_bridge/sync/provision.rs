@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use mediapm_cas::CasApi;
 use mediapm_conductor::tools::provider::{fetch_tool_sources, postprocess_tool_sources};
-use mediapm_utils::progress::{ProgressBarApi, ProviderPhase, ProviderProgressCallback};
+use mediapm_utils::progress::{ProviderPhase, ProviderProgressCallback};
 
 use crate::error::MediaPmError;
 use crate::output::ProgressGroupApi;

@@ -207,6 +207,12 @@ Status markers: 🟢 = covered by test(s), 🟡 = partially covered, 🔴 = no t
 | COND-P.2 | Each epoch bar position is monotonic (no regression) | 🟡 | Architectural fix by design; verified by COND-P.3 |
 | COND-P.3 | Rate computation tolerates non-monotonic position (`saturating_sub`) | 🟢 | `progress.rs` `rate_computation_handles_non_monotonic_position` |
 | COND-P.4 | Poisoned mutex in ProgressGroup methods doesn't abort | 🟢 | Code review (trivial idiom `unwrap_or_else(\|e\| e.into_inner())`) |
+| COND-P.5 | Phase 2 (Fetch) reports aggregate byte progress — `bytes.0` accumulates across all sources, `bytes.1` is best-effort total | 🟡 | Provider `fetch_tool_sources` callback verification |
+| COND-P.6 | Phase 3 (Postprocess) reports aggregate byte progress — all sizes known, `bytes.1` is exact total | 🟡 | Provider `postprocess_tool_sources` callback verification |
+| COND-P.7 | Per-chunk streaming callbacks report aggregate bytes (completed + partial) | 🟡 | Provider `fetch_bytes_from_candidates` callback verification |
+| COND-P.8 | Bridge routes bytes to bar position/total and items to `set_prefix` for fetch and postprocess bars | 🟢 | Compilation + existing tests |
+| COND-P.9 | `ProgressBarApi` exposes `set_prefix` for dependency-injection compatibility | 🟢 | Trait impl + recording handle |
+| COND-P.10 | `bytes` is always aggregate — never per-source or per-entry; this is an architectural invariant ensuring minimal coupling | 🟢 | Documented in provider AGENTS.md |
 | COND-L.3 | Completed steps local counter | 🟢 | Coordinator tests |
 | COND-L.4 | Per-worker Vec bounds | 🟢 | Renderer tests |
 | COND-L.5 | 75 ms settle delay | 🟡 | Implicit in progress bar tests |

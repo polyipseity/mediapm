@@ -27,3 +27,4 @@ Crate: `mediapm-utils`
 - `DownloadProgressSnapshot` and `ProgressCallback` are **always** available (no feature gate).
 - The conductor *library* must NOT depend on this feature — it uses `Fn` callbacks instead.
 - The conductor *CLI binary* and the `mediapm` crate enable this feature.
+- **SI prefixes are 1000-based**: `format_count` and `format_rate` use decimal SI prefixes (`k` = 1,000, `M` = 1,000,000, `G` = 1,000,000,000), not binary (`Ki` = 1,024). Byte counts and transfer rates follow the same convention.
