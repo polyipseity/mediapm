@@ -552,4 +552,64 @@ mod tests {
                 .boxed()
         }
     }
+
+    // ── OutputCaptureSpec serde ───────────────────────────────────────────
+
+    #[test]
+    fn output_capture_spec_full_roundtrip() {
+        let spec = OutputCaptureSpec {
+            name: "output1".to_string(),
+            capture: "stdout".to_string(),
+            save: SaveMode::Full,
+            allow_empty: true,
+            include_topmost_folder: false,
+        };
+        let json = serde_json::to_string(&spec).expect("serialize");
+        let back: OutputCaptureSpec = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(spec, back);
+    }
+
+    #[test]
+    fn output_capture_spec_defaults_roundtrip() {
+        let spec = OutputCaptureSpec::default();
+        let json = serde_json::to_string(&spec).expect("serialize");
+        let back: OutputCaptureSpec = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(spec, back);
+    }
+
+    #[test]
+    fn output_capture_spec_default_save_skipped_in_json() {
+        let spec = OutputCaptureSpec {
+            name: "out".to_string(),
+            capture: "stdout".to_string(),
+            save: SaveMode::True,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert!(!json.contains("\"save\""), "default save=True should be skipped: {json}");
+    }
+
+    #[test]
+    fn output_capture_spec_false_save_present_in_json() {
+        let spec = OutputCaptureSpec {
+            name: "out".to_string(),
+            capture: "stdout".to_string(),
+            save: SaveMode::False,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert!(json.contains("\"save\""), "save=False should be present: {json}");
+    }
+
+    #[test]
+    fn output_capture_spec_full_save_present_in_json() {
+        let spec = OutputCaptureSpec {
+            name: "out".to_string(),
+            capture: "stdout".to_string(),
+            save: SaveMode::Full,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert!(json.contains("\"save\""), "save=Full should be present: {json}");
+    }
 }

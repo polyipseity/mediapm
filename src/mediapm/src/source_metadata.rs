@@ -341,4 +341,93 @@ mod tests {
         assert_eq!(resolved.description, "Resolved description.");
         assert!(resolved.warning.is_none());
     }
+
+    // ── Online source metadata edge cases ─────────────────────────────────
+
+    #[test]
+    fn empty_json_object_returns_defaults() {
+        let input = json!({});
+        let metadata = parse_online_source_metadata(&input);
+        assert_eq!(metadata.title, "Untitled");
+        assert_eq!(metadata.artist, "Unknown");
+        assert_eq!(metadata.description, "");
+    }
+
+    #[test]
+    fn extra_fields_ignored() {
+        let input = json!({
+            "title": "Video",
+            "uploader": "Channel",
+            "extra_field": "should be ignored",
+            "another_extra": 42
+        });
+        let metadata = parse_online_source_metadata(&input);
+        assert_eq!(metadata.title, "Video");
+        assert_eq!(metadata.artist, "Channel");
+        assert_eq!(metadata.description, "");
+    }
+
+    #[test]
+    fn nested_description_extracted() {
+        // Live streams may include nested objects; the top-level `description`
+        // field is still extracted correctly.
+        let input = json!({
+            "title": "Live Stream",
+            "uploader": "Channel",
+            "description": "A description for a live stream",
+            "live_status": "is_live",
+            "concurrent_view_count": 1234
+        });
+        let metadata = parse_online_source_metadata(&input);
+        assert_eq!(metadata.description, "A description for a live stream");
+    }
+
+    #[test]
+    fn both_fulltitle_and_title_prefers_title() {
+        let input = json!({
+            "title": "Actual Title",
+            "fulltitle": "Full Title"
+        });
+        let metadata = parse_online_source_metadata(&input);
+        assert_eq!(metadata.title, "Actual Title");
+    }
+
+    // ── Local source metadata edge cases ──────────────────────────────────
+
+    #[test]
+    fn ffprobe_json_without_format_tags_returns_defaults() {
+        let input = json!({
+            "format": {
+                "filename": "/path/to/file.mp3"
+            }
+        });
+        let metadata = parse_local_source_metadata_from_ffprobe_json(&input);
+        assert_eq!(metadata.title, "/path/to/file.mp3");
+        assert_eq!(metadata.artist, "Unknown");
+    }
+
+    #[test]
+    fn ffprobe_json_missing_format_field_returns_defaults() {
+        let input = json!({
+            "streams": []
+        });
+        let metadata = parse_local_source_metadata_from_ffprobe_json(&input);
+        assert_eq!(metadata.title, "Untitled");
+        assert_eq!(metadata.artist, "Unknown");
+    }
+
+    // ── resolve_online_source_metadata_for_add edge cases ─────────────────
+
+    #[test]
+    fn resolve_with_warning_passes_through() {
+        let input = json!({
+            "title": "Video",
+            "uploader": "Channel",
+            "description": "Desc"
+        });
+        let resolved =
+            resolve_online_source_metadata_for_add(&input, Some("warning message".to_string()));
+        assert_eq!(resolved.title, "Video");
+        assert_eq!(resolved.warning, Some("warning message".to_string()));
+    }
 }

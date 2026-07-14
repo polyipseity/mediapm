@@ -412,4 +412,64 @@ mod tests {
         let mode = fs::metadata(&file_path).expect("metadata after").permissions().mode();
         assert_ne!(mode & 0o100, 0, "owner execute bit should be set");
     }
+
+    // ── classify_content_map_key edge cases ──────────────────────────────
+
+    #[test]
+    fn unicode_paths_are_accepted() {
+        match classify_content_map_key("résumé.txt").expect("unicode file") {
+            ContentMapKeyKind::File { relative_path } => {
+                assert_eq!(relative_path, PathBuf::from("résumé.txt"));
+            }
+            ContentMapKeyKind::Directory { .. } => panic!("expected File"),
+        }
+    }
+
+    #[test]
+    fn deeply_nested_directory_key() {
+        match classify_content_map_key("a/b/c/d/e/f/").expect("deeply nested") {
+            ContentMapKeyKind::Directory { relative_dir } => {
+                assert_eq!(relative_dir, PathBuf::from("a/b/c/d/e/f"));
+            }
+            ContentMapKeyKind::File { .. } => panic!("expected Directory"),
+        }
+    }
+
+    #[test]
+    fn path_with_dot_components() {
+        // CurDir components (`.`) are stripped during normalization.
+        match classify_content_map_key("./foo/./bar").expect("dot components") {
+            ContentMapKeyKind::File { relative_path } => {
+                assert_eq!(relative_path, PathBuf::from("foo/bar"));
+            }
+            ContentMapKeyKind::Directory { .. } => panic!("expected File"),
+        }
+    }
+
+    #[test]
+    fn single_dot_key_is_normalized() {
+        // Bare `.` without trailing separator goes through the file branch,
+        // but normalizes to an empty path and is rejected.
+        let err = classify_content_map_key(".").expect_err("bare dot");
+        assert!(
+            err.to_string().contains("must contain a concrete path component"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn path_with_slash_prefix() {
+        let err = classify_content_map_key("/foo").expect_err("absolute path");
+        assert!(err.to_string().contains("must be relative"));
+    }
+
+    #[test]
+    fn just_filename_no_directory() {
+        match classify_content_map_key("file.txt").expect("just filename") {
+            ContentMapKeyKind::File { relative_path } => {
+                assert_eq!(relative_path, PathBuf::from("file.txt"));
+            }
+            ContentMapKeyKind::Directory { .. } => panic!("expected File"),
+        }
+    }
 }

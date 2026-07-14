@@ -973,4 +973,162 @@ mod tests {
             vec!["a".to_string(), "b".to_string(), "c".to_string()]
         );
     }
+
+    // ── expand_variant_selectors ─────────────────────────────────────────
+
+    #[test]
+    fn literal_selector_matches_exact_variant() {
+        let selectors = vec!["1080p".to_string()];
+        let available: BTreeSet<String> =
+            ["1080p", "720p", "480p"].into_iter().map(String::from).collect();
+        let result = expand_variant_selectors(&selectors, &available).unwrap();
+        assert_eq!(result, vec!["1080p"]);
+    }
+
+    #[test]
+    fn regex_selector_matches_multiple_variants() {
+        let selectors = vec![regex_variant_selector(r"^\d+p$")];
+        let available: BTreeSet<String> =
+            ["1080p", "720p", "480p", "hls"].into_iter().map(String::from).collect();
+        let result = expand_variant_selectors(&selectors, &available).unwrap();
+        // BTreeSet sorts alphabetically: 1080p, 480p, 720p
+        assert_eq!(result, vec!["1080p", "480p", "720p"]);
+    }
+
+    #[test]
+    fn selector_falls_back_to_default_when_no_match() {
+        let selectors = vec!["nonexistent".to_string()];
+        let available: BTreeSet<String> =
+            ["default", "1080p"].into_iter().map(String::from).collect();
+        let result = expand_variant_selectors(&selectors, &available).unwrap();
+        assert_eq!(result, vec!["default"]);
+    }
+
+    #[test]
+    fn deduplicates_results() {
+        // Literal "var_one" matches first; then regex "^var_" also matches
+        // var_one (deduped) plus var_two and var_three.
+        let selectors = vec!["var_one".to_string(), regex_variant_selector(r"^var_")];
+        let available: BTreeSet<String> =
+            ["var_one", "var_two", "var_three"].into_iter().map(String::from).collect();
+        // BTreeSet iterates: var_one (seen), var_three (new), var_two (new)
+        let result = expand_variant_selectors(&selectors, &available).unwrap();
+        assert_eq!(result, vec!["var_one", "var_three", "var_two"]);
+    }
+
+    #[test]
+    fn unknown_literal_selector_without_default_errors() {
+        let selectors = vec!["bogus".to_string()];
+        let available: BTreeSet<String> = ["1080p"].into_iter().map(String::from).collect();
+        let err = expand_variant_selectors(&selectors, &available).unwrap_err();
+        assert!(err.contains("references unknown variant selector 'bogus'"));
+    }
+
+    #[test]
+    fn empty_selector_errors() {
+        let selectors = vec!["".to_string()];
+        let available: BTreeSet<String> = ["1080p"].into_iter().map(String::from).collect();
+        let err = expand_variant_selectors(&selectors, &available).unwrap_err();
+        assert!(err.contains("contains an empty variant selector"));
+    }
+
+    #[test]
+    fn mixed_literal_and_regex_selectors() {
+        let selectors = vec!["720p".to_string(), regex_variant_selector(r"^\d+p$")];
+        let available: BTreeSet<String> =
+            ["1080p", "720p", "480p", "hls"].into_iter().map(String::from).collect();
+        let result = expand_variant_selectors(&selectors, &available).unwrap();
+        // 720p literal matches first, then regex adds 1080p and 480p.
+        assert_eq!(result, vec!["720p", "1080p", "480p"]);
+    }
+
+    #[test]
+    fn selectors_maintain_first_seen_order() {
+        let selectors = vec![regex_variant_selector(r"^(720p|1080p)$"), "720p".to_string()];
+        let available: BTreeSet<String> = ["1080p", "720p"].into_iter().map(String::from).collect();
+        let result = expand_variant_selectors(&selectors, &available).unwrap();
+        // First-seen order: 1080p (BTreeSet alphabetical order), then 720p;
+        // literal 720p is deduped.
+        assert_eq!(result, vec!["1080p", "720p"]);
+    }
+
+    // ── collect_playlist_media_index ──────────────────────────────────────
+
+    fn media_entry(path: &str, hierarchy_id: &str, media_id: &str) -> FlattenedHierarchyEntry {
+        FlattenedHierarchyEntry {
+            path_components: path.split('/').map(String::from).collect(),
+            hierarchy_id: Some(hierarchy_id.to_string()),
+            entry: HierarchyEntry {
+                kind: HierarchyEntryKind::Media,
+                media_id: media_id.to_string(),
+                variants: vec!["hq".to_string()],
+                rename_files: Vec::new(),
+                format: PlaylistFormat::M3u8,
+                ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Inherit,
+            },
+        }
+    }
+
+    fn non_media_entry(path: &str) -> FlattenedHierarchyEntry {
+        FlattenedHierarchyEntry {
+            path_components: path.split('/').map(String::from).collect(),
+            hierarchy_id: None,
+            entry: HierarchyEntry {
+                kind: HierarchyEntryKind::Playlist,
+                media_id: String::new(),
+                variants: Vec::new(),
+                rename_files: Vec::new(),
+                format: PlaylistFormat::M3u8,
+                ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Inherit,
+            },
+        }
+    }
+
+    #[test]
+    fn empty_hierarchy_returns_empty_index() {
+        let result = collect_playlist_media_index(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn single_media_entry_indexed_by_id() {
+        let entries = vec![media_entry("videos/clip", "clip1", "media1")];
+        let result = collect_playlist_media_index(&entries).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["clip1"], vec!["videos", "clip"]);
+    }
+
+    #[test]
+    fn non_media_entries_skipped() {
+        let entries =
+            vec![non_media_entry("playlists/mix"), media_entry("videos/clip", "clip1", "media1")];
+        let result = collect_playlist_media_index(&entries).unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_hierarchy_id_with_same_path_ok() {
+        let entries = vec![
+            media_entry("videos/clip", "clip1", "media1"),
+            media_entry("videos/clip", "clip1", "media2"),
+        ];
+        let result = collect_playlist_media_index(&entries).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["clip1"], vec!["videos", "clip"]);
+    }
+
+    #[test]
+    fn duplicate_hierarchy_id_with_different_path_errors() {
+        let entries = vec![
+            media_entry("videos/clip1", "clip1", "media1"),
+            media_entry("videos/clip2", "clip1", "media2"),
+        ];
+        let err = collect_playlist_media_index(&entries).unwrap_err();
+        assert!(
+            matches!(err, MediaPmError::Workflow(ref msg) if msg.contains("clip1")),
+            "expected Workflow error about clip1, got: {err}"
+        );
+    }
 }
