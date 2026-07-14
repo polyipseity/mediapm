@@ -32,7 +32,7 @@ const ECHO_OS_COUNT: u64 = 3;
 /// source per platform.
 #[tokio::test]
 async fn resolve_echo_returns_three_launcher_sources() {
-    let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
+    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
 
     assert_eq!(fetch.tool_id, "echo");
     assert_eq!(fetch.sources.len() as u64, ECHO_OS_COUNT);
@@ -57,7 +57,7 @@ async fn resolve_echo_returns_three_launcher_sources() {
 /// Resolving an unknown tool returns an error.
 #[tokio::test]
 async fn resolve_unknown_tool_returns_error() {
-    let result = resolve_tool_fetch("nonexistent-tool", None, None).await;
+    let result = resolve_tool_fetch("nonexistent-tool").await;
     assert!(result.is_err(), "unknown tool should fail to resolve");
 }
 
@@ -69,7 +69,7 @@ async fn resolve_unknown_tool_returns_error() {
 /// cached in `UserLevelCache`.
 #[tokio::test]
 async fn fetch_echo_produces_launcher_scripts_via_cache() {
-    let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
+    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
 
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
@@ -110,7 +110,7 @@ async fn fetch_echo_produces_launcher_scripts_via_cache() {
 /// Fetching from cache returns the same bytes on the second call.
 #[tokio::test]
 async fn fetch_echo_is_cached_idempotently() {
-    let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
+    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
@@ -135,7 +135,7 @@ async fn fetch_echo_is_cached_idempotently() {
 /// with one entry per OS.
 #[tokio::test]
 async fn postprocess_echo_produces_correct_content_map_and_os_exec_paths() {
-    let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
+    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
@@ -179,7 +179,7 @@ async fn postprocess_echo_produces_correct_content_map_and_os_exec_paths() {
 /// every content-map hash is retrievable from CAS.
 #[tokio::test]
 async fn full_pipeline_echo_all_hashes_retrievable_from_cas() {
-    let fetch = resolve_tool_fetch("echo", None, None).await.expect("resolve echo");
+    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
