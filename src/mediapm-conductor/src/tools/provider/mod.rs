@@ -175,6 +175,8 @@ pub async fn fetch_tool_sources(
     let mut entries = Vec::with_capacity(fetch.sources.len());
     let mut items_done = 0u64;
     let total = fetch.total_items;
+    let agg_total_bytes: u64 = fetch.sources.iter().map(|s| s.expected_size.unwrap_or(0)).sum();
+    let mut agg_completed_bytes: u64 = 0;
 
     for source in &fetch.sources {
         match &source.producer {
@@ -182,6 +184,7 @@ pub async fn fetch_tool_sources(
                 let cache_key = &urls[0];
                 let bytes = if let Some(cached) = cache.lookup_bytes(cache_key).await {
                     cache.touch(cache_key);
+                    agg_completed_bytes += cached.len() as u64;
                     cached
                 } else {
                     let downloaded = fetch_bytes_from_candidates(
@@ -191,8 +194,11 @@ pub async fn fetch_tool_sources(
                         &progress_cb,
                         items_done,
                         total,
+                        agg_completed_bytes,
+                        agg_total_bytes,
                     )
                     .await?;
+                    agg_completed_bytes += downloaded.len() as u64;
                     cache.store_bytes(cache_key, &downloaded).await;
                     downloaded
                 };
@@ -205,6 +211,7 @@ pub async fn fetch_tool_sources(
             }
             SourceProducer::GenerateLauncher { builtin_id } => {
                 let bytes = generate_launcher_script(source.os.as_str(), builtin_id);
+                agg_completed_bytes += bytes.len() as u64;
                 entries.push(DownloadedSource {
                     os: source.os.clone(),
                     producer: SourceProducer::GenerateLauncher { builtin_id: builtin_id.clone() },
@@ -218,7 +225,7 @@ pub async fn fetch_tool_sources(
             cb(mediapm_utils::progress::ProviderProgressSnapshot {
                 phase: ProviderPhase::Fetch,
                 items: (items_done, total),
-                bytes: (0, 0),
+                bytes: (agg_completed_bytes, std::cmp::max(agg_total_bytes, agg_completed_bytes)),
             });
         }
     }
@@ -235,6 +242,8 @@ async fn fetch_bytes_from_candidates(
     progress_cb: &Option<ProviderProgressCallback>,
     items_done: u64,
     total: u64,
+    agg_completed_bytes: u64,
+    agg_total_bytes: u64,
 ) -> Result<Vec<u8>, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use futures_util::StreamExt;
@@ -261,10 +270,19 @@ async fn fetch_bytes_from_candidates(
                     downloaded += chunk.len() as u64;
                     buffer.extend_from_slice(&chunk);
                     if let Some(cb) = progress_cb {
+                        let bytes_completed = agg_completed_bytes + downloaded;
+                        let bytes_total_estimate =
+                            agg_completed_bytes + total_bytes.unwrap_or(downloaded);
                         cb(mediapm_utils::progress::ProviderProgressSnapshot {
                             phase: ProviderPhase::Fetch,
                             items: (items_done, total),
-                            bytes: (downloaded, total_bytes.unwrap_or(0)),
+                            bytes: (
+                                bytes_completed,
+                                std::cmp::max(
+                                    bytes_completed,
+                                    std::cmp::max(agg_total_bytes, bytes_total_estimate),
+                                ),
+                            ),
                         });
                     }
                 }
@@ -337,6 +355,8 @@ pub async fn postprocess_tool_sources(
     let mut content_map: BTreeMap<String, String> = BTreeMap::new();
     let mut os_exec_paths: BTreeMap<String, String> = BTreeMap::new();
     let total = downloaded.entries.len() as u64;
+    let agg_total_bytes: u64 = downloaded.entries.iter().map(|e| e.bytes.len() as u64).sum();
+    let mut agg_completed_bytes: u64 = 0;
 
     for (idx, source) in downloaded.entries.iter().enumerate() {
         let os_label = &source.os;
@@ -380,11 +400,13 @@ pub async fn postprocess_tool_sources(
         content_map.extend(os_cm);
         os_exec_paths.insert(os_label.clone(), exec_path);
 
+        agg_completed_bytes += source.bytes.len() as u64;
+
         if let Some(cb) = progress_cb.as_ref() {
             cb(mediapm_utils::progress::ProviderProgressSnapshot {
                 phase: ProviderPhase::Postprocess,
                 items: ((idx + 1) as u64, total),
-                bytes: (source.bytes.len() as u64, 0),
+                bytes: (agg_completed_bytes, agg_total_bytes),
             });
         }
     }
