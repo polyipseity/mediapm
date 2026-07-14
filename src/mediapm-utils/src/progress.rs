@@ -865,14 +865,6 @@ mod inner {
         /// first-created child at the top of the band, last-created adjacent
         /// to the overall bar.
         ///
-        /// Attach a tracked state to the next available render slot.
-        ///
-        /// Places the new child at the **bottom** of the active band (just
-        /// above the overall bar when one exists).  Existing active children
-        /// are shifted up by one slot, preserving chronological order:
-        /// first-created child at the top of the band, last-created adjacent
-        /// to the overall bar.
-        ///
         /// When all slots are occupied by active handles, scans for a
         /// finished slot to recycle.  When none is available, the handle is
         /// pushed to [`orphaned_states`] — it remains tracked but has no
