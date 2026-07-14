@@ -135,3 +135,194 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
 
     Ok(outputs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::OutputCaptureSpec;
+    use crate::config::SaveMode;
+    use std::collections::BTreeMap;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn captures_stdout() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let execution =
+            ExecutionResult { stdout: b"hello".to_vec(), stderr: Vec::new(), exit_code: 0 };
+        let mut output_specs = BTreeMap::new();
+        output_specs.insert(
+            "stdout".to_string(),
+            OutputCaptureSpec {
+                name: "stdout".to_string(),
+                capture: "stdout".to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
+        );
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap();
+        let out = outputs.iter().find(|o| o.name == "stdout").unwrap();
+        let data = cas.get(out.hash).await.unwrap();
+        assert_eq!(data.as_ref(), b"hello");
+    }
+
+    #[tokio::test]
+    async fn captures_stderr() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let execution =
+            ExecutionResult { stdout: Vec::new(), stderr: b"error output".to_vec(), exit_code: 1 };
+        let mut output_specs = BTreeMap::new();
+        output_specs.insert(
+            "stderr".to_string(),
+            OutputCaptureSpec {
+                name: "stderr".to_string(),
+                capture: "stderr".to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
+        );
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap();
+        let out = outputs.iter().find(|o| o.name == "stderr").unwrap();
+        let data = cas.get(out.hash).await.unwrap();
+        assert_eq!(data.as_ref(), b"error output");
+    }
+
+    #[tokio::test]
+    async fn captures_process_code() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 42 };
+        let mut output_specs = BTreeMap::new();
+        output_specs.insert(
+            "process_code".to_string(),
+            OutputCaptureSpec {
+                name: "process_code".to_string(),
+                capture: "process_code".to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
+        );
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap();
+        let out = outputs.iter().find(|o| o.name == "process_code").unwrap();
+        let data = cas.get(out.hash).await.unwrap();
+        assert_eq!(data.as_ref(), b"42");
+    }
+
+    #[tokio::test]
+    async fn captures_file() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let file_path = tmp.path().join("test.txt");
+        tokio::fs::write(&file_path, b"file content").await.unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let mut output_specs = BTreeMap::new();
+        output_specs.insert(
+            "test_file".to_string(),
+            OutputCaptureSpec {
+                name: "test_file".to_string(),
+                capture: "file:test.txt".to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
+        );
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap();
+        let out = outputs.iter().find(|o| o.name == "test_file").unwrap();
+        let data = cas.get(out.hash).await.unwrap();
+        assert_eq!(data.as_ref(), b"file content");
+    }
+
+    #[tokio::test]
+    async fn captures_file_regex() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let file_path = tmp.path().join("result.log");
+        tokio::fs::write(&file_path, b"regex match").await.unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let mut output_specs = BTreeMap::new();
+        output_specs.insert(
+            "log".to_string(),
+            OutputCaptureSpec {
+                name: "log".to_string(),
+                capture: "file_regex:result\\.\\w+".to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
+        );
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap();
+        let out = outputs.iter().find(|o| o.name == "log").unwrap();
+        let data = cas.get(out.hash).await.unwrap();
+        assert_eq!(data.as_ref(), b"regex match");
+    }
+
+    #[tokio::test]
+    async fn captures_folder() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let subdir = tmp.path().join("subdir");
+        tokio::fs::create_dir(&subdir).await.unwrap();
+        tokio::fs::write(subdir.join("a.txt"), b"content_a").await.unwrap();
+        tokio::fs::write(subdir.join("b.txt"), b"content_b").await.unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let mut output_specs = BTreeMap::new();
+        output_specs.insert(
+            "folder_out".to_string(),
+            OutputCaptureSpec {
+                name: "folder_out".to_string(),
+                capture: "folder:subdir".to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
+        );
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap();
+        let out = outputs.iter().find(|o| o.name == "folder_out").unwrap();
+        let data = cas.get(out.hash).await.unwrap();
+        let file_list: Vec<String> = serde_json::from_slice(&data).unwrap();
+        assert!(file_list.contains(&"subdir/a.txt".to_string()));
+        assert!(file_list.contains(&"subdir/b.txt".to_string()));
+    }
+
+    #[tokio::test]
+    async fn implicit_outputs() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let execution =
+            ExecutionResult { stdout: b"hello".to_vec(), stderr: b"error".to_vec(), exit_code: 1 };
+        let output_specs = BTreeMap::new();
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap();
+        assert_eq!(outputs.len(), 3);
+        let stdout_out = outputs.iter().find(|o| o.name == "stdout").unwrap();
+        let stderr_out = outputs.iter().find(|o| o.name == "stderr").unwrap();
+        let code_out = outputs.iter().find(|o| o.name == "process_code").unwrap();
+        assert_eq!(cas.get(stdout_out.hash).await.unwrap().as_ref(), b"hello");
+        assert_eq!(cas.get(stderr_out.hash).await.unwrap().as_ref(), b"error");
+        assert_eq!(cas.get(code_out.hash).await.unwrap().as_ref(), b"1");
+    }
+}

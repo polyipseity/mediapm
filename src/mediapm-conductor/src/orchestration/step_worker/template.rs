@@ -1715,4 +1715,64 @@ mod tests {
         let result = resolve_template("${*}", &ctx).await;
         assert!(result.is_err());
     }
+
+    // -----------------------------------------------------------------------
+    // Input references
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_inputs() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let mut inputs = BTreeMap::new();
+        inputs.insert("url".to_string(), "https://example.com".to_string());
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &inputs,
+        };
+        let result = resolve_template("${inputs.url}", &ctx).await.unwrap();
+        assert_eq!(result, "https://example.com");
+    }
+
+    #[tokio::test]
+    async fn resolve_inputs_missing() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let inputs = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &inputs,
+        };
+        let result = resolve_template("${inputs.url}", &ctx).await;
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Step output via helper
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_step_output_via_helper() {
+        let mut step_outputs = BTreeMap::new();
+        let mut outputs = BTreeMap::new();
+        outputs.insert("result".to_string(), Hash::from_content(b"hello"));
+        step_outputs.insert("step-1".to_string(), outputs);
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template("${step_output.step-1.result}", &ctx).await.unwrap();
+        assert_eq!(result, Hash::from_content(b"hello").to_string());
+    }
 }

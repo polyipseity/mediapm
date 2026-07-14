@@ -48,3 +48,54 @@ pub(super) fn probe_cache(
     }
     (false, None)
 }
+
+#[cfg(feature = "proptest")]
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use proptest::strategy::BoxedStrategy;
+
+    impl proptest::arbitrary::Arbitrary for ResolvedInput {
+        type Parameters = ();
+        type Strategy = BoxedStrategy<Self>;
+        fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+            (any::<String>(), any::<String>())
+                .prop_map(|(key, value)| ResolvedInput { key, value })
+                .boxed()
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn different_inputs_produce_different_keys(
+            inputs1 in proptest::collection::vec(any::<ResolvedInput>(), 1..5),
+            inputs2 in proptest::collection::vec(any::<ResolvedInput>(), 1..5),
+        ) {
+            prop_assume!(inputs1 != inputs2);
+            let key1 = derive_instance_key(&inputs1, None);
+            let key2 = derive_instance_key(&inputs2, None);
+            prop_assert_ne!(key1, key2);
+        }
+
+        #[test]
+        fn same_inputs_produce_same_keys(
+            inputs in proptest::collection::vec(any::<ResolvedInput>(), 0..10),
+        ) {
+            let key1 = derive_instance_key(&inputs, None);
+            let key2 = derive_instance_key(&inputs, None);
+            prop_assert_eq!(key1, key2);
+        }
+    }
+
+    #[test]
+    fn different_impure_timestamps_produce_different_keys() {
+        let inputs = vec![ResolvedInput {
+            key: "url".to_string(),
+            value: "https://example.com".to_string(),
+        }];
+        let key1 = derive_instance_key(&inputs, Some(ImpureTimestamp::from_unix_nanos(0)));
+        let key2 = derive_instance_key(&inputs, Some(ImpureTimestamp::from_unix_nanos(1)));
+        assert_ne!(key1, key2);
+    }
+}
