@@ -70,15 +70,22 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     let fetch_bar_cb = fetch_bar.clone();
     let postprocess_bar_cb = postprocess_bar.clone();
+    let tool_id_for_closure = tool_id.to_string();
     let progress_cb: Option<ProviderProgressCallback> = {
         Some(Arc::new(move |snap| match snap.phase {
             ProviderPhase::Fetch => {
-                fetch_bar_cb.set_prefix(&format!("{}/{}", snap.items.0, snap.items.1));
+                fetch_bar_cb.set_prefix(&format!(
+                    "{tool_id_for_closure} [fetch] {}/{}",
+                    snap.items.0, snap.items.1
+                ));
                 fetch_bar_cb.set_position(snap.bytes.0);
                 fetch_bar_cb.set_total(snap.bytes.1);
             }
             ProviderPhase::Postprocess => {
-                postprocess_bar_cb.set_prefix(&format!("{}/{}", snap.items.0, snap.items.1));
+                postprocess_bar_cb.set_prefix(&format!(
+                    "{tool_id_for_closure} [process] {}/{}",
+                    snap.items.0, snap.items.1
+                ));
                 postprocess_bar_cb.set_position(snap.bytes.0);
                 postprocess_bar_cb.set_total(snap.bytes.1);
             }
