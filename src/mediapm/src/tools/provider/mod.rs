@@ -14,8 +14,7 @@ pub(crate) mod rsgain;
 pub(crate) mod sd;
 pub(crate) mod yt_dlp;
 
-use mediapm_conductor::tools::provider::{ResolvedToolFetch, VersionSpec};
-use mediapm_utils::progress::ProviderProgressCallback;
+use mediapm_conductor::tools::provider::ResolvedToolFetch;
 
 /// Resolves source descriptors for the named managed tool.
 ///
@@ -24,8 +23,6 @@ use mediapm_utils::progress::ProviderProgressCallback;
 /// Returns an error when the tool name is not recognised.
 pub(crate) async fn resolve_tool_fetch(
     tool_name: &str,
-    _version: Option<VersionSpec>,
-    _progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<ResolvedToolFetch, mediapm_conductor::ConductorError> {
     match tool_name {
         n if n.eq_ignore_ascii_case("ffmpeg") => Ok(ffmpeg::sources()),
@@ -47,7 +44,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_tool_fetch_routes_all_tools() {
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "sd"] {
-            let result = resolve_tool_fetch(name, None, None).await;
+            let result = resolve_tool_fetch(name).await;
             assert!(result.is_ok(), "tool {name}: resolve should succeed");
             let fetch = result.unwrap();
             assert_eq!(fetch.tool_id, *name, "tool_id should match input name");
@@ -62,7 +59,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_tool_fetch_rejects_unknown() {
-        let result = resolve_tool_fetch("no-such-tool", None, None).await;
+        let result = resolve_tool_fetch("no-such-tool").await;
         assert!(result.is_err(), "unknown tool should return error");
     }
 
@@ -71,7 +68,7 @@ mod tests {
         // media-tagger is an internal launcher — no external sources.
         let expected_oses = ["windows", "linux", "macos"];
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd"] {
-            let fetch = resolve_tool_fetch(name, None, None).await.unwrap();
+            let fetch = resolve_tool_fetch(name).await.unwrap();
             let oses: Vec<&str> = fetch.sources.iter().map(|s| s.os.as_str()).collect();
             for expected_os in &expected_oses {
                 assert!(

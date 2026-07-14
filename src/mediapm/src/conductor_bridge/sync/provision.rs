@@ -53,7 +53,7 @@ pub(super) async fn fetch_and_import_tool_payload(
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
     let resolve_bar = group.add_bar(1, &format!("{tool_id} [resolve]"));
-    let fetch = provider::resolve_tool_fetch(tool_id, None, None)
+    let fetch = provider::resolve_tool_fetch(tool_id)
         .await
         .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")))?;
     resolve_bar.finish();

@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_utils::progress::ProviderProgressCallback;
+use mediapm_utils::progress::{ProviderPhase, ProviderProgressCallback, ProviderProgressSnapshot};
 
 // ---------------------------------------------------------------------------
 // Archive format constants (private — inferred internally in phase 3)
@@ -135,8 +135,6 @@ pub(crate) mod sd;
 #[cfg(feature = "tool-presets")]
 pub async fn resolve_tool_fetch(
     tool_id: &str,
-    _version: Option<VersionSpec>,
-    _progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<ResolvedToolFetch, crate::error::ConductorError> {
     match tool_id {
         n if n.eq_ignore_ascii_case("sd") => Ok(sd::sources()),
@@ -170,8 +168,6 @@ pub async fn fetch_tool_sources(
     cache: &crate::cache_user_level::UserLevelCache,
     progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<DownloadedSources, crate::error::ConductorError> {
-    use mediapm_utils::progress::ProviderPhase;
-
     let mut entries = Vec::with_capacity(fetch.sources.len());
     let mut items_done = 0u64;
     let total = fetch.total_items;
@@ -222,7 +218,7 @@ pub async fn fetch_tool_sources(
         }
         items_done += 1;
         if let Some(cb) = progress_cb.as_ref() {
-            cb(mediapm_utils::progress::ProviderProgressSnapshot {
+            cb(ProviderProgressSnapshot {
                 phase: ProviderPhase::Fetch,
                 items: (items_done, total),
                 bytes: (agg_completed_bytes, std::cmp::max(agg_total_bytes, agg_completed_bytes)),
@@ -247,7 +243,6 @@ async fn fetch_bytes_from_candidates(
 ) -> Result<Vec<u8>, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use futures_util::StreamExt;
-    use mediapm_utils::progress::ProviderPhase;
 
     const CONDUCTOR_USER_AGENT: &str = concat!("mediapm-conductor/", env!("CARGO_PKG_VERSION"));
 
@@ -273,7 +268,7 @@ async fn fetch_bytes_from_candidates(
                         let bytes_completed = agg_completed_bytes + downloaded;
                         let bytes_total_estimate =
                             agg_completed_bytes + total_bytes.unwrap_or(downloaded);
-                        cb(mediapm_utils::progress::ProviderProgressSnapshot {
+                        cb(ProviderProgressSnapshot {
                             phase: ProviderPhase::Fetch,
                             items: (items_done, total),
                             bytes: (
@@ -342,8 +337,6 @@ pub async fn postprocess_tool_sources(
     cas: &impl mediapm_cas::CasApi,
     progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<ProvisionResult, crate::error::ConductorError> {
-    use mediapm_utils::progress::ProviderPhase;
-
     let temp_root = tempfile::tempdir().map_err(|source| {
         crate::error::ConductorError::io(
             "creating temp directory for tool extraction",
@@ -403,7 +396,7 @@ pub async fn postprocess_tool_sources(
         agg_completed_bytes += source.bytes.len() as u64;
 
         if let Some(cb) = progress_cb.as_ref() {
-            cb(mediapm_utils::progress::ProviderProgressSnapshot {
+            cb(ProviderProgressSnapshot {
                 phase: ProviderPhase::Postprocess,
                 items: ((idx + 1) as u64, total),
                 bytes: (agg_completed_bytes, agg_total_bytes),
