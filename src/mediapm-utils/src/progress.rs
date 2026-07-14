@@ -2502,6 +2502,24 @@ mod tests {
         assert!(bar.is_finished(), "recording bar is finished");
     }
 
+    #[test]
+    fn rate_computation_handles_non_monotonic_position() {
+        // When a bar's position regresses between ticks, the EMA rate
+        // computation must not panic (saturating_sub guard).
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+        let h = group.add_bar(100, "test");
+        h.advance(80); // position grows to 80
+        group.tick(); // tick captures prev_position = 80
+        h.set_position(20); // position drops to 20 (non-monotonic)
+        group.tick(); // must not panic (saturating_sub saves it)
+        let snap = h.snapshot();
+        assert_eq!(snap.position, 20);
+        assert!(matches!(snap.status, TrackStatus::Active));
+    }
+
     // ── Color helpers (ANSI escape code generation) ─────────────────────
 
     #[test]
