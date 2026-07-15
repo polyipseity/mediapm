@@ -155,7 +155,7 @@ mod tests {
             "remote add should preserve provided URI"
         );
         assert_eq!(
-            remote_source.metadata.as_ref().and_then(|metadata| metadata.get("video_ext")),
+            remote_source.metadata.get("video_ext"),
             Some(&MediaMetadataValue::Literal(".mkv".to_string())),
             "yt-dlp preset should hardcode .mkv for video_ext when ffmpeg output extension establishes container"
         );

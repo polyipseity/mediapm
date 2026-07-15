@@ -173,7 +173,7 @@ mod tests {
         let remote_source =
             document.media.get(&manifest.remote_media_id).expect("remote source should exist");
         assert_eq!(
-            remote_source.metadata.as_ref().and_then(|metadata| metadata.get("video_ext")),
+            remote_source.metadata.get("video_ext"),
             Some(&MediaMetadataValue::Literal(".mkv".to_string())),
             "yt-dlp hierarchy example should hardcode .mkv for video_ext"
         );
