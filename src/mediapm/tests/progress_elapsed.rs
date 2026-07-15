@@ -4,19 +4,27 @@
 //! their elapsed timer start at zero (rather than inheriting the pool-creation
 //! timestamp) and freeze after finish/abandon.
 
-use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
-use mediapm::output::ProgressGroup;
+use std::sync::Arc;
 
-fn mk() -> (MultiProgress, InMemoryTerm) {
+use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
+use mediapm::output::{ProgressGroup, TestTimeSource};
+use mediapm_utils::progress::TimeSource;
+
+fn mk() -> (MultiProgress, InMemoryTerm, Arc<TestTimeSource>) {
     let term = InMemoryTerm::new(24, 80);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-    (MultiProgress::with_draw_target(target), term)
+    let ts = Arc::new(TestTimeSource::new());
+    (MultiProgress::with_draw_target(target), term, ts)
 }
 
 #[test]
 fn consumer_child_bar_elapsed_starts_at_zero() {
-    let (mp, term) = mk();
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let (mp, term, ts) = mk();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
     let _ = group.add_bar(5, "tool-a");
     let contents = term.contents();
     assert!(contents.contains("0s"), "elapsed must start at 0, got:\n{contents}");
@@ -24,8 +32,12 @@ fn consumer_child_bar_elapsed_starts_at_zero() {
 
 #[test]
 fn consumer_child_bar_elapsed_frozen_after_finish() {
-    let (mp, term) = mk();
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let (mp, term, ts) = mk();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
     let child = group.add_bar(5, "tool-a");
     child.set_position(5);
     child.finish();
@@ -37,8 +49,12 @@ fn consumer_child_bar_elapsed_frozen_after_finish() {
 
 #[test]
 fn consumer_child_bar_elapsed_frozen_after_finish_success() {
-    let (mp, term) = mk();
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let (mp, term, ts) = mk();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
     let child = group.add_bar(5, "tool-a");
     child.set_position(5);
     child.finish_success();
@@ -53,8 +69,12 @@ fn consumer_child_bar_elapsed_frozen_after_finish_success() {
 
 #[test]
 fn consumer_child_bar_elapsed_frozen_after_finish_error() {
-    let (mp, term) = mk();
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let (mp, term, ts) = mk();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
     let child = group.add_bar(5, "tool-a");
     child.set_position(2);
     child.finish_error();
@@ -64,8 +84,12 @@ fn consumer_child_bar_elapsed_frozen_after_finish_error() {
 
 #[test]
 fn consumer_child_bar_elapsed_frozen_after_abandon() {
-    let (mp, term) = mk();
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let (mp, term, ts) = mk();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
     let child = group.add_bar(5, "tool-a");
     child.set_position(3);
     child.abandon();

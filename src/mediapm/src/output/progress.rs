@@ -7,5 +7,5 @@
 #[doc(inline)]
 pub use mediapm_utils::progress::{
     DimensionSource, ProgressBarApi, ProgressGroup, ProgressGroupApi, TestDimensionSource,
-    TrackedHandle,
+    TestTimeSource, TimeSource, TrackedHandle,
 };

@@ -13,7 +13,7 @@ pub mod report;
 
 pub use progress::{
     DimensionSource, ProgressBarApi, ProgressGroup, ProgressGroupApi, TestDimensionSource,
-    TrackedHandle,
+    TestTimeSource, TrackedHandle,
 };
 pub use report::{
     StatusIcon, print_error, print_heading, print_hint, print_result, print_status_report,
