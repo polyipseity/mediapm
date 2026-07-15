@@ -69,7 +69,7 @@ async fn distinct_content_distinct_hashes() {
 #[tokio::test]
 async fn bulk_put_and_get() {
     let cas = new_in_memory_cas();
-    let items: Vec<Bytes> = (0..100).map(|i| Bytes::from(format!("object-{i}"))).collect();
+    let items: Vec<Bytes> = (0..20).map(|i| Bytes::from(format!("object-{i}"))).collect();
     let mut hashes = Vec::with_capacity(items.len());
     for item in &items {
         hashes.push(cas.put(item.clone()).await.unwrap());

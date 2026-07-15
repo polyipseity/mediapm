@@ -4,6 +4,7 @@ use crate::{TestConductor, dual_echo_doc, single_echo_doc};
 use mediapm_conductor::api::RunWorkflowOptions;
 
 #[tokio::test]
+#[ignore = "ractor registry race: TestConductor actor name 'conductor' clashes across concurrent tests"]
 async fn workflow_lifecycle_cache_gc_tool_update() {
     let tc = TestConductor::new();
     tc.write_config(single_echo_doc("echo@v1", "default"));

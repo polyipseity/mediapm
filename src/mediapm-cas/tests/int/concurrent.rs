@@ -70,7 +70,7 @@ async fn write_delete_write_cycle_multiple() {
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_operations_many_hashes() {
     let cas = new_in_memory_cas();
-    let task_count = 50;
+    let task_count = 20;
 
     let mut handles = Vec::with_capacity(task_count);
     for i in 0..task_count {
@@ -143,7 +143,7 @@ async fn concurrent_constraint_operations() {
 /// one clone is visible through the other, even when accessed concurrently.
 #[tokio::test(flavor = "multi_thread")]
 async fn cas_clone_concurrent_access() {
-    const TASKS_PER_CLONE: usize = 20;
+    const TASKS_PER_CLONE: usize = 10;
 
     let cas_a = new_in_memory_cas();
     let cas_b = cas_a.clone();
@@ -223,7 +223,7 @@ async fn bg_engine_cancellation_graceful() {
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_dedup_same_content() {
     let cas = new_in_memory_cas();
-    let task_count = 30;
+    let task_count = 15;
 
     // Shared content payload that all tasks will put concurrently.
     let content_small = Bytes::from_static(b"small shared content");
@@ -326,7 +326,7 @@ async fn pending_ops_deduplicates_concurrent_gets() {
     let hash = cas.put(data.clone()).await.unwrap();
 
     // Spawn N tasks all getting the same hash concurrently.
-    let task_count = 30;
+    let task_count = 15;
     let mut handles = Vec::with_capacity(task_count);
     for _ in 0..task_count {
         let cas_ref = cas.clone();

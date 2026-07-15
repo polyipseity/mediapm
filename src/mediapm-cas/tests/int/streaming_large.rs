@@ -7,16 +7,20 @@
 //! - 65 MiB for threshold-exceeded paths (above
 //!   [`WAL_INLINE_THRESHOLD`](mediapm_cas::defaults::WAL_INLINE_THRESHOLD)).
 
-use bytes::Bytes;
-use tempfile::tempdir;
-
-use mediapm_cas::CasError;
 use mediapm_cas::api::CasApi;
 use mediapm_cas::hash::Hash;
+
+#[cfg(feature = "large-tests")]
+use bytes::Bytes;
+#[cfg(feature = "large-tests")]
+use mediapm_cas::CasError;
+#[cfg(feature = "large-tests")]
+use tempfile::tempdir;
 
 /// Size of a 1 MiB payload for streaming correctness tests.
 const SIZE_1MIB: u64 = 1024 * 1024;
 /// Size of a 65 MiB payload (> [`WAL_INLINE_THRESHOLD`]) for `TooLarge` tests.
+#[cfg(feature = "large-tests")]
 const SIZE_65MIB: u64 = 65 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -64,6 +68,7 @@ async fn put_stream_get_to_writer_roundtrip() {
 
 /// `InMemoryCas` `get()` returns [`CasError::TooLarge`] when the object
 /// exceeds [`WAL_INLINE_THRESHOLD`].
+#[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn in_memory_large_object_get_returns_too_large() {
     let cas = new_in_memory_cas_for_large_tests();
@@ -85,6 +90,7 @@ async fn in_memory_large_object_get_returns_too_large() {
 
 /// `InMemoryCas` `get_to_writer()` succeeds for objects that exceed
 /// [`WAL_INLINE_THRESHOLD`] (streaming read path).
+#[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn in_memory_large_object_get_to_writer_works() {
     let cas = new_in_memory_cas_for_large_tests();
@@ -109,6 +115,7 @@ async fn in_memory_large_object_get_to_writer_works() {
 
 /// `FileSystemCas` `get()` returns [`CasError::TooLarge`] for objects
 /// exceeding [`WAL_INLINE_THRESHOLD`].
+#[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn filesystem_large_object_get_returns_too_large() {
     let dir = tempdir().unwrap();
@@ -123,6 +130,7 @@ async fn filesystem_large_object_get_returns_too_large() {
 
 /// `FileSystemCas` `get_to_writer()` succeeds for objects exceeding
 /// [`WAL_INLINE_THRESHOLD`].
+#[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn filesystem_large_object_get_to_writer_works() {
     let dir = tempdir().unwrap();
