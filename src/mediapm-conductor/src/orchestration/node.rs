@@ -36,8 +36,8 @@ pub(crate) enum ConductorMessage {
         unified: UnifiedNickelDocument,
         /// Current orchestration state (cloned, actor owns its copy).
         state: OrchestrationState,
-        /// Reply channel.
-        reply: RpcReplyPort<Result<RunSummary, ConductorError>>,
+        /// Reply channel (returns summary + updated state).
+        reply: RpcReplyPort<Result<(RunSummary, OrchestrationState), ConductorError>>,
     },
     /// Returns the current runtime diagnostics snapshot.
     GetRuntimeDiagnostics {
@@ -107,7 +107,7 @@ where
             } => {
                 let summary =
                     state.run_workflow(&workflow_name, &unified, &mut ws_state, &options).await;
-                let _ = reply.send(summary);
+                let _ = reply.send(summary.map(|s| (s, ws_state)));
             }
             ConductorMessage::GetRuntimeDiagnostics { reply } => {
                 let diagnostics = state.runtime_diagnostics();
@@ -147,7 +147,7 @@ impl ConductorActorClient {
         }
     }
 
-    /// Sends a `RunWorkflow` request and awaits the reply.
+    /// Sends a `RunWorkflow` request and awaits the reply (summary + state).
     ///
     /// # Errors
     ///
@@ -159,7 +159,7 @@ impl ConductorActorClient {
         options: RunWorkflowOptions,
         unified: UnifiedNickelDocument,
         state: OrchestrationState,
-    ) -> Result<RunSummary, ConductorError> {
+    ) -> Result<(RunSummary, OrchestrationState), ConductorError> {
         match self
             .actor_ref
             .call(
@@ -174,7 +174,7 @@ impl ConductorActorClient {
             )
             .await
         {
-            Ok(CallResult::Success(Ok(summary))) => Ok(summary),
+            Ok(CallResult::Success(Ok(pair))) => Ok(pair),
             Ok(CallResult::Success(Err(e))) => Err(e),
             Ok(CallResult::Timeout) => {
                 Err(ConductorError::rpc_error("ConductorActor", "RPC timeout"))

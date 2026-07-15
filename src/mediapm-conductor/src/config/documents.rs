@@ -187,11 +187,16 @@ impl NickelDocument {
                     ToolKindSpec::Builtin { .. } => (Vec::new(), vec![0]),
                 };
 
+                let builtin_id = match &spec.kind {
+                    ToolKindSpec::Builtin { builtin_id } => Some(builtin_id.clone()),
+                    ToolKindSpec::Executable { .. } => None,
+                };
                 let unified = UnifiedToolSpec {
                     name: spec.name.clone(),
                     is_impure: spec.runtime.impure,
                     max_concurrent_calls: spec.runtime.max_concurrent_calls,
                     max_retries: spec.runtime.max_retries,
+                    builtin_id,
                     command_parts,
                     success_codes,
                     inputs: spec.inputs.clone(),

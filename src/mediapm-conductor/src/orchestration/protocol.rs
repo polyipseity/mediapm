@@ -60,6 +60,9 @@ pub(crate) struct UnifiedToolSpec {
     pub outputs: BTreeMap<String, OutputCaptureSpec>,
     /// Per-tool content-map entries to materialize into the execution sandbox.
     pub tool_content_map: BTreeMap<String, String>,
+    /// The versioned builtin identifier (e.g. `"echo@v1"`) for builtin tools,
+    /// or `None` for executable tools.
+    pub builtin_id: Option<String>,
 }
 
 /// The runtime view of the merged conductor documents.
@@ -110,4 +113,6 @@ pub(crate) struct StepExecutionRequest {
 pub(crate) struct StepExecutionBundle {
     /// Final tool call instance snapshot to merge into orchestration state.
     pub instance: ToolCallInstance,
+    /// Whether this result came from a cache hit (vs. fresh execution).
+    pub cache_hit: bool,
 }

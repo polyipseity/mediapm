@@ -8,15 +8,18 @@ use crate::state::{ResolvedInput, ToolCallInstance};
 
 /// Derives a deterministic tool call instance key from tool + inputs + optional impure timestamp.
 pub(super) fn derive_instance_key(
+    tool_id: &str,
     inputs: &[ResolvedInput],
     impure_timestamp: Option<ImpureTimestamp>,
 ) -> String {
     use blake3;
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"instance-key-v1");
+    hasher.update(b"instance-key-v2");
 
-    // Include tool identity.
-    // For now, key on inputs since we don't have tool id easily accessible.
+    // Include tool identity so different tools with identical inputs produce different keys.
+    hasher.update(tool_id.as_bytes());
+    hasher.update(b"\0");
+
     for input in inputs {
         hasher.update(input.key.as_bytes());
         hasher.update(b"\0");
@@ -73,8 +76,8 @@ mod proptests {
             inputs2 in proptest::collection::vec(any::<ResolvedInput>(), 1..5),
         ) {
             prop_assume!(inputs1 != inputs2);
-            let key1 = derive_instance_key(&inputs1, None);
-            let key2 = derive_instance_key(&inputs2, None);
+            let key1 = derive_instance_key("test", &inputs1, None);
+            let key2 = derive_instance_key("test", &inputs2, None);
             prop_assert_ne!(key1, key2);
         }
 
@@ -82,8 +85,8 @@ mod proptests {
         fn same_inputs_produce_same_keys(
             inputs in proptest::collection::vec(any::<ResolvedInput>(), 0..10),
         ) {
-            let key1 = derive_instance_key(&inputs, None);
-            let key2 = derive_instance_key(&inputs, None);
+            let key1 = derive_instance_key("test", &inputs, None);
+            let key2 = derive_instance_key("test", &inputs, None);
             prop_assert_eq!(key1, key2);
         }
     }
@@ -94,8 +97,8 @@ mod proptests {
             key: "url".to_string(),
             value: "https://example.com".to_string(),
         }];
-        let key1 = derive_instance_key(&inputs, Some(ImpureTimestamp::from_unix_nanos(0)));
-        let key2 = derive_instance_key(&inputs, Some(ImpureTimestamp::from_unix_nanos(1)));
+        let key1 = derive_instance_key("test", &inputs, Some(ImpureTimestamp::from_unix_nanos(0)));
+        let key2 = derive_instance_key("test", &inputs, Some(ImpureTimestamp::from_unix_nanos(1)));
         assert_ne!(key1, key2);
     }
 }

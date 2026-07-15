@@ -33,7 +33,8 @@ async fn dispatch_tool_execution<C: CasApi + Send + Sync>(
     if tool_spec.command_parts.is_empty() {
         let args: BTreeMap<String, String> =
             resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
-        run_builtin(&request.step.tool, &args, &request.outermost_config_dir, sandbox_dir).await
+        let builtin_id = tool_spec.builtin_id.as_deref().unwrap_or(&request.step.tool);
+        run_builtin(builtin_id, &args, &request.outermost_config_dir, sandbox_dir).await
     } else {
         let resolved_inputs_map: BTreeMap<String, String> =
             resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
@@ -73,7 +74,8 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
             ))
         })?;
 
-    let instance_key = derive_instance_key(&resolved_inputs, request.impure_timestamp);
+    let instance_key =
+        derive_instance_key(&request.step.tool, &resolved_inputs, request.impure_timestamp);
 
     // Cache probe.
     let (cache_hit, _cached_instance) =
@@ -88,7 +90,9 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
                 ))
             })?;
 
-        return Ok(StepExecutionBundle { instance: cached.clone() });
+        let mut cached = cached.clone();
+        cached.conductor_gc_last_referenced_at = crate::config::ImpureTimestamp::now();
+        return Ok(StepExecutionBundle { instance: cached, cache_hit: true });
     }
 
     let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &instance_key).await?;
@@ -118,10 +122,10 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         worker_index: 0,
         executed: true,
         rematerialized: false,
-        conductor_gc_last_referenced_at: crate::config::ImpureTimestamp::default(),
+        conductor_gc_last_referenced_at: crate::config::ImpureTimestamp::now(),
     };
 
-    Ok(StepExecutionBundle { instance })
+    Ok(StepExecutionBundle { instance, cache_hit: false })
 }
 
 /// Merge tool-level output specs (defaults) with step-level output specs

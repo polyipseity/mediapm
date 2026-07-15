@@ -26,6 +26,9 @@ use crate::state::OrchestrationState;
 ///
 /// Wraps a lazily initialized [`ConductorActorClient`] (which itself manages a
 /// [`WorkflowCoordinator`] actor) and exposes all CLI-required operations.
+///
+/// Persists [`OrchestrationState`] across workflow runs so that subsequent
+/// runs can benefit from cached tool-call instances.
 pub struct SimpleConductor<C>
 where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
@@ -36,6 +39,8 @@ where
     actor_client: OnceCell<ConductorActorClient>,
     /// Resolved runtime paths.
     storage_paths: RuntimeStoragePaths,
+    /// Persisted orchestration state, shared across workflow runs.
+    state: std::sync::Mutex<OrchestrationState>,
 }
 
 impl<C> SimpleConductor<C>
@@ -45,7 +50,12 @@ where
     /// Creates a new conductor facade.
     #[must_use]
     pub fn new(storage_paths: RuntimeStoragePaths, cas: C) -> Self {
-        Self { cas: Arc::new(cas), actor_client: OnceCell::new(), storage_paths }
+        Self {
+            cas: Arc::new(cas),
+            actor_client: OnceCell::new(),
+            storage_paths,
+            state: std::sync::Mutex::new(OrchestrationState::default()),
+        }
     }
 
     /// Returns or initialises the conductor actor client.
@@ -75,6 +85,9 @@ where
 
     /// Runs a workflow and returns a summary.
     ///
+    /// Persists the orchestration state across runs so that repeated
+    /// deterministic workflows hit the cache on subsequent calls.
+    ///
     /// # Errors
     ///
     /// Delegates to the conductor actor; returns an error when delivery or
@@ -85,7 +98,7 @@ where
         options: RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
         let client = self.ensure_actor_client().await?;
-        let (unified, state) = load_unified_config_and_state(self.storage_paths())?;
+        let (unified, _fresh_state) = load_unified_config_and_state(self.storage_paths())?;
         // Apply conductor runtime config defaults to options
         let options = {
             let mut opts = options;
@@ -94,7 +107,20 @@ where
             }
             opts
         };
-        client.run_workflow(workflow_name, options, unified, state).await
+        // Take the persisted state (or default if empty) so the actor
+        // receives the latest cached instances from the previous run.
+        let state = {
+            let mut guard = self.state.lock().expect("state lock");
+            if guard.tool_call_instances.is_empty() {
+                OrchestrationState::default()
+            } else {
+                std::mem::take(&mut *guard)
+            }
+        };
+        let (summary, updated_state) =
+            client.run_workflow(workflow_name, options, unified, state).await?;
+        *self.state.lock().expect("state lock") = updated_state;
+        Ok(summary)
     }
 
     /// Returns a snapshot of runtime diagnostics.
@@ -108,23 +134,26 @@ where
         client.runtime_diagnostics().await
     }
 
-    /// Returns the current orchestration state (always default fresh state).
+    /// Returns the current orchestration state (from in-memory persistence).
     ///
     /// # Errors
     ///
     /// Returns [`ConductorError::Io`] when the persisted state file cannot be
     /// read.
     pub fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
-        Ok(OrchestrationState::default())
+        Ok(self.state.lock().expect("state lock").clone())
     }
 
-    /// Replaces the persisted orchestration state (currently a no-op).
+    /// Replaces the persisted orchestration state.
     ///
     /// # Errors
     ///
-    /// Returns [`ConductorError::Io`] when the persisted state file cannot be
-    /// written.
-    pub fn replace_resolved_state(&self, _state: OrchestrationState) -> Result<(), ConductorError> {
+    /// Currently infallible.
+    pub fn replace_resolved_state(
+        &self,
+        new_state: OrchestrationState,
+    ) -> Result<(), ConductorError> {
+        *self.state.lock().expect("state lock") = new_state;
         Ok(())
     }
 
@@ -330,9 +359,11 @@ where
     /// Delegates to the conductor actor.
     pub async fn run_gc(&self) -> Result<(), ConductorError> {
         let client = self.ensure_actor_client().await?;
-        let (unified, state) = load_unified_config_and_state(self.storage_paths())?;
+        let (unified, _) = load_unified_config_and_state(self.storage_paths())?;
         let referenced_keys = std::collections::BTreeSet::new();
-        let _new_state = client.run_gc(referenced_keys, state, unified).await?;
+        let state = self.state.lock().expect("state lock").clone();
+        let new_state = client.run_gc(referenced_keys, state, unified).await?;
+        *self.state.lock().expect("state lock") = new_state;
         Ok(())
     }
 

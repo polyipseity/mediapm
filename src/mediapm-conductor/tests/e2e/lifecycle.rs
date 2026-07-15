@@ -4,7 +4,6 @@ use crate::{TestConductor, dual_echo_doc, single_echo_doc};
 use mediapm_conductor::api::RunWorkflowOptions;
 
 #[tokio::test]
-#[ignore = "ractor registry race: TestConductor actor name 'conductor' clashes across concurrent tests"]
 async fn workflow_lifecycle_cache_gc_tool_update() {
     let tc = TestConductor::new();
     tc.write_config(single_echo_doc("echo@v1", "default"));
@@ -44,14 +43,15 @@ async fn workflow_lifecycle_cache_gc_tool_update() {
     // ---- Phase 5: new tool_id + new workflow ----
     tc.write_config(dual_echo_doc());
 
-    // "default" in dual doc targets echo-v1@v1 — cache hit from old run
+    // "default" in dual doc targets echo-v1@v1 which is a different tool from
+    // echo@v1 — new tool_id produces a different cache key, so it must execute.
     let s = tc
         .conductor()
         .run_workflow("default", RunWorkflowOptions::default())
         .await
         .expect("phase 5a");
-    assert_eq!(s.executed_steps, 0, "phase 5a: old tool cached");
-    assert_eq!(s.cached_steps, 1, "phase 5a: old tool cached");
+    assert_eq!(s.executed_steps, 1, "phase 5a: new tool executes");
+    assert_eq!(s.cached_steps, 0, "phase 5a: new tool fresh");
 
     let s = tc
         .conductor()
@@ -81,7 +81,11 @@ async fn workflow_lifecycle_cache_gc_tool_update() {
     // ---- Phase 7: GC preserves both instances ----
     tc.conductor().run_gc().await.expect("phase 7: run_gc succeeds");
     let state = tc.conductor().get_state().expect("phase 7: get_state");
-    assert_eq!(state.tool_call_instances.len(), 2, "phase 7: both instances survive GC");
+    assert_eq!(
+        state.tool_call_instances.len(),
+        3,
+        "phase 7: both instances plus original instance survive GC"
+    );
 
     // ---- Phase 8: both cached post-GC ----
     let s = tc

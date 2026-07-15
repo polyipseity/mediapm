@@ -166,8 +166,8 @@ mod tests {
     fn derive_instance_key_is_deterministic() {
         let inputs = vec![ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
 
-        let key1 = cache::derive_instance_key(&inputs, None);
-        let key2 = cache::derive_instance_key(&inputs, None);
+        let key1 = cache::derive_instance_key("test_tool", &inputs, None);
+        let key2 = cache::derive_instance_key("test_tool", &inputs, None);
         assert_eq!(key1, key2);
     }
 
@@ -178,8 +178,8 @@ mod tests {
 
         let ts1 = ImpureTimestamp::from_unix_nanos(1000);
         let ts2 = ImpureTimestamp::from_unix_nanos(2000);
-        let key1 = cache::derive_instance_key(&inputs, Some(ts1));
-        let key2 = cache::derive_instance_key(&inputs, Some(ts2));
+        let key1 = cache::derive_instance_key("test_tool", &inputs, Some(ts1));
+        let key2 = cache::derive_instance_key("test_tool", &inputs, Some(ts2));
         assert_ne!(key1, key2);
     }
 

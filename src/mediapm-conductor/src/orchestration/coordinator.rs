@@ -174,6 +174,7 @@ where
 
         let total_steps = workflow.steps.len();
         let mut executed_steps = 0usize;
+        let mut cached_steps = 0usize;
         let mut failed_steps = 0usize;
 
         let mut step_outputs: StepOutputs = BTreeMap::new();
@@ -240,13 +241,22 @@ where
             for (step_id, _worker_idx, handle) in handles {
                 match handle.await {
                     Ok(Ok(bundle)) => {
-                        executed_steps += 1;
+                        if bundle.cache_hit {
+                            cached_steps += 1;
+                        } else {
+                            executed_steps += 1;
+                        }
                         for output_ref in &bundle.instance.outputs {
                             step_outputs
                                 .entry(step_id.clone())
                                 .or_default()
                                 .insert(output_ref.name.clone(), output_ref.hash);
                         }
+                        // Insert executed instance into state so subsequent levels
+                        // (and future runs) can find cache hits.
+                        state
+                            .tool_call_instances
+                            .insert(bundle.instance.instance_key.clone(), bundle.instance);
                     }
                     Ok(Err(e)) => {
                         failed_steps += 1;
@@ -263,7 +273,6 @@ where
             }
         }
 
-        let cached_steps = total_steps.saturating_sub(executed_steps + failed_steps);
         Ok(RunSummary { total_steps, executed_steps, cached_steps, failed_steps })
     }
 
