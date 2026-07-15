@@ -951,7 +951,8 @@ mod inner {
                 });
             }
             // Last slot = overall bar.
-            let overall_state = Arc::new(SharedState::new(total, label));
+            let overall_state =
+                Arc::new(SharedState::with_time_source(total, label, Arc::clone(&time_source)));
             let inner = ProgressBar::new(total);
             let overall_bar = mp.add(inner);
             let (_, cols) = dim_source.dimensions();
@@ -1577,9 +1578,14 @@ mod inner {
             let Some(ref renderer) = self.renderer else {
                 return TrackedHandle::disabled();
             };
-            let state = Arc::new(SharedState::new(total, label));
+            let state;
             {
                 let mut locked = renderer.lock().unwrap_or_else(|e| e.into_inner());
+                state = Arc::new(SharedState::with_time_source(
+                    total,
+                    label,
+                    Arc::clone(&locked.time_source),
+                ));
                 locked.attach(&state);
             }
             TrackedHandle { state }
