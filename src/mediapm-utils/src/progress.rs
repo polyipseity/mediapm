@@ -231,6 +231,71 @@ mod inner {
         }
     }
 
+    // ---- time source (injectable for tests) ------------------------------
+
+    /// Injectable time source for testing.
+    pub trait TimeSource: Send + Sync {
+        /// Returns the current instant.
+        fn now(&self) -> Instant;
+    }
+
+    /// Real time via [`Instant::now`].
+    pub struct RealTimeSource;
+
+    impl TimeSource for RealTimeSource {
+        fn now(&self) -> Instant {
+            Instant::now()
+        }
+    }
+
+    /// Injectable time for testing.
+    ///
+    /// Use [`advance`](TestTimeSource::advance) to move time forward
+    /// synthetically without real wall-clock delay.
+    #[allow(dead_code)]
+    pub struct TestTimeSource {
+        now: Mutex<Instant>,
+    }
+
+    #[allow(dead_code)]
+    impl TestTimeSource {
+        /// Create a source initialized to [`Instant::now`].
+        #[must_use]
+        pub fn new() -> Self {
+            Self { now: Mutex::new(Instant::now()) }
+        }
+
+        /// Advance the synthetic clock by `dur`.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the internal mutex is poisoned.
+        pub fn advance(&self, dur: Duration) {
+            *self.now.lock().unwrap() += dur;
+        }
+
+        /// Override the instant returned by [`TimeSource::now`].
+        ///
+        /// # Panics
+        ///
+        /// Panics if the internal mutex is poisoned.
+        #[allow(dead_code)]
+        pub fn set(&self, instant: Instant) {
+            *self.now.lock().unwrap() = instant;
+        }
+    }
+
+    impl TimeSource for TestTimeSource {
+        /// Returns the current synthetic instant.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the internal mutex is poisoned.
+        fn now(&self) -> Instant {
+            *self.now.lock().unwrap()
+        }
+    }
+
     // ---- style constants --------------------------------------------------
 
     /// Format a duration compactly: `0s`, `3s`, `42s`, `1m35s`, `12m4s`, `2h15m`, `1d8h`, `30d`.
@@ -501,18 +566,28 @@ mod inner {
         status: AtomicU8,
         start_time: Instant,
         finished_elapsed: RwLock<Option<Duration>>,
+        time_source: Arc<dyn TimeSource>,
     }
 
     impl SharedState {
         pub(crate) fn new(total: u64, label: &str) -> Self {
+            Self::with_time_source(total, label, Arc::new(RealTimeSource))
+        }
+
+        pub(crate) fn with_time_source(
+            total: u64,
+            label: &str,
+            time_source: Arc<dyn TimeSource>,
+        ) -> Self {
             Self {
                 position: AtomicU64::new(0),
                 total: AtomicU64::new(total),
                 label: RwLock::new(label.to_string()),
                 prefix: RwLock::new(label.to_string()),
                 status: AtomicU8::new(0),
-                start_time: Instant::now(),
+                start_time: time_source.now(),
                 finished_elapsed: RwLock::new(None),
+                time_source,
             }
         }
 
@@ -539,12 +614,12 @@ mod inner {
             {
                 frozen
             } else {
-                self.start_time.elapsed()
+                self.time_source.now() - self.start_time
             }
         }
 
         pub(crate) fn mark_finished(&self) {
-            let elapsed = self.start_time.elapsed();
+            let elapsed = self.time_source.now() - self.start_time;
             *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") =
                 Some(elapsed);
         }
@@ -756,6 +831,8 @@ mod inner {
         /// [`join_and_clear`](Self::join_and_clear) and
         /// [`Drop`](Drop).
         finalized: Cell<bool>,
+        /// Injectable time source (real or synthetic for testing).
+        time_source: Arc<dyn TimeSource>,
         /// EMA-smoothed rate tracking, one entry per slot.
         slots_timing: Vec<SlotTiming>,
         /// When `Some`, property-setter terminal writes are suppressed
@@ -772,8 +849,8 @@ mod inner {
     }
 
     impl SlotTiming {
-        fn new() -> Self {
-            Self { prev_position: 0, prev_instant: Instant::now(), rate: 0.0 }
+        fn new(time_source: &dyn TimeSource) -> Self {
+            Self { prev_position: 0, prev_instant: time_source.now(), rate: 0.0 }
         }
     }
 
@@ -810,6 +887,7 @@ mod inner {
             capacity: usize,
             dim_source: Arc<dyn DimensionSource>,
             buffer_enabled: Option<Arc<AtomicBool>>,
+            time_source: Arc<dyn TimeSource>,
         ) -> Self {
             let mut slots = Vec::with_capacity(capacity);
             for _ in 0..capacity {
@@ -832,7 +910,7 @@ mod inner {
             if let Some(slot) = slots.last() {
                 slot.bar.tick();
             }
-            let slots_timing = (0..capacity).map(|_| SlotTiming::new()).collect();
+            let slots_timing = (0..capacity).map(|_| SlotTiming::new(&*time_source)).collect();
             Self {
                 inner: mp,
                 slots,
@@ -842,6 +920,7 @@ mod inner {
                 dynamic_height: false,
                 orphaned_states: RefCell::new(VecDeque::new()),
                 finalized: Cell::new(false),
+                time_source,
                 slots_timing,
                 buffer_enabled,
             }
@@ -856,6 +935,7 @@ mod inner {
             label: &str,
             dim_source: Arc<dyn DimensionSource>,
             buffer_enabled: Option<Arc<AtomicBool>>,
+            time_source: Arc<dyn TimeSource>,
         ) -> (Self, Arc<SharedState>) {
             let mut slots = Vec::with_capacity(capacity);
             for _ in 0..capacity.saturating_sub(1) {
@@ -882,7 +962,7 @@ mod inner {
                 source: RefCell::new(Some(overall_state.clone())),
                 cache: SlotCache::new(),
             });
-            let slots_timing = (0..capacity).map(|_| SlotTiming::new()).collect();
+            let slots_timing = (0..capacity).map(|_| SlotTiming::new(&*time_source)).collect();
             (
                 Self {
                     inner: mp,
@@ -893,6 +973,7 @@ mod inner {
                     dynamic_height: false,
                     orphaned_states: RefCell::new(VecDeque::new()),
                     finalized: Cell::new(false),
+                    time_source,
                     slots_timing,
                     buffer_enabled,
                 },
@@ -983,7 +1064,7 @@ mod inner {
                 }
                 // Place new child at the freed bottom slot.
                 self.slots[bottom].source.replace(Some(Arc::clone(state)));
-                self.slots_timing[bottom] = SlotTiming::new();
+                self.slots_timing[bottom] = SlotTiming::new(&*self.time_source);
                 self.slots[bottom].cache = SlotCache::new();
                 self.sync_slot(bottom);
                 return;
@@ -993,7 +1074,7 @@ mod inner {
             for i in (0..=bottom).rev() {
                 if self.slots[i].source.borrow().as_ref().is_none_or(|s| s.is_finished()) {
                     self.slots[i].source.replace(Some(Arc::clone(state)));
-                    self.slots_timing[i] = SlotTiming::new();
+                    self.slots_timing[i] = SlotTiming::new(&*self.time_source);
                     self.slots[i].cache = SlotCache::new();
                     self.sync_slot(i);
                     return;
@@ -1029,7 +1110,7 @@ mod inner {
                     // Rate is only recomputed when position actually changes.
                     let rate_str: Option<String> = if snap.status == TrackStatus::Active {
                         if snap.position != self.slots_timing[i].prev_position {
-                            let now = Instant::now();
+                            let now = self.time_source.now();
                             let dt =
                                 now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
                             if dt > 0.001 {
@@ -1207,7 +1288,7 @@ mod inner {
                             slot.source.replace(Some(orphan));
                         }
                         self.slots.insert(0, slot);
-                        self.slots_timing.insert(0, SlotTiming::new());
+                        self.slots_timing.insert(0, SlotTiming::new(&*self.time_source));
                     }
                     // Sync slots that may have been reattached.
                     for i in 0..self.slots.len() {
@@ -1316,6 +1397,7 @@ mod inner {
         overall: Option<(String, u64)>,
         capacity: Option<usize>,
         dynamic_height: bool,
+        time_source: Arc<dyn TimeSource>,
     }
 
     impl Default for ProgressGroupBuilder {
@@ -1326,6 +1408,7 @@ mod inner {
                 overall: None,
                 capacity: None,
                 dynamic_height: false,
+                time_source: Arc::new(RealTimeSource),
             }
         }
     }
@@ -1367,6 +1450,13 @@ mod inner {
             self
         }
 
+        /// Use an injectable time source (for tests).
+        #[must_use]
+        pub fn with_time_source(mut self, time_source: Arc<dyn TimeSource>) -> Self {
+            self.time_source = time_source;
+            self
+        }
+
         /// Build a group without an overall bar.
         ///
         /// # Panics
@@ -1398,7 +1488,13 @@ mod inner {
                     (mp, Some(flag))
                 }
             };
-            let mut renderer = ProgressRenderer::from_mp(mp, cap, self.dim_source, buffer_enabled);
+            let mut renderer = ProgressRenderer::from_mp(
+                mp,
+                cap,
+                self.dim_source,
+                buffer_enabled,
+                self.time_source,
+            );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Some(Arc::new(Mutex::new(renderer)));
             let ticker = Some(ProgressGroup::spawn_ticker(renderer.as_ref().unwrap()));
@@ -1440,6 +1536,7 @@ mod inner {
                 &label,
                 self.dim_source,
                 buffer_enabled,
+                self.time_source,
             );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Arc::new(Mutex::new(renderer));
@@ -1568,8 +1665,8 @@ mod inner {
 
 #[cfg(feature = "progress")]
 pub use inner::{
-    DimensionSource, ProgressGroup, ProgressRenderer, RealTerminalSource, TestDimensionSource,
-    TrackSnapshot, TrackStatus, TrackedHandle,
+    DimensionSource, ProgressGroup, ProgressRenderer, RealTerminalSource, RealTimeSource,
+    TestDimensionSource, TestTimeSource, TimeSource, TrackSnapshot, TrackStatus, TrackedHandle,
 };
 
 #[cfg(feature = "progress")]
