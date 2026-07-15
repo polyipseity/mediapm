@@ -46,8 +46,11 @@ jobs:
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
 
-      - name: Run tests
-        run: cargo --locked test-all
+      - name: Run tests (default features)
+        run: cargo --locked test --workspace --all-targets
+
+      - name: Run large CAS tests
+        run: cargo --locked test -p mediapm-cas --features large-tests
 
       - name: Build project
         run: |
