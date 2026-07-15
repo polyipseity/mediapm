@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use mediapm_utils::progress::{
-    DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TrackedHandle,
+    DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TimeSource, TrackedHandle,
 };
 
 /// Default terminal dimensions for standard tests.
@@ -91,6 +91,15 @@ fn mk_with_size(h: u16, w: u16) -> (MultiProgress, InMemoryTerm) {
     let term = InMemoryTerm::new(h, w);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     (MultiProgress::with_draw_target(target), term)
+}
+
+/// Create a [`MultiProgress`] + [`InMemoryTerm`] + [`TestTimeSource`] triple
+/// for tests that need deterministic elapsed timing.
+fn mk_with_size_and_ts(h: u16, w: u16) -> (MultiProgress, InMemoryTerm, Arc<TestTimeSource>) {
+    let term = InMemoryTerm::new(h, w);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let ts = Arc::new(TestTimeSource::new());
+    (MultiProgress::with_draw_target(target), term, ts)
 }
 
 /// Shorthand: create a bar, set style+prefix, add to mp, return it.
@@ -2779,12 +2788,13 @@ fn child_bar_elapsed_frozen_after_abandon() {
 #[test]
 fn orphan_reattach_preserves_elapsed() {
     let dims = Arc::new(TestDimensionSource::new((3, 80)));
-    let (mp, term) = mk_with_size(5, 80);
+    let (mp, term, ts) = mk_with_size_and_ts(5, 80);
     let (group, _overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 5)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(true)
         .build_with_overall();
     let _child = group.add_bar(10, "worker");
@@ -3490,12 +3500,13 @@ fn resize_width_narrow_to_wide_restores_content() {
 #[test]
 fn resize_width_noop_same_width_no_change() {
     let dims = Arc::new(TestDimensionSource::new((H, W)));
-    let (mp, term) = mk_with_size(H, W);
+    let (mp, term, ts) = mk_with_size_and_ts(H, W);
     let (group, _overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(false)
         .build_with_overall();
     let before = term.contents();
