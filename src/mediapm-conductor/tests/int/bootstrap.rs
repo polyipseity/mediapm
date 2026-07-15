@@ -9,7 +9,6 @@ use mediapm_conductor::{
 
 /// Protects bootstrap behavior when the config document is missing.
 #[tokio::test]
-#[ignore = "ractor registry race: TestConductor actor name 'conductor' clashes across concurrent tests"]
 async fn run_workflow_bootstraps_missing_documents() {
     let tc = TestConductor::new();
 
@@ -35,7 +34,6 @@ async fn run_workflow_bootstraps_missing_documents() {
 
 /// Protects integer-only validation for executable `success_codes`.
 #[tokio::test]
-#[ignore = "ractor registry race: TestConductor actor name 'conductor' clashes across concurrent tests"]
 async fn run_workflow_rejects_fractional_success_codes() {
     let tc = TestConductor::new();
     let config_path = tc.path().join("conductor.ncl");

@@ -243,12 +243,11 @@ where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
 {
     let coordinator = WorkflowCoordinator::new(cas);
-    let (actor_ref, _handle) =
-        ractor::spawn_named::<ConductorActor<C>>("conductor".to_string(), coordinator)
-            .await
-            .map_err(|e| {
-                ConductorError::Internal(format!("failed to spawn conductor actor: {e}"))
-            })?;
+    // Use anonymous spawn to avoid ractor global name registry conflicts
+    // when multiple SimpleConductor instances coexist (e.g. in tests).
+    let (actor_ref, _handle) = ractor::spawn::<ConductorActor<C>>(coordinator)
+        .await
+        .map_err(|e| ConductorError::Internal(format!("failed to spawn conductor actor: {e}")))?;
 
     Ok(ConductorActorClient::new(actor_ref))
 }

@@ -111,14 +111,11 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
     pool_size: usize,
 ) -> Result<Vec<ActorRef<StepWorkerMessage>>, ConductorError> {
     let mut workers = Vec::with_capacity(pool_size);
-    for i in 0..pool_size {
+    for _ in 0..pool_size {
         let state = StepWorkerState { cas: cas.clone() };
-        let (actor_ref, _handle) =
-            ractor::spawn_named::<StepWorkerActor<C>>(format!("step-worker-{i}"), state)
-                .await
-                .map_err(|e| {
-                    ConductorError::Internal(format!("failed to spawn step worker: {e}"))
-                })?;
+        let (actor_ref, _handle) = ractor::spawn::<StepWorkerActor<C>>(state)
+            .await
+            .map_err(|e| ConductorError::Internal(format!("failed to spawn step worker: {e}")))?;
         workers.push(actor_ref);
     }
     Ok(workers)
