@@ -2380,24 +2380,33 @@ mod tests {
 
     #[test]
     fn shared_state_elapsed_advances() {
-        let s = super::SharedState::new(100, "test");
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        let ts = std::sync::Arc::new(super::TestTimeSource::new());
+        let s = super::SharedState::with_time_source(
+            100,
+            "test",
+            std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::TimeSource>,
+        );
+        ts.advance(std::time::Duration::from_millis(10));
         let elapsed = s.elapsed();
-        assert!(elapsed.as_millis() >= 5, "elapsed should advance after sleep, got {elapsed:?}");
+        assert!(elapsed.as_millis() >= 10, "elapsed should advance after advance, got {elapsed:?}");
     }
 
     #[test]
     fn shared_state_elapsed_frozen_after_mark_finished() {
-        let s = super::SharedState::new(100, "test");
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        let ts = std::sync::Arc::new(super::TestTimeSource::new());
+        let s = super::SharedState::with_time_source(
+            100,
+            "test",
+            std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::TimeSource>,
+        );
+        ts.advance(std::time::Duration::from_millis(10));
         s.mark_finished();
         let frozen = s.elapsed();
         assert!(
-            frozen.as_millis() >= 5,
+            frozen.as_millis() >= 10,
             "elapsed should capture time until mark_finished, got {frozen:?}"
         );
-        // Small extra wait to confirm frozen.
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        ts.advance(std::time::Duration::from_millis(10));
         let frozen2 = s.elapsed();
         assert_eq!(frozen, frozen2, "elapsed should be frozen after mark_finished");
     }
@@ -2413,11 +2422,16 @@ mod tests {
 
     #[test]
     fn shared_state_elapsed_monotonic() {
-        let s = super::SharedState::new(100, "test");
+        let ts = std::sync::Arc::new(super::TestTimeSource::new());
+        let s = super::SharedState::with_time_source(
+            100,
+            "test",
+            std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::TimeSource>,
+        );
         let t0 = s.elapsed();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        ts.advance(std::time::Duration::from_millis(5));
         let t1 = s.elapsed();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        ts.advance(std::time::Duration::from_millis(5));
         let t2 = s.elapsed();
         assert!(t1 >= t0, "t1 ({t1:?}) should be >= t0 ({t0:?})");
         assert!(t2 >= t1, "t2 ({t2:?}) should be >= t1 ({t1:?})");
@@ -2436,9 +2450,14 @@ mod tests {
             ("finish_and_clear", Box::new(|h: &TrackedHandle| h.finish_and_clear())),
             ("abandon", Box::new(|h: &TrackedHandle| h.abandon())),
         ] {
-            let g = ProgressGroup::builder().build();
+            let ts = std::sync::Arc::new(super::TestTimeSource::new());
+            let g = super::ProgressGroup::builder()
+                .with_time_source(
+                    std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::TimeSource>
+                )
+                .build();
             let h = g.add_bar(100, &format!("{name}-bar"));
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            ts.advance(std::time::Duration::from_millis(10));
             finish_fn(&h);
             // We can't directly access SharedState::elapsed() from the handle,
             // but we verify the handle doesn't panic and is usable afterward.

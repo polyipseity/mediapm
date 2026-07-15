@@ -16,7 +16,9 @@ use std::thread;
 use std::time::Duration;
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use mediapm_utils::progress::{DimensionSource, ProgressGroup, TestDimensionSource, TrackedHandle};
+use mediapm_utils::progress::{
+    DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TrackedHandle,
+};
 
 /// Default terminal dimensions for standard tests.
 const H: u16 = 24;
@@ -4198,16 +4200,18 @@ fn color_no_success_brackets() {
 #[test]
 fn rate_stable_on_stale_ticks() {
     let (mp, term) = mk_with_size(2, 80);
+    let time_source = Arc::new(TestTimeSource::new());
     let (group, _overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_time_source(time_source.clone())
         .build_with_overall();
     let child = group.add_bar(1000, "test");
     // Advance a significant amount so the initial rate is clearly non-zero.
     child.set_position(500);
     group.tick();
-    std::thread::sleep(std::time::Duration::from_millis(60));
+    time_source.advance(std::time::Duration::from_millis(60));
     let after_progress = term.contents();
     assert!(
         after_progress.contains("500/1.0k"),
@@ -4226,7 +4230,7 @@ fn rate_stable_on_stale_ticks() {
 
     // Now tick 20× with realistic ticker-interval delays.
     for _ in 0..20 {
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        time_source.advance(std::time::Duration::from_millis(50));
         group.tick();
     }
 
@@ -4255,21 +4259,24 @@ fn rate_stable_on_stale_ticks() {
 #[test]
 fn rate_updates_on_progress() {
     let (mp, term) = mk_with_size(2, 80);
+    let time_source = Arc::new(TestTimeSource::new());
     let (group, _overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_time_source(time_source.clone())
         .build_with_overall();
     let child = group.add_bar(2000, "test");
     child.set_position(10);
+    time_source.advance(std::time::Duration::from_millis(2));
     group.tick();
-    std::thread::sleep(std::time::Duration::from_millis(60));
+    time_source.advance(std::time::Duration::from_millis(60));
     let after_small = term.contents();
 
     // Advance much more.
     child.set_position(1500);
     group.tick();
-    std::thread::sleep(std::time::Duration::from_millis(60));
+    time_source.advance(std::time::Duration::from_millis(60));
     let after_large = term.contents();
 
     // Both must show rate.
@@ -4291,15 +4298,17 @@ fn rate_updates_on_progress() {
 #[test]
 fn rate_always_shown() {
     let (mp, term) = mk_with_size(2, 80);
+    let time_source = Arc::new(TestTimeSource::new());
     let (group, _overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_time_source(time_source.clone())
         .build_with_overall();
     let _child = group.add_bar(100, "idle");
     // No progress made — bar is still active.
     group.tick();
-    std::thread::sleep(std::time::Duration::from_millis(60));
+    time_source.advance(std::time::Duration::from_millis(60));
     let contents = term.contents();
     // Rate must appear even with zero progress.
     assert!(
