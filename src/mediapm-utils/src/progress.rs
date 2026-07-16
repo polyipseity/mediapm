@@ -1095,6 +1095,11 @@ mod inner {
         ///
         /// Includes resize reactivity and full style re-application.
         ///
+        /// Pre-tick hooks (see [`pre_tick_hooks`](Self::pre_tick_hooks)) are
+        /// invoked first, before any state-to-bar sync.  This lets external
+        /// code reconcile bar state before the render pass — for example,
+        /// catching finished bars whose position never reached total.
+        ///
         /// When [`buffer_enabled`](Self::buffer_enabled) is `Some` (production),
         /// property-setter terminal writes are suppressed during the update
         /// loop, then exactly one draw is released at the end.  This ensures

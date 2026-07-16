@@ -45,6 +45,16 @@ pub(super) struct FetchedToolPayload {
 /// not interpret the meaning of items or bytes — it only relays the values
 /// to the bar.
 ///
+/// After phase 1 (resolve), a HEAD-prefetch step populates
+/// [`ResolvedSource.expected_size`] for each `Fetch`-producer source so
+/// phase 2 progress bars start with an accurate byte total. Evermeet and
+/// getrelease URLs are skipped (dynamic endpoints).
+///
+/// A pre-tick hook is registered on `group` so that all three progress bars
+/// display `position = total` when finished, even if the callback closures
+/// never updated position to match total. This eliminates the need for
+/// explicit `set_position(total)` before `finish()`.
+///
 /// `metadata_cache` is passed to the resolve phase for caching version/tag
 /// resolution results. The consumer must NOT call `touch()` on the metadata
 /// cache — its TTL is creation-time-based.

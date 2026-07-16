@@ -159,6 +159,11 @@ pub async fn resolve_tool_fetch(
 /// generate shell/batch script bytes in memory. Uses `cache` for deduplication
 /// of downloaded payloads.
 ///
+/// Progress reporting uses [`ResolvedSource.expected_size`] for the
+/// aggregated byte total (falls back to 0 when unset).  After download,
+/// [`DownloadedSource.expected_size`] is set to the actual byte count
+/// (or `max(expected, actual)` if a HEAD-based estimate existed).
+///
 /// # Errors
 ///
 /// Returns [`ConductorError`] when all URL candidates fail or I/O fails.
@@ -330,6 +335,9 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 /// (`{os}/{filename}`).
 ///
 /// Archive format is inferred from the URL extension.
+///
+/// Progress reporting uses [`DownloadedSource.expected_size`] for the
+/// aggregated byte total (falling back to `bytes.len()` when unset).
 ///
 /// # Errors
 ///
