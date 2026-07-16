@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use mediapm_cas::CasApi;
-use mediapm_conductor::tools::provider::{fetch_tool_sources, postprocess_tool_sources};
+use mediapm_conductor::tools::provider::{
+    ResolvedSource, SourceProducer, fetch_tool_sources, postprocess_tool_sources,
+};
 use mediapm_utils::progress::{ProviderPhase, ProviderProgressCallback, TrackStatus};
 
 use crate::error::MediaPmError;
@@ -58,10 +60,13 @@ pub(super) async fn fetch_and_import_tool_payload(
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
     let resolve_bar = group.add_bar(1, &format!("{tool_id} [resolve]"));
-    let fetch = provider::resolve_tool_fetch(tool_id, Some(metadata_cache))
+    let mut fetch = provider::resolve_tool_fetch(tool_id, Some(metadata_cache))
         .await
         .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")))?;
     resolve_bar.finish();
+
+    // Phase 1b: Prefetch expected sizes via HEAD requests.
+    prefetch_expected_sizes(&mut fetch.sources).await;
 
     if fetch.sources.is_empty() {
         // No sources to fetch (internal launcher tool like media-tagger).
@@ -138,6 +143,43 @@ pub(super) async fn fetch_and_import_tool_payload(
         content_map: result.content_map,
         os_exec_paths: result.os_exec_paths,
     }))
+}
+
+/// Sends HEAD requests to populate `expected_size` on each `Fetch`-producer
+/// source.  Failures are silently ignored — `expected_size` stays `None` and
+/// the existing Content-Length fallback in phase 2 applies.
+///
+/// Evermeet URLs are skipped because they are dynamic endpoints (return a
+/// freshly-built zip per request, so HEAD Content-Length wouldn't match the
+/// GET response).
+async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
+    let client = match crate::http_client::shared_http_client() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let head_timeout = std::time::Duration::from_secs(10);
+
+    for source in sources.iter_mut() {
+        let url = match &source.producer {
+            SourceProducer::Fetch { urls } if !urls.is_empty() => &urls[0],
+            _ => continue,
+        };
+        // Skip dynamic endpoints: Evermeet returns a fresh build
+        // on every request, so HEAD Content-Length is meaningless.
+        if url.contains("evermeet") || url.contains("getrelease") {
+            continue;
+        }
+        let request = client.head(url).timeout(head_timeout).send().await;
+        if let Ok(response) = request {
+            if response.status().is_success() {
+                if let Some(content_length) = response.content_length() {
+                    if content_length > 0 {
+                        source.expected_size = Some(content_length);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

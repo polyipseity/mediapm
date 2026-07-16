@@ -201,8 +201,11 @@ pub async fn fetch_tool_sources(
                 entries.push(DownloadedSource {
                     os: source.os.clone(),
                     producer: SourceProducer::Fetch { urls: urls.clone() },
+                    expected_size: {
+                        let actual_size = bytes.len() as u64;
+                        source.expected_size.map(|s| s.max(actual_size)).or(Some(actual_size))
+                    },
                     bytes,
-                    expected_size: source.expected_size,
                 });
             }
             SourceProducer::GenerateLauncher { builtin_id } => {
@@ -348,7 +351,8 @@ pub async fn postprocess_tool_sources(
     let mut content_map: BTreeMap<String, String> = BTreeMap::new();
     let mut os_exec_paths: BTreeMap<String, String> = BTreeMap::new();
     let total = downloaded.entries.len() as u64;
-    let agg_total_bytes: u64 = downloaded.entries.iter().map(|e| e.bytes.len() as u64).sum();
+    let agg_total_bytes: u64 =
+        downloaded.entries.iter().map(|e| e.expected_size.unwrap_or(e.bytes.len() as u64)).sum();
     let mut agg_completed_bytes: u64 = 0;
 
     for (idx, source) in downloaded.entries.iter().enumerate() {
