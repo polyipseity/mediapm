@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use mediapm_cas::CasApi;
 use mediapm_conductor::tools::provider::{fetch_tool_sources, postprocess_tool_sources};
-use mediapm_utils::progress::{ProviderPhase, ProviderProgressCallback};
+use mediapm_utils::progress::{ProviderPhase, ProviderProgressCallback, TrackStatus};
 
 use crate::error::MediaPmError;
 use crate::output::ProgressGroupApi;
@@ -72,6 +72,28 @@ pub(super) async fn fetch_and_import_tool_payload(
     let total = fetch.sources.len() as u64;
     let fetch_bar = group.add_bar(total, &format!("{tool_id} [fetch]"));
     let postprocess_bar = group.add_bar(total, &format!("{tool_id} [process]"));
+
+    // Pre-tick hook: ensure finished bars show position = total.
+    // Catches bars that were finished without updating position.
+    {
+        let resolve_hook = resolve_bar.clone();
+        let fetch_hook = fetch_bar.clone();
+        let process_hook = postprocess_bar.clone();
+        group.add_pre_tick_hook(Arc::new(move || {
+            let r = resolve_hook.snapshot();
+            if r.status != TrackStatus::Active && r.position < r.total {
+                resolve_hook.set_position(r.total);
+            }
+            let f = fetch_hook.snapshot();
+            if f.status != TrackStatus::Active && f.position < f.total {
+                fetch_hook.set_position(f.total);
+            }
+            let p = process_hook.snapshot();
+            if p.status != TrackStatus::Active && p.position < p.total {
+                process_hook.set_position(p.total);
+            }
+        }));
+    }
 
     let fetch_bar_cb = fetch_bar.clone();
     let postprocess_bar_cb = postprocess_bar.clone();

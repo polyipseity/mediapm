@@ -1785,6 +1785,10 @@ impl ProgressGroupApi for ProgressGroup {
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
         Arc::new(ProgressGroup::add_bar(self, total, label))
     }
+
+    fn add_pre_tick_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        ProgressGroup::add_pre_tick_hook(self, hook);
+    }
 }
 
 // ---- Recording types for test assertions (feature-gated) ---------------
