@@ -389,6 +389,15 @@ fn now_unix_seconds() -> u64 {
 }
 
 #[cfg(test)]
+impl Cache {
+    /// Test-only: returns the last-access timestamp for a cache entry.
+    #[must_use]
+    pub(crate) fn get_entry_last_access(&self, key: &str) -> Option<u64> {
+        self.index.lock().ok()?.entries.get(key).map(|e| e.last_access_unix_seconds)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{Cache, ENTRY_TTL_SECONDS, PRUNE_INTERVAL_SECONDS, TOUCH_PERSIST_INTERVAL_SECONDS};
 
@@ -489,5 +498,122 @@ mod tests {
         cache.store_bytes("empty-key", b"").await;
         assert_eq!(cache.entry_count(), 0, "empty payload must not create an entry");
         assert!(cache.lookup_bytes("empty-key").await.is_none(), "empty key must not be findable");
+    }
+
+    /// Verifies that `touch()` bumps `last_access` so an entry survives prune.
+    #[tokio::test]
+    async fn touch_bumps_last_access_and_prevents_prune() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 1)
+            .await
+            .expect("open cache");
+
+        cache.store_bytes("key", b"data").await;
+
+        // Wait for TTL to expire (1 second).
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // Touch moves last_access forward to now.
+        cache.touch("key");
+
+        // Prune — entry should survive because touch moved last_access
+        // past the cutoff (now - 1s).
+        let report = cache.prune_expired_entries().await.expect("prune");
+        assert_eq!(report.removed_entries, 0, "touched entry must survive prune");
+        let retrieved = cache.lookup_bytes("key").await;
+        assert_eq!(retrieved, Some(b"data".to_vec()));
+    }
+
+    /// Verifies that `lookup_bytes()` does not update `last_access`.
+    #[tokio::test]
+    async fn lookup_bytes_does_not_bump_last_access() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
+                .await
+                .expect("open cache");
+
+        cache.store_bytes("key", b"data").await;
+        let before = cache.get_entry_last_access("key").expect("entry exists");
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let _ = cache.lookup_bytes("key").await;
+        let after = cache.get_entry_last_access("key").expect("entry still exists");
+        assert_eq!(before, after, "lookup_bytes must not bump last_access");
+    }
+
+    /// Verifies that `touch()` bumps `last_access`.
+    #[tokio::test]
+    async fn touch_bumps_last_access() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
+                .await
+                .expect("open cache");
+
+        cache.store_bytes("key", b"data").await;
+        let before = cache.get_entry_last_access("key").expect("entry exists");
+
+        // Timestamps are in seconds; sleep 1s to guarantee a different second.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        cache.touch("key");
+        let after = cache.get_entry_last_access("key").expect("entry still exists");
+        assert!(after > before, "touch must bump last_access");
+    }
+
+    /// Verifies that pruning one index does not delete payloads referenced
+    /// by another index sharing the same CAS store.
+    #[tokio::test]
+    async fn prune_cross_index_payload_gc_keeps_shared_references() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache_a = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
+            .await
+            .expect("open cache_a");
+        let cache_b =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tool_metadata.json", 0)
+                .await
+                .expect("open cache_b");
+
+        let payload = b"shared-payload".to_vec();
+        cache_a.store_bytes("key-a", &payload).await;
+        cache_b.store_bytes("key-b", &payload).await;
+
+        // Prune cache_a — key-a entries removed, but payload must survive
+        // because cache_b still references the same hash.
+        let report = cache_a.prune_expired_entries().await.expect("prune cache_a");
+        assert!(report.removed_entries >= 1, "key-a must be pruned");
+
+        // Payload still accessible via cache_b.
+        let retrieved = cache_b.lookup_bytes("key-b").await;
+        assert_eq!(retrieved, Some(payload), "payload must survive cross-index GC");
+    }
+
+    /// Verifies that prune cooldown (24h) prevents re-pruning within the
+    /// interval.
+    #[tokio::test]
+    async fn prune_cooldown_respects_interval() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
+            .await
+            .expect("open cache");
+
+        // First prune — removes the immediately-expired entry.
+        cache.store_bytes("expiring-key", b"ephemeral").await;
+        let report = cache.prune_expired_entries().await.expect("first prune");
+        assert!(report.removed_entries >= 1);
+
+        // Store a fresh entry.
+        cache.store_bytes("fresh-key", b"fresh").await;
+
+        // Second prune within cooldown — must return empty report.
+        let report = cache.prune_expired_entries().await.expect("second prune");
+        assert_eq!(report.removed_entries, 0, "cooldown must prevent pruning");
+        assert_eq!(report.removed_payloads, 0, "cooldown must prevent payload removal");
+
+        // Fresh entry survives because prune didn't run.
+        let retrieved = cache.lookup_bytes("fresh-key").await;
+        assert_eq!(retrieved, Some(b"fresh".to_vec()));
     }
 }

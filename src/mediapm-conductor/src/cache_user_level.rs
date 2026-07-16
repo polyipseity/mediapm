@@ -171,4 +171,53 @@ mod tests {
         let retrieved_after = cache.lookup_bytes(key).await;
         assert_eq!(retrieved_after, Some(payload), "fresh entry must survive prune");
     }
+
+    /// Metadata cache: TTL is creation-based — lookup_bytes does not bump
+    /// last_access, so after TTL expires the entry can be pruned even if it
+    /// was read.
+    #[tokio::test]
+    async fn metadata_cache_ttl_is_creation_based() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // Open with 1-day TTL.
+        let cache = UserLevelCache::open(root.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("open metadata cache");
+        let key = "yt-dlp:latest-tag";
+        cache.store_bytes(key, b"v2025.01.01").await;
+
+        // Simulate a read (no touch).
+        let retrieved = cache.lookup_bytes(key).await;
+        assert_eq!(retrieved, Some(b"v2025.01.01".to_vec()));
+
+        // Re-open with TTL=0 — entries expire immediately.
+        drop(cache);
+        let cache = UserLevelCache::open(root.path(), "tool_metadata.json", 0)
+            .await
+            .expect("open metadata cache");
+
+        // Prune should remove the entry since TTL=0 and last_access was set
+        // at creation time (not bumped by lookup_bytes).
+        let report = cache.prune_expired_entries().await.expect("prune");
+        assert!(report.removed_entries >= 1, "creation-based TTL entry must be pruned");
+        let retrieved = cache.lookup_bytes(key).await;
+        assert!(retrieved.is_none(), "pruned entry must not be retrievable");
+    }
+
+    /// Metadata cache: lookup_bytes must not bump last_access.
+    #[tokio::test]
+    async fn metadata_cache_lookup_does_not_bump_last_access() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = UserLevelCache::open(root.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("open metadata cache");
+
+        cache.store_bytes("test-key", b"test").await;
+        let before = cache.get_entry_last_access("test-key").expect("entry exists");
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let _ = cache.lookup_bytes("test-key").await;
+        let after = cache.get_entry_last_access("test-key").expect("entry exists");
+        assert_eq!(before, after, "metadata cache lookup must not bump last_access");
+    }
 }

@@ -126,10 +126,6 @@ async fn fetch_echo_is_cached_idempotently() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Phase 3 — Postprocess
-// ---------------------------------------------------------------------------
-
 /// Postprocessing echo launchers produces a content map with one entry per OS
 /// (binary format → `{os_label}/{tool_id}` keys) and an `os_exec_paths` map
 /// with one entry per OS.
