@@ -124,7 +124,7 @@ Dual-file ownership model summary:
 - **Last-use semantics**: `last_access_unix_seconds` is set on `store_bytes()` (initial creation) and is **never touched by `lookup_bytes()`**. The consumer for this cache MUST NOT call `touch()`. This means the TTL measures time-since-creation, not time-since-last-use.
 - **Consumer**: Phase 1 (resolve) uses this cache to store/retrieve version-tag resolution results (e.g., "latest tag for tool X as of fetch time"). The resolve phase calls `store_bytes()` on a new tag fetch and `lookup_bytes()` on subsequent accesses without calling `touch()`. After 1 day from creation, the entry expires and the next resolve re-fetches the tag data.
 - **Purpose**: Cache version/tag resolution results so repeated `mediapm tool sync` runs (or runs across projects) do not hit GitHub API/network for every tool on every invocation.
-- **Key**: Tool-name + version-spec composite string (e.g., `"yt-dlp:latest"`, `"ffmpeg:7.1"`).
+- **Key**: Resolution API endpoint URL (e.g., `"https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"`, `"https://evermeet.cx/ffmpeg/info/zip"`).
 - **API**: `store_bytes(key, bytes)` / `lookup_bytes(key)` (no `touch()` on read).
 - **Module**: `src/mediapm-conductor/src/cache.rs` and `cache_user_level.rs`.
 

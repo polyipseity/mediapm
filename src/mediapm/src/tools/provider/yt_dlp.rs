@@ -4,6 +4,9 @@
 //! standalone binaries (no archive extraction needed). The "latest"
 //! tag is resolved via the GitHub API and cached in the metadata cache.
 
+/// GitHub API endpoint for the latest yt-dlp release.
+const LATEST_API_URL: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
+
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 
 use crate::tools::downloader::ToolDownloadCache;
@@ -14,7 +17,7 @@ use crate::tools::downloader::ToolDownloadCache;
 /// caller must NOT call `touch()` on the metadata cache — the 1-day TTL
 /// is anchored to creation time, not last use.
 ///
-/// Cache key: `"yt-dlp:latest-tag"`.
+/// Cache key: [`LATEST_API_URL`] (the API endpoint URL).
 ///
 /// # Errors
 ///
@@ -23,11 +26,9 @@ use crate::tools::downloader::ToolDownloadCache;
 pub(crate) async fn resolve_latest_tag(
     metadata_cache: Option<&ToolDownloadCache>,
 ) -> Result<String, mediapm_conductor::ConductorError> {
-    let cache_key = "yt-dlp:latest-tag";
-
     // Try metadata cache first.
     if let Some(cache) = metadata_cache {
-        if let Some(bytes) = cache.lookup_bytes(cache_key).await {
+        if let Some(bytes) = cache.lookup_bytes(LATEST_API_URL).await {
             let tag = String::from_utf8(bytes.to_vec()).map_err(|_| {
                 mediapm_conductor::ConductorError::Workflow(
                     "cached tag is not valid UTF-8".to_string(),
@@ -65,7 +66,7 @@ pub(crate) async fn resolve_latest_tag(
 
     // Store in metadata cache. Do NOT call touch() — TTL is creation-time-based.
     if let Some(cache) = metadata_cache {
-        cache.store_bytes(cache_key, tag.as_bytes()).await;
+        cache.store_bytes(LATEST_API_URL, tag.as_bytes()).await;
     }
 
     Ok(tag)
