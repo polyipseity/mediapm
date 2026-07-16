@@ -43,17 +43,22 @@ pub(super) struct FetchedToolPayload {
 /// not interpret the meaning of items or bytes — it only relays the values
 /// to the bar.
 ///
+/// `metadata_cache` is passed to the resolve phase for caching version/tag
+/// resolution results. The consumer must NOT call `touch()` on the metadata
+/// cache — its TTL is creation-time-based.
+///
 /// Returns `Ok(None)` when the tool has no provider sources (internal
 /// launcher, no external download needed).
 pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
     tool_id: &str,
     cache: &ToolDownloadCache,
+    metadata_cache: &ToolDownloadCache,
     group: &dyn ProgressGroupApi,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
     let resolve_bar = group.add_bar(1, &format!("{tool_id} [resolve]"));
-    let fetch = provider::resolve_tool_fetch(tool_id)
+    let fetch = provider::resolve_tool_fetch(tool_id, Some(metadata_cache))
         .await
         .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")))?;
     resolve_bar.finish();
@@ -124,28 +129,40 @@ mod tests {
 
     /// Helper to create the minimal dependencies for tests that exercise
     /// paths not reaching the cache or CAS (unknown tool, no-sources tool).
-    async fn test_deps() -> (impl CasApi, ToolDownloadCache, RecordingProgressTracker, TempDir) {
+    async fn test_deps()
+    -> (impl CasApi, ToolDownloadCache, ToolDownloadCache, RecordingProgressTracker, TempDir) {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
         let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
             .await
             .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
         let tracker = RecordingProgressTracker::new();
-        (cas, cache, tracker, tmp)
+        (cas, cache, metadata_cache, tracker, tmp)
     }
 
     #[tokio::test]
     async fn fetch_and_import_rejects_unknown_tool() {
-        let (cas, cache, tracker, _tmp) = test_deps().await;
-        let result =
-            fetch_and_import_tool_payload(&cas, "nonexistent-tool", &cache, &tracker).await;
+        let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "nonexistent-tool",
+            &cache,
+            &metadata_cache,
+            &tracker,
+        )
+        .await;
         assert!(result.is_err(), "unknown tool should return an error");
     }
 
     #[tokio::test]
     async fn fetch_and_import_media_tagger_returns_none() {
-        let (cas, cache, tracker, _tmp) = test_deps().await;
-        let result = fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker).await;
+        let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &metadata_cache, &tracker)
+                .await;
         match result {
             Ok(None) => {} // expected: no sources → None
             other => panic!("media-tagger should return Ok(None), got {other:?}"),

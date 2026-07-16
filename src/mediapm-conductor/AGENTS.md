@@ -97,31 +97,54 @@ Dual-file ownership model summary:
 
 ## Cache Architecture (Separation of Concerns)
 
-The conductor crate uses two distinct caching layers with different responsibilities:
+## Cache Architecture (Three-Tier)
 
-### `Cache` / `UserLevelDriveCache`
+### 1. Tool content cache (`tools.json`)
 
-- **Type**: Generic key→bytes store backed by a local `FileSystemCas` + JSON index.
-- **Location**: User-level cache directory (per-user, shared across projects).
-- **TTL**: Configurable per instance (30 days for tool binaries, 1 day for metadata).
-- **Purpose**: Download deduplication — avoids re-downloading identical payloads across tool versions and projects.
-- **Key**: Download URI.
+- **Engine**: `Cache` (CAS-backed, logical-key).
+- **Type**: User-level download cache.
+- **Location**: `<os-cache>/mediapm/cache/` (mediapm) or `<os-cache>/mediapm-conductor/cache/` (conductor standalone).
+- **Index file**: `tools.json`.
+- **TTL**: 30 days, based on **last use**.
+- **Last-use semantics**: `last_access_unix_seconds` is set on `store_bytes()` (initial download) and updated by explicit `touch()` call. `lookup_bytes()` does NOT touch the timestamp — the consumer must call `touch()` to refresh.
+- **Consumer**: Phase 2 (fetch) calls `cache.touch(key)` on cache hit, so last use reflects when the content was last downloaded, NOT when the tool was last run.
+- **Purpose**: Avoid re-downloading identical binary payloads across tool versions, projects, or sync runs.
+- **Pruning**: `prune_expired_entries()` removes entries where `last_access_unix_seconds` is older than TTL. Cooldown: 24h between full prune scans. Orphaned CAS payloads (not referenced by any index file in the cache root) are garbage-collected.
+- **Key**: Download URI (first URL in the source's URL list).
 - **API**: `store_bytes(uri, bytes)` / `lookup_bytes(uri)` / `touch(uri)`.
-- **Does NOT**: manage extraction, content maps, or RAII lifecycle.
 - **Module**: `src/mediapm-conductor/src/cache.rs` and `cache_user_level.rs`.
 
-### `ProvisionCache`
+### 2. Tool metadata cache (`tool_metadata.json`)
 
-- **Type**: Per-tool extraction cache with CAS-backed materialization.
-- **Location**: Workspace-scoped `<tools_dir>/<sanitized_tool_id>/`.
-- **TTL**: 24 hours since last use (refreshed on every `materialize` call).
-- **Purpose**: Single-flight extraction and materialization of tool content maps into ready-to-execute directory trees.
+- **Engine**: `Cache` (CAS-backed, logical-key).
+- **Type**: User-level metadata cache.
+- **Location**: Same cache root as tool content cache (shared `<os-cache>/.../cache/` root, separate index file).
+- **Index file**: `tool_metadata.json`.
+- **TTL**: 1 day, based on **creation time**.
+- **Last-use semantics**: `last_access_unix_seconds` is set on `store_bytes()` (initial creation) and is **never touched by `lookup_bytes()`**. The consumer for this cache MUST NOT call `touch()`. This means the TTL measures time-since-creation, not time-since-last-use.
+- **Consumer**: Phase 1 (resolve) uses this cache to store/retrieve version-tag resolution results (e.g., "latest tag for tool X as of fetch time"). The resolve phase calls `store_bytes()` on a new tag fetch and `lookup_bytes()` on subsequent accesses without calling `touch()`. After 1 day from creation, the entry expires and the next resolve re-fetches the tag data.
+- **Purpose**: Cache version/tag resolution results so repeated `mediapm tool sync` runs (or runs across projects) do not hit GitHub API/network for every tool on every invocation.
+- **Key**: Tool-name + version-spec composite string (e.g., `"yt-dlp:latest"`, `"ffmpeg:7.1"`).
+- **API**: `store_bytes(key, bytes)` / `lookup_bytes(key)` (no `touch()` on read).
+- **Module**: `src/mediapm-conductor/src/cache.rs` and `cache_user_level.rs`.
+
+### 3. Tool-content provision cache (`ProvisionCache`)
+
+- **Type**: Per-tool extraction cache with CAS-backed materialization and RAII guards.
+- **Location**: Workspace-scoped `<workspace>/tools/<sanitized_tool_id>/`.
+- **TTL**: 24 hours since last use, refreshed on every `materialize()` call.
+- **Purpose**: Single-flight extraction of tool content maps into ready-to-execute directory trees. Holds advisory locks to prevent pruning while in use.
 - **Key**: Tool id (filesystem-sanitized).
 - **API**: `materialize(tool_id, content_map) → ProvisionedTool (RAII guard)`, `prune_expired()`, `retain_only()`.
 - **Extra**: Platform filtering via `link_to_sandbox(payload_dir, sandbox_dir)` to exclude foreign-platform directories.
 - **Module**: `src/mediapm-conductor/src/provision/`.
 
-**Hard rule**: These two caches are never interchangeable. The `Cache` layer stores raw downloaded bytes keyed by URI; the `ProvisionCache` layer stores extracted tool trees keyed by tool id. Downstream code must not bypass `ProvisionCache` to read from `tools_dir/` directly.
+### Hard rules
+
+1. The tool content cache (`tools.json`) and tool metadata cache (`tool_metadata.json`) share the same CAS `store/` and cache root but have independent index files and TTL policies. Both are `Cache` engine instances opened with different index-file names.
+2. The provision cache (`ProvisionCache`) is a fundamentally different mechanism — it manages extracted tool trees with file locks, not raw bytes with CAS hashes. Never bypass `ProvisionCache` to read from `<tools_dir>/` directly.
+3. The `tools.json` cache consumer (phase 2) calls `touch()` on cache hit — this is intentional so the 30-day TTL measures last-download, not last-run.
+4. The `tool_metadata.json` cache consumer (phase 1) must NOT call `touch()` on cache hit — this keeps the TTL anchored to creation time.
 
 ## Conductor Builtin Tool Strategy
 

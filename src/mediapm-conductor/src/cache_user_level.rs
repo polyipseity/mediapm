@@ -2,6 +2,24 @@
 //!
 //! A thin newtype wrapper around the generic [`Cache`] that anchors the cache
 //! root at a user-level directory (OS cache dir).
+//!
+//! # Three-tier cache model
+//!
+//! This crate provides two user-level cache tiers that share a CAS `store/`
+//! but have independent index files and TTL policies:
+//!
+//! 1. **Tool content cache** (`tools.json`, 30-day TTL, last-use-based): stores
+//!    raw downloaded bytes for tool binaries. The phase 2 (fetch) consumer calls
+//!    `touch()` on cache hit so TTL measures last-download.
+//! 2. **Tool metadata cache** (`tool_metadata.json`, 1-day TTL, creation-time-based):
+//!    stores version/tag resolution results. The phase 1 (resolve) consumer MUST
+//!    NOT call `touch()` on read — TTL is anchored to creation time.
+//! 3. **Provision cache** (separate mechanism, see `crate::provision`): manages
+//!    extracted tool trees with file locks under `<workspace>/tools/`. This is a
+//!    fundamentally different mechanism and never interchangeable with the above
+//!    two tiers.
+//!
+//! The provision cache lives in the `provision` module and is not a `Cache` variant.
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};

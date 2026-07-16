@@ -81,13 +81,16 @@ pub(crate) async fn reconcile_desired_tools(
     //    content maps and tool specs.
     let mut tool_runtimes: BTreeMap<String, ToolRuntime> = BTreeMap::new();
 
-    // Open or create the tool download cache.
+    // Open or create the tool download cache and tool metadata cache.
     let cache_root = default_mediapm_user_download_cache_root().ok_or_else(|| {
         MediaPmError::Workflow("could not determine default tool cache root".to_string())
     })?;
     let cache = ToolDownloadCache::open(&cache_root, "tools.json", 30 * 24 * 60 * 60)
         .await
         .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
+    let metadata_cache = ToolDownloadCache::open(&cache_root, "tool_metadata.json", 24 * 60 * 60)
+        .await
+        .map_err(|e| MediaPmError::Workflow(format!("failed to open tool metadata cache: {e}")))?;
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = desired_tools.len() as u64;
@@ -113,7 +116,8 @@ pub(crate) async fn reconcile_desired_tools(
 
         // Fetch tool payload, import to CAS, get content map + command.
         let payload_result =
-            fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group).await;
+            fetch_and_import_tool_payload(cas, tool_id, &cache, &metadata_cache, effective_group)
+                .await;
 
         match payload_result {
             Ok(Some(payload)) => {

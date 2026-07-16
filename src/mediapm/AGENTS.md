@@ -184,14 +184,18 @@ Follow this spec-first, test-first workflow:
    - Preset produces valid `ToolSpec` with non-empty command/inputs/outputs
    - Workflow step synthesizes correct command-line tokens
 
-## Cache Domain Separation
+## Cache Architecture (Three-Tier)
 
-MediaPM interacts with two distinct caching layers:
+MediaPM interacts with three distinct caching layers. See `src/mediapm-conductor/AGENTS.md` for the detailed three-tier specification.
 
-1. **User-level download cache** (`Cache` / `UserLevelCache`): `<os-cache-dir>/mediapm/cache/`. Stores raw downloaded bytes keyed by download URI. 30-day TTL. Used by the provider pipeline to avoid re-downloading identical payloads.
-2. **Workspace-scoped provision cache** (`ProvisionCache`): `<mediapm_dir>/tools/<tool-id>/`. Stores extracted tool trees keyed by tool id. 24-hour TTL. Used by the conductor bridge to materialize tool content maps for reconciliation.
+1. **Tool content cache** (`tools.json`): `<os-cache>/mediapm/cache/`. Raw downloaded bytes keyed by download URI. 30-day TTL based on last use (touch-on-read).
+2. **Tool metadata cache** (`tool_metadata.json`): `<os-cache>/mediapm/cache/`. Raw bytes for version/tag resolution results. 1-day TTL based on creation time (no touch on read).
+3. **Provision cache** (`ProvisionCache`): `<mediapm_dir>/tools/<tool-id>/`. Extracted tool trees keyed by tool id. 24-hour TTL refreshed on `materialize()`. RAII guards prevent prune during use.
 
-**Hard boundary**: The download cache and provision cache are never interchangeable. Do not read from `<mediapm_dir>/tools/` directly; always go through `ProvisionCache::materialize`.
+**Hard boundaries**:
+
+- The content cache and metadata cache share the same CAS `store/` but have independent index files and TTL policies.
+- The download cache and provision cache are never interchangeable. Do not read from `<mediapm_dir>/tools/` directly; always go through `ProvisionCache::materialize`.
 
 ## Materialization
 
