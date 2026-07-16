@@ -16,7 +16,7 @@ use mediapm_cas::CasApi;
 use mediapm_conductor::tools::provider::{
     ResolvedSource, SourceProducer, fetch_tool_sources, postprocess_tool_sources,
 };
-use mediapm_utils::progress::{ProviderPhase, ProviderProgressCallback, TrackStatus};
+use mediapm_utils::progress::ProviderProgressCallback;
 
 use crate::error::MediaPmError;
 use crate::output::ProgressGroupApi;
@@ -50,10 +50,10 @@ pub(super) struct FetchedToolPayload {
 /// phase 2 progress bars start with an accurate byte total. Evermeet and
 /// getrelease URLs are skipped (dynamic endpoints).
 ///
-/// A pre-tick hook is registered on `group` so that all three progress bars
-/// display `position = total` when finished, even if the callback closures
-/// never updated position to match total. This eliminates the need for
-/// explicit `set_position(total)` before `finish()`.
+/// The resolve bar's position and total are set to `fetch.total_items`
+/// before finishing, so it shows the correct count. Phase 2 and 3 bars are
+/// created on-demand — one before fetching, one before postprocessing — so
+/// bars only appear when their phase actively runs.
 ///
 /// `metadata_cache` is passed to the resolve phase for caching version/tag
 /// resolution results. The consumer must NOT call `touch()` on the metadata
@@ -73,6 +73,8 @@ pub(super) async fn fetch_and_import_tool_payload(
     let mut fetch = provider::resolve_tool_fetch(tool_id, Some(metadata_cache))
         .await
         .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")))?;
+    resolve_bar.set_position(fetch.total_items);
+    resolve_bar.set_total(fetch.total_items);
     resolve_bar.finish();
 
     // Phase 1b: Prefetch expected sizes via HEAD requests.
@@ -83,70 +85,37 @@ pub(super) async fn fetch_and_import_tool_payload(
         return Ok(None);
     }
 
-    // Create 2 more phase-agnostic progress bars (fetch, postprocess).
     let total = fetch.sources.len() as u64;
-    let fetch_bar = group.add_bar(total, &format!("{tool_id} [fetch]"));
-    let postprocess_bar = group.add_bar(total, &format!("{tool_id} [process]"));
-
-    // Pre-tick hook: ensure finished bars show position = total.
-    // Catches bars that were finished without updating position.
-    {
-        let resolve_hook = resolve_bar.clone();
-        let fetch_hook = fetch_bar.clone();
-        let process_hook = postprocess_bar.clone();
-        group.add_pre_tick_hook(Arc::new(move || {
-            let r = resolve_hook.snapshot();
-            if r.status != TrackStatus::Active && r.position < r.total {
-                resolve_hook.set_position(r.total);
-            }
-            let f = fetch_hook.snapshot();
-            if f.status != TrackStatus::Active && f.position < f.total {
-                fetch_hook.set_position(f.total);
-            }
-            let p = process_hook.snapshot();
-            if p.status != TrackStatus::Active && p.position < p.total {
-                process_hook.set_position(p.total);
-            }
-        }));
-    }
-
-    let fetch_bar_cb = fetch_bar.clone();
-    let postprocess_bar_cb = postprocess_bar.clone();
-    let tool_id_for_closure = tool_id.to_string();
-    let progress_cb: Option<ProviderProgressCallback> = {
-        Some(Arc::new(move |snap| match snap.phase {
-            ProviderPhase::Fetch => {
-                fetch_bar_cb.set_prefix(&format!(
-                    "{tool_id_for_closure} [fetch] {}/{}",
-                    snap.items.0, snap.items.1
-                ));
-                fetch_bar_cb.set_position(snap.bytes.0);
-                fetch_bar_cb.set_total(snap.bytes.1);
-            }
-            ProviderPhase::Postprocess => {
-                postprocess_bar_cb.set_prefix(&format!(
-                    "{tool_id_for_closure} [process] {}/{}",
-                    snap.items.0, snap.items.1
-                ));
-                postprocess_bar_cb.set_position(snap.bytes.0);
-                postprocess_bar_cb.set_total(snap.bytes.1);
-            }
-            ProviderPhase::Resolve => {}
-        }))
-    };
 
     // Phase 2: Fetch — download (or generate) bytes for each source.
-    let downloaded = fetch_tool_sources(&fetch, cache, progress_cb.clone())
+    let fetch_bar = group.add_bar(total, &format!("{tool_id} [fetch]"));
+    let fetch_bar_cb = fetch_bar.clone();
+    let fetch_tool_id = tool_id.to_string();
+    let fetch_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
+        fetch_bar_cb
+            .set_prefix(&format!("{fetch_tool_id} [fetch] {}/{}", snap.items.0, snap.items.1));
+        fetch_bar_cb.set_position(snap.bytes.0);
+        fetch_bar_cb.set_total(snap.bytes.1);
+    }));
+    let downloaded = fetch_tool_sources(&fetch, cache, fetch_progress)
         .await
         .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: fetch failed: {e}")))?;
+    fetch_bar.finish();
 
     // Phase 3: Postprocess — extract archives, repack to uncompressed ZIP,
     // import to CAS, build content map + command selector.
-    let result = postprocess_tool_sources(&downloaded, cas, progress_cb)
+    let postprocess_bar = group.add_bar(total, &format!("{tool_id} [process]"));
+    let postprocess_bar_cb = postprocess_bar.clone();
+    let pp_tool_id = tool_id.to_string();
+    let pp_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
+        postprocess_bar_cb
+            .set_prefix(&format!("{pp_tool_id} [process] {}/{}", snap.items.0, snap.items.1));
+        postprocess_bar_cb.set_position(snap.bytes.0);
+        postprocess_bar_cb.set_total(snap.bytes.1);
+    }));
+    let result = postprocess_tool_sources(&downloaded, cas, pp_progress)
         .await
         .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: postprocess failed: {e}")))?;
-
-    fetch_bar.finish();
     postprocess_bar.finish();
 
     Ok(Some(FetchedToolPayload {

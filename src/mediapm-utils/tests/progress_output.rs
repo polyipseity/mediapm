@@ -17,8 +17,7 @@ use std::time::Duration;
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use mediapm_utils::progress::{
-    DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TimeSource, TrackStatus,
-    TrackedHandle,
+    DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TimeSource, TrackedHandle,
 };
 
 /// Default terminal dimensions for standard tests.
@@ -4332,35 +4331,4 @@ fn rate_always_shown() {
             || contents.contains("/d"),
         "rate must appear even on idle active bar: {contents:?}"
     );
-}
-
-/// Pre-tick hook corrects a finished bar whose position never reached total.
-#[test]
-fn pre_tick_hook_syncs_finished_bar_position() {
-    let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
-
-    // Create a bar and immediately finish it so position=0, status=Finished.
-    let bar = group.add_bar(5, "tool-a");
-
-    // Register hook that syncs finished bars to position=total.
-    let hook_bar = bar.clone();
-    group.add_pre_tick_hook(Arc::new(move || {
-        let snap = hook_bar.snapshot();
-        if snap.status != TrackStatus::Active && snap.position < snap.total {
-            hook_bar.set_position(snap.total);
-        }
-    }));
-
-    bar.finish(); // position=0, status=Finished
-
-    // Tick: hook fires → sets position=5 before render sync.
-    group.tick();
-
-    let contents = term.contents();
-    assert!(
-        contents.contains("5/5"),
-        "pre-tick hook must set position=total on finished bar, got: {contents:?}"
-    );
-    assert!(contents.contains("tool-a"), "bar label must be visible, got: {contents:?}");
 }
