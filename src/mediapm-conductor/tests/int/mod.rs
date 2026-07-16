@@ -19,3 +19,6 @@ mod platform_filtering;
 
 /// Provider pipeline: resolve → fetch → postprocess for tool provisioning.
 mod provider_pipeline;
+
+/// Provision cache and download cache domain separation.
+mod provision_domain_separation;
