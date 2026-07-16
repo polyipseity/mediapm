@@ -106,8 +106,33 @@ pub(crate) async fn resolve_tool_fetch(
             }
             Ok(fetch)
         }
-        n if n.eq_ignore_ascii_case("ffmpeg") => Ok(ffmpeg::sources()),
-        n if n.eq_ignore_ascii_case("deno") => Ok(deno::sources()),
+        n if n.eq_ignore_ascii_case("ffmpeg") => {
+            let tag = ffmpeg::resolve_tag(metadata_cache).await?;
+            let mut fetch = ffmpeg::sources();
+            for source in &mut fetch.sources {
+                if let SourceProducer::Fetch { urls } = &mut source.producer {
+                    for url in urls.iter_mut() {
+                        // Only substitute BtbN URLs; Evermeet macOS URL stays floating.
+                        if url.contains("BtbN") {
+                            *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
+                        }
+                    }
+                }
+            }
+            Ok(fetch)
+        }
+        n if n.eq_ignore_ascii_case("deno") => {
+            let tag = deno::resolve_tag(metadata_cache).await?;
+            let mut fetch = deno::sources();
+            for source in &mut fetch.sources {
+                if let SourceProducer::Fetch { urls } = &mut source.producer {
+                    for url in urls.iter_mut() {
+                        *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
+                    }
+                }
+            }
+            Ok(fetch)
+        }
         n if n.eq_ignore_ascii_case("rsgain") => Ok(rsgain::sources()),
         n if n.eq_ignore_ascii_case("media-tagger") => Ok(media_tagger::sources()),
         n if n.eq_ignore_ascii_case("sd") => Ok(sd::sources()),

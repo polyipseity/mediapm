@@ -4,6 +4,15 @@
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 
+use crate::tools::downloader::ToolDownloadCache;
+
+/// Resolves the latest tag for deno from GitHub releases.
+pub(crate) async fn resolve_tag(
+    metadata_cache: Option<&ToolDownloadCache>,
+) -> Result<String, mediapm_conductor::ConductorError> {
+    super::resolve_latest_github_tag("denoland", "deno", metadata_cache).await
+}
+
 /// Returns the resolved sources for `deno`.
 #[must_use]
 pub(crate) fn sources() -> ResolvedToolFetch {

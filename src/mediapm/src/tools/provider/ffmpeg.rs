@@ -6,6 +6,19 @@
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 
+use crate::tools::downloader::ToolDownloadCache;
+
+/// Resolves the latest tag for BtbN/FFmpeg-Builds.
+///
+/// Windows and Linux sources use BtbN GitHub releases; macOS uses
+/// evermeet.cx (no resolution needed — the `getrelease/zip` endpoint
+/// always serves the latest build).
+pub(crate) async fn resolve_tag(
+    metadata_cache: Option<&ToolDownloadCache>,
+) -> Result<String, mediapm_conductor::ConductorError> {
+    super::resolve_latest_github_tag("BtbN", "FFmpeg-Builds", metadata_cache).await
+}
+
 /// Returns the resolved sources for `ffmpeg`.
 #[must_use]
 pub(crate) fn sources() -> ResolvedToolFetch {
