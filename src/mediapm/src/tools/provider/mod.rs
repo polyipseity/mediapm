@@ -293,4 +293,200 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn resolve_latest_github_tag_round_trip() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+
+        let owner = "testowner";
+        let repo = "testrepo";
+        let expected_tag = "v1.0.0";
+        let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
+
+        // Pre-seed metadata cache so the helper returns cached data without network.
+        cache.store_bytes(&api_url, expected_tag.as_bytes()).await;
+
+        let tag = resolve_latest_github_tag(owner, repo, Some(&cache))
+            .await
+            .expect("resolve_latest_github_tag should succeed with cached data");
+
+        assert_eq!(tag, expected_tag, "cached tag should be returned without HTTP call",);
+    }
+
+    #[tokio::test]
+    async fn resolve_tool_fetch_exact_urls_after_resolution() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+
+        // Pre-seed metadata cache with known tags for all tools.
+        for (api_url, tag) in &[
+            ("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", "2025.07.15"),
+            ("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest", "L2025-07-15"),
+            ("https://api.github.com/repos/denoland/deno/releases/latest", "v2.2.12"),
+            ("https://api.github.com/repos/complexlogic/rsgain/releases/latest", "v3.7"),
+            ("https://api.github.com/repos/chmln/sd/releases/latest", "v1.1.0"),
+        ] {
+            cache.store_bytes(api_url, tag.as_bytes()).await;
+        }
+
+        // — yt-dlp (tag "2025.07.15", no v-prefix, no filename rewrite) —
+        {
+            let fetch = resolve_tool_fetch("yt-dlp", Some(&cache)).await.unwrap();
+            assert_eq!(fetch.sources.len(), 3, "yt-dlp: expected 3 OS sources");
+            // Assert exact URLs per OS source.
+            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
+                assert_eq!(fetch.sources[0].os, "windows");
+                assert_eq!(
+                    urls,
+                    &["https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp.exe"]
+                );
+            }
+            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
+                assert_eq!(fetch.sources[1].os, "macos");
+                assert_eq!(
+                    urls,
+                    &["https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_macos"]
+                );
+            }
+            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
+                assert_eq!(fetch.sources[2].os, "linux");
+                assert_eq!(
+                    urls,
+                    &["https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_linux"]
+                );
+            }
+        }
+
+        // — ffmpeg (tag "L2025-07-15", BtbN substituted, Evermeet untouched) —
+        {
+            let fetch = resolve_tool_fetch("ffmpeg", Some(&cache)).await.unwrap();
+            assert_eq!(fetch.sources.len(), 3, "ffmpeg: expected 3 OS sources");
+            // windows: BtbN with tag, 2 fallback URLs
+            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
+                assert_eq!(fetch.sources[0].os, "windows");
+                assert_eq!(urls.len(), 2);
+                assert!(
+                    urls[0].contains("L2025-07-15"),
+                    "ffmpeg windows primary URL should contain tag"
+                );
+                assert!(urls[0].contains("BtbN"), "ffmpeg windows primary URL should be BtbN");
+                assert!(
+                    urls[1].contains("L2025-07-15"),
+                    "ffmpeg windows fallback URL should contain tag"
+                );
+            }
+            // macos: Evermeet, completely unchanged
+            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
+                assert_eq!(fetch.sources[1].os, "macos");
+                assert_eq!(urls, &["https://evermeet.cx/ffmpeg/getrelease/zip"]);
+            }
+            // linux: BtbN with tag, 2 fallback URLs
+            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
+                assert_eq!(fetch.sources[2].os, "linux");
+                assert_eq!(urls.len(), 2);
+                assert!(
+                    urls[0].contains("L2025-07-15"),
+                    "ffmpeg linux primary URL should contain tag"
+                );
+                assert!(urls[0].contains("BtbN"), "ffmpeg linux primary URL should be BtbN");
+            }
+        }
+
+        // — deno (tag "v2.2.12", v-prefixed, no filename rewrite) —
+        {
+            let fetch = resolve_tool_fetch("deno", Some(&cache)).await.unwrap();
+            assert_eq!(fetch.sources.len(), 3, "deno: expected 3 OS sources");
+            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
+                assert_eq!(fetch.sources[0].os, "windows");
+                assert!(urls[0].contains("v2.2.12"), "deno windows URL should contain tag");
+                assert!(
+                    urls[0].ends_with("deno-x86_64-pc-windows-msvc.zip"),
+                    "deno windows URL filename mismatch",
+                );
+            }
+            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
+                assert_eq!(fetch.sources[1].os, "macos");
+                assert!(urls[0].contains("v2.2.12"), "deno macos URL should contain tag");
+                assert!(
+                    urls[0].ends_with("deno-aarch64-apple-darwin.zip"),
+                    "deno macos primary URL filename mismatch",
+                );
+                assert_eq!(urls.len(), 2, "deno macos should have 2 URLs");
+            }
+            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
+                assert_eq!(fetch.sources[2].os, "linux");
+                assert!(urls[0].contains("v2.2.12"), "deno linux URL should contain tag");
+                assert_eq!(urls.len(), 2, "deno linux should have 2 URLs");
+            }
+        }
+
+        // — rsgain (tag "v3.7", path + filename rewrite: rsgain-latest → rsgain-3.7) —
+        {
+            let fetch = resolve_tool_fetch("rsgain", Some(&cache)).await.unwrap();
+            assert_eq!(fetch.sources.len(), 3, "rsgain: expected 3 OS sources");
+            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
+                assert_eq!(fetch.sources[0].os, "windows");
+                assert_eq!(
+                    urls,
+                    &[
+                        "https://github.com/complexlogic/rsgain/releases/download/v3.7/rsgain-3.7-win64.zip"
+                    ]
+                );
+            }
+            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
+                assert_eq!(fetch.sources[1].os, "macos");
+                assert_eq!(
+                    urls,
+                    &[
+                        "https://github.com/complexlogic/rsgain/releases/download/v3.7/rsgain-3.7-macOS-x86_64.zip"
+                    ]
+                );
+            }
+            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
+                assert_eq!(fetch.sources[2].os, "linux");
+                assert_eq!(
+                    urls,
+                    &[
+                        "https://github.com/complexlogic/rsgain/releases/download/v3.7/rsgain-3.7-Linux.tar.xz"
+                    ]
+                );
+            }
+        }
+
+        // — sd (tag "v1.1.0", path + filename rewrite: sd-latest → sd-1.1.0) —
+        {
+            let fetch = resolve_tool_fetch("sd", Some(&cache)).await.unwrap();
+            assert_eq!(fetch.sources.len(), 3, "sd: expected 3 OS sources");
+            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
+                assert_eq!(fetch.sources[0].os, "windows");
+                assert_eq!(
+                    urls,
+                    &[
+                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-1.1.0-x86_64-pc-windows-msvc.zip"
+                    ]
+                );
+            }
+            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
+                assert_eq!(fetch.sources[1].os, "macos");
+                assert_eq!(
+                    urls,
+                    &[
+                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-1.1.0-aarch64-apple-darwin.tar.gz"
+                    ]
+                );
+            }
+            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
+                assert_eq!(fetch.sources[2].os, "linux");
+                assert_eq!(
+                    urls,
+                    &[
+                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-1.1.0-x86_64-unknown-linux-gnu.tar.gz"
+                    ]
+                );
+            }
+        }
+    }
 }
