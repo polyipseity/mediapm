@@ -176,8 +176,23 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_tool_fetch_routes_all_tools() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+
+        // Pre-seed metadata cache for network-backed tools to avoid real API calls.
+        for (api_url, tag) in &[
+            ("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", "2025.07.15"),
+            ("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest", "L2025-07-15"),
+            ("https://api.github.com/repos/denoland/deno/releases/latest", "v2.2.12"),
+            ("https://api.github.com/repos/complexlogic/rsgain/releases/latest", "v3.7"),
+            ("https://api.github.com/repos/chmln/sd/releases/latest", "v1.1.0"),
+        ] {
+            cache.store_bytes(api_url, tag.as_bytes()).await;
+        }
+
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "sd"] {
-            let result = resolve_tool_fetch(name, None).await;
+            let result = resolve_tool_fetch(name, Some(&cache)).await;
             assert!(result.is_ok(), "tool {name}: resolve should succeed");
             let fetch = result.unwrap();
             assert_eq!(fetch.tool_id, *name, "tool_id should match input name");
@@ -198,16 +213,83 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_tool_fetch_each_fetched_tool_has_three_os_entries() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+
+        // Pre-seed metadata cache to avoid real API calls.
+        for (api_url, tag) in &[
+            ("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", "2025.07.15"),
+            ("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest", "L2025-07-15"),
+            ("https://api.github.com/repos/denoland/deno/releases/latest", "v2.2.12"),
+            ("https://api.github.com/repos/complexlogic/rsgain/releases/latest", "v3.7"),
+            ("https://api.github.com/repos/chmln/sd/releases/latest", "v1.1.0"),
+        ] {
+            cache.store_bytes(api_url, tag.as_bytes()).await;
+        }
+
         // media-tagger is an internal launcher — no external sources.
         let expected_oses = ["windows", "linux", "macos"];
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd"] {
-            let fetch = resolve_tool_fetch(name, None).await.unwrap();
+            let fetch = resolve_tool_fetch(name, Some(&cache)).await.unwrap();
             let oses: Vec<&str> = fetch.sources.iter().map(|s| s.os.as_str()).collect();
             for expected_os in &expected_oses {
                 assert!(
                     oses.contains(expected_os),
                     "tool {name}: missing source for OS {expected_os}; found OSes: {oses:?}"
                 );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_tool_fetch_with_metadata_cache_produces_concrete_urls() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+
+        // Pre-seed metadata cache with tag values for each tool.
+        // The cache keys are the actual API endpoint URLs (URL-based convention).
+        let test_data: Vec<(&str, &str, &str)> = vec![
+            ("yt-dlp", "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", "2025.07.15"),
+            (
+                "ffmpeg",
+                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest",
+                "L2025-07-15",
+            ),
+            ("deno", "https://api.github.com/repos/denoland/deno/releases/latest", "v2.2.12"),
+            ("rsgain", "https://api.github.com/repos/complexlogic/rsgain/releases/latest", "v3.7"),
+            ("sd", "https://api.github.com/repos/chmln/sd/releases/latest", "v1.1.0"),
+        ];
+
+        for (_, api_url, tag) in &test_data {
+            cache.store_bytes(api_url, tag.as_bytes()).await;
+        }
+
+        for (tool_name, _, tag) in &test_data {
+            let fetch = resolve_tool_fetch(tool_name, Some(&cache)).await.unwrap();
+            assert_eq!(fetch.tool_id, *tool_name, "tool_id should match input name",);
+            assert!(!fetch.sources.is_empty(), "tool {tool_name}: should have at least one source",);
+            for source in &fetch.sources {
+                if let SourceProducer::Fetch { urls } = &source.producer {
+                    for url in urls {
+                        // No URL should still contain the /latest/download/ placeholder.
+                        assert!(
+                            !url.contains("/latest/download/"),
+                            "tool {tool_name}: URL {url} still contains placeholder /latest/download/",
+                        );
+                        // For non-ffmpeg tools, and for ffmpeg's BtbN sources (not Evermeet),
+                        // the URL should contain the resolved tag.
+                        if *tool_name != "ffmpeg"
+                            || !url.contains("evermeet") && !url.contains("getrelease")
+                        {
+                            assert!(
+                                url.contains(tag),
+                                "tool {tool_name}: URL {url} does not contain resolved tag '{tag}'",
+                            );
+                        }
+                    }
+                }
             }
         }
     }
