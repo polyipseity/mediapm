@@ -133,9 +133,37 @@ pub(crate) async fn resolve_tool_fetch(
             }
             Ok(fetch)
         }
-        n if n.eq_ignore_ascii_case("rsgain") => Ok(rsgain::sources()),
+        n if n.eq_ignore_ascii_case("rsgain") => {
+            let tag = rsgain::resolve_tag(metadata_cache).await?;
+            let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
+            let mut fetch = rsgain::sources();
+            for source in &mut fetch.sources {
+                if let SourceProducer::Fetch { urls } = &mut source.producer {
+                    for url in urls.iter_mut() {
+                        *url = url
+                            .replace("/latest/download/", &format!("/download/{tag}/"))
+                            .replace("rsgain-latest", &format!("rsgain-{version}"));
+                    }
+                }
+            }
+            Ok(fetch)
+        }
         n if n.eq_ignore_ascii_case("media-tagger") => Ok(media_tagger::sources()),
-        n if n.eq_ignore_ascii_case("sd") => Ok(sd::sources()),
+        n if n.eq_ignore_ascii_case("sd") => {
+            let tag = sd::resolve_tag(metadata_cache).await?;
+            let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
+            let mut fetch = sd::sources();
+            for source in &mut fetch.sources {
+                if let SourceProducer::Fetch { urls } = &mut source.producer {
+                    for url in urls.iter_mut() {
+                        *url = url
+                            .replace("/latest/download/", &format!("/download/{tag}/"))
+                            .replace("sd-latest", &format!("sd-{version}"));
+                    }
+                }
+            }
+            Ok(fetch)
+        }
         _ => Err(mediapm_conductor::ConductorError::Workflow(format!(
             "tool {tool_name}: no provider registered for resolution"
         ))),
