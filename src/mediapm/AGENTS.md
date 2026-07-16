@@ -138,6 +138,8 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 **Provisioning paths**: `<mediapm_dir>/tools/<tool-id>/payload/<os>/`
 **Provision result**: `ProvisionResult { content_map, os_exec_paths }` — the `os_exec_paths` map drives `${context.os == ...}` command selectors in workflow specs. Binary tool filenames are derived from download URLs.
 
+**URL resolution**: All GitHub-hosted tools (yt-dlp, ffmpeg/BtbN, deno, rsgain, sd) use floating placeholder URLs (`/latest/download/`) that are resolved to concrete tags at fetch time via `resolve_latest_github_tag()` in `tools/provider/mod.rs`. The metadata cache key is the API endpoint URL. rsgain and sd additionally rewrite the filename component (`rsgain-latest-*` → `rsgain-{version}-*`). ffmpeg's macOS Evermeet source uses `getrelease/zip` directly without resolution.
+
 **Tool defaults**: yt-dlp max_concurrent_calls=1, max_retries=1; rsgain album=false; media-tagger ca_providers broad, caa_image_types excluding matrix/watermark.
 
 **User-level cache**: `<os-cache-dir>/mediapm/cache/` (30-day eviction) — shared download cache distinct from workspace tool cache.
