@@ -833,6 +833,10 @@ mod inner {
         finalized: Cell<bool>,
         /// Injectable time source (real or synthetic for testing).
         time_source: Arc<dyn TimeSource>,
+        /// Optional callbacks invoked at the start of each tick, before
+        /// state-to-bar sync.  Used to reconcile external state with bar
+        /// [`SharedState`].
+        pre_tick_hooks: Vec<Arc<dyn Fn() + Send + Sync>>,
         /// EMA-smoothed rate tracking, one entry per slot.
         slots_timing: Vec<SlotTiming>,
         /// When `Some`, property-setter terminal writes are suppressed
@@ -923,6 +927,7 @@ mod inner {
                 time_source,
                 slots_timing,
                 buffer_enabled,
+                pre_tick_hooks: Vec::new(),
             }
         }
 
@@ -977,6 +982,7 @@ mod inner {
                     time_source,
                     slots_timing,
                     buffer_enabled,
+                    pre_tick_hooks: Vec::new(),
                 },
                 overall_state,
             )
@@ -1099,6 +1105,11 @@ mod inner {
             // no-ops through BufferedTerm.
             if let Some(ref flag) = self.buffer_enabled {
                 flag.store(true, Ordering::Release);
+            }
+
+            // Step 0: Run pre-tick hooks (before any state-to-bar sync).
+            for hook in &self.pre_tick_hooks {
+                hook();
             }
 
             // Step 2: Existing update logic (unchanged).
@@ -1618,6 +1629,20 @@ mod inner {
             }
         }
 
+        /// Register a pre-tick hook: called at the start of each render
+        /// tick, before state-to-bar sync.  Used to reconcile external
+        /// state with bar [`SharedState`].
+        ///
+        /// # Panics
+        ///
+        /// Panics when the internal `Mutex` is poisoned (another thread
+        /// panicked while holding the lock).
+        pub fn add_pre_tick_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+            if let Some(ref renderer) = self.renderer {
+                renderer.lock().unwrap_or_else(|e| e.into_inner()).pre_tick_hooks.push(hook);
+            }
+        }
+
         /// Force a render sync (used in tests with
         /// [`InMemoryTerm`](indicatif::InMemoryTerm) where the timer
         /// thread does not run).
@@ -1750,6 +1775,9 @@ impl ProgressBarApi for TrackedHandle {
 pub trait ProgressGroupApi {
     /// Add a child bar and return an [`Arc`]-wrapped handle.
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi>;
+
+    /// Register a pre-tick hook.  Default is a no-op.
+    fn add_pre_tick_hook(&self, _hook: Arc<dyn Fn() + Send + Sync>) {}
 }
 
 #[cfg(feature = "progress")]
