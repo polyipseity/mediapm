@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+	"scripts/build-utils",
 	"scripts/cargo-bin",
 	"src/mediapm",
 	"src/mediapm-cas",

@@ -1,0 +1,10 @@
+[package]
+name = "build-utils"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+description = "Shared build-script utilities for the mediapm workspace"
+
+[lints]
+workspace = true

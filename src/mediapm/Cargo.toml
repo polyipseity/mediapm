@@ -62,6 +62,9 @@ url.workspace = true
 unicode-normalization.workspace = true
 zip.workspace = true
 
+[build-dependencies]
+build-utils = { path = "../../scripts/build-utils" }
+
 [dev-dependencies]
 indicatif = { workspace = true, features = ["in_memory"] }
 proptest.workspace = true

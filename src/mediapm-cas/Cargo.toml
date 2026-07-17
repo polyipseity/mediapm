@@ -34,6 +34,9 @@ zerocopy = { workspace = true, features = ["derive"] }
 [dev-dependencies]
 tempfile.workspace = true
 
+[build-dependencies]
+build-utils = { path = "../../scripts/build-utils" }
+
 [[bin]]
 name = "mediapm-cas"
 path = "src/main.rs"

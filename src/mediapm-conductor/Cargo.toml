@@ -59,6 +59,9 @@ zip = { workspace = true, optional = true }
 [dev-dependencies]
 proptest.workspace = true
 
+[build-dependencies]
+build-utils = { path = "../../scripts/build-utils" }
+
 [[bin]]
 name = "mediapm-conductor"
 path = "src/main.rs"
