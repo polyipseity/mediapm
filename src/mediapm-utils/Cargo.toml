@@ -26,3 +26,7 @@ serde_json = { workspace = true, optional = true }
 [dev-dependencies]
 indicatif = { workspace = true, features = ["in_memory"] }
 tempfile.workspace = true
+
+[[test]]
+name = "progress_output"
+path = "tests/progress_output/mod.rs"
