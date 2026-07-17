@@ -5,4 +5,5 @@
 //!
 //! All tests use [`InMemoryCas`](mediapm_cas::storage::in_memory::new_in_memory_cas).
 
+mod common;
 mod int;
