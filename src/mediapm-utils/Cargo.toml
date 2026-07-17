@@ -11,7 +11,7 @@ description = "Shared utility types, path helpers, and builtin boilerplate for m
 default = []
 cli = ["dep:clap"]
 nickel = ["dep:serde", "dep:serde_json"]
-progress = ["dep:indicatif", "dep:console"]
+progress = ["dep:indicatif", "dep:console", "dep:tokio"]
 
 [lints]
 workspace = true
@@ -20,6 +20,7 @@ workspace = true
 clap = { workspace = true, features = ["derive", "std"], optional = true }
 console = { workspace = true, optional = true }
 indicatif = { workspace = true, features = ["tokio"], optional = true }
+tokio = { workspace = true, features = ["time"], optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 

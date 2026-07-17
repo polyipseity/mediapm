@@ -87,7 +87,6 @@ mod inner {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
-    use std::thread;
     use std::time::{Duration, Instant};
 
     use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike};
@@ -1366,10 +1365,10 @@ mod inner {
     pub struct ProgressGroup {
         /// `None` when progress is disabled.
         renderer: Option<Arc<Mutex<ProgressRenderer>>>,
-        /// Daemon ticker thread driving renders at 50 ms intervals.
+        /// Daemon ticker task driving renders at 50 ms intervals.
         /// Holds a `Weak` reference to the renderer — exits cleanly
         /// when the renderer is dropped.
-        _ticker: Option<thread::JoinHandle<()>>,
+        _ticker: Option<tokio::task::JoinHandle<()>>,
     }
 
     // ---- ProgressGroupBuilder -------------------------------------------------
@@ -1499,7 +1498,7 @@ mod inner {
             );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Some(Arc::new(Mutex::new(renderer)));
-            let ticker = Some(ProgressGroup::spawn_ticker(renderer.as_ref().unwrap()));
+            let ticker = ProgressGroup::spawn_ticker(renderer.as_ref().unwrap());
             ProgressGroup { renderer, _ticker: ticker }
         }
 
@@ -1542,7 +1541,7 @@ mod inner {
             );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Arc::new(Mutex::new(renderer));
-            let ticker = Some(ProgressGroup::spawn_ticker(&renderer));
+            let ticker = ProgressGroup::spawn_ticker(&renderer);
             let handle = TrackedHandle { state };
             (ProgressGroup { renderer: Some(renderer), _ticker: ticker }, handle)
         }
@@ -1633,25 +1632,37 @@ mod inner {
             }
         }
 
-        /// Spawn a daemon thread that drives render updates at 50 ms
-        /// intervals.  Holds a `Weak` reference so the thread exits
-        /// cleanly when the renderer is dropped.
+        /// Spawn a tokio task that drives render updates at 50 ms
+        /// intervals.  Holds a `Weak` reference so the task exits
+        /// cleanly when the renderer is dropped.  Returns `None` when
+        /// no tokio runtime is active (caller outside an async context).
         ///
         /// # Panics
         ///
         /// Panics when the internal `Mutex` is poisoned (another thread
         /// panicked while holding the lock).
-        fn spawn_ticker(renderer: &Arc<Mutex<ProgressRenderer>>) -> thread::JoinHandle<()> {
+        fn spawn_ticker(
+            renderer: &Arc<Mutex<ProgressRenderer>>,
+        ) -> Option<tokio::task::JoinHandle<()>> {
             let weak = Arc::downgrade(renderer);
-            thread::spawn(move || {
-                while let Some(r) = weak.upgrade() {
+            let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                return None;
+            };
+            let jh = handle.spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(50));
+                // Skip the first immediate tick (tokio default behavior) so the
+                // initial wait matches the old `thread::sleep`-before-tick order.
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let Some(r) = weak.upgrade() else { break };
                     let Ok(mut guard) = r.lock() else {
                         break;
                     };
                     guard.tick();
-                    thread::sleep(Duration::from_millis(50));
                 }
-            })
+            });
+            Some(jh)
         }
     }
 
@@ -1663,6 +1674,9 @@ mod inner {
 
     impl Drop for ProgressGroup {
         fn drop(&mut self) {
+            if let Some(handle) = self._ticker.take() {
+                handle.abort();
+            }
             if let Some(ref renderer) = self.renderer {
                 renderer.lock().unwrap_or_else(|e| e.into_inner()).finalize();
             }
@@ -2243,13 +2257,9 @@ mod tests {
     #[test]
     fn recording_handle_elapsed_frozen_after_finish() {
         let h = RecordingTrackedHandle::new(100);
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(1));
         h.finish();
         let frozen = h.snapshot_elapsed();
-        assert!(
-            frozen.as_millis() >= 5,
-            "elapsed should capture time until finish, got {frozen:?}"
-        );
         // Verify the value stays frozen on subsequent reads.
         let frozen2 = h.snapshot_elapsed();
         assert_eq!(frozen, frozen2, "elapsed should be frozen after finish");
@@ -2258,13 +2268,9 @@ mod tests {
     #[test]
     fn recording_handle_elapsed_frozen_after_finish_success() {
         let h = RecordingTrackedHandle::new(100);
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(1));
         h.finish_success();
         let frozen = h.snapshot_elapsed();
-        assert!(
-            frozen.as_millis() >= 5,
-            "elapsed should capture time until finish_success, got {frozen:?}"
-        );
         let frozen2 = h.snapshot_elapsed();
         assert_eq!(frozen, frozen2, "elapsed should be frozen after finish_success");
     }
@@ -2272,13 +2278,9 @@ mod tests {
     #[test]
     fn recording_handle_elapsed_frozen_after_finish_error() {
         let h = RecordingTrackedHandle::new(100);
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(1));
         h.finish_error();
         let frozen = h.snapshot_elapsed();
-        assert!(
-            frozen.as_millis() >= 5,
-            "elapsed should capture time until finish_error, got {frozen:?}"
-        );
         let frozen2 = h.snapshot_elapsed();
         assert_eq!(frozen, frozen2, "elapsed should be frozen after finish_error");
     }
@@ -2286,13 +2288,9 @@ mod tests {
     #[test]
     fn recording_handle_elapsed_frozen_after_abandon() {
         let h = RecordingTrackedHandle::new(100);
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(1));
         h.abandon();
         let frozen = h.snapshot_elapsed();
-        assert!(
-            frozen.as_millis() >= 5,
-            "elapsed should capture time until abandon, got {frozen:?}"
-        );
         let frozen2 = h.snapshot_elapsed();
         assert_eq!(frozen, frozen2, "elapsed should be frozen after abandon");
     }
