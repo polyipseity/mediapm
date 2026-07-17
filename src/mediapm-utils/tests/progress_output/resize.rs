@@ -7,7 +7,7 @@ use mediapm_utils::progress::{
 };
 use std::sync::Arc;
 
-use crate::common::*;
+use super::common::*;
 
 #[test]
 fn resize_width_wide_to_narrow_changes_output() {

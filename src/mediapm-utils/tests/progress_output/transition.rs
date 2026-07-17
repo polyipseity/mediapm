@@ -7,7 +7,7 @@ use mediapm_utils::progress::{
 };
 use std::sync::Arc;
 
-use crate::common::*;
+use super::common::*;
 
 #[test]
 fn transition_finish_without_clear() {

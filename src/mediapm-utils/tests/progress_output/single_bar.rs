@@ -7,7 +7,7 @@ use mediapm_utils::progress::{
 };
 use std::sync::Arc;
 
-use crate::common::*;
+use super::common::*;
 
 #[test]
 fn single_bar_empty_after_creation() {
