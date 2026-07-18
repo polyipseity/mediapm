@@ -21,9 +21,6 @@ use std::str::FromStr;
 /// Expected OS labels produced by the echo provider.
 const ECHO_OS_LABELS: &[&str] = &["linux", "macos", "windows"];
 
-/// Number of OS entries the echo provider defines.
-const ECHO_OS_COUNT: u64 = 3;
-
 // ---------------------------------------------------------------------------
 // Phase 1 — Resolve
 // ---------------------------------------------------------------------------
@@ -35,8 +32,7 @@ async fn resolve_echo_returns_three_launcher_sources() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
 
     assert_eq!(fetch.tool_id, "echo");
-    assert_eq!(fetch.sources.len() as u64, ECHO_OS_COUNT);
-    assert_eq!(fetch.total_items, ECHO_OS_COUNT);
+    assert_eq!(fetch.sources.len(), ECHO_OS_LABELS.len());
 
     let oses: Vec<&str> = fetch.sources.iter().map(|s| s.os.as_str()).collect();
     for expected_os in ECHO_OS_LABELS {
@@ -79,7 +75,7 @@ async fn fetch_echo_produces_launcher_scripts_via_cache() {
     let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo sources");
 
     assert_eq!(downloaded.tool_id, "echo");
-    assert_eq!(downloaded.entries.len() as u64, ECHO_OS_COUNT);
+    assert_eq!(downloaded.entries.len(), ECHO_OS_LABELS.len());
 
     for entry in &downloaded.entries {
         assert!(ECHO_OS_LABELS.contains(&entry.os.as_str()), "unexpected OS: {}", entry.os);
@@ -142,7 +138,7 @@ async fn postprocess_echo_produces_correct_content_map_and_os_exec_paths() {
     let result = postprocess_tool_sources(&downloaded, &cas, None).await.expect("postprocess echo");
 
     // Content map: one binary-format entry per OS
-    assert_eq!(result.content_map.len() as u64, ECHO_OS_COUNT, "content map size");
+    assert_eq!(result.content_map.len(), ECHO_OS_LABELS.len(), "content map size");
     for os in ECHO_OS_LABELS {
         let key = format!("{os}/echo");
         assert!(
@@ -153,7 +149,7 @@ async fn postprocess_echo_produces_correct_content_map_and_os_exec_paths() {
     }
 
     // os_exec_paths: one entry per OS
-    assert_eq!(result.os_exec_paths.len() as u64, ECHO_OS_COUNT, "os_exec_paths size");
+    assert_eq!(result.os_exec_paths.len(), ECHO_OS_LABELS.len(), "os_exec_paths size");
     for os in ECHO_OS_LABELS {
         assert!(
             result.os_exec_paths.contains_key(*os),
@@ -200,5 +196,16 @@ async fn full_pipeline_echo_all_hashes_retrievable_from_cas() {
         let bytes = cas.get(hash).await.expect("retrievable from CAS");
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("MEDIAPM_EXECUTABLE"), "CAS content should be launcher script");
+    }
+}
+
+/// Every registered conductor provider returns at least one source —
+/// `sources.len()` must always be a valid positive count for progress bars.
+#[tokio::test]
+async fn resolve_tool_fetch_matches_sources_len_for_all_providers() {
+    for tool_id in &["echo", "fs", "archive", "import", "export", "sd"] {
+        let fetch =
+            resolve_tool_fetch(tool_id).await.unwrap_or_else(|e| panic!("resolve {tool_id}: {e}"));
+        assert!(!fetch.sources.is_empty(), "{tool_id}: expected at least one source, got empty",);
     }
 }

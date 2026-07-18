@@ -50,8 +50,8 @@ pub(super) struct FetchedToolPayload {
 /// phase 2 progress bars start with an accurate byte total. Evermeet and
 /// getrelease URLs are skipped (dynamic endpoints).
 ///
-/// The resolve bar's position and total are set to `fetch.total_items`
-/// before finishing, so it shows the correct count. Phase 2 and 3 bars are
+/// The resolve bar shows 1 item (one resolve call).  Fetch and postprocess
+/// bars show `sources.len()` items (one per source).  Phase 2 and 3 bars are
 /// created on-demand — one before fetching, one before postprocessing — so
 /// bars only appear when their phase actively runs.
 ///
