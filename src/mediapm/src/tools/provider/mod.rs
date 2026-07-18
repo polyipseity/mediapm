@@ -151,14 +151,13 @@ pub(crate) async fn resolve_tool_fetch(
         n if n.eq_ignore_ascii_case("media-tagger") => Ok(media_tagger::sources()),
         n if n.eq_ignore_ascii_case("sd") => {
             let tag = sd::resolve_tag(metadata_cache).await?;
-            let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
             let mut fetch = sd::sources();
             for source in &mut fetch.sources {
                 if let SourceProducer::Fetch { urls } = &mut source.producer {
                     for url in urls.iter_mut() {
                         *url = url
                             .replace("/latest/download/", &format!("/download/{tag}/"))
-                            .replace("sd-latest", &format!("sd-{version}"));
+                            .replace("sd-latest", &format!("sd-{tag}"));
                     }
                 }
             }
@@ -456,7 +455,7 @@ mod tests {
             }
         }
 
-        // — sd (tag "v1.1.0", path + filename rewrite: sd-latest → sd-1.1.0) —
+        // — sd (tag "v1.1.0", path + filename rewrite: sd-latest → sd-v1.1.0) —
         {
             let fetch = resolve_tool_fetch("sd", Some(&cache)).await.unwrap();
             assert_eq!(fetch.sources.len(), 3, "sd: expected 3 OS sources");
@@ -465,7 +464,7 @@ mod tests {
                 assert_eq!(
                     urls,
                     &[
-                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-1.1.0-x86_64-pc-windows-msvc.zip"
+                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-pc-windows-msvc.zip"
                     ]
                 );
             }
@@ -474,7 +473,8 @@ mod tests {
                 assert_eq!(
                     urls,
                     &[
-                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-1.1.0-aarch64-apple-darwin.tar.gz"
+                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-aarch64-apple-darwin.tar.gz",
+                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-apple-darwin.tar.gz",
                     ]
                 );
             }
@@ -483,7 +483,7 @@ mod tests {
                 assert_eq!(
                     urls,
                     &[
-                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-1.1.0-x86_64-unknown-linux-gnu.tar.gz"
+                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-unknown-linux-gnu.tar.gz"
                     ]
                 );
             }

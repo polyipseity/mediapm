@@ -36,6 +36,8 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                     urls: vec![
                         "https://github.com/chmln/sd/releases/latest/download/sd-latest-aarch64-apple-darwin.tar.gz"
                             .to_string(),
+                        "https://github.com/chmln/sd/releases/latest/download/sd-latest-x86_64-apple-darwin.tar.gz"
+                            .to_string(),
                     ],
                 },
                 expected_size: None,
