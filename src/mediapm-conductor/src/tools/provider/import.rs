@@ -24,6 +24,5 @@ pub fn sources() -> ResolvedToolFetch {
                 expected_size: None,
             },
         ],
-        total_items: 3,
     }
 }

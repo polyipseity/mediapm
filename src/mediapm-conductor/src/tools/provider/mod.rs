@@ -173,7 +173,7 @@ pub async fn fetch_tool_sources(
 ) -> Result<DownloadedSources, crate::error::ConductorError> {
     let mut entries = Vec::with_capacity(fetch.sources.len());
     let mut items_done = 0u64;
-    let total = fetch.total_items;
+    let total = fetch.sources.len() as u64;
     let agg_total_bytes: u64 = fetch.sources.iter().map(|s| s.expected_size.unwrap_or(0)).sum();
     let mut agg_completed_bytes: u64 = 0;
 
