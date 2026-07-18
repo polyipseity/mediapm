@@ -87,8 +87,8 @@ pub(super) async fn fetch_and_import_tool_payload(
             return Err(MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")));
         }
     };
-    resolve_bar.set_position(fetch.total_items);
-    resolve_bar.set_total(fetch.total_items);
+    // Resolve is a single operation — total stays at 1 from add_bar(1, ...).
+    resolve_bar.set_position(1);
     resolve_bar.finish();
 
     // Phase 1b: Prefetch expected sizes via HEAD requests.
