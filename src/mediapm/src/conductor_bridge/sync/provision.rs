@@ -226,14 +226,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_and_import_media_tagger_succeeds() {
+    async fn fetch_and_import_generate_launcher_succeeds() {
         let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
         let result =
             fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &metadata_cache, &tracker)
                 .await;
         match result {
             Ok(Some(payload)) => {
-                // media-tagger now returns 3 GenerateLauncher sources (windows/macos/linux).
+                // GenerateLauncher returns 3 inline sources (windows/macos/linux).
                 assert_eq!(payload.content_map.len(), 3, "expected 3 content-map entries");
                 assert_eq!(payload.os_exec_paths.len(), 3, "expected 3 OS exec paths");
                 assert!(
@@ -266,6 +266,59 @@ mod tests {
             }
             Ok(None) => panic!("media-tagger should return Ok(Some(...)), got Ok(None)"),
             Err(e) => panic!("media-tagger should succeed, got Err({e:?})"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_and_import_ytdlp_full_pipeline() {
+        // Full 3-phase pipeline (resolve → fetch → postprocess) for a tool
+        // with URL-based Fetch sources. Pre-seed both the metadata cache
+        // (tag resolution) and the download cache (simulated downloads) so
+        // no network I/O is required beyond the HEAD prefetch probe.
+        let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
+
+        // Pre-seed the metadata cache with a stable tag string.
+        let tag = "2025.07.15";
+        let api_key = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
+        metadata_cache.store_bytes(api_key, tag.as_bytes()).await;
+
+        // Pre-seed the download cache with fake binary content for each OS.
+        let urls_and_bytes: Vec<(&str, &str, &[u8])> = vec![
+            ("windows", "yt-dlp.exe", &b"fake yt-dlp windows binary"[..]),
+            ("macos", "yt-dlp_macos", &b"fake yt-dlp macos binary"[..]),
+            ("linux", "yt-dlp_linux", &b"fake yt-dlp linux binary"[..]),
+        ];
+        for (_os, filename, bytes) in &urls_and_bytes {
+            let url =
+                format!("https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/{filename}");
+            cache.store_bytes(&url, bytes).await;
+        }
+
+        let result =
+            fetch_and_import_tool_payload(&cas, "yt-dlp", &cache, &metadata_cache, &tracker).await;
+        match result {
+            Ok(Some(payload)) => {
+                assert_eq!(
+                    payload.content_map.len(),
+                    3,
+                    "expected 3 content-map entries for yt-dlp"
+                );
+                assert_eq!(payload.os_exec_paths.len(), 3, "expected 3 OS exec paths for yt-dlp");
+                for (os, filename, _) in &urls_and_bytes {
+                    let key = format!("{os}/{filename}");
+                    assert!(
+                        payload.content_map.contains_key(&key),
+                        "missing {key} in content_map for yt-dlp"
+                    );
+                    assert_eq!(
+                        payload.os_exec_paths.get(*os),
+                        Some(&filename.to_string()),
+                        "{os} exec path mismatch for yt-dlp"
+                    );
+                }
+            }
+            Ok(None) => panic!("yt-dlp should return Ok(Some(...)), got Ok(None)"),
+            Err(e) => panic!("yt-dlp should succeed, got Err({e:?})"),
         }
     }
 }

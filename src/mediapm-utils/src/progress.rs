@@ -1148,7 +1148,7 @@ mod inner {
 
                     self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), eta_str.as_deref());
                     if snap.status == TrackStatus::Active {
-                        slot.bar.tick();
+                        // bar.tick() called after buffer disable below.
                     } else if source.is_cleared() {
                         slot.bar.set_style(blank_bar_style());
                         slot.bar.set_message(" ");
@@ -1159,17 +1159,21 @@ mod inner {
                 }
             }
 
-            // Step 3: Disable buffering and draw ONCE.
+            // Step 3: Disable buffering (production mode).
+            // After this point, draws go to the real terminal.
             if let Some(ref flag) = self.buffer_enabled {
                 flag.store(false, Ordering::Release);
-                // Trigger one real draw: pick the first bound bar and tick
-                // it.  This single draw writes ALL bars because
-                // MultiState::draw() collects all members' draw states.
-                for slot in &self.slots {
-                    if slot.source.borrow().is_some() {
-                        slot.bar.tick();
-                        break;
-                    }
+            }
+
+            // Step 4: Tick all bound bars to advance spinner counters.
+            // In production the buffer is already disabled, so each tick()
+            // triggers a real terminal draw.  In test mode (no buffer),
+            // tick() draws go directly to InMemoryTerm.
+            // MultiState::draw() renders ALL members on each tick() call,
+            // so the final tick's draw shows the latest state for all bars.
+            for slot in &self.slots {
+                if slot.source.borrow().is_some() {
+                    slot.bar.tick();
                 }
             }
         }
@@ -2796,6 +2800,72 @@ mod tests {
         let snap = h.snapshot();
         assert_eq!(snap.position, 20);
         assert!(matches!(snap.status, TrackStatus::Active));
+    }
+
+    #[test]
+    fn spinner_advances_per_cycle_for_all_bars() {
+        // Each bar's spinner character must change across ticks, not just
+        // the overall bar's.
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let (group, overall) = super::ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .with_overall("syncing", 3)
+            .build_with_overall();
+
+        let bar1 = group.add_bar(100, "tool [resolve]");
+        let bar2 = group.add_bar(100, "tool [fetch]");
+
+        // Advance time so rate computation has positive dt.
+        ts.advance(std::time::Duration::from_millis(100));
+
+        // Collect the first-char (spinner) from each line across many ticks.
+        let mut snapshots: Vec<Vec<char>> = Vec::new();
+        for _ in 0..30 {
+            // Change positions each tick to trigger tick_inner via setters.
+            bar1.advance(1);
+            bar2.advance(2);
+            overall.advance(0);
+            ts.advance(std::time::Duration::from_millis(50));
+            group.tick();
+
+            let output = term.contents();
+            let line_chars: Vec<char> = output
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.chars().next().unwrap_or(' '))
+                .collect();
+            if !line_chars.is_empty() {
+                snapshots.push(line_chars);
+            }
+        }
+
+        // Must have captured several distinct snapshots.
+        assert!(snapshots.len() >= 10, "expected >=10 captured snapshots, got {}", snapshots.len());
+
+        // Every bar's spinner char must differ between the first and last
+        // snapshot (i.e., it must be animating).
+        let first = &snapshots[0];
+        let last = &snapshots[snapshots.len() - 1];
+        assert_eq!(
+            first.len(),
+            last.len(),
+            "bar count changed between first ({}) and last ({})",
+            first.len(),
+            last.len()
+        );
+        for (i, (f, l)) in first.iter().zip(last.iter()).enumerate() {
+            assert!(f != l, "bar {i}: spinner char did not change ('{f}' == '{l}') after 30 ticks");
+        }
     }
 
     // ── Color helpers (ANSI escape code generation) ─────────────────────
