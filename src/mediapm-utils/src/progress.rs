@@ -1368,7 +1368,7 @@ mod inner {
         /// Daemon ticker task driving renders at 50 ms intervals.
         /// Holds a `Weak` reference to the renderer — exits cleanly
         /// when the renderer is dropped.
-        _ticker: Option<tokio::task::JoinHandle<()>>,
+        _ticker: Option<std::thread::JoinHandle<()>>,
     }
 
     // ---- ProgressGroupBuilder -------------------------------------------------
@@ -1632,10 +1632,15 @@ mod inner {
             }
         }
 
-        /// Spawn a tokio task that drives render updates at 50 ms
-        /// intervals.  Holds a `Weak` reference so the task exits
+        /// Spawn a dedicated thread that drives render updates at 50 ms
+        /// intervals.  Holds a `Weak` reference so the thread exits
         /// cleanly when the renderer is dropped.  Returns `None` when
-        /// no tokio runtime is active (caller outside an async context).
+        /// the thread could not be spawned.
+        ///
+        /// Using a dedicated thread (instead of a tokio task) ensures
+        /// the spinner animates even when the async runtime is under
+        /// load or the mutex is contested — the ticker is completely
+        /// decoupled from the tokio worker pool.
         ///
         /// # Panics
         ///
@@ -1643,26 +1648,26 @@ mod inner {
         /// panicked while holding the lock).
         fn spawn_ticker(
             renderer: &Arc<Mutex<ProgressRenderer>>,
-        ) -> Option<tokio::task::JoinHandle<()>> {
+        ) -> Option<std::thread::JoinHandle<()>> {
             let weak = Arc::downgrade(renderer);
-            let Ok(handle) = tokio::runtime::Handle::try_current() else {
-                return None;
-            };
-            let jh = handle.spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(50));
-                // Skip the first immediate tick (tokio default behavior) so the
-                // initial wait matches the old `thread::sleep`-before-tick order.
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    let Some(r) = weak.upgrade() else { break };
-                    let Ok(mut guard) = r.lock() else {
-                        break;
-                    };
-                    guard.tick();
+            match std::thread::Builder::new().name("mediapm-progress-ticker".into()).spawn(
+                move || {
+                    loop {
+                        std::thread::sleep(Duration::from_millis(50));
+                        let Some(r) = weak.upgrade() else { break };
+                        let Ok(mut guard) = r.lock() else {
+                            break;
+                        };
+                        guard.tick();
+                    }
+                },
+            ) {
+                Ok(handle) => Some(handle),
+                Err(e) => {
+                    eprintln!("warning: failed to start progress ticker thread: {e}");
+                    None
                 }
-            });
-            Some(jh)
+            }
         }
     }
 
@@ -1674,9 +1679,10 @@ mod inner {
 
     impl Drop for ProgressGroup {
         fn drop(&mut self) {
-            if let Some(handle) = self._ticker.take() {
-                handle.abort();
-            }
+            // Drop the ticker handle to detach the thread — it will
+            // exit on its next iteration when weak.upgrade() returns
+            // None (the renderer Arc is dropped right after this).
+            self._ticker.take();
             if let Some(ref renderer) = self.renderer {
                 renderer.lock().unwrap_or_else(|e| e.into_inner()).finalize();
             }
