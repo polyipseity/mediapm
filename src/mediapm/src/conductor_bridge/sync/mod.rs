@@ -23,10 +23,7 @@ use crate::conductor_bridge::documents::{
     apply_builtin_runtime_defaults, load_conductor_generated_document,
     register_missing_builtin_tools, save_conductor_generated_document,
 };
-use crate::conductor_bridge::sync::lifecycle::{
-    ensure_internal_launcher_content_entries_exist, is_builtin_source_ingest_requirement,
-    regenerate_media_tagger_internal_launcher_file,
-};
+use crate::conductor_bridge::sync::lifecycle::is_builtin_source_ingest_requirement;
 use crate::conductor_bridge::sync::provision::fetch_and_import_tool_payload;
 use crate::conductor_bridge::sync::tool_config::{
     resolve_companion_deno_selection, resolve_companion_ffmpeg_selection,
@@ -65,7 +62,7 @@ pub(crate) async fn reconcile_desired_tools(
     paths: &MediaPmPaths,
     desired_tools: &BTreeMap<String, serde_json::Value>,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
-    check_tag_updates: bool,
+    _check_tag_updates: bool,
     progress_group: Option<&dyn ProgressGroupApi>,
 ) -> Result<ToolSyncReport, MediaPmError> {
     let mut report = ToolSyncReport::default();
@@ -216,7 +213,11 @@ pub(crate) async fn reconcile_desired_tools(
         pb.advance(1);
     }
 
-    pb.finish_success();
+    if report.warnings.is_empty() {
+        pb.finish_success();
+    } else {
+        pb.finish_error();
+    }
     if let Some(g) = owned_group {
         g.join();
     }
@@ -225,28 +226,17 @@ pub(crate) async fn reconcile_desired_tools(
     let _ffmpeg_selection = resolve_companion_ffmpeg_selection(desired_tools);
     let _deno_selection = resolve_companion_deno_selection(desired_tools);
 
-    // 4. Apply lifecycle transitions.
-    if !check_tag_updates {
-        // When tag updates are disabled, mark managed tools — the lifecycle
-        // module handles the actual per-tool update-skip check internally.
-    }
+    // 4. Ensure the tools runtime directory exists.
+    std::fs::create_dir_all(&paths.tools_dir).map_err(|source| MediaPmError::Io {
+        operation: "creating tools directory".to_string(),
+        path: paths.tools_dir.clone(),
+        source,
+    })?;
 
-    // 5. Ensure internal launcher content entries exist and regenerate.
-    let tools_dir = &paths.tools_dir;
-    ensure_internal_launcher_content_entries_exist(&mut generated_doc, tools_dir);
-    regenerate_media_tagger_internal_launcher_file(
-        tools_dir,
-        &std::env::current_exe().map_err(|source| crate::error::MediaPmError::Io {
-            operation: "resolving current executable path".to_string(),
-            path: std::path::PathBuf::new(),
-            source,
-        })?,
-    )?;
-
-    // 6. Write generated runtime env file from tool runtimes.
+    // 5. Write generated runtime env file from tool runtimes.
     write_generated_runtime_env_file(paths, &tool_runtimes)?;
 
-    // 7. Save generated document.
+    // 5. Save generated document.
     save_conductor_generated_document(paths, &generated_doc)?;
 
     Ok(report)

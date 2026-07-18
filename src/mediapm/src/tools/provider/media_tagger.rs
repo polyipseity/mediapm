@@ -1,15 +1,34 @@
 //! Provider source definitions for `media-tagger`.
 //!
-//! `media-tagger` is an internal launcher tool shipped with mediapm
-//! itself, not an external download. The sources list is intentionally
-//! empty to signal that the tool does not go through the fetch/postprocess
-//! pipeline. The lifecycle module handles launcher file generation
-//! separately.
+//! `media-tagger` is a builtin launcher tool shipped with mediapm itself.
+//! It uses `GenerateLauncher` sources (like the echo/fs/archive builtins)
+//! so the standard 3-phase provisioning pipeline generates the launcher
+//! script via the conductor's `generate_launcher_script`.
 
-use mediapm_conductor::tools::provider::ResolvedToolFetch;
+use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 
-/// Returns an empty resolved fetch, signalling no external provisioning.
+/// Returns per-OS `GenerateLauncher` sources for the media-tagger builtin.
 #[must_use]
 pub(crate) fn sources() -> ResolvedToolFetch {
-    ResolvedToolFetch { tool_id: "media-tagger".to_string(), sources: vec![], total_items: 0 }
+    ResolvedToolFetch {
+        tool_id: "media-tagger".to_string(),
+        sources: vec![
+            ResolvedSource {
+                os: "windows".to_string(),
+                producer: SourceProducer::GenerateLauncher { builtin_id: "media-tagger".into() },
+                expected_size: None,
+            },
+            ResolvedSource {
+                os: "macos".to_string(),
+                producer: SourceProducer::GenerateLauncher { builtin_id: "media-tagger".into() },
+                expected_size: None,
+            },
+            ResolvedSource {
+                os: "linux".to_string(),
+                producer: SourceProducer::GenerateLauncher { builtin_id: "media-tagger".into() },
+                expected_size: None,
+            },
+        ],
+        total_items: 3,
+    }
 }

@@ -59,8 +59,7 @@ pub(super) struct FetchedToolPayload {
 /// resolution results. The consumer must NOT call `touch()` on the metadata
 /// cache — its TTL is creation-time-based.
 ///
-/// Returns `Ok(None)` when the tool has no provider sources (internal
-/// launcher, no external download needed).
+/// Returns `Ok(None)` when the tool has no provider sources.
 pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
     tool_id: &str,
@@ -68,11 +67,26 @@ pub(super) async fn fetch_and_import_tool_payload(
     metadata_cache: &ToolDownloadCache,
     group: &dyn ProgressGroupApi,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
+    // Track created bars so we can mark them red on error.
+    let mut error_bars: Vec<Arc<dyn crate::output::ProgressBarApi>> = Vec::new();
+
+    // Helper to mark all tracked bars as errored before returning Err.
+    let finish_error_bars = |bars: &[Arc<dyn crate::output::ProgressBarApi>]| {
+        for bar in bars {
+            bar.finish_error();
+        }
+    };
+
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
     let resolve_bar = group.add_bar(1, &format!("{tool_id} [resolve]"));
-    let mut fetch = provider::resolve_tool_fetch(tool_id, Some(metadata_cache))
-        .await
-        .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")))?;
+    error_bars.push(resolve_bar.clone());
+    let mut fetch = match provider::resolve_tool_fetch(tool_id, Some(metadata_cache)).await {
+        Ok(fetch) => fetch,
+        Err(e) => {
+            finish_error_bars(&error_bars);
+            return Err(MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")));
+        }
+    };
     resolve_bar.set_position(fetch.total_items);
     resolve_bar.set_total(fetch.total_items);
     resolve_bar.finish();
@@ -81,7 +95,8 @@ pub(super) async fn fetch_and_import_tool_payload(
     prefetch_expected_sizes(&mut fetch.sources).await;
 
     if fetch.sources.is_empty() {
-        // No sources to fetch (internal launcher tool like media-tagger).
+        // No sources to fetch — return None without error bars since
+        // no bars beyond resolve were created.
         return Ok(None);
     }
 
@@ -89,6 +104,7 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     // Phase 2: Fetch — download (or generate) bytes for each source.
     let fetch_bar = group.add_bar(total, &format!("{tool_id} [fetch]"));
+    error_bars.push(fetch_bar.clone());
     let fetch_bar_cb = fetch_bar.clone();
     let fetch_tool_id = tool_id.to_string();
     let fetch_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
@@ -97,14 +113,19 @@ pub(super) async fn fetch_and_import_tool_payload(
         fetch_bar_cb.set_position(snap.bytes.0);
         fetch_bar_cb.set_total(snap.bytes.1);
     }));
-    let downloaded = fetch_tool_sources(&fetch, cache, fetch_progress)
-        .await
-        .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: fetch failed: {e}")))?;
+    let downloaded = match fetch_tool_sources(&fetch, cache, fetch_progress).await {
+        Ok(d) => d,
+        Err(e) => {
+            finish_error_bars(&error_bars);
+            return Err(MediaPmError::Workflow(format!("tool {tool_id}: fetch failed: {e}")));
+        }
+    };
     fetch_bar.finish();
 
     // Phase 3: Postprocess — extract archives, repack to uncompressed ZIP,
     // import to CAS, build content map + command selector.
     let postprocess_bar = group.add_bar(total, &format!("{tool_id} [process]"));
+    error_bars.push(postprocess_bar.clone());
     let postprocess_bar_cb = postprocess_bar.clone();
     let pp_tool_id = tool_id.to_string();
     let pp_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
@@ -113,9 +134,13 @@ pub(super) async fn fetch_and_import_tool_payload(
         postprocess_bar_cb.set_position(snap.bytes.0);
         postprocess_bar_cb.set_total(snap.bytes.1);
     }));
-    let result = postprocess_tool_sources(&downloaded, cas, pp_progress)
-        .await
-        .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: postprocess failed: {e}")))?;
+    let result = match postprocess_tool_sources(&downloaded, cas, pp_progress).await {
+        Ok(r) => r,
+        Err(e) => {
+            finish_error_bars(&error_bars);
+            return Err(MediaPmError::Workflow(format!("tool {tool_id}: postprocess failed: {e}")));
+        }
+    };
     postprocess_bar.finish();
 
     Ok(Some(FetchedToolPayload {
@@ -201,14 +226,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_and_import_media_tagger_returns_none() {
+    async fn fetch_and_import_media_tagger_succeeds() {
         let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
         let result =
             fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &metadata_cache, &tracker)
                 .await;
         match result {
-            Ok(None) => {} // expected: no sources → None
-            other => panic!("media-tagger should return Ok(None), got {other:?}"),
+            Ok(Some(payload)) => {
+                // media-tagger now returns 3 GenerateLauncher sources (windows/macos/linux).
+                assert_eq!(payload.content_map.len(), 3, "expected 3 content-map entries");
+                assert_eq!(payload.os_exec_paths.len(), 3, "expected 3 OS exec paths");
+                assert!(
+                    payload.content_map.contains_key("windows/media-tagger"),
+                    "missing windows/media-tagger in content_map"
+                );
+                assert!(
+                    payload.content_map.contains_key("macos/media-tagger"),
+                    "missing macos/media-tagger in content_map"
+                );
+                assert!(
+                    payload.content_map.contains_key("linux/media-tagger"),
+                    "missing linux/media-tagger in content_map"
+                );
+                assert_eq!(
+                    payload.os_exec_paths.get("windows"),
+                    Some(&"media-tagger".to_string()),
+                    "windows exec path mismatch"
+                );
+                assert_eq!(
+                    payload.os_exec_paths.get("macos"),
+                    Some(&"media-tagger".to_string()),
+                    "macos exec path mismatch"
+                );
+                assert_eq!(
+                    payload.os_exec_paths.get("linux"),
+                    Some(&"media-tagger".to_string()),
+                    "linux exec path mismatch"
+                );
+            }
+            Ok(None) => panic!("media-tagger should return Ok(Some(...)), got Ok(None)"),
+            Err(e) => panic!("media-tagger should succeed, got Err({e:?})"),
         }
     }
 }

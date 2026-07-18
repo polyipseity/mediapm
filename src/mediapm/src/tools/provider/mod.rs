@@ -196,8 +196,14 @@ mod tests {
             let fetch = result.unwrap();
             assert_eq!(fetch.tool_id, *name, "tool_id should match input name");
             if *name == "media-tagger" {
-                // media-tagger is an internal launcher with no external sources.
-                assert!(fetch.sources.is_empty(), "tool {name}: should have zero sources");
+                // media-tagger is a builtin launcher with 3 GenerateLauncher sources.
+                assert_eq!(fetch.sources.len(), 3, "tool {name}: should have 3 sources");
+                for source in &fetch.sources {
+                    assert!(
+                        matches!(source.producer, SourceProducer::GenerateLauncher { .. }),
+                        "tool {name}: source should be GenerateLauncher"
+                    );
+                }
             } else {
                 assert!(!fetch.sources.is_empty(), "tool {name}: should have at least one source");
             }
