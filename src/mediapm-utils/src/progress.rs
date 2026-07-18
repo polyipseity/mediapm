@@ -997,6 +997,12 @@ mod inner {
                 } else if snap.status != TrackStatus::Active {
                     apply_done_bar_style(&slot.bar, cols);
                 } else {
+                    // Slot recycling may leave the indicatif bar with
+                    // Status::DoneVisible from the previous phase.  Reset
+                    // it to InProgress so the spinner cycles again.
+                    if slot.bar.is_finished() {
+                        slot.bar.reset();
+                    }
                     apply_bar_style(&slot.bar, cols);
                 }
                 slot.bar.set_prefix(build_prefix(snap.status, &snap.prefix));
@@ -1260,14 +1266,8 @@ mod inner {
             if self.last_width != Some(cols) {
                 self.last_width = Some(cols);
                 for i in 0..self.slots.len() {
-                    let slot = &self.slots[i];
-                    if slot.source.borrow().is_some() {
-                        let is_overall = self.has_overall && i == self.slots.len() - 1;
-                        if is_overall {
-                            apply_overall_bar_style(&slot.bar, cols);
-                        } else {
-                            apply_bar_style(&slot.bar, cols);
-                        }
+                    if self.slots[i].source.borrow().is_some() {
+                        self.sync_slot(i);
                     }
                 }
             }
@@ -2866,6 +2866,88 @@ mod tests {
         for (i, (f, l)) in first.iter().zip(last.iter()).enumerate() {
             assert!(f != l, "bar {i}: spinner char did not change ('{f}' == '{l}') after 30 ticks");
         }
+    }
+
+    #[test]
+    fn recycled_bar_spinner_animates() {
+        // Force slot recycling by creating a renderer with a single child
+        // slot.  When bar1 finishes and bar2 attaches, bar2 reuses bar1's
+        // slot.  Without the fix, bar2's indicatif bar would still have
+        // Status::DoneVisible and the spinner would show the final char
+        // (⠏ for our tick set) without cycling.
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        // capacity=2 means 1 child + 1 overall bar.
+        // dynamic_height=false fixed capacity prevents auto-growing.
+        let (group, overall) = super::ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .dynamic_height(false)
+            .with_overall("syncing", 3)
+            .build_with_overall();
+
+        // Phase 1: finish resolve bar (fills the single child slot).
+        let bar1 = group.add_bar(1, "tool [resolve]");
+        bar1.finish();
+
+        // Tick to trigger finish_slot → bar.finish() → DoneVisible.
+        ts.advance(std::time::Duration::from_millis(50));
+        group.tick();
+
+        // Phase 2: add fetch bar (recycles bar1's slot via attach Phase 2).
+        let bar2 = group.add_bar(5, "tool [fetch]");
+        bar2.advance(2);
+        ts.advance(std::time::Duration::from_millis(50));
+        group.tick();
+
+        // Capture spinner chars across many ticks.
+        let mut snapshots: Vec<Vec<char>> = Vec::new();
+        for _ in 0..30 {
+            bar2.advance(1);
+            overall.advance(0);
+            ts.advance(std::time::Duration::from_millis(50));
+            group.tick();
+
+            let output = term.contents();
+            let line_chars: Vec<char> = output
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.chars().next().unwrap_or(' '))
+                .collect();
+            if !line_chars.is_empty() {
+                snapshots.push(line_chars);
+            }
+        }
+
+        // Must have captured several distinct snapshots.
+        assert!(snapshots.len() >= 10, "expected >=10 captured snapshots, got {}", snapshots.len());
+
+        // The spinner char for the child bar (first line) must differ
+        // between the first and last snapshot — if it's the same, the
+        // spinner is frozen because the indicatif bar stayed DoneVisible.
+        let first = &snapshots[0];
+        let last = &snapshots[snapshots.len() - 1];
+        assert!(
+            first.len() >= 2,
+            "expected at least 2 visible bars (child + overall), got {}",
+            first.len()
+        );
+        assert!(
+            first[0] != last[0],
+            "child bar spinner did not change ('{}' == '{}') after 30 ticks — \
+             slot status leak",
+            first[0],
+            last[0]
+        );
     }
 
     // ── Color helpers (ANSI escape code generation) ─────────────────────
