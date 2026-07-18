@@ -72,8 +72,6 @@ pub struct ResolvedToolFetch {
     pub tool_id: String,
     /// Per-platform source descriptors.
     pub sources: Vec<ResolvedSource>,
-    /// Total number of items for progress tracking.
-    pub total_items: u64,
 }
 
 /// Phase 2 output: bytes of one resolved source.
