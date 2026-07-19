@@ -24,18 +24,11 @@ applyTo: "src/**/*.rs"
 
 See `src/mediapm-conductor/AGENTS.md`, `src/mediapm-conductor-builtins/*/AGENTS.md`, `src/mediapm/AGENTS.md`, and `src/mediapm-cas/AGENTS.md` for per-crate guidance and the root `AGENTS.md`'s "Repository Shape" section for the crate directory listing.
 
+Detailed per-concern specifications (error taxonomy, paths, cache, provider dispatch, preset dispatch, state persistence, document lifecycle, tool-sync coordinator, 3-phase provisioning, content-addressed identity, companion dependencies, generated env output) live in `.agents/instructions/*.instructions.md`. This file covers cross-crate boundaries and invariants only.
+
 ## All-platform download principle (tool payloads)
 
-- Managed tool payloads (yt-dlp, ffmpeg, rsgain, sd, media-tagger, deno) are
-  downloaded and CAS-imported for **all supported OSes** regardless of the
-  host platform.
-- Content-map keys use the `./{os}/…` prefix pattern so
-  the conductor's [`FOREIGN_PLATFORM_DIRS`] filtering materialises only the
-  host-native files into the sandbox.
-- The command selector is emitted as a `${context.os == "..." ? ./{os}/… : …}`
-  template expression that resolves at runtime.
-- Never filter by host OS in the provisioner; always iterate
-  [`ResolvedDownloadPlan::per_os_actions`] unconditionally.
+Managed tool payloads are downloaded and CAS-imported for all supported OSes regardless of host platform. Never filter by host OS in the provisioner. See `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` for the full provisioning pipeline and content-map conventions.
 
 See `.agents/instructions/rust-workflow.instructions.md` for module split conventions.
 
@@ -82,27 +75,27 @@ See `.agents/instructions/rust-workflow.instructions.md` for module split conven
   - `${env.VAR_NAME}` input-binding segments are expanded at execution time in the step worker; persisted orchestration state only keeps hashes and does not serialize resolved plain content,
   - directory-form tool content-map entries are cached under runtime root's `tools/` directory (derived from `runtime_tmp_dir.parent().join("tools")`), with 24h stale-entry eviction and cached payload reuse,
 - `mediapm` should compose CAS and conductor APIs rather than bypassing them. For `mediapm` runtime paths, preserve these invariants:
-  - crate-level error taxonomy remains centralized in `src/mediapm/src/error.rs` and is re-exported via `lib.rs`,
+  - crate-level error taxonomy is centralized in `src/mediapm/src/error.rs` (see `.agents/instructions/error-taxonomy.instructions.md` for variant details).
   - media tagger implementation remains under `src/mediapm/src/builtins/media_tagger.rs` (do not reintroduce a second root-level `src/mediapm/src/media_tagger.rs`),
   - `config` is a folder module rooted at `src/mediapm/src/config/mod.rs`,
   - default runtime root is `.mediapm/`,
-  - `mediapm.ncl` `runtime` may optionally override `mediapm_dir`, `conductor_config`, `conductor_generated_config`, `conductor_state_config`, `inherited_env_vars`, `media_state_config`, `hierarchy_root_dir`, `conductor_schema_dir`, `env_file`, `env_generated_file`, and `mediapm_schema_dir`,
+  - `mediapm.ncl` `runtime` overrideable fields: see `.agents/instructions/paths-layout.instructions.md` for the full list and resolution rules.
   - `runtime.inherited_env_vars` is platform-keyed (`windows`, `linux`, `macos`, ...) and each platform key maps to an ordered list of inherited environment-variable names,
-  - defaults for those paths are: `mediapm_dir = .mediapm`, `conductor_config = mediapm.conductor.ncl`, `conductor_generated_config = mediapm.conductor.generated.ncl`, `conductor_state_config = <mediapm_dir>/state.conductor.ncl`, `media_state_config = <mediapm_dir>/state.ncl`,
+  - path defaults (`mediapm_dir`, `conductor_config`, etc.): see `.agents/instructions/paths-layout.instructions.md`.
   - persisted `mediapm.ncl` schema keeps explicit top-level numeric `version` markers,
   - persisted machine-managed `state.ncl` schema keeps explicit top-level numeric `version` markers and one top-level `state` payload field,
-  - `mediapm.ncl` wire-version dispatch and migrations live under `src/mediapm/src/config/versions/` with version-specific wire envelopes in `vN.rs`,
-  - machine-managed state wire-version dispatch and migrations live under `src/mediapm/src/config/versions/` with version-specific wire envelopes in `vN.rs`,
+  - `mediapm.ncl` wire-version dispatch and migrations: see `.agents/instructions/state-persistence.instructions.md`.
+  - machine-managed `state.ncl` wire-version dispatch and migrations: see `.agents/instructions/state-persistence.instructions.md`.
   - `mediapm tool add` should load `mediapm.ncl` without cross-field validation so existing inherit dependency selectors do not block bootstrap of missing managed tools,
   - default materialized output root is the topmost `mediapm.ncl` directory itself (no implicit `library/` folder),
   - mediapm-managed materialized outputs are marked read-only after sync commit; runtime may clear read-only only for managed replacement/removal operations; on macOS (and other BSDs), stale managed-path removal must also clear user/system immutable flags (`UF_IMMUTABLE`/`SF_IMMUTABLE`) via `libc::chflags` before chmod-based readonly clearing, or `remove_file()` fails with `EACCES`,
   - when `mediapm` invokes conductor, grouped conductor runtime-storage defaults also target effective `mediapm_dir` (`conductor_dir = <mediapm_dir>`, `conductor_state_config = <mediapm_dir>/state.conductor.ncl`, `cas_store_dir = <mediapm_dir>/store`) with inherited env-name defaults matching conductor host defaults; managed tool-config env-vars should not redundantly restate those inherited names,
   - `mediapm` workflow execution must pass grouped runtime-storage paths derived from effective runtime path resolution so volatile state writes do not regress to standalone `.conductor/state.ncl` defaults,
   - relative `runtime.hierarchy_root_dir` resolves relative to the topmost `mediapm.ncl` directory,
-  - managed-tool downloads use a shared user-level cache by default (`<os-cache-dir>/mediapm/cache/`) with fixed layout `cache/store/` (CAS payloads), default metadata index `cache/tools.json`, optional additional indexes `cache/*.json`, and fixed 30-day eviction; conductor standalone uses `<os-cache-dir>/mediapm-conductor/cache/` with the same layout; this cache domain is distinct from workspace tool-content materialization under `<mediapm_dir>/tools/` (or `<conductor_dir>/tools/` in standalone conductor), and those paths are never interchangeable,
-  - `tools.ffmpeg.max_input_slots` defaults to `16` when omitted and `tools.ffmpeg.max_output_slots` defaults to `4` when omitted; both bound generated ffmpeg indexed input/output slot fan-out,
-  - runtime dotenv loading uses effective `runtime.env_file` (default `<mediapm_dir>/.env`) and `runtime.env_generated_file` (default `<mediapm_dir>/.env.generated`), keeps a colocated `.gitignore` containing only `/.env`, and generated default dotenv environment-variable lines stay commented (`# ...`) so ambient shell/user environment variables are not shadowed by placeholder file values,
-  - relative `runtime.conductor_config`, `runtime.conductor_generated_config`, `runtime.conductor_state_config`, and `runtime.media_state_config` resolve relative to the topmost `mediapm.ncl` directory,
+  - managed-tool downloads use a shared user-level cache (default `<os-cache-dir>/mediapm/cache/` with 30-day eviction). This cache domain is distinct from workspace tool-content materialization. See `.agents/instructions/cache-and-http.instructions.md` for the full three-tier cache spec.
+  - ffmpeg slot limits default to 16 input / 4 output; see `.agents/instructions/preset-dispatch.instructions.md` for ffmpeg spec builder defaults.
+  - runtime dotenv loading follows generated-env-output conventions. See `.agents/instructions/tool-sync-generated-env-output.instructions.md` for the `.env.generated` format and quoting rules.
+  - relative `runtime.conductor_config`, `runtime.conductor_generated_config`, `runtime.conductor_state_config`, and `runtime.media_state_config` resolve relative to the topmost `mediapm.ncl` directory (see `.agents/instructions/paths-layout.instructions.md`).
   - local-source ingest created by `mediapm media add-local` is represented as an `import` step (`options.kind = "cas_hash"`, `options.hash = "blake3:<hex>"`),
   - media source schema may additionally keep manual payload pointers in `variant_hashes` (variant name -> CAS hash),
   - media source entries may include optional human-readable `title` and `description`,
@@ -124,7 +117,7 @@ See `.agents/instructions/rust-workflow.instructions.md` for module split conven
   - playlist-only output variants must keep explicit gating so single-item runs with `no_playlist = true` cannot capture playlist sidecar artifacts,
   - hierarchy directory entries may define ordered `rename_files = [{ pattern, replacement }, ...]` regex rewrites that apply to extracted folder file members; file hierarchy targets must keep `rename_files` empty,
   - hierarchy flattening validation allows same-path entries when they have different `rename_files` rules, since `rename_files` produce distinct final output filenames at materialization time; the materializer uses isolated staging directories per entry for multi-entry deduplication,
-  - See `src/mediapm/AGENTS.md` for managed-tool default settings (yt-dlp, ffmpeg, rsgain, media-tagger).
+  - See `.agents/instructions/preset-dispatch.instructions.md` for managed-tool default settings.
   - output-variant values are object-driven across managed tools: `kind` defines default file-vs-folder capture behavior and optional `capture_kind` (`file`/`folder`) may override that default,
   - yt-dlp output-variant `langs` is only a capture-filter hint for subtitle-family artifacts; downloader language selection remains step-option owned via `options.sub_langs`,
   - do not document or rely on a separate dedicated per-variant output-folder configuration model,
@@ -143,16 +136,14 @@ See `.agents/instructions/rust-workflow.instructions.md` for module split conven
   - when both `version` and `tag` are provided they must resolve to the same release selector,
   - immutable tool ids include source identifiers and resolve with precedence `mediapm.tools.<name>+source@git-hash` -> `mediapm.tools.<name>+source@version` -> `mediapm.tools.<name>+source@tag`; resolution must fail if none are available,
   - `conductor::registered_builtin_ids()` exposes namespaced immutable ids; when building `ToolKindSpec::Builtin`, map `name` to the process-name suffix (`import`, `export`, ...) instead of copying full namespaced ids,
-  - catalog defaults are: `ffmpeg` preferring GitHub Releases (BtbN on Windows) with platform fallbacks, `yt-dlp` from GitHub Releases on `latest`, `rsgain` from GitHub Releases on `latest` ZIP assets, and `media-tagger` from the built-in internal launcher (`mediapm builtins media-tagger`) using Chromaprint + AcoustID + MusicBrainz + FFmetadata + FFmpeg,
-  - downloader-plan resolution should remain cross-platform (`windows`, `linux`, `macos`) even if later import/materialization is host-filtered,
-  - tool preset downloads are never host-platform-only; preset reconciliation must always provision all supported platform payloads and use `${context.os}`-conditional command selectors to pick the runtime executable,
-  - for GitHub release assets (notably ffmpeg), resolve concrete asset URLs from release metadata instead of assuming static `releases/latest/download/...` paths,
+  - catalog defaults (per-tool source preferences): see `.agents/instructions/provider-dispatch.instructions.md` for per-tool source descriptors.
+  - downloader-plan resolution must remain cross-platform; see `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md`.
+  - tool preset downloads are never host-platform-only. See `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` for the all-platform provisioning invariant.
+  - for GitHub release assets, resolve concrete URLs from release metadata; see `.agents/instructions/provider-dispatch.instructions.md` for URL resolution patterns.
   - archive-backed managed tool payloads should prefer compact directory-form `content_map` entries (trailing `/` keys with ZIP bytes) over one-entry-per-file maps when possible,
-  - managed executable payload materialization should keep all-platform `content_map` coverage (`windows/`, `linux/`, `macos/`, or shared `./` root when payloads are platform-identical), and generated command selectors should use `${context.os == "<target>" ? ... | ...}` branches that all map to one materialized target,
-  - managed runtime defaults and generated executable paths must resolve via `<tools_dir>/<tool-id>/payload/<os>/...`; do not use or reintroduce legacy `<tools_dir>/<tool-id>/<os>/...` runtime path projection,
-  - managed-tool dependencies are split into two explicit classes:
-    - cross-step dependency (one mediapm step expands to multiple conductor steps that use other logical tools, including media-tagger ffmpeg runtime selection): do **not** inline dependency payload bytes into the requester `content_map`, and do **not** fold dependency selector fragments into the requester tool id; each conductor step should reference its own resolved dependency tool id directly,
-    - same-step companion dependency (the requester tool needs companion tool payload bytes during the same conductor step, e.g. `yt-dlp` needing `ffmpeg` + `deno`): always inline companion payload bytes into the requester `content_map`, and always fold companion selector identity into the requester tool id,
+  - managed executable payloads keep all-platform `content_map` coverage; see `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` for content-map conventions and command selector patterns.
+  - managed runtime defaults and executable paths resolve via `<tools_dir>/<tool-id>/payload/<os>/...`; see `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md`.
+  - managed-tool dependencies are split into same-step companion (inline payload + fold selector) and cross-step (separate payload + ids). See `.agents/instructions/tool-sync-companion-dependencies.instructions.md` for the full contract.
   - step execution order is the declared `steps` list order,
   - step `options` are tool-specific and unknown keys are rejected,
   - materialization uses stage -> verify -> commit semantics with staging under effective `.mediapm/tmp` and atomic commit into library roots,
