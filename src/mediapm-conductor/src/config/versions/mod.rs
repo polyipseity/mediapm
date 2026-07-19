@@ -53,14 +53,19 @@ pub(crate) const fn latest_config_version() -> u32 {
 
 /// Encodes one configuration document to Nickel source bytes.
 ///
-/// The document is first converted to a latest-schema envelope, validated,
-/// then rendered as Nickel source.
+/// The document is first validated (content_map ⊆ external_data invariant),
+/// converted to a latest-schema envelope, then rendered as Nickel source.
 ///
 /// # Errors
 ///
 /// Returns [`ConductorError`] when the document cannot be converted to the
 /// latest schema, validation fails, or Nickel rendering fails.
 pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8>, ConductorError> {
+    // Validate the content_map ⊆ external_data invariant before encoding.
+    // This catches missing external_data entries at encode time (first
+    // save), preventing silent production of an invalid document that would
+    // fail on the next decode.
+    document.validate_external_data_invariant()?;
     let envelope: v_latest::NickelEnvelopeLatest = document.into();
     mediapm_utils::nickel::render_document_as_nickel(&envelope, "configuration document")
         .map_err(ConductorError::Serialization)
