@@ -15,9 +15,11 @@ pub(crate) mod tool_config;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mediapm_cas::CasApi;
+use mediapm_cas::{CasApi, Hash};
 use mediapm_conductor::ToolRuntime;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
+use mediapm_conductor::config::ExternalDataEntry;
+use mediapm_conductor::state::OutputSaveMode;
 
 use crate::conductor_bridge::documents::{
     apply_builtin_runtime_defaults, load_conductor_generated_document,
@@ -161,6 +163,17 @@ pub(crate) async fn reconcile_desired_tools(
                 } else {
                     tool_id.to_string()
                 };
+
+                // Populate external_data from content_map CAS hashes so the
+                // content_map ⊆ external_data invariant is satisfied.
+                for hash_str in spec.runtime.content_map.values() {
+                    if let Ok(hash) = hash_str.parse::<Hash>() {
+                        generated_doc.external_data.entry(hash).or_insert(ExternalDataEntry {
+                            description: format!("managed tool content root for {tool_id}"),
+                            save_mode: OutputSaveMode::Saved,
+                        });
+                    }
+                }
 
                 generated_doc.tools.insert(tool_key.clone(), spec);
                 tool_runtimes.insert(tool_key.clone(), full_runtime);
