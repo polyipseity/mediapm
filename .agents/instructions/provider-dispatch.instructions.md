@@ -1,10 +1,10 @@
 ---
 description: "Use when editing tool provider definitions in src/mediapm/src/tools/provider/. Covers resolve_tool_fetch dispatch, per-tool source modules, resolve_latest_github_tag, and metadata cache usage."
-name: "Tool Sync Provider Dispatch"
+name: "Provider Dispatch"
 applyTo: "src/mediapm/src/tools/provider/**/*.rs"
 ---
 
-# Tool sync provider dispatch
+# Provider dispatch
 
 ## Purpose
 

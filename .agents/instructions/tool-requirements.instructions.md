@@ -1,10 +1,10 @@
 ---
 description: "Use when editing tool requirement configuration in src/mediapm/src/config/mod.rs and source_types.rs. Covers ToolRequirement fields, ToolRequirementDependencies selectors, MediaMetadataValue enum, and normalization rules."
-name: "Tool Sync Desired Tools Config"
+name: "Tool Requirements"
 applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/source_types.rs"
 ---
 
-# Tool sync desired tools config
+# Tool requirements
 
 ## Purpose
 

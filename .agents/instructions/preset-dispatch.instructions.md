@@ -1,10 +1,10 @@
 ---
 description: "Use when editing tool preset definitions in src/mediapm/src/tools/preset/ and workflows/. Covers apply_preset dispatch, per-tool spec builders, workflow step synthesis, and sandbox artifact conventions."
-name: "Tool Sync Preset Dispatch"
+name: "Preset Dispatch"
 applyTo: "src/mediapm/src/tools/preset/**/*.rs, src/mediapm/src/tools/workflows/**/*.rs"
 ---
 
-# Tool sync preset dispatch
+# Preset dispatch
 
 ## Purpose
 

@@ -1,10 +1,10 @@
 ---
-description: "Use when editing tool-sync path resolution in src/mediapm/src/paths.rs. Covers MediaPmPaths fields, MediaPmPathOverrides, default layout under .mediapm/, and override resolution rules."
-name: "Tool Sync Paths Layout"
+description: "Use when editing path resolution in src/mediapm/src/paths.rs. Covers MediaPmPaths fields, MediaPmPathOverrides, default layout under .mediapm/, and override resolution rules."
+name: "Paths Layout"
 applyTo: "src/mediapm/src/paths.rs"
 ---
 
-# Tool sync paths layout
+# Paths layout
 
 ## Purpose
 

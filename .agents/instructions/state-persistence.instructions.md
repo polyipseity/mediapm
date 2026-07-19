@@ -1,10 +1,10 @@
 ---
-description: "Use when editing tool-sync state persistence in src/mediapm/src/config/mod.rs and config/versions/. Covers MediaPmState fields, ToolRegistryEntry, ActiveToolInstance, schema version dispatch, and normalization rules."
-name: "Tool Sync State Persistence"
+description: "Use when editing state persistence in src/mediapm/src/config/mod.rs and config/versions/. Covers MediaPmState fields, ToolRegistryEntry, ActiveToolInstance, schema version dispatch, and normalization rules."
+name: "State Persistence"
 applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs"
 ---
 
-# Tool sync state persistence
+# State persistence
 
 ## Purpose
 

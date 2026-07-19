@@ -1,10 +1,10 @@
 ---
 description: "Use when editing conductor document loading/saving and builtin lifecycle in src/mediapm/src/conductor_bridge/documents.rs and lifecycle.rs. Covers NCL load/save, builtin registration, lifecycle helpers."
-name: "Tool Sync Document I/O and Lifecycle"
+name: "Document I/O and Lifecycle"
 applyTo: "src/mediapm/src/conductor_bridge/documents.rs, src/mediapm/src/conductor_bridge/sync/lifecycle.rs"
 ---
 
-# Tool sync document I/O and lifecycle
+# Document I/O and lifecycle
 
 ## Purpose
 

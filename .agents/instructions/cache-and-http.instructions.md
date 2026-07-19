@@ -1,10 +1,10 @@
 ---
-description: "Use when editing tool-sync cache and HTTP client in src/mediapm/src/tools/downloader.rs and http_client.rs. Covers three-tier cache hierarchy, TTL policies, and shared HTTP client configuration."
-name: "Tool Sync Cache and HTTP Client"
+description: "Use when editing cache and HTTP client in src/mediapm/src/tools/downloader.rs and http_client.rs. Covers three-tier cache hierarchy, TTL policies, and shared HTTP client configuration."
+name: "Cache and HTTP Client"
 applyTo: "src/mediapm/src/tools/downloader.rs, src/mediapm/src/http_client.rs"
 ---
 
-# Tool sync cache and HTTP client
+# Cache and HTTP client
 
 ## Purpose
 

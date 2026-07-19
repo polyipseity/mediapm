@@ -1,14 +1,14 @@
 ---
-description: "Use when editing tool-sync error handling in src/mediapm/src/error.rs. Covers MediaPmError variants, context preservation conventions, and ConductorError mapping."
-name: "Tool Sync Error Taxonomy"
+description: "Use when editing error handling in src/mediapm/src/error.rs. Covers MediaPmError variants, context preservation conventions, and ConductorError mapping."
+name: "Error Taxonomy"
 applyTo: "src/mediapm/src/error.rs"
 ---
 
-# Tool sync error taxonomy
+# Error taxonomy
 
 ## Purpose
 
-- Centralize crate-level error variants so all tool-sync submodules share one consistent error contract.
+- Centralize crate-level error variants so all submodules share one consistent error contract.
 - Preserve operation + path context for I/O and document errors.
 
 ## `MediaPmError` variants
