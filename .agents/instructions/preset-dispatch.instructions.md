@@ -15,14 +15,14 @@ applyTo: "src/mediapm/src/tools/preset/**/*.rs, src/mediapm/src/tools/workflows/
 
 Case-insensitive routing to per-tool `apply()` functions:
 
-| Tool | Module | Key responsibilities |
-|------|--------|---------------------|
-| `ffmpeg` | `ffmpeg.rs` | Command template, slot limit config, input/output streams |
-| `yt-dlp` | `yt_dlp.rs` | URL-based command, subtitle/thumbnail outputs, format selectors |
-| `deno` | `deno.rs` | Deno runtime command with permissions |
-| `rsgain` | `rsgain.rs` | ReplayGain analysis command, single-track mode |
-| `media-tagger` | `media_tagger.rs` | Picard-based tagging command, CAA provider config |
-| `sd` | `sd.rs` | Stable Diffusion command, model paths |
+| Tool           | Module            | Key responsibilities                                            |
+| -------------- | ----------------- | --------------------------------------------------------------- |
+| `ffmpeg`       | `ffmpeg.rs`       | Command template, slot limit config, input/output streams       |
+| `yt-dlp`       | `yt_dlp.rs`       | URL-based command, subtitle/thumbnail outputs, format selectors |
+| `deno`         | `deno.rs`         | Deno runtime command with permissions                           |
+| `rsgain`       | `rsgain.rs`       | ReplayGain analysis command, single-track mode                  |
+| `media-tagger` | `media_tagger.rs` | Picard-based tagging command, CAA provider config               |
+| `sd`           | `sd.rs`           | Stable Diffusion command, model paths                           |
 
 Each preset builds:
 
@@ -41,11 +41,11 @@ Per-tool `build_<tool>_spec()` functions wrap presets to produce final `(ToolSpe
 
 ## Sandbox artifacts folder convention
 
-| Directory | Purpose |
-|-----------|---------|
+| Directory    | Purpose                                             |
+| ------------ | --------------------------------------------------- |
 | `downloads/` | Downloaded source files (yt-dlp outputs, raw media) |
-| `coverart/` | Extracted cover art images |
-| `inputs/` | Step input files staged by the conductor |
+| `coverart/`  | Extracted cover art images                          |
+| `inputs/`    | Step input files staged by the conductor            |
 
 ## Key invariants
 

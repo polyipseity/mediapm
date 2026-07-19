@@ -13,24 +13,24 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/source_types.rs"
 
 ## `ToolRequirement` fields
 
-| Field | Type | Default | Purpose |
-|-------|------|---------|---------|
-| `version` | `MediaMetadataValue` | `Literal("")` | Version metadata value or selector binding |
-| `tag` | `String` | `""` | Tag metadata value or selector binding |
-| `dependencies` | `ToolRequirementDependencies` | default | Cross-tool dependency version selectors |
-| `recheck_seconds` | `u64` | `0` (use default heuristic) | Recheck interval for metadata freshness |
-| `max_input_slots` | `u32` | from `defaults` | Max ffmpeg input slot count |
-| `max_output_slots` | `u32` | from `defaults` | Max ffmpeg output slot count |
+| Field              | Type                          | Default                     | Purpose                                    |
+| ------------------ | ----------------------------- | --------------------------- | ------------------------------------------ |
+| `version`          | `MediaMetadataValue`          | `Literal("")`               | Version metadata value or selector binding |
+| `tag`              | `String`                      | `""`                        | Tag metadata value or selector binding     |
+| `dependencies`     | `ToolRequirementDependencies` | default                     | Cross-tool dependency version selectors    |
+| `recheck_seconds`  | `u64`                         | `0` (use default heuristic) | Recheck interval for metadata freshness    |
+| `max_input_slots`  | `u32`                         | from `defaults`             | Max ffmpeg input slot count                |
+| `max_output_slots` | `u32`                         | from `defaults`             | Max ffmpeg output slot count               |
 
 Both `version` and `tag` serve as version selectors; a tool entry must have at least one non-empty value to be retained during normalization.
 
 ## `ToolRequirementDependencies` fields
 
-| Field | Type | Purpose |
-|-------|------|---------|
+| Field            | Type                 | Purpose                                             |
+| ---------------- | -------------------- | --------------------------------------------------- |
 | `ffmpeg_version` | `MediaMetadataValue` | Selector or literal for ffmpeg companion dependency |
-| `deno_version` | `MediaMetadataValue` | Selector or literal for deno companion dependency |
-| `sd_version` | `MediaMetadataValue` | Selector or literal for sd dependency |
+| `deno_version`   | `MediaMetadataValue` | Selector or literal for deno companion dependency   |
+| `sd_version`     | `MediaMetadataValue` | Selector or literal for sd dependency               |
 
 Each dependency follows the same `MediaMetadataValue` enum. The string `"inherit"` signals "use global default" and is treated as empty by companion resolution.
 

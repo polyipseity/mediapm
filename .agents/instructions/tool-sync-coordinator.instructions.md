@@ -29,12 +29,12 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 
 ## `ToolSyncReport` fields
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `tools_added` | `usize` | Tools newly registered (not previously in generated doc) |
-| `tools_updated` | `usize` | Tools updated to match desired version |
-| `tools_removed` | `usize` | Tools removed (no longer in desired set) |
-| `warnings` | `Vec<String>` | Non-fatal warnings (provision failures) |
+| Field           | Type          | Purpose                                                  |
+| --------------- | ------------- | -------------------------------------------------------- |
+| `tools_added`   | `usize`       | Tools newly registered (not previously in generated doc) |
+| `tools_updated` | `usize`       | Tools updated to match desired version                   |
+| `tools_removed` | `usize`       | Tools removed (no longer in desired set)                 |
+| `warnings`      | `Vec<String>` | Non-fatal warnings (provision failures)                  |
 
 ## Invariants
 

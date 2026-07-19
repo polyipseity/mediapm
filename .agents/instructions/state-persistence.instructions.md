@@ -14,31 +14,31 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 
 ## `MediaPmState` fields
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `version` | `u32` | Schema version marker (for migration dispatch) |
-| `media` | `BTreeMap<String, ManagedWorkflowStepState>` | Per-media-source workflow state |
-| `tools` | `BTreeMap<String, ToolRequirement>` | Stale tool requirement snapshot (for diff detection) |
-| `tool_registry` | `BTreeMap<String, ToolRegistryEntry>` | Fetched-tool registry keyed by tool id |
-| `active_tools` | `BTreeMap<String, ActiveToolInstance>` | Active tool deployments keyed by tool id |
-| `last_materialized_state_hash` | `String` | Hash of state snapshot at last materialization |
-| `managed_files` | `BTreeSet<String>` | Set of files currently managed (for cleanup) |
+| Field                          | Type                                         | Purpose                                              |
+| ------------------------------ | -------------------------------------------- | ---------------------------------------------------- |
+| `version`                      | `u32`                                        | Schema version marker (for migration dispatch)       |
+| `media`                        | `BTreeMap<String, ManagedWorkflowStepState>` | Per-media-source workflow state                      |
+| `tools`                        | `BTreeMap<String, ToolRequirement>`          | Stale tool requirement snapshot (for diff detection) |
+| `tool_registry`                | `BTreeMap<String, ToolRegistryEntry>`        | Fetched-tool registry keyed by tool id               |
+| `active_tools`                 | `BTreeMap<String, ActiveToolInstance>`       | Active tool deployments keyed by tool id             |
+| `last_materialized_state_hash` | `String`                                     | Hash of state snapshot at last materialization       |
+| `managed_files`                | `BTreeSet<String>`                           | Set of files currently managed (for cleanup)         |
 
 ## `ToolRegistryEntry`
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `version` | `Option<String>` | Tool version as fetched |
-| `tag` | `Option<String>` | Tag as fetched |
-| `fetch_hash` | `Option<String>` | CAS content hash of the fetched payload |
-| `deployed_at` | `u64` | Unix-epoch seconds when deployed (0 = not yet) |
+| Field         | Type             | Purpose                                        |
+| ------------- | ---------------- | ---------------------------------------------- |
+| `version`     | `Option<String>` | Tool version as fetched                        |
+| `tag`         | `Option<String>` | Tag as fetched                                 |
+| `fetch_hash`  | `Option<String>` | CAS content hash of the fetched payload        |
+| `deployed_at` | `u64`            | Unix-epoch seconds when deployed (0 = not yet) |
 
 ## `ActiveToolInstance`
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `tool_id` | `String` | Tool identifier for registry lookups |
-| `content_hash` | `String` | CAS content hash of the deployed payload |
+| Field           | Type     | Purpose                                           |
+| --------------- | -------- | ------------------------------------------------- |
+| `tool_id`       | `String` | Tool identifier for registry lookups              |
+| `content_hash`  | `String` | CAS content hash of the deployed payload          |
 | `deployed_path` | `String` | Filesystem path to the deployed executable/bundle |
 
 ## Schema version dispatch

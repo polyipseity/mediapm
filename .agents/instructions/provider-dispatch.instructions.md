@@ -15,14 +15,14 @@ applyTo: "src/mediapm/src/tools/provider/**/*.rs"
 
 Routes tool names (case-insensitive) to per-tool `sources()` functions:
 
-| Tool | Module | Source strategy |
-|------|--------|-----------------|
-| `ffmpeg` | `ffmpeg.rs` | GitHub releases + Evermeet (macOS) |
-| `yt-dlp` | `yt_dlp.rs` | GitHub releases |
-| `deno` | `deno.rs` | GitHub releases |
-| `rsgain` | `rsgain.rs` | GitHub releases |
+| Tool           | Module            | Source strategy                      |
+| -------------- | ----------------- | ------------------------------------ |
+| `ffmpeg`       | `ffmpeg.rs`       | GitHub releases + Evermeet (macOS)   |
+| `yt-dlp`       | `yt_dlp.rs`       | GitHub releases                      |
+| `deno`         | `deno.rs`         | GitHub releases                      |
+| `rsgain`       | `rsgain.rs`       | GitHub releases                      |
 | `media-tagger` | `media_tagger.rs` | GitHub releases + `GenerateLauncher` |
-| `sd` | `sd.rs` | GitHub releases |
+| `sd`           | `sd.rs`           | GitHub releases                      |
 
 Returns a `ResolvedToolFetch` containing:
 

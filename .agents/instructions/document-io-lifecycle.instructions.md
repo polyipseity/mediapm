@@ -27,12 +27,12 @@ applyTo: "src/mediapm/src/conductor_bridge/documents.rs, src/mediapm/src/conduct
 
 ### Document lifecycle helpers
 
-| Function | Purpose |
-|----------|---------|
-| `load_conductor_generated_document(paths)` | Loads `paths.conductor_generated_ncl` |
+| Function                                        | Purpose                                  |
+| ----------------------------------------------- | ---------------------------------------- |
+| `load_conductor_generated_document(paths)`      | Loads `paths.conductor_generated_ncl`    |
 | `save_conductor_generated_document(paths, doc)` | Saves to `paths.conductor_generated_ncl` |
-| `load_conductor_state_document(paths)` | Loads `paths.conductor_state_config` |
-| `save_conductor_state_document(paths, doc)` | Saves to `paths.conductor_state_config` |
+| `load_conductor_state_document(paths)`          | Loads `paths.conductor_state_config`     |
+| `save_conductor_state_document(paths, doc)`     | Saves to `paths.conductor_state_config`  |
 
 ## Builtin registration
 
@@ -54,11 +54,11 @@ applyTo: "src/mediapm/src/conductor_bridge/documents.rs, src/mediapm/src/conduct
 
 ## Lifecycle helpers (`lifecycle.rs`)
 
-| Function | Purpose |
-|----------|---------|
-| `is_builtin_source_ingest_requirement(tool_name)` | Returns true for builtin `import` (special content-ingestion handling) |
-| `is_hash_in_tool_content_maps(hash, doc)` | Checks if a hash is still referenced by any tool content map |
-| `lock_registry_version(cas, tool_id, identity)` | Stores a deterministic CAS marker `registry-locks/{tool_id}/{identity}` |
+| Function                                          | Purpose                                                                 |
+| ------------------------------------------------- | ----------------------------------------------------------------------- |
+| `is_builtin_source_ingest_requirement(tool_name)` | Returns true for builtin `import` (special content-ingestion handling)  |
+| `is_hash_in_tool_content_maps(hash, doc)`         | Checks if a hash is still referenced by any tool content map            |
+| `lock_registry_version(cas, tool_id, identity)`   | Stores a deterministic CAS marker `registry-locks/{tool_id}/{identity}` |
 
 ## Key invariants
 

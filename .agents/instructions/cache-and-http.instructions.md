@@ -13,11 +13,11 @@ applyTo: "src/mediapm/src/tools/downloader.rs, src/mediapm/src/http_client.rs"
 
 ## Three-tier cache hierarchy
 
-| Cache | TTL | Basis | Content | Key |
-|-------|-----|-------|---------|-----|
-| **Content cache** (`tools.json`) | 30d | Last-use | Raw downloaded tool payload bytes | URL or resource identifier |
-| **Metadata cache** (`tool_metadata.json`) | 1d | Creation-time | GitHub API responses (tag names, versions) | API endpoint URL |
-| **Provision cache** (RAII) | 24h | Creation-time | Extracted tool binaries (per-platform unpack results) | Tool identity hash |
+| Cache                                     | TTL | Basis         | Content                                               | Key                        |
+| ----------------------------------------- | --- | ------------- | ----------------------------------------------------- | -------------------------- |
+| **Content cache** (`tools.json`)          | 30d | Last-use      | Raw downloaded tool payload bytes                     | URL or resource identifier |
+| **Metadata cache** (`tool_metadata.json`) | 1d  | Creation-time | GitHub API responses (tag names, versions)            | API endpoint URL           |
+| **Provision cache** (RAII)                | 24h | Creation-time | Extracted tool binaries (per-platform unpack results) | Tool identity hash         |
 
 ### Important: TTL basis differences
 
@@ -40,11 +40,11 @@ All caches live under `default_mediapm_user_download_cache_root()` (OS-specific 
 
 Configured once via `OnceLock`:
 
-| Setting | Default | Override |
-|---------|---------|----------|
-| Connect timeout | 30s | — |
-| Request timeout | 30 min | `MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS` env var (min 30s) |
-| User-Agent | `mediapm/0.0.0 (+https://github.com/mediapm/mediapm)` | — |
+| Setting         | Default                                               | Override                                             |
+| --------------- | ----------------------------------------------------- | ---------------------------------------------------- |
+| Connect timeout | 30s                                                   | —                                                    |
+| Request timeout | 30 min                                                | `MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS` env var (min 30s) |
+| User-Agent      | `mediapm/0.0.0 (+https://github.com/mediapm/mediapm)` | —                                                    |
 
 ## Hard boundary rules
 
