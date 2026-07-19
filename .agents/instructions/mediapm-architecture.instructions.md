@@ -257,16 +257,16 @@ The `mediapm tool sync` pipeline is documented across focused instruction files,
 | Concern | Instruction file | Target files |
 |---------|-----------------|--------------|
 | CLI entry & service orchestration | `src/mediapm/AGENTS.md` | `main.rs`, `service.rs` |
-| Desired-tools config model | `tool-sync-desired-tools-config.instructions.md` | `config/mod.rs`, `config/source_types.rs` |
-| State persistence | `tool-sync-state-persistence.instructions.md` | `config/mod.rs`, `config/versions/` |
+| Tool requirements | `tool-requirements.instructions.md` | `config/mod.rs`, `config/source_types.rs` |
+| State persistence | `state-persistence.instructions.md` | `config/mod.rs`, `config/versions/` |
 | Reconciliation coordinator | `tool-sync-coordinator.instructions.md` | `conductor_bridge/sync/mod.rs` |
 | 3-phase provisioning pipeline | `tool-sync-3-phase-provisioning.instructions.md` | `conductor_bridge/sync/provision.rs` |
 | Content-addressed tool identity | `tool-sync-content-addressed-identity.instructions.md` | `conductor_bridge/sync/mod.rs`, `documents.rs` |
 | Companion dependency binding | `tool-sync-companion-dependencies.instructions.md` | `conductor_bridge/sync/tool_config.rs` |
 | Generated env output | `tool-sync-generated-env-output.instructions.md` | `conductor_bridge/sync/tool_config.rs` |
-| Document I/O and lifecycle | `tool-sync-document-io-lifecycle.instructions.md` | `conductor_bridge/documents.rs`, `lifecycle.rs` |
-| Paths layout | `tool-sync-paths-layout.instructions.md` | `paths.rs` |
-| Cache architecture & HTTP client | `tool-sync-cache-http.instructions.md` | `tools/downloader.rs`, `http_client.rs` |
-| Error taxonomy | `tool-sync-error-taxonomy.instructions.md` | `error.rs` |
-| Provider dispatch | `tool-sync-provider-dispatch.instructions.md` | `tools/provider/` |
-| Preset dispatch | `tool-sync-preset-dispatch.instructions.md` | `tools/preset/`, `tools/workflows/` |
+| Document I/O and lifecycle | `document-io-lifecycle.instructions.md` | `conductor_bridge/documents.rs`, `lifecycle.rs` |
+| Paths layout | `paths-layout.instructions.md` | `paths.rs` |
+| Cache architecture & HTTP client | `cache-and-http.instructions.md` | `tools/downloader.rs`, `http_client.rs` |
+| Error taxonomy | `error-taxonomy.instructions.md` | `error.rs` |
+| Provider dispatch | `provider-dispatch.instructions.md` | `tools/provider/` |
+| Preset dispatch | `preset-dispatch.instructions.md` | `tools/preset/`, `tools/workflows/` |
