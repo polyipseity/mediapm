@@ -95,6 +95,18 @@ Dual-file ownership model summary:
 - `conductor.generated.ncl` is machine-owned operational state such as content maps and machine-derived runtime metadata.
 - Conductor embeds Nickel evaluation in-process (`nickel-lang-core`) and does not delegate schema evaluation to an out-of-process secondary interpreter.
 
+## Document invariants
+
+### `content_map ⊆ external_data`
+
+Every CAS hash referenced in any tool's `runtime.content_map` must have a
+corresponding entry in the document's `external_data` map. This prevents CAS
+garbage collection from pruning hashes that tools depend on. The invariant is
+enforced at both encoding (via `encode_document()` calling
+`validate_external_data_invariant()`) and decoding
+(`decode_document()`/`compile_configuration_source()`). Failures produce a
+`ConductorError::Workflow` listing all missing hashes.
+
 ## Cache Architecture (Separation of Concerns)
 
 ## Cache Architecture (Three-Tier)

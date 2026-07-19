@@ -20,6 +20,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
    - Call `fetch_and_import_tool_payload()` to run the 3-phase pipeline.
    - On `Ok(Some(payload))`: compute content-addressed hash, build spec+runtime, insert into generated doc.
+   - **External data registration**: before inserting the tool spec, register every CAS hash in the tool's `content_map` as an `ExternalDataEntry` in `generated_doc.external_data` with `OutputSaveMode::Saved`. This satisfies the `content_map ⊆ external_data` invariant.
    - On `Ok(None)`: create minimal spec without content map.
    - On `Err`: append warning to report, continue loop.
 5. **Companion binding resolution** — `resolve_companion_ffmpeg_selection()`, `resolve_companion_deno_selection()` (currently stubs).
@@ -43,3 +44,4 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 - Tool key format: `"{name}@{hash}"` when content_map non-empty, bare `"{name}"` when empty.
 - Builtin source-ingest tools (`import`) skip hash-key generation and use bare name.
 - Progress bar shows `desired_tools.len()` total items; bar finishes success (no warnings) or error (warnings present).
+- `content_map ⊆ external_data` invariant: every CAS hash referenced in any tool's `runtime.content_map` must have a matching `ExternalDataEntry` in `generated_doc.external_data`. Enforced on both encode (`encode_document()`) and decode (`decode_document()`) of conductor NCL documents.
