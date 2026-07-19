@@ -7,7 +7,7 @@ Media orchestration facade composing `mediapm-cas` and `mediapm-conductor` into 
 ```text
 lib.rs                     — Re-exports, SyncSummary, ToolsSyncSummary, global cache ops
 main.rs                    — CLI dispatch (clap): sync, tool, media, hierarchy, cas, conductor
-error.rs                   — MediaPmError: InvalidSource, Workflow, Serialization, Io, Conductor
+error.rs                   — MediaPmError: 6 variants (see error-taxonomy.instructions.md)
 output.rs                  — CLI formatting (print_sync_summary)
 util.rs                    — first_non_empty_json_string helper
 http_client.rs             — Shared reqwest::Client (OnceLock)
@@ -124,23 +124,13 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
 ## Managed Tool Provisioning
 
-6 managed tools with preset/provider entries:
+6 managed tools: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`. See `.agents/instructions/provider-dispatch.instructions.md` for per-OS source descriptors and URL resolution. See `.agents/instructions/preset-dispatch.instructions.md` for preset spec builders and tool defaults. See `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` for the provisioning pipeline and paths.
 
-| Tool | Source | Companions |
-|------|--------|-----------|
-| `yt-dlp` | GitHub Releases | ffmpeg, deno |
-| `ffmpeg` | GitHub Releases (BtbN/evermeet) | — |
-| `deno` | GitHub Releases | — |
-| `rsgain` | GitHub Releases ZIP | ffmpeg, sd |
-| `media-tagger` | Internal launcher | ffmpeg |
-| `sd` | GitHub Releases | — |
+**Provisioning paths**: see `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` for the provisioning pipeline, paths, and `FetchedToolPayload` shape (`content_map`, `os_exec_paths`).
 
-**Provisioning paths**: `<mediapm_dir>/tools/<tool-id>/payload/<os>/`
-**Provision result**: `ProvisionResult { content_map, os_exec_paths }` — the `os_exec_paths` map drives `${context.os == ...}` command selectors in workflow specs. Binary tool filenames are derived from download URLs.
+**URL resolution**: See `.agents/instructions/provider-dispatch.instructions.md` for URL resolution (`resolve_latest_github_tag`), per-tool URL templating, and metadata cache usage.
 
-**URL resolution**: All GitHub-hosted tools (yt-dlp, ffmpeg/BtbN, deno, rsgain, sd) use floating placeholder URLs (`/latest/download/`) that are resolved to concrete tags at fetch time via `resolve_latest_github_tag()` in `tools/provider/mod.rs`. The metadata cache key is the API endpoint URL. rsgain and sd additionally rewrite the filename component (`rsgain-latest-*` → `rsgain-{version}-*`). ffmpeg's macOS Evermeet source uses `getrelease/zip` directly without resolution.
-
-**Tool defaults**: yt-dlp max_concurrent_calls=1, max_retries=1; rsgain album=false; media-tagger ca_providers broad, caa_image_types excluding matrix/watermark.
+**Tool defaults**: see `.agents/instructions/preset-dispatch.instructions.md` for per-tool spec builders and default settings.
 
 **User-level cache**: `<os-cache-dir>/mediapm/cache/` (30-day eviction) — shared download cache distinct from workspace tool cache.
 
@@ -177,7 +167,6 @@ Follow this spec-first, test-first workflow:
 6. **Register everywhere**:
    - Add to `is_known_tool_id()` in `tools/mod.rs`
    - Add to `tools/mod.rs` module declarations (`pub(crate) mod <tool>;`)
-   - Add to the managed tool table above
    - Add config defaults in `config/defaults.rs` if needed
    - Add CLI test cases in `main.rs` tests (route parsing)
 
@@ -188,16 +177,7 @@ Follow this spec-first, test-first workflow:
 
 ## Cache Architecture (Three-Tier)
 
-MediaPM interacts with three distinct caching layers. See `src/mediapm-conductor/AGENTS.md` for the detailed three-tier specification.
-
-1. **Tool content cache** (`tools.json`): `<os-cache>/mediapm/cache/`. Raw downloaded bytes keyed by download URI. 30-day TTL based on last use (touch-on-read).
-2. **Tool metadata cache** (`tool_metadata.json`): `<os-cache>/mediapm/cache/`. Raw bytes for version/tag resolution results. 1-day TTL based on creation time (no touch on read).
-3. **Provision cache** (`ProvisionCache`): `<mediapm_dir>/tools/<tool-id>/`. Extracted tool trees keyed by tool id. 24-hour TTL refreshed on `materialize()`. RAII guards prevent prune during use.
-
-**Hard boundaries**:
-
-- The content cache and metadata cache share the same CAS `store/` but have independent index files and TTL policies.
-- The download cache and provision cache are never interchangeable. Do not read from `<mediapm_dir>/tools/` directly; always go through `ProvisionCache::materialize`.
+See `.agents/instructions/cache-and-http.instructions.md` for the three-tier cache specification (content, metadata, provision), TTL policies, and hard boundary rules.
 
 ## Materialization
 
@@ -245,5 +225,4 @@ Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all`.
 - `paths.rs` — Path resolution
 - `service.rs` — MediaPmService orchestration
 - `error.rs` — Error taxonomy
-- `.agents/instructions/mediapm-architecture.instructions.md`
-- `.agents/instructions/mediapm-testing-and-docstrings.instructions.md`
+- `.agents/instructions/*.instructions.md` — Focused guidance by concern (error taxonomy, paths, cache, provider dispatch, preset dispatch, state persistence, document lifecycle, tool sync coordinator, 3-phase provisioning, content-addressed identity, companion dependencies, generated env output)
