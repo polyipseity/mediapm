@@ -18,10 +18,12 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 3. **Open caches** — `ToolDownloadCache::open()` for content cache (30d TTL) and metadata cache (1d TTL) under the user-level cache root. The cache root path is determined by the `cache_root_override` parameter:
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
    - `Some(path)` → use the provided path as the cache root for both content and metadata caches
-4. **Provision skip** — before fetching each tool, compare `state.managed_tools[tool_id].canonical_version` against the resolved canonical version using direct string equality. Direct string equality comparison — no Option unwrapping needed since `canonical_version` is always a populated `String`. If they match AND the stored `fetch_hash` is non-empty, skip provisioning entirely and increment `tools_skipped`.
+4. **Provision skip** — before fetching each tool, compare `state.managed_tools[tool_id].canonical_version` against the resolved canonical version using direct string equality. If they match AND the stored `fetch_hash` is non-empty, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar.
 5. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
-   - Call `fetch_and_import_tool_payload()` to run the 3-phase pipeline.
+   - Resolve the tool fetch via `provider::resolve_tool_fetch()`. If resolve fails, emit a warning and continue.
+   - Determine `PreResolveOutcome`: `Skip` if the tool is already provisioned at the resolved version, else `Resolved`.
+   - Call `fetch_and_import_tool_payload()` with the outcome. On skip (`was_skip`), increment `tools_skipped` and continue.
    - On `Ok(Some(payload))`: compute content-addressed hash, build spec+runtime, insert into generated doc.
    - **External data registration**: before inserting the tool spec, register every CAS hash in the tool's `content_map` as an `ExternalDataEntry` in `generated_doc.external_data` with `OutputSaveMode::Saved`. This satisfies the `content_map ⊆ external_data` invariant.
    - On `Ok(None)`: create minimal spec without content map.
@@ -38,7 +40,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 | `tools_added`   | `usize`       | Tools newly registered (not previously in generated doc)              |
 | `tools_updated` | `usize`       | Tools updated to match desired version                                |
 | `tools_removed` | `usize`       | Tools removed (no longer in desired set)                              |
-| `tools_skipped` | `usize`       | Tools skipped because their canonical version was already provisioned |
+| `tools_skipped` | `usize`       | Tools skipped because their canonical version was already provisioned. Shown in the resolve bar with `set_message("skipped")`. |
 | `warnings`      | `Vec<String>` | Non-fatal warnings (provision failures)                               |
 
 ## Invariants

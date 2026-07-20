@@ -121,6 +121,17 @@ group.join();   // keeps final state visible, then group drops draw thread
 
 Prefer `join()` to let users read the final state of each bar before it disappears. It keeps finished bars visible until the group goes out of scope. Use `join_and_clear()` only when the terminal must be cleared before subsequent output (e.g., before printing a result line). Callers should ensure all bars are in a finished state first (via `finish()`, `finish_success()`, or `finish_error()`). The draw thread terminates when the group is dropped at end of scope.
 
+### Custom RHS message
+
+Use `set_message()` on any `TrackedHandle` or `ProgressBarApi` to append custom text after the auto-computed right-hand side (count/total, elapsed, rate, ETA). The message appears separated by two spaces from the auto-computed text. Clear by setting an empty string.
+
+Common uses:
+
+- **`"skipped"`** — tool is already provisioned at the latest version
+- **`"cached (N)"`** — N sources served from download cache rather than fetched from the network
+
+`set_message()` works after `finish()` / `finish_success()` because the daemon ticker continues to sync shared state to the indicatif bar until the bar is removed from `MultiProgress`.
+
 ### Formatting helpers
 
 ```rust
