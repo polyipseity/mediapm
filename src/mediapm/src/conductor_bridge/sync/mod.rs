@@ -121,14 +121,21 @@ pub(crate) async fn reconcile_desired_tools(
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
+        // Initialized in the Ok(fetch) arm before the skip check;
+        // used in the Ok(None) payload branch below. String::new() is
+        // the dead initial value because the assignment in the match
+        // arm always runs before any read (other paths `continue`).
+        #[allow(unused_assignments)]
+        let mut resolved_canonical_version = String::new();
         let pre_resolved = match provider::resolve_tool_fetch(tool_id, Some(&metadata_cache)).await
         {
             Ok((fetch, canonical_version)) => {
+                resolved_canonical_version = canonical_version.clone();
+
                 // Check skip: if state has an entry with the same canonical_version
                 // AND a non-empty fetch_hash, skip provisioning entirely.
                 let should_skip = state.managed_tools.get(tool_id).is_some_and(|existing| {
-                    existing.canonical_version.as_deref() == canonical_version.as_deref()
-                        && existing.fetch_hash.is_some()
+                    existing.canonical_version == canonical_version && existing.fetch_hash.is_some()
                 });
 
                 if should_skip {
@@ -268,7 +275,7 @@ pub(crate) async fn reconcile_desired_tools(
                     ToolRegistryEntry {
                         version: None,
                         tag: None,
-                        canonical_version: None,
+                        canonical_version: resolved_canonical_version.clone(),
                         fetch_hash: None,
                         deployed_at: now,
                     },

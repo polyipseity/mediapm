@@ -32,8 +32,9 @@ pub(super) struct FetchedToolPayload {
     /// without OS prefix). Passed to the preset layer to build the command
     /// selector template.
     pub(super) os_exec_paths: BTreeMap<String, String>,
-    /// Canonical version used for skip-if-up-to-date logic.
-    pub(super) canonical_version: Option<String>,
+    /// Canonical version used for skip-if-up-to-date logic. Always set;
+    /// the type is `String`, not `Option<String>`.
+    pub(super) canonical_version: String,
 }
 
 /// Fetches a tool payload for **all** platforms, extracts each to a
@@ -68,7 +69,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     cache: &ToolDownloadCache,
     metadata_cache: &ToolDownloadCache,
     group: &dyn ProgressGroupApi,
-    pre_resolved: Option<(ResolvedToolFetch, Option<String>)>,
+    pre_resolved: Option<(ResolvedToolFetch, String)>,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     // Track created bars so we can mark them red on error.
     let mut error_bars: Vec<Arc<dyn crate::output::ProgressBarApi>> = Vec::new();

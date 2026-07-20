@@ -81,8 +81,10 @@ pub(crate) async fn resolve_latest_github_tag(
 
 /// Resolves source descriptors and canonical version for the named managed tool.
 ///
-/// Returns a tuple of `(ResolvedToolFetch, Option<String>)` where the second
-/// element is the canonical version identifier for skip-if-up-to-date logic.
+/// Returns a tuple of `(ResolvedToolFetch, String)` where the second element
+/// is the canonical version identifier for skip-if-up-to-date logic. Always
+/// populated — the type is `String`, not `Option<String>`. The semantic kind
+/// (VCS hash, version, or tag) is fixed at code-writing time per tool.
 ///
 /// When `metadata_cache` is provided, tools with dynamic version resolution
 /// (e.g., yt-dlp "latest" tag) use it to cache version/tag lookup results.
@@ -95,7 +97,7 @@ pub(crate) async fn resolve_latest_github_tag(
 pub(crate) async fn resolve_tool_fetch(
     tool_name: &str,
     metadata_cache: Option<&ToolDownloadCache>,
-) -> Result<(ResolvedToolFetch, Option<String>), mediapm_conductor::ConductorError> {
+) -> Result<(ResolvedToolFetch, String), mediapm_conductor::ConductorError> {
     match tool_name {
         n if n.eq_ignore_ascii_case("yt-dlp") => {
             let tag = yt_dlp::resolve_latest_tag(metadata_cache).await?;
@@ -107,7 +109,7 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok((fetch, Some(tag)))
+            Ok((fetch, tag))
         }
         n if n.eq_ignore_ascii_case("ffmpeg") => {
             let tag = ffmpeg::resolve_tag(metadata_cache).await?;
@@ -122,7 +124,7 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok((fetch, Some(tag)))
+            Ok((fetch, tag))
         }
         n if n.eq_ignore_ascii_case("deno") => {
             let tag = deno::resolve_tag(metadata_cache).await?;
@@ -134,7 +136,7 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok((fetch, Some(tag)))
+            Ok((fetch, tag))
         }
         n if n.eq_ignore_ascii_case("rsgain") => {
             let tag = rsgain::resolve_tag(metadata_cache).await?;
@@ -149,9 +151,12 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok((fetch, Some(tag)))
+            Ok((fetch, tag))
         }
-        n if n.eq_ignore_ascii_case("media-tagger") => Ok((media_tagger::sources(), None)),
+        n if n.eq_ignore_ascii_case("media-tagger") => {
+            let canonical = crate::global::MEDIAPM_GIT_HASH.to_string();
+            Ok((media_tagger::sources(), canonical))
+        }
         n if n.eq_ignore_ascii_case("sd") => {
             let tag = sd::resolve_tag(metadata_cache).await?;
             let mut fetch = sd::sources();
@@ -164,7 +169,7 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok((fetch, Some(tag)))
+            Ok((fetch, tag))
         }
         _ => Err(mediapm_conductor::ConductorError::Workflow(format!(
             "tool {tool_name}: no provider registered for resolution"

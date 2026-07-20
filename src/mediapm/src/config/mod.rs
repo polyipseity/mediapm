@@ -513,9 +513,10 @@ pub struct ToolRegistryEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     /// Canonical version identifier for skip-if-up-to-date logic.
-    /// Populated by the provisioning pipeline at fetch time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canonical_version: Option<String>,
+    /// Non-optional — always populated by the provisioning pipeline.
+    /// Defaults to empty string (`""`) for backward-compat with old state files.
+    #[serde(default)]
+    pub canonical_version: String,
     /// CAS content hash of the fetched payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fetch_hash: Option<String>,
@@ -597,7 +598,7 @@ impl MediaPmState {
         self.managed_tools.retain(|_, entry| {
             entry.version.as_ref().is_none_or(|v| !v.trim().is_empty())
                 || entry.tag.as_ref().is_none_or(|t| !t.trim().is_empty())
-                || entry.canonical_version.as_ref().is_none_or(|c| !c.trim().is_empty())
+                || !entry.canonical_version.trim().is_empty()
         });
     }
 }
