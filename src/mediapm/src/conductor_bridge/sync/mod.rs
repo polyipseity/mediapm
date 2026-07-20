@@ -27,7 +27,7 @@ use crate::conductor_bridge::documents::{
     register_missing_builtin_tools, save_conductor_generated_document,
 };
 use crate::conductor_bridge::sync::lifecycle::is_builtin_source_ingest_requirement;
-use crate::conductor_bridge::sync::provision::fetch_and_import_tool_payload;
+use crate::conductor_bridge::sync::provision::{PreResolveOutcome, fetch_and_import_tool_payload};
 use crate::conductor_bridge::sync::tool_config::{
     resolve_companion_deno_selection, resolve_companion_ffmpeg_selection,
     write_generated_runtime_env_file,
@@ -146,12 +146,10 @@ pub(crate) async fn reconcile_desired_tools(
                 });
 
                 if should_skip {
-                    report.tools_skipped += 1;
-                    pb.advance(1);
-                    continue;
+                    PreResolveOutcome::Skip { name: tool_id.clone(), version: canonical_version }
+                } else {
+                    PreResolveOutcome::Resolved(fetch, canonical_version)
                 }
-
-                Some((fetch, canonical_version))
             }
             Err(e) => {
                 report.warnings.push(format!(
@@ -162,6 +160,7 @@ pub(crate) async fn reconcile_desired_tools(
             }
         };
 
+        let was_skip = matches!(&pre_resolved, PreResolveOutcome::Skip { .. });
         let payload_result = fetch_and_import_tool_payload(
             cas,
             tool_id,
@@ -171,6 +170,12 @@ pub(crate) async fn reconcile_desired_tools(
             pre_resolved,
         )
         .await;
+
+        if was_skip {
+            report.tools_skipped += 1;
+            pb.advance(1);
+            continue;
+        }
 
         match payload_result {
             Ok(Some(payload)) => {

@@ -94,6 +94,9 @@ pub struct DownloadedSources {
     pub tool_id: String,
     /// Per-platform source bytes.
     pub entries: Vec<DownloadedSource>,
+    /// Number of sources that were served from the download cache
+    /// (not fetched from the network).
+    pub cached_count: usize,
 }
 
 /// Phase 3 output: final content map and per-OS executable paths for a tool.
@@ -172,6 +175,7 @@ pub async fn fetch_tool_sources(
     progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<DownloadedSources, crate::error::ConductorError> {
     let mut entries = Vec::with_capacity(fetch.sources.len());
+    let mut cached_count: usize = 0;
     let mut items_done = 0u64;
     let total = fetch.sources.len() as u64;
     let agg_total_bytes: u64 = fetch.sources.iter().map(|s| s.expected_size.unwrap_or(0)).sum();
@@ -184,6 +188,7 @@ pub async fn fetch_tool_sources(
                 let bytes = if let Some(cached) = cache.lookup_bytes(cache_key).await {
                     cache.touch(cache_key);
                     agg_completed_bytes += cached.len() as u64;
+                    cached_count += 1;
                     cached
                 } else {
                     let downloaded = fetch_bytes_from_candidates(
@@ -232,7 +237,7 @@ pub async fn fetch_tool_sources(
         }
     }
 
-    Ok(DownloadedSources { tool_id: fetch.tool_id.clone(), entries })
+    Ok(DownloadedSources { tool_id: fetch.tool_id.clone(), entries, cached_count })
 }
 
 /// Downloads bytes from URL candidates (tried in order).

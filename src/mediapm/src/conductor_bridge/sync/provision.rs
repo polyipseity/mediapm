@@ -21,6 +21,7 @@ use mediapm_utils::progress::ProviderProgressCallback;
 use crate::error::MediaPmError;
 use crate::output::ProgressGroupApi;
 use crate::tools::downloader::ToolDownloadCache;
+#[cfg(test)]
 use crate::tools::provider;
 
 /// Result of fetching and importing a tool payload into CAS.
@@ -35,6 +36,24 @@ pub(super) struct FetchedToolPayload {
     /// Canonical version used for skip-if-up-to-date logic. Always set;
     /// the type is `String`, not `Option<String>`.
     pub(super) canonical_version: String,
+}
+
+/// Outcome of the pre-resolve step that determines whether a tool should be
+/// provisioned or skipped.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(super) enum PreResolveOutcome {
+    /// Tool should be fetched and imported normally.
+    Resolved(ResolvedToolFetch, String),
+    /// Tool is already provisioned at the given canonical version (skip).
+    Skip {
+        /// Tool identifier.
+        #[allow(dead_code)]
+        name: String,
+        /// Canonical version that was already provisioned.
+        #[allow(dead_code)]
+        version: String,
+    },
 }
 
 /// Fetches a tool payload for **all** platforms, extracts each to a
@@ -67,9 +86,9 @@ pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
     tool_id: &str,
     cache: &ToolDownloadCache,
-    metadata_cache: &ToolDownloadCache,
+    _metadata_cache: &ToolDownloadCache,
     group: &dyn ProgressGroupApi,
-    pre_resolved: Option<(ResolvedToolFetch, String)>,
+    outcome: PreResolveOutcome,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     // Track created bars so we can mark them red on error.
     let mut error_bars: Vec<Arc<dyn crate::output::ProgressBarApi>> = Vec::new();
@@ -84,15 +103,15 @@ pub(super) async fn fetch_and_import_tool_payload(
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
     let resolve_bar = group.add_bar(1, &format!("{tool_id} [resolve]"));
     error_bars.push(resolve_bar.clone());
-    let (mut fetch, canonical_version) = if let Some((f, cv)) = pre_resolved {
-        (f, cv)
-    } else {
-        match provider::resolve_tool_fetch(tool_id, Some(metadata_cache)).await {
-            Ok(tuple) => tuple,
-            Err(e) => {
-                finish_error_bars(&error_bars);
-                return Err(MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")));
-            }
+    let (mut fetch, canonical_version) = match outcome {
+        PreResolveOutcome::Resolved(f, cv) => (f, cv),
+        PreResolveOutcome::Skip { .. } => {
+            // Tool is already provisioned at this version — show resolve bar
+            // with "skipped" indicator, then return early.
+            resolve_bar.set_position(1);
+            resolve_bar.set_message("skipped");
+            resolve_bar.finish_success();
+            return Ok(None);
         }
     };
     // Resolve is a single operation — total stays at 1 from add_bar(1, ...).
@@ -128,6 +147,10 @@ pub(super) async fn fetch_and_import_tool_payload(
             return Err(MediaPmError::Workflow(format!("tool {tool_id}: fetch failed: {e}")));
         }
     };
+    // Set fetch bar RHS message if some sources were cache-served.
+    if downloaded.cached_count > 0 {
+        fetch_bar.set_message(&format!("cached ({})", downloaded.cached_count));
+    }
     fetch_bar.finish();
 
     // Phase 3: Postprocess — extract archives, repack to uncompressed ZIP,
@@ -222,29 +245,30 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_import_rejects_unknown_tool() {
-        let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "nonexistent-tool",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            None,
-        )
-        .await;
-        assert!(result.is_err(), "unknown tool should return an error");
+        let (_cas, _cache, metadata_cache, _tracker, _tmp) = test_deps().await;
+        // Resolution is now handled before fetch_and_import_tool_payload;
+        // verify that resolve_tool_fetch rejects unknown tools.
+        let resolve_result =
+            crate::tools::provider::resolve_tool_fetch("nonexistent-tool", Some(&metadata_cache))
+                .await;
+        assert!(resolve_result.is_err(), "resolve_tool_fetch should reject unknown tools");
     }
 
     #[tokio::test]
     async fn fetch_and_import_generate_launcher_succeeds() {
         let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
+        let (fetch, canonical) =
+            crate::tools::provider::resolve_tool_fetch("media-tagger", Some(&metadata_cache))
+                .await
+                .unwrap();
+        let outcome = PreResolveOutcome::Resolved(fetch, canonical);
         let result = fetch_and_import_tool_payload(
             &cas,
             "media-tagger",
             &cache,
             &metadata_cache,
             &tracker,
-            None,
+            outcome,
         )
         .await;
         match result {
@@ -314,9 +338,20 @@ mod tests {
             cache.store_bytes(&url, bytes).await;
         }
 
-        let result =
-            fetch_and_import_tool_payload(&cas, "yt-dlp", &cache, &metadata_cache, &tracker, None)
-                .await;
+        let (fetch, canonical) =
+            crate::tools::provider::resolve_tool_fetch("yt-dlp", Some(&metadata_cache))
+                .await
+                .unwrap();
+        let outcome = PreResolveOutcome::Resolved(fetch, canonical);
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "yt-dlp",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
         match result {
             Ok(Some(payload)) => {
                 assert_eq!(
@@ -353,8 +388,8 @@ mod tests {
         let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
 
         // Use media_tagger's sources as a known ResolvedToolFetch.
-        let fetch = crate::tools::provider::media_tagger::sources();
-        let pre_resolved = Some((fetch, "test-canonical".to_string()));
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(fetch, "test-canonical".to_string());
 
         let result = fetch_and_import_tool_payload(
             &cas,
@@ -362,7 +397,7 @@ mod tests {
             &cache,
             &metadata_cache,
             &tracker,
-            pre_resolved,
+            outcome,
         )
         .await;
         match result {
