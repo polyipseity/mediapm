@@ -50,14 +50,14 @@ The canonical version is the resolved tag verbatim for all GitHub-release-based 
 
 ## Canonical version per tool
 
-| Tool           | Canonical version source         | Example         |
-| -------------- | -------------------------------- | --------------- |
-| `yt-dlp`       | Resolved GitHub tag, verbatim    | `2025.07.15`    |
-| `ffmpeg`       | Resolved GitHub tag, verbatim    | `L2025-07-15`   |
-| `deno`         | Resolved GitHub tag, verbatim    | `v2.2.12`       |
-| `rsgain`       | Resolved GitHub tag, verbatim    | `v3.7`          |
-| `sd`           | Resolved GitHub tag, verbatim    | `v1.1.0`        |
-| `media-tagger` | mediapm build-time git hash       | (git hash)       |
+| Tool           | Canonical version source      | Example       |
+| -------------- | ----------------------------- | ------------- |
+| `yt-dlp`       | Resolved GitHub tag, verbatim | `2025.07.15`  |
+| `ffmpeg`       | Resolved GitHub tag, verbatim | `L2025-07-15` |
+| `deno`         | Resolved GitHub tag, verbatim | `v2.2.12`     |
+| `rsgain`       | Resolved GitHub tag, verbatim | `v3.7`        |
+| `sd`           | Resolved GitHub tag, verbatim | `v1.1.0`      |
+| `media-tagger` | mediapm build-time git hash   | (git hash)    |
 
 ## Platform-specific considerations
 

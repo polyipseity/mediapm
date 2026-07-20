@@ -25,13 +25,13 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 
 ## `ToolRegistryEntry` (v2)
 
-| Field         | Type             | Purpose                                        |
-| ------------- | ---------------- | ---------------------------------------------- |
-| `version`     | `Option<String>` | Tool version as fetched                        |
-| `tag`         | `Option<String>` | Tag as fetched                                 |
-| `fetch_hash`  | `Option<String>` | CAS content hash of the fetched payload        |
-| `canonical_version` | `String` | Canonical version identifier used for skip-if-up-to-date logic |
-| `deployed_at` | `u64`            | Unix-epoch seconds when deployed (0 = not yet) |
+| Field               | Type             | Purpose                                                        |
+| ------------------- | ---------------- | -------------------------------------------------------------- |
+| `version`           | `Option<String>` | Tool version as fetched                                        |
+| `tag`               | `Option<String>` | Tag as fetched                                                 |
+| `fetch_hash`        | `Option<String>` | CAS content hash of the fetched payload                        |
+| `canonical_version` | `String`         | Canonical version identifier used for skip-if-up-to-date logic |
+| `deployed_at`       | `u64`            | Unix-epoch seconds when deployed (0 = not yet)                 |
 
 ## `ToolRegistryEntry` vs legacy `ActiveToolInstance`
 
