@@ -729,19 +729,22 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         let inherited_env_vars = runtime_storage.inherited_env_vars.clone();
 
         // Run the reconciliation.
+        // Load current state before reconciliation (needed for skip logic).
+        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
+
         let report = reconcile_desired_tools(
             &**self.conductor.cas(),
             effective_paths,
             &desired_tools,
             &inherited_env_vars,
             check_tag_updates,
+            &state,
             None,
         )
         .await?;
 
         // Merge deployment records from the provisioning pipeline into the
         // persisted managed-tool registry and save.
-        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
         for (tool_id, record) in &report.tool_records {
             state.managed_tools.insert(tool_id.clone(), record.clone());
         }

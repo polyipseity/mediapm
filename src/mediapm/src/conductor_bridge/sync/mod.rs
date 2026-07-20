@@ -32,8 +32,8 @@ use crate::conductor_bridge::sync::tool_config::{
     write_generated_runtime_env_file,
 };
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
-use crate::config::ToolRegistryEntry;
 use crate::config::defaults;
+use crate::config::{MediaPmState, ToolRegistryEntry};
 use crate::error::MediaPmError;
 use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
@@ -49,6 +49,8 @@ pub(crate) struct ToolSyncReport {
     pub(crate) tools_removed: usize,
     /// Number of tools updated to match desired version.
     pub(crate) tools_updated: usize,
+    /// Number of tools skipped because their canonical version was already provisioned.
+    pub(crate) tools_skipped: usize,
     /// Non-fatal warnings collected during reconciliation.
     pub(crate) warnings: Vec<String>,
     /// Per-tool deployment records populated during provisioning.
@@ -70,6 +72,7 @@ pub(crate) async fn reconcile_desired_tools(
     desired_tools: &BTreeMap<String, serde_json::Value>,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
     _check_tag_updates: bool,
+    state: &MediaPmState,
     progress_group: Option<&dyn ProgressGroupApi>,
 ) -> Result<ToolSyncReport, MediaPmError> {
     let mut report = ToolSyncReport::default();
@@ -120,7 +123,22 @@ pub(crate) async fn reconcile_desired_tools(
 
         let pre_resolved = match provider::resolve_tool_fetch(tool_id, Some(&metadata_cache)).await
         {
-            Ok((fetch, canonical_version)) => Some((fetch, canonical_version)),
+            Ok((fetch, canonical_version)) => {
+                // Check skip: if state has an entry with the same canonical_version
+                // AND a non-empty fetch_hash, skip provisioning entirely.
+                let should_skip = state.managed_tools.get(tool_id).is_some_and(|existing| {
+                    existing.canonical_version.as_deref() == canonical_version.as_deref()
+                        && existing.fetch_hash.is_some()
+                });
+
+                if should_skip {
+                    report.tools_skipped += 1;
+                    pb.advance(1);
+                    continue;
+                }
+
+                Some((fetch, canonical_version))
+            }
             Err(e) => {
                 report.warnings.push(format!(
                     "tool {tool_id}: resolve failed (will retry on next sync): {e}",
