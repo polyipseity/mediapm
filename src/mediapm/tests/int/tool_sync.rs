@@ -13,7 +13,9 @@
 //! idempotency, and pure-function logic — not on counter values
 //! (`added_tools`, `updated_tools`, etc.).
 
-use mediapm::{MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRequirement};
+use mediapm::{
+    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
+};
 use mediapm_conductor::{NickelDocument, ToolKindSpec, decode_document};
 use tempfile::tempdir;
 
@@ -48,11 +50,11 @@ async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
     service.sync_tools().await?;
-    let state_path = &service.paths().mediapm_state_ncl;
-    assert!(state_path.exists(), "state.ncl should exist");
-    let content = std::fs::read_to_string(state_path).expect("state.ncl should be readable");
-    assert!(!content.is_empty(), "state.ncl must not be empty");
-    assert!(content.contains("version"), "state.ncl must contain a version field");
+    let state_path = &service.paths().mediapm_state_json;
+    assert!(state_path.exists(), "state.json should exist");
+    let content = std::fs::read_to_string(state_path).expect("state.json should be readable");
+    assert!(!content.is_empty(), "state.json must not be empty");
+    assert!(content.contains("version"), "state.json must contain a version field");
     Ok(())
 }
 
@@ -112,11 +114,11 @@ async fn sync_is_idempotent() -> Result<(), mediapm::MediaPmError> {
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
     service.sync_tools().await?;
     let state_after_first =
-        std::fs::read(&service.paths().mediapm_state_ncl).expect("state.ncl should exist");
+        std::fs::read(&service.paths().mediapm_state_json).expect("state.json should exist");
     let _ = service.sync_tools().await?;
     let state_after_second =
-        std::fs::read(&service.paths().mediapm_state_ncl).expect("state.ncl should exist");
-    assert_eq!(state_after_first, state_after_second, "state.ncl must be identical after re-sync");
+        std::fs::read(&service.paths().mediapm_state_json).expect("state.json should exist");
+    assert_eq!(state_after_first, state_after_second, "state.json must be identical after re-sync");
     Ok(())
 }
 
@@ -150,11 +152,13 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
     let mut state = MediaPmState::default();
-    state.tools.insert(
+    state.managed_tools.insert(
         "demo-tool".to_string(),
-        ToolRequirement {
-            version: mediapm::MediaMetadataValue::Literal("1.0".to_string()),
-            ..Default::default()
+        ToolRegistryEntry {
+            version: Some("1.0".to_string()),
+            tag: None,
+            fetch_hash: None,
+            deployed_at: 0,
         },
     );
     assert!(!service.logical_tool_requires_sync("demo-tool", &state)?);

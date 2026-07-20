@@ -13,3 +13,5 @@ mod tool_sync;
 /// All-platform document structure integration: verifies that managed
 /// tools have per-OS content-map entries and non-empty command selectors.
 mod all_platform;
+/// State JSON persistence and migration tests.
+mod state_persistence;
