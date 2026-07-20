@@ -46,10 +46,12 @@ Active tool resolution: the entry in `state.managed_tools[tool_id]` where
 Inactive entries are conductor tool entries with stale hashes that were
 superseded by a newer provision cycle.
 
-`canonical_version` on `ToolRegistryEntry` enables skip-if-up-to-date
-provisioning: if the stored `canonical_version` matches the resolved canonical
-version from the provider, and `fetch_hash` is non-empty, the 3-phase
-provision pipeline is skipped.
+`canonical_version` on `ToolRegistryEntry` (a non-optional `String`, not
+`Option<String>`) enables skip-if-up-to-date provisioning: if the stored
+`canonical_version` matches the resolved canonical version from the provider,
+and `fetch_hash` is non-empty, the 3-phase provision pipeline is skipped. The
+semantic kind of the canonical version (VCS hash vs version vs tag) is fixed
+per tool at code-writing time; no runtime fallback chain exists.
 
 See `.agents/instructions/rust-workflow.instructions.md` for module split conventions.
 

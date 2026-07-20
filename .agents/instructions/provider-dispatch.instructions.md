@@ -46,7 +46,7 @@ Each tool module defines URL patterns that interpolate:
 
 ## Canonical version policy
 
-The canonical version is the resolved tag verbatim for all GitHub-release-based tools. No prefix stripping or transformation is applied. For tools without external sources (e.g., media-tagger), there is no canonical version.
+The canonical version is the resolved tag verbatim for all GitHub-release-based tools. No prefix stripping or transformation is applied. For builtin tools that ship with mediapm, the canonical version is the mediapm git hash embedded at build time (VCS hash kind). The semantic kind (VCS hash vs version vs tag) is fixed per tool at code-writing time; it is never determined at runtime.
 
 ## Canonical version per tool
 
@@ -57,7 +57,7 @@ The canonical version is the resolved tag verbatim for all GitHub-release-based 
 | `deno`         | Resolved GitHub tag, verbatim    | `v2.2.12`       |
 | `rsgain`       | Resolved GitHub tag, verbatim    | `v3.7`          |
 | `sd`           | Resolved GitHub tag, verbatim    | `v1.1.0`        |
-| `media-tagger` | None (no external sources)       | —               |
+| `media-tagger` | mediapm build-time git hash       | (git hash)       |
 
 ## Platform-specific considerations
 

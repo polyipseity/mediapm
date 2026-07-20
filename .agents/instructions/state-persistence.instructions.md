@@ -30,7 +30,7 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 | `version`     | `Option<String>` | Tool version as fetched                        |
 | `tag`         | `Option<String>` | Tag as fetched                                 |
 | `fetch_hash`  | `Option<String>` | CAS content hash of the fetched payload        |
-| `canonical_version` | `Option<String>` | Canonical version identifier used for skip-if-up-to-date logic |
+| `canonical_version` | `String` | Canonical version identifier used for skip-if-up-to-date logic |
 | `deployed_at` | `u64`            | Unix-epoch seconds when deployed (0 = not yet) |
 
 ## `ToolRegistryEntry` vs legacy `ActiveToolInstance`
@@ -135,11 +135,11 @@ Flat→v2 mapping:
 
 `canonical_version` is populated by the provisioning pipeline at fetch time.
 The resolve phase determines it from available data (GitHub tag, VCS hash,
-etc.) and stores it in the resulting `ToolRegistryEntry`.
+etc.) and stores it in the resulting `ToolRegistryEntry`. The semantic kind
+(VCS hash vs version vs tag) is fixed per tool at code-writing time — each
+tool's provider always returns the same kind of identifier. No runtime
+fallback chain exists.
 
 When comparing canonical versions for skip-if-up-to-date logic, use exact
 string equality. All providers use the resolved tag verbatim — no prefix
 transformation is applied.
-
-`canonical_version` is `None` for builtin launcher tools (e.g., media-tagger)
-that have no external version source.
