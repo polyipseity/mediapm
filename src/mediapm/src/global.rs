@@ -20,6 +20,11 @@ use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_roo
 #[allow(dead_code)]
 pub const MEDIAPM_USER_AGENT: &str = concat!("mediapm/", env!("CARGO_PKG_VERSION"));
 
+/// Git hash of the mediapm build, embedded at compile time.
+/// Used as the canonical version for builtin tools (media-tagger).
+/// Empty (`""`) when git was unavailable at build time.
+pub const MEDIAPM_GIT_HASH: &str = env!("MEDIAPM_GIT_HASH");
+
 /// Canonical global directory paths for one user profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaPmGlobalPaths {
