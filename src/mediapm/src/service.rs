@@ -739,7 +739,8 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             &inherited_env_vars,
             check_tag_updates,
             &state,
-            None,
+            None, // cache_root_override — use default OS cache dir
+            None, // progress_group
         )
         .await?;
 

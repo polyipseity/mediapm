@@ -13,6 +13,7 @@ pub(crate) mod provision;
 pub(crate) mod tool_config;
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use mediapm_cas::{CasApi, Hash};
@@ -73,6 +74,7 @@ pub(crate) async fn reconcile_desired_tools(
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
     _check_tag_updates: bool,
     state: &MediaPmState,
+    cache_root_override: Option<&Path>,
     progress_group: Option<&dyn ProgressGroupApi>,
 ) -> Result<ToolSyncReport, MediaPmError> {
     let mut report = ToolSyncReport::default();
@@ -89,9 +91,14 @@ pub(crate) async fn reconcile_desired_tools(
     let mut tool_runtimes: BTreeMap<String, ToolRuntime> = BTreeMap::new();
 
     // Open or create the tool download cache and tool metadata cache.
-    let cache_root = default_mediapm_user_download_cache_root().ok_or_else(|| {
-        MediaPmError::Workflow("could not determine default tool cache root".to_string())
-    })?;
+    // Use cache_root_override when provided (for hermetic tests), otherwise
+    // fall back to the default OS-level user cache root.
+    let cache_root = match cache_root_override {
+        Some(root) => root.to_path_buf(),
+        None => default_mediapm_user_download_cache_root().ok_or_else(|| {
+            MediaPmError::Workflow("could not determine default tool cache root".to_string())
+        })?,
+    };
     let cache = ToolDownloadCache::open(&cache_root, "tools.json", 30 * 24 * 60 * 60)
         .await
         .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
@@ -415,6 +422,11 @@ mod tests {
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 
+        // Record real cache state before the call.
+        let real_cache_mtime = default_mediapm_user_download_cache_root()
+            .and_then(|p| std::fs::metadata(p.join("tools.json")).ok())
+            .and_then(|m| m.modified().ok());
+
         let state = MediaPmState::default();
         let result = reconcile_desired_tools(
             &cas,
@@ -435,21 +447,20 @@ mod tests {
         assert_eq!(report.tools_skipped, 0, "no tools should be skipped");
         assert!(report.warnings.is_empty(), "no warnings expected: {:?}", report.warnings);
 
-        // Verify the real cache dir was NOT written to.
-        let real_cache = default_mediapm_user_download_cache_root().map(|p| p.join("tools.json"));
-        if let Some(real_index) = real_cache {
-            assert!(
-                !real_index.exists(),
-                "real cache index must not exist after override: {}",
-                real_index.display()
-            );
-        }
-
-        // Verify the override path was used instead.
+        // Verify the override path was used (cache files initialized there).
         assert!(
             cache_root.path().join("tools.json").exists()
                 || cache_root.path().join("store").exists(),
             "override cache dir should have been initialized",
+        );
+
+        // Verify the real cache was not modified by the call (mtime unchanged).
+        let real_cache_mtime_after = default_mediapm_user_download_cache_root()
+            .and_then(|p| std::fs::metadata(p.join("tools.json")).ok())
+            .and_then(|m| m.modified().ok());
+        assert_eq!(
+            real_cache_mtime, real_cache_mtime_after,
+            "real cache directory must not be modified when cache_root_override is set",
         );
     }
 
