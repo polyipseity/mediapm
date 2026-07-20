@@ -1,6 +1,8 @@
 //! Provider source definitions for `deno`.
 //!
 //! Sources are fetched from the deno GitHub releases page as zip archives.
+//!
+//! Canonical version: the resolved tag verbatim (e.g. "v2.2.12").
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 

@@ -79,7 +79,10 @@ pub(crate) async fn resolve_latest_github_tag(
     Ok(tag)
 }
 
-/// Resolves source descriptors for the named managed tool.
+/// Resolves source descriptors and canonical version for the named managed tool.
+///
+/// Returns a tuple of `(ResolvedToolFetch, Option<String>)` where the second
+/// element is the canonical version identifier for skip-if-up-to-date logic.
 ///
 /// When `metadata_cache` is provided, tools with dynamic version resolution
 /// (e.g., yt-dlp "latest" tag) use it to cache version/tag lookup results.
@@ -92,7 +95,7 @@ pub(crate) async fn resolve_latest_github_tag(
 pub(crate) async fn resolve_tool_fetch(
     tool_name: &str,
     metadata_cache: Option<&ToolDownloadCache>,
-) -> Result<ResolvedToolFetch, mediapm_conductor::ConductorError> {
+) -> Result<(ResolvedToolFetch, Option<String>), mediapm_conductor::ConductorError> {
     match tool_name {
         n if n.eq_ignore_ascii_case("yt-dlp") => {
             let tag = yt_dlp::resolve_latest_tag(metadata_cache).await?;
@@ -104,7 +107,7 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok(fetch)
+            Ok((fetch, Some(tag)))
         }
         n if n.eq_ignore_ascii_case("ffmpeg") => {
             let tag = ffmpeg::resolve_tag(metadata_cache).await?;
@@ -119,7 +122,7 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok(fetch)
+            Ok((fetch, Some(tag)))
         }
         n if n.eq_ignore_ascii_case("deno") => {
             let tag = deno::resolve_tag(metadata_cache).await?;
@@ -131,7 +134,7 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok(fetch)
+            Ok((fetch, Some(tag)))
         }
         n if n.eq_ignore_ascii_case("rsgain") => {
             let tag = rsgain::resolve_tag(metadata_cache).await?;
@@ -146,9 +149,9 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok(fetch)
+            Ok((fetch, Some(tag)))
         }
-        n if n.eq_ignore_ascii_case("media-tagger") => Ok(media_tagger::sources()),
+        n if n.eq_ignore_ascii_case("media-tagger") => Ok((media_tagger::sources(), None)),
         n if n.eq_ignore_ascii_case("sd") => {
             let tag = sd::resolve_tag(metadata_cache).await?;
             let mut fetch = sd::sources();
@@ -161,7 +164,7 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok(fetch)
+            Ok((fetch, Some(tag)))
         }
         _ => Err(mediapm_conductor::ConductorError::Workflow(format!(
             "tool {tool_name}: no provider registered for resolution"
@@ -193,8 +196,17 @@ mod tests {
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "sd"] {
             let result = resolve_tool_fetch(name, Some(&cache)).await;
             assert!(result.is_ok(), "tool {name}: resolve should succeed");
-            let fetch = result.unwrap();
+            let (fetch, canonical) = result.unwrap();
             assert_eq!(fetch.tool_id, *name, "tool_id should match input name");
+            match *name {
+                "yt-dlp" => assert_eq!(canonical.as_deref(), Some("2025.07.15")),
+                "ffmpeg" => assert_eq!(canonical.as_deref(), Some("L2025-07-15")),
+                "deno" => assert_eq!(canonical.as_deref(), Some("v2.2.12")),
+                "rsgain" => assert_eq!(canonical.as_deref(), Some("v3.7")),
+                "sd" => assert_eq!(canonical.as_deref(), Some("v1.1.0")),
+                "media-tagger" => assert_eq!(canonical, None),
+                _ => unreachable!(),
+            }
             if *name == "media-tagger" {
                 // media-tagger is a builtin launcher with 3 GenerateLauncher sources.
                 assert_eq!(fetch.sources.len(), 3, "tool {name}: should have 3 sources");
@@ -235,8 +247,25 @@ mod tests {
 
         // media-tagger is an internal launcher — no external sources.
         let expected_oses = ["windows", "linux", "macos"];
+        let expected_canonicals: [(&str, &str); 5] = [
+            ("ffmpeg", "L2025-07-15"),
+            ("yt-dlp", "2025.07.15"),
+            ("deno", "v2.2.12"),
+            ("rsgain", "v3.7"),
+            ("sd", "v1.1.0"),
+        ];
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd"] {
-            let fetch = resolve_tool_fetch(name, Some(&cache)).await.unwrap();
+            let (fetch, canonical) = resolve_tool_fetch(name, Some(&cache)).await.unwrap();
+            let expected_canonical = expected_canonicals
+                .iter()
+                .find(|(n, _)| *n == *name)
+                .map(|(_, c)| *c)
+                .expect("canonical mapping exists");
+            assert_eq!(
+                canonical.as_deref(),
+                Some(expected_canonical),
+                "tool {name}: canonical version mismatch"
+            );
             let oses: Vec<&str> = fetch.sources.iter().map(|s| s.os.as_str()).collect();
             for expected_os in &expected_oses {
                 assert!(
@@ -272,8 +301,13 @@ mod tests {
         }
 
         for (tool_name, _, tag) in &test_data {
-            let fetch = resolve_tool_fetch(tool_name, Some(&cache)).await.unwrap();
+            let (fetch, canonical) = resolve_tool_fetch(tool_name, Some(&cache)).await.unwrap();
             assert_eq!(fetch.tool_id, *tool_name, "tool_id should match input name",);
+            assert_eq!(
+                canonical.as_deref(),
+                Some(*tag),
+                "tool {tool_name}: canonical version mismatch",
+            );
             assert!(!fetch.sources.is_empty(), "tool {tool_name}: should have at least one source",);
             for source in &fetch.sources {
                 if let SourceProducer::Fetch { urls } = &source.producer {
@@ -339,7 +373,8 @@ mod tests {
 
         // — yt-dlp (tag "2025.07.15", no v-prefix, no filename rewrite) —
         {
-            let fetch = resolve_tool_fetch("yt-dlp", Some(&cache)).await.unwrap();
+            let (fetch, canonical) = resolve_tool_fetch("yt-dlp", Some(&cache)).await.unwrap();
+            assert_eq!(canonical.as_deref(), Some("2025.07.15"), "yt-dlp canonical version");
             assert_eq!(fetch.sources.len(), 3, "yt-dlp: expected 3 OS sources");
             // Assert exact URLs per OS source.
             if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
@@ -367,7 +402,8 @@ mod tests {
 
         // — ffmpeg (tag "L2025-07-15", BtbN substituted, Evermeet untouched) —
         {
-            let fetch = resolve_tool_fetch("ffmpeg", Some(&cache)).await.unwrap();
+            let (fetch, canonical) = resolve_tool_fetch("ffmpeg", Some(&cache)).await.unwrap();
+            assert_eq!(canonical.as_deref(), Some("L2025-07-15"), "ffmpeg canonical version");
             assert_eq!(fetch.sources.len(), 3, "ffmpeg: expected 3 OS sources");
             // windows: BtbN with tag, 2 fallback URLs
             if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
@@ -402,7 +438,8 @@ mod tests {
 
         // — deno (tag "v2.2.12", v-prefixed, no filename rewrite) —
         {
-            let fetch = resolve_tool_fetch("deno", Some(&cache)).await.unwrap();
+            let (fetch, canonical) = resolve_tool_fetch("deno", Some(&cache)).await.unwrap();
+            assert_eq!(canonical.as_deref(), Some("v2.2.12"), "deno canonical version");
             assert_eq!(fetch.sources.len(), 3, "deno: expected 3 OS sources");
             if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
                 assert_eq!(fetch.sources[0].os, "windows");
@@ -430,7 +467,8 @@ mod tests {
 
         // — rsgain (tag "v3.7", path + filename rewrite: rsgain-latest → rsgain-3.7) —
         {
-            let fetch = resolve_tool_fetch("rsgain", Some(&cache)).await.unwrap();
+            let (fetch, canonical) = resolve_tool_fetch("rsgain", Some(&cache)).await.unwrap();
+            assert_eq!(canonical.as_deref(), Some("v3.7"), "rsgain canonical version");
             assert_eq!(fetch.sources.len(), 3, "rsgain: expected 3 OS sources");
             if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
                 assert_eq!(fetch.sources[0].os, "windows");
@@ -463,7 +501,8 @@ mod tests {
 
         // — sd (tag "v1.1.0", path + filename rewrite: sd-latest → sd-v1.1.0) —
         {
-            let fetch = resolve_tool_fetch("sd", Some(&cache)).await.unwrap();
+            let (fetch, canonical) = resolve_tool_fetch("sd", Some(&cache)).await.unwrap();
+            assert_eq!(canonical.as_deref(), Some("v1.1.0"), "sd canonical version");
             assert_eq!(fetch.sources.len(), 3, "sd: expected 3 OS sources");
             if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
                 assert_eq!(fetch.sources[0].os, "windows");

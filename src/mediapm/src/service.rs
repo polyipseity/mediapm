@@ -743,7 +743,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         // persisted managed-tool registry and save.
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
         for (tool_id, record) in &report.tool_records {
-            state.managed_tools.entry(tool_id.clone()).or_insert_with(|| record.clone());
+            state.managed_tools.insert(tool_id.clone(), record.clone());
         }
         save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
 

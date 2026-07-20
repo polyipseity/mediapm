@@ -3,6 +3,8 @@
 //! Sources are fetched from the yt-dlp GitHub releases page as
 //! standalone binaries (no archive extraction needed). The "latest"
 //! tag is resolved via the GitHub API and cached in the metadata cache.
+//!
+//! Canonical version: the resolved tag verbatim (e.g. "2025.07.15").
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 

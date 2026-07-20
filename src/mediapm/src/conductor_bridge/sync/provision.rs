@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use mediapm_cas::CasApi;
 use mediapm_conductor::tools::provider::{
-    ResolvedSource, SourceProducer, fetch_tool_sources, postprocess_tool_sources,
+    ResolvedSource, ResolvedToolFetch, SourceProducer, fetch_tool_sources, postprocess_tool_sources,
 };
 use mediapm_utils::progress::ProviderProgressCallback;
 
@@ -32,6 +32,8 @@ pub(super) struct FetchedToolPayload {
     /// without OS prefix). Passed to the preset layer to build the command
     /// selector template.
     pub(super) os_exec_paths: BTreeMap<String, String>,
+    /// Canonical version used for skip-if-up-to-date logic.
+    pub(super) canonical_version: Option<String>,
 }
 
 /// Fetches a tool payload for **all** platforms, extracts each to a
@@ -66,6 +68,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     cache: &ToolDownloadCache,
     metadata_cache: &ToolDownloadCache,
     group: &dyn ProgressGroupApi,
+    pre_resolved: Option<(ResolvedToolFetch, Option<String>)>,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     // Track created bars so we can mark them red on error.
     let mut error_bars: Vec<Arc<dyn crate::output::ProgressBarApi>> = Vec::new();
@@ -80,11 +83,15 @@ pub(super) async fn fetch_and_import_tool_payload(
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
     let resolve_bar = group.add_bar(1, &format!("{tool_id} [resolve]"));
     error_bars.push(resolve_bar.clone());
-    let mut fetch = match provider::resolve_tool_fetch(tool_id, Some(metadata_cache)).await {
-        Ok(fetch) => fetch,
-        Err(e) => {
-            finish_error_bars(&error_bars);
-            return Err(MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")));
+    let (mut fetch, canonical_version) = if let Some((f, cv)) = pre_resolved {
+        (f, cv)
+    } else {
+        match provider::resolve_tool_fetch(tool_id, Some(metadata_cache)).await {
+            Ok(tuple) => tuple,
+            Err(e) => {
+                finish_error_bars(&error_bars);
+                return Err(MediaPmError::Workflow(format!("tool {tool_id}: resolve failed: {e}")));
+            }
         }
     };
     // Resolve is a single operation — total stays at 1 from add_bar(1, ...).
@@ -146,6 +153,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     Ok(Some(FetchedToolPayload {
         content_map: result.content_map,
         os_exec_paths: result.os_exec_paths,
+        canonical_version,
     }))
 }
 
@@ -220,6 +228,7 @@ mod tests {
             &cache,
             &metadata_cache,
             &tracker,
+            None,
         )
         .await;
         assert!(result.is_err(), "unknown tool should return an error");
@@ -228,9 +237,15 @@ mod tests {
     #[tokio::test]
     async fn fetch_and_import_generate_launcher_succeeds() {
         let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
-        let result =
-            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &metadata_cache, &tracker)
-                .await;
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "media-tagger",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            None,
+        )
+        .await;
         match result {
             Ok(Some(payload)) => {
                 // GenerateLauncher returns 3 inline sources (windows/macos/linux).
@@ -295,7 +310,8 @@ mod tests {
         }
 
         let result =
-            fetch_and_import_tool_payload(&cas, "yt-dlp", &cache, &metadata_cache, &tracker).await;
+            fetch_and_import_tool_payload(&cas, "yt-dlp", &cache, &metadata_cache, &tracker, None)
+                .await;
         match result {
             Ok(Some(payload)) => {
                 assert_eq!(

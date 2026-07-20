@@ -3,6 +3,8 @@
 //! Sources are fetched from BtbN/FFmpeg-Builds (Windows, Linux) and
 //! evermeet.cx (macOS). Each platform has two URL candidates tried in
 //! order.
+//!
+//! Canonical version: the resolved tag verbatim (e.g. "L2025-07-15").
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 

@@ -3,6 +3,8 @@
 //! Sources are fetched from the rsgain GitHub releases page as
 //! zip (Windows, macOS) and tar.xz (Linux) archives. The latest
 //! tag is resolved via the GitHub API.
+//!
+//! Canonical version: the resolved tag verbatim (e.g. "v3.7").
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 

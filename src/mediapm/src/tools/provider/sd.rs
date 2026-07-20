@@ -2,6 +2,8 @@
 //!
 //! Sources are fetched from the sd GitHub releases page as zip/tar.gz archives.
 //! The latest tag is resolved via the GitHub API.
+//!
+//! Canonical version: the resolved tag verbatim (e.g. "v1.1.0").
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 

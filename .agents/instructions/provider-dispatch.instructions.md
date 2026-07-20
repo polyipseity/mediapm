@@ -44,6 +44,21 @@ Each tool module defines URL patterns that interpolate:
 - `{os}` — target OS label (`linux`, `macos`, `windows`).
 - `{arch}` — target architecture (`x86_64`, `aarch64`).
 
+## Canonical version policy
+
+The canonical version is the resolved tag verbatim for all GitHub-release-based tools. No prefix stripping or transformation is applied. For tools without external sources (e.g., media-tagger), there is no canonical version.
+
+## Canonical version per tool
+
+| Tool           | Canonical version source         | Example         |
+| -------------- | -------------------------------- | --------------- |
+| `yt-dlp`       | Resolved GitHub tag, verbatim    | `2025.07.15`    |
+| `ffmpeg`       | Resolved GitHub tag, verbatim    | `L2025-07-15`   |
+| `deno`         | Resolved GitHub tag, verbatim    | `v2.2.12`       |
+| `rsgain`       | Resolved GitHub tag, verbatim    | `v3.7`          |
+| `sd`           | Resolved GitHub tag, verbatim    | `v1.1.0`        |
+| `media-tagger` | None (no external sources)       | —               |
+
 ## Platform-specific considerations
 
 - macOS ffmpeg: Evermeet.cc and getrelease URLs use dynamic endpoints — HEAD is skipped during prefetch.

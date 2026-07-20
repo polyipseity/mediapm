@@ -38,6 +38,7 @@ use crate::error::MediaPmError;
 use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
 use crate::tools::downloader::ToolDownloadCache;
+use crate::tools::provider;
 
 /// Summary of one `mediapm tool sync` reconciliation pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -117,10 +118,27 @@ pub(crate) async fn reconcile_desired_tools(
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
-        // Fetch tool payload, import to CAS, get content map + command.
-        let payload_result =
-            fetch_and_import_tool_payload(cas, tool_id, &cache, &metadata_cache, effective_group)
-                .await;
+        let pre_resolved = match provider::resolve_tool_fetch(tool_id, Some(&metadata_cache)).await
+        {
+            Ok((fetch, canonical_version)) => Some((fetch, canonical_version)),
+            Err(e) => {
+                report.warnings.push(format!(
+                    "tool {tool_id}: resolve failed (will retry on next sync): {e}",
+                ));
+                pb.advance(1);
+                continue;
+            }
+        };
+
+        let payload_result = fetch_and_import_tool_payload(
+            cas,
+            tool_id,
+            &cache,
+            &metadata_cache,
+            effective_group,
+            pre_resolved,
+        )
+        .await;
 
         match payload_result {
             Ok(Some(payload)) => {
@@ -175,6 +193,7 @@ pub(crate) async fn reconcile_desired_tools(
                     ToolRegistryEntry {
                         version: Some(req_version),
                         tag: if req_tag.is_empty() { None } else { Some(req_tag) },
+                        canonical_version: payload.canonical_version.clone(),
                         fetch_hash: content_hash.as_ref().map(|h| h.to_string()),
                         deployed_at: now,
                     },
@@ -231,6 +250,7 @@ pub(crate) async fn reconcile_desired_tools(
                     ToolRegistryEntry {
                         version: None,
                         tag: None,
+                        canonical_version: None,
                         fetch_hash: None,
                         deployed_at: now,
                     },

@@ -4,6 +4,8 @@
 //! It uses `GenerateLauncher` sources (like the echo/fs/archive builtins)
 //! so the standard 3-phase provisioning pipeline generates the launcher
 //! script via the conductor's `generate_launcher_script`.
+//!
+//! No canonical version (no external sources).
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 

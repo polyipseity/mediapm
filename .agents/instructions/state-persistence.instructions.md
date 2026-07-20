@@ -16,12 +16,12 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 
 ## `MediaPmState` fields (v2)
 
-| Field             | Type                                               | Purpose                                              |
-| ----------------- | -------------------------------------------------- | ---------------------------------------------------- |
-| `version`         | `u32`                                              | Schema version marker (for migration dispatch)       |
-| `managed_files`   | `BTreeMap<String, ManagedFileRecord>`              | Materialized files keyed by output path              |
-| `managed_tools`   | `BTreeMap<String, ToolRegistryEntry>`              | Fetched/deployed tool registry keyed by tool id      |
-| `workflow_states` | `BTreeMap<String, ManagedWorkflowStepState>`       | Per-media-source workflow step state                 |
+| Field             | Type                                         | Purpose                                         |
+| ----------------- | -------------------------------------------- | ----------------------------------------------- |
+| `version`         | `u32`                                        | Schema version marker (for migration dispatch)  |
+| `managed_files`   | `BTreeMap<String, ManagedFileRecord>`        | Materialized files keyed by output path         |
+| `managed_tools`   | `BTreeMap<String, ToolRegistryEntry>`        | Fetched/deployed tool registry keyed by tool id |
+| `workflow_states` | `BTreeMap<String, ManagedWorkflowStepState>` | Per-media-source workflow step state            |
 
 ## `ToolRegistryEntry` (v2)
 
@@ -30,6 +30,7 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 | `version`     | `Option<String>` | Tool version as fetched                        |
 | `tag`         | `Option<String>` | Tag as fetched                                 |
 | `fetch_hash`  | `Option<String>` | CAS content hash of the fetched payload        |
+| `canonical_version` | `Option<String>` | Canonical version identifier used for skip-if-up-to-date logic |
 | `deployed_at` | `u64`            | Unix-epoch seconds when deployed (0 = not yet) |
 
 ## `ToolRegistryEntry` vs legacy `ActiveToolInstance`
@@ -129,3 +130,16 @@ Flat→v2 mapping:
 - `managed_tools`: retain only entries where at least one of `version`/`tag` is non-empty.
 - `workflow_states`: no special normalization.
 - Normalization runs in `MediaPmState::normalize()`.
+
+## Canonical version resolution
+
+`canonical_version` is populated by the provisioning pipeline at fetch time.
+The resolve phase determines it from available data (GitHub tag, VCS hash,
+etc.) and stores it in the resulting `ToolRegistryEntry`.
+
+When comparing canonical versions for skip-if-up-to-date logic, use exact
+string equality. All providers use the resolved tag verbatim — no prefix
+transformation is applied.
+
+`canonical_version` is `None` for builtin launcher tools (e.g., media-tagger)
+that have no external version source.
