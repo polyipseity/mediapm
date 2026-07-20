@@ -67,7 +67,7 @@ builtins/                  — Native tool implementations
 |------|------|---------|
 | `MediaPmService<Cas>` | `service.rs` | Orchestration API: sync, add/remove media, tool lifecycle |
 | `MediaPmDocument` | `config/mod.rs` | Deserialized `mediapm.ncl` |
-| `MediaPmState` | `config/mod.rs` | Machine-managed `state.ncl` |
+| `MediaPmState` | `config/mod.rs` | Machine-managed `state.json` |
 | `MediaRuntimeStorage` | `config/mod.rs` | Runtime path overrides (config, CLI, env) |
 | `MediaPmPaths` | `paths.rs` | Resolved canonical path bundle for one workspace root |
 | `MediaPmGlobalPaths` | `global.rs` | User-level cache (`<os-cache>/mediapm/cache/`) |
@@ -83,7 +83,7 @@ Four-document system, all with explicit top-level `version`:
 | `mediapm.ncl` | `<root>/mediapm.ncl` | User | Declares media, hierarchy, tools, runtime |
 | `<mediapm_dir>/conductor.ncl` | Generated | Conductor user intent + workflow defs |  |
 | `<mediapm_dir>/conductor.generated.ncl` | Machine | Tool registry, resolved hashes |  |
-| `<mediapm_dir>/state.ncl` | Machine | Per-media workflow state, managed files, hashes |  |
+| `<mediapm_dir>/state.json` | Machine | Per-media workflow state, managed files, hashes |  |
 
 ## CLI Overview
 
