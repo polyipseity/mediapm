@@ -1,7 +1,8 @@
-//! State serialization and migration.
+//! State persistence and migration.
 //!
-//! This module handles all JSON serialization of [`MediaPmState`], including
-//! V2 wire format encoding, V1 migration decoding, and Nickel state file
-//! migration.
+//! Public serialization API is in [`ser`] (thin delegation layer over
+//! [`versions`] submodules). Version-specific wire formats for V1 and V2
+//! live in [`versions::v1`] and [`versions::v2`].
 
 pub mod ser;
+pub mod versions;

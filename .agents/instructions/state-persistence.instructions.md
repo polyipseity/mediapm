@@ -11,7 +11,8 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 - Model machine-managed state persisted in `state.json` under `<runtime_root>/`.
 - Track managed file records, tool fetch/deploy metadata, and media workflow step state.
 - Support schema version dispatch for forward/backward migration from legacy `.ncl` formats.
-- **No `MigrateState` trait** — migration helpers are plain functions in `state/ser.rs` (no trait dispatch). This avoids trait overhead for a single-migration-path design.
+- **No `MigrateState` trait** — migration helpers are plain functions in `state/versions/v1.rs` (no trait dispatch). This avoids trait overhead for a single-migration-path design.
+- **File organization**: public API lives in `state/ser.rs` (thin delegation), V1 wire types and migration in `state/versions/v1.rs`, V2 wire types in `state/versions/v2.rs`, version dispatch utilities in `state/versions/mod.rs`.
 
 ## `MediaPmState` fields (v2)
 
@@ -108,13 +109,9 @@ Flat→v2 mapping:
 
 ## Version dispatch
 
-- On load (`state/ser.rs::from_json_value`):
-  1. Read `version` field from JSON value.
-  2. V1 → call `from_v1_json_value` (wrapper) or `migrate_from_old_nickel` (flat).
-  3. V2 → direct serde deserialization.
-- On save (`state/ser.rs::to_json_value`):
-  Always serialize as V2 format (pretty-printed JSON).
-- Migration from `.ncl`: `load_mediapm_state_document` checks for `state.json` first; if missing and `state.ncl` exists, evaluates via Nickel → `migrate_from_old_nickel` → writes `state.json` → deletes `state.ncl`.
+- On load (`state/ser.rs::from_json_value`): delegates to `versions::extract_state_version_field`, then `versions::v1::from_v1_json_value` or `versions::v2::from_v2_json_value`.
+- On save (`state/ser.rs::to_json_value`): delegates to `versions::v2::to_v2_json_value` (always V2).
+- Migration from `.ncl` (`state/ser.rs::migrate_from_old_nickel`): delegates to `versions::v1::from_v1_json_value` which handles both wrapper and flat V1 shapes → writes `state.json` → deletes `state.ncl`.
 
 ## `deployed_at` ordering semantics
 
