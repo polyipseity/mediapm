@@ -44,7 +44,7 @@ async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError>
     Ok(())
 }
 
-/// Sync creates `state.ncl` containing a version field.
+/// Sync creates `state.json` containing a version field.
 #[tokio::test]
 async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
