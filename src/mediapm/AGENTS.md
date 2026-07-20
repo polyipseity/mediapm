@@ -175,6 +175,17 @@ Follow this spec-first, test-first workflow:
    - Preset produces valid `ToolSpec` with non-empty command/inputs/outputs
    - Workflow step synthesizes correct command-line tokens
 
+### Canonical Version Tracking
+
+Every `ToolRegistryEntry` always has a `canonical_version` (non-optional `String`). The semantic kind (VCS hash vs version) is fixed per tool at code-writing time:
+
+- **Builtin tools** (media-tagger): use `MEDIAPM_GIT_HASH` (compile-time constant from `build.rs`).
+- **GitHub-release tools** (yt-dlp, ffmpeg, deno, rsgain, sd): use the resolved tag name verbatim as the canonical version.
+
+Skip logic: when `reconcile_desired_tools` resolves a tool and finds the same `canonical_version` in `state.managed_tools` with a non-empty `fetch_hash`, the provisioning pipeline is skipped for that tool.
+
+The `Ok(None)` branch (no payload fetched) still populates `canonical_version` from the resolved value. The migration path: `canonical_version` defaults to `""` via `#[serde(default)]` for backward-compat with old state files.
+
 ## Cache Architecture (Three-Tier)
 
 See `.agents/instructions/cache-and-http.instructions.md` for the three-tier cache specification (content, metadata, provision), TTL policies, and hard boundary rules.

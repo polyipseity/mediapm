@@ -43,6 +43,7 @@ fn v2_round_trip() {
             ToolRegistryEntry {
                 version: Some("2025.01.01".to_string()),
                 tag: None,
+                canonical_version: String::new(),
                 fetch_hash: Some("blake3:def456".to_string()),
                 deployed_at: 1_700_000_000,
             },
@@ -199,6 +200,7 @@ fn json_save_idempotent() {
             ToolRegistryEntry {
                 version: Some("1.0".to_string()),
                 tag: None,
+                canonical_version: String::new(),
                 fetch_hash: Some("blake3:y".to_string()),
                 deployed_at: 1_700_000_000,
             },

@@ -279,6 +279,10 @@ mod tests {
                     Some(&"media-tagger".to_string()),
                     "linux exec path mismatch"
                 );
+                assert!(
+                    !payload.canonical_version.is_empty(),
+                    "canonical_version should be populated"
+                );
             }
             Ok(None) => panic!("media-tagger should return Ok(Some(...)), got Ok(None)"),
             Err(e) => panic!("media-tagger should succeed, got Err({e:?})"),
@@ -333,6 +337,11 @@ mod tests {
                         "{os} exec path mismatch for yt-dlp"
                     );
                 }
+                assert!(
+                    !payload.canonical_version.is_empty(),
+                    "canonical_version should be populated"
+                );
+                assert_eq!(payload.canonical_version, "2025.07.15");
             }
             Ok(None) => panic!("yt-dlp should return Ok(Some(...)), got Ok(None)"),
             Err(e) => panic!("yt-dlp should succeed, got Err({e:?})"),

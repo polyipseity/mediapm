@@ -49,6 +49,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/provision.rs"
 | --------------- | -------------------------- | -------------------------------------------------- |
 | `content_map`   | `BTreeMap<String, String>` | Sandbox-relative path → CAS hash hex               |
 | `os_exec_paths` | `BTreeMap<String, String>` | OS label → relative executable path (no OS prefix) |
+| `canonical_version` | `String` | Canonical version for skip-if-up-to-date logic. Always populated — from pre-resolved value (if provided) or from resolved fetch metadata. |
 
 ## Error handling
 

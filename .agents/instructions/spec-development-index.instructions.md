@@ -38,7 +38,7 @@ This file is the replacement for the deleted monolithic `.agents/instructions/cr
 | `.agents/instructions/markdown-and-customizations.instructions.md`      | Markdown formatting rules, YAML frontmatter patterns, repo linking conventions                           |
 | `.agents/instructions/scripts-and-permissions.instructions.md`          | Script placement, cross-platform runtime detection, permission expectations                              |
 | `.agents/instructions/stack-and-tooling-detection.instructions.md`      | Stack and tooling detection: languages, frameworks, build commands, validation workflows                 |
-| `.agents/instructions/versioning-and-migration.instructions.md`         | Versioned structs, wire formats, DeltaState bridges                                                      |
+| `.agents/instructions/versioning-and-migration.instructions.md` | Versioned structs, wire formats, DeltaState bridges |
 
 ## Quick Reference: Where to Look
 

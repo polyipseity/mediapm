@@ -127,7 +127,7 @@ Flat→v2 mapping:
 ## Normalization / retain rules
 
 - `managed_files`: remove entries with empty/whitespace-only keys.
-- `managed_tools`: retain only entries where at least one of `version`/`tag` is non-empty.
+- `managed_tools`: retain only entries where at least one of `version`, `tag`, or `canonical_version` is non-empty.
 - `workflow_states`: no special normalization.
 - Normalization runs in `MediaPmState::normalize()`.
 

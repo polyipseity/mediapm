@@ -157,6 +157,7 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
         ToolRegistryEntry {
             version: Some("1.0".to_string()),
             tag: None,
+            canonical_version: String::new(),
             fetch_hash: None,
             deployed_at: 0,
         },

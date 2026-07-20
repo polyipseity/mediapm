@@ -16,7 +16,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 1. **Load generated document** — `load_conductor_generated_document(paths)`. Returns empty `NickelDocument` if file doesn't exist.
 2. **Register builtins** — `register_missing_builtin_tools()`, `apply_builtin_runtime_defaults()`.
 3. **Open caches** — `ToolDownloadCache::open()` for content cache (30d TTL) and metadata cache (1d TTL) under the user-level cache root.
-4. **Provision skip** — before fetching each tool, compare `state.managed_tools[tool_id].canonical_version` against the resolved canonical version using direct string equality. If they match AND the stored `fetch_hash` is non-empty, skip provisioning entirely and increment `tools_skipped`.
+4. **Provision skip** — before fetching each tool, compare `state.managed_tools[tool_id].canonical_version` against the resolved canonical version using direct string equality. Direct string equality comparison — no Option unwrapping needed since `canonical_version` is always a populated `String`. If they match AND the stored `fetch_hash` is non-empty, skip provisioning entirely and increment `tools_skipped`.
 5. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
    - Call `fetch_and_import_tool_payload()` to run the 3-phase pipeline.
