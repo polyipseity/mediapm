@@ -16,17 +16,18 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 1. **Load generated document** — `load_conductor_generated_document(paths)`. Returns empty `NickelDocument` if file doesn't exist.
 2. **Register builtins** — `register_missing_builtin_tools()`, `apply_builtin_runtime_defaults()`.
 3. **Open caches** — `ToolDownloadCache::open()` for content cache (30d TTL) and metadata cache (1d TTL) under the user-level cache root.
-4. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
+4. **Provision skip** — before fetching each tool, check `state.managed_tools[tool_id].canonical_version` against the resolved canonical version. If they match AND the stored `fetch_hash` is non-empty, skip provisioning entirely and increment `tools_skipped`.
+5. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
    - Call `fetch_and_import_tool_payload()` to run the 3-phase pipeline.
    - On `Ok(Some(payload))`: compute content-addressed hash, build spec+runtime, insert into generated doc.
    - **External data registration**: before inserting the tool spec, register every CAS hash in the tool's `content_map` as an `ExternalDataEntry` in `generated_doc.external_data` with `OutputSaveMode::Saved`. This satisfies the `content_map ⊆ external_data` invariant.
    - On `Ok(None)`: create minimal spec without content map.
    - On `Err`: append warning to report, continue loop.
-5. **Companion binding resolution** — `resolve_companion_ffmpeg_selection()`, `resolve_companion_deno_selection()` (currently stubs).
-6. **Create tools dir** — `std::fs::create_dir_all(&paths.tools_dir)`.
-7. **Write env file** — `write_generated_runtime_env_file()`.
-8. **Save generated document** — `save_conductor_generated_document()`.
+6. **Companion binding resolution** — `resolve_companion_ffmpeg_selection()`, `resolve_companion_deno_selection()` (currently stubs).
+7. **Create tools dir** — `std::fs::create_dir_all(&paths.tools_dir)`.
+8. **Write env file** — `write_generated_runtime_env_file()`.
+9. **Save generated document** — `save_conductor_generated_document()`.
 
 ## `ToolSyncReport` fields
 
@@ -35,6 +36,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 | `tools_added`   | `usize`       | Tools newly registered (not previously in generated doc) |
 | `tools_updated` | `usize`       | Tools updated to match desired version                   |
 | `tools_removed` | `usize`       | Tools removed (no longer in desired set)                 |
+| `tools_skipped` | `usize`       | Tools skipped because their canonical version was already provisioned |
 | `warnings`      | `Vec<String>` | Non-fatal warnings (provision failures)                  |
 
 ## Invariants

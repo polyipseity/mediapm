@@ -30,6 +30,27 @@ Detailed per-concern specifications (error taxonomy, paths, cache, provider disp
 
 Managed tool payloads are downloaded and CAS-imported for all supported OSes regardless of host platform. Never filter by host OS in the provisioner. See `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` for the full provisioning pipeline and content-map conventions.
 
+## MediaPM tool mapping to Conductor tools
+
+One logical mediapm tool maps to potentially many conductor tool entries in
+`generated_doc.tools`, keyed `{name}@{hash}`.
+
+`state.managed_tools` stores the authoritative provisioning record keyed by
+bare `{tool_id}` (without hash suffix). Multiple conductor tool entries can
+share the same logical tool name (different hashes), but only one
+`managed_tools` entry exists per tool id — always reflecting the latest
+provisioned version.
+
+Active tool resolution: the entry in `state.managed_tools[tool_id]` where
+`fetch_hash` is non-empty (i.e., has a content map) is the active version.
+Inactive entries are conductor tool entries with stale hashes that were
+superseded by a newer provision cycle.
+
+`canonical_version` on `ToolRegistryEntry` enables skip-if-up-to-date
+provisioning: if the stored `canonical_version` matches the resolved canonical
+version from the provider, and `fetch_hash` is non-empty, the 3-phase
+provision pipeline is skipped.
+
 See `.agents/instructions/rust-workflow.instructions.md` for module split conventions.
 
 ## Conceptual layering terms
