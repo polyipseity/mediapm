@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    ActiveToolInstance, HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath,
+    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath,
     MaterializationMethod, MediaMetadataValue, MediaMetadataVariantBinding, MediaPmPaths,
     MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistFormat,
     PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement,
@@ -648,7 +648,7 @@ fn assert_materialized_output_hardlinked_to_cas(
     output_path: &Path,
 ) -> ExampleResult<bool> {
     let relative_path = managed_relative_path(hierarchy_root, output_path)?;
-    if !lock.managed_files.contains(relative_path.as_str()) {
+    if !lock.managed_files.contains_key(relative_path.as_str()) {
         return Err(std::io::Error::other(format!(
             "managed output '{relative_path}' missing from lockfile tracking"
         ))
@@ -1232,7 +1232,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
 
     let mut machine: NickelDocument =
         decode_document(fs::read(&service.paths().conductor_generated_ncl)?.as_slice())?;
-    let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
+    let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_json)?;
 
     for logical_tool_name in logical_tool_ids {
         let stale_tool_id =
@@ -1261,15 +1261,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
             },
         );
 
-        lock.active_tools.insert(
-            logical_tool_name.clone(),
-            ActiveToolInstance {
-                tool_id: stale_tool_id.clone(),
-                content_hash: stale_hash.to_string(),
-                deployed_path: stale_relative_path.clone(),
-            },
-        );
-        lock.tool_registry.insert(
+        lock.managed_tools.insert(
             stale_tool_id,
             ToolRegistryEntry {
                 version: Some("old".to_string()),
@@ -1281,7 +1273,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
     }
 
     fs::write(&service.paths().conductor_generated_ncl, encode_document(machine)?)?;
-    save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)?;
+    save_mediapm_state_document(&service.paths().mediapm_state_json, &lock)?;
 
     Ok(())
 }
@@ -2318,7 +2310,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         resolve_demo_output_paths(&hierarchy_root)?;
     assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
     let cas_root = sync_service.paths().runtime_root.join("store");
-    let lock = load_mediapm_state_document(&sync_service.paths().mediapm_state_ncl)?;
+    let lock = load_mediapm_state_document(&sync_service.paths().mediapm_state_json)?;
     let materialized_demo_video_hardlinked_to_cas = assert_materialized_output_hardlinked_to_cas(
         &cas_root,
         &hierarchy_root,

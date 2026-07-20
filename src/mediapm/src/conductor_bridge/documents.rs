@@ -3,7 +3,7 @@
 //! This module manages the four-document model:
 //! - `mediapm.ncl` — user intent (loaded via mediapm config, not here)
 //! - `conductor.generated.ncl` — machine-generated tool definitions
-//! - `state.ncl` — machine mediapm state (loaded via mediapm config)
+//! - `state.json` — machine mediapm state (loaded via mediapm config)
 //! - `state.conductor.ncl` — conductor runtime state
 
 use mediapm_conductor::{

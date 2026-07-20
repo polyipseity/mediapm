@@ -175,22 +175,26 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
 
     /// Checks whether a logical tool for the given media id requires a sync.
     ///
-    /// Returns `true` if the tool is missing from the state's tool table or
-    /// its requirements have changed.
+    /// Returns `true` if the tool is missing from the state's managed tool
+    /// registry or its version/tag requirements have changed.
     pub fn logical_tool_requires_sync(
         &self,
         tool_id: &str,
         state: &MediaPmState,
     ) -> Result<bool, MediaPmError> {
-        if let Some(existing) = state.tools.get(tool_id) {
+        if let Some(existing) = state.managed_tools.get(tool_id) {
             let effective = self.resolve_effective_runtime_storage()?;
             let desired = effective.tools.get(tool_id);
+            // Compare desired requirement with fetched deployment metadata.
             // If no desired requirement is declared, the tool is considered
             // up-to-date when present in state.
-            Ok(desired
-                .is_some_and(|req| req.version != existing.version || req.tag != existing.tag))
+            Ok(desired.is_some_and(|req| {
+                let desired_version = crate::config::normalized_version(&req.version);
+                let desired_tag = crate::config::normalized_tag(&req.tag);
+                desired_version != existing.version || desired_tag != existing.tag
+            }))
         } else {
-            Ok(true) // missing from state → requires sync
+            Ok(true) // missing from state's managed tool registry → requires sync
         }
     }
 
@@ -613,9 +617,9 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         regenerate: bool,
     ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
         let effective_paths = self.resolve_effective_paths()?;
-        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
+        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
 
-        if !state.media.contains_key(media_id) {
+        if !state.workflow_states.contains_key(media_id) {
             return Err(MediaPmError::Workflow(format!(
                 "media source '{media_id}' not found in state",
             )));
@@ -632,7 +636,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             (vec![], vec![])
         };
 
-        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &state)?;
+        save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
 
         Ok(MediaStepInvalidationSummary {
             workflow_id,
@@ -735,12 +739,13 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         )
         .await?;
 
-        // Load and update state with reconciled tools.
-        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        for (tool_id, req) in &runtime_storage.tools {
-            state.tools.insert(tool_id.clone(), req.clone());
+        // Merge deployment records from the provisioning pipeline into the
+        // persisted managed-tool registry and save.
+        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
+        for (tool_id, record) in &report.tool_records {
+            state.managed_tools.entry(tool_id.clone()).or_insert_with(|| record.clone());
         }
-        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &state)?;
+        save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
 
         Ok(ToolsSyncSummary {
             added_tools: report.tools_added,
@@ -879,7 +884,7 @@ impl MediaPmService<FileSystemCas> {
 
         // 3. Load mediapm document and state.
         let document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
-        let state = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
+        let state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
 
         // 4. Check if any tools require sync.
         self.append_tool_sync_hint_warning(&mut warnings, &state)?;

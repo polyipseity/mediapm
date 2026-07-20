@@ -69,6 +69,15 @@ pub const DEFAULT_PROFILER_ENABLED: bool = false;
 /// Default verify-materialization state.
 pub const DEFAULT_VERIFY_MATERIALIZATION: bool = false;
 
+/// Current persisted schema marker for `state.json`.
+pub const MEDIAPM_STATE_VERSION: u32 = 2;
+
+/// Serde default function for state `version` field.
+#[must_use]
+pub fn default_mediapm_state_version() -> u32 {
+    MEDIAPM_STATE_VERSION
+}
+
 /// Default retry-impure flag.
 pub const DEFAULT_RETRY_IMPURE: bool = false;
 

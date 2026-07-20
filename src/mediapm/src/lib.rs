@@ -9,7 +9,7 @@
 //! - desired state: `mediapm.ncl`,
 //! - conductor runtime docs: `mediapm.conductor.ncl`,
 //!   `mediapm.conductor.generated.ncl` (both configurable),
-//! - realized state: `.mediapm/state.ncl` by default (configurable).
+//! - realized state: `.mediapm/state.json` by default (configurable).
 
 pub mod builtins;
 pub(crate) mod conductor_bridge;
@@ -25,6 +25,7 @@ pub(crate) mod paths;
 pub(crate) mod service;
 pub(crate) mod service_standalone;
 pub(crate) mod source_metadata;
+pub mod state;
 pub(crate) mod tools;
 pub(crate) mod util;
 
@@ -34,8 +35,8 @@ use std::path::Path;
 use url::Url;
 
 pub use config::{
-    ActiveToolInstance, DecodedOutputVariantConfig, GenericOutputVariantConfig, HierarchyEntry,
-    HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath,
+    DecodedOutputVariantConfig, GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind,
+    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, ManagedFileRecord,
     MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
     MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmState,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,

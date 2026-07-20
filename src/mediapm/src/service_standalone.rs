@@ -158,7 +158,7 @@ pub(crate) fn mark_media_step_for_regeneration(
     media_id: &str,
     step_index: usize,
 ) {
-    if let Some(step_state) = state.media.get_mut(media_id) {
+    if let Some(step_state) = state.workflow_states.get_mut(media_id) {
         // Clear variant hashes to force regeneration
         step_state.variant_hashes.clear();
         step_state.steps_completed = u32::try_from(step_index).unwrap_or(u32::MAX);
@@ -199,7 +199,7 @@ pub(crate) fn save_conductor_state_document(
 
 /// Removes impure timestamps for a specific tool from all media step states.
 pub(crate) fn remove_target_step_impure_timestamps(state: &mut MediaPmState, _tool_id: &str) {
-    for step_state in state.media.values_mut() {
+    for step_state in state.workflow_states.values_mut() {
         if step_state.last_impure_sync_at.is_some() {
             step_state.last_impure_sync_at = None;
         }
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn mark_media_step_for_regeneration_clears_variant_hashes() {
         let mut state = MediaPmState::default();
-        state.media.insert(
+        state.workflow_states.insert(
             "test-source".to_string(),
             crate::config::ManagedWorkflowStepState {
                 variant_hashes: BTreeMap::from([("media".to_string(), "hash123".to_string())]),
@@ -333,7 +333,7 @@ mod tests {
         );
 
         mark_media_step_for_regeneration(&mut state, "test-source", 0);
-        assert!(state.media["test-source"].variant_hashes.is_empty());
+        assert!(state.workflow_states["test-source"].variant_hashes.is_empty());
     }
 
     /// Ensures `resolve_effective_paths_for_root` works with overrides.

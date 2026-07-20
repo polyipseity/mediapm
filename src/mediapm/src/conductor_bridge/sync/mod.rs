@@ -32,6 +32,7 @@ use crate::conductor_bridge::sync::tool_config::{
     write_generated_runtime_env_file,
 };
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
+use crate::config::ToolRegistryEntry;
 use crate::config::defaults;
 use crate::error::MediaPmError;
 use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
@@ -49,6 +50,9 @@ pub(crate) struct ToolSyncReport {
     pub(crate) tools_updated: usize,
     /// Non-fatal warnings collected during reconciliation.
     pub(crate) warnings: Vec<String>,
+    /// Per-tool deployment records populated during provisioning.
+    /// Keyed by tool id (the desired-tools key, not the content-addressed key).
+    pub(crate) tool_records: BTreeMap<String, ToolRegistryEntry>,
 }
 
 /// Runs the full tool-reconciliation cycle for the current workspace.
@@ -151,6 +155,31 @@ pub(crate) async fn reconcile_desired_tools(
                     report.tools_updated += 1;
                 }
 
+                // Record deployment metadata for the managed-tool registry.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let req_version = _requirement_value
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let req_tag = _requirement_value
+                    .get("tag")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                report.tool_records.insert(
+                    tool_id.clone(),
+                    ToolRegistryEntry {
+                        version: Some(req_version),
+                        tag: if req_tag.is_empty() { None } else { Some(req_tag) },
+                        fetch_hash: content_hash.as_ref().map(|h| h.to_string()),
+                        deployed_at: now,
+                    },
+                );
+
                 // Inject inherited_env_vars from requirement config.
                 let inherited = inherited_env_vars.get(tool_id).cloned().unwrap_or_default();
 
@@ -191,6 +220,21 @@ pub(crate) async fn reconcile_desired_tools(
                     ..ToolRuntime::default()
                 };
                 tool_runtimes.insert(tool_id.clone(), runtime.clone());
+
+                // Record deployment metadata (no payload — builtin or launcher).
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                report.tool_records.insert(
+                    tool_id.clone(),
+                    ToolRegistryEntry {
+                        version: None,
+                        tag: None,
+                        fetch_hash: None,
+                        deployed_at: now,
+                    },
+                );
 
                 if !already_exists && !is_builtin_code {
                     report.tools_added += 1;

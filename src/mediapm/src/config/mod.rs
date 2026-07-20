@@ -13,8 +13,8 @@
 //! | [`output_types`] | Output variant config, persistence policy |
 //! | [`source_types`] | Media source, step, and tool types |
 //! | [`hierarchy_types`] | Hierarchy node, path, and flattening utilities |
-//! | [`nickel_io`] | Evaluate `.ncl` files to JSON, render terms |
-//! | [`versions`] | Schema version dispatch and V1 envelope types |
+//! | [`nickel_io`] | Evaluate `.ncl` files to JSON, render terms, state I/O |
+//! | [`versions`] | Schema version dispatch and V1 document envelope types |
 //! | [`validation`] | Cross-field document validation |
 
 pub mod custom_deserializers;
@@ -44,7 +44,7 @@ pub use source_types::{
     MediaMetadataVariantBinding, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
 };
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -480,7 +480,7 @@ impl MediaPmDocument {
 // ---------------------------------------------------------------------------
 
 /// Per-media-source workflow step state.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedWorkflowStepState {
     /// Pre-seeded CAS hash pointers keyed by variant name.
@@ -495,7 +495,7 @@ pub struct ManagedWorkflowStepState {
 }
 
 /// Impure sync timestamp tracked per media source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaPmImpureTimestamp {
     /// Seconds since Unix epoch when the last impure sync occurred.
@@ -503,7 +503,7 @@ pub struct MediaPmImpureTimestamp {
 }
 
 /// Entry in the managed-tool registry tracking fetch/deployment metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolRegistryEntry {
     /// Tool version as fetched.
@@ -523,6 +523,7 @@ pub struct ToolRegistryEntry {
 /// Active instance of a managed tool deployed to the local filesystem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 pub struct ActiveToolInstance {
     /// Tool identifier used for registry lookups.
     pub tool_id: String,
@@ -532,65 +533,73 @@ pub struct ActiveToolInstance {
     pub deployed_path: String,
 }
 
-/// Persisted mediapm machine state (`state.ncl`).
+/// Managed file record stored in persisted state.
+///
+/// Tracks each materialized output file with its originating media source,
+/// variant name, and content hash for integrity verification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedFileRecord {
+    /// Media source id that produced this file.
+    pub media_id: String,
+    /// Output variant name.
+    pub variant: String,
+    /// Content hash (blake3:...).
+    pub hash: String,
+}
+
+/// Persisted mediapm machine state (`state.json`).
+///
+/// V2 format with `managed_files` (path → record map), `managed_tools`
+/// (tool deployment metadata), and `workflow_states` (per-media workflow
+/// progress). No longer stores tool requirements, active instances, or
+/// last-materialization hash — the document config owns those.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaPmState {
     /// Schema version marker.
-    #[serde(default = "defaults::default_mediapm_document_version")]
+    #[serde(default = "defaults::default_mediapm_state_version")]
     pub version: u32,
+    /// Managed files keyed by filesystem path.
+    #[serde(default)]
+    pub managed_files: BTreeMap<String, ManagedFileRecord>,
+    /// Managed tool deployment metadata keyed by tool id.
+    #[serde(default)]
+    pub managed_tools: BTreeMap<String, ToolRegistryEntry>,
     /// Per-media-source workflow state.
     #[serde(default)]
-    pub media: BTreeMap<String, ManagedWorkflowStepState>,
-    /// Tool registry version/tracking state.
-    #[serde(default)]
-    pub tools: BTreeMap<String, ToolRequirement>,
-    /// Hash of the state snapshot at last materialization.
-    #[serde(default)]
-    pub last_materialized_state_hash: String,
-    /// Set of files currently managed (tracked for cleanup).
-    #[serde(default)]
-    pub managed_files: BTreeSet<String>,
-    /// Fetched-tool registry keyed by tool id.
-    #[serde(default)]
-    pub tool_registry: BTreeMap<String, ToolRegistryEntry>,
-    /// Active tool deployments keyed by tool id.
-    #[serde(default)]
-    pub active_tools: BTreeMap<String, ActiveToolInstance>,
+    pub workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
 }
 
 impl Default for MediaPmState {
     fn default() -> Self {
         Self {
-            version: defaults::MEDIAPM_DOCUMENT_VERSION,
-            media: BTreeMap::new(),
-            tools: BTreeMap::new(),
-            last_materialized_state_hash: String::new(),
-            managed_files: BTreeSet::new(),
-            tool_registry: BTreeMap::new(),
-            active_tools: BTreeMap::new(),
+            version: defaults::MEDIAPM_STATE_VERSION,
+            managed_files: BTreeMap::new(),
+            managed_tools: BTreeMap::new(),
+            workflow_states: BTreeMap::new(),
         }
     }
 }
 
 impl MediaPmState {
-    /// Normalizes string fields and removes empty tool entries.
+    /// Normalizes string fields in managed file records and tool entries.
     pub fn normalize(&mut self) {
-        self.tools.retain(|_, tool_req| {
-            normalized_version(&tool_req.version).is_some()
-                || normalized_tag(&tool_req.tag).is_some()
+        self.managed_files.retain(|path, record| {
+            !path.trim().is_empty()
+                && !record.media_id.trim().is_empty()
+                && !record.hash.trim().is_empty()
         });
-        self.tool_registry.retain(|_, entry| {
+        self.managed_tools.retain(|_, entry| {
             entry.version.as_ref().is_none_or(|v| !v.trim().is_empty())
                 || entry.tag.as_ref().is_none_or(|t| !t.trim().is_empty())
         });
-        self.managed_files.retain(|f| !f.trim().is_empty());
     }
 }
 
 /// Helper: normalize a version metadata selector to trimmed Option.
 #[must_use]
-fn normalized_version(version: &MediaMetadataValue) -> Option<String> {
+pub(crate) fn normalized_version(version: &MediaMetadataValue) -> Option<String> {
     match version {
         MediaMetadataValue::Literal(s) => {
             let trimmed = s.trim().to_string();
@@ -602,7 +611,7 @@ fn normalized_version(version: &MediaMetadataValue) -> Option<String> {
 
 /// Helper: normalize a tag string to trimmed Option.
 #[must_use]
-fn normalized_tag(tag: &str) -> Option<String> {
+pub(crate) fn normalized_tag(tag: &str) -> Option<String> {
     let trimmed = tag.trim().to_string();
     if trimmed.is_empty() { None } else { Some(trimmed) }
 }

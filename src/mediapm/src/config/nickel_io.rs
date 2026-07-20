@@ -106,29 +106,62 @@ pub fn save_mediapm_document(
     save_json_document(path, doc, "mediapm document")
 }
 
-/// Loads and parses a `state.ncl` file.
+/// Loads and parses a `state.json` file.
 ///
-/// Returns [`MediaPmState::default()`] when the file does not yet exist (first
-/// run or reset state).
+/// Tries the JSON path first. If missing, looks for a legacy `state.ncl`
+/// (derived by swapping the extension), evaluates it, migrates to JSON,
+/// writes the result, and deletes the `.ncl` file. Returns
+/// [`MediaPmState::default()`] when neither exists (first run or reset).
 #[allow(clippy::missing_errors_doc)]
 pub fn load_mediapm_state_document(
     path: &Path,
 ) -> Result<crate::config::MediaPmState, MediaPmError> {
-    if !path.exists() {
-        return Ok(crate::config::MediaPmState::default());
+    // 1. Try JSON path.
+    if path.exists() {
+        let file = std::fs::File::open(path).map_err(|e| MediaPmError::Io {
+            operation: "open mediapm state".to_string(),
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+        let value: serde_json::Value = serde_json::from_reader(file).map_err(|e| {
+            MediaPmError::Serialization(format!("failed to parse mediapm state JSON: {e}"))
+        })?;
+        return crate::state::ser::from_json_value(value);
     }
-    load_json_document(path, "mediapm state")
+
+    // 2. Try legacy Nickel path (.ncl).
+    let nickel_path = path.with_extension("ncl");
+    if nickel_path.exists() {
+        let value = evaluate_nickel_source_to_json(&nickel_path)?;
+        let state = crate::state::ser::migrate_from_old_nickel(value)?;
+
+        // Save migrated state as JSON.
+        save_mediapm_state_document(path, &state)?;
+
+        // Remove the old .ncl file.
+        std::fs::remove_file(&nickel_path).map_err(|e| MediaPmError::Io {
+            operation: "remove legacy state.ncl".to_string(),
+            path: nickel_path,
+            source: e,
+        })?;
+
+        return Ok(state);
+    }
+
+    // 3. Neither exists — return default.
+    Ok(crate::config::MediaPmState::default())
 }
 
-/// Serializes and writes a `state.ncl` document as proper Nickel source.
+/// Serializes and writes a `state.json` document as pretty-printed JSON.
 #[allow(clippy::missing_errors_doc)]
 pub fn save_mediapm_state_document(
     path: &Path,
     state: &crate::config::MediaPmState,
 ) -> Result<(), MediaPmError> {
-    let bytes = mediapm_utils::nickel::render_document_as_nickel(state, "mediapm state")
-        .map_err(MediaPmError::Serialization)?;
-    std::fs::write(path, bytes).map_err(|err| MediaPmError::Io {
+    let value = crate::state::ser::to_json_value(state)?;
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|e| MediaPmError::Serialization(format!("failed to format state JSON: {e}")))?;
+    std::fs::write(path, json).map_err(|err| MediaPmError::Io {
         operation: "write mediapm state".to_string(),
         path: path.to_path_buf(),
         source: err,

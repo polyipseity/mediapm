@@ -14,11 +14,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    ActiveToolInstance, AddInsertPosition, HierarchyNode, HierarchyNodeKind, HierarchyPath,
-    MaterializationMethod, MediaMetadataValue, MediaPmPaths, MediaPmService, MediaRuntimeStorage,
-    MediaSourceSpec, MediaStep, MediaStepTool, PlaylistFormat, PlaylistItemRef,
-    SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, ToolRequirementDependencies,
-    TransformInputValue, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    AddInsertPosition, HierarchyNode, HierarchyNodeKind, HierarchyPath, MaterializationMethod,
+    MediaMetadataValue, MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec,
+    MediaStep, MediaStepTool, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
+    ToolRegistryEntry, ToolRequirement, ToolRequirementDependencies, TransformInputValue,
+    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
     save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -88,7 +88,7 @@ struct DemoManifest {
     materialized_secondary_hardlinked_to_cas: bool,
     sync_executed: bool,
     lock_managed_files_count: usize,
-    lock_tool_registry_count: usize,
+    lock_managed_tools_count: usize,
     executed_instances: usize,
     cached_instances: usize,
     rematerialized_instances: usize,
@@ -99,7 +99,7 @@ struct DemoManifest {
     mediapm_ncl_path: String,
     conductor_user_ncl_path: String,
     conductor_generated_ncl_path: String,
-    mediapm_state_ncl_path: String,
+    mediapm_state_json_path: String,
     library_root_path: String,
     store_size_without_delta_bytes: u64,
     store_size_with_delta_bytes: u64,
@@ -371,7 +371,7 @@ fn assert_materialized_output_hardlinked_to_cas(
     output_path: &Path,
 ) -> ExampleResult<bool> {
     let relative_path = managed_relative_path(hierarchy_root, output_path)?;
-    if !lock.managed_files.contains(relative_path.as_str()) {
+    if !lock.managed_files.contains_key(relative_path.as_str()) {
         return Err(std::io::Error::other(format!(
             "managed output '{relative_path}' missing from lockfile tracking"
         ))
@@ -839,7 +839,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
 
     let mut machine: NickelDocument =
         decode_document(fs::read(&service.paths().conductor_generated_ncl)?.as_slice())?;
-    let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
+    let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_json)?;
 
     for logical_tool_name in local_demo_tool_requirements().into_keys() {
         if logical_tool_name.eq_ignore_ascii_case("import") {
@@ -872,15 +872,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
             },
         );
 
-        lock.active_tools.insert(
-            logical_tool_name.clone(),
-            ActiveToolInstance {
-                tool_id: stale_tool_id.clone(),
-                content_hash: stale_hash.to_string(),
-                deployed_path: stale_relative_path.clone(),
-            },
-        );
-        lock.tool_registry.insert(
+        lock.managed_tools.insert(
             stale_tool_id,
             ToolRegistryEntry {
                 version: Some("old".to_string()),
@@ -892,7 +884,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
     }
 
     fs::write(&service.paths().conductor_generated_ncl, encode_document(machine)?)?;
-    save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)?;
+    save_mediapm_state_document(&service.paths().mediapm_state_json, &lock)?;
 
     Ok(())
 }
@@ -1016,7 +1008,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
             "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}].untagged.mp4"
         ));
 
-    let lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
+    let lock = load_mediapm_state_document(&service.paths().mediapm_state_json)?;
     let (materialized_primary_hardlinked_to_cas, materialized_secondary_hardlinked_to_cas) =
         if maybe_summary.is_some() {
             let hierarchy_root = &effective_paths.hierarchy_root_dir;
@@ -1065,7 +1057,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         materialized_secondary_hardlinked_to_cas,
         sync_executed: maybe_summary.is_some(),
         lock_managed_files_count: lock.managed_files.len(),
-        lock_tool_registry_count: lock.tool_registry.len(),
+        lock_managed_tools_count: lock.managed_tools.len(),
         executed_instances: maybe_summary.as_ref().map_or(0, |summary| summary.executed_instances),
         cached_instances: maybe_summary.as_ref().map_or(0, |summary| summary.cached_instances),
         rematerialized_instances: maybe_summary
@@ -1078,7 +1070,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         mediapm_ncl_path: display_path(&service.paths().mediapm_ncl),
         conductor_user_ncl_path: display_path(&service.paths().conductor_user_ncl),
         conductor_generated_ncl_path: display_path(&service.paths().conductor_generated_ncl),
-        mediapm_state_ncl_path: display_path(&service.paths().mediapm_state_ncl),
+        mediapm_state_json_path: display_path(&service.paths().mediapm_state_json),
         library_root_path: display_path(&effective_paths.hierarchy_root_dir),
         store_size_without_delta_bytes: store_size_stats.without_delta_bytes,
         store_size_with_delta_bytes: store_size_stats.with_delta_bytes,

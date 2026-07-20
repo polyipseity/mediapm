@@ -51,8 +51,8 @@ pub struct MediaPmPaths {
     pub conductor_tmp_dir: PathBuf,
     /// Conductor schema export directory.
     pub conductor_schema_dir: PathBuf,
-    /// `mediapm` machine-managed state document (`state.ncl`).
-    pub mediapm_state_ncl: PathBuf,
+    /// `mediapm` machine-managed state document (`state.json`).
+    pub mediapm_state_json: PathBuf,
     /// Runtime dotenv file for local credential overrides.
     pub env_file: PathBuf,
     /// Machine-generated runtime dotenv file.
@@ -85,7 +85,7 @@ impl MediaPmPaths {
             conductor_state_config: runtime_root.join("state.conductor.ncl"),
             conductor_tmp_dir: tmp_dir.clone(),
             conductor_schema_dir: runtime_root.join("config").join("conductor"),
-            mediapm_state_ncl: runtime_root.join("state.ncl"),
+            mediapm_state_json: runtime_root.join("state.json"),
             env_file: runtime_root.join(".env"),
             env_generated_file: runtime_root.join(".env.generated"),
             schema_export_dir: Some(runtime_root.join("config").join("mediapm")),
@@ -179,10 +179,10 @@ impl MediaPmPaths {
             |raw| resolve_path(config_dir, raw),
         );
 
-        let mediapm_state_ncl = overrides
+        let mediapm_state_json = overrides
             .media_state_config
             .clone()
-            .map_or_else(|| runtime_root.join("state.ncl"), |raw| resolve_path(config_dir, raw));
+            .map_or_else(|| runtime_root.join("state.json"), |raw| resolve_path(config_dir, raw));
 
         let env_file = overrides
             .env_file
@@ -208,7 +208,7 @@ impl MediaPmPaths {
             conductor_state_config,
             conductor_tmp_dir: tmp_dir.clone(),
             conductor_schema_dir,
-            mediapm_state_ncl,
+            mediapm_state_json,
             env_file,
             env_generated_file,
             schema_export_dir,
@@ -260,7 +260,7 @@ mod tests {
             paths.conductor_schema_dir,
             root.path().join(".mediapm").join("config").join("conductor")
         );
-        assert_eq!(paths.mediapm_state_ncl, root.path().join(".mediapm").join("state.ncl"));
+        assert_eq!(paths.mediapm_state_json, root.path().join(".mediapm").join("state.json"));
         assert_eq!(paths.env_file, root.path().join(".mediapm").join(".env"));
         assert_eq!(paths.env_generated_file, root.path().join(".mediapm").join(".env.generated"));
         assert_eq!(
@@ -319,7 +319,7 @@ mod tests {
             root.path().join("state").join("custom.state.ncl")
         );
         assert_eq!(
-            resolved.mediapm_state_ncl,
+            resolved.mediapm_state_json,
             root.path().join("state").join("custom.state.mediapm.ncl")
         );
         assert_eq!(resolved.env_file, root.path().join("state").join("custom.env"));

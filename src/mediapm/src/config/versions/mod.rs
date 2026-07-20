@@ -1,8 +1,8 @@
 //! Versioned document migration and envelope dispatch.
 //!
 //! This module manages the version marker dispatch for serialized
-//! `mediapm.ncl` and `state.ncl` documents.  The `Migrate` trait defines the
-//! decode/encode contract that each supported schema version must implement.
+//! `mediapm.ncl` documents.  The `Migrate` trait defines the decode/encode
+//! contract that each supported schema version must implement.
 
 #![allow(dead_code)]
 // TODO: Stream A stubs — wired when provisioning pipeline is complete.
@@ -14,7 +14,6 @@ use crate::error::MediaPmError;
 mod v1;
 
 use super::MediaPmDocument;
-use super::MediaPmState;
 
 // ---------------------------------------------------------------------------
 // Migrate trait
@@ -58,23 +57,6 @@ pub fn decode_mediapm_document_value(value: Value) -> Result<MediaPmDocument, Me
 /// Encodes one mediapm document to its latest stable wire format.
 pub fn encode_mediapm_document_value(doc: &MediaPmDocument) -> Result<Value, MediaPmError> {
     doc.encode()
-}
-
-/// Decodes one mediapm state JSON value into the runtime state model.
-pub fn decode_mediapm_state_value(value: Value) -> Result<MediaPmState, MediaPmError> {
-    let version = extract_version_field(&value)?;
-
-    match version {
-        1 => MediaPmState::decode(value),
-        _ => Err(MediaPmError::Workflow(format!(
-            "unsupported mediapm state schema version {version}",
-        ))),
-    }
-}
-
-/// Encodes one mediapm state to its latest stable wire format.
-pub fn encode_mediapm_state_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
-    state.encode()
 }
 
 // ---------------------------------------------------------------------------
