@@ -297,3 +297,57 @@ fn regression_recycle_finished_slot_after_full() {
     assert!(lines.iter().any(|l| l.contains("task4")), "task4 visible: {lines:?}");
     assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
 }
+
+// ── Regression: newest finished bars survive Phase 2 compact ────────────
+
+#[test]
+fn regression_recycle_oldest_finished_slot() {
+    // Use W=80 so the overall bar's rate+ETA message (which can be 18+
+    // visible chars) fits without wrapping in the compact template.
+    let (mp, term) = mk_with_size(10, 80);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(6)
+        .with_overall("overall", 5)
+        .build_with_overall();
+    // child_cap = 5, overall at slot 5
+
+    // Fill all 5 child slots with bars from 2 tools (simulating 3-phase
+    // provisioning where each tool produces resolve/fetch/process bars).
+    let a1 = group.add_bar(1, "a [resolve]");
+    let a2 = group.add_bar(1, "a [fetch]");
+    let a3 = group.add_bar(1, "a [process]");
+    let b1 = group.add_bar(1, "b [resolve]");
+    let b2 = group.add_bar(1, "b [fetch]");
+    a1.finish();
+    a2.finish();
+    a3.finish();
+    b1.finish();
+    b2.finish();
+    overall.advance(2);
+    group.tick();
+
+    // All bars visible.
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert!(lines.iter().any(|l| l.contains("a [resolve]")), "a [resolve] visible pre-compact");
+    assert!(lines.iter().any(|l| l.contains("b [fetch]")), "b [fetch] visible pre-compact");
+
+    // Add b [process] — triggers Phase 2 compact (all slots occupied).
+    let b3 = group.add_bar(1, "b [process]");
+    b3.finish();
+    overall.advance(1);
+    overall.finish();
+    group.tick();
+
+    // After compact: oldest (a1 at old_i=0) is recycled, everything
+    // shifts up, b3 at bottom.  All 3 b-specific bars must be visible.
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    assert!(lines.iter().any(|l| l.contains("b [resolve]")), "b [resolve] visible after compact");
+    assert!(lines.iter().any(|l| l.contains("b [fetch]")), "b [fetch] visible after compact");
+    assert!(lines.iter().any(|l| l.contains("b [process]")), "b [process] visible after compact");
+
+    // a [resolve] was recycled, should NOT be visible after compact
+    assert!(!lines.iter().any(|l| l.contains("a [resolve]")), "a [resolve] recycled after compact");
+}

@@ -1045,8 +1045,10 @@ mod inner {
         /// first-created child at the top of the band, last-created adjacent
         /// to the overall bar.
         ///
-        /// When all slots are occupied by active handles, scans for a
-        /// finished slot to recycle.  When none is available, the handle is
+        /// When all slots are occupied by active handles, recycles the
+        /// oldest finished slot from the top of the band and shifts all
+        /// remaining bars up, keeping the newest bars contiguous at the
+        /// bottom.  When no finished slot is available, the handle is
         /// pushed to [`orphaned_states`] — it remains tracked but has no
         /// render slot until the terminal grows back.
         fn attach(&mut self, state: &Arc<SharedState>) {
@@ -1077,13 +1079,27 @@ mod inner {
                 return;
             }
 
-            // Phase 2: recycle a finished slot (all slots occupied).
-            for i in (0..=bottom).rev() {
-                if self.slots[i].source.borrow().as_ref().is_none_or(|s| s.is_finished()) {
-                    self.slots[i].source.replace(Some(Arc::clone(state)));
-                    self.slots_timing[i] = SlotTiming::new(&*self.time_source);
-                    self.slots[i].cache = SlotCache::new();
-                    self.sync_slot(i);
+            // Phase 2: compact — recycle the oldest finished slot and shift
+            // all bars below it up by one slot, placing the new bar at the
+            // bottom.  This keeps the most recent bars visible and contiguous.
+            for old_i in 0..=bottom {
+                if self.slots[old_i].source.borrow().as_ref().is_some_and(|s| s.is_finished()) {
+                    // Bubble the source at old_i rightward through bottom,
+                    // shifting all sources up by one slot.
+                    for j in old_i..bottom {
+                        let (left, right) = self.slots.split_at_mut(j + 1);
+                        std::mem::swap(&mut left[left.len() - 1].source, &mut right[0].source);
+                        self.slots_timing.swap(j + 1, j);
+                    }
+                    // Sync shifted slots (sources moved to different bars).
+                    for j in old_i..bottom {
+                        self.sync_slot(j);
+                    }
+                    // Place new child at the freed bottom slot.
+                    self.slots[bottom].source.replace(Some(Arc::clone(state)));
+                    self.slots_timing[bottom] = SlotTiming::new(&*self.time_source);
+                    self.slots[bottom].cache = SlotCache::new();
+                    self.sync_slot(bottom);
                     return;
                 }
             }
