@@ -15,7 +15,9 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 
 1. **Load generated document** — `load_conductor_generated_document(paths)`. Returns empty `NickelDocument` if file doesn't exist.
 2. **Register builtins** — `register_missing_builtin_tools()`, `apply_builtin_runtime_defaults()`.
-3. **Open caches** — `ToolDownloadCache::open()` for content cache (30d TTL) and metadata cache (1d TTL) under the user-level cache root.
+3. **Open caches** — `ToolDownloadCache::open()` for content cache (30d TTL) and metadata cache (1d TTL) under the user-level cache root. The cache root path is determined by the `cache_root_override` parameter:
+   - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
+   - `Some(path)` → use the provided path as the cache root for both content and metadata caches
 4. **Provision skip** — before fetching each tool, compare `state.managed_tools[tool_id].canonical_version` against the resolved canonical version using direct string equality. Direct string equality comparison — no Option unwrapping needed since `canonical_version` is always a populated `String`. If they match AND the stored `fetch_hash` is non-empty, skip provisioning entirely and increment `tools_skipped`.
 5. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
@@ -47,3 +49,9 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 - Builtin source-ingest tools (`import`) skip hash-key generation and use bare name.
 - Progress bar shows `desired_tools.len()` total items; bar finishes success (no warnings) or error (warnings present).
 - `content_map ⊆ external_data` invariant: every CAS hash referenced in any tool's `runtime.content_map` must have a matching `ExternalDataEntry` in `generated_doc.external_data`. Enforced on both encode (`encode_document()`) and decode (`decode_document()`) of conductor NCL documents.
+
+## Testing invariants
+
+- Tests must be hermetic: never read from or write to the real OS-level user cache dir. Use `cache_root_override` to inject a tempdir.
+- The `default_mediapm_user_download_cache_root().is_none()` skip guard is macOS-ineffective and must not be relied upon. Use `cache_root_override` instead.
+- Test assertions should verify the override path was used (e.g., cache index files exist under the override path rather than the default).
