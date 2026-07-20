@@ -356,13 +356,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_desired_tools_records_progress_ops() {
-        // The function opens a user-level download cache rooted at the OS
-        // cache dir; skip when the cache dir is unavailable (CI containers).
-        if default_mediapm_user_download_cache_root().is_none() {
-            return;
-        }
-
         let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let tracker = RecordingProgressTracker::new();
         let cas = InMemoryCas::default();
@@ -375,6 +370,7 @@ mod tests {
             &BTreeMap::new(),
             false,
             &state,
+            Some(cache_root.path()),
             Some(&tracker),
         )
         .await;
@@ -410,5 +406,83 @@ mod tests {
             matches!(&finish_successes[0], ProgressOp::FinishSuccess { .. }),
             "expected FinishSuccess"
         );
+    }
+
+    #[tokio::test]
+    async fn reconcile_desired_tools_with_override_does_not_touch_real_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let cas = InMemoryCas::default();
+
+        let state = MediaPmState::default();
+        let result = reconcile_desired_tools(
+            &cas,
+            &paths,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            &state,
+            Some(cache_root.path()),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+        let report = result.unwrap();
+        assert_eq!(report.tools_added, 0, "no tools should be added");
+        assert_eq!(report.tools_updated, 0, "no tools should be updated");
+        assert_eq!(report.tools_skipped, 0, "no tools should be skipped");
+        assert!(report.warnings.is_empty(), "no warnings expected: {:?}", report.warnings);
+
+        // Verify the real cache dir was NOT written to.
+        let real_cache = default_mediapm_user_download_cache_root().map(|p| p.join("tools.json"));
+        if let Some(real_index) = real_cache {
+            assert!(
+                !real_index.exists(),
+                "real cache index must not exist after override: {}",
+                real_index.display()
+            );
+        }
+
+        // Verify the override path was used instead.
+        assert!(
+            cache_root.path().join("tools.json").exists()
+                || cache_root.path().join("store").exists(),
+            "override cache dir should have been initialized",
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_desired_tools_cache_override_supports_explicit_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let cas = InMemoryCas::default();
+
+        // Pre-populate the cache dir with an empty store/ dir so the CAS
+        // opens cleanly at the override path.
+        std::fs::create_dir_all(cache_root.path().join("store")).unwrap();
+
+        let state = MediaPmState::default();
+        let result = reconcile_desired_tools(
+            &cas,
+            &paths,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            &state,
+            Some(cache_root.path()),
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "reconcile_desired_tools with pre-populated cache dir failed: {:?}",
+            result.err()
+        );
+        let report = result.unwrap();
+        assert!(report.warnings.is_empty(), "no warnings expected: {:?}", report.warnings);
     }
 }
