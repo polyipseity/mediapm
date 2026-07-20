@@ -534,4 +534,38 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn resolve_tool_fetch_media_tagger_canonical_is_git_hash() {
+        let (_, canonical) = resolve_tool_fetch("media-tagger", None).await.unwrap();
+        // MEDIAPM_GIT_HASH is the compile-time constant — it may be empty in some
+        // test environments without .git, but it must not panic.
+        if !canonical.is_empty() {
+            assert!(canonical.len() >= 7, "git hash should be at least 7 chars");
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_canonical_version_is_deterministic() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache = ToolDownloadCache::open(temp_dir.path(), "metadata.json", 3600).await.unwrap();
+
+        // Pre-seed metadata cache with known tags.
+        let seeds: &[(&str, &str)] = &[
+            ("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", "2025.07.15"),
+            ("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest", "L2025-07-15"),
+            ("https://api.github.com/repos/denoland/deno/releases/latest", "v2.2.12"),
+            ("https://api.github.com/repos/complexlogic/rsgain/releases/latest", "v3.7"),
+            ("https://api.github.com/repos/chmln/sd/releases/latest", "v1.1.0"),
+        ];
+        for (url, tag) in seeds {
+            cache.store_bytes(url, tag.as_bytes()).await;
+        }
+
+        for tool in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd", "media-tagger"] {
+            let (_, cv1) = resolve_tool_fetch(tool, Some(&cache)).await.unwrap();
+            let (_, cv2) = resolve_tool_fetch(tool, Some(&cache)).await.unwrap();
+            assert_eq!(cv1, cv2, "canonical_version for {tool} must be deterministic");
+        }
+    }
 }

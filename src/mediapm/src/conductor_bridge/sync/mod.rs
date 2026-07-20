@@ -367,12 +367,14 @@ mod tests {
         let tracker = RecordingProgressTracker::new();
         let cas = InMemoryCas::default();
 
+        let state = MediaPmState::default();
         let result = reconcile_desired_tools(
             &cas,
             &paths,
             &BTreeMap::new(),
             &BTreeMap::new(),
             false,
+            &state,
             Some(&tracker),
         )
         .await;

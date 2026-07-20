@@ -183,7 +183,7 @@ pub fn global_tool_cache_clear() -> Result<(), std::io::Error> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::MediaPmGlobalPaths;
+    use super::{MEDIAPM_GIT_HASH, MediaPmGlobalPaths};
 
     #[test]
     fn from_cache_base_dir_uses_flat_cache_layout() {
@@ -203,5 +203,12 @@ mod tests {
         assert_eq!(paths.tool_cache_dir, tool_cache_dir);
         assert_eq!(paths.tool_cache_store_dir, paths.tool_cache_dir.join("store"));
         assert_eq!(paths.tool_cache_index, paths.tool_cache_dir.join("tools.json"));
+    }
+
+    #[test]
+    fn mediapm_git_hash_is_defined() {
+        // The constant exists and compiles; it may be "" in environments
+        // without .git at build time. Just verify it doesn't panic.
+        let _ = MEDIAPM_GIT_HASH;
     }
 }

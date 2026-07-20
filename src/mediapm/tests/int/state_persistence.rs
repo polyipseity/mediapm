@@ -256,3 +256,124 @@ fn load_missing_state_returns_default() {
     assert!(state.managed_files.is_empty());
     assert!(state.managed_tools.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// ToolRegistryEntry serde with canonical_version
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tool_registry_entry_round_trip() {
+    let entry = ToolRegistryEntry {
+        version: Some("1.0".to_string()),
+        tag: None,
+        canonical_version: "abc123".to_string(),
+        fetch_hash: None,
+        deployed_at: 0,
+    };
+    let json = serde_json::to_value(&entry).expect("serialize");
+    let back: ToolRegistryEntry = serde_json::from_value(json).expect("deserialize");
+    assert_eq!(back.canonical_version, "abc123");
+}
+
+#[test]
+fn tool_registry_entry_backward_compat_deserialize_without_canonical_version() {
+    let json = serde_json::json!({
+        "version": "1.0",
+        "fetch_hash": "blake3:x",
+        "deployed_at": 0
+    });
+    let entry: ToolRegistryEntry = serde_json::from_value(json).expect("deserialize old format");
+    assert_eq!(
+        entry.canonical_version, "",
+        "missing canonical_version should default to empty string"
+    );
+}
+
+#[test]
+fn tool_registry_entry_normalize_drops_blank_entry() {
+    let mut state = MediaPmState::default();
+    state.managed_tools.insert(
+        "tool".to_string(),
+        ToolRegistryEntry {
+            version: Some(String::new()),
+            tag: Some(String::new()),
+            canonical_version: "".to_string(),
+            fetch_hash: None,
+            deployed_at: 0,
+        },
+    );
+    state.normalize();
+    assert!(state.managed_tools.is_empty(), "blank entry should be dropped");
+}
+
+#[test]
+fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
+    let mut state = MediaPmState::default();
+    state.managed_tools.insert(
+        "tool".to_string(),
+        ToolRegistryEntry {
+            version: None,
+            tag: None,
+            canonical_version: "abc123".to_string(),
+            fetch_hash: None,
+            deployed_at: 0,
+        },
+    );
+    state.normalize();
+    assert_eq!(state.managed_tools.len(), 1, "entry with canonical_version should survive");
+}
+
+#[test]
+fn state_normalize_retains_tool_with_canonical_version() {
+    let mut state = MediaPmState::default();
+    state.managed_tools.insert(
+        "media-tagger".to_string(),
+        ToolRegistryEntry {
+            version: None,
+            tag: None,
+            canonical_version: "abc123".to_string(),
+            fetch_hash: None,
+            deployed_at: 0,
+        },
+    );
+    state.normalize();
+    assert!(
+        state.managed_tools.contains_key("media-tagger"),
+        "tool with canonical_version should be retained"
+    );
+}
+
+#[test]
+fn state_normalize_drops_tool_with_all_blank() {
+    let mut state = MediaPmState::default();
+    state.managed_tools.insert(
+        "blank-tool".to_string(),
+        ToolRegistryEntry {
+            version: Some(String::new()),
+            tag: Some(String::new()),
+            canonical_version: "".to_string(),
+            fetch_hash: None,
+            deployed_at: 0,
+        },
+    );
+    state.normalize();
+    assert!(!state.managed_tools.contains_key("blank-tool"), "blank tool should be dropped");
+}
+
+#[test]
+fn canonical_version_json_round_trip() {
+    let long = "a".repeat(64);
+    let versions = vec!["", "abc123", "v1.0.0", "2025.07.15", "L2025-07-15", &long];
+    for v in &versions {
+        let entry = ToolRegistryEntry {
+            version: None,
+            tag: None,
+            canonical_version: (*v).to_string(),
+            fetch_hash: None,
+            deployed_at: 0,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        let back: ToolRegistryEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back.canonical_version, *v, "canonical_version round-trip failed for {:?}", v);
+    }
+}

@@ -347,4 +347,34 @@ mod tests {
             Err(e) => panic!("yt-dlp should succeed, got Err({e:?})"),
         }
     }
+
+    #[tokio::test]
+    async fn fetch_and_import_with_pre_resolved_canonical_version() {
+        let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
+
+        // Use media_tagger's sources as a known ResolvedToolFetch.
+        let fetch = crate::tools::provider::media_tagger::sources();
+        let pre_resolved = Some((fetch, "test-canonical".to_string()));
+
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "media-tagger",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            pre_resolved,
+        )
+        .await;
+        match result {
+            Ok(Some(payload)) => {
+                assert_eq!(
+                    payload.canonical_version, "test-canonical",
+                    "pre-resolved canonical_version should be threaded through",
+                );
+                assert_eq!(payload.content_map.len(), 3, "expected 3 content-map entries");
+            }
+            Ok(None) => panic!("media-tagger should return Ok(Some(...)), got Ok(None)"),
+            Err(e) => panic!("media-tagger should succeed, got Err({e:?})"),
+        }
+    }
 }
