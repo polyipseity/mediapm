@@ -562,6 +562,7 @@ mod inner {
         total: AtomicU64,
         label: RwLock<String>,
         prefix: RwLock<String>,
+        message: RwLock<String>,
         status: AtomicU8,
         start_time: Instant,
         finished_elapsed: RwLock<Option<Duration>>,
@@ -583,6 +584,7 @@ mod inner {
                 total: AtomicU64::new(total),
                 label: RwLock::new(label.to_string()),
                 prefix: RwLock::new(label.to_string()),
+                message: RwLock::new(String::new()),
                 status: AtomicU8::new(0),
                 start_time: time_source.now(),
                 finished_elapsed: RwLock::new(None),
@@ -596,6 +598,7 @@ mod inner {
                 total: self.total.load(Ordering::Relaxed),
                 label: self.label.read().expect("shared_state label lock").clone(),
                 prefix: self.prefix.read().expect("shared_state prefix lock").clone(),
+                message: self.message.read().expect("shared_state message lock").clone(),
                 status: match self.status.load(Ordering::Relaxed) {
                     0 => TrackStatus::Active,
                     1 => TrackStatus::Success,
@@ -643,6 +646,8 @@ mod inner {
         pub label: String,
         /// Prefix (shown before the bar).
         pub prefix: String,
+        /// Custom message appended to the right-hand side (empty = none).
+        pub message: String,
         /// Current status.
         pub status: TrackStatus,
         /// Elapsed time since the handle was created (frozen on finish).
@@ -728,6 +733,22 @@ mod inner {
         pub fn set_prefix(&self, prefix: impl Into<String>) {
             let prefix: String = prefix.into();
             (*self.state.prefix.write().expect("shared_state prefix lock")).clone_from(&prefix);
+        }
+
+        /// Set a custom message appended to the auto-computed right-hand side.
+        ///
+        /// The message is appended after a space after the auto-computed
+        /// `{count}/{total} {elapsed} {rate} [{eta}]` text.  When empty
+        /// (default), no extra text appears.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the shared-state `RwLock` is poisoned.
+        pub fn set_message(&self, message: impl Into<String>) {
+            if self.state.total.load(Ordering::Relaxed) == 0 {
+                return; // disabled handle
+            }
+            *self.state.message.write().expect("shared_state message lock") = message.into();
         }
 
         /// Mark the bar as finished (keeps it visible).
@@ -1235,9 +1256,15 @@ mod inner {
                 slot.bar.set_prefix(new_prefix.clone());
                 *slot.cache.prefix.borrow_mut() = new_prefix;
             }
-            if msg != *slot.cache.msg.borrow() {
-                slot.bar.set_message(msg.clone());
-                *slot.cache.msg.borrow_mut() = msg;
+            // Build display message: auto-computed RHS + optional custom message.
+            let display_msg = if snap.message.is_empty() {
+                msg.clone()
+            } else {
+                format!("{}  {}", msg, snap.message)
+            };
+            if display_msg != *slot.cache.msg.borrow() {
+                slot.bar.set_message(display_msg.clone());
+                *slot.cache.msg.borrow_mut() = display_msg;
             }
             if snap.total != slot.cache.total.get() {
                 slot.bar.set_length(snap.total);
@@ -1748,6 +1775,8 @@ pub trait ProgressBarApi: Send + Sync {
     fn set_total(&self, total: u64);
     /// Set the prefix shown before the bar.
     fn set_prefix(&self, prefix: &str);
+    /// Set a custom message appended to the auto-computed right-hand side.
+    fn set_message(&self, message: &str);
 }
 
 #[cfg(feature = "progress")]
@@ -1778,6 +1807,9 @@ impl ProgressBarApi for TrackedHandle {
     }
     fn set_prefix(&self, prefix: &str) {
         TrackedHandle::set_prefix(self, prefix);
+    }
+    fn set_message(&self, message: &str) {
+        TrackedHandle::set_message(self, message);
     }
 }
 
@@ -1846,6 +1878,11 @@ pub mod recording {
         SetPrefix {
             /// Prefix text.
             prefix: String,
+        },
+        /// `set_message(message)` was called.
+        SetMessage {
+            /// Custom message text.
+            message: String,
         },
         /// `finish()` was called.
         Finish,
@@ -1982,6 +2019,14 @@ pub mod recording {
                 .push(ProgressOp::SetPrefix { prefix: prefix.into() });
         }
 
+        /// Set the custom RHS message.
+        pub fn set_message(&self, message: impl Into<String>) {
+            self.ops
+                .lock()
+                .expect("recording lock")
+                .push(ProgressOp::SetMessage { message: message.into() });
+        }
+
         /// Mark the handle as finished.
         pub fn finish(&self) {
             self.ops.lock().expect("recording lock").push(ProgressOp::Finish);
@@ -2063,6 +2108,7 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
             total: self.total(),
             label: String::new(),
             prefix: String::new(),
+            message: String::new(),
             status: TrackStatus::Active,
             elapsed: recording::RecordingTrackedHandle::snapshot_elapsed(self),
         }
@@ -2091,6 +2137,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     }
     fn set_prefix(&self, prefix: &str) {
         recording::RecordingTrackedHandle::set_prefix(self, prefix);
+    }
+    fn set_message(&self, message: &str) {
+        recording::RecordingTrackedHandle::set_message(self, message);
     }
 }
 
