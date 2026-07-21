@@ -395,11 +395,19 @@ impl Cache {
     pub(crate) fn get_entry_last_access(&self, key: &str) -> Option<u64> {
         self.index.lock().ok()?.entries.get(key).map(|e| e.last_access_unix_seconds)
     }
+
+    /// Test-only: returns the hash text for a cache entry.
+    #[must_use]
+    pub(crate) fn get_entry_hash(&self, key: &str) -> Option<String> {
+        self.index.lock().ok()?.entries.get(key).map(|e| e.hash.clone())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Cache, ENTRY_TTL_SECONDS, PRUNE_INTERVAL_SECONDS, TOUCH_PERSIST_INTERVAL_SECONDS};
+    use mediapm_cas::{CasApi, FileSystemCas, Hash};
+    use std::str::FromStr;
 
     // Compile-time assertions: TTL constants must be at least one day/hour/minute.
     const _: () = assert!(ENTRY_TTL_SECONDS >= 24 * 60 * 60);
@@ -615,5 +623,122 @@ mod tests {
         // Fresh entry survives because prune didn't run.
         let retrieved = cache.lookup_bytes("fresh-key").await;
         assert_eq!(retrieved, Some(b"fresh".to_vec()));
+    }
+
+    /// Verifies that prune deletes the CAS payload blob when no index
+    /// references its hash.
+    #[tokio::test]
+    async fn prune_expired_removes_payload_blob_from_cas() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
+            .await
+            .expect("open cache");
+        let payload = b"ephemeral-blob".to_vec();
+        cache.store_bytes("expiring-key", &payload).await;
+
+        // Capture the hash before prune.
+        let hash_text = cache.get_entry_hash("expiring-key").expect("entry must exist");
+
+        // Prune.
+        let report = cache.prune_expired_entries().await.expect("prune");
+        assert!(report.removed_entries >= 1, "expired entry must be pruned");
+        assert!(report.removed_payloads >= 1, "payload blob must be reported as removed");
+
+        // Verify blob is gone from CAS by opening a fresh FileSystemCas on the
+        // same store directory and attempting to get the hash.
+        let store_dir = root.path().join("store");
+        let fresh_cas = FileSystemCas::open(&store_dir).await.expect("open fresh cas");
+        let hash = Hash::from_str(&hash_text).expect("valid hash");
+        let result = fresh_cas.get(hash).await;
+        assert!(result.is_err(), "blob must be physically deleted from CAS after prune");
+    }
+
+    /// Verifies that when two keys in the same index share the same hash
+    /// and both expire, the payload blob is only deleted once.
+    #[tokio::test]
+    async fn prune_expired_same_hash_multiple_keys_survives_one_expiry() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
+            .await
+            .expect("open cache");
+        let payload = b"shared-payload".to_vec();
+        cache.store_bytes("key-a", &payload).await;
+        // Store the same payload under a different key.
+        cache.store_bytes("key-b", &payload).await;
+
+        // Prune — both entries are expired (TTL=0).
+        let report = cache.prune_expired_entries().await.expect("prune");
+        assert!(report.removed_entries >= 2, "both expired entries must be pruned");
+        // The hash of key-a and key-b are identical; at most one blob should
+        // be removed. With blob-level dedup, cas.delete() is idempotent.
+        assert!(report.removed_payloads <= 1, "shared payload must be deleted at most once");
+
+        // Both keys gone from index.
+        assert!(cache.lookup_bytes("key-a").await.is_none());
+        assert!(cache.lookup_bytes("key-b").await.is_none());
+    }
+
+    /// Verifies that a blob referenced by two separate index files survives
+    /// when only one index is pruned.
+    #[tokio::test]
+    async fn prune_expired_cross_index_shared_hash_preserves_blob() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache_a = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 1)
+            .await
+            .expect("open cache_a");
+        let cache_b =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tool_metadata.json", 3600)
+                .await
+                .expect("open cache_b");
+
+        let payload = b"cross-index-shared".to_vec();
+        cache_a.store_bytes("key-a", &payload).await;
+        cache_b.store_bytes("key-b", &payload).await;
+
+        // Wait for cache_a's TTL to expire.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // Prune cache_a — key-a expires, but blob is referenced by cache_b.
+        let report = cache_a.prune_expired_entries().await.expect("prune cache_a");
+        assert!(report.removed_entries >= 1);
+        assert_eq!(report.removed_payloads, 0, "blob must survive cross-index reference");
+
+        // Blob still retrievable via cache_b.
+        let retrieved = cache_b.lookup_bytes("key-b").await;
+        assert_eq!(retrieved, Some(payload));
+    }
+
+    /// Verifies that a blob referenced by two index files is deleted when
+    /// BOTH indexes expire their references.
+    #[tokio::test]
+    async fn prune_expired_removes_blob_when_no_index_references_hash() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache_a = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
+            .await
+            .expect("open cache_a");
+        let cache_b =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tool_metadata.json", 0)
+                .await
+                .expect("open cache_b");
+
+        let payload = b"double-expired".to_vec();
+        cache_a.store_bytes("key-a", &payload).await;
+        cache_b.store_bytes("key-b", &payload).await;
+
+        // Capture hash before prune.
+        let hash_text = cache_a.get_entry_hash("key-a").expect("entry");
+
+        // Prune both caches.
+        cache_a.prune_expired_entries().await.expect("prune a");
+        cache_b.prune_expired_entries().await.expect("prune b");
+
+        // Blob must be gone from CAS.
+        let store_dir = root.path().join("store");
+        let fresh_cas = FileSystemCas::open(&store_dir).await.expect("open fresh cas");
+        let hash = Hash::from_str(&hash_text).expect("valid hash");
+        assert!(
+            fresh_cas.get(hash).await.is_err(),
+            "blob must be deleted when all references expire"
+        );
     }
 }
