@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -618,4 +619,54 @@ async fn file_system_cas_background_task_survives_reopen() {
     .expect("open CAS second session");
     let retrieved = cas.get(hash).await.expect("get data after reopen");
     assert_eq!(retrieved.to_vec(), payload.to_vec(), "blob must survive reopen");
+}
+
+/// Verifies that the background WAL consumer processes a put+delete pair
+/// so the blob is never materialized on disk (the two entries cancel out).
+#[tokio::test]
+async fn file_system_cas_background_task_deletes_through_wal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
+        dir.path(),
+        vec![],
+        Duration::from_millis(100),
+    )
+    .await
+    .expect("open CAS with background");
+
+    let payload = Bytes::from_static(b"delete-through-wal");
+    let hash = cas.put(payload.clone()).await.expect("put data");
+    // Delete before the background consumer runs (500ms initial delay).
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    cas.delete(hash).await.expect("delete data");
+
+    // Wait for background consumer to process both entries.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // The blob should not exist — the net effect of put+delete is zero.
+    assert!(cas.get(hash).await.is_err(), "blob must not exist after put+delete via background");
+}
+
+/// Verifies that the background maintenance guard's cancelled flag is set
+/// when the FileSystemCas handle is dropped.
+#[tokio::test]
+async fn file_system_cas_background_maintenance_guard_cancels_on_drop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
+        dir.path(),
+        vec![],
+        Duration::from_millis(100),
+    )
+    .await
+    .expect("open CAS with background");
+
+    // Clone the cancelled flag from the guard (via test accessor).
+    let cancelled = cas.bg_guard_ref().cancelled.clone();
+    assert!(!cancelled.load(Ordering::SeqCst), "guard must not be cancelled before drop");
+
+    drop(cas);
+    assert!(
+        cancelled.load(Ordering::SeqCst),
+        "bg_guard must be cancelled after FileSystemCas drop"
+    );
 }

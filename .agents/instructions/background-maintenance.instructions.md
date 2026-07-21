@@ -11,7 +11,7 @@ Unified policy for all background maintenance tasks across the mediapm workspace
 ## Lifecycle
 
 - **Trigger**: At construction time of the owning instance.
-- **Lifecycle**: Run immediately at spawn, then wait a *fixed interval after each complete run*, then run again. Timer starts only after a run finishes.
+- **Lifecycle**: Run immediately at spawn, then wait a _fixed interval after each complete run_, then run again. Timer starts only after a run finishes.
 - **Interruptibility**: Always freely interruptible. Loop checks cancellation flag before and after each work cycle. RAII guard's `abort()` provides immediate termination.
 - **RAII lifecycle**: Starts when the owning instance is constructed; ends when that instance is destroyed (guard's Drop cancels the task).
 - **Testing**: Every background task must be tested explicitly as a background loop (not just via foreground API calls).

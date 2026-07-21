@@ -887,4 +887,56 @@ mod tests {
             "bg_guard must be cancelled after cache drop"
         );
     }
+
+    /// Verifies that when a background-pruned cache shares the same CAS
+    /// `store/` with another cache, the other cache's references keep the
+    /// blob alive (cross-index GC safety via background prune).
+    #[tokio::test]
+    async fn background_maintenance_cross_index_preserves_blob() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // Cache with background maintenance and short TTL.
+        let cache_a = Cache::open_with_ttl_and_maintenance_interval(
+            root.path(),
+            "tools.json",
+            0, // TTL = 0: entries expire immediately
+            1, // maintenance interval = 1s
+        )
+        .await
+        .expect("open cache_a");
+        // Second cache pointing at the same store with normal TTL and
+        // no background maintenance (default 24h interval is effectively
+        // inert during the test window).
+        let cache_b =
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tool_metadata.json", 3600)
+                .await
+                .expect("open cache_b");
+
+        let payload = b"cross-index-background".to_vec();
+        cache_a.store_bytes("key-a", &payload).await;
+        cache_b.store_bytes("key-b", &payload).await;
+
+        let hash_text = cache_a.get_entry_hash("key-a").expect("entry must exist");
+
+        // Wait for background prune to fire on cache_a.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // cache_a's entry should be gone.
+        assert!(
+            cache_a.lookup_bytes("key-a").await.is_none(),
+            "expired entry in cache_a must be pruned"
+        );
+
+        // The blob must still be retrievable via cache_b.
+        let retrieved = cache_b.lookup_bytes("key-b").await;
+        assert_eq!(retrieved, Some(payload), "blob must survive cross-index background prune");
+
+        // The blob must still exist on disk.
+        let store_dir = root.path().join("store");
+        let fresh_cas = FileSystemCas::open(&store_dir).await.expect("open fresh cas");
+        let hash = Hash::from_str(&hash_text).expect("valid hash");
+        assert!(
+            fresh_cas.get(hash).await.is_ok(),
+            "blob must still exist on disk after cross-index background prune"
+        );
+    }
 }
