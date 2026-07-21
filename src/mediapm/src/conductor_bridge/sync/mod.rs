@@ -99,14 +99,12 @@ pub(crate) async fn reconcile_desired_tools(
             MediaPmError::Workflow("could not determine default tool cache root".to_string())
         })?,
     };
-    let (cache, _cache_guard) =
-        ToolDownloadCache::open(&cache_root, "tools.json", 30 * 24 * 60 * 60).await.map_err(
-            |e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")),
-        )?;
-    let (metadata_cache, _meta_guard) =
-        ToolDownloadCache::open(&cache_root, "tool_metadata.json", 24 * 60 * 60).await.map_err(
-            |e| MediaPmError::Workflow(format!("failed to open tool metadata cache: {e}")),
-        )?;
+    let cache = ToolDownloadCache::open(&cache_root, "tools.json", 30 * 24 * 60 * 60)
+        .await
+        .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
+    let metadata_cache = ToolDownloadCache::open(&cache_root, "tool_metadata.json", 24 * 60 * 60)
+        .await
+        .map_err(|e| MediaPmError::Workflow(format!("failed to open tool metadata cache: {e}")))?;
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = desired_tools.len() as u64;

@@ -184,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_tool_fetch_routes_all_tools() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let (cache, _guard) =
+        let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache for network-backed tools to avoid real API calls.
@@ -239,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_tool_fetch_each_fetched_tool_has_three_os_entries() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let (cache, _guard) =
+        let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache to avoid real API calls.
@@ -283,7 +283,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_tool_fetch_with_metadata_cache_produces_concrete_urls() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let (cache, _guard) =
+        let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache with tag values for each tool.
@@ -336,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_latest_github_tag_round_trip() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let (cache, _guard) =
+        let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
         let owner = "testowner";
@@ -357,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_tool_fetch_exact_urls_after_resolution() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let (cache, _guard) =
+        let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache with known tags for all tools.
@@ -548,8 +548,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_canonical_version_is_deterministic() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let (cache, _guard) =
-            ToolDownloadCache::open(temp_dir.path(), "metadata.json", 3600).await.unwrap();
+        let cache = ToolDownloadCache::open(temp_dir.path(), "metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache with known tags.
         let seeds: &[(&str, &str)] = &[

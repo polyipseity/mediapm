@@ -23,10 +23,8 @@
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
 
-use crate::cache::{BackgroundMaintenanceGuard, Cache};
+use crate::cache::Cache;
 use crate::error::ConductorError;
 
 /// Returns the default user-scoped cache root for conductor standalone
@@ -46,7 +44,7 @@ pub fn default_mediapm_user_download_cache_root() -> Option<PathBuf> {
     dirs::cache_dir().map(|root| root.join("mediapm").join("cache"))
 }
 
-/// User-level download cache wrapping the generic Cache engine in an Arc.
+/// User-level download cache wrapping the generic Cache engine.
 ///
 /// All Cache methods are accessible via Deref.  Consumers open separate
 /// instances for different cache domains:
@@ -55,11 +53,8 @@ pub fn default_mediapm_user_download_cache_root() -> Option<PathBuf> {
 /// - `open_metadata_cache()` — metadata/version-check payloads (1 day TTL,
 ///   tool_metadata.json)
 /// - `open(root, name, ttl)` — fully custom
-///
-/// Each opener returns a [`BackgroundMaintenanceGuard`] that runs WAL
-/// consumer maintenance in a background task; drop the guard to cancel it.
 #[derive(Clone)]
-pub struct UserLevelCache(Arc<Cache>);
+pub struct UserLevelCache(Cache);
 
 impl Deref for UserLevelCache {
     type Target = Cache;
@@ -69,47 +64,38 @@ impl Deref for UserLevelCache {
 }
 
 impl UserLevelCache {
-    /// Opens at the default user-level root with tools.json index and 30 day
-    /// TTL, starting background maintenance with a 60-second interval.
+    /// Opens at the default user-level root with tools.json index and 30 day TTL.
     ///
     /// # Errors
     ///
     /// Returns [`ConductorError`] when filesystem preparation or CAS opening
     /// fails or the default cache root cannot be determined.
-    pub async fn open_tool_cache() -> Result<(Self, BackgroundMaintenanceGuard), ConductorError> {
+    pub async fn open_tool_cache() -> Result<Self, ConductorError> {
         let root = default_user_download_cache_root().ok_or_else(|| {
             ConductorError::Workflow("could not determine default tool cache root".to_string())
         })?;
-        let cache = Arc::new(
-            Cache::open_with_index_file_name_and_ttl(&root, "tools.json", 30 * 24 * 60 * 60)
-                .await?,
-        );
-        let guard = cache.start_background_maintenance(Duration::from_secs(60));
-        Ok((Self(cache), guard))
+        Cache::open_with_index_file_name_and_ttl(&root, "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .map(Self)
     }
 
     /// Opens at the default user-level root with tool_metadata.json index and
-    /// 1 day TTL, starting background maintenance with a 60-second interval.
+    /// 1 day TTL.
     ///
     /// # Errors
     ///
     /// Returns [`ConductorError`] when filesystem preparation or CAS opening
     /// fails or the default cache root cannot be determined.
-    pub async fn open_metadata_cache() -> Result<(Self, BackgroundMaintenanceGuard), ConductorError>
-    {
+    pub async fn open_metadata_cache() -> Result<Self, ConductorError> {
         let root = default_user_download_cache_root().ok_or_else(|| {
             ConductorError::Workflow("could not determine default metadata cache root".to_string())
         })?;
-        let cache = Arc::new(
-            Cache::open_with_index_file_name_and_ttl(&root, "tool_metadata.json", 24 * 60 * 60)
-                .await?,
-        );
-        let guard = cache.start_background_maintenance(Duration::from_secs(60));
-        Ok((Self(cache), guard))
+        Cache::open_with_index_file_name_and_ttl(&root, "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .map(Self)
     }
 
-    /// Opens at an explicit root with custom index file and TTL, starting
-    /// background maintenance with a 60-second interval.
+    /// Opens at an explicit root with custom index file and TTL.
     ///
     /// # Errors
     ///
@@ -119,19 +105,10 @@ impl UserLevelCache {
         root: &Path,
         index_file_name: &str,
         entry_ttl_seconds: u64,
-    ) -> Result<(Self, BackgroundMaintenanceGuard), ConductorError> {
-        let cache = Arc::new(
-            Cache::open_with_index_file_name_and_ttl(root, index_file_name, entry_ttl_seconds)
-                .await?,
-        );
-        let guard = cache.start_background_maintenance(Duration::from_secs(60));
-        Ok((Self(cache), guard))
-    }
-
-    /// Returns a reference to the inner [`Arc<Cache>`].
-    #[must_use]
-    pub fn inner(&self) -> &Arc<Cache> {
-        &self.0
+    ) -> Result<Self, ConductorError> {
+        Cache::open_with_index_file_name_and_ttl(root, index_file_name, entry_ttl_seconds)
+            .await
+            .map(Self)
     }
 }
 
@@ -180,7 +157,7 @@ mod tests {
     #[tokio::test]
     async fn cache_round_trips_bytes_by_logical_key() {
         let root = tempfile::tempdir().expect("tempdir");
-        let (cache, _guard) = UserLevelCache::open(root.path(), "tools.json", 30 * 24 * 60 * 60)
+        let cache = UserLevelCache::open(root.path(), "tools.json", 30 * 24 * 60 * 60)
             .await
             .expect("open cache");
         let payload = b"shared-download-cache".to_vec();
@@ -201,7 +178,7 @@ mod tests {
     async fn metadata_cache_ttl_is_creation_based() {
         let root = tempfile::tempdir().expect("tempdir");
         // Open with 1-day TTL.
-        let (cache, _guard) = UserLevelCache::open(root.path(), "tool_metadata.json", 24 * 60 * 60)
+        let cache = UserLevelCache::open(root.path(), "tool_metadata.json", 24 * 60 * 60)
             .await
             .expect("open metadata cache");
         let key = "yt-dlp:latest-tag";
@@ -213,7 +190,7 @@ mod tests {
 
         // Re-open with TTL=0 — entries expire immediately.
         drop(cache);
-        let (cache, _guard) = UserLevelCache::open(root.path(), "tool_metadata.json", 0)
+        let cache = UserLevelCache::open(root.path(), "tool_metadata.json", 0)
             .await
             .expect("open metadata cache");
 
@@ -229,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn metadata_cache_lookup_does_not_bump_last_access() {
         let root = tempfile::tempdir().expect("tempdir");
-        let (cache, _guard) = UserLevelCache::open(root.path(), "tool_metadata.json", 24 * 60 * 60)
+        let cache = UserLevelCache::open(root.path(), "tool_metadata.json", 24 * 60 * 60)
             .await
             .expect("open metadata cache");
 

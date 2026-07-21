@@ -11,7 +11,7 @@ fn main() {
                 None
             }
         })
-        .unwrap_or_else(|| String::new());
+        .unwrap_or_default();
     println!("cargo:rustc-env=MEDIAPM_GIT_HASH={git_hash}");
     // Rebuild when HEAD changes.
     println!("cargo:rerun-if-changed=.git/HEAD");

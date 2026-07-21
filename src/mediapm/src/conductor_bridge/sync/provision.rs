@@ -233,14 +233,12 @@ mod tests {
     -> (impl CasApi, ToolDownloadCache, ToolDownloadCache, RecordingProgressTracker, TempDir) {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let (cache, _cache_guard) =
-            UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-                .await
-                .expect("cache open");
-        let (metadata_cache, _meta_guard) =
-            UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
         let tracker = RecordingProgressTracker::new();
         (cas, cache, metadata_cache, tracker, tmp)
     }

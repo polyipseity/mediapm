@@ -28,10 +28,9 @@ async fn download_cache_and_provision_cache_use_different_roots() {
     let tools_dir = tempfile::tempdir().expect("tempdir for tools");
 
     // Store a payload in the download cache.
-    let (download, _guard) =
-        UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("open download cache");
+    let download = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+        .await
+        .expect("open download cache");
     download.store_bytes("my-key", b"shared-payload").await;
 
     // Compute the hash directly from the known payload.
@@ -61,7 +60,7 @@ async fn provision_cache_prune_does_not_affect_download_cache() {
     let root = tempfile::tempdir().expect("tempdir");
 
     // Open download cache — creates <root>/store/ for CAS.
-    let (download, _guard) = UserLevelCache::open(root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let download = UserLevelCache::open(root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open download cache");
     download.store_bytes("survivor", b"keep-me").await;
