@@ -47,6 +47,51 @@ impl std::ops::Deref for FileSystemCas {
 
 impl FileSystemCas {
     /// Open or create a file-system CAS store at `dir` with the given
+    /// verify strategies, spawning a background WAL consumer with the
+    /// given interval between cycles.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to WAL creation, blob store creation, and metadata rebuild.
+    pub async fn open_with_strategies_and_interval(
+        dir: &Path,
+        verify_strategies: Vec<VerifyTriggerStrategy>,
+        bg_interval: Duration,
+    ) -> Result<Self, CasError> {
+        let wal = FileWal::create(dir.to_path_buf()).await?;
+        let start_pos = wal.consumed_position().await;
+        let blob = FileSystemBlobStore::create(dir.join("blobs"), verify_strategies).await?;
+        let metadata = FileSystemMetadataStore::new(blob.clone());
+        metadata.rebuild_from_wal(&wal).await?;
+        let store = Arc::new(CasStore::new(wal, metadata, blob, start_pos, defaults::CACHE_TTL));
+
+        // Spawn background WAL consumer with the given interval.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+        let store_clone = store.clone();
+        let handle = tokio::spawn(async move {
+            // Small initial delay so fast tests can set up before
+            // the first maintenance cycle races against them. The
+            // run→sleep lifecycle ensures first real maintenance runs
+            // promptly after this window.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            loop {
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = store_clone.bg_engine().run_wal_consumer().await;
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(bg_interval).await;
+            }
+        });
+        let guard = BackgroundMaintenanceGuard { cancelled, handle: Some(handle) };
+
+        Ok(Self { store, _bg_guard: Arc::new(guard) })
+    }
+
+    /// Open or create a file-system CAS store at `dir` with the given
     /// verify strategies, spawning a background WAL consumer.
     ///
     /// # Errors
@@ -56,29 +101,8 @@ impl FileSystemCas {
         dir: &Path,
         verify_strategies: Vec<VerifyTriggerStrategy>,
     ) -> Result<Self, CasError> {
-        let wal = FileWal::create(dir.to_path_buf()).await?;
-        let start_pos = wal.consumed_position().await;
-        let blob = FileSystemBlobStore::create(dir.join("blobs"), verify_strategies).await?;
-        let metadata = FileSystemMetadataStore::new(blob.clone());
-        metadata.rebuild_from_wal(&wal).await?;
-        let store = Arc::new(CasStore::new(wal, metadata, blob, start_pos, defaults::CACHE_TTL));
-
-        // Spawn background WAL consumer with 60s interval.
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancelled_clone = cancelled.clone();
-        let store_clone = store.clone();
-        let handle = tokio::spawn(async move {
-            while !cancelled_clone.load(Ordering::Relaxed) {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                if cancelled_clone.load(Ordering::Relaxed) {
-                    break;
-                }
-                let _ = store_clone.bg_engine().run_wal_consumer().await;
-            }
-        });
-        let guard = BackgroundMaintenanceGuard { cancelled, handle: Some(handle) };
-
-        Ok(Self { store, _bg_guard: Arc::new(guard) })
+        Self::open_with_strategies_and_interval(dir, verify_strategies, Duration::from_secs(300))
+            .await
     }
 
     /// Open or create a file-system CAS store at `dir` with no

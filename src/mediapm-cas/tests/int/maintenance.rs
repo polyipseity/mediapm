@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use bytes::Bytes;
 use tempfile::tempdir;
@@ -555,4 +556,66 @@ async fn file_system_cas_wal_consumer_multiple_cycles() {
     // Second consume — no new entries, should return 0.
     let consumed2 = cas.bg_engine().run_wal_consumer().await.expect("second wal consumer");
     assert_eq!(consumed2, 0, "second consume must return 0 (no new entries)");
+}
+
+// ---------------------------------------------------------------------------
+// Background WAL consumer tests
+// ---------------------------------------------------------------------------
+
+/// Verifies that the background WAL consumer materializes blobs without
+/// an explicit `run_wal_consumer()` call.
+#[tokio::test]
+async fn file_system_cas_background_task_materializes_blob() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
+        dir.path(),
+        vec![],
+        Duration::from_millis(100),
+    )
+    .await
+    .expect("open CAS with background");
+
+    let payload = Bytes::from_static(b"background-test-data");
+    let hash = cas.put(payload.clone()).await.expect("put data");
+    // Wait for background consumer to materialize the blob.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let retrieved = cas.get(hash).await.expect("get data");
+    assert_eq!(retrieved.to_vec(), payload.to_vec(), "background must materialize blob");
+
+    drop(cas);
+    // After drop, the background guard's cancelled flag should be true.
+    // Note: we can't directly access _bg_guard after drop, but
+    // dropping without panics confirms RAII cleanup works.
+}
+
+/// Verifies that the background task survives a re-open cycle (WAL
+/// entries from a previous session are consumed on re-open).
+#[tokio::test]
+async fn file_system_cas_background_task_survives_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // First session: put data and let background materialize it.
+    let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
+        dir.path(),
+        vec![],
+        Duration::from_millis(100),
+    )
+    .await
+    .expect("open CAS first session");
+    let payload = Bytes::from_static(b"reopen-test-data");
+    let hash = cas.put(payload.clone()).await.expect("put data");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    drop(cas);
+
+    // Second session: reopen and verify blob retrievable.
+    let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
+        dir.path(),
+        vec![],
+        Duration::from_millis(100),
+    )
+    .await
+    .expect("open CAS second session");
+    let retrieved = cas.get(hash).await.expect("get data after reopen");
+    assert_eq!(retrieved.to_vec(), payload.to_vec(), "blob must survive reopen");
 }

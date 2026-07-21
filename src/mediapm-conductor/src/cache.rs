@@ -18,9 +18,11 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, FileSystemCas, Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
@@ -29,6 +31,9 @@ use crate::error::ConductorError;
 const INDEX_VERSION: u32 = 1;
 /// Default metadata index file name.
 const DEFAULT_INDEX_FILE_NAME: &str = "tools.json";
+
+/// Fixed interval between cache prune cycles (24 hours).
+const CACHE_PRUNE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 
 /// Fixed entry TTL for automatic cache eviction (30 days).
 pub const ENTRY_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
@@ -61,20 +66,18 @@ pub struct Cache {
     index: Arc<Mutex<CacheIndex>>,
     /// Entry TTL in seconds for automatic cache eviction.
     entry_ttl_seconds: u64,
+    /// Background maintenance guard for periodic prune, if started.
+    bg_guard: Option<Arc<BackgroundMaintenanceGuard>>,
 }
 
 impl Cache {
-    /// Opens one cache root and binds this handle to a specific index file
-    /// with a custom TTL.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open_with_index_file_name_and_ttl(
+    /// Opens one cache root with a custom TTL and configurable background
+    /// maintenance interval.
+    async fn open_internal(
         root: &Path,
         index_file_name: &str,
         entry_ttl_seconds: u64,
+        maintenance_interval_seconds: u64,
     ) -> Result<Self, ConductorError> {
         fs::create_dir_all(root).map_err(|source| ConductorError::Io {
             operation: "creating cache root".to_string(),
@@ -99,12 +102,48 @@ impl Cache {
         if !index_path.exists() {
             let _ = write_index_file(&index_path, &index);
         }
-        Ok(Self {
+        let mut cache = Self {
             cas: Arc::new(cas),
             index_path,
             index: Arc::new(Mutex::new(index)),
             entry_ttl_seconds,
-        })
+            bg_guard: None,
+        };
+        // Start background prune loop.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+        let cache_clone = cache.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = cache_clone.prune_expired_inner(now_unix_seconds()).await;
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(maintenance_interval_seconds)).await;
+            }
+        });
+        cache.bg_guard =
+            Some(Arc::new(BackgroundMaintenanceGuard { cancelled, handle: Some(handle) }));
+        Ok(cache)
+    }
+
+    /// Opens one cache root and binds this handle to a specific index file
+    /// with a custom TTL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
+    /// fails.
+    pub async fn open_with_index_file_name_and_ttl(
+        root: &Path,
+        index_file_name: &str,
+        entry_ttl_seconds: u64,
+    ) -> Result<Self, ConductorError> {
+        Self::open_internal(root, index_file_name, entry_ttl_seconds, CACHE_PRUNE_INTERVAL_SECONDS)
+            .await
     }
 
     /// Looks up cached payload bytes for one logical key.
@@ -160,22 +199,45 @@ impl Cache {
 
     /// Removes expired index rows and their unreferenced CAS payloads.
     ///
+    /// This method enforces [`PRUNE_INTERVAL_SECONDS`] cooldown between
+    /// successive calls.  Use [`prune_expired_inner`] to bypass the cooldown.
+    ///
     /// # Errors
     ///
     /// Returns [`ConductorError`] when index locking or persistence fails.
     pub async fn prune_expired_entries(&self) -> Result<CachePruneReport, ConductorError> {
         let now = now_unix_seconds();
+        let last_prune = {
+            let index = self.index.lock().map_err(|_| {
+                ConductorError::Internal("locking cache index mutex failed".to_string())
+            })?;
+            index.last_prune_unix_seconds
+        };
+        if now.saturating_sub(last_prune) < PRUNE_INTERVAL_SECONDS {
+            return Ok(CachePruneReport::default());
+        }
+        // Advance last_prune before proceeding so manual prune has its own
+        // cooldown independent of background loop prunes.
+        {
+            let mut index = self.index.lock().map_err(|_| {
+                ConductorError::Internal("locking cache index mutex failed".to_string())
+            })?;
+            index.last_prune_unix_seconds = now;
+        }
+        self.prune_expired_inner(now).await
+    }
+
+    /// Core prune logic without cooldown check.
+    ///
+    /// Used by the background maintenance loop so background prunes do not
+    /// interfere with [`prune_expired_entries`] cooldown tracking.
+    async fn prune_expired_inner(&self, now: u64) -> Result<CachePruneReport, ConductorError> {
         let cutoff = now.saturating_sub(self.entry_ttl_seconds);
 
         let (expired_keys, expired_hashes) = {
             let mut index = self.index.lock().map_err(|_| {
                 ConductorError::Internal("locking cache index mutex failed".to_string())
             })?;
-            if now.saturating_sub(index.last_prune_unix_seconds) < PRUNE_INTERVAL_SECONDS {
-                return Ok(CachePruneReport::default());
-            }
-            index.last_prune_unix_seconds = now;
-
             let mut expired_keys = Vec::new();
             let mut expired_hashes = Vec::new();
             for (key, entry) in &index.entries {
@@ -401,6 +463,24 @@ impl Cache {
     pub(crate) fn get_entry_hash(&self, key: &str) -> Option<String> {
         self.index.lock().ok()?.entries.get(key).map(|e| e.hash.clone())
     }
+
+    /// Test-only: returns a clone of the background guard Arc.
+    #[must_use]
+    pub(crate) fn get_bg_guard(&self) -> Option<Arc<BackgroundMaintenanceGuard>> {
+        self.bg_guard.clone()
+    }
+
+    /// Test-only: opens cache with a configurable background maintenance
+    /// interval.
+    pub(crate) async fn open_with_ttl_and_maintenance_interval(
+        root: &Path,
+        index_file_name: &str,
+        entry_ttl_seconds: u64,
+        maintenance_interval_seconds: u64,
+    ) -> Result<Self, ConductorError> {
+        Self::open_internal(root, index_file_name, entry_ttl_seconds, maintenance_interval_seconds)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -408,6 +488,7 @@ mod tests {
     use super::{Cache, ENTRY_TTL_SECONDS, PRUNE_INTERVAL_SECONDS, TOUCH_PERSIST_INTERVAL_SECONDS};
     use mediapm_cas::{CasApi, FileSystemCas, Hash};
     use std::str::FromStr;
+    use std::sync::atomic::Ordering;
 
     // Compile-time assertions: TTL constants must be at least one day/hour/minute.
     const _: () = assert!(ENTRY_TTL_SECONDS >= 24 * 60 * 60);
@@ -739,6 +820,71 @@ mod tests {
         assert!(
             fresh_cas.get(hash).await.is_err(),
             "blob must be deleted when all references expire"
+        );
+    }
+
+    /// Verifies that the background prune loop removes expired entries.
+    #[tokio::test]
+    async fn background_prune_removes_expired_entries() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Cache::open_with_ttl_and_maintenance_interval(
+            root.path(),
+            "tools.json",
+            0, // TTL = 0: entries expire immediately
+            1, // maintenance interval = 1s
+        )
+        .await
+        .expect("open cache");
+        cache.store_bytes("expiring-key", b"ephemeral").await;
+        // Wait for background prune to run (interval is 1s).
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert!(
+            cache.lookup_bytes("expiring-key").await.is_none(),
+            "expired entry must be pruned by background task"
+        );
+    }
+
+    /// Verifies that the background prune loop preserves fresh entries.
+    #[tokio::test]
+    async fn background_prune_preserves_fresh_entries() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Cache::open_with_ttl_and_maintenance_interval(
+            root.path(),
+            "tools.json",
+            86400, // normal TTL
+            1,     // maintenance interval = 1s
+        )
+        .await
+        .expect("open cache");
+        cache.store_bytes("fresh-key", b"fresh").await;
+        // Wait for background prune to run (interval is 1s).
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert!(
+            cache.lookup_bytes("fresh-key").await.is_some(),
+            "fresh entry must survive background prune"
+        );
+    }
+
+    /// Verifies that dropping the cache cancels the background prune task.
+    #[tokio::test]
+    async fn background_prune_guard_drop_stops_task() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Cache::open_with_ttl_and_maintenance_interval(
+            root.path(),
+            "tools.json",
+            86400,
+            1, // maintenance interval = 1s
+        )
+        .await
+        .expect("open cache");
+        let cancelled_flag = {
+            let g = cache.get_bg_guard().expect("bg_guard must exist");
+            g.cancelled.clone()
+        };
+        drop(cache);
+        assert!(
+            cancelled_flag.load(Ordering::SeqCst),
+            "bg_guard must be cancelled after cache drop"
         );
     }
 }

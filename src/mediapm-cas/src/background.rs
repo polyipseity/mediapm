@@ -12,8 +12,8 @@ use tokio::task::JoinHandle;
 /// When the last clone of this guard is dropped, the background task is
 /// cancelled (via `Arc<AtomicBool>` flag) and the tokio handle is aborted.
 pub struct BackgroundMaintenanceGuard {
-    pub(crate) cancelled: Arc<AtomicBool>,
-    pub(crate) handle: Option<JoinHandle<()>>,
+    pub cancelled: Arc<AtomicBool>,
+    pub handle: Option<JoinHandle<()>>,
 }
 
 impl BackgroundMaintenanceGuard {
