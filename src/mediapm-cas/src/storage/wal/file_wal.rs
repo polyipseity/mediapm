@@ -319,6 +319,36 @@ impl FileWal {
         // Sort sealed segments by first_pos.
         sealed.sort_by_key(|s| s.first_pos);
 
+        // Dedup overlapping sealed segments — keep the one with the largest last_pos.
+        // Overlapping segments can occur from crash-during-seal leaving both the
+        // old active segment and the partially-sealed replacement.
+        let mut write_idx = 0;
+        while write_idx < sealed.len() {
+            let mut best = write_idx;
+            let mut next = write_idx + 1;
+            while next < sealed.len() && sealed[next].first_pos <= sealed[best].last_pos {
+                if sealed[next].last_pos > sealed[best].last_pos {
+                    best = next;
+                }
+                next += 1;
+            }
+            // Delete all in [write_idx, next) except best.
+            for k in write_idx..next {
+                if k != best {
+                    let _ = std::fs::remove_file(&sealed[k].path);
+                }
+            }
+            // Shift best to write_idx position.
+            if best != write_idx {
+                sealed[write_idx] = sealed[best].clone();
+            }
+            write_idx += 1;
+            // Drain the now-stale entries after current write_idx.
+            if next > write_idx {
+                sealed.drain(write_idx..next);
+            }
+        }
+
         // Determine next position.
         let next_pos = max_position + 1;
 
@@ -329,31 +359,44 @@ impl FileWal {
             ActiveSegment::create(&ActiveSegment::path(&journal_dir)).await?
         };
 
-        // Build pending state from checkpoint forward.
+        // Build pending state from checkpoint forward (streaming, one segment at a time).
         let mut pending = HashMap::new();
         let mut pending_constraints = HashMap::new();
-        let all_entries =
-            Self::collect_entries_from_checkpoint(&sealed, &active_entries, &[], checkpoint_pos)?;
-        for (pos, entry) in &all_entries {
-            match entry {
-                WalEntry::Put { hash, data } => {
-                    pending.insert(*hash, (*pos, PendingState::Present(data.clone())));
-                    pending_constraints.remove(hash);
-                }
-                WalEntry::PutLarge { hash, content_len } => {
-                    pending.insert(
-                        *hash,
-                        (*pos, PendingState::PresentExternal { content_len: *content_len }),
+        for seg in &sealed {
+            if seg.last_pos < checkpoint_pos {
+                continue;
+            }
+            let buf = std::fs::read(&seg.path).map_err(CasError::Io)?;
+            if buf.len() < format::HEADER_LEN {
+                return Err(CasError::corrupt_object(format!(
+                    "segment file too short: {}",
+                    seg.path.display()
+                )));
+            }
+            let mut header = [0u8; format::HEADER_LEN];
+            header.copy_from_slice(&buf[..format::HEADER_LEN]);
+            format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)?;
+            for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+                let (pos, entry) = result?;
+                if pos > checkpoint_pos {
+                    Self::apply_entry_to_pending(
+                        &mut pending,
+                        &mut pending_constraints,
+                        pos,
+                        entry,
                     );
-                    pending_constraints.remove(hash);
                 }
-                WalEntry::Delete { hash } => {
-                    pending.insert(*hash, (*pos, PendingState::Tombstone));
-                    pending_constraints.remove(hash);
-                }
-                WalEntry::Constraint { target, bases } => {
-                    pending_constraints.insert(*target, (*pos, bases.clone()));
-                }
+            }
+            // buf dropped — segment memory freed
+        }
+        for (pos, entry) in &active_entries {
+            if *pos > checkpoint_pos {
+                Self::apply_entry_to_pending(
+                    &mut pending,
+                    &mut pending_constraints,
+                    *pos,
+                    entry.clone(),
+                );
             }
         }
 
@@ -394,38 +437,30 @@ impl FileWal {
         Ok((entries, range))
     }
 
-    /// Collect all entries from checkpoint position forward, reading
-    /// from sealed segments, active entries list, and new entries.
-    fn collect_entries_from_checkpoint(
-        sealed: &[SealedSegment],
-        active_entries: &[(WalPosition, WalEntry)],
-        pre_pended: &[(WalPosition, WalEntry)],
-        checkpoint_pos: WalPosition,
-    ) -> Result<Vec<(WalPosition, WalEntry)>, CasError> {
-        let mut all = Vec::new();
-
-        // Collect from sealed segments whose range overlaps checkpoint_pos.
-        for seg in sealed {
-            if seg.last_pos < checkpoint_pos {
-                continue; // Fully consumed, skip.
+    /// Apply one entry to the pending state maps.
+    fn apply_entry_to_pending(
+        pending: &mut HashMap<Hash, (WalPosition, PendingState)>,
+        pending_constraints: &mut HashMap<Hash, (WalPosition, BTreeSet<Hash>)>,
+        pos: WalPosition,
+        entry: WalEntry,
+    ) {
+        match entry {
+            WalEntry::Put { hash, data } => {
+                pending.insert(hash, (pos, PendingState::Present(data)));
+                pending_constraints.remove(&hash);
             }
-            let buf = std::fs::read(&seg.path).map_err(CasError::Io)?;
-            let entries = format::decode_entries(&buf[format::HEADER_LEN..])?;
-            all.extend(entries.into_iter().filter(|(pos, _)| *pos > checkpoint_pos));
+            WalEntry::PutLarge { hash, content_len } => {
+                pending.insert(hash, (pos, PendingState::PresentExternal { content_len }));
+                pending_constraints.remove(&hash);
+            }
+            WalEntry::Delete { hash } => {
+                pending.insert(hash, (pos, PendingState::Tombstone));
+                pending_constraints.remove(&hash);
+            }
+            WalEntry::Constraint { target, bases } => {
+                pending_constraints.insert(target, (pos, bases));
+            }
         }
-
-        // Collect from active entries.
-        all.extend(active_entries.iter().filter(|(pos, _)| *pos > checkpoint_pos).cloned());
-
-        // Collect from pre-pended entries (for use after sealing).
-        all.extend(pre_pended.iter().filter(|(pos, _)| *pos > checkpoint_pos).cloned());
-
-        // Sort by position (entries from different segments may interleave
-        // in theory, but in practice positions are monotonic across segments).
-        all.sort_by_key(|(pos, _)| *pos);
-        all.dedup_by_key(|(pos, _)| *pos);
-
-        Ok(all)
     }
 
     /// Ensure the active segment is ready to accept writes.
@@ -569,7 +604,7 @@ impl Wal for FileWal {
 
         let mut all = Vec::new();
 
-        // Collect from sealed segments.
+        // Collect from sealed segments (streaming, one segment at a time).
         for seg in sealed.iter() {
             if seg.last_pos < pos {
                 continue;
@@ -580,24 +615,43 @@ impl Wal for FileWal {
             if buf.len() < format::HEADER_LEN {
                 continue;
             }
-            if let Ok(entries) = format::decode_entries(&buf[format::HEADER_LEN..]) {
-                for (epos, entry) in entries {
-                    if epos >= pos {
-                        all.push((epos, entry));
-                    }
+            let mut header = [0u8; format::HEADER_LEN];
+            header.copy_from_slice(&buf[..format::HEADER_LEN]);
+            if format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
+                .is_err()
+            {
+                continue;
+            }
+            for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+                let Ok((epos, entry)) = result else {
+                    continue;
+                };
+                if epos >= pos {
+                    all.push((epos, entry));
                 }
             }
+            // buf dropped — segment memory freed
         }
 
-        // Collect from active segment.
+        // Collect from active segment (streaming).
         let active_path = ActiveSegment::path(&inner.journal_dir);
         if let Ok(buf) = std::fs::read(&active_path)
             && buf.len() >= format::HEADER_LEN
-            && let Ok(entries) = format::decode_entries(&buf[format::HEADER_LEN..])
         {
-            for (epos, entry) in entries {
-                if epos >= pos {
-                    all.push((epos, entry));
+            let mut header = [0u8; format::HEADER_LEN];
+            header.copy_from_slice(&buf[..format::HEADER_LEN]);
+            if format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
+                .is_err()
+            {
+                // Skip active segment if header is corrupt.
+            } else {
+                for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+                    let Ok((epos, entry)) = result else {
+                        break;
+                    };
+                    if epos >= pos {
+                        all.push((epos, entry));
+                    }
                 }
             }
         }
@@ -658,6 +712,7 @@ impl Clone for FileWal {
 mod tests {
     use super::*;
     use crate::hash::Hash;
+    use crate::storage::wal::versions as wal_format;
     use bytes::Bytes;
     use tempfile::TempDir;
 
@@ -838,5 +893,103 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(journal.committed_position().await, pos);
+    }
+
+    // -----------------------------------------------------------------------
+    // Segment dedup tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: create a valid sealed segment file with one entry at `first`.
+    async fn create_dedup_segment(jd: &std::path::Path, first: u64, last: u64) -> PathBuf {
+        let mut bytes =
+            wal_format::encode_header(wal_format::JOURNAL_MAGIC, wal_format::JOURNAL_VERSION)
+                .to_vec();
+        let entry =
+            WalEntry::Put { hash: Hash::from_content(b"x"), data: Bytes::from_static(b"x") };
+        bytes.extend_from_slice(&wal_format::encode_entry(&entry, WalPosition::from_u64(first)));
+        let filename = format!("{:020x}-{:020x}.seg", first, last);
+        let path = jd.join(filename);
+        tokio::fs::write(&path, &bytes).await.unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn dedup_removes_overlapping_segment() {
+        let tmp = TempDir::new().unwrap();
+        let cas_dir = tmp.path().to_path_buf();
+        let journal_dir = cas_dir.join("journal");
+        tokio::fs::create_dir_all(&journal_dir).await.unwrap();
+
+        // Segment A: first=1, last=10
+        let seg_a = create_dedup_segment(&journal_dir, 1, 10).await;
+        // Segment B: first=5, last=20 (overlaps A, larger last_pos)
+        let seg_b = create_dedup_segment(&journal_dir, 5, 20).await;
+
+        // Create FileWal — dedup should keep B (larger) and remove A.
+        let _journal = FileWal::create_with_max_size(cas_dir, 1024 * 1024).await.unwrap();
+
+        assert!(!seg_a.exists(), "shorter overlapping segment should be removed");
+        assert!(seg_b.exists(), "longer segment should survive");
+    }
+
+    #[tokio::test]
+    async fn dedup_non_overlapping_segments_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let cas_dir = tmp.path().to_path_buf();
+        let journal_dir = cas_dir.join("journal");
+        tokio::fs::create_dir_all(&journal_dir).await.unwrap();
+
+        // Three non-overlapping segments.
+        let seg_a = create_dedup_segment(&journal_dir, 1, 10).await;
+        let seg_b = create_dedup_segment(&journal_dir, 11, 20).await;
+        let seg_c = create_dedup_segment(&journal_dir, 21, 30).await;
+
+        let _journal = FileWal::create_with_max_size(cas_dir, 1024 * 1024).await.unwrap();
+
+        assert!(seg_a.exists(), "seg_a should still exist");
+        assert!(seg_b.exists(), "seg_b should still exist");
+        assert!(seg_c.exists(), "seg_c should still exist");
+    }
+
+    /// Regression test for streaming replay in `create_with_max_size`.
+    ///
+    /// Creates entries across multiple sealed segments, then opens a new
+    /// `FileWal` on the same directory. Verifies that the streaming decoder
+    /// produces the same pending state as the original append sequence.
+    #[tokio::test]
+    async fn create_replays_streaming_matches_append_sequence() {
+        let tmp = TempDir::new().unwrap();
+        let cas_dir = tmp.path().to_path_buf();
+
+        // Tiny max segment size forces sealing after a few entries.
+        let entries_per_segment = 3usize;
+        let segment_count = 3usize;
+        let total_entries = entries_per_segment * segment_count;
+
+        let mut hashes = Vec::new();
+        {
+            let journal = FileWal::create_with_max_size(cas_dir.clone(), 64).await.unwrap();
+            for i in 0..total_entries {
+                let data = vec![i as u8; 16];
+                let hash = Hash::from_content(&data);
+                journal.append(WalEntry::Put { hash, data: Bytes::from(data) }).await.unwrap();
+                hashes.push(hash);
+            }
+        }
+
+        // Reopen — streaming decoder must produce identical pending state.
+        let journal = FileWal::create(cas_dir.clone()).await.unwrap();
+        for (i, hash) in hashes.iter().enumerate() {
+            match journal.check_pending(hash).await {
+                PendingState::Present(data) => {
+                    assert_eq!(data.len(), 16, "entry {i}: unexpected data length");
+                    assert_eq!(data[0], i as u8, "entry {i}: unexpected first byte");
+                }
+                other => {
+                    panic!("entry {i}: expected Present, got {other:?}");
+                }
+            }
+        }
+        assert_eq!(journal.pending_count().await, total_entries as u64);
     }
 }

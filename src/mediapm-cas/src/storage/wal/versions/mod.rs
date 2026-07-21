@@ -25,6 +25,8 @@ use crate::error::CasError;
 
 use super::{WalEntry, WalPosition};
 
+use std::iter;
+
 // ---------------------------------------------------------------------------
 // Re-exported constants
 // ---------------------------------------------------------------------------
@@ -74,6 +76,33 @@ pub(crate) fn decode_entries(buf: &[u8]) -> Result<Vec<(WalPosition, WalEntry)>,
         offset += consumed;
     }
     Ok(entries)
+}
+
+/// Iterate over journal entries in a buffer without allocating a Vec.
+///
+/// Yields `(position, entry)` tuples from the wire format. Returns
+/// `CasError::CorruptObject` on malformed data. After yielding an error,
+/// the iterator terminates (does not try to resync).
+#[allow(dead_code)]
+pub(crate) fn decode_entries_streaming(
+    buf: &[u8],
+) -> impl Iterator<Item = Result<(WalPosition, WalEntry), CasError>> + '_ {
+    let mut offset = 0;
+    iter::from_fn(move || {
+        if offset >= buf.len() {
+            return None;
+        }
+        match decode_entry(&buf[offset..]) {
+            Ok((entry, pos, consumed)) => {
+                offset += consumed;
+                Some(Ok((pos, entry)))
+            }
+            Err(e) => {
+                offset = buf.len(); // prevent infinite loop
+                Some(Err(e))
+            }
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -245,5 +274,93 @@ mod tests {
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[0].0, WalPosition::from_u64(1));
         assert_eq!(decoded[1].0, WalPosition::from_u64(2));
+    }
+
+    #[test]
+    fn streaming_decoder_matches_batch_decoder() {
+        let h1 = Hash::from_content(b"data1");
+        let h2 = Hash::from_content(b"data2");
+        let target = Hash::from_content(b"constraint-target");
+        let entries = vec![
+            (
+                WalPosition::from_u64(10),
+                WalEntry::Put { hash: h1, data: Bytes::from_static(b"data1") },
+            ),
+            (WalPosition::from_u64(20), WalEntry::Delete { hash: h2 }),
+            (
+                WalPosition::from_u64(30),
+                WalEntry::Constraint {
+                    target,
+                    bases: std::iter::once(Hash::from_content(b"base")).collect(),
+                },
+            ),
+        ];
+
+        let mut encoded = Vec::new();
+        for (pos, entry) in &entries {
+            encoded.extend_from_slice(&encode_entry(entry, *pos));
+        }
+
+        let batch: Vec<(WalPosition, WalEntry)> = decode_entries(&encoded).unwrap();
+        let streaming: Vec<Result<(WalPosition, WalEntry), CasError>> =
+            decode_entries_streaming(&encoded).collect();
+
+        assert_eq!(streaming.len(), batch.len());
+        for (s, b) in streaming.iter().zip(batch.iter()) {
+            let s = s.as_ref().unwrap();
+            assert_eq!(s.0, b.0, "position mismatch");
+            // Compare entries via re-encoding (WalEntry does not implement PartialEq)
+            let s_encoded = encode_entry(&s.1, s.0);
+            let b_encoded = encode_entry(&b.1, b.0);
+            assert_eq!(s_encoded, b_encoded, "entry mismatch at position {:?}", s.0);
+        }
+    }
+
+    #[test]
+    fn streaming_decoder_rejects_corrupt_data() {
+        let hash = Hash::from_content(b"good");
+        let good = encode_entry(
+            &WalEntry::Put { hash, data: Bytes::from_static(b"good") },
+            WalPosition::from_u64(1),
+        );
+        // truncated entry (incomplete header)
+        let corrupt = good[..good.len() - 3].to_vec();
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&good);
+        buf.extend_from_slice(&corrupt);
+
+        let mut iter = decode_entries_streaming(&buf);
+        assert!(iter.next().unwrap().is_ok());
+        assert!(iter.next().unwrap().is_err());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn streaming_decoder_empty_buffer() {
+        let results: Vec<Result<(WalPosition, WalEntry), CasError>> =
+            decode_entries_streaming(b"").collect();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn streaming_decoder_single_entry() {
+        let hash = Hash::from_content(b"single");
+        let entry = WalEntry::Put { hash, data: Bytes::from_static(b"single") };
+        let encoded = encode_entry(&entry, WalPosition::from_u64(1));
+
+        let mut iter = decode_entries_streaming(&encoded);
+        let result = iter.next().unwrap();
+        assert!(result.is_ok());
+        let (pos, decoded) = result.unwrap();
+        assert_eq!(pos, WalPosition::from_u64(1));
+        match decoded {
+            WalEntry::Put { hash, data } => {
+                assert_eq!(hash, Hash::from_content(b"single"));
+                assert_eq!(data, Bytes::from_static(b"single"));
+            }
+            _ => panic!("expected a Put entry"),
+        }
+        assert!(iter.next().is_none());
     }
 }
