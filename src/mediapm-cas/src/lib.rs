@@ -33,6 +33,7 @@
 //! ```
 
 pub mod api;
+pub mod background;
 pub mod config;
 pub mod defaults;
 pub(crate) mod delta;
@@ -49,6 +50,7 @@ pub use api::{
     CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding, ObjectMeta,
     OptimizeReport, PruneReport, VerifyTriggerStrategy,
 };
+pub use background::BackgroundMaintenanceGuard;
 pub use config::{
     CasConfig, CasIntegrityConfig, CasLocatorParseOptions, CasStorageLocator, ConfiguredCas,
 };

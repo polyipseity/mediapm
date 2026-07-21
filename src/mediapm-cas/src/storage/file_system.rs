@@ -2,6 +2,9 @@
 //! store, and file-system-backed index.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use super::blob_store::{BlobStore, FileSystemBlobStore};
 use super::metadata_store::{FileSystemMetadataStore, MetadataStore};
@@ -9,6 +12,7 @@ use super::store::CasStore;
 use super::wal::FileWal;
 use super::wal::Wal;
 use crate::api::{CasApi, ObjectEncoding, VerifyTriggerStrategy};
+use crate::background::BackgroundMaintenanceGuard;
 use crate::defaults;
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -20,21 +24,30 @@ use crate::storage::metadata_store::MetadataEntry;
 /// [`FileSystemBlobStore`] for payload persistence, and a
 /// [`FileSystemMetadataStore`] for metadata + constraint lookup with per-
 /// directory persistent snapshots alongside blob files.
-#[derive(Clone)]
-pub struct FileSystemCas(
-    pub(crate) CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>,
-);
+///
+/// Spawns a background WAL consumer on open to periodically materialize
+/// WAL entries into blob + metadata.
+pub struct FileSystemCas {
+    store: Arc<CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>>,
+    _bg_guard: Arc<BackgroundMaintenanceGuard>,
+}
+
+impl Clone for FileSystemCas {
+    fn clone(&self) -> Self {
+        Self { store: self.store.clone(), _bg_guard: self._bg_guard.clone() }
+    }
+}
 
 impl std::ops::Deref for FileSystemCas {
     type Target = CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.store
     }
 }
 
 impl FileSystemCas {
     /// Open or create a file-system CAS store at `dir` with the given
-    /// verify strategies.
+    /// verify strategies, spawning a background WAL consumer.
     ///
     /// # Errors
     ///
@@ -48,8 +61,24 @@ impl FileSystemCas {
         let blob = FileSystemBlobStore::create(dir.join("blobs"), verify_strategies).await?;
         let metadata = FileSystemMetadataStore::new(blob.clone());
         metadata.rebuild_from_wal(&wal).await?;
-        let store = CasStore::new(wal, metadata, blob, start_pos, defaults::CACHE_TTL);
-        Ok(Self(store))
+        let store = Arc::new(CasStore::new(wal, metadata, blob, start_pos, defaults::CACHE_TTL));
+
+        // Spawn background WAL consumer with 60s interval.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+        let store_clone = store.clone();
+        let handle = tokio::spawn(async move {
+            while !cancelled_clone.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = store_clone.bg_engine().run_wal_consumer().await;
+            }
+        });
+        let guard = BackgroundMaintenanceGuard { cancelled, handle: Some(handle) };
+
+        Ok(Self { store, _bg_guard: Arc::new(guard) })
     }
 
     /// Open or create a file-system CAS store at `dir` with no
@@ -70,7 +99,7 @@ impl FileSystemCas {
     /// even when the blob is stored as delta — check `exists` vs the
     /// concrete file.
     pub fn object_path_for_hash(&self, hash: Hash) -> Option<PathBuf> {
-        self.0.blob().materialized_path(&hash)
+        self.blob().materialized_path(&hash)
     }
 
     /// Ensure the blob for `hash` is materialized in the blob store on
@@ -86,16 +115,15 @@ impl FileSystemCas {
     /// hardlink/symlink/reflink materialization.
     pub async fn ensure_blob_materialized(&self, hash: Hash) -> Result<(), CasError> {
         // Fast path: already materialized in the blob store.
-        if self.0.blob().materialized_path(&hash).is_some_and(|p| p.is_file()) {
+        if self.blob().materialized_path(&hash).is_some_and(|p| p.is_file()) {
             return Ok(());
         }
 
         // Slow path: read bytes from CAS (WAL fallback handles small
         // blobs) and write them to the blob store + metadata.
         let data = self.get(hash).await?;
-        self.0.blob().write(hash, ObjectEncoding::Full, data.clone()).await?;
-        self.0
-            .metadata_store()
+        self.blob().write(hash, ObjectEncoding::Full, data.clone()).await?;
+        self.metadata_store()
             .put(hash, MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full })
             .await?;
         Ok(())
