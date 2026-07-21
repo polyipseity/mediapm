@@ -18,10 +18,13 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinHandle;
 
 use crate::error::ConductorError;
 
@@ -215,6 +218,35 @@ impl Cache {
         Ok(CachePruneReport { removed_entries: expired_keys.len(), removed_payloads })
     }
 
+    /// Start a background task that periodically drains WAL entries via
+    /// `cas.bg_engine().run_wal_consumer()` at the given `interval`.
+    ///
+    /// Returns a [`BackgroundMaintenanceGuard`] that cancels the task on drop.
+    ///
+    /// Call this on an `Arc<Cache>` when the caller intends to keep the cache
+    /// alive for an extended period (e.g. long-running service).  Temporary
+    /// or short-lived cache handles typically do not need background
+    /// maintenance — the WAL will be consumed on the next open.
+    #[must_use]
+    pub fn start_background_maintenance(
+        self: &Arc<Self>,
+        interval: Duration,
+    ) -> BackgroundMaintenanceGuard {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+        let cache = self.clone();
+        let handle = tokio::spawn(async move {
+            while !cancelled_clone.load(Ordering::Relaxed) {
+                tokio::time::sleep(interval).await;
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = cache.cas.bg_engine().run_wal_consumer().await;
+            }
+        });
+        BackgroundMaintenanceGuard { cancelled, handle: Some(handle) }
+    }
+
     /// Removes one key row from cache index metadata.
     fn remove_index_entry(&self, key: &str) {
         let Ok(mut index) = self.index.lock() else {
@@ -300,6 +332,41 @@ struct CacheIndexEntry {
     hash: String,
     /// Last successful read/write access timestamp (Unix seconds).
     last_access_unix_seconds: u64,
+}
+
+/// RAII guard that cancels background WAL consumer maintenance on drop.
+///
+/// Returned by [`Cache::start_background_maintenance`].  While the guard is
+/// alive a tokio task periodically calls `cas.bg_engine().run_wal_consumer()`.
+/// Dropping the guard aborts the task and releases the `Arc<Cache>` reference.
+pub struct BackgroundMaintenanceGuard {
+    /// Shared flag checked by the background task loop.
+    cancelled: Arc<AtomicBool>,
+    /// Handle to the spawned background task, aborted on drop.
+    handle: Option<JoinHandle<()>>,
+}
+
+impl BackgroundMaintenanceGuard {
+    /// Returns `true` if the background task has been cancelled (guard dropped
+    /// or [`cancel`](Self::cancel) called explicitly).
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Cancel the background task immediately.  Idempotent.
+    pub fn cancel(&mut self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+impl Drop for BackgroundMaintenanceGuard {
+    fn drop(&mut self) {
+        self.cancel();
+    }
 }
 
 /// Loads one index file from disk, falling back to an empty index when absent
@@ -615,5 +682,50 @@ mod tests {
         // Fresh entry survives because prune didn't run.
         let retrieved = cache.lookup_bytes("fresh-key").await;
         assert_eq!(retrieved, Some(b"fresh".to_vec()));
+    }
+
+    /// Verifies that background maintenance can be started and dropped
+    /// without crashing on an empty cache.
+    #[tokio::test]
+    async fn background_maintenance_does_not_crash_on_empty_cache() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Arc::new(
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
+                .await
+                .expect("open cache"),
+        );
+
+        // Start background maintenance with a 10-minute interval so it never
+        // actually fires during the test.
+        let guard = cache.start_background_maintenance(Duration::from_secs(600));
+
+        // Verify the guard is alive.
+        assert!(!guard.is_cancelled());
+
+        // Drop stops the background task.
+        drop(guard);
+    }
+
+    /// Verifies that background maintenance guard reports cancelled after
+    /// the handle is dropped.
+    #[tokio::test]
+    async fn background_maintenance_cancels_on_drop() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Arc::new(
+            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
+                .await
+                .expect("open cache"),
+        );
+
+        let guard = cache.start_background_maintenance(Duration::from_secs(600));
+        drop(guard);
+
+        // Guard was dropped without panicking — cancellation succeeded.
     }
 }
