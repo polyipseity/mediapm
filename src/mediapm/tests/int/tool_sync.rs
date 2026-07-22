@@ -132,20 +132,21 @@ async fn sync_tool_requires_sync_when_missing() -> Result<(), mediapm::MediaPmEr
     let root = tempdir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await?;
     let state = MediaPmState::default();
-    assert!(service.logical_tool_requires_sync("non-existent", &state)?);
+    assert!(service.logical_tool_requires_sync("non-existent", &state).await?);
     Ok(())
 }
 
 /// `logical_tool_requires_sync` returns `false` for a tool that is present
-/// in state with matching version.
+/// in state with matching canonical version.
 #[tokio::test]
 async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
+    // media-tagger is a known tool whose provider resolves without network.
     let mut overrides = MediaRuntimeStorage::default();
     overrides.tools.insert(
-        "demo-tool".to_string(),
+        "media-tagger".to_string(),
         ToolRequirement {
-            version: mediapm::MediaMetadataValue::Literal("1.0".to_string()),
+            version: mediapm::MediaMetadataValue::Literal(String::new()),
             ..Default::default()
         },
     );
@@ -153,16 +154,59 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
     let mut state = MediaPmState::default();
     state.managed_tools.insert(
-        "demo-tool".to_string(),
+        "media-tagger".to_string(),
         ToolRegistryEntry {
-            version: Some("1.0".to_string()),
+            version: Some(mediapm::MEDIAPM_GIT_HASH.to_string()),
             tag: None,
-            canonical_version: String::new(),
-            fetch_hash: None,
+            canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
+            fetch_hash: Some("blake3:abc".to_string()),
             deployed_at: 0,
         },
     );
-    assert!(!service.logical_tool_requires_sync("demo-tool", &state)?);
+    assert!(!service.logical_tool_requires_sync("media-tagger", &state).await?);
+    Ok(())
+}
+
+/// `ToolRegistryEntry.version` is populated with the canonical version after
+/// sync, not an empty string or requirement version.
+#[tokio::test]
+async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let mut overrides = MediaRuntimeStorage::default();
+    overrides.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement {
+            // Explicitly set a non-empty requirement version to prove that
+            // `ToolRegistryEntry.version` uses the resolved canonical version,
+            // not this requirement value.
+            version: mediapm::MediaMetadataValue::Literal("2.0.0".to_string()),
+            ..Default::default()
+        },
+    );
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
+    service.sync_tools().await?;
+
+    let bytes = std::fs::read(&service.paths().mediapm_state_json)
+        .expect("state.json should exist after sync");
+    let state: MediaPmState =
+        serde_json::from_slice(&bytes).expect("state.json should deserialize");
+
+    let entry = state
+        .managed_tools
+        .get("media-tagger")
+        .expect("media-tagger should be registered after sync");
+
+    let expected_canonical = mediapm::MEDIAPM_GIT_HASH;
+    assert_eq!(
+        entry.canonical_version, expected_canonical,
+        "canonical_version should be the git hash"
+    );
+    assert_eq!(
+        entry.version,
+        Some(expected_canonical.to_string()),
+        "version should match canonical_version, not the requirement version '2.0.0'"
+    );
     Ok(())
 }
 
@@ -173,7 +217,7 @@ async fn sync_no_tools_need_sync_when_none_desired() -> Result<(), mediapm::Medi
     let root = tempdir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await?;
     let state = MediaPmState::default();
-    let needing = service.collect_tools_requiring_sync(&state)?;
+    let needing = service.collect_tools_requiring_sync(&state).await?;
     assert!(needing.is_empty(), "no desired tools → nothing needs sync");
     Ok(())
 }
@@ -194,7 +238,7 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
     let state = MediaPmState::default();
-    let needing = service.collect_tools_requiring_sync(&state)?;
+    let needing = service.collect_tools_requiring_sync(&state).await?;
     assert_eq!(needing, vec!["media-tagger"]);
     Ok(())
 }

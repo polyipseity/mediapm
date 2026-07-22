@@ -49,7 +49,7 @@ pub use config::{
 };
 pub use error::MediaPmError;
 pub use global::{
-    GlobalToolCachePruneSummary, GlobalToolCacheStatus, MediaPmGlobalPaths,
+    GlobalToolCachePruneSummary, GlobalToolCacheStatus, MEDIAPM_GIT_HASH, MediaPmGlobalPaths,
     ensure_global_directory_layout, global_tool_cache_clear, global_tool_cache_prune_expired,
     global_tool_cache_status,
 };

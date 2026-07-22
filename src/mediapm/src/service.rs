@@ -176,8 +176,9 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     /// Checks whether a logical tool for the given media id requires a sync.
     ///
     /// Returns `true` if the tool is missing from the state's managed tool
-    /// registry or its version/tag requirements have changed.
-    pub fn logical_tool_requires_sync(
+    /// registry or its canonical version does not match the provider-resolved
+    /// version.
+    pub async fn logical_tool_requires_sync(
         &self,
         tool_id: &str,
         state: &MediaPmState,
@@ -185,28 +186,36 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         if let Some(existing) = state.managed_tools.get(tool_id) {
             let effective = self.resolve_effective_runtime_storage()?;
             let desired = effective.tools.get(tool_id);
-            // Compare desired requirement with fetched deployment metadata.
             // If no desired requirement is declared, the tool is considered
             // up-to-date when present in state.
-            Ok(desired.is_some_and(|req| {
-                let desired_version = crate::config::normalized_version(&req.version);
-                let desired_tag = crate::config::normalized_tag(&req.tag);
-                desired_version != existing.version || desired_tag != existing.tag
-            }))
+            if desired.is_none() {
+                return Ok(false);
+            }
+            // Resolve the canonical version from the provider and compare
+            // against the recorded canonical_version in state.
+            match crate::tools::provider::resolve_tool_fetch(tool_id, None).await {
+                Ok((_, resolved_canonical_version)) => Ok(existing.canonical_version
+                    != resolved_canonical_version
+                    || existing.fetch_hash.is_none()),
+                Err(_) => {
+                    // Conservatively recommend sync on provider resolution failure.
+                    Ok(true)
+                }
+            }
         } else {
             Ok(true) // missing from state's managed tool registry → requires sync
         }
     }
 
     /// Collects tool ids that require a sync based on state comparison.
-    pub fn collect_tools_requiring_sync(
+    pub async fn collect_tools_requiring_sync(
         &self,
         state: &MediaPmState,
     ) -> Result<Vec<String>, MediaPmError> {
         let effective = self.resolve_effective_runtime_storage()?;
         let mut needing_sync = Vec::new();
         for tool_id in effective.tools.keys() {
-            if self.logical_tool_requires_sync(tool_id, state)? {
+            if self.logical_tool_requires_sync(tool_id, state).await? {
                 needing_sync.push(tool_id.clone());
             }
         }
@@ -219,12 +228,12 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ///
     /// Returns [`MediaPmError::Io`] if the document cannot be read, or
     /// [`MediaPmError::Serialization`] if it cannot be parsed.
-    pub fn append_tool_sync_hint_warning(
+    pub async fn append_tool_sync_hint_warning(
         &self,
         warnings: &mut Vec<String>,
         state: &MediaPmState,
     ) -> Result<(), MediaPmError> {
-        let needing_sync = self.collect_tools_requiring_sync(state)?;
+        let needing_sync = self.collect_tools_requiring_sync(state).await?;
         if !needing_sync.is_empty() {
             warnings.push(format!(
                 "tools require sync before library sync: {}",
@@ -891,7 +900,7 @@ impl MediaPmService<FileSystemCas> {
         let state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
 
         // 4. Check if any tools require sync.
-        self.append_tool_sync_hint_warning(&mut warnings, &state)?;
+        self.append_tool_sync_hint_warning(&mut warnings, &state).await?;
 
         // 5 – 6. Open CAS and run the materializer.
         let materialize_report = {

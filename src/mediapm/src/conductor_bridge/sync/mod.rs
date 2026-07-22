@@ -215,11 +215,6 @@ pub(crate) async fn reconcile_desired_tools(
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                let req_version = _requirement_value
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
                 let req_tag = _requirement_value
                     .get("tag")
                     .and_then(|v| v.as_str())
@@ -228,7 +223,7 @@ pub(crate) async fn reconcile_desired_tools(
                 report.tool_records.insert(
                     tool_id.clone(),
                     ToolRegistryEntry {
-                        version: Some(req_version),
+                        version: Some(payload.canonical_version.clone()),
                         tag: if req_tag.is_empty() { None } else { Some(req_tag) },
                         canonical_version: payload.canonical_version.clone(),
                         fetch_hash: content_hash.as_ref().map(|h| h.to_string()),
