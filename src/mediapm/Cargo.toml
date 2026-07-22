@@ -39,6 +39,7 @@ clap = { workspace = true, features = ["derive", "std"], optional = true }
 clap_complete = { workspace = true, optional = true }
 dotenvy.workspace = true
 ffmetadata = { workspace = true, optional = true }
+futures-util.workspace = true
 libc.workspace = true
 mediapm-cas = { path = "../mediapm-cas", default-features = false }
 mediapm-utils = { workspace = true, features = ["nickel", "progress"] }

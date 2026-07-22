@@ -14,9 +14,11 @@ use std::sync::Arc;
 
 use mediapm_cas::CasApi;
 use mediapm_conductor::tools::provider::{
-    ResolvedSource, ResolvedToolFetch, SourceProducer, fetch_tool_sources, postprocess_tool_sources,
+    MAX_LOOKAHEAD, ResolvedSource, ResolvedToolFetch, SourceProducer, fetch_tool_sources,
+    postprocess_tool_sources,
 };
 use mediapm_utils::progress::ProviderProgressCallback;
+use tokio::sync::Semaphore;
 
 use crate::error::MediaPmError;
 use crate::output::ProgressGroupApi;
@@ -188,32 +190,53 @@ pub(super) async fn fetch_and_import_tool_payload(
 /// Evermeet URLs are skipped because they are dynamic endpoints (return a
 /// freshly-built zip per request, so HEAD Content-Length wouldn't match the
 /// GET response).
+///
+/// Uses fully concurrent HEAD requests with a semaphore to limit concurrency.
 async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
     let client = match crate::http_client::shared_http_client() {
         Ok(c) => c,
         Err(_) => return,
     };
     let head_timeout = std::time::Duration::from_secs(10);
+    let semaphore = Arc::new(Semaphore::new(MAX_LOOKAHEAD));
 
-    for source in sources.iter_mut() {
-        let url = match &source.producer {
-            SourceProducer::Fetch { urls } if !urls.is_empty() => &urls[0],
-            _ => continue,
-        };
-        // Skip dynamic endpoints: Evermeet returns a fresh build
-        // on every request, so HEAD Content-Length is meaningless.
-        if url.contains("evermeet") || url.contains("getrelease") {
-            continue;
-        }
-        let request = client.head(url).timeout(head_timeout).send().await;
-        if let Ok(response) = request {
-            if response.status().is_success() {
-                if let Some(content_length) = response.content_length() {
-                    if content_length > 0 {
-                        source.expected_size = Some(content_length);
+    let tasks: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, source)| {
+            let url = match &source.producer {
+                SourceProducer::Fetch { urls } if !urls.is_empty() => &urls[0],
+                _ => return None,
+            };
+            // Skip dynamic endpoints: Evermeet returns a fresh build
+            // on every request, so HEAD Content-Length is meaningless.
+            if url.contains("evermeet") || url.contains("getrelease") {
+                return None;
+            }
+            let client = client.clone();
+            let semaphore = semaphore.clone();
+            let url = url.clone();
+            Some(async move {
+                let _permit = semaphore.acquire().await.expect("semaphore closed");
+                let request = client.head(&url).timeout(head_timeout).send().await;
+                if let Ok(response) = request {
+                    if response.status().is_success() {
+                        if let Some(content_length) = response.content_length() {
+                            if content_length > 0 {
+                                return Some((idx, content_length));
+                            }
+                        }
                     }
                 }
-            }
+                None
+            })
+        })
+        .collect();
+
+    let results: Vec<Option<(usize, u64)>> = futures_util::future::join_all(tasks).await;
+    for result in results {
+        if let Some((idx, content_length)) = result {
+            sources[idx].expected_size = Some(content_length);
         }
     }
 }
