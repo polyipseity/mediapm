@@ -6,12 +6,16 @@
 //! access. The echo builtin is used because it produces launcher scripts
 //! in memory rather than downloading payloads.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use mediapm_cas::CasApi;
 use mediapm_cas::InMemoryCas;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::{
     fetch_tool_sources, postprocess_tool_sources, resolve_tool_fetch,
 };
+use mediapm_utils::progress::ProviderProgressSnapshot;
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
@@ -208,4 +212,36 @@ async fn resolve_tool_fetch_matches_sources_len_for_all_providers() {
             resolve_tool_fetch(tool_id).await.unwrap_or_else(|e| panic!("resolve {tool_id}: {e}"));
         assert!(!fetch.sources.is_empty(), "{tool_id}: expected at least one source, got empty",);
     }
+}
+
+/// Postprocessing with a progress callback fires at least one callback per
+/// source entry (launcher-based tools still trigger per-source progress).
+#[tokio::test]
+async fn postprocess_fires_progress_per_source_entry() {
+    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
+    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+        .await
+        .expect("open UserLevelCache");
+    let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo");
+    let cas = InMemoryCas::default();
+    let source_count = downloaded.entries.len();
+
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let cc = Arc::clone(&call_count);
+    let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> = Arc::new(move |snap| {
+        // Only count postprocess phase callbacks.
+        if matches!(snap.phase, mediapm_utils::progress::ProviderPhase::Postprocess) {
+            cc.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    let _result =
+        postprocess_tool_sources(&downloaded, &cas, Some(cb)).await.expect("postprocess echo");
+
+    let total_calls = call_count.load(Ordering::Relaxed);
+    assert!(
+        total_calls >= source_count,
+        "expected >= {source_count} progress callbacks (one per source), got {total_calls}",
+    );
 }
