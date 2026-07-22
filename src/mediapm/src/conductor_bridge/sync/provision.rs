@@ -224,12 +224,14 @@ mod tests {
     use mediapm_conductor::cache_user_level::UserLevelCache;
     use mediapm_utils::progress::recording::RecordingProgressTracker;
     use tempfile::TempDir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
     #[tokio::test]
     async fn fetch_and_import_rejects_unknown_tool() {
-        let cas = new_in_memory_cas();
+        let _cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
         let _cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
             .await
@@ -316,9 +318,28 @@ mod tests {
     #[tokio::test]
     async fn fetch_and_import_ytdlp_full_pipeline() {
         // Full 3-phase pipeline (resolve → fetch → postprocess) for a tool
-        // with URL-based Fetch sources. Pre-seed both the metadata cache
-        // (tag resolution) and the download cache (simulated downloads) so
-        // no network I/O is required beyond the HEAD prefetch probe.
+        // with URL-based Fetch sources. Uses wiremock to serve download
+        // payloads and pre-seeds the metadata cache for tag resolution.
+
+        // Start a wiremock server for controlled HTTP responses.
+        let mock_server = MockServer::start().await;
+        let binaries = vec![
+            ("yt-dlp.exe", &b"fake yt-dlp windows binary"[..]),
+            ("yt-dlp_macos", &b"fake yt-dlp macos binary"[..]),
+            ("yt-dlp_linux", &b"fake yt-dlp linux binary"[..]),
+        ];
+        for (filename, bytes) in &binaries {
+            Mock::given(method("GET"))
+                .and(path(&format!("/{filename}")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_bytes(bytes.to_vec())
+                        .insert_header("Content-Length", bytes.len().to_string()),
+                )
+                .mount(&mock_server)
+                .await;
+        }
+
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
         let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
@@ -329,27 +350,29 @@ mod tests {
             .expect("metadata cache open");
         let tracker = RecordingProgressTracker::new();
 
-        // Pre-seed the metadata cache with a stable tag string.
+        // Pre-seed the metadata cache with a stable tag string (no network).
         let tag = "2025.07.15";
         let api_key = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
         metadata_cache.store_bytes(api_key, tag.as_bytes()).await;
 
-        // Pre-seed the download cache with fake binary content for each OS.
-        let urls_and_bytes: Vec<(&str, &str, &[u8])> = vec![
-            ("windows", "yt-dlp.exe", &b"fake yt-dlp windows binary"[..]),
-            ("macos", "yt-dlp_macos", &b"fake yt-dlp macos binary"[..]),
-            ("linux", "yt-dlp_linux", &b"fake yt-dlp linux binary"[..]),
-        ];
-        for (_os, filename, bytes) in &urls_and_bytes {
-            let url =
-                format!("https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/{filename}");
-            cache.store_bytes(&url, bytes).await;
-        }
-
-        let (fetch, canonical) =
+        // Resolve normally — metadata cache returns the pre-seeded tag.
+        let (mut fetch, canonical) =
             crate::tools::provider::resolve_tool_fetch("yt-dlp", Some(&metadata_cache))
                 .await
                 .unwrap();
+
+        // Patch download URLs to point at wiremock (so HEAD prefetch and
+        // download hit the local server instead of GitHub).
+        for source in &mut fetch.sources {
+            if let SourceProducer::Fetch { urls } = &mut source.producer {
+                for url in urls.iter_mut() {
+                    let filename = url.rsplit('/').next().unwrap_or(url);
+                    *url =
+                        format!("http://127.0.0.1:{}/{}", mock_server.address().port(), filename);
+                }
+            }
+        }
+
         let outcome = PreResolveOutcome::Resolved(fetch, canonical);
         let result = fetch_and_import_tool_payload(
             &cas,
@@ -360,6 +383,8 @@ mod tests {
             outcome,
         )
         .await;
+        let filenames: Vec<&str> = binaries.iter().map(|(n, _)| *n).collect();
+        let os_labels = ["windows", "macos", "linux"];
         match result {
             Ok(Some(payload)) => {
                 assert_eq!(
@@ -368,7 +393,7 @@ mod tests {
                     "expected 3 content-map entries for yt-dlp"
                 );
                 assert_eq!(payload.os_exec_paths.len(), 3, "expected 3 OS exec paths for yt-dlp");
-                for (os, filename, _) in &urls_and_bytes {
+                for (os, filename) in os_labels.iter().zip(filenames.iter()) {
                     let key = format!("{os}/{filename}");
                     assert!(
                         payload.content_map.contains_key(&key),

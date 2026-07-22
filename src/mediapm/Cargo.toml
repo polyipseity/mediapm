@@ -69,3 +69,4 @@ build-utils = { path = "../../scripts/build-utils" }
 indicatif = { workspace = true, features = ["in_memory"] }
 proptest.workspace = true
 same-file.workspace = true
+wiremock = "0.6"
