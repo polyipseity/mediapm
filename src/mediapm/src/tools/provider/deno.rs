@@ -30,7 +30,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                     ],
                 },
                 expected_size: None,
-                size_hint_bytes: None,
+                size_hint_bytes: Some(40_000_000),
             },
             ResolvedSource {
                 os: "macos".to_string(),
@@ -43,7 +43,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                     ],
                 },
                 expected_size: None,
-                size_hint_bytes: None,
+                size_hint_bytes: Some(40_000_000),
             },
             ResolvedSource {
                 os: "linux".to_string(),
@@ -56,7 +56,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                     ],
                 },
                 expected_size: None,
-                size_hint_bytes: None,
+                size_hint_bytes: Some(40_000_000),
             },
         ],
     }
