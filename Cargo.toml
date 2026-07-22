@@ -92,4 +92,5 @@ proptest = "1"
 
 [workspace.metadata.bin]
 cargo-binstall = { version = "1.19.1" }
+cargo-nextest = { version = "0.9.140" }
 rumdl = { version = "0.2.0" }
