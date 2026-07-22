@@ -1349,6 +1349,76 @@ mod tests {
         }
     }
 
+    // ── fetch suffix_expected ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_progress_uses_size_hint_bytes_when_expected_size_none() {
+        let cache_root = tempfile::tempdir().expect("tempdir for cache");
+        let cache = crate::cache_user_level::UserLevelCache::open(
+            cache_root.path(),
+            "tools.json",
+            30 * 24 * 60 * 60,
+        )
+        .await
+        .expect("open UserLevelCache");
+
+        // Pre-seed cache with small bytes under fake URLs.
+        cache.store_bytes("mock://a", &[0u8; 50]).await;
+        cache.store_bytes("mock://b", &[1u8; 30]).await;
+
+        let fetch = ResolvedToolFetch {
+            tool_id: "test".to_string(),
+            sources: vec![
+                ResolvedSource {
+                    os: "linux".to_string(),
+                    producer: SourceProducer::Fetch { urls: vec!["mock://a".to_string()] },
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+                ResolvedSource {
+                    os: "macos".to_string(),
+                    producer: SourceProducer::Fetch { urls: vec!["mock://b".to_string()] },
+                    expected_size: None,
+                    size_hint_bytes: Some(500),
+                },
+            ],
+        };
+
+        let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let snap_clone = Arc::clone(&snapshots);
+        let cb: ProviderProgressCallback = Arc::new(move |snap| {
+            snap_clone.lock().unwrap().push(snap);
+        });
+
+        let _downloaded = fetch_tool_sources(&fetch, &cache, Some(cb))
+            .await
+            .expect("fetch should succeed with cached data");
+
+        let all = snapshots.lock().unwrap().clone();
+        assert!(!all.is_empty(), "should have recorded at least one snapshot");
+
+        // The first snapshot total should include size_hint_bytes for the
+        // remaining (unprocessed) source, not just completed bytes.
+        // Source 0 (processed): 50 actual bytes, expected_size=None.
+        // Source 1 (remaining): size_hint_bytes=Some(500).
+        // Total = 50 + 500 = 550.
+        let first_total = all[0].bytes.1;
+        assert!(
+            first_total > 80,
+            "first snapshot total {first_total} should include size_hint_bytes fallback "
+        );
+
+        let mut prev_pos = 0u64;
+        for (i, snap) in all.iter().enumerate() {
+            let pos = snap.bytes.0;
+            let tot = snap.bytes.1;
+            assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}",);
+            assert!(pos <= tot, "position {pos} exceeds total {tot} at snapshot {i}",);
+            prev_pos = pos;
+        }
+    }
+
     // ── source_input_cost ──────────────────────────────────────────
 
     #[tokio::test]
@@ -1400,6 +1470,81 @@ mod tests {
             cost > content.len() as u64,
             "archive input_cost {cost} should exceed decompressed size alone ({})",
             content.len(),
+        );
+    }
+
+    // ── postprocess position ≤ total ───────────────────────────────
+
+    #[tokio::test]
+    async fn postprocess_position_never_exceeds_total_with_archive_entries() {
+        // Use a large enough pseudo-random buffer so the zip container overhead
+        // is negligible compared to the decompressed size.
+        let decompressed = pseudo_random_buffer(200_000);
+        let zip = synthetic_zip(&[("tool.bin", &decompressed)]);
+
+        let binary_bytes = vec![0u8; 100];
+
+        let downloaded = DownloadedSources {
+            tool_id: "test".to_string(),
+            entries: vec![
+                DownloadedSource {
+                    os: "linux".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/tool.zip".to_string()],
+                    },
+                    bytes: zip.clone(),
+                    expected_size: None,
+                },
+                DownloadedSource {
+                    os: "macos".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/tool-bin".to_string()],
+                    },
+                    bytes: binary_bytes.clone(),
+                    expected_size: Some(100),
+                },
+            ],
+            cached_count: 0,
+        };
+
+        let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let snap_clone = Arc::clone(&snapshots);
+        let cas = InMemoryCas::default();
+        let cb: ProviderProgressCallback = Arc::new(move |snap| {
+            snap_clone.lock().unwrap().push(snap);
+        });
+
+        let _result = postprocess_tool_sources(&downloaded, &cas, Some(cb))
+            .await
+            .expect("postprocess should succeed with synthetic entries");
+
+        let all = snapshots.lock().unwrap().clone();
+        assert!(!all.is_empty(), "should have recorded at least one snapshot");
+
+        // Verify monotonicity and pos ≤ total across ALL postprocess snapshots.
+        let mut prev_pos = 0u64;
+        for (i, snap) in all.iter().enumerate() {
+            if snap.phase != ProviderPhase::Postprocess {
+                continue;
+            }
+            let pos = snap.bytes.0;
+            let tot = snap.bytes.1;
+            assert!(
+                pos >= prev_pos,
+                "Postprocess position decreased at snapshot {i}: {pos} < {prev_pos}",
+            );
+            assert!(pos <= tot, "Postprocess position {pos} exceeds total {tot} at snapshot {i}",);
+            prev_pos = pos;
+        }
+
+        // Verify the final snapshot total reflects decompressed cost.
+        let final_snap = all.iter().rev().find(|s| s.phase == ProviderPhase::Postprocess).unwrap();
+        let final_total = final_snap.bytes.1;
+        let compressed_total = (zip.len() + binary_bytes.len()) as u64;
+        assert!(
+            final_total > compressed_total,
+            "final total {final_total} should exceed compressed total {compressed_total} (decompressed cost was not added)"
         );
     }
 

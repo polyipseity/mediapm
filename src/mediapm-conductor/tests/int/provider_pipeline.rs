@@ -299,3 +299,93 @@ async fn full_pipeline_progress_monotonic() {
         }
     }
 }
+
+#[tokio::test]
+async fn postprocess_mixed_archive_binary_progress() {
+    // Use echo (launcher-only) for binary sources and add a synthetic
+    // zip archive as an extra source to validate mixed progress.
+    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
+    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+        .await
+        .expect("open UserLevelCache");
+    let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo");
+
+    let decompressed = pseudo_random_buffer(20_000);
+    let zip = synthetic_zip(&[("extra.bin", &decompressed)]);
+
+    // Append a synthetic archive entry to test mixed source processing.
+    let mut entries = downloaded.entries.clone();
+    entries.push(mediapm_conductor::tools::provider::DownloadedSource {
+        os: "linux".to_string(),
+        producer: mediapm_conductor::tools::provider::SourceProducer::Fetch {
+            urls: vec!["https://example.com/extra.zip".to_string()],
+        },
+        bytes: zip,
+        expected_size: None,
+    });
+    let mixed = mediapm_conductor::tools::provider::DownloadedSources {
+        tool_id: "echo".to_string(),
+        entries,
+        cached_count: downloaded.cached_count,
+    };
+
+    let cas = InMemoryCas::default();
+    let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let snap_clone = Arc::clone(&snapshots);
+    let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> = Arc::new(move |snap| {
+        snap_clone.lock().unwrap().push(snap);
+    });
+
+    let _result = postprocess_tool_sources(&mixed, &cas, Some(cb))
+        .await
+        .expect("postprocess mixed echo+archive");
+
+    let all = snapshots.lock().unwrap().clone();
+    assert!(!all.is_empty(), "should have recorded at least one snapshot");
+
+    let mut prev_pos = 0u64;
+    for (i, snap) in all.iter().enumerate() {
+        if snap.phase != mediapm_utils::progress::ProviderPhase::Postprocess {
+            continue;
+        }
+        let pos = snap.bytes.0;
+        let tot = snap.bytes.1;
+        assert!(
+            pos >= prev_pos,
+            "Postprocess position decreased at snapshot {i}: {pos} < {prev_pos}",
+        );
+        assert!(pos <= tot, "Postprocess position {pos} exceeds total {tot} at snapshot {i}",);
+        prev_pos = pos;
+    }
+}
+
+/// Creates a deterministic pseudo-random buffer useful for archive tests
+/// where compressed size should remain close to uncompressed size.
+fn pseudo_random_buffer(size: usize) -> Vec<u8> {
+    let mut data = vec![0u8; size];
+    let mut state: u64 = 123456789;
+    for byte in data.iter_mut() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        *byte = state as u8;
+    }
+    data
+}
+
+/// Creates a synthetic zip archive from named entries.
+fn synthetic_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(cursor);
+    let options = SimpleFileOptions::default();
+    for (name, content) in entries {
+        writer.start_file(*name, options.clone()).unwrap();
+        writer.write_all(content).unwrap();
+    }
+    let cursor = writer.finish().unwrap();
+    cursor.into_inner()
+}

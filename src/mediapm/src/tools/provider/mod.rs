@@ -568,4 +568,51 @@ mod tests {
             assert_eq!(cv1, cv2, "canonical_version for {tool} must be deterministic");
         }
     }
+
+    #[tokio::test]
+    async fn all_fetch_providers_have_size_hint_bytes() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+
+        // Pre-seed metadata cache to avoid real API calls.
+        for (api_url, tag) in &[
+            ("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", "2025.07.15"),
+            ("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest", "L2025-07-15"),
+            ("https://api.github.com/repos/denoland/deno/releases/latest", "v2.2.12"),
+            ("https://api.github.com/repos/complexlogic/rsgain/releases/latest", "v3.7"),
+        ] {
+            cache.store_bytes(api_url, tag.as_bytes()).await;
+        }
+
+        // All managed tools whose provider type is Fetch must have size_hint_bytes.
+        for name in &["ffmpeg", "yt-dlp", "deno", "rsgain"] {
+            let (fetch, _canonical) = resolve_tool_fetch(name, Some(&cache))
+                .await
+                .unwrap_or_else(|e| panic!("resolve {name}: {e}"));
+            for source in &fetch.sources {
+                assert!(
+                    matches!(source.producer, super::SourceProducer::Fetch { .. }),
+                    "{name}: expected Fetch source, got {:?}",
+                    source.producer
+                );
+                assert!(
+                    source.size_hint_bytes.is_some(),
+                    "{name} source for {}: size_hint_bytes should be Some",
+                    source.os
+                );
+            }
+        }
+
+        // media-tagger is a builtin launcher — all sources are GenerateLauncher.
+        {
+            let (fetch, _) = resolve_tool_fetch("media-tagger", Some(&cache)).await.unwrap();
+            for source in &fetch.sources {
+                assert!(
+                    matches!(source.producer, super::SourceProducer::GenerateLauncher { .. }),
+                    "media-tagger should only have GenerateLauncher sources"
+                );
+            }
+        }
+    }
 }
