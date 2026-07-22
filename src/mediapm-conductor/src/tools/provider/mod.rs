@@ -16,6 +16,8 @@
 #![cfg(feature = "tool-presets")]
 
 use std::collections::BTreeMap;
+use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use mediapm_utils::progress::{ProviderPhase, ProviderProgressCallback, ProviderProgressSnapshot};
 
@@ -339,6 +341,34 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 ///
 /// Archive format is inferred from the URL extension.
 ///
+/// # Progress bar smoothness
+///
+/// Progress callbacks are threaded through [`process_single_source`] and
+/// the extraction helpers so that per-entry callbacks fire during archive
+/// extraction. This gives the progress bar smooth 20Hz updates instead of
+/// freezing for seconds at a time during the decompression of large
+/// archives (yt-dlp, ffmpeg, deno, rsgain).
+///
+/// - **ZIP extraction**: the total decompressed size is pre-computed from
+///   the central directory, and a callback fires after each entry with
+///   cumulative decompressed bytes as the position. This is the most
+///   accurate tracking — the bar reaches 100% exactly when extraction ends.
+///
+/// - **tar.gz / tar.xz extraction**: the compressed payload size is used
+///   as the total, and a [`CountingReader`] tracks how many compressed
+///   bytes have been consumed by the decoder. A callback fires after each
+///   tar entry. Since the decompressed size can exceed the compressed size,
+///   the bar may reach 100% before extraction fully completes — this
+///   estimated-but-smooth bar is far better than a frozen one.
+///
+/// - **Binary / launcher sources**: no intermediate callbacks are needed
+///   because CAS import is an instant in-memory operation.
+///
+/// The per-source item callback (fired at the end of each source iteration
+/// in the main loop below) advances the item counter — the prefix shows
+/// `{tool} [process] 1/3`, `2/3`, `3/3` — while the per-entry extraction
+/// callbacks above smoothly fill the bytes bar.
+///
 /// Progress reporting uses [`DownloadedSource.expected_size`] for the
 /// aggregated byte total (falling back to `bytes.len()` when unset).
 ///
@@ -402,6 +432,10 @@ pub async fn postprocess_tool_sources(
             &os_dir,
             &filename,
             cas,
+            progress_cb.as_ref(),
+            ((idx as u64), total),
+            agg_completed_bytes,
+            agg_total_bytes,
         )
         .await?;
 
@@ -451,6 +485,12 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// For binary/launcher format: CAS-import bytes directly using the given
 /// `filename` (URL basename for Fetch sources, `tool_id` for launchers).
 /// Returns file-level content key (`{os}/{filename}`).
+///
+/// When `progress_cb` is `Some` and the source is an archive, fires
+/// per-entry progress callbacks during extraction (ZIP: decompressed bytes
+/// tracked accurately; tar.gz/xz: compressed bytes consumed as estimate).
+/// This gives the progress bar smooth updates instead of freezing during
+/// the seconds-long extraction of large archives like yt-dlp or ffmpeg.
 #[cfg(feature = "tool-presets")]
 async fn process_single_source(
     bytes: &[u8],
@@ -460,6 +500,10 @@ async fn process_single_source(
     os_dir: &std::path::Path,
     filename: &str,
     cas: &impl mediapm_cas::CasApi,
+    progress_cb: Option<&ProviderProgressCallback>,
+    items: (u64, u64),
+    bytes_done_before: u64,
+    bytes_total: u64,
 ) -> Result<(BTreeMap<String, String>, String), crate::error::ConductorError> {
     use crate::error::ConductorError;
     use bytes::Bytes;
@@ -473,7 +517,15 @@ async fn process_single_source(
                 source,
             )
         })?;
-        extract_archive(bytes, archive_format, os_dir)?;
+        extract_archive(
+            bytes,
+            archive_format,
+            os_dir,
+            progress_cb,
+            items,
+            bytes_done_before,
+            bytes_total,
+        )?;
 
         let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
 
@@ -500,22 +552,88 @@ async fn process_single_source(
 // Archive extraction helpers
 // ---------------------------------------------------------------------------
 
+/// Wraps a byte slice reader and tracks how many bytes have been consumed
+/// via an [`AtomicU64`]. Used to report per-entry progress during tar.gz/xz
+/// extraction, where the compressed-bytes-consumed count is the best
+/// available estimate of extraction progress.
+struct CountingReader<'a> {
+    cursor: std::io::Cursor<&'a [u8]>,
+    bytes_read: &'a AtomicU64,
+}
+
+impl Read for CountingReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.cursor.read(buf)?;
+        self.bytes_read.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+/// Generic tar-entry iteration with per-entry progress reporting.
+///
+/// Iterates over entries in a tar archive, calls `entry.unpack_in(target_dir)`
+/// for each, and fires the progress callback after every entry using
+/// `bytes_read` (compressed bytes consumed so far) as the progress metric.
+fn extract_tar_entries_with_progress<R: Read>(
+    mut archive: tar::Archive<R>,
+    bytes_read: &AtomicU64,
+    total_compressed: u64,
+    target_dir: &std::path::Path,
+    progress_cb: Option<&ProviderProgressCallback>,
+    items: (u64, u64),
+    bytes_done_before: u64,
+    effective_total: u64,
+) -> Result<(), crate::error::ConductorError> {
+    use crate::error::ConductorError;
+    for result in
+        archive.entries().map_err(|e| ConductorError::io("read tar entries", target_dir, e))?
+    {
+        let mut entry = result.map_err(|e| ConductorError::io("read tar entry", target_dir, e))?;
+        entry
+            .unpack_in(target_dir)
+            .map_err(|e| ConductorError::io("extract tar entry", target_dir, e))?;
+
+        let consumed = bytes_read.load(Ordering::Relaxed);
+        if let Some(cb) = progress_cb.as_ref() {
+            cb(ProviderProgressSnapshot {
+                phase: ProviderPhase::Postprocess,
+                items,
+                bytes: (bytes_done_before + consumed.min(total_compressed), effective_total),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Extracts archive bytes to the given directory based on archive format.
 ///
 /// `format` must be `Some(ARCHIVE_ZIP)`, `Some(ARCHIVE_TAR_GZ)`, or
 /// `Some(ARCHIVE_TAR_XZ)`. Binary payloads are not extracted through this
 /// function — they bypass to direct CAS import.
+///
+/// When `progress_cb` is `Some`, fires per-entry progress callbacks so the
+/// progress bar updates smoothly during extraction.
 #[cfg(feature = "tool-presets")]
 fn extract_archive(
     bytes: &[u8],
     format: Option<&str>,
     target_dir: &std::path::Path,
+    progress_cb: Option<&ProviderProgressCallback>,
+    items: (u64, u64),
+    bytes_done_before: u64,
+    bytes_total: u64,
 ) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
     match format {
-        Some(ARCHIVE_ZIP) => extract_zip(bytes, target_dir),
-        Some(ARCHIVE_TAR_GZ) => extract_tar_gz(bytes, target_dir),
-        Some(ARCHIVE_TAR_XZ) => extract_tar_xz(bytes, target_dir),
+        Some(ARCHIVE_ZIP) => {
+            extract_zip(bytes, target_dir, progress_cb, items, bytes_done_before, bytes_total)
+        }
+        Some(ARCHIVE_TAR_GZ) => {
+            extract_tar_gz(bytes, target_dir, progress_cb, items, bytes_done_before, bytes_total)
+        }
+        Some(ARCHIVE_TAR_XZ) => {
+            extract_tar_xz(bytes, target_dir, progress_cb, items, bytes_done_before, bytes_total)
+        }
         Some(other) => {
             Err(ConductorError::Workflow(format!("unsupported archive format: {other}")))
         }
@@ -529,10 +647,30 @@ fn extract_archive(
 fn extract_zip(
     bytes: &[u8],
     target_dir: &std::path::Path,
+    progress_cb: Option<&ProviderProgressCallback>,
+    items: (u64, u64),
+    bytes_done_before: u64,
+    bytes_total: u64,
 ) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| ConductorError::Workflow(format!("ZIP open error: {e}")))?;
+
+    // Pre-compute total decompressed size from ZIP central directory so the
+    // progress bar has an accurate total from the start.
+    // Uses a separate loop block so the mutable borrow is released before the
+    // extraction loop below.
+    let total_decompressed: u64 = {
+        let mut total = 0u64;
+        for i in 0..archive.len() {
+            if let Ok(f) = archive.by_index(i) {
+                total += f.size();
+            }
+        }
+        total
+    };
+    let effective_total = std::cmp::max(bytes_total, bytes_done_before + total_decompressed);
+    let mut bytes_done: u64 = 0;
 
     for i in 0..archive.len() {
         let mut file = archive
@@ -551,6 +689,14 @@ fn extract_zip(
                 .map_err(|e| ConductorError::io("create file", &out_path, e))?;
             std::io::copy(&mut file, &mut out)
                 .map_err(|e| ConductorError::io("write file", &out_path, e))?;
+            bytes_done += file.size();
+        }
+        if let Some(cb) = progress_cb.as_ref() {
+            cb(ProviderProgressSnapshot {
+                phase: ProviderPhase::Postprocess,
+                items,
+                bytes: (bytes_done_before + bytes_done, effective_total),
+            });
         }
     }
     Ok(())
@@ -560,22 +706,54 @@ fn extract_zip(
 fn extract_tar_gz(
     bytes: &[u8],
     target_dir: &std::path::Path,
+    progress_cb: Option<&ProviderProgressCallback>,
+    items: (u64, u64),
+    bytes_done_before: u64,
+    bytes_total: u64,
 ) -> Result<(), crate::error::ConductorError> {
-    use crate::error::ConductorError;
-    let decoder = flate2::read::GzDecoder::new(bytes);
-    let mut archive = tar::Archive::new(decoder);
-    archive.unpack(target_dir).map_err(|e| ConductorError::io("extract tar.gz", target_dir, e))
+    let total_compressed = bytes.len() as u64;
+    let effective_total = std::cmp::max(bytes_total, bytes_done_before + total_compressed);
+    let bytes_read = AtomicU64::new(0);
+    let reader = CountingReader { cursor: std::io::Cursor::new(bytes), bytes_read: &bytes_read };
+    let decoder = flate2::read::GzDecoder::new(reader);
+    let archive = tar::Archive::new(decoder);
+    extract_tar_entries_with_progress(
+        archive,
+        &bytes_read,
+        total_compressed,
+        target_dir,
+        progress_cb,
+        items,
+        bytes_done_before,
+        effective_total,
+    )
 }
 
 #[cfg(feature = "tool-presets")]
 fn extract_tar_xz(
     bytes: &[u8],
     target_dir: &std::path::Path,
+    progress_cb: Option<&ProviderProgressCallback>,
+    items: (u64, u64),
+    bytes_done_before: u64,
+    bytes_total: u64,
 ) -> Result<(), crate::error::ConductorError> {
-    use crate::error::ConductorError;
-    let decoder = xz2::read::XzDecoder::new(bytes);
-    let mut archive = tar::Archive::new(decoder);
-    archive.unpack(target_dir).map_err(|e| ConductorError::io("extract tar.xz", target_dir, e))
+    let total_compressed = bytes.len() as u64;
+    let effective_total = std::cmp::max(bytes_total, bytes_done_before + total_compressed);
+    let bytes_read = AtomicU64::new(0);
+    let reader = CountingReader { cursor: std::io::Cursor::new(bytes), bytes_read: &bytes_read };
+    let decoder = xz2::read::XzDecoder::new(reader);
+    let archive = tar::Archive::new(decoder);
+    extract_tar_entries_with_progress(
+        archive,
+        &bytes_read,
+        total_compressed,
+        target_dir,
+        progress_cb,
+        items,
+        bytes_done_before,
+        effective_total,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -834,10 +1012,21 @@ mod tests {
         let zip = synthetic_zip(&[("sd", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
-        let (cmap, exec) =
-            process_single_source(&zip, Some(ARCHIVE_ZIP), "linux", "sd", os_dir.path(), "", &cas)
-                .await
-                .unwrap();
+        let (cmap, exec) = process_single_source(
+            &zip,
+            Some(ARCHIVE_ZIP),
+            "linux",
+            "sd",
+            os_dir.path(),
+            "",
+            &cas,
+            None,
+            (0, 1),
+            0,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(cmap.len(), 1);
         assert!(cmap.contains_key("linux/"));
         assert_eq!(exec, "sd");
@@ -856,6 +1045,10 @@ mod tests {
             os_dir.path(),
             "",
             &cas,
+            None,
+            (0, 1),
+            0,
+            0,
         )
         .await
         .unwrap();
@@ -877,6 +1070,10 @@ mod tests {
             os_dir.path(),
             "",
             &cas,
+            None,
+            (0, 1),
+            0,
+            0,
         )
         .await
         .unwrap();
@@ -898,6 +1095,10 @@ mod tests {
             os_dir.path(),
             "echo",
             &cas,
+            None,
+            (0, 1),
+            0,
+            0,
         )
         .await
         .unwrap();
@@ -924,6 +1125,10 @@ mod tests {
             os_dir.path(),
             filename,
             &cas,
+            None,
+            (0, 1),
+            0,
+            0,
         )
         .await
         .expect("process_single_source should succeed for binary");
@@ -982,21 +1187,25 @@ mod tests {
     fn extract_zip_rejects_tar_xz_bytes() {
         let txz = synthetic_tar_xz(&[("x", &[0u8; 4])]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract_archive(&txz, Some(ARCHIVE_ZIP), dir.path()).is_err());
+        assert!(extract_archive(&txz, Some(ARCHIVE_ZIP), dir.path(), None, (0, 1), 0, 0).is_err());
     }
 
     #[test]
     fn extract_tar_gz_rejects_zip_bytes() {
         let zip = synthetic_zip(&[("x", &[0u8; 4])]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract_archive(&zip, Some(ARCHIVE_TAR_GZ), dir.path()).is_err());
+        assert!(
+            extract_archive(&zip, Some(ARCHIVE_TAR_GZ), dir.path(), None, (0, 1), 0, 0).is_err()
+        );
     }
 
     #[test]
     fn extract_tar_xz_rejects_zip_bytes() {
         let zip = synthetic_zip(&[("x", &[0u8; 4])]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract_archive(&zip, Some(ARCHIVE_TAR_XZ), dir.path()).is_err());
+        assert!(
+            extract_archive(&zip, Some(ARCHIVE_TAR_XZ), dir.path(), None, (0, 1), 0, 0).is_err()
+        );
     }
 
     // ── pack_directory_to_uncompressed_zip_bytes ──────────────────────
@@ -1016,6 +1225,81 @@ mod tests {
             (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_string()).collect();
         names.sort();
         assert_eq!(names, vec!["a.txt", "sub/b.txt"]);
+    }
+
+    // ── Progress callback granularity ─────────────────────────────────
+    //
+    // These tests verify that archive extraction functions fire progress
+    // callbacks at entry-level granularity (not just once per source).
+    // Before the fix, the [process] progress bar only updated once per
+    // downloaded source, freezing for seconds during extraction of large
+    // archives. Per-entry callbacks give the bar smooth 20Hz updates.
+
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    /// Creates a counting progress callback.
+    fn counting_progress_cb() -> (Option<ProviderProgressCallback>, Arc<AtomicUsize>) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let cb: Option<ProviderProgressCallback> = Some(Arc::new({
+            let count = count.clone();
+            move |_| {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+        (cb, count)
+    }
+
+    #[test]
+    fn extract_zip_fires_per_entry_progress() {
+        let entries: [(&str, &[u8]); 3] =
+            [("small.bin", &[0u8; 50]), ("medium.bin", &[1u8; 200]), ("large.bin", &[2u8; 800])];
+        let zip = synthetic_zip(&entries);
+        let dir = tempfile::tempdir().unwrap();
+        let (cb, count) = counting_progress_cb();
+        extract_zip(&zip, dir.path(), cb.as_ref(), (0, 1), 0, 0).unwrap();
+        let call_count = count.load(Ordering::Relaxed);
+        assert!(
+            call_count >= entries.len(),
+            "expected >= {} callbacks (one per zip entry), got {call_count}",
+            entries.len(),
+        );
+    }
+
+    #[test]
+    fn extract_tar_gz_fires_per_entry_progress() {
+        let entries: [(&str, &[u8]); 4] = [
+            ("a.bin", &[0u8; 100]),
+            ("b.bin", &[1u8; 200]),
+            ("c.bin", &[2u8; 300]),
+            ("d.bin", &[3u8; 400]),
+        ];
+        let tgz = synthetic_tar_gz(&entries);
+        let dir = tempfile::tempdir().unwrap();
+        let (cb, count) = counting_progress_cb();
+        extract_tar_gz(&tgz, dir.path(), cb.as_ref(), (0, 1), 0, 0).unwrap();
+        let call_count = count.load(Ordering::Relaxed);
+        assert!(
+            call_count >= entries.len(),
+            "expected >= {} callbacks (one per tar entry), got {call_count}",
+            entries.len(),
+        );
+    }
+
+    #[test]
+    fn extract_tar_xz_fires_per_entry_progress() {
+        let entries: [(&str, &[u8]); 3] =
+            [("x.bin", &[0u8; 64]), ("y.bin", &[1u8; 128]), ("z.bin", &[2u8; 256])];
+        let txz = synthetic_tar_xz(&entries);
+        let dir = tempfile::tempdir().unwrap();
+        let (cb, count) = counting_progress_cb();
+        extract_tar_xz(&txz, dir.path(), cb.as_ref(), (0, 1), 0, 0).unwrap();
+        let call_count = count.load(Ordering::Relaxed);
+        assert!(
+            call_count >= entries.len(),
+            "expected >= {} callbacks (one per tar entry), got {call_count}",
+            entries.len(),
+        );
     }
 
     // ── Property-based tests (proptest) ───────────────────────────────
