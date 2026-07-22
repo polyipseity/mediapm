@@ -256,12 +256,18 @@ mod inner {
         now: Mutex<Instant>,
     }
 
+    impl Default for TestTimeSource {
+        fn default() -> Self {
+            Self { now: Mutex::new(Instant::now()) }
+        }
+    }
+
     #[allow(dead_code)]
     impl TestTimeSource {
         /// Create a source initialized to [`Instant::now`].
         #[must_use]
         pub fn new() -> Self {
-            Self { now: Mutex::new(Instant::now()) }
+            Self::default()
         }
 
         /// Advance the synthetic clock by `dur`.
@@ -1415,7 +1421,7 @@ mod inner {
         /// Daemon ticker task driving renders at 50 ms intervals.
         /// Holds a `Weak` reference to the renderer — exits cleanly
         /// when the renderer is dropped.
-        _ticker: Option<std::thread::JoinHandle<()>>,
+        ticker: Option<std::thread::JoinHandle<()>>,
     }
 
     // ---- ProgressGroupBuilder -------------------------------------------------
@@ -1522,19 +1528,15 @@ mod inner {
                 let (rows, _) = self.dim_source.dimensions();
                 (rows as usize).clamp(1, MAX_SLOTS)
             });
-            let (mp, buffer_enabled) = match self.mp {
-                Some(mp) => (mp, None),
-                None => {
-                    let flag = Arc::new(AtomicBool::new(false));
-                    let term = BufferedTerm {
-                        inner: console::Term::stderr(),
-                        buffer_enabled: flag.clone(),
-                    };
-                    let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(
-                        Box::new(term),
-                    ));
-                    (mp, Some(flag))
-                }
+            let (mp, buffer_enabled) = if let Some(mp) = self.mp {
+                (mp, None)
+            } else {
+                let flag = Arc::new(AtomicBool::new(false));
+                let term =
+                    BufferedTerm { inner: console::Term::stderr(), buffer_enabled: flag.clone() };
+                let mp =
+                    MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
+                (mp, Some(flag))
             };
             let mut renderer = ProgressRenderer::from_mp(
                 mp,
@@ -1546,7 +1548,7 @@ mod inner {
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Some(Arc::new(Mutex::new(renderer)));
             let ticker = ProgressGroup::spawn_ticker(renderer.as_ref().unwrap());
-            ProgressGroup { renderer, _ticker: ticker }
+            ProgressGroup { renderer, ticker }
         }
 
         /// Build a group with an overall aggregate bar.
@@ -1563,19 +1565,15 @@ mod inner {
                 let (rows, _) = self.dim_source.dimensions();
                 (rows as usize).clamp(1, MAX_SLOTS)
             });
-            let (mp, buffer_enabled) = match self.mp {
-                Some(mp) => (mp, None),
-                None => {
-                    let flag = Arc::new(AtomicBool::new(false));
-                    let term = BufferedTerm {
-                        inner: console::Term::stderr(),
-                        buffer_enabled: flag.clone(),
-                    };
-                    let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(
-                        Box::new(term),
-                    ));
-                    (mp, Some(flag))
-                }
+            let (mp, buffer_enabled) = if let Some(mp) = self.mp {
+                (mp, None)
+            } else {
+                let flag = Arc::new(AtomicBool::new(false));
+                let term =
+                    BufferedTerm { inner: console::Term::stderr(), buffer_enabled: flag.clone() };
+                let mp =
+                    MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
+                (mp, Some(flag))
             };
             let (mut renderer, state) = ProgressRenderer::from_mp_with_overall(
                 mp,
@@ -1590,7 +1588,7 @@ mod inner {
             let renderer = Arc::new(Mutex::new(renderer));
             let ticker = ProgressGroup::spawn_ticker(&renderer);
             let handle = TrackedHandle { state };
-            (ProgressGroup { renderer: Some(renderer), _ticker: ticker }, handle)
+            (ProgressGroup { renderer: Some(renderer), ticker }, handle)
         }
     }
 
@@ -1607,7 +1605,7 @@ mod inner {
         /// Useful in tests where progress is not needed.
         #[must_use]
         pub fn disabled() -> Self {
-            Self { renderer: None, _ticker: None }
+            Self { renderer: None, ticker: None }
         }
 
         /// Add a child bar to the group.
@@ -1627,7 +1625,7 @@ mod inner {
             };
             let state;
             {
-                let mut locked = renderer.lock().unwrap_or_else(|e| e.into_inner());
+                let mut locked = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 state = Arc::new(SharedState::with_time_source(
                     total,
                     label,
@@ -1661,7 +1659,7 @@ mod inner {
         /// panicked while holding the lock).
         pub fn join_and_clear(&self) {
             if let Some(ref renderer) = self.renderer {
-                renderer.lock().unwrap_or_else(|e| e.into_inner()).finalize();
+                renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finalize();
             }
         }
 
@@ -1675,7 +1673,7 @@ mod inner {
         /// panicked while holding the lock).
         pub fn tick(&self) {
             if let Some(ref renderer) = self.renderer {
-                renderer.lock().unwrap_or_else(|e| e.into_inner()).tick();
+                renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tick();
             }
         }
 
@@ -1729,9 +1727,9 @@ mod inner {
             // Drop the ticker handle to detach the thread — it will
             // exit on its next iteration when weak.upgrade() returns
             // None (the renderer Arc is dropped right after this).
-            self._ticker.take();
+            self.ticker.take();
             if let Some(ref renderer) = self.renderer {
-                renderer.lock().unwrap_or_else(|e| e.into_inner()).finalize();
+                renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finalize();
             }
         }
     }
@@ -2397,7 +2395,7 @@ mod tests {
 
     #[test]
     fn format_elapsed_large_hours() {
-        assert_eq!(super::format_elapsed(std::time::Duration::from_secs(100 * 3600)), "4d4h");
+        assert_eq!(super::format_elapsed(std::time::Duration::from_hours(100)), "4d4h");
     }
 
     // ---- format_rate (pure formatting) -----------------------------------

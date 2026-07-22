@@ -15,6 +15,10 @@ pub const SHELLS: &[&str] = &["bash", "elvish", "fish", "powershell", "zsh"];
 /// Should be called from a `build.rs`. Only generates in release profile.
 /// `extra_sources` may include additional source file paths (relative to
 /// `CARGO_MANIFEST_DIR`) that should trigger regeneration on change.
+/// # Panics
+///
+/// Panics if the `CARGO_MANIFEST_DIR` environment variable is not set (this
+/// should never happen in a `build.rs` context).
 pub fn generate_completions(bin_name: &str, extra_sources: &[&str]) {
     if env::var_os(SKIP_ENV).is_some() {
         return;
