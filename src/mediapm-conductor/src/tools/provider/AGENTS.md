@@ -31,3 +31,21 @@ The `total_items` field is not part of `ResolvedToolFetch` — consumers derive 
 
 - **Bytes are always aggregate**: `ProviderProgressSnapshot.bytes` reports values summed across all sources/entries in the phase. Individual source/entry sizes are never exposed. This is an architectural invariant that decouples the bridge adapter and progress bar from internal provider structure.
 - **SI prefixes are 1000-based**: `format_count` and friends use SI decimal prefixes (`k` = 1,000, `M` = 1,000,000, `G` = 1,000,000,000), not binary prefixes (`Ki` = 1,024, etc.). Progress rates (`format_rate`) follow the same convention.
+
+### Per-entry progress during archive extraction
+
+When a postprocess source is an archive (ZIP, tar.gz, tar.xz), the extraction
+loop fires one `ProviderProgressSnapshot` callback per extracted entry
+(file or directory) within that archive. This ensures the progress bar
+updates smoothly during multi-second archive extractions (for example,
+yt-dlp or ffmpeg) instead of freezing until extraction completes.
+
+- **ZIP**: bytes counter uses decompressed entry sizes from the central
+directory, providing accurate per-entry progress.
+- **tar.gz / tar.xz**: bytes counter uses compressed bytes consumed (from
+a `CountingReader` wrapper), providing a smoothed estimate of extraction
+progress.
+- **Per-entry callbacks are nested within the per-source item**: the
+`items` counter still advances per source, not per entry — the per-entry
+callbacks are sub-steps within one source's item. The bytes counter
+tracks total extraction progress within the source's item.
