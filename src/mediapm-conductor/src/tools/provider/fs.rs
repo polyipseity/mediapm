@@ -12,16 +12,19 @@ pub fn sources() -> ResolvedToolFetch {
                 os: "windows".to_string(),
                 producer: SourceProducer::GenerateLauncher { builtin_id: "fs@v1".to_string() },
                 expected_size: None,
+                size_hint_bytes: None,
             },
             ResolvedSource {
                 os: "linux".to_string(),
                 producer: SourceProducer::GenerateLauncher { builtin_id: "fs@v1".to_string() },
                 expected_size: None,
+                size_hint_bytes: None,
             },
             ResolvedSource {
                 os: "macos".to_string(),
                 producer: SourceProducer::GenerateLauncher { builtin_id: "fs@v1".to_string() },
                 expected_size: None,
+                size_hint_bytes: None,
             },
         ],
     }

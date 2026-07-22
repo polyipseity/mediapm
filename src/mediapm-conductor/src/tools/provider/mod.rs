@@ -29,6 +29,13 @@ const ARCHIVE_ZIP: &str = "zip";
 const ARCHIVE_TAR_GZ: &str = "tar.gz";
 const ARCHIVE_TAR_XZ: &str = "tar.xz";
 
+/// Maximum number of sources to probe concurrently for expected sizes.
+/// Covers all current tools (≤3 sources) with headroom.
+pub const MAX_LOOKAHEAD: usize = 16;
+
+/// Compressed byte threshold between sub-entry progress callbacks (128 KB).
+const COMPRESSED_CHUNK: u64 = 131072;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -65,6 +72,9 @@ pub struct ResolvedSource {
     pub producer: SourceProducer,
     /// Expected byte size, if known from HEAD probes.
     pub expected_size: Option<u64>,
+    /// Optional soft upper bound for expected byte size, set from provider
+    /// definitions. Used as a fallback estimate when HEAD probes fail.
+    pub size_hint_bytes: Option<u64>,
 }
 
 /// Phase 1 output: everything needed for phase 2.
@@ -378,9 +388,15 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 /// callbacks above smoothly fill the bytes bar.
 ///
 /// Progress reporting uses [`DownloadedSource.expected_size`] for the
-/// aggregated byte total (falling back to `bytes.len()` when unset).  All
-/// extraction progress is measured in compressed (input) bytes — never
-/// decompressed (output) bytes — so totals are stable and monotonic.
+/// aggregated byte total (falling back to `bytes.len()` when unset).  The
+/// total accounts for both compressed input bytes during extraction and
+/// decompressed bytes during repacking, keeping the progress bar smooth
+/// through the full postprocess pipeline.
+///
+/// [`MAX_LOOKAHEAD`] (16) bounds the number of concurrent HEAD probes
+/// during phase 1 (resolve). [`COMPRESSED_CHUNK`] (128 KiB) controls the
+/// minimum compressed-byte interval between sub-entry progress callbacks
+/// during tar.gz/xz extraction, preventing excessive callback overhead.
 ///
 /// # Errors
 ///
@@ -434,7 +450,7 @@ pub async fn postprocess_tool_sources(
             }
         };
 
-        let (os_cm, exec_path) = process_single_source(
+        let (os_cm, exec_path, source_input_cost) = process_single_source(
             &source.bytes,
             archive_format,
             os_label,
@@ -452,7 +468,7 @@ pub async fn postprocess_tool_sources(
         content_map.extend(os_cm);
         os_exec_paths.insert(os_label.clone(), exec_path);
 
-        agg_completed_bytes += source.bytes.len() as u64;
+        agg_completed_bytes += source_input_cost;
 
         if let Some(cb) = progress_cb.as_ref() {
             cb(ProviderProgressSnapshot {
@@ -498,8 +514,9 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 ///
 /// When `progress_cb` is `Some` and the source is an archive, fires
 /// per-entry progress callbacks during extraction (ZIP: `compressed_size()`
-/// tracked; tar.gz/xz: compressed bytes consumed as estimate).  All
-/// progress uses compressed (input) sizes so totals remain stable.
+/// tracked; tar.gz/xz: compressed bytes consumed as estimate).  The
+/// progress total also includes decompressed bytes during repacking, so
+/// the bar remains smooth through the full extraction+repack pipeline.
 /// This gives the progress bar smooth updates instead of freezing during
 /// the seconds-long extraction of large archives like yt-dlp or ffmpeg.
 #[cfg(feature = "tool-presets")]
@@ -515,7 +532,7 @@ async fn process_single_source(
     items: (u64, u64),
     bytes_done_before: u64,
     bytes_total: u64,
-) -> Result<(BTreeMap<String, String>, String), crate::error::ConductorError> {
+) -> Result<(BTreeMap<String, String>, String, u64), crate::error::ConductorError> {
     use crate::error::ConductorError;
     use bytes::Bytes;
 
@@ -528,6 +545,27 @@ async fn process_single_source(
                 source,
             )
         })?;
+        // Pre-compute total input cost: compressed + decompressed
+        let total_compressed = bytes.len() as u64;
+        let decompressed_total: u64 = if archive_format == Some(ARCHIVE_ZIP) {
+            let cursor = std::io::Cursor::new(bytes);
+            match zip::ZipArchive::new(cursor) {
+                Ok(mut archive) => {
+                    let mut total = 0u64;
+                    for i in 0..archive.len() {
+                        if let Ok(file) = archive.by_index(i) {
+                            total += file.size();
+                        }
+                    }
+                    total
+                }
+                Err(_) => total_compressed.saturating_mul(3),
+            }
+        } else {
+            total_compressed.saturating_mul(3)
+        };
+        let source_input_cost = total_compressed + decompressed_total;
+        let adjusted_total = bytes_total.saturating_sub(total_compressed) + source_input_cost;
         extract_archive(
             bytes,
             archive_format,
@@ -535,17 +573,23 @@ async fn process_single_source(
             progress_cb,
             items,
             bytes_done_before,
-            bytes_total,
+            adjusted_total,
         )?;
 
         let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
 
-        let zip_bytes = pack_directory_to_uncompressed_zip_bytes(os_dir)?;
+        let zip_bytes = pack_directory_to_uncompressed_zip_bytes(
+            os_dir,
+            progress_cb,
+            items,
+            bytes_done_before + total_compressed,
+            adjusted_total,
+        )?;
         let hash = cas.put(Bytes::from(zip_bytes)).await.map_err(|e| ConductorError::Cas(e))?;
         let key = format!("{os_label}/");
         let mut cm = BTreeMap::new();
         cm.insert(key, hash.to_hex());
-        Ok((cm, exec_path))
+        Ok((cm, exec_path, source_input_cost))
     } else {
         // ── Binary/launcher format ───────────────────────────────────
         // CAS-import bytes directly; filename is the URL basename
@@ -555,7 +599,7 @@ async fn process_single_source(
         let key = format!("{os_label}/{filename}");
         let mut cm = BTreeMap::new();
         cm.insert(key, hash.to_hex());
-        Ok((cm, filename.to_string()))
+        Ok((cm, filename.to_string(), bytes.len() as u64))
     }
 }
 
@@ -570,12 +614,33 @@ async fn process_single_source(
 struct CountingReader<'a> {
     cursor: std::io::Cursor<&'a [u8]>,
     bytes_read: &'a AtomicU64,
+    last_callback_threshold: AtomicU64,
+    progress_cb: Option<&'a ProviderProgressCallback>,
+    items: (u64, u64),
+    bytes_done_before: u64,
+    bytes_total: u64,
 }
 
 impl Read for CountingReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.cursor.read(buf)?;
-        self.bytes_read.fetch_add(n as u64, Ordering::Relaxed);
+        let prev = self.bytes_read.fetch_add(n as u64, Ordering::Relaxed);
+        let new_total = prev + n as u64;
+        // Fire callback every COMPRESSED_CHUNK bytes of compressed progress
+        let new_threshold = new_total / COMPRESSED_CHUNK;
+        if new_threshold > self.last_callback_threshold.load(Ordering::Relaxed) {
+            self.last_callback_threshold.store(new_threshold, Ordering::Relaxed);
+            if let Some(cb) = self.progress_cb.as_ref() {
+                cb(ProviderProgressSnapshot {
+                    phase: ProviderPhase::Postprocess,
+                    items: self.items,
+                    bytes: (
+                        self.bytes_done_before + new_total.min(self.bytes_total),
+                        self.bytes_total,
+                    ),
+                });
+            }
+        }
         Ok(n)
     }
 }
@@ -688,9 +753,36 @@ fn extract_zip(
             }
             let mut out = std::fs::File::create(&out_path)
                 .map_err(|e| ConductorError::io("create file", &out_path, e))?;
-            std::io::copy(&mut file, &mut out)
-                .map_err(|e| ConductorError::io("write file", &out_path, e))?;
-            bytes_done += file.compressed_size();
+            let entry_compressed = file.compressed_size();
+            let entry_decompressed = file.size();
+            use std::io::Write;
+            let mut buf = [0u8; 65536];
+            let mut written: u64 = 0;
+            loop {
+                let len = file
+                    .read(&mut buf)
+                    .map_err(|e| ConductorError::io("read zip entry", &out_path, e))?;
+                if len == 0 {
+                    break;
+                }
+                out.write_all(&buf[..len])
+                    .map_err(|e| ConductorError::io("write zip entry", &out_path, e))?;
+                written += len as u64;
+                // Estimate compressed progress proportional to decompressed bytes written
+                let est_compressed = if entry_decompressed > 0 {
+                    (written * entry_compressed) / entry_decompressed
+                } else {
+                    entry_compressed
+                };
+                if let Some(cb) = progress_cb.as_ref() {
+                    cb(ProviderProgressSnapshot {
+                        phase: ProviderPhase::Postprocess,
+                        items,
+                        bytes: (bytes_done_before + bytes_done + est_compressed, bytes_total),
+                    });
+                }
+            }
+            bytes_done += entry_compressed;
         }
         if let Some(cb) = progress_cb.as_ref() {
             cb(ProviderProgressSnapshot {
@@ -714,7 +806,15 @@ fn extract_tar_gz(
 ) -> Result<(), crate::error::ConductorError> {
     let total_compressed = bytes.len() as u64;
     let bytes_read = AtomicU64::new(0);
-    let reader = CountingReader { cursor: std::io::Cursor::new(bytes), bytes_read: &bytes_read };
+    let reader = CountingReader {
+        cursor: std::io::Cursor::new(bytes),
+        bytes_read: &bytes_read,
+        last_callback_threshold: AtomicU64::new(0),
+        progress_cb,
+        items,
+        bytes_done_before,
+        bytes_total,
+    };
     let decoder = flate2::read::GzDecoder::new(reader);
     let archive = tar::Archive::new(decoder);
     extract_tar_entries_with_progress(
@@ -740,7 +840,15 @@ fn extract_tar_xz(
 ) -> Result<(), crate::error::ConductorError> {
     let total_compressed = bytes.len() as u64;
     let bytes_read = AtomicU64::new(0);
-    let reader = CountingReader { cursor: std::io::Cursor::new(bytes), bytes_read: &bytes_read };
+    let reader = CountingReader {
+        cursor: std::io::Cursor::new(bytes),
+        bytes_read: &bytes_read,
+        last_callback_threshold: AtomicU64::new(0),
+        progress_cb,
+        items,
+        bytes_done_before,
+        bytes_total,
+    };
     let decoder = xz2::read::XzDecoder::new(reader);
     let archive = tar::Archive::new(decoder);
     extract_tar_entries_with_progress(
@@ -763,6 +871,10 @@ fn extract_tar_xz(
 #[cfg(feature = "tool-presets")]
 fn pack_directory_to_uncompressed_zip_bytes(
     dir: &std::path::Path,
+    progress_cb: Option<&ProviderProgressCallback>,
+    items: (u64, u64),
+    bytes_done_before: u64,
+    bytes_total: u64,
 ) -> Result<Vec<u8>, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use zip::write::SimpleFileOptions;
@@ -773,7 +885,18 @@ fn pack_directory_to_uncompressed_zip_bytes(
         let options =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
-        pack_directory_entries(&mut writer, dir, dir, &options)?;
+        let decompressed_accumulator = AtomicU64::new(0);
+        pack_directory_entries(
+            &mut writer,
+            dir,
+            dir,
+            &options,
+            progress_cb,
+            items,
+            bytes_done_before,
+            bytes_total,
+            &decompressed_accumulator,
+        )?;
 
         writer.finish().map_err(|e| {
             ConductorError::Workflow(format!("failed to finalize zip archive: {e}"))
@@ -789,6 +912,11 @@ fn pack_directory_entries(
     root: &std::path::Path,
     dir: &std::path::Path,
     options: &zip::write::SimpleFileOptions,
+    progress_cb: Option<&ProviderProgressCallback>,
+    items: (u64, u64),
+    bytes_done_before: u64,
+    bytes_total: u64,
+    decompressed_accumulator: &AtomicU64,
 ) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
     use std::io::Read;
@@ -806,7 +934,17 @@ fn pack_directory_entries(
         })?;
         let path = entry.path();
         if path.is_dir() {
-            pack_directory_entries(writer, root, &path, options)?;
+            pack_directory_entries(
+                writer,
+                root,
+                &path,
+                options,
+                progress_cb,
+                items,
+                bytes_done_before,
+                bytes_total,
+                decompressed_accumulator,
+            )?;
         } else {
             let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string();
             let mut file = std::fs::File::open(&path).map_err(|source| {
@@ -830,6 +968,16 @@ fn pack_directory_entries(
             writer.write_all(&contents).map_err(|e| {
                 ConductorError::Workflow(format!("failed to write zip entry '{relative}': {e}"))
             })?;
+            if let Some(cb) = progress_cb.as_ref() {
+                let decompressed_so_far = decompressed_accumulator
+                    .fetch_add(contents.len() as u64, Ordering::Relaxed)
+                    + contents.len() as u64;
+                cb(ProviderProgressSnapshot {
+                    phase: ProviderPhase::Postprocess,
+                    items,
+                    bytes: (bytes_done_before + decompressed_so_far, bytes_total),
+                });
+            }
         }
     }
     Ok(())
@@ -1011,7 +1159,7 @@ mod tests {
         let zip = synthetic_zip(&[("sd", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
-        let (cmap, exec) = process_single_source(
+        let (cmap, exec, _) = process_single_source(
             &zip,
             Some(ARCHIVE_ZIP),
             "linux",
@@ -1036,7 +1184,7 @@ mod tests {
         let tgz = synthetic_tar_gz(&[("sd", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
-        let (cmap, exec) = process_single_source(
+        let (cmap, exec, _) = process_single_source(
             &tgz,
             Some(ARCHIVE_TAR_GZ),
             "macos",
@@ -1061,7 +1209,7 @@ mod tests {
         let txz = synthetic_tar_xz(&[("sd.exe", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
-        let (cmap, exec) = process_single_source(
+        let (cmap, exec, _) = process_single_source(
             &txz,
             Some(ARCHIVE_TAR_XZ),
             "windows",
@@ -1086,7 +1234,7 @@ mod tests {
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
         let launcher_bytes = generate_launcher_script("linux", "echo@v1");
-        let (cmap, exec) = process_single_source(
+        let (cmap, exec, _) = process_single_source(
             &launcher_bytes,
             None,
             "linux",
@@ -1116,7 +1264,7 @@ mod tests {
         let binary_content = b"mock-binary-content-for-cas-test";
         let tool_id = "my-tool";
         let filename = "my-tool-v1.2.3"; // URL-derived, differs from tool_id
-        let (cmap, exec) = process_single_source(
+        let (cmap, exec, _) = process_single_source(
             binary_content,
             None, // no archive format → binary path
             "linux",
@@ -1216,7 +1364,8 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub").join("b.txt"), b"bbb").unwrap();
 
-        let zip_bytes = pack_directory_to_uncompressed_zip_bytes(dir.path()).unwrap();
+        let zip_bytes =
+            pack_directory_to_uncompressed_zip_bytes(dir.path(), None, (0, 1), 0, 0).unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).unwrap();
         assert_eq!(archive.len(), 2);
 
@@ -1429,16 +1578,19 @@ mod tests {
                     os: "linux".to_string(),
                     producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
                     expected_size: Some(100),
+                    size_hint_bytes: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
                     producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
                     expected_size: Some(200),
+                    size_hint_bytes: None,
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
                     producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
                     expected_size: Some(150),
+                    size_hint_bytes: None,
                 },
             ],
         };
