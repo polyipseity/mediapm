@@ -220,12 +220,19 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use mediapm_cas::storage::in_memory::new_in_memory_cas;
     use mediapm_conductor::cache_user_level::UserLevelCache;
     use mediapm_utils::progress::recording::RecordingProgressTracker;
     use tempfile::TempDir;
 
     use super::*;
+
+    /// Serializes all tests in this module to prevent concurrent cache
+    /// interactions that cause `fetch_and_import_ytdlp_full_pipeline` to
+    /// fail intermittently (~1/20 runs) under parallel tokio runtimes.
+    static LOCK: Mutex<()> = Mutex::new(());
 
     /// Helper to create the minimal dependencies for tests that exercise
     /// paths not reaching the cache or CAS (unknown tool, no-sources tool).
@@ -245,6 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_import_rejects_unknown_tool() {
+        let _guard = LOCK.lock().unwrap();
         let (_cas, _cache, metadata_cache, _tracker, _tmp) = test_deps().await;
         // Resolution is now handled before fetch_and_import_tool_payload;
         // verify that resolve_tool_fetch rejects unknown tools.
@@ -256,6 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_import_generate_launcher_succeeds() {
+        let _guard = LOCK.lock().unwrap();
         let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
         let (fetch, canonical) =
             crate::tools::provider::resolve_tool_fetch("media-tagger", Some(&metadata_cache))
@@ -315,6 +324,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_import_ytdlp_full_pipeline() {
+        let _guard = LOCK.lock().unwrap();
         // Full 3-phase pipeline (resolve → fetch → postprocess) for a tool
         // with URL-based Fetch sources. Pre-seed both the metadata cache
         // (tag resolution) and the download cache (simulated downloads) so
@@ -385,6 +395,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_import_with_pre_resolved_canonical_version() {
+        let _guard = LOCK.lock().unwrap();
         let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
 
         // Use media_tagger's sources as a known ResolvedToolFetch.
