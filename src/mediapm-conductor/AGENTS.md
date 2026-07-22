@@ -55,6 +55,34 @@ Key ecosystem (from `Cargo.toml`):
 - The conductor **CLI binary** (`src/mediapm-conductor/src/cli.rs`) can create `ProgressGroup` from `mediapm-utils/progress` and wrap it in a callback.
 - `DownloadProgressSnapshot` and `ProgressCallback` from `mediapm-utils` are available in the library for download progress.
 
+## Provider progress bar invariants (input-size policy)
+
+The tool provisioning pipeline (`resolve → fetch → postprocess`) reports
+progress via `ProviderProgressSnapshot`. All progress bars must satisfy:
+
+- **Input-size principle**: progress tracks the resource consumed (network
+  bytes, storage bytes read), not the resource produced (uncompressed files,
+  CAS blobs). This means:
+  - Fetch: count wire bytes (Content-Length or actual downloaded bytes).
+  - Postprocess/extraction: count compressed archive bytes consumed.
+- **Monotonicity**: position is non-decreasing, total is non-decreasing,
+  position never exceeds total.
+- **Fetch total uses suffix-expected estimates**: the total at source `i` is
+  `agg_completed_i + remaining_expected[i+1]` where `remaining_expected` is
+  the sum of `expected_size` for unstarted sources. This provides a stable
+  lower bound that only updates when new sources complete.
+- **Extraction total is immutable**: the outer `agg_total_bytes` (sum of
+  compressed sizes) is passed through to extraction helpers unchanged
+  — no `effective_total` override with decompressed-size estimates.
+- **ZIP entry progress uses `compressed_size()`**: per-entry position weight
+  is `file.compressed_size()` from the ZIP central directory, not
+  `file.size()` (decompressed). This keeps position within the compressed
+  budget and prevents backward jumps.
+
+See `src/mediapm-conductor/src/tools/provider/AGENTS.md` for detailed
+per-phase invariants and `src/mediapm-conductor/src/tools/provider/mod.rs`
+for the implementation.
+
 ## Configuration Document Model
 
 Conductor uses two config documents plus one runtime state document:

@@ -245,3 +245,57 @@ async fn postprocess_fires_progress_per_source_entry() {
         "expected >= {source_count} progress callbacks (one per source), got {total_calls}",
     );
 }
+
+/// Full-pipeline progress monotonicity: fetch and postprocess phases must
+/// produce monotonically non-decreasing position within each phase, and
+/// position must never exceed total.  This is a regression test for the
+/// input-size policy fix (prevents backward jumps, total instability).
+#[tokio::test]
+async fn full_pipeline_progress_monotonic() {
+    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
+    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+        .await
+        .expect("open UserLevelCache");
+    let cas = InMemoryCas::default();
+
+    let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let snap_clone = Arc::clone(&snapshots);
+    let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> = Arc::new(move |snap| {
+        snap_clone.lock().unwrap().push(snap);
+    });
+
+    let downloaded =
+        fetch_tool_sources(&fetch, &cache, Some(cb.clone())).await.expect("fetch echo");
+    let _result =
+        postprocess_tool_sources(&downloaded, &cas, Some(cb)).await.expect("postprocess echo");
+
+    let all = snapshots.lock().unwrap().clone();
+    assert!(!all.is_empty(), "should have recorded at least one snapshot");
+
+    // Group by phase, verify monotonicity within each phase.
+    for phase in &[
+        mediapm_utils::progress::ProviderPhase::Fetch,
+        mediapm_utils::progress::ProviderPhase::Postprocess,
+    ] {
+        let phase_snaps: Vec<&ProviderProgressSnapshot> =
+            all.iter().filter(|s| &s.phase == phase).collect();
+        if phase_snaps.is_empty() {
+            continue;
+        }
+
+        let mut prev_pos = 0u64;
+        for (i, snap) in phase_snaps.iter().enumerate() {
+            let pos = snap.bytes.0;
+            let tot = snap.bytes.1;
+            assert!(
+                pos >= prev_pos,
+                "{:?} position decreased at snapshot {i}: {pos} < {prev_pos}",
+                phase,
+            );
+            assert!(pos <= tot, "{:?} position {pos} exceeds total {tot} at snapshot {i}", phase,);
+            prev_pos = pos;
+        }
+    }
+}
