@@ -200,7 +200,7 @@ pub async fn fetch_tool_sources(
         let n = fetch.sources.len();
         let mut s = vec![0u64; n + 1];
         for (i, src) in fetch.sources.iter().enumerate().rev() {
-            s[i] = s[i + 1] + src.expected_size.unwrap_or(0);
+            s[i] = s[i + 1] + src.expected_size.or(src.size_hint_bytes).unwrap_or(0);
         }
         s
     };
@@ -418,7 +418,7 @@ pub async fn postprocess_tool_sources(
     let mut content_map: BTreeMap<String, String> = BTreeMap::new();
     let mut os_exec_paths: BTreeMap<String, String> = BTreeMap::new();
     let total = downloaded.entries.len() as u64;
-    let agg_total_bytes: u64 =
+    let mut agg_total_bytes: u64 =
         downloaded.entries.iter().map(|e| e.expected_size.unwrap_or(e.bytes.len() as u64)).sum();
     let mut agg_completed_bytes: u64 = 0;
 
@@ -450,6 +450,8 @@ pub async fn postprocess_tool_sources(
             }
         };
 
+        let total_compressed = source.expected_size.unwrap_or(source.bytes.len() as u64);
+
         let (os_cm, exec_path, source_input_cost) = process_single_source(
             &source.bytes,
             archive_format,
@@ -469,6 +471,7 @@ pub async fn postprocess_tool_sources(
         os_exec_paths.insert(os_label.clone(), exec_path);
 
         agg_completed_bytes += source_input_cost;
+        agg_total_bytes = agg_total_bytes.saturating_sub(total_compressed) + source_input_cost;
 
         if let Some(cb) = progress_cb.as_ref() {
             cb(ProviderProgressSnapshot {
