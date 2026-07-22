@@ -920,6 +920,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn segment_boundaries_active_only() {
+        let (journal, _tmp) = create_test_journal().await;
+        let h1 = Hash::from_content(b"a");
+        let h2 = Hash::from_content(b"b");
+        journal.append(WalEntry::Put { hash: h1, data: Bytes::from_static(b"x") }).await.unwrap();
+        journal.append(WalEntry::Put { hash: h2, data: Bytes::from_static(b"y") }).await.unwrap();
+
+        // Active segment with entries, no sealed segments.
+        let boundaries = journal.segment_boundaries(WalPosition::ZERO).await;
+        assert!(!boundaries.is_empty(), "should have at least one boundary");
+        // All boundaries must cover [0, ∞) — each last_pos >= 0.
+        for &(first, last) in &boundaries {
+            assert!(last >= first, "boundary last {last:?} must be >= first {first:?}");
+        }
+        // Boundaries must be sorted by first_pos.
+        for w in boundaries.windows(2) {
+            assert!(w[0].0 <= w[1].0, "boundaries must be sorted");
+        }
+    }
+
+    #[tokio::test]
+    async fn segment_boundaries_filters_by_from() {
+        let (journal, _tmp) = create_test_journal().await;
+        let h1 = Hash::from_content(b"a");
+        let h2 = Hash::from_content(b"b");
+        journal.append(WalEntry::Put { hash: h1, data: Bytes::from_static(b"x") }).await.unwrap();
+        journal.append(WalEntry::Put { hash: h2, data: Bytes::from_static(b"y") }).await.unwrap();
+
+        // Boundaries from=ZERO should include the active segment.
+        let all = journal.segment_boundaries(WalPosition::ZERO).await;
+        assert!(!all.is_empty(), "should have boundaries from ZERO");
+
+        // Boundaries from=0 should be the same as from=ZERO.
+        let from0 = journal.segment_boundaries(WalPosition::from_u64(0)).await;
+        assert_eq!(all, from0, "from=ZERO and from=0 should be identical");
+
+        // Boundaries from=large should be empty.
+        let far = journal.segment_boundaries(WalPosition::from_u64(u64::MAX)).await;
+        assert!(far.is_empty(), "boundaries from far future should be empty");
+    }
+
+    #[tokio::test]
+    async fn replay_range_within_active_segment() {
+        let (journal, _tmp) = create_test_journal().await;
+        let h1 = Hash::from_content(b"a");
+        let h2 = Hash::from_content(b"b");
+        let h3 = Hash::from_content(b"c");
+        journal.append(WalEntry::Put { hash: h1, data: Bytes::from_static(b"x") }).await.unwrap();
+        journal.append(WalEntry::Put { hash: h2, data: Bytes::from_static(b"y") }).await.unwrap();
+        journal.append(WalEntry::Put { hash: h3, data: Bytes::from_static(b"z") }).await.unwrap();
+
+        // Replay range should return entries with positions in [from, to].
+        let entries =
+            journal.replay_range(WalPosition::from_u64(1), WalPosition::from_u64(2)).await;
+        assert!(!entries.is_empty(), "should have entries in [1,2]");
+        for (pos, _) in &entries {
+            assert!(
+                *pos >= WalPosition::from_u64(1) && *pos <= WalPosition::from_u64(2),
+                "entry position {pos:?} outside [1,2]",
+            );
+        }
+        // Positions must be sorted.
+        for w in entries.windows(2) {
+            assert!(w[0].0 <= w[1].0, "entries must be sorted by position");
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_range_empty_when_no_overlap() {
+        let (journal, _tmp) = create_test_journal().await;
+        let h1 = Hash::from_content(b"a");
+        let h2 = Hash::from_content(b"b");
+        journal.append(WalEntry::Put { hash: h1, data: Bytes::from_static(b"x") }).await.unwrap();
+        journal.append(WalEntry::Put { hash: h2, data: Bytes::from_static(b"y") }).await.unwrap();
+
+        // Range [5, 10] has no entries when only [0, committed] exist.
+        let entries =
+            journal.replay_range(WalPosition::from_u64(5), WalPosition::from_u64(10)).await;
+        assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn segment_boundaries_and_replay_range_with_sealed_segments() {
+        let tmp = TempDir::new().unwrap();
+        // Tiny max_segment_size so each append triggers a seal of the
+        // previous segment after the first entry.
+        let journal = FileWal::create_with_max_size(tmp.path().to_path_buf(), 0).await.unwrap();
+
+        let h1 = Hash::from_content(b"seg1");
+        let h2 = Hash::from_content(b"seg2");
+        journal.append(WalEntry::Put { hash: h1, data: Bytes::from_static(b"1") }).await.unwrap();
+        journal.append(WalEntry::Put { hash: h2, data: Bytes::from_static(b"2") }).await.unwrap();
+
+        // Should have 2 boundaries (one sealed, one active).
+        let boundaries = journal.segment_boundaries(WalPosition::ZERO).await;
+        assert_eq!(boundaries.len(), 2, "expected 2 boundaries (sealed + active)");
+        // Boundaries must be sorted.
+        assert!(boundaries[0].0 <= boundaries[1].0, "boundaries must be sorted");
+
+        // Iterating the boundaries and replaying each should return all entries.
+        let committed = journal.committed_position().await;
+        let mut all_from_boundaries = Vec::new();
+        for (start, end) in &boundaries {
+            let entries = journal.replay_range(*start, *end).await;
+            all_from_boundaries.extend(entries);
+        }
+        assert_eq!(all_from_boundaries.len(), 2, "boundary replay should cover all entries");
+        // Positions must be sorted and unique.
+        let positions: Vec<WalPosition> = all_from_boundaries.iter().map(|(p, _)| *p).collect();
+        let mut sorted = positions.clone();
+        sorted.sort();
+        assert_eq!(positions, sorted, "positions must be sorted");
+        // Every position should be ≤ committed.
+        for p in &positions {
+            assert!(*p <= committed, "position {p:?} must be <= committed {committed:?}");
+        }
+
+        // Full replay_from should return the same entries (by position).
+        let all_from_replay = journal.replay_from(WalPosition::ZERO).await;
+        let replay_positions: Vec<WalPosition> = all_from_replay.iter().map(|(p, _)| *p).collect();
+        assert_eq!(positions, replay_positions, "boundary-based and full replay must agree");
+    }
+
+    #[tokio::test]
     async fn checkpoint_persists_across_reopen() {
         let tmp = TempDir::new().unwrap();
         let cas_dir = tmp.path().to_path_buf();

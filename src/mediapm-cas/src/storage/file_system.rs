@@ -50,6 +50,18 @@ impl FileSystemCas {
     /// verify strategies, spawning a background WAL consumer with the
     /// given interval between cycles.
     ///
+    /// The background consumer starts after a 500 ms initial delay so
+    /// that fast setup flows (e.g., tests) can complete before the first
+    /// maintenance cycle races against them. After each consumer run, it
+    /// sleeps for `bg_interval` before re-running.
+    ///
+    /// # WAL consumer policy
+    ///
+    /// The consumer runs via a deferred background task, **not**
+    /// synchronously during open. This ensures the store is immediately
+    /// readable after construction. See [`CasStore::new`] for the
+    /// rationale.
+    ///
     /// # Errors
     ///
     /// Delegates to WAL creation, blob store creation, and metadata rebuild.

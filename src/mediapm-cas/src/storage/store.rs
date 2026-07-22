@@ -70,6 +70,19 @@ impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> CasStore<J,
     /// `cache_ttl` controls the reconstructed-bytes cache lifetime.
     /// Boundary callers should pass [`crate::defaults::CACHE_TTL`] unless
     /// they need a custom value.
+    ///
+    /// # WAL consumer policy (IMPORTANT)
+    ///
+    /// The WAL consumer must **never** be run synchronously during
+    /// construction or open. Adding an implicit `run_wal_consumer()` call
+    /// here blocks the caller on replaying potentially gigabytes of WAL
+    /// entries, making the store unusable for reads until the entire WAL
+    /// is drained. This defeats the purpose of write-ahead logging: the
+    /// store should be immediately readable after construction.
+    ///
+    /// The correct design is either:
+    /// - Deferred background task (see [`super::file_system::FileSystemCas::open_with_strategies_and_interval`]), or
+    /// - Explicit `flush()` by the caller.
     pub fn new(wal: J, metadata: M, blob: B, start_pos: WalPosition, cache_ttl: Duration) -> Self
     where
         J: 'static,
