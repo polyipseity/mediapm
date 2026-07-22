@@ -101,74 +101,86 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             return Ok(0);
         }
 
-        // Replay from checkpoint (inclusive). Re-processing already-consumed
-        // entries is safe because puts and deletes are idempotent.
-        let entries = self.wal.replay_from(ckpt).await;
-        if entries.is_empty() {
-            return Ok(0);
-        }
-
-        for (pos, entry) in &entries {
+        // Replay from checkpoint (inclusive) one segment at a time.
+        // Processing entries per-segment bounds memory usage: at most one
+        // sealed segment (~75 MB) is loaded at a time, avoiding the
+        // accumulation of all WAL entries in a single Vec.
+        let boundaries = self.wal.segment_boundaries(ckpt).await;
+        let mut total_consumed = 0u64;
+        for (seg_start, seg_end) in &boundaries {
             if self.is_cancelled() {
                 break;
             }
-            match entry {
-                WalEntry::Put { hash, data } => {
-                    // Write payload to Blob as Full.
-                    self.blob.write(*hash, ObjectEncoding::Full, data.clone()).await?;
-                    // Preserve existing constraint bases, if any.
-                    let existing_bases = self.metadata.get_constraint(hash).await?;
-                    self.metadata
-                        .put(
-                            *hash,
-                            MetadataEntry {
-                                len: data.len() as u64,
-                                encoding: ObjectEncoding::Full,
-                            },
-                        )
-                        .await?;
-                    // Re-apply constraint bases (constraint is stored separately
-                    // from metadata, so we must explicitly set it after put).
-                    if !existing_bases.is_empty() {
-                        self.metadata.set_constraint(*hash, existing_bases).await?;
-                    }
-                }
-                WalEntry::PutLarge { hash, content_len: _ } => {
-                    // Large objects are immediately materialized during
-                    // put(), so the WAL consumer just advances checkpoint
-                    // and trims. The payload is already in Blob + Metadata.
-                    // Preserve existing constraint bases, if any.
-                    let existing_bases = self.metadata.get_constraint(hash).await?;
-                    if !existing_bases.is_empty() {
-                        self.metadata.set_constraint(*hash, existing_bases).await?;
-                    }
-                }
-                WalEntry::Delete { hash } => {
-                    // Empty-content sentinel is indelible; skip deletion.
-                    if *hash == Hash::empty() {
-                        continue;
-                    }
-                    // Before physical deletion, re-materialize any deltas
-                    // that depend on this hash as their base. This prevents
-                    // dangling-delta reconstruction failure.
-                    self.rematerialize_deltas_for(hash).await?;
-                    self.blob.delete(hash).await?;
-                    self.metadata.delete(hash).await?;
-                }
-                WalEntry::Constraint { target, bases } => {
-                    self.metadata.set_constraint(*target, bases.clone()).await?;
-                }
+            // Use max(seg_start, ckpt) as the effective start to avoid
+            // re-processing entries that were already consumed in a
+            // previous invocation.
+            let effective_start = std::cmp::max(*seg_start, ckpt);
+            let entries = self.wal.replay_range(effective_start, *seg_end).await;
+            if entries.is_empty() {
+                continue;
             }
-            // Advance checkpoint to the next position after this entry.
-            self.checkpoint.store(pos.next().as_u64(), Ordering::SeqCst);
+            for (pos, entry) in &entries {
+                if self.is_cancelled() {
+                    break;
+                }
+                match entry {
+                    WalEntry::Put { hash, data } => {
+                        // Write payload to Blob as Full.
+                        self.blob.write(*hash, ObjectEncoding::Full, data.clone()).await?;
+                        // Preserve existing constraint bases, if any.
+                        let existing_bases = self.metadata.get_constraint(hash).await?;
+                        self.metadata
+                            .put(
+                                *hash,
+                                MetadataEntry {
+                                    len: data.len() as u64,
+                                    encoding: ObjectEncoding::Full,
+                                },
+                            )
+                            .await?;
+                        // Re-apply constraint bases (constraint is stored separately
+                        // from metadata, so we must explicitly set it after put).
+                        if !existing_bases.is_empty() {
+                            self.metadata.set_constraint(*hash, existing_bases).await?;
+                        }
+                    }
+                    WalEntry::PutLarge { hash, content_len: _ } => {
+                        // Large objects are immediately materialized during
+                        // put(), so the WAL consumer just advances checkpoint
+                        // and trims. The payload is already in Blob + Metadata.
+                        // Preserve existing constraint bases, if any.
+                        let existing_bases = self.metadata.get_constraint(hash).await?;
+                        if !existing_bases.is_empty() {
+                            self.metadata.set_constraint(*hash, existing_bases).await?;
+                        }
+                    }
+                    WalEntry::Delete { hash } => {
+                        // Empty-content sentinel is indelible; skip deletion.
+                        if *hash == Hash::empty() {
+                            continue;
+                        }
+                        // Before physical deletion, re-materialize any deltas
+                        // that depend on this hash as their base. This prevents
+                        // dangling-delta reconstruction failure.
+                        self.rematerialize_deltas_for(hash).await?;
+                        self.blob.delete(hash).await?;
+                        self.metadata.delete(hash).await?;
+                    }
+                    WalEntry::Constraint { target, bases } => {
+                        self.metadata.set_constraint(*target, bases.clone()).await?;
+                    }
+                }
+                // Advance checkpoint to the next position after this entry.
+                self.checkpoint.store(pos.next().as_u64(), Ordering::SeqCst);
+            }
+            // Trim the segment after processing.
+            if let Some((last_pos, _)) = entries.last() {
+                self.wal.trim(*last_pos).await?;
+            }
+            total_consumed += entries.len() as u64;
         }
 
-        // Trim up to the last processed position.
-        if let Some((last_pos, _)) = entries.last() {
-            self.wal.trim(*last_pos).await?;
-        }
-
-        Ok(entries.len() as u64)
+        Ok(total_consumed)
     }
 
     /// Re-materialize all delta-encoded objects that depend on `hash` as

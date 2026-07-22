@@ -110,6 +110,26 @@ impl Wal for InMemoryWal {
         guard.iter().skip(skip).cloned().collect()
     }
 
+    async fn segment_boundaries(&self, from: WalPosition) -> Vec<(WalPosition, WalPosition)> {
+        let guard = self.inner.entries.lock().unwrap();
+        let Some(&(last_pos, _)) = guard.back() else {
+            return Vec::new();
+        };
+        if last_pos < from {
+            return Vec::new();
+        }
+        vec![(from, last_pos)]
+    }
+
+    async fn replay_range(
+        &self,
+        from: WalPosition,
+        to: WalPosition,
+    ) -> Vec<(WalPosition, WalEntry)> {
+        let guard = self.inner.entries.lock().unwrap();
+        guard.iter().filter(|(pos, _)| *pos >= from && *pos <= to).cloned().collect()
+    }
+
     async fn trim(&self, up_to: WalPosition) -> Result<(), CasError> {
         let mut guard = self.inner.entries.lock().unwrap();
         while guard.front().is_some_and(|(p, _)| *p <= up_to) {

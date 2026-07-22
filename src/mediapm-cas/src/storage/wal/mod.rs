@@ -126,6 +126,33 @@ pub trait Wal: Send + Sync {
     /// Replay entries from (and including) `pos`.
     async fn replay_from(&self, pos: WalPosition) -> Vec<(WalPosition, WalEntry)>;
 
+    /// Return segment boundary positions starting at or after `from`.
+    ///
+    /// Each pair is `(first_pos, last_pos)` of a segment, in position order.
+    /// The last pair may represent the active (unsealed) segment for
+    /// segment-based WALs.
+    async fn segment_boundaries(&self, from: WalPosition) -> Vec<(WalPosition, WalPosition)> {
+        let entries = self.replay_from(from).await;
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let first = entries.first().unwrap().0;
+        let last = entries.last().unwrap().0;
+        vec![(first, last)]
+    }
+
+    /// Replay entries in the range `[from, to]` (both inclusive).
+    ///
+    /// Returns all entries at or after `from` and at or before `to`.
+    /// Behavior is undefined if `to < from`.
+    async fn replay_range(
+        &self,
+        from: WalPosition,
+        to: WalPosition,
+    ) -> Vec<(WalPosition, WalEntry)> {
+        self.replay_from(from).await.into_iter().take_while(|(pos, _)| *pos <= to).collect()
+    }
+
     /// Trim all entries up to and including `up_to`.
     async fn trim(&self, up_to: WalPosition) -> Result<(), CasError>;
 }

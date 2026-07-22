@@ -663,6 +663,114 @@ impl Wal for FileWal {
         all
     }
 
+    async fn segment_boundaries(&self, from: WalPosition) -> Vec<(WalPosition, WalPosition)> {
+        let inner = &*self.inner;
+        // Acquire write lock to prevent concurrent writes (same ordering
+        // as replay_from) before reading sealed + active segment metadata.
+        let state = inner.write_lock.lock().await;
+        let sealed = inner.sealed.lock().unwrap();
+        let committed =
+            WalPosition::from_u64(inner.next_pos.load(Ordering::SeqCst).saturating_sub(1));
+
+        let mut boundaries = Vec::new();
+
+        // Collect from sealed segments where last_pos >= from.
+        for seg in sealed.iter() {
+            if seg.last_pos < from {
+                continue;
+            }
+            boundaries.push((seg.first_pos, seg.last_pos));
+        }
+
+        // Add active segment if it overlaps [from, ∞).
+        if let Some(ref active) = state.active {
+            // Active segment covers [first_pos, committed_position].
+            if committed >= from || active.first_pos >= from {
+                boundaries.push((active.first_pos, committed));
+            }
+        }
+
+        // Sort by first_pos (both sealed and active are already in order,
+        // but the active segment always comes last).
+        boundaries.sort_by_key(|(first, _)| *first);
+
+        boundaries
+    }
+
+    async fn replay_range(
+        &self,
+        from: WalPosition,
+        to: WalPosition,
+    ) -> Vec<(WalPosition, WalEntry)> {
+        let inner = &*self.inner;
+        // Acquire write lock first (tokio::sync::Mutex) to prevent concurrent
+        // writes, then sealed list (std::sync::Mutex).
+        let _state = inner.write_lock.lock().await;
+        let sealed = inner.sealed.lock().unwrap();
+
+        let mut all = Vec::new();
+
+        // Collect from sealed segments that overlap [from, to].
+        for seg in sealed.iter() {
+            if seg.last_pos < from {
+                continue;
+            }
+            if seg.first_pos > to {
+                break;
+            }
+            let Ok(buf) = std::fs::read(&seg.path) else {
+                continue;
+            };
+            if buf.len() < format::HEADER_LEN {
+                continue;
+            }
+            let mut header = [0u8; format::HEADER_LEN];
+            header.copy_from_slice(&buf[..format::HEADER_LEN]);
+            if format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
+                .is_err()
+            {
+                continue;
+            }
+            for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+                let Ok((epos, entry)) = result else {
+                    continue;
+                };
+                if epos >= from && epos <= to {
+                    all.push((epos, entry));
+                }
+            }
+        }
+
+        // Collect from active segment.
+        let active_path = ActiveSegment::path(&inner.journal_dir);
+        if let Ok(buf) = std::fs::read(&active_path)
+            && buf.len() >= format::HEADER_LEN
+        {
+            let mut header = [0u8; format::HEADER_LEN];
+            header.copy_from_slice(&buf[..format::HEADER_LEN]);
+            if format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
+                .is_err()
+            {
+                // Skip active segment if header is corrupt.
+            } else {
+                for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+                    let Ok((epos, entry)) = result else {
+                        break;
+                    };
+                    if epos >= from && epos <= to {
+                        all.push((epos, entry));
+                    }
+                }
+            }
+        }
+
+        // Sort and dedup by position.
+        all.sort_by_key(|(p, _)| *p);
+        all.dedup_by_key(|(p, _)| *p);
+
+        all
+    }
+
     async fn trim(&self, up_to: WalPosition) -> Result<(), CasError> {
         let inner = &*self.inner;
 
