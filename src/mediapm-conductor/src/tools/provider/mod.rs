@@ -1301,6 +1301,170 @@ mod tests {
         );
     }
 
+    // ── Progress monotonicity ────────────────────────────────────────
+    //
+    // These tests verify that extraction progress callbacks produce
+    // monotonically non-decreasing position and constant total.  Before
+    // the fix, ZIP extraction used decompressed sizes that could cause
+    // backward jumps and total changes.
+
+    use std::sync::Mutex;
+
+    /// Records all progress snapshots for later analysis.
+    struct SnapshotRecorder {
+        snapshots: Arc<Mutex<Vec<ProviderProgressSnapshot>>>,
+    }
+
+    impl SnapshotRecorder {
+        fn new() -> (Self, Option<ProviderProgressCallback>) {
+            let snapshots: Arc<Mutex<Vec<ProviderProgressSnapshot>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let clone = Arc::clone(&snapshots);
+            let cb: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
+                clone.lock().unwrap().push(snap);
+            }));
+            (Self { snapshots }, cb)
+        }
+
+        fn snapshots(&self) -> Vec<ProviderProgressSnapshot> {
+            self.snapshots.lock().unwrap().clone()
+        }
+    }
+
+    #[test]
+    fn extract_zip_progress_position_non_decreasing_and_total_constant() {
+        let entries: [(&str, &[u8]); 4] = [
+            ("a.bin", &[0u8; 100]),
+            ("b.bin", &[1u8; 500]),
+            ("c.bin", &[2u8; 200]),
+            ("d.bin", &[3u8; 800]),
+        ];
+        let zip_bytes = synthetic_zip(&entries);
+        let dir = tempfile::tempdir().unwrap();
+        let (recorder, cb) = SnapshotRecorder::new();
+
+        // bytes_total=0 is caller's choice — we only check that it stays
+        // constant (never changes mid-extraction).  The per-entry position
+        // uses compressed_size() so it tracks monotonically even when the
+        // outer total is zero.
+        extract_zip(&zip_bytes, dir.path(), cb.as_ref(), (0, 1), 0, 0)
+            .expect("extract_zip should succeed");
+
+        let snapshots = recorder.snapshots();
+        assert!(!snapshots.is_empty(), "should have recorded at least one snapshot");
+
+        let initial_total = snapshots[0].bytes.1;
+        let mut prev_position = 0u64;
+
+        for (i, snap) in snapshots.iter().enumerate() {
+            let pos = snap.bytes.0;
+            assert!(
+                pos >= prev_position,
+                "position decreased at snapshot {i}: {pos} < {prev_position}"
+            );
+            assert_eq!(
+                snap.bytes.1, initial_total,
+                "total changed at snapshot {i}: {} != {initial_total}",
+                snap.bytes.1,
+            );
+            prev_position = pos;
+        }
+    }
+
+    #[test]
+    fn extract_tar_gz_progress_position_non_decreasing() {
+        let entries: [(&str, &[u8]); 3] =
+            [("x.bin", &[0u8; 256]), ("y.bin", &[1u8; 512]), ("z.bin", &[2u8; 128])];
+        let tgz = synthetic_tar_gz(&entries);
+        let dir = tempfile::tempdir().unwrap();
+        let (recorder, cb) = SnapshotRecorder::new();
+
+        extract_tar_gz(&tgz, dir.path(), cb.as_ref(), (0, 1), 0, 0)
+            .expect("extract_tar_gz should succeed");
+
+        let snapshots = recorder.snapshots();
+        assert!(!snapshots.is_empty());
+
+        let mut prev_pos = 0u64;
+        for (i, snap) in snapshots.iter().enumerate() {
+            let pos = snap.bytes.0;
+            assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}");
+            prev_pos = pos;
+        }
+    }
+
+    #[test]
+    fn extract_tar_xz_progress_position_non_decreasing() {
+        let entries: [(&str, &[u8]); 2] = [("a.bin", &[0u8; 200]), ("b.bin", &[1u8; 300])];
+        let txz = synthetic_tar_xz(&entries);
+        let dir = tempfile::tempdir().unwrap();
+        let (recorder, cb) = SnapshotRecorder::new();
+
+        extract_tar_xz(&txz, dir.path(), cb.as_ref(), (0, 1), 0, 0)
+            .expect("extract_tar_xz should succeed");
+
+        let snapshots = recorder.snapshots();
+        assert!(!snapshots.is_empty());
+
+        let mut prev_pos = 0u64;
+        for (i, snap) in snapshots.iter().enumerate() {
+            let pos = snap.bytes.0;
+            assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}");
+            prev_pos = pos;
+        }
+    }
+
+    /// Fetch-phase progress with known expected_size values: position should
+    /// never decrease, and position should never exceed total (the suffix-
+    /// expected estimate).  Total may decrease as remaining-expected narrows
+    /// (the intentional "ASAP lower-bound" design).
+    #[tokio::test]
+    async fn fetch_progress_monotonic_with_known_sizes() {
+        use crate::cache_user_level::UserLevelCache;
+
+        let fetch = ResolvedToolFetch {
+            tool_id: "test-tool".to_string(),
+            sources: vec![
+                ResolvedSource {
+                    os: "linux".to_string(),
+                    producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
+                    expected_size: Some(100),
+                },
+                ResolvedSource {
+                    os: "macos".to_string(),
+                    producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
+                    expected_size: Some(200),
+                },
+                ResolvedSource {
+                    os: "windows".to_string(),
+                    producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
+                    expected_size: Some(150),
+                },
+            ],
+        };
+
+        let cache_root = tempfile::tempdir().expect("tempdir for cache");
+        let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("open UserLevelCache");
+
+        let (recorder, cb) = SnapshotRecorder::new();
+
+        let _result = fetch_tool_sources(&fetch, &cache, cb).await.expect("fetch should succeed");
+
+        let snapshots = recorder.snapshots();
+        assert!(!snapshots.is_empty(), "should have recorded at least one fetch snapshot");
+
+        let mut prev_pos = 0u64;
+        for (i, snap) in snapshots.iter().enumerate() {
+            let pos = snap.bytes.0;
+            let tot = snap.bytes.1;
+            assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}");
+            assert!(pos <= tot, "position {pos} exceeds total {tot} at snapshot {i}");
+            prev_pos = pos;
+        }
+    }
+
     // ── Property-based tests (proptest) ───────────────────────────────
 
     use super::super::helpers::build_os_conditional_selector;
