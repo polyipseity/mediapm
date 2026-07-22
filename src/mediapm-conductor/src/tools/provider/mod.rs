@@ -162,8 +162,10 @@ pub async fn resolve_tool_fetch(
 /// generate shell/batch script bytes in memory. Uses `cache` for deduplication
 /// of downloaded payloads.
 ///
-/// Progress reporting uses [`ResolvedSource.expected_size`] for the
-/// aggregated byte total (falls back to 0 when unset).  After download,
+/// Progress reporting: the per-chunk total combines already-completed sizes
+/// (`agg_completed_bytes`) + the best lower bound for the current source
+/// (Content-Length if available, otherwise `downloaded_so_far`) + expected
+/// sizes for unstarted sources (`remaining_expected`).  After download,
 /// [`DownloadedSource.expected_size`] is set to the actual byte count
 /// (or `max(expected, actual)` if a HEAD-based estimate existed).
 ///
@@ -178,12 +180,23 @@ pub async fn fetch_tool_sources(
 ) -> Result<DownloadedSources, crate::error::ConductorError> {
     let mut entries = Vec::with_capacity(fetch.sources.len());
     let mut cached_count: usize = 0;
-    let mut items_done = 0u64;
     let total = fetch.sources.len() as u64;
-    let agg_total_bytes: u64 = fetch.sources.iter().map(|s| s.expected_size.unwrap_or(0)).sum();
     let mut agg_completed_bytes: u64 = 0;
 
-    for source in &fetch.sources {
+    // Pre-compute suffix sums of expected_size: suffix_expected[i] = sum of
+    // expected_size for sources[i..].  remaining_expected for sources after
+    // the current one is suffix_expected[idx + 1].
+    let suffix_expected: Vec<u64> = {
+        let n = fetch.sources.len();
+        let mut s = vec![0u64; n + 1];
+        for (i, src) in fetch.sources.iter().enumerate().rev() {
+            s[i] = s[i + 1] + src.expected_size.unwrap_or(0);
+        }
+        s
+    };
+
+    for (idx, source) in fetch.sources.iter().enumerate() {
+        let remaining_expected = suffix_expected[idx + 1];
         match &source.producer {
             SourceProducer::Fetch { urls } => {
                 let cache_key = &urls[0];
@@ -198,10 +211,10 @@ pub async fn fetch_tool_sources(
                         &fetch.tool_id,
                         &source.os,
                         &progress_cb,
-                        items_done,
+                        idx as u64,
                         total,
                         agg_completed_bytes,
-                        agg_total_bytes,
+                        remaining_expected,
                     )
                     .await?;
                     agg_completed_bytes += downloaded.len() as u64;
@@ -229,12 +242,11 @@ pub async fn fetch_tool_sources(
                 });
             }
         }
-        items_done += 1;
         if let Some(cb) = progress_cb.as_ref() {
             cb(ProviderProgressSnapshot {
                 phase: ProviderPhase::Fetch,
-                items: (items_done, total),
-                bytes: (agg_completed_bytes, std::cmp::max(agg_total_bytes, agg_completed_bytes)),
+                items: ((idx + 1) as u64, total),
+                bytes: (agg_completed_bytes, agg_completed_bytes + remaining_expected),
             });
         }
     }
@@ -252,7 +264,7 @@ async fn fetch_bytes_from_candidates(
     items_done: u64,
     total: u64,
     agg_completed_bytes: u64,
-    agg_total_bytes: u64,
+    remaining_expected: u64,
 ) -> Result<Vec<u8>, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use futures_util::StreamExt;
@@ -279,18 +291,16 @@ async fn fetch_bytes_from_candidates(
                     buffer.extend_from_slice(&chunk);
                     if let Some(cb) = progress_cb {
                         let bytes_completed = agg_completed_bytes + downloaded;
-                        let bytes_total_estimate =
-                            agg_completed_bytes + total_bytes.unwrap_or(downloaded);
+                        // Best lower bound for current source: Content-Length
+                        // if available, otherwise bytes received so far.
+                        let current_estimate = total_bytes.unwrap_or(downloaded);
+                        // Total = completed sizes + current source bound + expected future.
+                        let total_estimate =
+                            agg_completed_bytes + current_estimate + remaining_expected;
                         cb(ProviderProgressSnapshot {
                             phase: ProviderPhase::Fetch,
                             items: (items_done, total),
-                            bytes: (
-                                bytes_completed,
-                                std::cmp::max(
-                                    bytes_completed,
-                                    std::cmp::max(agg_total_bytes, bytes_total_estimate),
-                                ),
-                            ),
+                            bytes: (bytes_completed, total_estimate),
                         });
                     }
                 }
@@ -349,17 +359,15 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 /// freezing for seconds at a time during the decompression of large
 /// archives (yt-dlp, ffmpeg, deno, rsgain).
 ///
-/// - **ZIP extraction**: the total decompressed size is pre-computed from
-///   the central directory, and a callback fires after each entry with
-///   cumulative decompressed bytes as the position. This is the most
-///   accurate tracking — the bar reaches 100% exactly when extraction ends.
+/// - **ZIP extraction**: each entry's `compressed_size()` from the ZIP
+///   central directory is used as the position weight, so progress tracks
+///   compressed bytes processed (input size). A callback fires after each
+///   entry with cumulative compressed bytes as the position.
 ///
 /// - **tar.gz / tar.xz extraction**: the compressed payload size is used
 ///   as the total, and a [`CountingReader`] tracks how many compressed
 ///   bytes have been consumed by the decoder. A callback fires after each
-///   tar entry. Since the decompressed size can exceed the compressed size,
-///   the bar may reach 100% before extraction fully completes — this
-///   estimated-but-smooth bar is far better than a frozen one.
+///   tar entry.
 ///
 /// - **Binary / launcher sources**: no intermediate callbacks are needed
 ///   because CAS import is an instant in-memory operation.
@@ -370,7 +378,9 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 /// callbacks above smoothly fill the bytes bar.
 ///
 /// Progress reporting uses [`DownloadedSource.expected_size`] for the
-/// aggregated byte total (falling back to `bytes.len()` when unset).
+/// aggregated byte total (falling back to `bytes.len()` when unset).  All
+/// extraction progress is measured in compressed (input) bytes — never
+/// decompressed (output) bytes — so totals are stable and monotonic.
 ///
 /// # Errors
 ///
@@ -487,8 +497,9 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// Returns file-level content key (`{os}/{filename}`).
 ///
 /// When `progress_cb` is `Some` and the source is an archive, fires
-/// per-entry progress callbacks during extraction (ZIP: decompressed bytes
-/// tracked accurately; tar.gz/xz: compressed bytes consumed as estimate).
+/// per-entry progress callbacks during extraction (ZIP: `compressed_size()`
+/// tracked; tar.gz/xz: compressed bytes consumed as estimate).  All
+/// progress uses compressed (input) sizes so totals remain stable.
 /// This gives the progress bar smooth updates instead of freezing during
 /// the seconds-long extraction of large archives like yt-dlp or ffmpeg.
 #[cfg(feature = "tool-presets")]
@@ -582,7 +593,7 @@ fn extract_tar_entries_with_progress<R: Read>(
     progress_cb: Option<&ProviderProgressCallback>,
     items: (u64, u64),
     bytes_done_before: u64,
-    effective_total: u64,
+    bytes_total: u64,
 ) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
     for result in
@@ -598,7 +609,7 @@ fn extract_tar_entries_with_progress<R: Read>(
             cb(ProviderProgressSnapshot {
                 phase: ProviderPhase::Postprocess,
                 items,
-                bytes: (bytes_done_before + consumed.min(total_compressed), effective_total),
+                bytes: (bytes_done_before + consumed.min(total_compressed), bytes_total),
             });
         }
     }
@@ -656,20 +667,10 @@ fn extract_zip(
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| ConductorError::Workflow(format!("ZIP open error: {e}")))?;
 
-    // Pre-compute total decompressed size from ZIP central directory so the
-    // progress bar has an accurate total from the start.
-    // Uses a separate loop block so the mutable borrow is released before the
-    // extraction loop below.
-    let total_decompressed: u64 = {
-        let mut total = 0u64;
-        for i in 0..archive.len() {
-            if let Ok(f) = archive.by_index(i) {
-                total += f.size();
-            }
-        }
-        total
-    };
-    let effective_total = std::cmp::max(bytes_total, bytes_done_before + total_decompressed);
+    // Track per-entry compressed sizes (input size) as position weight.
+    // The sum of compressed_size() is slightly less than source.bytes.len()
+    // (ZIP local-file-header overhead), so position stays strictly within
+    // the compressed-size budget and the total (`bytes_total`) never changes.
     let mut bytes_done: u64 = 0;
 
     for i in 0..archive.len() {
@@ -689,13 +690,13 @@ fn extract_zip(
                 .map_err(|e| ConductorError::io("create file", &out_path, e))?;
             std::io::copy(&mut file, &mut out)
                 .map_err(|e| ConductorError::io("write file", &out_path, e))?;
-            bytes_done += file.size();
+            bytes_done += file.compressed_size();
         }
         if let Some(cb) = progress_cb.as_ref() {
             cb(ProviderProgressSnapshot {
                 phase: ProviderPhase::Postprocess,
                 items,
-                bytes: (bytes_done_before + bytes_done, effective_total),
+                bytes: (bytes_done_before + bytes_done, bytes_total),
             });
         }
     }
@@ -712,7 +713,6 @@ fn extract_tar_gz(
     bytes_total: u64,
 ) -> Result<(), crate::error::ConductorError> {
     let total_compressed = bytes.len() as u64;
-    let effective_total = std::cmp::max(bytes_total, bytes_done_before + total_compressed);
     let bytes_read = AtomicU64::new(0);
     let reader = CountingReader { cursor: std::io::Cursor::new(bytes), bytes_read: &bytes_read };
     let decoder = flate2::read::GzDecoder::new(reader);
@@ -725,7 +725,7 @@ fn extract_tar_gz(
         progress_cb,
         items,
         bytes_done_before,
-        effective_total,
+        bytes_total,
     )
 }
 
@@ -739,7 +739,6 @@ fn extract_tar_xz(
     bytes_total: u64,
 ) -> Result<(), crate::error::ConductorError> {
     let total_compressed = bytes.len() as u64;
-    let effective_total = std::cmp::max(bytes_total, bytes_done_before + total_compressed);
     let bytes_read = AtomicU64::new(0);
     let reader = CountingReader { cursor: std::io::Cursor::new(bytes), bytes_read: &bytes_read };
     let decoder = xz2::read::XzDecoder::new(reader);
@@ -752,7 +751,7 @@ fn extract_tar_xz(
         progress_cb,
         items,
         bytes_done_before,
-        effective_total,
+        bytes_total,
     )
 }
 
