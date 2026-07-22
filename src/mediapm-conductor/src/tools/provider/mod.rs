@@ -1068,6 +1068,21 @@ mod tests {
         encoder.finish().unwrap()
     }
 
+    /// Simple deterministic pseudo-random buffer for creating hard-to-compress
+    /// data, ensuring compressed size stays close to uncompressed size during
+    /// sub-entry progress tests.
+    fn pseudo_random_buffer(size: usize) -> Vec<u8> {
+        let mut data = vec![0u8; size];
+        let mut state: u64 = 123456789;
+        for byte in data.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+        data
+    }
+
     fn synthetic_tar_xz(entries: &[(&str, &[u8])]) -> Vec<u8> {
         use xz2::write::XzEncoder;
         let buf = Vec::new();
@@ -1298,6 +1313,93 @@ mod tests {
         assert_eq!(exec, filename, "executable should be URL-derived filename for binary format");
     }
 
+    // ── size_hint_bytes ───────────────────────────────────────────────
+
+    #[test]
+    fn sd_provider_sources_have_size_hint_bytes() {
+        let fetch = sd::sources();
+        for source in &fetch.sources {
+            assert!(
+                source.size_hint_bytes.is_some(),
+                "sd source for {} should have size_hint_bytes",
+                source.os
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_providers_size_hint_bytes_are_none() {
+        for (name, fetch) in [
+            ("echo", echo::sources()),
+            ("archive", archive::sources()),
+            ("export", export::sources()),
+            ("fs", fs::sources()),
+            ("import", import::sources()),
+        ] {
+            for source in &fetch.sources {
+                assert_eq!(
+                    source.size_hint_bytes, None,
+                    "{name} source for {} should have None",
+                    source.os
+                );
+            }
+        }
+    }
+
+    // ── source_input_cost ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn process_single_source_binary_input_cost_equals_byte_length() {
+        let cas = InMemoryCas::default();
+        let os_dir = tempfile::tempdir().unwrap();
+        let content = b"binary-content-for-cost-test";
+        let (_, _, cost) = process_single_source(
+            content,
+            None,
+            "linux",
+            "tool",
+            os_dir.path(),
+            "tool",
+            &cas,
+            None,
+            (0, 1),
+            0,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cost, content.len() as u64, "binary input cost should equal byte length");
+    }
+
+    #[tokio::test]
+    async fn process_single_source_archive_input_cost_exceeds_compressed_size() {
+        let content = b"some-content-that-will-be-in-the-archive";
+        let zip = synthetic_zip(&[("file.bin", content)]);
+        let cas = InMemoryCas::default();
+        let os_dir = tempfile::tempdir().unwrap();
+        let (_, _, cost) = process_single_source(
+            &zip,
+            Some(ARCHIVE_ZIP),
+            "linux",
+            "tool",
+            os_dir.path(),
+            "",
+            &cas,
+            None,
+            (0, 1),
+            0,
+            0,
+        )
+        .await
+        .unwrap();
+        // cost = compressed + decompressed.
+        assert!(
+            cost > content.len() as u64,
+            "archive input_cost {cost} should exceed decompressed size alone ({})",
+            content.len(),
+        );
+    }
+
     // ── generate_launcher_script ──────────────────────────────────────
 
     #[test]
@@ -1447,6 +1549,45 @@ mod tests {
             call_count >= entries.len(),
             "expected >= {} callbacks (one per tar entry), got {call_count}",
             entries.len(),
+        );
+    }
+
+    // ── Sub-entry progress for large archives ─────────────────────
+    //
+    // These tests verify that extraction of a single large archive entry
+    // fires multiple progress callbacks (sub-entry granularity), not just
+    // one callback per entry.  A 200 KB hard-to-compress entry in a ZIP
+    // with 64 KB read chunks produces ~4 chunk callbacks.  A 300 KB
+    // hard-to-compress tar.gz entry triggers ~2 CountingReader callbacks
+    // at COMPRESSED_CHUNK (128 KB) boundaries.
+
+    #[test]
+    fn extract_zip_large_entry_fires_multiple_sub_entry_callbacks() {
+        let large = pseudo_random_buffer(200_000);
+        let entries = [("large.bin", large.as_slice())];
+        let zip = synthetic_zip(&entries);
+        let dir = tempfile::tempdir().unwrap();
+        let (cb, count) = counting_progress_cb();
+        extract_zip(&zip, dir.path(), cb.as_ref(), (0, 1), 0, 0).unwrap();
+        let call_count = count.load(Ordering::Relaxed);
+        assert!(
+            call_count >= 5,
+            "expected >=5 callbacks for large zip entry (entry-level + ~4 chunk), got {call_count}",
+        );
+    }
+
+    #[test]
+    fn extract_tar_gz_large_entry_fires_sub_entry_progress() {
+        let large = pseudo_random_buffer(300_000);
+        let entries = [("large.bin", large.as_slice())];
+        let tgz = synthetic_tar_gz(&entries);
+        let dir = tempfile::tempdir().unwrap();
+        let (cb, count) = counting_progress_cb();
+        extract_tar_gz(&tgz, dir.path(), cb.as_ref(), (0, 1), 0, 0).unwrap();
+        let call_count = count.load(Ordering::Relaxed);
+        assert!(
+            call_count >= 3,
+            "expected >=3 callbacks for large tar.gz (entry-level + ~2 sub-entry), got {call_count}",
         );
     }
 
