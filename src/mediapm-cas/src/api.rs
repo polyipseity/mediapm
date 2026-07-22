@@ -134,7 +134,10 @@ pub trait CasApi: Send + Sync {
     async fn put_stream<R: tokio::io::AsyncRead + Send + Unpin>(
         &self,
         mut reader: R,
-    ) -> Result<Hash, CasError> {
+    ) -> Result<Hash, CasError>
+    where
+        Self: Sized,
+    {
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
         reader.read_to_end(&mut buf).await?;
@@ -150,7 +153,10 @@ pub trait CasApi: Send + Sync {
         &self,
         hash: Hash,
         mut writer: W,
-    ) -> Result<(), CasError> {
+    ) -> Result<(), CasError>
+    where
+        Self: Sized,
+    {
         use tokio::io::AsyncWriteExt;
         let data = self.get(hash).await?;
         writer.write_all(&data).await?;

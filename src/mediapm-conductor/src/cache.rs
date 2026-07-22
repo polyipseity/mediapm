@@ -59,7 +59,7 @@ pub struct CachePruneReport {
 #[derive(Clone)]
 pub struct Cache {
     /// Shared CAS store that persists cached payload bytes.
-    cas: Arc<FileSystemCas>,
+    cas: Arc<dyn CasApi>,
     /// Path to one JSON metadata index file.
     index_path: PathBuf,
     /// In-memory index guarded for concurrent worker access.
@@ -71,6 +71,46 @@ pub struct Cache {
 }
 
 impl Cache {
+    /// Opens a cache backed by a pre-built CAS store.
+    ///
+    /// Creates only the cache root directory and metadata index; skips
+    /// CAS store directory creation and background maintenance since the
+    /// caller manages the CAS lifecycle.
+    ///
+    /// Useful for tests that use [`InMemoryCas`](mediapm_cas::InMemoryCas)
+    /// to avoid filesystem races.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError`] when filesystem preparation or index
+    /// loading fails.
+    pub async fn open_with_cas(
+        root: &Path,
+        index_file_name: &str,
+        entry_ttl_seconds: u64,
+        cas: Arc<dyn CasApi>,
+    ) -> Result<Self, ConductorError> {
+        fs::create_dir_all(root).map_err(|source| ConductorError::Io {
+            operation: "creating cache root".to_string(),
+            path: root.to_path_buf(),
+            source,
+        })?;
+        let normalized_index_file_name = normalize_index_file_name(index_file_name);
+        let index_path = root.join(normalized_index_file_name);
+        let index = load_index_file(&index_path);
+        if !index_path.exists() {
+            let _ = write_index_file(&index_path, &index);
+        }
+        let cache = Self {
+            cas,
+            index_path,
+            index: Arc::new(Mutex::new(index)),
+            entry_ttl_seconds,
+            bg_guard: None,
+        };
+        Ok(cache)
+    }
+
     /// Opens one cache root with a custom TTL and configurable background
     /// maintenance interval.
     async fn open_internal(
@@ -79,11 +119,6 @@ impl Cache {
         entry_ttl_seconds: u64,
         maintenance_interval_seconds: u64,
     ) -> Result<Self, ConductorError> {
-        fs::create_dir_all(root).map_err(|source| ConductorError::Io {
-            operation: "creating cache root".to_string(),
-            path: root.to_path_buf(),
-            source,
-        })?;
         let store_dir = root.join("store");
         fs::create_dir_all(&store_dir).map_err(|source| ConductorError::Io {
             operation: "creating cache store directory".to_string(),
@@ -96,19 +131,13 @@ impl Cache {
                 store_dir.display()
             ))
         })?;
-        let normalized_index_file_name = normalize_index_file_name(index_file_name);
-        let index_path = root.join(normalized_index_file_name);
-        let index = load_index_file(&index_path);
-        if !index_path.exists() {
-            let _ = write_index_file(&index_path, &index);
-        }
-        let mut cache = Self {
-            cas: Arc::new(cas),
-            index_path,
-            index: Arc::new(Mutex::new(index)),
+        let mut cache = Self::open_with_cas(
+            root,
+            index_file_name,
             entry_ttl_seconds,
-            bg_guard: None,
-        };
+            Arc::new(cas) as Arc<dyn CasApi>,
+        )
+        .await?;
         // Start background prune loop.
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancelled_clone = cancelled.clone();
