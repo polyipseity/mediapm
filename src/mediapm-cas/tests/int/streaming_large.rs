@@ -1,7 +1,7 @@
 //! Large-object and streaming-path integration tests.
 //!
 //! These tests exercise the streaming `put`/`get_to_writer` paths and verify
-//! behavior at the WAL-inline threshold boundary (64 MiB).  Test data is:
+//! behavior at the WAL-inline threshold boundary (1 MiB).  Test data is:
 //!
 //! - 1 MiB for streaming-path correctness (well below threshold).
 //! - 65 MiB for threshold-exceeded paths (above
@@ -19,7 +19,7 @@ use tempfile::tempdir;
 
 /// Size of a 1 MiB payload for streaming correctness tests.
 const SIZE_1MIB: u64 = 1024 * 1024;
-/// Size of a 65 MiB payload (> [`WAL_INLINE_THRESHOLD`]) for `TooLarge` tests.
+/// Size of a 65 MiB payload (> old [`WAL_INLINE_THRESHOLD`]) for `TooLarge` tests.
 #[cfg(feature = "large-tests")]
 const SIZE_65MIB: u64 = 65 * 1024 * 1024;
 

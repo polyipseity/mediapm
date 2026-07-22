@@ -21,9 +21,12 @@ pub const CACHE_TTL: Duration = Duration::from_mins(1);
 /// Default maximum WAL segment size (64 MiB).
 pub const WAL_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 
-/// Default threshold for inlining data in WAL entries (64 MiB).
+/// Default threshold for inlining data in WAL entries (1 MiB).
 /// Objects larger than this use external payload storage.
-pub const WAL_INLINE_THRESHOLD: u64 = 64 * 1024 * 1024;
+/// All tool binaries (~8-50 MiB) exceed this threshold, so they are stored as
+/// `PutLarge` with zero inline data in the pending map, preventing memory
+/// accumulation during WAL replay and consumer operations.
+pub const WAL_INLINE_THRESHOLD: u64 = 1024 * 1024;
 
 /// Default buffer size for streaming I/O (256 KiB).
 pub const OBJECT_STREAM_BUFFER_SIZE: u32 = 262_144;
