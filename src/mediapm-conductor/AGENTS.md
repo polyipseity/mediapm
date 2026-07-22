@@ -69,11 +69,18 @@ progress via `ProviderProgressSnapshot`. All progress bars must satisfy:
   position never exceeds total.
 - **Fetch total uses suffix-expected estimates**: the total at source `i` is
   `agg_completed_i + remaining_expected[i+1]` where `remaining_expected` is
-  the sum of `expected_size` for unstarted sources. This provides a stable
-  lower bound that only updates when new sources complete.
-- **Extraction total is immutable**: the outer `agg_total_bytes` (sum of
-  compressed sizes) is passed through to extraction helpers unchanged
-  — no `effective_total` override with decompressed-size estimates.
+  the sum of `expected_size.or(size_hint_bytes).unwrap_or(0)` for unstarted
+  sources. When HEAD probing fails and `expected_size` is `None`,
+  `size_hint_bytes` from the provider definition serves as a fallback
+  estimate to keep the initial total stable.
+- **Total adjusts per-source for decompressed cost in postprocess**: the
+  outer `agg_total_bytes` starts as the sum of compressed sizes (via
+  `expected_size.unwrap_or(bytes.len())`). After each source, it is
+  re-adjusted: `agg_total_bytes = agg_total_bytes - total_compressed +
+  source_input_cost` where `source_input_cost = total_compressed +
+  decompressed_total` for archives. This ensures the total reflects the
+  actual work (both compressed and decompressed bytes processed) and that
+  position never exceeds total.
 - **ZIP entry progress uses `compressed_size()`**: per-entry position weight
   is `file.compressed_size()` from the ZIP central directory, not
   `file.size()` (decompressed). This keeps position within the compressed

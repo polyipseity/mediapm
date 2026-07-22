@@ -82,7 +82,13 @@ All progress callbacks must satisfy:
 - **Total is monotonically non-decreasing** within a single phase.
   Total must never decrease within the same source. Total may increase
   when a new source's size becomes known (fetch phase: Content-Length
-  arrives; postprocess phase: fixed at start from compressed sum).
-  The official policy allows bounded non-monotonicity (<10% decrease)
-  when required for ASAP info propagation.
+  arrives; postprocess phase: per-source adjustment for decompressed
+  cost). The official policy allows bounded non-monotonicity (<10%
+  decrease) when required for ASAP info propagation.
+- **Postprocess total adjusts per source**: `agg_total_bytes` starts as
+  the sum of compressed sizes and is re-adjusted after each source to
+  `agg_total_bytes - total_compressed + source_input_cost`. For archives
+  (`source_input_cost = compressed + decompressed`) this increases the
+  total to reflect actual extraction work. For binaries (`source_input_cost
+  = compressed`) the total stays unchanged.
 - **Position never exceeds total** at any point. Position strictly ≤ total.
