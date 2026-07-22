@@ -220,8 +220,6 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use mediapm_cas::storage::in_memory::new_in_memory_cas;
     use mediapm_conductor::cache_user_level::UserLevelCache;
     use mediapm_utils::progress::recording::RecordingProgressTracker;
@@ -229,31 +227,17 @@ mod tests {
 
     use super::*;
 
-    /// Serializes all tests in this module to prevent concurrent cache
-    /// interactions that cause `fetch_and_import_ytdlp_full_pipeline` to
-    /// fail intermittently (~1/20 runs) under parallel tokio runtimes.
-    static LOCK: Mutex<()> = Mutex::new(());
-
-    /// Helper to create the minimal dependencies for tests that exercise
-    /// paths not reaching the cache or CAS (unknown tool, no-sources tool).
-    async fn test_deps()
-    -> (impl CasApi, ToolDownloadCache, ToolDownloadCache, RecordingProgressTracker, TempDir) {
+    #[tokio::test]
+    async fn fetch_and_import_rejects_unknown_tool() {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+        let _cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
             .await
             .expect("cache open");
         let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
             .await
             .expect("metadata cache open");
-        let tracker = RecordingProgressTracker::new();
-        (cas, cache, metadata_cache, tracker, tmp)
-    }
-
-    #[tokio::test]
-    async fn fetch_and_import_rejects_unknown_tool() {
-        let _guard = LOCK.lock().unwrap();
-        let (_cas, _cache, metadata_cache, _tracker, _tmp) = test_deps().await;
+        let _tracker = RecordingProgressTracker::new();
         // Resolution is now handled before fetch_and_import_tool_payload;
         // verify that resolve_tool_fetch rejects unknown tools.
         let resolve_result =
@@ -264,8 +248,15 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_import_generate_launcher_succeeds() {
-        let _guard = LOCK.lock().unwrap();
-        let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
         let (fetch, canonical) =
             crate::tools::provider::resolve_tool_fetch("media-tagger", Some(&metadata_cache))
                 .await
@@ -324,12 +315,19 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_import_ytdlp_full_pipeline() {
-        let _guard = LOCK.lock().unwrap();
         // Full 3-phase pipeline (resolve → fetch → postprocess) for a tool
         // with URL-based Fetch sources. Pre-seed both the metadata cache
         // (tag resolution) and the download cache (simulated downloads) so
         // no network I/O is required beyond the HEAD prefetch probe.
-        let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
 
         // Pre-seed the metadata cache with a stable tag string.
         let tag = "2025.07.15";
@@ -395,8 +393,15 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_import_with_pre_resolved_canonical_version() {
-        let _guard = LOCK.lock().unwrap();
-        let (cas, cache, metadata_cache, tracker, _tmp) = test_deps().await;
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
 
         // Use media_tagger's sources as a known ResolvedToolFetch.
         let fetch = provider::media_tagger::sources();
