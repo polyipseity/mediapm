@@ -55,53 +55,23 @@ Key ecosystem (from `Cargo.toml`):
 - The conductor **CLI binary** (`src/mediapm-conductor/src/cli.rs`) can create `ProgressGroup` from `mediapm-utils/progress` and wrap it in a callback.
 - `DownloadProgressSnapshot` and `ProgressCallback` from `mediapm-utils` are available in the library for download progress.
 
-## Provider progress bar invariants (input-size policy)
+## Provider progress size tracking
 
-The tool provisioning pipeline (`resolve → fetch → postprocess`) reports
-progress via `ProviderProgressSnapshot`. All progress bars must satisfy:
+Provider progress size tracking uses the [`ByteBudget`](../.agents/instructions/progress-budget.instructions.md)
+architecture: a generic, thread-safe atomic tracker that replaces ad-hoc
+`agg_completed_bytes`/`agg_total_bytes`/`source_input_cost` parameters.
 
-- **Input-size principle**: progress tracks the resource consumed (network
-  bytes, storage bytes read), not the resource produced (uncompressed files,
-  CAS blobs). This means:
-  - Fetch: count wire bytes (Content-Length or actual downloaded bytes).
-  - Postprocess/extraction: count compressed archive bytes consumed.
-- **Monotonicity**: position is non-decreasing, total is non-decreasing,
-  position never exceeds total.
-- **Fetch total uses suffix-expected estimates**: the total at source `i` is
-  `agg_completed_i + remaining_expected[i+1]` where `remaining_expected` is
-  the sum of `expected_size.or(size_hint_bytes).unwrap_or(0)` for unstarted
-  sources. When HEAD probing fails and `expected_size` is `None`,
-  `size_hint_bytes` from the provider definition serves as a fallback
-  estimate to keep the initial total stable.
-- **Total adjusts per-source for decompressed cost in postprocess**: the
-  outer `agg_total_bytes` starts as the sum of compressed sizes (via
-  `expected_size.unwrap_or(bytes.len())`). After each source, it is
-  re-adjusted: `agg_total_bytes = agg_total_bytes - total_compressed +
-  source_input_cost` where `source_input_cost = total_compressed +
-  decompressed_total` for archives. This ensures the total reflects the
-  actual work (both compressed and decompressed bytes processed) and that
-  position never exceeds total.
-- **ZIP entry progress uses `compressed_size()`**: per-entry position weight
-  is `file.compressed_size()` from the ZIP central directory, not
-  `file.size()` (decompressed). This keeps position within the compressed
-  budget and prevents backward jumps.
+See `.agents/instructions/progress-budget.instructions.md` for the full
+architecture, `ByteBudget` API, extraction-helper callback protocol, and
+phase-loop mapping.
 
-See `src/mediapm-conductor/src/tools/provider/AGENTS.md` for detailed
-per-phase invariants and `src/mediapm-conductor/src/tools/provider/mod.rs`
-for the implementation.
+Key invariants at a glance:
 
-## Progress bar policy (official)
-
-The following rules apply to all progress bars in the tool provisioning pipeline.
-Constants are defined in `src/mediapm-conductor/src/tools/provider/mod.rs`.
-
-1. **Input size only.** Progress tracks resource consumed (input bytes read from wire, compressed bytes decompressed, bytes read from disk), never resource produced (decompressed output, written files).
-
-2. **ASAP info propagation with lookahead limit.** When info about future work (source sizes) can be obtained, get it as soon as possible — up to a `MAX_LOOKAHEAD` constant (default 16). Before starting fetch, probe all sources concurrently. When a response arrives for source N, immediately update total with known Content-Length. When extraction finishes, immediately update total with known decompressed size.
-
-3. **Best estimate — converge to actual.** When actual size is not yet known, use best available estimate (size hint, HEAD Content-Length, streaming Content-Length). Improve estimate as soon as better info arrives. Must eventually converge to actual size by the time the work unit completes. Estimates may increase but must never decrease unless correction is small (<10%).
-
-4. **Progress monotonicity.** Position MUST be monotonic non-decreasing. Total should ideally be monotonic, but bounded non-monotonicity (<10% decrease that quickly corrects) is acceptable.
+- Position is monotonically non-decreasing.
+- Total may increase or decrease (via `ByteBudget.adjust`/`reconcile`).
+- `pos ≤ total` is enforced by hard `assert!` on every mutation.
+- Extraction helpers fire local callbacks only (`local_cb: &dyn Fn(u64)`);
+  the outer phase loop owns the `ByteBudget` and maps local → aggregate.
 
 ## Configuration Document Model
 
