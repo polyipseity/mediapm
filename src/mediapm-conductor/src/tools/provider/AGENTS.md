@@ -47,6 +47,8 @@ All progress bars measure **input work**, never output work:
   bytes, storage bytes read), not the resource produced (uncompressed
   files, CAS blobs).
 
+> **Note:** This policy is now the official progress bar policy. See [`src/mediapm-conductor/AGENTS.md`](../../../AGENTS.md) for the full canonical rules, constants, and invariants.
+
 ### Per-entry progress during archive extraction
 
 When a postprocess source is an archive (ZIP, tar.gz, tar.xz), the extraction
@@ -69,6 +71,8 @@ yt-dlp or ffmpeg) instead of freezing until extraction completes.
   callbacks are sub-steps within one source's item. The bytes counter
   tracks total extraction progress within the source's item.
 
+Within each entry, progress callbacks fire every `COMPRESSED_CHUNK` (128 KB) of compressed bytes consumed. For ZIP archives, the chunked `io::copy` loop estimates compressed position proportional to decompressed bytes written. For tar archives, the `CountingReader` fires periodic callbacks as compressed bytes flow through.
+
 ### Progress monotonicity invariants
 
 All progress callbacks must satisfy:
@@ -79,4 +83,6 @@ All progress callbacks must satisfy:
   Total must never decrease within the same source. Total may increase
   when a new source's size becomes known (fetch phase: Content-Length
   arrives; postprocess phase: fixed at start from compressed sum).
+  The official policy allows bounded non-monotonicity (<10% decrease)
+  when required for ASAP info propagation.
 - **Position never exceeds total** at any point. Position strictly ≤ total.

@@ -83,6 +83,19 @@ See `src/mediapm-conductor/src/tools/provider/AGENTS.md` for detailed
 per-phase invariants and `src/mediapm-conductor/src/tools/provider/mod.rs`
 for the implementation.
 
+## Progress bar policy (official)
+
+The following rules apply to all progress bars in the tool provisioning pipeline.
+Constants are defined in `src/mediapm-conductor/src/tools/provider/mod.rs`.
+
+1. **Input size only.** Progress tracks resource consumed (input bytes read from wire, compressed bytes decompressed, bytes read from disk), never resource produced (decompressed output, written files).
+
+2. **ASAP info propagation with lookahead limit.** When info about future work (source sizes) can be obtained, get it as soon as possible — up to a `MAX_LOOKAHEAD` constant (default 16). Before starting fetch, probe all sources concurrently. When a response arrives for source N, immediately update total with known Content-Length. When extraction finishes, immediately update total with known decompressed size.
+
+3. **Best estimate — converge to actual.** When actual size is not yet known, use best available estimate (size hint, HEAD Content-Length, streaming Content-Length). Improve estimate as soon as better info arrives. Must eventually converge to actual size by the time the work unit completes. Estimates may increase but must never decrease unless correction is small (<10%).
+
+4. **Progress monotonicity.** Position MUST be monotonic non-decreasing. Total should ideally be monotonic, but bounded non-monotonicity (<10% decrease that quickly corrects) is acceptable.
+
 ## Configuration Document Model
 
 Conductor uses two config documents plus one runtime state document:
