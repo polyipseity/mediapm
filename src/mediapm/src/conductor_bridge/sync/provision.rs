@@ -58,6 +58,39 @@ pub(super) enum PreResolveOutcome {
     },
 }
 
+/// Returns `true` if the source producer represents an archive download.
+///
+/// Archive sources produce compressed payloads that require decompression
+/// (e.g., `.zip`, `.tar.gz`, `.tar.xz`). Binary and launcher sources are
+/// used as-is. Mirrors the logic in `mediapm-conductor/src/tools/provider/mod.rs`.
+fn is_archive_source(producer: &SourceProducer) -> bool {
+    match producer {
+        SourceProducer::Fetch { urls } => {
+            urls.first().map_or(false, |url| infer_archive_format(url).is_some())
+        }
+        SourceProducer::GenerateLauncher { .. } => false,
+    }
+}
+
+/// Infers archive format from a URL's file extension.
+///
+/// Returns `Some(format)` for recognized archive extensions, or `None` for
+/// binary/launcher payloads. Mirrors the logic in
+/// `mediapm-conductor/src/tools/provider/mod.rs`.
+fn infer_archive_format(url: &str) -> Option<&'static str> {
+    let url_path = url.split('?').next().unwrap_or(url);
+    let filename = url_path.trim_end_matches('/').split('/').next_back().unwrap_or(url_path);
+    if filename.ends_with(".tar.xz") {
+        Some("tar.xz")
+    } else if filename.ends_with(".tar.gz") || filename.ends_with(".tgz") {
+        Some("tar.gz")
+    } else if filename.ends_with(".zip") || filename == "zip" {
+        Some("zip")
+    } else {
+        None
+    }
+}
+
 /// Fetches a tool payload for **all** platforms, extracts each to a
 /// per-OS temp directory, imports files to CAS with `./{os}/` key prefixes,
 /// and builds an OS-conditional command-selector template.
@@ -74,10 +107,12 @@ pub(super) enum PreResolveOutcome {
 /// phase 2 progress bars start with an accurate byte total. Evermeet and
 /// getrelease URLs are skipped (dynamic endpoints).
 ///
-/// The resolve bar shows 1 item (one resolve call).  Fetch and postprocess
-/// bars show `sources.len()` items (one per source).  Phase 2 and 3 bars are
-/// created on-demand — one before fetching, one before postprocessing — so
-/// bars only appear when their phase actively runs.
+/// The resolve bar shows 1 item (one resolve call).  Fetch bar shows
+/// `sources.len()` items (one per source).  Postprocess bar shows the sum
+/// of per-source items: archive sources contribute 2 items (decompress +
+/// compress), binary/launcher sources contribute 1 item (import).  Phase 2
+/// and 3 bars are created on-demand — one before fetching, one before
+/// postprocessing — so bars only appear when their phase actively runs.
 ///
 /// `metadata_cache` is passed to the resolve phase for caching version/tag
 /// resolution results. The consumer must NOT call `touch()` on the metadata
@@ -131,6 +166,14 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     let total = fetch.sources.len() as u64;
 
+    // Compute total postprocess items: archive sources get 2 (decompress + compress),
+    // binary/launcher sources get 1 (import).
+    let total_postprocess_items: u64 = fetch
+        .sources
+        .iter()
+        .map(|s| if is_archive_source(&s.producer) { 2u64 } else { 1u64 })
+        .sum();
+
     // Phase 2: Fetch — download (or generate) bytes for each source.
     let fetch_bar = group.add_bar(total, &format!("{tool_id} [fetch]"));
     error_bars.push(fetch_bar.clone());
@@ -157,7 +200,7 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     // Phase 3: Postprocess — extract archives, repack to uncompressed ZIP,
     // import to CAS, build content map + command selector.
-    let postprocess_bar = group.add_bar(total, &format!("{tool_id} [process]"));
+    let postprocess_bar = group.add_bar(total_postprocess_items, &format!("{tool_id} [process]"));
     error_bars.push(postprocess_bar.clone());
     let postprocess_bar_cb = postprocess_bar.clone();
     let pp_tool_id = tool_id.to_string();
