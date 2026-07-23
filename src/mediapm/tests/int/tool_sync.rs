@@ -156,7 +156,6 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
     state.managed_tools.insert(
         "media-tagger".to_string(),
         ToolRegistryEntry {
-            version: Some(mediapm::MEDIAPM_GIT_HASH.to_string()),
             tag: None,
             canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
             fetch_hash: Some("blake3:abc".to_string()),
