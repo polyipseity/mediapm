@@ -25,21 +25,12 @@ use crate::tools::downloader::ToolDownloadCache;
 /// owner/repo pair gets its own cache entry. The caller must NOT call
 /// `touch()` on the metadata cache — the 1-day TTL is anchored to
 /// creation time, not last use.
+/// creation time, not last use.
 ///
 /// # Errors
 ///
 /// Returns [`mediapm_conductor::ConductorError`] when the HTTP request
 /// or cache I/O fails.
-/// Validates that a tag is a concrete version, not a placeholder.
-fn validate_tag(tag: &str) -> Result<(), mediapm_conductor::ConductorError> {
-    if tag.eq_ignore_ascii_case("latest") {
-        return Err(mediapm_conductor::ConductorError::Workflow(format!(
-            "resolved tag is '{tag}' which is a placeholder, not a concrete version"
-        )));
-    }
-    Ok(())
-}
-
 pub(crate) async fn resolve_latest_github_tag(
     owner: &str,
     repo: &str,
@@ -47,15 +38,12 @@ pub(crate) async fn resolve_latest_github_tag(
 ) -> Result<String, mediapm_conductor::ConductorError> {
     let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
 
-    // Try metadata cache first. If the cached tag is invalid (e.g. stale
-    // "latest" placeholder) or not UTF-8, fall through to re-fetch from
-    // the GitHub API — treating it as a cache miss.
+    // Try metadata cache first. If the cached tag is non-UTF-8, fall through
+    // to re-fetch from the GitHub API — treating it as a cache miss.
     if let Some(cache) = metadata_cache {
         if let Some(bytes) = cache.lookup_bytes(&api_url).await {
             if let Ok(tag) = String::from_utf8(bytes.to_vec()) {
-                if validate_tag(&tag).is_ok() {
-                    return Ok(tag);
-                }
+                return Ok(tag);
             }
             // Cached tag is invalid or not UTF-8 — fall through to re-fetch.
         }
@@ -82,7 +70,6 @@ pub(crate) async fn resolve_latest_github_tag(
         )
     })?;
     let tag = tag.to_string();
-    validate_tag(&tag)?;
 
     // Store in metadata cache. Do NOT call touch() — TTL is creation-time-based.
     if let Some(cache) = metadata_cache {
@@ -629,57 +616,22 @@ mod tests {
         }
     }
 
-    // ── validate_tag ────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn validate_tag_rejects_latest() {
-        let err = validate_tag("latest").unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("placeholder"),
-            "error for 'latest' should mention 'placeholder', got: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn validate_tag_rejects_latest_case_insensitive() {
-        let err = validate_tag("LATEST").unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("placeholder"),
-            "error for 'LATEST' should mention 'placeholder', got: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn validate_tag_accepts_concrete_version() {
-        validate_tag("v1.0.0").expect("concrete version should be accepted");
-        validate_tag("2025.07.15").expect("date version should be accepted");
-        validate_tag("L2025-07-15").expect("ffmpeg-style version should be accepted");
-        validate_tag("abc123").expect("hash should be accepted");
-    }
-
     #[tokio::test]
     async fn resolve_latest_github_tag_fallthrough_on_stale_latest() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
-        // Pre-seed cache with "latest" placeholder — this simulates stale state.
+        // Pre-seed cache with non-UTF-8 bytes — String::from_utf8 conversion
+        // fails, triggering fallthrough to the HTTP fetch. Without a real GitHub
+        // API endpoint, the HTTP call fails with a transport error.
         let owner = "testowner";
         let repo = "testrepo";
         let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
-        cache.store_bytes(&api_url, b"latest").await;
+        cache.store_bytes(&api_url, b"\xff\xfe\x00latest").await;
 
-        // The cached "latest" is rejected by validate_tag, so the function
-        // falls through to the HTTP fetch.  Without a real GitHub API, the
-        // HTTP call fails with a transport error — NOT a "placeholder" error.
         let err = resolve_latest_github_tag(owner, repo, Some(&cache)).await.unwrap_err();
         let msg = format!("{err}");
-        assert!(
-            !msg.contains("placeholder"),
-            "stale-cache fallthrough should produce a transport error, not 'placeholder', got: {msg}"
-        );
         assert!(
             msg.contains("GitHub API request failed")
                 || msg.contains("HTTP client unavailable")
