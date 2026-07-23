@@ -47,16 +47,17 @@ pub(crate) async fn resolve_latest_github_tag(
         Ok(())
     }
 
-    // Try metadata cache first.
+    // Try metadata cache first. If the cached tag is invalid (e.g. stale
+    // "latest" placeholder) or not UTF-8, fall through to re-fetch from
+    // the GitHub API — treating it as a cache miss.
     if let Some(cache) = metadata_cache {
         if let Some(bytes) = cache.lookup_bytes(&api_url).await {
-            let tag = String::from_utf8(bytes.to_vec()).map_err(|_| {
-                mediapm_conductor::ConductorError::Workflow(
-                    "cached tag is not valid UTF-8".to_string(),
-                )
-            })?;
-            validate_tag(&tag)?;
-            return Ok(tag);
+            if let Ok(tag) = String::from_utf8(bytes.to_vec()) {
+                if validate_tag(&tag).is_ok() {
+                    return Ok(tag);
+                }
+            }
+            // Cached tag is invalid or not UTF-8 — fall through to re-fetch.
         }
     }
 
