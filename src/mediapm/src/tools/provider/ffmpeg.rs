@@ -48,10 +48,17 @@ pub(crate) async fn resolve_evermeet_version(
     }
 
     // HEAD request — no body download.
-    let http_client = crate::http_client::shared_http_client().map_err(|e| {
-        mediapm_conductor::ConductorError::Workflow(format!("HTTP client unavailable: {e}"))
-    })?;
-    let response = http_client.head(url).send().await.map_err(|e| {
+    // Build a no-redirect client to capture the redirect Location header
+    // instead of following it to the final (zip) response.
+    let no_redirect_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| {
+            mediapm_conductor::ConductorError::Workflow(format!(
+                "failed to build no-redirect HTTP client: {e}"
+            ))
+        })?;
+    let response = no_redirect_client.head(url).send().await.map_err(|e| {
         mediapm_conductor::ConductorError::Workflow(format!("evermeet HEAD request failed: {e}"))
     })?;
 
