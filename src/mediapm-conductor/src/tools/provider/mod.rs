@@ -611,7 +611,7 @@ async fn process_single_source(
             total_compressed.saturating_mul(3)
         };
         let source_input_cost = total_compressed + decompressed_total;
-        extract_archive(bytes, archive_format, os_dir, source_total, local_cb)?;
+        extract_archive(bytes, archive_format, os_dir, local_cb)?;
 
         let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
 
@@ -694,7 +694,6 @@ fn extract_tar_entries_with_progress<R: Read>(
     consumed: &Cell<u64>,
     total_compressed: u64,
     target_dir: &std::path::Path,
-    _source_total: u64,
     local_cb: Option<&dyn Fn(u64)>,
 ) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
@@ -727,14 +726,13 @@ fn extract_archive(
     bytes: &[u8],
     format: Option<&str>,
     target_dir: &std::path::Path,
-    _source_total: u64,
     local_cb: Option<&dyn Fn(u64)>,
 ) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
     match format {
-        Some(ARCHIVE_ZIP) => extract_zip(bytes, target_dir, _source_total, local_cb),
-        Some(ARCHIVE_TAR_GZ) => extract_tar_gz(bytes, target_dir, _source_total, local_cb),
-        Some(ARCHIVE_TAR_XZ) => extract_tar_xz(bytes, target_dir, _source_total, local_cb),
+        Some(ARCHIVE_ZIP) => extract_zip(bytes, target_dir, local_cb),
+        Some(ARCHIVE_TAR_GZ) => extract_tar_gz(bytes, target_dir, local_cb),
+        Some(ARCHIVE_TAR_XZ) => extract_tar_xz(bytes, target_dir, local_cb),
         Some(other) => {
             Err(ConductorError::Workflow(format!("unsupported archive format: {other}")))
         }
@@ -748,7 +746,6 @@ fn extract_archive(
 fn extract_zip(
     bytes: &[u8],
     target_dir: &std::path::Path,
-    _source_total: u64,
     local_cb: Option<&dyn Fn(u64)>,
 ) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
@@ -814,7 +811,6 @@ fn extract_zip(
 fn extract_tar_gz(
     bytes: &[u8],
     target_dir: &std::path::Path,
-    _source_total: u64,
     local_cb: Option<&dyn Fn(u64)>,
 ) -> Result<(), crate::error::ConductorError> {
     let total_compressed = bytes.len() as u64;
@@ -827,21 +823,13 @@ fn extract_tar_gz(
     };
     let decoder = flate2::read::GzDecoder::new(reader);
     let archive = tar::Archive::new(decoder);
-    extract_tar_entries_with_progress(
-        archive,
-        &consumed,
-        total_compressed,
-        target_dir,
-        _source_total,
-        local_cb,
-    )
+    extract_tar_entries_with_progress(archive, &consumed, total_compressed, target_dir, local_cb)
 }
 
 #[cfg(feature = "tool-presets")]
 fn extract_tar_xz(
     bytes: &[u8],
     target_dir: &std::path::Path,
-    _source_total: u64,
     local_cb: Option<&dyn Fn(u64)>,
 ) -> Result<(), crate::error::ConductorError> {
     let total_compressed = bytes.len() as u64;
@@ -854,14 +842,7 @@ fn extract_tar_xz(
     };
     let decoder = xz2::read::XzDecoder::new(reader);
     let archive = tar::Archive::new(decoder);
-    extract_tar_entries_with_progress(
-        archive,
-        &consumed,
-        total_compressed,
-        target_dir,
-        _source_total,
-        local_cb,
-    )
+    extract_tar_entries_with_progress(archive, &consumed, total_compressed, target_dir, local_cb)
 }
 
 // ---------------------------------------------------------------------------
@@ -1567,21 +1548,21 @@ mod tests {
     fn extract_zip_rejects_tar_xz_bytes() {
         let txz = synthetic_tar_xz(&[("x", &[0u8; 4])]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract_archive(&txz, Some(ARCHIVE_ZIP), dir.path(), 0, None).is_err());
+        assert!(extract_archive(&txz, Some(ARCHIVE_ZIP), dir.path(), None).is_err());
     }
 
     #[test]
     fn extract_tar_gz_rejects_zip_bytes() {
         let zip = synthetic_zip(&[("x", &[0u8; 4])]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract_archive(&zip, Some(ARCHIVE_TAR_GZ), dir.path(), 0, None).is_err());
+        assert!(extract_archive(&zip, Some(ARCHIVE_TAR_GZ), dir.path(), None).is_err());
     }
 
     #[test]
     fn extract_tar_xz_rejects_zip_bytes() {
         let zip = synthetic_zip(&[("x", &[0u8; 4])]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract_archive(&zip, Some(ARCHIVE_TAR_XZ), dir.path(), 0, None).is_err());
+        assert!(extract_archive(&zip, Some(ARCHIVE_TAR_XZ), dir.path(), None).is_err());
     }
 
     // ── pack_directory_to_uncompressed_zip_bytes ──────────────────────
@@ -1633,7 +1614,7 @@ mod tests {
         let zip = synthetic_zip(&entries);
         let dir = tempfile::tempdir().unwrap();
         let (cb, count) = counting_local_cb();
-        extract_zip(&zip, dir.path(), 0, Some(&cb)).unwrap();
+        extract_zip(&zip, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
         assert!(
             call_count >= entries.len(),
@@ -1653,7 +1634,7 @@ mod tests {
         let tgz = synthetic_tar_gz(&entries);
         let dir = tempfile::tempdir().unwrap();
         let (cb, count) = counting_local_cb();
-        extract_tar_gz(&tgz, dir.path(), 0, Some(&cb)).unwrap();
+        extract_tar_gz(&tgz, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
         assert!(
             call_count >= entries.len(),
@@ -1669,7 +1650,7 @@ mod tests {
         let txz = synthetic_tar_xz(&entries);
         let dir = tempfile::tempdir().unwrap();
         let (cb, count) = counting_local_cb();
-        extract_tar_xz(&txz, dir.path(), 0, Some(&cb)).unwrap();
+        extract_tar_xz(&txz, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
         assert!(
             call_count >= entries.len(),
@@ -1694,7 +1675,7 @@ mod tests {
         let zip = synthetic_zip(&entries);
         let dir = tempfile::tempdir().unwrap();
         let (cb, count) = counting_local_cb();
-        extract_zip(&zip, dir.path(), 0, Some(&cb)).unwrap();
+        extract_zip(&zip, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
         assert!(
             call_count >= 5,
@@ -1709,7 +1690,7 @@ mod tests {
         let tgz = synthetic_tar_gz(&entries);
         let dir = tempfile::tempdir().unwrap();
         let (cb, count) = counting_local_cb();
-        extract_tar_gz(&tgz, dir.path(), 0, Some(&cb)).unwrap();
+        extract_tar_gz(&tgz, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
         assert!(
             call_count >= 3,
@@ -1758,7 +1739,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (recorder, cb) = PositionRecorder::new();
 
-        extract_zip(&zip_bytes, dir.path(), 0, Some(&cb)).expect("extract_zip should succeed");
+        extract_zip(&zip_bytes, dir.path(), Some(&cb)).expect("extract_zip should succeed");
 
         let positions = recorder.positions();
         assert!(!positions.is_empty(), "should have recorded at least one position");
@@ -1782,7 +1763,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (recorder, cb) = PositionRecorder::new();
 
-        extract_tar_gz(&tgz, dir.path(), 0, Some(&cb)).expect("extract_tar_gz should succeed");
+        extract_tar_gz(&tgz, dir.path(), Some(&cb)).expect("extract_tar_gz should succeed");
 
         let positions = recorder.positions();
         assert!(!positions.is_empty());
@@ -1801,7 +1782,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (recorder, cb) = PositionRecorder::new();
 
-        extract_tar_xz(&txz, dir.path(), 0, Some(&cb)).expect("extract_tar_xz should succeed");
+        extract_tar_xz(&txz, dir.path(), Some(&cb)).expect("extract_tar_xz should succeed");
 
         let positions = recorder.positions();
         assert!(!positions.is_empty());
