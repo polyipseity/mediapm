@@ -41,7 +41,6 @@ fn v2_round_trip() {
         managed_tools: BTreeMap::from([(
             "yt-dlp".to_string(),
             ToolRegistryEntry {
-                version: Some("2025.01.01".to_string()),
                 tag: None,
                 canonical_version: String::new(),
                 fetch_hash: Some("blake3:def456".to_string()),
@@ -198,7 +197,6 @@ fn json_save_idempotent() {
         managed_tools: BTreeMap::from([(
             "tool-a".to_string(),
             ToolRegistryEntry {
-                version: Some("1.0".to_string()),
                 tag: None,
                 canonical_version: String::new(),
                 fetch_hash: Some("blake3:y".to_string()),
@@ -264,7 +262,6 @@ fn load_missing_state_returns_default() {
 #[test]
 fn tool_registry_entry_round_trip() {
     let entry = ToolRegistryEntry {
-        version: Some("1.0".to_string()),
         tag: None,
         canonical_version: "abc123".to_string(),
         fetch_hash: None,
@@ -295,7 +292,6 @@ fn tool_registry_entry_normalize_drops_blank_entry() {
     state.managed_tools.insert(
         "tool".to_string(),
         ToolRegistryEntry {
-            version: Some(String::new()),
             tag: Some(String::new()),
             canonical_version: "".to_string(),
             fetch_hash: None,
@@ -312,7 +308,6 @@ fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
     state.managed_tools.insert(
         "tool".to_string(),
         ToolRegistryEntry {
-            version: None,
             tag: None,
             canonical_version: "abc123".to_string(),
             fetch_hash: None,
@@ -329,7 +324,6 @@ fn state_normalize_retains_tool_with_canonical_version() {
     state.managed_tools.insert(
         "media-tagger".to_string(),
         ToolRegistryEntry {
-            version: None,
             tag: None,
             canonical_version: "abc123".to_string(),
             fetch_hash: None,
@@ -349,7 +343,6 @@ fn state_normalize_drops_tool_with_all_blank() {
     state.managed_tools.insert(
         "blank-tool".to_string(),
         ToolRegistryEntry {
-            version: Some(String::new()),
             tag: Some(String::new()),
             canonical_version: "".to_string(),
             fetch_hash: None,
@@ -366,7 +359,6 @@ fn canonical_version_json_round_trip() {
     let versions = vec!["", "abc123", "v1.0.0", "2025.07.15", "L2025-07-15", &long];
     for v in &versions {
         let entry = ToolRegistryEntry {
-            version: None,
             tag: None,
             canonical_version: (*v).to_string(),
             fetch_hash: None,

@@ -223,7 +223,6 @@ pub(crate) async fn reconcile_desired_tools(
                 report.tool_records.insert(
                     tool_id.clone(),
                     ToolRegistryEntry {
-                        version: Some(payload.canonical_version.clone()),
                         tag: if req_tag.is_empty() { None } else { Some(req_tag) },
                         canonical_version: payload.canonical_version.clone(),
                         fetch_hash: content_hash.as_ref().map(|h| h.to_string()),
@@ -280,7 +279,6 @@ pub(crate) async fn reconcile_desired_tools(
                 report.tool_records.insert(
                     tool_id.clone(),
                     ToolRegistryEntry {
-                        version: None,
                         tag: None,
                         canonical_version: resolved_canonical_version.clone(),
                         fetch_hash: None,

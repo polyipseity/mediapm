@@ -167,8 +167,8 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
     Ok(())
 }
 
-/// `ToolRegistryEntry.version` is populated with the canonical version after
-/// sync, not an empty string or requirement version.
+/// `ToolRegistryEntry.canonical_version` is populated with the canonical version
+/// after sync, not an empty string or requirement version.
 #[tokio::test]
 async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
@@ -177,8 +177,8 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
         "media-tagger".to_string(),
         ToolRequirement {
             // Explicitly set a non-empty requirement version to prove that
-            // `ToolRegistryEntry.version` uses the resolved canonical version,
-            // not this requirement value.
+            // `ToolRegistryEntry.canonical_version` uses the resolved canonical
+            // version, not this requirement value.
             version: mediapm::MediaMetadataValue::Literal("2.0.0".to_string()),
             ..Default::default()
         },
@@ -201,11 +201,6 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
     assert_eq!(
         entry.canonical_version, expected_canonical,
         "canonical_version should be the git hash"
-    );
-    assert_eq!(
-        entry.version,
-        Some(expected_canonical.to_string()),
-        "version should match canonical_version, not the requirement version '2.0.0'"
     );
     Ok(())
 }

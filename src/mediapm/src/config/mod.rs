@@ -504,11 +504,7 @@ pub struct MediaPmImpureTimestamp {
 
 /// Entry in the managed-tool registry tracking fetch/deployment metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolRegistryEntry {
-    /// Tool version as fetched.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
     /// Tag as fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
@@ -596,8 +592,7 @@ impl MediaPmState {
                 && !record.hash.trim().is_empty()
         });
         self.managed_tools.retain(|_, entry| {
-            entry.version.as_ref().is_none_or(|v| !v.trim().is_empty())
-                || entry.tag.as_ref().is_none_or(|t| !t.trim().is_empty())
+            entry.tag.as_ref().is_none_or(|t| !t.trim().is_empty())
                 || !entry.canonical_version.trim().is_empty()
         });
     }
