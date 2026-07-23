@@ -549,6 +549,44 @@ fn is_archive_source(producer: &SourceProducer) -> bool {
     }
 }
 
+/// Estimates the uncompressed size of archive bytes before extraction.
+///
+/// For ZIP archives: reads central directory metadata and sums per-entry
+/// uncompressed sizes for an accurate estimate.
+/// For tar.gz/tar.xz: falls back to compressed size (`bytes.len()`) since
+/// the uncompressed size is not knowable without full decompression.
+/// Returns 0 for non-archive (binary/launcher) formats.
+fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
+    match format {
+        Some(ARCHIVE_ZIP) => {
+            // Sum uncompressed sizes from ZIP central directory metadata.
+            // This is fast — no decompression, just parsing the directory.
+            let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+                // Fall back to compressed size if ZIP metadata is corrupt.
+                return bytes.len() as u64;
+            };
+            let mut total: u64 = 0;
+            for i in 0..archive.len() {
+                if let Ok(file) = archive.by_index(i) {
+                    total = total.saturating_add(file.size());
+                }
+            }
+            total
+        }
+        Some(ARCHIVE_TAR_GZ) | Some(ARCHIVE_TAR_XZ) => {
+            // Cannot know uncompressed size without full decompression;
+            // use compressed size as a conservative lower-bound estimate.
+            bytes.len() as u64
+        }
+        Some(other) => {
+            // Unknown archive format — no estimate available.
+            tracing::warn!("unknown archive format {other}, cannot estimate uncompressed size");
+            bytes.len() as u64
+        }
+        None => 0, // Binary/launcher — no compress phase.
+    }
+}
+
 /// Processes one downloaded source: extract archives or import binaries to CAS.
 ///
 /// For archive formats (ZIP, tar.gz, tar.xz): extract → find executable →
@@ -597,16 +635,19 @@ async fn process_single_source(
 
         // Item 0: decompress — total = compressed size (input), pos updated via local_cb
         budget.set_total(item_idx, total_compressed);
+        // Pre-estimate compress item total so the progress bar has a useful
+        // value before extraction completes (refined to actual size after).
+        let compress_idx = item_idx + 1;
+        let compress_estimate = estimate_uncompressed_size(bytes, archive_format);
+        budget.set_total(compress_idx, compress_estimate);
         extract_archive(bytes, archive_format, os_dir, local_cb)?;
         // Ensure final pos = total (callbacks may already have set it)
         budget.set_pos(item_idx, total_compressed);
 
         let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
 
-        // Item 1: compress — total = actual dir content size, pos updated via compress callback.
-        // The total is computed by walking the directory after extraction so that pre-existing
-        // files from a prior source for the same OS are correctly accounted for.
-        let compress_idx = item_idx + 1;
+        // Item 1: compress — refine total to actual directory content size,
+        // then repack to uncompressed ZIP and import to CAS.
         let dir_total = total_dir_size(os_dir);
         budget.set_total(compress_idx, dir_total);
         let compress_wrapper = |pos: u64| budget.set_pos(compress_idx, pos);
