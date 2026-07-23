@@ -576,7 +576,7 @@ async fn process_single_source(
     os_dir: &std::path::Path,
     filename: &str,
     cas: &impl mediapm_cas::CasApi,
-    source_total: u64,
+    _source_total: u64,
     local_cb: Option<&dyn Fn(u64)>,
 ) -> Result<ProcessedSource, crate::error::ConductorError> {
     use crate::error::ConductorError;
@@ -615,12 +615,8 @@ async fn process_single_source(
 
         let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
 
-        let zip_bytes = pack_directory_to_uncompressed_zip_bytes(
-            os_dir,
-            source_total,
-            total_compressed,
-            local_cb,
-        )?;
+        let zip_bytes =
+            pack_directory_to_uncompressed_zip_bytes(os_dir, total_compressed, local_cb)?;
         let hash = cas.put(Bytes::from(zip_bytes)).await.map_err(|e| ConductorError::Cas(e))?;
         let key = format!("{os_label}/");
         let mut cm = BTreeMap::new();
@@ -853,7 +849,6 @@ fn extract_tar_xz(
 #[cfg(feature = "tool-presets")]
 fn pack_directory_to_uncompressed_zip_bytes(
     dir: &std::path::Path,
-    source_total: u64,
     offset: u64,
     local_cb: Option<&dyn Fn(u64)>,
 ) -> Result<Vec<u8>, crate::error::ConductorError> {
@@ -872,7 +867,6 @@ fn pack_directory_to_uncompressed_zip_bytes(
             dir,
             dir,
             &options,
-            source_total,
             local_cb,
             &mut decompressed_accumulator,
         )?;
@@ -891,7 +885,6 @@ fn pack_directory_entries(
     root: &std::path::Path,
     dir: &std::path::Path,
     options: &zip::write::SimpleFileOptions,
-    _source_total: u64,
     local_cb: Option<&dyn Fn(u64)>,
     decompressed_accumulator: &mut u64,
 ) -> Result<(), crate::error::ConductorError> {
@@ -916,7 +909,6 @@ fn pack_directory_entries(
                 root,
                 &path,
                 options,
-                _source_total,
                 local_cb,
                 decompressed_accumulator,
             )?;
@@ -1574,7 +1566,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub").join("b.txt"), b"bbb").unwrap();
 
-        let zip_bytes = pack_directory_to_uncompressed_zip_bytes(dir.path(), 0, 0, None).unwrap();
+        let zip_bytes = pack_directory_to_uncompressed_zip_bytes(dir.path(), 0, None).unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).unwrap();
         assert_eq!(archive.len(), 2);
 
