@@ -99,13 +99,16 @@ for (idx, source) in sources:
                 budget.advance(idx, cached.len())
             else:
                 budget.set_total(idx, estimate)
-                fetch_bytes_from_candidates(urls, ..., &budget, idx)
-                # Inside fetch: budget.set_total(idx, content_length)
-                #              budget.advance(idx, downloaded)
+                fetch_bytes_from_candidates(urls, ..., &budget, idx, ...)
+                # Inside fetch (per chunk):
+                #   budget.set_total(idx, content_length_estimate)
+                #   budget.advance(idx, chunk.len())
+                #   cb(aggregate snapshot)  ← fires after EACH chunk
         GenerateLauncher { .. }:
             budget.set_total(idx, launcher_size)
             budget.advance(idx, launcher_size)
 
+    # Per-source callback (cached/launcher: only here; fetch: in addition to per-chunk)
     cb(ProviderProgressSnapshot {
         phase: Fetch,
         items: (idx + 1, total),        # (completed_items, total_items)
@@ -113,28 +116,42 @@ for (idx, source) in sources:
     })
 ```
 
-Key: `fetch_bytes_from_candidates` receives `&MultiItemBudget` + `item_idx`. During download it calls `budget.set_total(item_idx, content_length_estimate)` on each chunk and `budget.advance(item_idx, downloaded)` at the end. The `aggregate()` call after each source gives smooth byte-level progress as items fill sequentially.
+Key: `fetch_bytes_from_candidates` receives `&MultiItemBudget` + `item_idx` + `progress_cb`. During download it calls `budget.set_total` + `budget.advance` per HTTP chunk and fires the progress callback with the aggregate after each chunk. For cached sources the advance is a single step; for launcher sources it is immediate. The end-of-source callback in the outer loop provides additional coverage for cached/launcher sources where no per-chunk callbacks fire.
 
 ### Postprocess phase loop (`postprocess_tool_sources`)
 
-```text
-budget = MultiItemBudget::with_capacity(entries.len())
-for entry in entries:
-    budget.add_item(expected_size.unwrap_or(bytes.len()))
+Archive sources use **2 budget items** (decompress + compress); binary/launcher sources use **1 item** (CAS import).
 
-for (idx, source) in entries:
-    process_single_source(bytes, ..., &budget, idx).await
-    # Inside: creates |pos| budget.set_pos(item_idx, pos)
-    # and passes it as local_cb to extraction helpers.
+```text
+total_items = sum(2 if is_archive(source) else 1 for source in entries)
+budget = MultiItemBudget::with_capacity(total_items)
+for entry in entries:
+    is_archive = is_archive_source(&entry.producer)
+    budget.add_item(expected_size.unwrap_or(bytes.len()))  # item i: decompress or binary
+    if is_archive:
+        budget.add_item(0)                                   # item i+1: compress (total set later)
+
+next_item_idx = 0
+for source in entries:
+    is_archive = is_archive_source(&source.producer)
+    item_count = 2 if is_archive else 1
+
+    process_single_source(bytes, ..., &budget, next_item_idx, item_count).await
+    # Inside archive arm:
+    #   callback 1 → budget.set_pos(item_idx, pos)       # decompress via extraction callback
+    #   callback 2 → budget.set_pos(item_idx + 1, pos)   # compress via pack callback
+    # Inside binary arm:
+    #   budget.advance(item_idx, bytes.len())             # single CAS import
 
     cb(ProviderProgressSnapshot {
         phase: Postprocess,
-        items: (idx + 1, total),        # (completed_items, total_items)
-        bytes: budget.aggregate(),       # (sum_pos, sum_total)
+        items: (next_item_idx + item_count, total_items),  # (completed_items, total_items)
+        bytes: budget.aggregate(),                          # (sum_pos, sum_total)
     })
+    next_item_idx += item_count
 ```
 
-`process_single_source` receives `budget: &MultiItemBudget` and `item_idx: usize`. It internally creates a callback wrapper `|pos| budget.set_pos(item_idx, pos)` and passes it to extraction helpers. After processing, no catch-up step is needed — the extraction helper's callbacks have already set the item's position via `set_pos`. The outer loop calls `budget.aggregate()` for the progress snapshot.
+`process_single_source` receives `budget: &MultiItemBudget`, `item_idx: usize`, and `item_count: usize`. For archive sources (`item_count=2`): it creates a decompress callback `\|pos| budget.set_pos(item_idx, pos)` for extraction and a compress callback `\|pos| budget.set_pos(item_idx + 1, pos)` for packing. After each sub-phase it calls `budget.set_pos(...)` to ensure completion. For binary sources (`item_count=1`): it calls `budget.advance(item_idx, bytes.len())` for the single CAS import step.
 
 ### Resolve phase
 

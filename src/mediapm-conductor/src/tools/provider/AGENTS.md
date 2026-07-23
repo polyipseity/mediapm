@@ -25,7 +25,9 @@ Progress item counters (`items_done`/`total`) measure **distinct operations in e
 |-------|-------|--------------------------|
 | Resolve | `1` | One `resolve_tool_fetch()` call |
 | Fetch | `sources.len()` | One download or launcher generation per source |
-| Postprocess | `sources.len()` | One extraction or CAS-import per source |
+| Postprocess | `∑(2 if archive else 1)` per source | Decompress + compress for archives, CAS-import for binaries |
+
+For postprocess, archive sources contribute **2 items**: item `i` tracks decompress progress (compressed bytes consumed), item `i+1` tracks compress progress (decompressed bytes packed). Binary/launcher sources contribute **1 item** for direct CAS import.
 
 The `total_items` field is not part of `ResolvedToolFetch` — consumers derive phase-specific totals from `sources.len()` or the literal `1` for resolve.
 
