@@ -228,9 +228,18 @@ pub async fn fetch_tool_sources(
                     // includes it even before download starts.
                     budget.set_total(idx, estimate);
 
-                    let downloaded =
-                        fetch_bytes_from_candidates(urls, &fetch.tool_id, &source.os, &budget, idx)
-                            .await?;
+                    let total_sources = fetch.sources.len() as u64;
+                    let downloaded = fetch_bytes_from_candidates(
+                        urls,
+                        &fetch.tool_id,
+                        &source.os,
+                        &budget,
+                        idx,
+                        idx,
+                        total_sources,
+                        progress_cb.as_ref(),
+                    )
+                    .await?;
                     cache.store_bytes(cache_key, &downloaded).await;
                     downloaded
                 };
@@ -273,6 +282,10 @@ pub async fn fetch_tool_sources(
 }
 
 /// Downloads bytes from URL candidates (tried in order).
+///
+/// Advances the budget item per HTTP chunk and fires the progress callback
+/// after each chunk, so the progress bar updates smoothly during large
+/// downloads instead of freezing until the payload is fully received.
 #[cfg(feature = "tool-presets")]
 async fn fetch_bytes_from_candidates(
     urls: &[String],
@@ -280,6 +293,9 @@ async fn fetch_bytes_from_candidates(
     os_label: &str,
     budget: &MultiItemBudget,
     item_idx: usize,
+    source_idx: usize,
+    total_sources: u64,
+    progress_cb: Option<&ProviderProgressCallback>,
 ) -> Result<Vec<u8>, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use futures_util::StreamExt;
@@ -296,20 +312,25 @@ async fn fetch_bytes_from_candidates(
         match request.send().await {
             Ok(response) if response.status().is_success() => {
                 let total_bytes = response.content_length();
-                let mut downloaded = 0u64;
                 let mut buffer = Vec::new();
                 let mut stream = response.bytes_stream();
                 while let Some(chunk_result) = stream.next().await {
                     let chunk = chunk_result
                         .map_err(|e| ConductorError::Workflow(format!("download error: {e}")))?;
-                    downloaded += chunk.len() as u64;
                     buffer.extend_from_slice(&chunk);
-                    // Update this item's total to reflect latest Content-Length estimate.
-                    // pos is 0 until we advance at the end, so any estimate >= 0 is valid.
-                    let current_estimate = total_bytes.unwrap_or(downloaded);
+                    // Advance budget per-chunk so progress bar updates smoothly.
+                    let current_estimate = total_bytes.unwrap_or(buffer.len() as u64);
                     budget.set_total(item_idx, current_estimate);
+                    budget.advance(item_idx, chunk.len() as u64);
+                    if let Some(cb) = progress_cb {
+                        let bytes = budget.aggregate();
+                        cb(ProviderProgressSnapshot {
+                            phase: ProviderPhase::Fetch,
+                            items: (source_idx as u64 + 1, total_sources),
+                            bytes,
+                        });
+                    }
                 }
-                budget.advance(item_idx, downloaded);
                 return Ok(buffer);
             }
             Ok(response) => {
