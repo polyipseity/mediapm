@@ -519,4 +519,136 @@ mod tests {
             Err(e) => panic!("media-tagger should succeed, got Err({e:?})"),
         }
     }
+
+    #[test]
+    fn infer_archive_format_recognises_zip() {
+        assert!(infer_archive_format("https://example.com/file.zip").is_some());
+        assert!(infer_archive_format("https://example.com/file.zip?query=1").is_some());
+    }
+
+    #[test]
+    fn infer_archive_format_recognises_tar_gz() {
+        assert!(infer_archive_format("https://example.com/file.tar.gz").is_some());
+        assert!(infer_archive_format("https://example.com/file.tgz").is_some());
+    }
+
+    #[test]
+    fn infer_archive_format_recognises_tar_xz() {
+        assert!(infer_archive_format("https://example.com/file.tar.xz").is_some());
+    }
+
+    #[test]
+    fn infer_archive_format_rejects_binary_urls() {
+        assert!(infer_archive_format("https://example.com/ffmpeg-linux-amd64").is_none());
+        assert!(infer_archive_format("https://example.com/ffmpeg.exe").is_none());
+    }
+
+    #[test]
+    fn infer_archive_format_empty_url_returns_none() {
+        assert!(infer_archive_format("").is_none());
+    }
+
+    #[test]
+    fn is_archive_source_fetch_zip_returns_true() {
+        let producer =
+            SourceProducer::Fetch { urls: vec!["https://example.com/tool.zip".to_string()] };
+        assert!(is_archive_source(&producer));
+    }
+
+    #[test]
+    fn is_archive_source_fetch_binary_returns_false() {
+        let producer = SourceProducer::Fetch {
+            urls: vec!["https://example.com/tool-linux-amd64".to_string()],
+        };
+        assert!(!is_archive_source(&producer));
+    }
+
+    #[test]
+    fn is_archive_source_no_urls_returns_false() {
+        let producer = SourceProducer::Fetch { urls: vec![] };
+        assert!(!is_archive_source(&producer));
+    }
+
+    #[test]
+    fn is_archive_source_launcher_returns_false() {
+        let producer = SourceProducer::GenerateLauncher { builtin_id: "test".to_string() };
+        assert!(!is_archive_source(&producer));
+    }
+
+    #[test]
+    fn total_postprocess_items_three_sources_three_archives() {
+        let fetch = ResolvedToolFetch {
+            tool_id: "ffmpeg".to_string(),
+            sources: vec![
+                ResolvedSource {
+                    os: "linux".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/ffmpeg-linux.zip".to_string()],
+                    },
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+                ResolvedSource {
+                    os: "macos".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/ffmpeg-macos.zip".to_string()],
+                    },
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+                ResolvedSource {
+                    os: "windows".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/ffmpeg-windows.zip".to_string()],
+                    },
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+            ],
+        };
+        let total: u64 = fetch
+            .sources
+            .iter()
+            .map(|s| if is_archive_source(&s.producer) { 2u64 } else { 1u64 })
+            .sum();
+        assert_eq!(total, 6, "3 archive sources should produce 6 postprocess items");
+    }
+
+    #[test]
+    fn total_postprocess_items_mixed_archives_and_binaries() {
+        let fetch = ResolvedToolFetch {
+            tool_id: "mixed".to_string(),
+            sources: vec![
+                ResolvedSource {
+                    os: "linux".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/tool-linux.zip".to_string()],
+                    },
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+                ResolvedSource {
+                    os: "macos".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/tool-macos".to_string()],
+                    },
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+                ResolvedSource {
+                    os: "windows".to_string(),
+                    producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+            ],
+        };
+        let total: u64 = fetch
+            .sources
+            .iter()
+            .map(|s| if is_archive_source(&s.producer) { 2u64 } else { 1u64 })
+            .sum();
+        // 1 archive (2) + 1 binary (1) + 1 launcher (1) = 4
+        assert_eq!(total, 4, "mixed sources should produce correct postprocess total");
+    }
 }

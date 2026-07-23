@@ -369,3 +369,47 @@ fn canonical_version_json_round_trip() {
         assert_eq!(back.canonical_version, *v, "canonical_version round-trip failed for {:?}", v);
     }
 }
+
+#[test]
+fn tool_registry_entry_serialization_omits_version_field() {
+    let entry = ToolRegistryEntry {
+        tag: None,
+        canonical_version: "v1.0.0".to_string(),
+        fetch_hash: None,
+        deployed_at: 0,
+    };
+    let json = serde_json::to_value(&entry).unwrap();
+    let map = json.as_object().expect("ToolRegistryEntry should serialize to a JSON object");
+    assert!(
+        !map.contains_key("version"),
+        "serialized ToolRegistryEntry must NOT contain a 'version' field"
+    );
+}
+
+#[test]
+fn tool_registry_entry_backward_compat_ignores_unknown_version_field() {
+    let json = serde_json::json!({
+        "tag": null,
+        "canonical_version": "v1.0.0",
+        "fetch_hash": null,
+        "deployed_at": 0,
+        "version": "v1.0.0"
+    });
+    let entry: ToolRegistryEntry =
+        serde_json::from_value(json).expect("should deserialize even with unknown 'version' field");
+    assert_eq!(entry.canonical_version, "v1.0.0");
+}
+
+#[test]
+fn tool_registry_entry_backward_compat_ignores_version_with_canonical_null() {
+    let json = serde_json::json!({
+        "tag": null,
+        "canonical_version": "",
+        "fetch_hash": null,
+        "deployed_at": 0,
+        "version": "v2.0.0"
+    });
+    let entry: ToolRegistryEntry =
+        serde_json::from_value(json).expect("should deserialize with empty canonical_version");
+    assert_eq!(entry.canonical_version, "");
+}

@@ -1937,6 +1937,48 @@ mod tests {
         }
     }
 
+    // ── estimate_uncompressed_size ─────────────────────────────────
+
+    #[test]
+    fn estimate_uncompressed_size_zip_sums_decompressed_sizes() {
+        let entries: [(&str, &[u8]); 3] =
+            [("a.bin", &[0u8; 100]), ("b.bin", &[1u8; 200]), ("c.bin", &[2u8; 300])];
+        let zip = synthetic_zip(&entries);
+        // Total uncompressed: 100 + 200 + 300 = 600
+        let estimate = estimate_uncompressed_size(&zip, Some("zip"));
+        assert_eq!(estimate, 600, "ZIP estimate should sum uncompressed sizes");
+    }
+
+    #[test]
+    fn estimate_uncompressed_size_tar_gz_returns_compressed_size() {
+        let entries: [(&str, &[u8]); 1] = [("x.bin", &[0u8; 1000])];
+        let tgz = synthetic_tar_gz(&entries);
+        let estimate = estimate_uncompressed_size(&tgz, Some("tar.gz"));
+        assert_eq!(estimate, tgz.len() as u64, "tar.gz should fall back to compressed len");
+    }
+
+    #[test]
+    fn estimate_uncompressed_size_tar_xz_returns_compressed_size() {
+        let entries: [(&str, &[u8]); 1] = [("y.bin", &[0u8; 500])];
+        let txz = synthetic_tar_xz(&entries);
+        let estimate = estimate_uncompressed_size(&txz, Some("tar.xz"));
+        assert_eq!(estimate, txz.len() as u64, "tar.xz should fall back to compressed len");
+    }
+
+    #[test]
+    fn estimate_uncompressed_size_none_format_returns_zero() {
+        let bytes = [0u8; 100];
+        let estimate = estimate_uncompressed_size(&bytes, None);
+        assert_eq!(estimate, 0, "None format should return 0");
+    }
+
+    #[test]
+    fn estimate_uncompressed_size_unknown_format_returns_compressed_size() {
+        let bytes = [0u8; 100];
+        let estimate = estimate_uncompressed_size(&bytes, Some("exe"));
+        assert_eq!(estimate, 100, "unknown format should return compressed len");
+    }
+
     // ── Property-based tests (proptest) ───────────────────────────────
 
     use super::super::helpers::build_os_conditional_selector;
