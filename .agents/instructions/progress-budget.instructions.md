@@ -28,17 +28,17 @@ Each `ItemBudget` tracks `(position, total)` where `position ≤ total`. Both fi
 
 Methods:
 
-| Method | Behavior | pos≤total assert? |
-|---|---|---|
-| `new()` | Empty budget, no items | — |
-| `with_capacity(capacity)` | Pre-allocated for `capacity` items | — |
-| `add_item(total)` | Push one item with pos=0, total=`total` | — |
-| `item_count()` | Number of items | — |
-| `set_total(item_idx, total)` | Set total for item (Release store). Must be ≥ current pos. | ✅ hard |
-| `advance(item_idx, amount)` | `pos += amount` per item via `compare_exchange_weak` loop | ✅ hard |
-| `set_pos(item_idx, pos)` | Absolute set (Release). Must be ≥ current pos. | ✅ hard |
-| `snap(item_idx)` | `(pos, total)` for one item | — |
-| `aggregate()` | `(sum_pos, sum_total)` across all items | — |
+| Method                       | Behavior                                                   | pos≤total assert? |
+| ---------------------------- | ---------------------------------------------------------- | ----------------- |
+| `new()`                      | Empty budget, no items                                     | —                 |
+| `with_capacity(capacity)`    | Pre-allocated for `capacity` items                         | —                 |
+| `add_item(total)`            | Push one item with pos=0, total=`total`                    | —                 |
+| `item_count()`               | Number of items                                            | —                 |
+| `set_total(item_idx, total)` | Set total for item (Release store). Must be ≥ current pos. | ✅ hard           |
+| `advance(item_idx, amount)`  | `pos += amount` per item via `compare_exchange_weak` loop  | ✅ hard           |
+| `set_pos(item_idx, pos)`     | Absolute set (Release). Must be ≥ current pos.             | ✅ hard           |
+| `snap(item_idx)`             | `(pos, total)` for one item                                | —                 |
+| `aggregate()`                | `(sum_pos, sum_total)` across all items                    | —                 |
 
 **Hard assert**: `assert!` (always compiled). Violation means a bug in size tracking logic — `pos ≤ total` per item is non-negotiable.
 
