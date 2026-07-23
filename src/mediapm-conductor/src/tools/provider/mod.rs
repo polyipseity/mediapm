@@ -21,7 +21,7 @@ use std::io::Read;
 use std::sync::Arc;
 
 use mediapm_utils::progress::{
-    ByteBudget, ProviderPhase, ProviderProgressCallback, ProviderProgressSnapshot,
+    ByteBudget, MultiItemBudget, ProviderPhase, ProviderProgressCallback, ProviderProgressSnapshot,
 };
 
 // ---------------------------------------------------------------------------
@@ -208,42 +208,34 @@ pub async fn fetch_tool_sources(
     let mut cached_count: usize = 0;
     let total = fetch.sources.len() as u64;
 
-    // Pre-compute suffix sums of expected_size: suffix_expected[i] = sum of
-    // expected_size for sources[i..].  remaining_expected for sources after
-    // the current one is suffix_expected[idx + 1].
-    let suffix_expected: Vec<u64> = {
-        let n = fetch.sources.len();
-        let mut s = vec![0u64; n + 1];
-        for (i, src) in fetch.sources.iter().enumerate().rev() {
-            s[i] = s[i + 1] + src.expected_size.or(src.size_hint_bytes).unwrap_or(0);
-        }
-        s
-    };
-
-    let budget = ByteBudget::new(suffix_expected[0]);
+    // Create per-item budget: each source gets its own item.
+    let mut budget = MultiItemBudget::with_capacity(fetch.sources.len());
+    for src in &fetch.sources {
+        let est = src.expected_size.or(src.size_hint_bytes).unwrap_or(0);
+        budget.add_item(est);
+    }
 
     for (idx, source) in fetch.sources.iter().enumerate() {
-        let remaining_expected = suffix_expected[idx + 1];
         match &source.producer {
             SourceProducer::Fetch { urls } => {
                 let cache_key = &urls[0];
                 let bytes = if let Some(cached) = cache.lookup_bytes(cache_key).await {
                     cache.touch(cache_key);
-                    budget.advance(cached.len() as u64);
+                    // Set total to cached size so advance works (item may have
+                    // been created with total=0 when no estimate was available).
+                    budget.set_total(idx, cached.len() as u64);
+                    budget.advance(idx, cached.len() as u64);
                     cached_count += 1;
                     cached
                 } else {
                     let estimate = source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
-                    budget.reconcile(estimate, estimate);
+                    // Ensure the item total reflects any estimate so aggregate
+                    // includes it even before download starts.
+                    budget.set_total(idx, estimate);
 
-                    let downloaded = fetch_bytes_from_candidates(
-                        urls,
-                        &fetch.tool_id,
-                        &source.os,
-                        &budget,
-                        remaining_expected,
-                    )
-                    .await?;
+                    let downloaded =
+                        fetch_bytes_from_candidates(urls, &fetch.tool_id, &source.os, &budget, idx)
+                            .await?;
                     cache.store_bytes(cache_key, &downloaded).await;
                     downloaded
                 };
@@ -262,8 +254,8 @@ pub async fn fetch_tool_sources(
                 let launcher_size = bytes.len() as u64;
                 // Launcher script sizes aren't in the initial total
                 // (expected_size/size_hint_bytes is None for launcher sources).
-                budget.reconcile(0, launcher_size);
-                budget.advance(launcher_size);
+                budget.set_total(idx, launcher_size);
+                budget.advance(idx, launcher_size);
                 entries.push(DownloadedSource {
                     os: source.os.clone(),
                     producer: SourceProducer::GenerateLauncher { builtin_id: builtin_id.clone() },
@@ -273,11 +265,11 @@ pub async fn fetch_tool_sources(
             }
         }
         if let Some(cb) = progress_cb.as_ref() {
-            let snap = budget.snap();
+            let bytes = budget.aggregate();
             cb(ProviderProgressSnapshot {
                 phase: ProviderPhase::Fetch,
                 items: ((idx + 1) as u64, total),
-                bytes: snap,
+                bytes,
             });
         }
     }
@@ -291,8 +283,8 @@ async fn fetch_bytes_from_candidates(
     urls: &[String],
     tool_id: &str,
     os_label: &str,
-    budget: &ByteBudget,
-    remaining_expected: u64,
+    budget: &MultiItemBudget,
+    item_idx: usize,
 ) -> Result<Vec<u8>, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use futures_util::StreamExt;
@@ -317,17 +309,12 @@ async fn fetch_bytes_from_candidates(
                         .map_err(|e| ConductorError::Workflow(format!("download error: {e}")))?;
                     downloaded += chunk.len() as u64;
                     buffer.extend_from_slice(&chunk);
-                    // Adjust budget total to reflect latest content-length estimate
+                    // Update this item's total to reflect latest Content-Length estimate.
+                    // pos is 0 until we advance at the end, so any estimate >= 0 is valid.
                     let current_estimate = total_bytes.unwrap_or(downloaded);
-                    let phase_base = budget.pos();
-                    let display_total = phase_base + current_estimate + remaining_expected;
-                    let current_total = budget.total();
-                    if display_total != current_total {
-                        let diff = display_total as i64 - current_total as i64;
-                        budget.adjust(diff);
-                    }
+                    budget.set_total(item_idx, current_estimate);
                 }
-                budget.advance(downloaded);
+                budget.advance(item_idx, downloaded);
                 return Ok(buffer);
             }
             Ok(response) => {
