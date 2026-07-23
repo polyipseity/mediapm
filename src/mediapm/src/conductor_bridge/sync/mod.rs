@@ -152,6 +152,8 @@ pub(crate) async fn reconcile_desired_tools(
                 }
             }
             Err(e) => {
+                let error_bar = effective_group.add_bar(1, &format!("{tool_id} [resolve]"));
+                error_bar.finish_error();
                 report.warnings.push(format!(
                     "tool {tool_id}: resolve failed (will retry on next sync): {e}",
                 ));
