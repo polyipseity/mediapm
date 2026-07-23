@@ -18,10 +18,9 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::sync::Arc;
 
 use mediapm_utils::progress::{
-    ByteBudget, MultiItemBudget, ProviderPhase, ProviderProgressCallback, ProviderProgressSnapshot,
+    MultiItemBudget, ProviderPhase, ProviderProgressCallback, ProviderProgressSnapshot,
 };
 
 // ---------------------------------------------------------------------------
@@ -419,9 +418,16 @@ pub async fn postprocess_tool_sources(
     let mut content_map: BTreeMap<String, String> = BTreeMap::new();
     let mut os_exec_paths: BTreeMap<String, String> = BTreeMap::new();
     let total = downloaded.entries.len() as u64;
-    let initial_total: u64 =
-        downloaded.entries.iter().map(|e| e.expected_size.unwrap_or(e.bytes.len() as u64)).sum();
-    let budget = ByteBudget::new(initial_total);
+
+    // Create MultiItemBudget with one item per source.
+    // Each item's initial total is the expected size (falling back to byte length
+    // if no estimate is available). The budget is refined during processing when
+    // the actual input cost is known.
+    let mut budget = MultiItemBudget::with_capacity(downloaded.entries.len());
+    for entry in &downloaded.entries {
+        let initial_total = entry.expected_size.unwrap_or(entry.bytes.len() as u64);
+        budget.add_item(initial_total);
+    }
 
     for (idx, source) in downloaded.entries.iter().enumerate() {
         let os_label = &source.os;
@@ -451,53 +457,6 @@ pub async fn postprocess_tool_sources(
             }
         };
 
-        let estimate = source.expected_size.unwrap_or(source.bytes.len() as u64);
-
-        // Pre-compute actual cost for reconcile
-        let source_input_cost = if archive_format.is_some() {
-            let total_compressed = source.bytes.len() as u64;
-            let decompressed_total: u64 = if archive_format == Some(ARCHIVE_ZIP) {
-                let cursor = std::io::Cursor::new(&source.bytes);
-                match zip::ZipArchive::new(cursor) {
-                    Ok(mut archive) => {
-                        let mut total = 0u64;
-                        for i in 0..archive.len() {
-                            if let Ok(file) = archive.by_index(i) {
-                                total += file.size();
-                            }
-                        }
-                        total
-                    }
-                    Err(_) => total_compressed.saturating_mul(3),
-                }
-            } else {
-                total_compressed.saturating_mul(3)
-            };
-            total_compressed + decompressed_total
-        } else {
-            source.bytes.len() as u64
-        };
-
-        // Reconcile budget total to reflect actual cost
-        budget.reconcile(estimate, source_input_cost);
-
-        let phase_base = budget.pos();
-
-        let bridge_cell: Option<Box<dyn Fn(u64) + '_>> = progress_cb.as_ref().map(|cb| {
-            let cb_arc = Arc::clone(cb);
-            let budget_ref = &budget;
-            Box::new(move |local_pos: u64| {
-                let agg_pos = phase_base + local_pos.min(source_input_cost);
-                let (_, agg_total) = budget_ref.snap();
-                cb_arc(ProviderProgressSnapshot {
-                    phase: ProviderPhase::Postprocess,
-                    items: (idx as u64, total),
-                    bytes: (agg_pos, agg_total),
-                });
-            }) as Box<dyn Fn(u64) + '_>
-        });
-        let local_cb: Option<&dyn Fn(u64)> = bridge_cell.as_deref();
-
         let processed = process_single_source(
             &source.bytes,
             archive_format,
@@ -506,23 +465,20 @@ pub async fn postprocess_tool_sources(
             &os_dir,
             &filename,
             cas,
-            source_input_cost,
-            local_cb,
+            &budget,
+            idx,
         )
         .await?;
-
-        // Catch up position — single-threaded sequential completion.
-        budget.set_pos(phase_base + processed.input_cost);
 
         content_map.extend(processed.content_map);
         os_exec_paths.insert(os_label.clone(), processed.exec_path);
 
         if let Some(cb) = progress_cb.as_ref() {
-            let snap = budget.snap();
+            let bytes = budget.aggregate();
             cb(ProviderProgressSnapshot {
                 phase: ProviderPhase::Postprocess,
                 items: ((idx + 1) as u64, total),
-                bytes: snap,
+                bytes,
             });
         }
     }
@@ -576,11 +532,14 @@ async fn process_single_source(
     os_dir: &std::path::Path,
     filename: &str,
     cas: &impl mediapm_cas::CasApi,
-    _source_total: u64,
-    local_cb: Option<&dyn Fn(u64)>,
+    budget: &MultiItemBudget,
+    item_idx: usize,
 ) -> Result<ProcessedSource, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use bytes::Bytes;
+
+    let cb_wrapper = |pos: u64| budget.set_pos(item_idx, pos);
+    let local_cb: Option<&dyn Fn(u64)> = Some(&cb_wrapper);
 
     if archive_format.is_some() {
         // ── Archive format ────────────────────────────────────────────
@@ -611,6 +570,8 @@ async fn process_single_source(
             total_compressed.saturating_mul(3)
         };
         let source_input_cost = total_compressed + decompressed_total;
+
+        budget.set_total(item_idx, source_input_cost);
         extract_archive(bytes, archive_format, os_dir, local_cb)?;
 
         let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
@@ -626,6 +587,9 @@ async fn process_single_source(
         // ── Binary/launcher format ───────────────────────────────────
         // CAS-import bytes directly; filename is the URL basename
         // (for Fetch sources) or tool_id (for launcher scripts).
+        let cost = bytes.len() as u64;
+        budget.set_total(item_idx, cost);
+        budget.advance(item_idx, cost);
         let hash =
             cas.put(Bytes::from(bytes.to_vec())).await.map_err(|e| ConductorError::Cas(e))?;
         let key = format!("{os_label}/{filename}");
@@ -1135,6 +1099,8 @@ mod tests {
         let zip = synthetic_zip(&[("sd", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
         let result = process_single_source(
             &zip,
             Some(ARCHIVE_ZIP),
@@ -1143,8 +1109,8 @@ mod tests {
             os_dir.path(),
             "",
             &cas,
-            0,
-            None,
+            &budget,
+            0usize,
         )
         .await
         .unwrap();
@@ -1158,6 +1124,8 @@ mod tests {
         let tgz = synthetic_tar_gz(&[("sd", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
         let result = process_single_source(
             &tgz,
             Some(ARCHIVE_TAR_GZ),
@@ -1166,8 +1134,8 @@ mod tests {
             os_dir.path(),
             "",
             &cas,
-            0,
-            None,
+            &budget,
+            0usize,
         )
         .await
         .unwrap();
@@ -1181,6 +1149,8 @@ mod tests {
         let txz = synthetic_tar_xz(&[("sd.exe", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
         let result = process_single_source(
             &txz,
             Some(ARCHIVE_TAR_XZ),
@@ -1189,8 +1159,8 @@ mod tests {
             os_dir.path(),
             "",
             &cas,
-            0,
-            None,
+            &budget,
+            0usize,
         )
         .await
         .unwrap();
@@ -1204,6 +1174,8 @@ mod tests {
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
         let launcher_bytes = generate_launcher_script("linux", "echo@v1");
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
         let result = process_single_source(
             &launcher_bytes,
             None,
@@ -1212,8 +1184,8 @@ mod tests {
             os_dir.path(),
             "echo",
             &cas,
-            0,
-            None,
+            &budget,
+            0usize,
         )
         .await
         .unwrap();
@@ -1232,6 +1204,8 @@ mod tests {
         let binary_content = b"mock-binary-content-for-cas-test";
         let tool_id = "my-tool";
         let filename = "my-tool-v1.2.3"; // URL-derived, differs from tool_id
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
         let result = process_single_source(
             binary_content,
             None, // no archive format → binary path
@@ -1240,8 +1214,8 @@ mod tests {
             os_dir.path(),
             filename,
             &cas,
-            0,
-            None,
+            &budget,
+            0usize,
         )
         .await
         .expect("process_single_source should succeed for binary");
@@ -1381,6 +1355,8 @@ mod tests {
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
         let content = b"binary-content-for-cost-test";
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
         let result = process_single_source(
             content,
             None,
@@ -1389,8 +1365,8 @@ mod tests {
             os_dir.path(),
             "tool",
             &cas,
-            0,
-            None,
+            &budget,
+            0usize,
         )
         .await
         .unwrap();
@@ -1407,6 +1383,8 @@ mod tests {
         let zip = synthetic_zip(&[("file.bin", content)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
         let result = process_single_source(
             &zip,
             Some(ARCHIVE_ZIP),
@@ -1415,8 +1393,8 @@ mod tests {
             os_dir.path(),
             "",
             &cas,
-            0,
-            None,
+            &budget,
+            0usize,
         )
         .await
         .unwrap();
