@@ -57,21 +57,26 @@ Key ecosystem (from `Cargo.toml`):
 
 ## Provider progress size tracking
 
-Provider progress size tracking uses the [`ByteBudget`](../.agents/instructions/progress-budget.instructions.md)
-architecture: a generic, thread-safe atomic tracker that replaces ad-hoc
-`agg_completed_bytes`/`agg_total_bytes`/`source_input_cost` parameters.
+Provider progress size tracking uses the [`MultiItemBudget`](../.agents/instructions/progress-budget.instructions.md)
+architecture: a per-item budget model where each tool source or archive entry
+is one budget item. This replaces ad-hoc `agg_completed_bytes`/`agg_total_bytes`/
+`source_input_cost` parameters and the legacy `ByteBudget` type.
 
 See `.agents/instructions/progress-budget.instructions.md` for the full
-architecture, `ByteBudget` API, extraction-helper callback protocol, and
+architecture, `MultiItemBudget` API, extraction-helper callback protocol, and
 phase-loop mapping.
 
 Key invariants at a glance:
 
-- Position is monotonically non-decreasing.
-- Total may increase or decrease (via `ByteBudget.adjust`/`reconcile`).
-- `pos ≤ total` is enforced by hard `assert!` on every mutation.
+- Position is monotonically non-decreasing per item.
+- Total is set once per item (via `set_total`); indeterminate items (`total == 0`)
+  contribute 0 bytes to the aggregate.
+- `pos ≤ total` is enforced by hard `assert!` on every mutation per item.
 - Extraction helpers fire local callbacks only (`local_cb: &dyn Fn(u64)`);
-  the outer phase loop owns the `ByteBudget` and maps local → aggregate.
+  the outer phase loop owns the `MultiItemBudget` and uses `aggregate()` to
+  derive combined progress for progress bars.
+- `ByteBudget` still exists as a legacy type but is unused in the provider
+  pipeline.
 
 ## Configuration Document Model
 

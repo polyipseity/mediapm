@@ -299,9 +299,6 @@ impl Default for MultiItemBudget {
     }
 }
 
-/// Callback for local position within a single source's work budget.
-pub type SourceProgressCallback = Arc<dyn Fn(u64) + Send + Sync>;
-
 // ---------------------------------------------------------------------------
 // Download-progress types (always available)
 // ---------------------------------------------------------------------------
@@ -3509,8 +3506,6 @@ mod byte_budget_tests {
         fn assert_sync<T: Sync>() {}
         assert_send::<ByteBudget>();
         assert_sync::<ByteBudget>();
-        assert_send::<SourceProgressCallback>();
-        assert_sync::<SourceProgressCallback>();
     }
 }
 

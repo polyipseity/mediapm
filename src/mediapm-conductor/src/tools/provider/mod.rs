@@ -122,7 +122,7 @@ pub struct ProcessedSource {
     pub content_map: BTreeMap<String, String>,
     /// Executable path relative to the extraction root.
     pub exec_path: String,
-    /// Total input cost in bytes (compressed + decompressed) for ByteBudget reconciliation.
+    /// Total input cost in bytes (compressed + decompressed) for MultiItemBudget reconciliation.
     pub input_cost: u64,
 }
 

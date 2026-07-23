@@ -1,258 +1,187 @@
 ---
-description: "Use when editing the ByteBudget progress size tracking system in mediapm-utils and the provider pipeline. Covers ByteBudget type, SourceProgress, extraction-helper callback protocol, and phase-loop mapping."
-name: "Progress Budget and ByteBudget"
+description: "Use when editing the MultiItemBudget per-item progress tracking system in mediapm-utils and the provider pipeline. Covers MultiItemBudget type, ItemBudget, extraction-helper callback protocol, and phase-loop mapping."
+name: "Progress Budget and MultiItemBudget"
 applyTo: "src/mediapm-utils/src/progress.rs, src/mediapm-conductor/src/tools/provider/mod.rs"
 ---
 
-# Progress budget (`ByteBudget`) architecture
+# Progress budget (`MultiItemBudget`) architecture
 
 ## Purpose
 
-`ByteBudget` is the single, generic mechanism for tracking byte-level progress
-across all provider phases (Fetch and Postprocess). It replaces ad-hoc
-`agg_completed_bytes`, `agg_total_bytes`, `source_input_cost`, and raw
-`bytes_done_before`/`bytes_total` parameters that were threaded through
-extraction helpers.
+`MultiItemBudget` is the primary mechanism for tracking byte-level progress across all three provider phases (Resolve, Fetch, and Postprocess). Each tracked entity (a tool source, a metadata URL) gets its own `ItemBudget` — progress is the aggregate of all items. `ByteBudget` (the legacy single-position type) still exists in the library but is no longer used in the provider pipeline.
 
 ## Core type
 
 ```rust
-/// Thread-safe progress size tracker.
-///
-/// Tracks (position, total) where position ≤ total at all times. Both fields
-/// use `AtomicU64` internally, making this type `Send + Sync` without external
-/// locking. Safe to read from one thread (progress bar renderer) while writing
-/// from another (download worker).
-///
-/// # Invariants (hard-fail with `assert!`)
-///
-/// - `pos ≤ total` — enforced on every mutation.
-/// - `pos` never decreases.
-/// - `total` may increase or decrease (via `adjust` or `reconcile`).
-pub struct ByteBudget {
+/// Thread-safe collection of per-item progress budgets.
+pub struct MultiItemBudget {
+    items: Vec<ItemBudget>,
+}
+
+struct ItemBudget {
     pos: AtomicU64,
     total: AtomicU64,
 }
 ```
 
+Each `ItemBudget` tracks `(position, total)` where `position ≤ total`. Both fields use `AtomicU64`, making the type `Send + Sync` without external locking. Multiple items can be advanced concurrently (e.g., per-chunk download callbacks) while a progress bar renderer reads the aggregate snapshot.
+
 Methods:
 
-| Method                        | Behavior                                                                                 | pos≤total assert?    |
-| ----------------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
-| `new(initial_total)`          | pos=0, total=initial_total                                                               | ✅                   |
-| `pos()` / `total()`           | Atomic load (Acquire)                                                                    | —                    |
-| `snap()`                      | `(pos, total)`                                                                           | —                    |
-| `advance(amount)`             | `pos += amount` via `compare_exchange_weak` loop                                         | ✅ hard              |
-| `set_pos(pos)`                | Absolute set (Release). Must be ≥ current pos.                                           | ✅ hard              |
-| `adjust(delta: i64)`          | total += delta (positive or negative). Uses `compare_exchange_weak` for negative deltas. | ✅ hard              |
-| `reconcile(estimate, actual)` | `total += (actual - estimate)`. Wrapper around `adjust`.                                 | ✅ hard via `adjust` |
+| Method | Behavior | pos≤total assert? |
+|---|---|---|
+| `new()` | Empty budget, no items | — |
+| `with_capacity(capacity)` | Pre-allocated for `capacity` items | — |
+| `add_item(total)` | Push one item with pos=0, total=`total` | — |
+| `item_count()` | Number of items | — |
+| `set_total(item_idx, total)` | Set total for item (Release store). Must be ≥ current pos. | ✅ hard |
+| `advance(item_idx, amount)` | `pos += amount` per item via `compare_exchange_weak` loop | ✅ hard |
+| `set_pos(item_idx, pos)` | Absolute set (Release). Must be ≥ current pos. | ✅ hard |
+| `snap(item_idx)` | `(pos, total)` for one item | — |
+| `aggregate()` | `(sum_pos, sum_total)` across all items | — |
 
-**Hard assert**: `assert!` (always compiled, not `debug_assert!`). Violation
-means a bug in size tracking logic — the invariant `pos ≤ total` is
-non-negotiable.
+**Hard assert**: `assert!` (always compiled). Violation means a bug in size tracking logic — `pos ≤ total` per item is non-negotiable.
 
-**All atomic operations** use `Ordering::AcqRel`/`Acquire`/`Release` (not
-`Relaxed`) so a progress bar thread sees a consistent snapshot.
+**All atomic operations** use `Ordering::AcqRel`/`Acquire`/`Release` so a progress bar thread sees a consistent snapshot.
 
-### `advance`
+**Indeterminate items**: Items with `total == 0` are counted in `item_count()` but contribute 0 bytes to the aggregate. This allows creating items before their total is known (e.g., before a Content-Length header arrives).
 
-Uses `compare_exchange_weak` loop to handle concurrent callers:
+### `advance` (per-item `compare_exchange_weak` loop)
 
 ```text
-fn advance(amount):
+fn advance(item_idx, amount):
+    item = items[item_idx]
     loop:
-        old = pos.load(Acquire)
+        old = item.pos.load(Acquire)
         new = old + amount
-        total = total.load(Acquire)
+        total = item.total.load(Acquire)
         assert(new ≤ total)
-        if pos.compare_exchange_weak(old, new, AcqRel, Acquire).is_ok():
+        if item.pos.compare_exchange_weak(old, new, AcqRel, Acquire).is_ok():
             return
 ```
 
-### `set_pos`
-
-Single load-store; assumes sequential completion (one source at a time):
+### `set_pos` (per-item, single load-store)
 
 ```text
-fn set_pos(pos):
-    total = total.load(Acquire)
+fn set_pos(item_idx, pos):
+    item = items[item_idx]
+    total = item.total.load(Acquire)
     assert(pos ≤ total)
-    current = pos.load(Acquire)
+    current = item.pos.load(Acquire)
     assert(pos ≥ current)
-    pos.store(pos, Release)
+    item.pos.store(pos, Release)
 ```
-
-### `adjust`
-
-Uses `compare_exchange_weak` loop for thread safety:
-
-```text
-fn adjust(delta):
-    loop:
-        old = total.load(Acquire)
-        new = if delta ≥ 0: old.saturating_add(delta) else: old.saturating_sub(|delta|)
-        pos = pos.load(Acquire)
-        assert(pos ≤ new)
-        if total.compare_exchange_weak(old, new, AcqRel, Acquire).is_ok():
-            return
-```
-
-### `reconcile`
-
-Delegates to `adjust`:
-
-```text
-fn reconcile(estimate, actual):
-    match actual.cmp(estimate):
-        Greater → adjust((actual - estimate) as i64)
-        Less → adjust(-((estimate - actual) as i64))
-        Equal → // no-op
-```
-
-Total may increase _or decrease_ when reconciling. If decreasing total would
-violate `pos ≤ total`, `adjust` panics — this is correct behavior (the
-estimate was too low or position got ahead of total, which is a bug).
 
 ## Extraction-helper callback protocol
 
-Extraction helpers (`extract_zip`, `extract_tar_gz`, `extract_tar_xz`,
-`extract_archive`, `CountingReader`, `pack_directory_to_uncompressed_zip_bytes`,
-`pack_directory_entries`) MUST NOT receive aggregate progress parameters.
+Extraction helpers (`extract_zip`, `extract_tar_gz`, `extract_tar_xz`, `extract_archive`, `CountingReader`) receive only a `local_cb: Option<&dyn Fn(u64)>`. The `source_total` parameter has been removed — helpers never know the total work for the source.
 
-**Old signature (removed)**:
-`bytes_done_before: u64, bytes_total: u64, items: (u64, u64)`.
-
-**New signature**: `source_total: u64, local_cb: Option<&dyn Fn(u64)>`
-
-- `source_total` is the total work for this source (precomputed by outer loop).
-- `local_cb` fires with `local_pos: u64` where `local_pos ∈ [0, source_total]`.
-  The helper never knows about aggregate positions.
-- `items` is removed — item tracking belongs exclusively in the outer phase
-  loop.
-- The helper does NOT call `set_pos`/`advance` on the shared budget. It only
-  fires position snapshots through the local callback.
+- `local_cb` fires with `local_pos: u64` where `local_pos` is the current compressed bytes consumed. The helper does NOT call `set_pos`/`advance` on the shared budget — it only fires position snapshots through the callback.
+- The outer phase loop (`process_single_source`) creates the callback internally from the `MultiItemBudget` using `budget.set_pos(item_idx, pos)`. This maps the helper's local position directly to the item's absolute position.
 
 ## Phase-loop mapping
 
-The outer phase loop (`fetch_tool_sources`, `postprocess_tool_sources`) owns
-the `ByteBudget` and maps local callbacks to aggregate progress.
+The outer phase loop owns the `MultiItemBudget` and creates one item per tracked entity (source, URL).
 
-### Postprocess phase loop
+### Fetch phase loop (`fetch_tool_sources`)
 
 ```text
-budget = ByteBudget::new(initial_total)  # sum of compressed bytes
+budget = MultiItemBudget::with_capacity(sources.len())
+for src in sources:
+    est = src.expected_size.or(size_hint_bytes).unwrap_or(0)
+    budget.add_item(est)
+
+for (idx, source) in sources:
+    match source.producer:
+        Fetch { urls }:
+            if cache hit:
+                budget.set_total(idx, cached.len())
+                budget.advance(idx, cached.len())
+            else:
+                budget.set_total(idx, estimate)
+                fetch_bytes_from_candidates(urls, ..., &budget, idx)
+                # Inside fetch: budget.set_total(idx, content_length)
+                #              budget.advance(idx, downloaded)
+        GenerateLauncher { .. }:
+            budget.set_total(idx, launcher_size)
+            budget.advance(idx, launcher_size)
+
+    cb(ProviderProgressSnapshot {
+        phase: Fetch,
+        items: (idx + 1, total),        # (completed_items, total_items)
+        bytes: budget.aggregate(),       # (sum_pos, sum_total)
+    })
+```
+
+Key: `fetch_bytes_from_candidates` receives `&MultiItemBudget` + `item_idx`. During download it calls `budget.set_total(item_idx, content_length_estimate)` on each chunk and `budget.advance(item_idx, downloaded)` at the end. The `aggregate()` call after each source gives smooth byte-level progress as items fill sequentially.
+
+### Postprocess phase loop (`postprocess_tool_sources`)
+
+```text
+budget = MultiItemBudget::with_capacity(entries.len())
+for entry in entries:
+    budget.add_item(expected_size.unwrap_or(bytes.len()))
+
 for (idx, source) in entries:
-    source_cost = precompute_input_cost(source, archive_format)
-    budget.reconcile(estimate=bytes.len(), source_cost)
-
-    phase_base = budget.pos()  # snapshot before work starts
-    local_cb = |local_pos| {
-        agg_pos = phase_base + min(local_pos, source_cost)
-        agg_total = budget.total()  # read-only, no mutation
-        cb(ProviderProgressSnapshot {
-            phase: Postprocess,
-            items: (idx, total_items),
-            bytes: (agg_pos, agg_total),
-        })
-    }
-
-    processed = process_single_source(bytes, ..., source_cost, Some(&local_cb))
-    budget.set_pos(phase_base + processed.input_cost)
+    process_single_source(bytes, ..., &budget, idx).await
+    # Inside: creates |pos| budget.set_pos(item_idx, pos)
+    # and passes it as local_cb to extraction helpers.
 
     cb(ProviderProgressSnapshot {
         phase: Postprocess,
-        items: (idx + 1, total_items),
-        bytes: budget.snap(),
+        items: (idx + 1, total),        # (completed_items, total_items)
+        bytes: budget.aggregate(),       # (sum_pos, sum_total)
     })
 ```
 
-Key: `local_cb` only **reads** `budget.total()` — it never mutates the
-budget. Position catch-up (`set_pos`) happens once in the outer loop after
-the source completes. This avoids races in concurrent scenarios: multiple
-workers can fire `local_cb` in parallel without mutating shared state.
+`process_single_source` receives `budget: &MultiItemBudget` and `item_idx: usize`. It internally creates a callback wrapper `|pos| budget.set_pos(item_idx, pos)` and passes it to extraction helpers. After processing, no catch-up step is needed — the extraction helper's callbacks have already set the item's position via `set_pos`. The outer loop calls `budget.aggregate()` for the progress snapshot.
 
-### Fetch phase loop
+### Resolve phase
 
-```text
-suffix = suffix_expected per source
-budget = ByteBudget::new(suffix[0])
+`resolve_tool_metadata` (when it uses progress) creates a `MultiItemBudget` with `items = metadata_urls.len()`. Each URL resolution (GitHub API call, cache lookup) advances the corresponding item. After all URLs resolve, `budget.aggregate()` reports complete progress. The `ProviderPhase` is `Resolve` and `items` reports `(resolved_count, total_urls)`.
 
-for (idx, source) in sources:
-    estimate = source.expected_size.or(size_hint_bytes).unwrap_or(0)
-    remaining = suffix[idx + 1]
-
-    # Reconcile before download if HEAD probe gave actual size
-    budget.reconcile(estimate, source.expected_size.unwrap_or(0))
-
-    phase_base = budget.pos()
-
-    download(source, |downloaded_bytes, content_len| {
-        current_estimate = content_len.unwrap_or(downloaded_bytes)
-        display_pos = phase_base + downloaded_bytes
-        display_total = phase_base + current_estimate + remaining
-
-        # Adjust budget total to reflect latest estimate
-        # (may increase or decrease vs current total)
-        if display_total != budget.total() {
-            diff = display_total as i64 - budget.total() as i64
-            budget.adjust(diff)
-        }
-
-        cb(ProviderProgressSnapshot {
-            phase: Fetch,
-            items: (idx, total),
-            bytes: (display_pos, budget.total()),
-        })
-    })
-
-    budget.reconcile(estimate, actual_bytes.len())
-    budget.set_pos(phase_base + actual_bytes.len())
-    cb(ProviderProgressSnapshot {
-        phase: Fetch,
-        items: (idx + 1, total),
-        bytes: budget.snap(),
-    })
-```
-
-## ProcessedSource return type
-
-`process_single_source` returns a struct instead of a tuple:
+## ProviderPhase enum
 
 ```rust
-pub struct ProcessedSource {
-    pub content_map: BTreeMap<String, String>,
-    pub exec_path: String,
-    /// Total work cost (compressed + decompressed for archives,
-    /// bytes.len() for binaries).
-    pub input_cost: u64,
+pub enum ProviderPhase {
+    Resolve,
+    Fetch,
+    Postprocess,
+}
+
+pub struct ProviderProgressSnapshot {
+    pub phase: ProviderPhase,
+    /// Items completed vs total: (completed, total).
+    /// Resolve: metadata URLs resolved.
+    /// Fetch: sources fetched.
+    /// Postprocess: sources postprocessed.
+    pub items: (u64, u64),
+    /// Bytes completed vs total: (completed, total).
+    pub bytes: (u64, u64),
 }
 ```
 
-## CountingReader (no longer uses atomics)
+The `items` field reports `(completed_items, total_items)` in fetch and postprocess — this drives the `{tool} [process] 1/3` → `2/3` → `3/3` prefix in progress bars.
 
-`CountingReader` wraps a byte slice to track compressed bytes consumed during
-tar extraction. Since extraction is single-threaded (sequential source
-processing), the `AtomicU64` for `bytes_read` is replaced with a plain `u64`.
+## ByteBudget (legacy)
+
+`ByteBudget` still exists in `mediapm-utils/src/progress.rs` as a single-position `(pos, total)` tracker with `advance`, `set_pos`, `adjust`, and `reconcile` methods. It is NOT used in the provider pipeline. All provider progress now goes through `MultiItemBudget`. `ByteBudget` remains available for other use cases that need a simple atomic byte counter.
+
+## CountingReader (Cell-based, no atomics)
 
 ```rust
 struct CountingReader<'a> {
     cursor: std::io::Cursor<&'a [u8]>,
-    bytes_read: u64,
-    last_callback_threshold: u64,
-    local_cb: Option<&'a dyn Fn(u64)>,
-    source_total: u64,
+    bytes_read: &'a Cell<u64>,
+    last_cb_pos: Cell<u64>,
+    progress_cb: Option<&'a dyn Fn(u64)>,
 }
 ```
 
-On each `read()`, increment `bytes_read` and if `bytes_read / COMPRESSED_CHUNK`
-exceeds `last_callback_threshold`, fire `local_cb(bytes_read.min(source_total))`.
+Wraps a byte slice to track compressed bytes consumed during tar extraction. Uses `Cell<u64>` (not `AtomicU64`) since extraction is single-threaded. Fires `progress_cb` at `COMPRESSED_CHUNK` (128 KB) boundaries. The callback maps to `budget.set_pos(item_idx, pos)` created by `process_single_source`.
 
 ## Placement
 
-- `ByteBudget` lives in `mediapm-utils/src/progress.rs` in the always-available
-  section (before `#[cfg(feature = "progress")] mod inner`).
-- The `ProcessedSource` struct lives in
-  `src/mediapm-conductor/src/tools/provider/mod.rs`.
-- This instruction file replaces the "Progress monotonicity invariants",
-  "Progress sizing policy", and "Per-entry progress" sections in the existing
-  AGENTS.md files.
+- `MultiItemBudget` and `ItemBudget` live in `mediapm-utils/src/progress.rs` in the always-available section (before `#[cfg(feature = "progress")] mod inner`).
+- `ProviderPhase`, `ProviderProgressSnapshot`, and `ProcessedSource` live in `src/mediapm-conductor/src/tools/provider/mod.rs`.
+- This instruction file replaces the "Progress monotonicity invariants", "Progress sizing policy", and "Per-entry progress" sections in the existing AGENTS.md files.
