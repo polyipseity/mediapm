@@ -3,16 +3,19 @@
 //! Sources are fetched from the sd GitHub releases page as zip/tar.gz archives.
 //! The latest tag is resolved via the GitHub API.
 //!
-//! Canonical version: the resolved tag verbatim (e.g. "v1.1.0").
+//! Canonical version: the resolved commit hash (from GitHub API).
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 
 use crate::tools::downloader::ToolDownloadCache;
 
 /// Resolves the latest tag for sd from GitHub releases.
+///
+/// Returns `(tag, commit_hash)` where `tag` is used for URL substitution
+/// and `commit_hash` is the canonical version identifier.
 pub(crate) async fn resolve_tag(
     metadata_cache: Option<&ToolDownloadCache>,
-) -> Result<String, mediapm_conductor::ConductorError> {
+) -> Result<(String, String), mediapm_conductor::ConductorError> {
     super::resolve_latest_github_tag("chmln", "sd", metadata_cache).await
 }
 

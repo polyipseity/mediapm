@@ -416,10 +416,12 @@ mod tests {
             .expect("metadata cache open");
         let tracker = RecordingProgressTracker::new();
 
-        // Pre-seed the metadata cache with a stable tag string (no network).
+        // Pre-seed the metadata cache with a stable tag+hash (no network).
+        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag.
         let tag = "2025.07.15";
+        let hash = "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9";
         let api_key = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
-        metadata_cache.store_bytes(api_key, tag.as_bytes()).await;
+        metadata_cache.store_bytes(api_key, format!("{tag}\n{hash}").as_bytes()).await;
 
         // Resolve normally — metadata cache returns the pre-seeded tag.
         let (mut fetch, canonical) =
@@ -475,7 +477,10 @@ mod tests {
                     !payload.canonical_version.is_empty(),
                     "canonical_version should be populated"
                 );
-                assert_eq!(payload.canonical_version, "2025.07.15");
+                assert_eq!(
+                    payload.canonical_version, "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+                    "canonical version should be the git commit hash",
+                );
             }
             Ok(None) => panic!("yt-dlp should return Ok(Some(...)), got Ok(None)"),
             Err(e) => panic!("yt-dlp should succeed, got Err({e:?})"),

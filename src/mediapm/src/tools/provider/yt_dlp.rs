@@ -4,7 +4,7 @@
 //! standalone binaries (no archive extraction needed). The "latest"
 //! tag is resolved via the GitHub API and cached in the metadata cache.
 //!
-//! Canonical version: the resolved tag verbatim (e.g. "2025.07.15").
+//! Canonical version: the resolved commit hash (from GitHub API).
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 
@@ -15,9 +15,12 @@ use crate::tools::downloader::ToolDownloadCache;
 /// Delegates to [`super::resolve_latest_github_tag`]. The metadata cache
 /// key is the GitHub API endpoint URL — see the shared helper for details.
 /// The caller must NOT call `touch()` on the metadata cache.
+///
+/// Returns `(tag, commit_hash)` where `tag` is used for URL substitution
+/// and `commit_hash` is the canonical version identifier.
 pub(crate) async fn resolve_latest_tag(
     metadata_cache: Option<&ToolDownloadCache>,
-) -> Result<String, mediapm_conductor::ConductorError> {
+) -> Result<(String, String), mediapm_conductor::ConductorError> {
     super::resolve_latest_github_tag("yt-dlp", "yt-dlp", metadata_cache).await
 }
 

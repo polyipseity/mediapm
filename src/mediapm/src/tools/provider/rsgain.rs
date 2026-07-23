@@ -4,16 +4,19 @@
 //! zip (Windows, macOS) and tar.xz (Linux) archives. The latest
 //! tag is resolved via the GitHub API.
 //!
-//! Canonical version: the resolved tag verbatim (e.g. "v3.7").
+//! Canonical version: the resolved commit hash (from GitHub API).
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 
 use crate::tools::downloader::ToolDownloadCache;
 
 /// Resolves the latest tag for rsgain from GitHub releases.
+///
+/// Returns `(tag, commit_hash)` where `tag` is used for URL substitution
+/// and `commit_hash` is the canonical version identifier.
 pub(crate) async fn resolve_tag(
     metadata_cache: Option<&ToolDownloadCache>,
-) -> Result<String, mediapm_conductor::ConductorError> {
+) -> Result<(String, String), mediapm_conductor::ConductorError> {
     super::resolve_latest_github_tag("complexlogic", "rsgain", metadata_cache).await
 }
 
