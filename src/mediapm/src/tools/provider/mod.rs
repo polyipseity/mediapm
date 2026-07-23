@@ -37,6 +37,16 @@ pub(crate) async fn resolve_latest_github_tag(
 ) -> Result<String, mediapm_conductor::ConductorError> {
     let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
 
+    /// Validates that a tag is a concrete version, not a placeholder.
+    fn validate_tag(tag: &str) -> Result<(), mediapm_conductor::ConductorError> {
+        if tag.eq_ignore_ascii_case("latest") {
+            return Err(mediapm_conductor::ConductorError::Workflow(format!(
+                "resolved tag is '{tag}' which is a placeholder, not a concrete version"
+            )));
+        }
+        Ok(())
+    }
+
     // Try metadata cache first.
     if let Some(cache) = metadata_cache {
         if let Some(bytes) = cache.lookup_bytes(&api_url).await {
@@ -45,6 +55,7 @@ pub(crate) async fn resolve_latest_github_tag(
                     "cached tag is not valid UTF-8".to_string(),
                 )
             })?;
+            validate_tag(&tag)?;
             return Ok(tag);
         }
     }
@@ -70,6 +81,7 @@ pub(crate) async fn resolve_latest_github_tag(
         )
     })?;
     let tag = tag.to_string();
+    validate_tag(&tag)?;
 
     // Store in metadata cache. Do NOT call touch() — TTL is creation-time-based.
     if let Some(cache) = metadata_cache {
