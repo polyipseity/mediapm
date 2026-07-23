@@ -27,26 +27,46 @@ const REQUEST_TIMEOUT_ENV: &str = "MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS";
 /// Process-wide shared `reqwest::Client` initialization state.
 static SHARED_HTTP_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 
-/// Returns the process-wide shared async HTTP client.
+/// Returns the process-wide shared async HTTP client (follows redirects).
 pub(crate) fn shared_http_client() -> Result<&'static Client, MediaPmError> {
-    match SHARED_HTTP_CLIENT.get_or_init(build_shared_http_client) {
+    match SHARED_HTTP_CLIENT.get_or_init(|| build_shared_http_client(true)) {
         Ok(client) => Ok(client),
         Err(message) => Err(MediaPmError::Workflow(message.clone())),
     }
 }
 
-/// Builds the shared HTTP client once.
-fn build_shared_http_client() -> Result<Client, String> {
+/// Process-wide shared no-redirect `reqwest::Client` initialization state.
+static SHARED_NO_REDIRECT_HTTP_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+
+/// Returns the process-wide shared async HTTP client that does **not** follow
+/// redirects. Use this when the caller needs to inspect redirect responses
+/// (e.g. capture the `Location` header) rather than transparently following
+/// them to the final destination.
+pub(crate) fn shared_no_redirect_http_client() -> Result<&'static Client, MediaPmError> {
+    match SHARED_NO_REDIRECT_HTTP_CLIENT.get_or_init(|| build_shared_http_client(false)) {
+        Ok(client) => Ok(client),
+        Err(message) => Err(MediaPmError::Workflow(message.clone())),
+    }
+}
+
+/// Builds an HTTP client with optional redirect following.
+fn build_shared_http_client(follow_redirects: bool) -> Result<Client, String> {
     let timeout_seconds = std::env::var(REQUEST_TIMEOUT_ENV)
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|value| *value >= 30)
         .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECONDS);
 
-    Client::builder()
+    let mut builder = Client::builder()
         .connect_timeout(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECONDS))
         .timeout(Duration::from_secs(timeout_seconds))
-        .user_agent(MEDIAPM_USER_AGENT)
+        .user_agent(MEDIAPM_USER_AGENT);
+
+    if !follow_redirects {
+        builder = builder.redirect(reqwest::redirect::Policy::none());
+    }
+
+    builder
         .build()
         .map_err(|source| format!("building shared HTTP client for mediapm failed: {source}"))
 }
