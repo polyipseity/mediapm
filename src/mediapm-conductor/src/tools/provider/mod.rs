@@ -113,17 +113,13 @@ pub struct DownloadedSources {
     pub cached_count: usize,
 }
 
-/// Result of processing a single source: content map, executable path, and
-/// the total input cost (compressed + decompressed bytes) for progress
-/// budget reconciliation.
+/// Result of processing a single source: content map and executable path.
 #[derive(Debug, Clone)]
 pub struct ProcessedSource {
     /// Content map entries (os/path → hash).
     pub content_map: BTreeMap<String, String>,
     /// Executable path relative to the extraction root.
     pub exec_path: String,
-    /// Total input cost in bytes (compressed + decompressed) for MultiItemBudget reconciliation.
-    pub input_cost: u64,
 }
 
 /// Phase 3 output: final content map and per-OS executable paths for a tool.
@@ -417,21 +413,31 @@ pub async fn postprocess_tool_sources(
 
     let mut content_map: BTreeMap<String, String> = BTreeMap::new();
     let mut os_exec_paths: BTreeMap<String, String> = BTreeMap::new();
-    let total = downloaded.entries.len() as u64;
 
-    // Create MultiItemBudget with one item per source.
-    // Each item's initial total is the expected size (falling back to byte length
-    // if no estimate is available). The budget is refined during processing when
-    // the actual input cost is known.
-    let mut budget = MultiItemBudget::with_capacity(downloaded.entries.len());
+    // Compute total items: archive sources get 2 items (decompress + compress),
+    // binary/launcher sources get 1 item.
+    let total_items: usize = downloaded
+        .entries
+        .iter()
+        .map(|e| if is_archive_source(&e.producer) { 2usize } else { 1usize })
+        .sum();
+    let mut budget = MultiItemBudget::with_capacity(total_items);
     for entry in &downloaded.entries {
+        let is_archive = is_archive_source(&entry.producer);
         let initial_total = entry.expected_size.unwrap_or(entry.bytes.len() as u64);
-        budget.add_item(initial_total);
+        budget.add_item(initial_total); // item 0: decompress (or single binary item)
+        if is_archive {
+            budget.add_item(0); // item 1: compress – starts at 0, refined during processing
+        }
     }
+    let total_items_u64 = total_items as u64;
 
-    for (idx, source) in downloaded.entries.iter().enumerate() {
+    let mut next_item_idx: usize = 0;
+    for source in &downloaded.entries {
         let os_label = &source.os;
         let os_dir = temp_root.path().join(os_label);
+        let is_archive = is_archive_source(&source.producer);
+        let item_count = if is_archive { 2usize } else { 1usize };
 
         let (archive_format, filename) = match &source.producer {
             SourceProducer::Fetch { urls } => {
@@ -466,7 +472,8 @@ pub async fn postprocess_tool_sources(
             &filename,
             cas,
             &budget,
-            idx,
+            next_item_idx,
+            item_count,
         )
         .await?;
 
@@ -477,10 +484,11 @@ pub async fn postprocess_tool_sources(
             let bytes = budget.aggregate();
             cb(ProviderProgressSnapshot {
                 phase: ProviderPhase::Postprocess,
-                items: ((idx + 1) as u64, total),
+                items: ((next_item_idx + item_count) as u64, total_items_u64),
                 bytes,
             });
         }
+        next_item_idx += item_count;
     }
 
     Ok(ProvisionResult { content_map, os_exec_paths })
@@ -506,6 +514,20 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
     }
 }
 
+/// Returns `true` if the source producer represents an archive download.
+///
+/// Archive sources produce compressed payloads that require decompression
+/// (e.g. `.zip`, `.tar.gz`, `.tar.xz`). Binary and launcher sources are
+/// used as-is.
+fn is_archive_source(producer: &SourceProducer) -> bool {
+    match producer {
+        SourceProducer::Fetch { urls } => {
+            urls.first().map_or(false, |url| infer_archive_format(url).is_some())
+        }
+        SourceProducer::GenerateLauncher { .. } => false,
+    }
+}
+
 /// Processes one downloaded source: extract archives or import binaries to CAS.
 ///
 /// For archive formats (ZIP, tar.gz, tar.xz): extract → find executable →
@@ -516,13 +538,11 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// `filename` (URL basename for Fetch sources, `tool_id` for launchers).
 /// Returns file-level content key (`{os}/{filename}`).
 ///
-/// When `progress_cb` is `Some` and the source is an archive, fires
-/// per-entry progress callbacks during extraction (ZIP: `compressed_size()`
-/// tracked; tar.gz/xz: compressed bytes consumed as estimate).  The
-/// progress total also includes decompressed bytes during repacking, so
-/// the bar remains smooth through the full extraction+repack pipeline.
-/// This gives the progress bar smooth updates instead of freezing during
-/// the seconds-long extraction of large archives like yt-dlp or ffmpeg.
+/// # Budget item layout
+///
+/// Archive sources use 2 consecutive budget items (`item_idx` = decompress,
+/// `item_idx + 1` = compress). Binary/launcher sources use 1 item (`item_idx`).
+/// The caller must set `item_count` to 2 for archive sources, 1 for others.
 #[cfg(feature = "tool-presets")]
 async fn process_single_source(
     bytes: &[u8],
@@ -534,15 +554,17 @@ async fn process_single_source(
     cas: &impl mediapm_cas::CasApi,
     budget: &MultiItemBudget,
     item_idx: usize,
+    item_count: usize,
 ) -> Result<ProcessedSource, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use bytes::Bytes;
 
-    let cb_wrapper = |pos: u64| budget.set_pos(item_idx, pos);
-    let local_cb: Option<&dyn Fn(u64)> = Some(&cb_wrapper);
+    let decompress_wrapper = |pos: u64| budget.set_pos(item_idx, pos);
+    let local_cb: Option<&dyn Fn(u64)> = Some(&decompress_wrapper);
 
     if archive_format.is_some() {
         // ── Archive format ────────────────────────────────────────────
+        debug_assert_eq!(item_count, 2, "archive sources must use 2 budget items");
         std::fs::create_dir_all(os_dir).map_err(|source| {
             ConductorError::io(
                 &format!("creating temp directory for {os_label} tool extraction"),
@@ -550,41 +572,36 @@ async fn process_single_source(
                 source,
             )
         })?;
-        // Pre-compute total input cost: compressed + decompressed
         let total_compressed = bytes.len() as u64;
-        let decompressed_total: u64 = if archive_format == Some(ARCHIVE_ZIP) {
-            let cursor = std::io::Cursor::new(bytes);
-            match zip::ZipArchive::new(cursor) {
-                Ok(mut archive) => {
-                    let mut total = 0u64;
-                    for i in 0..archive.len() {
-                        if let Ok(file) = archive.by_index(i) {
-                            total += file.size();
-                        }
-                    }
-                    total
-                }
-                Err(_) => total_compressed.saturating_mul(3),
-            }
-        } else {
-            total_compressed.saturating_mul(3)
-        };
-        let source_input_cost = total_compressed + decompressed_total;
 
-        budget.set_total(item_idx, source_input_cost);
+        // Item 0: decompress — total = compressed size (input), pos updated via local_cb
+        budget.set_total(item_idx, total_compressed);
         extract_archive(bytes, archive_format, os_dir, local_cb)?;
+        // Ensure final pos = total (callbacks may already have set it)
+        budget.set_pos(item_idx, total_compressed);
 
         let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
 
-        let zip_bytes =
-            pack_directory_to_uncompressed_zip_bytes(os_dir, total_compressed, local_cb)?;
+        // Item 1: compress — total = actual dir content size, pos updated via compress callback.
+        // The total is computed by walking the directory after extraction so that pre-existing
+        // files from a prior source for the same OS are correctly accounted for.
+        let compress_idx = item_idx + 1;
+        let dir_total = total_dir_size(os_dir);
+        budget.set_total(compress_idx, dir_total);
+        let compress_wrapper = |pos: u64| budget.set_pos(compress_idx, pos);
+        let compress_cb: Option<&dyn Fn(u64)> = Some(&compress_wrapper);
+
+        let zip_bytes = pack_directory_to_uncompressed_zip_bytes(os_dir, 0, compress_cb)?;
+        // Ensure final pos = total (callbacks may already have set it)
+        budget.set_pos(compress_idx, dir_total);
         let hash = cas.put(Bytes::from(zip_bytes)).await.map_err(|e| ConductorError::Cas(e))?;
         let key = format!("{os_label}/");
         let mut cm = BTreeMap::new();
         cm.insert(key, hash.to_hex());
-        Ok(ProcessedSource { content_map: cm, exec_path, input_cost: source_input_cost })
+        Ok(ProcessedSource { content_map: cm, exec_path })
     } else {
         // ── Binary/launcher format ───────────────────────────────────
+        debug_assert_eq!(item_count, 1, "binary/launcher sources must use 1 budget item");
         // CAS-import bytes directly; filename is the URL basename
         // (for Fetch sources) or tool_id (for launcher scripts).
         let cost = bytes.len() as u64;
@@ -595,11 +612,7 @@ async fn process_single_source(
         let key = format!("{os_label}/{filename}");
         let mut cm = BTreeMap::new();
         cm.insert(key, hash.to_hex());
-        Ok(ProcessedSource {
-            content_map: cm,
-            exec_path: filename.to_string(),
-            input_cost: bytes.len() as u64,
-        })
+        Ok(ProcessedSource { content_map: cm, exec_path: filename.to_string() })
     }
 }
 
@@ -925,6 +938,23 @@ fn find_os_executable(os_dir: &std::path::Path, tool_id: &str) -> Option<String>
     None
 }
 
+/// Computes the total size of all regular files under `dir`, recursively.
+#[cfg(feature = "tool-presets")]
+fn total_dir_size(dir: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                total += total_dir_size(&path);
+            } else if let Ok(meta) = path.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
 /// Recursively searches for a file with the given name, returning its path
 /// relative to `root`.
 #[cfg(feature = "tool-presets")]
@@ -1101,6 +1131,7 @@ mod tests {
         let os_dir = tempfile::tempdir().unwrap();
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
+        budget.add_item(0);
         let result = process_single_source(
             &zip,
             Some(ARCHIVE_ZIP),
@@ -1111,6 +1142,7 @@ mod tests {
             &cas,
             &budget,
             0usize,
+            2usize,
         )
         .await
         .unwrap();
@@ -1126,6 +1158,7 @@ mod tests {
         let os_dir = tempfile::tempdir().unwrap();
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
+        budget.add_item(0);
         let result = process_single_source(
             &tgz,
             Some(ARCHIVE_TAR_GZ),
@@ -1136,6 +1169,7 @@ mod tests {
             &cas,
             &budget,
             0usize,
+            2usize,
         )
         .await
         .unwrap();
@@ -1151,6 +1185,7 @@ mod tests {
         let os_dir = tempfile::tempdir().unwrap();
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
+        budget.add_item(0);
         let result = process_single_source(
             &txz,
             Some(ARCHIVE_TAR_XZ),
@@ -1161,6 +1196,7 @@ mod tests {
             &cas,
             &budget,
             0usize,
+            2usize,
         )
         .await
         .unwrap();
@@ -1186,6 +1222,7 @@ mod tests {
             &cas,
             &budget,
             0usize,
+            1usize,
         )
         .await
         .unwrap();
@@ -1216,6 +1253,7 @@ mod tests {
             &cas,
             &budget,
             0usize,
+            1usize,
         )
         .await
         .expect("process_single_source should succeed for binary");
@@ -1348,16 +1386,16 @@ mod tests {
         }
     }
 
-    // ── source_input_cost ──────────────────────────────────────────
+    // ── process_single_source budget tracking ────────────────────────
 
     #[tokio::test]
-    async fn process_single_source_binary_input_cost_equals_byte_length() {
+    async fn process_single_source_binary_budget_advances_correct_item() {
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
         let content = b"binary-content-for-cost-test";
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
-        let result = process_single_source(
+        let _result = process_single_source(
             content,
             None,
             "linux",
@@ -1367,25 +1405,29 @@ mod tests {
             &cas,
             &budget,
             0usize,
+            1usize,
         )
         .await
         .unwrap();
+        let (pos, total) = budget.snap(0);
         assert_eq!(
-            result.input_cost,
-            content.len() as u64,
-            "binary input cost should equal byte length"
+            pos, total,
+            "binary source should advance budget item to completed (pos={}, total={})",
+            pos, total
         );
+        assert_eq!(total, content.len() as u64);
     }
 
     #[tokio::test]
-    async fn process_single_source_archive_input_cost_exceeds_compressed_size() {
+    async fn process_single_source_archive_two_items_completed() {
         let content = b"some-content-that-will-be-in-the-archive";
         let zip = synthetic_zip(&[("file.bin", content)]);
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
-        let result = process_single_source(
+        budget.add_item(0);
+        let _result = process_single_source(
             &zip,
             Some(ARCHIVE_ZIP),
             "linux",
@@ -1395,16 +1437,26 @@ mod tests {
             &cas,
             &budget,
             0usize,
+            2usize,
         )
         .await
         .unwrap();
-        // cost = compressed + decompressed.
-        assert!(
-            result.input_cost > content.len() as u64,
-            "archive input_cost {} should exceed decompressed size alone ({})",
-            result.input_cost,
-            content.len(),
+        // Item 0 (decompress): pos should == total_compressed
+        let (pos0, total0) = budget.snap(0);
+        assert_eq!(
+            pos0, total0,
+            "decompress item should be fully advanced (pos={}, total={})",
+            pos0, total0
         );
+        assert_eq!(total0, zip.len() as u64);
+        // Item 1 (compress): pos should == total (decompressed size)
+        let (pos1, total1) = budget.snap(1);
+        assert_eq!(
+            pos1, total1,
+            "compress item should be fully advanced (pos={}, total={})",
+            pos1, total1
+        );
+        assert!(total1 >= content.len() as u64);
     }
 
     // ── postprocess position ≤ total ───────────────────────────────
