@@ -226,7 +226,7 @@ Located in the `mediapm-utils` crate. Two availability tiers: `DownloadProgressS
 
 ### Dependency boundary rule
 
-The conductor *library* (`mediapm-conductor`) must not depend on indicatif directly. It receives progress updates via `Fn` callbacks typed as `ProgressCallback`. Only the conductor *CLI binary* and the `mediapm` crate may use indicatif, accessed through `mediapm-utils/progress` with the `progress` feature enabled. This boundary ensures that downstream consumers of the conductor library (such as alternative frontends or test harnesses) are not forced to pull in indicatif and its transitive dependencies.
+The conductor _library_ (`mediapm-conductor`) must not depend on indicatif directly. It receives progress updates via `Fn` callbacks typed as `ProgressCallback`. Only the conductor _CLI binary_ and the `mediapm` crate may use indicatif, accessed through `mediapm-utils/progress` with the `progress` feature enabled. This boundary ensures that downstream consumers of the conductor library (such as alternative frontends or test harnesses) are not forced to pull in indicatif and its transitive dependencies.
 
 ### Common usage pattern in handlers
 

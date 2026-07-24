@@ -48,20 +48,20 @@ Managed tool payloads are downloaded and CAS-imported for all supported OSes reg
 
 ## Tool sync flow reference
 
-| Concern | Instruction file |
-|---|---|
-| CLI entry & service orchestration | `src/mediapm/AGENTS.md` |
-| Tool requirements | `tool-requirements.instructions.md` |
-| State persistence | `state-persistence.instructions.md` |
-| Coordinator & identity | `tool-sync-coordinator-and-identity.instructions.md` |
-| 3-phase provisioning | `tool-sync-3-phase-provisioning.instructions.md` |
-| Tool config (companion deps + env) | `tool-sync-tool-config.instructions.md` |
-| Document I/O lifecycle | `document-io-lifecycle.instructions.md` |
-| Paths layout | `paths-layout.instructions.md` |
-| Cache & HTTP | `cache-and-http.instructions.md` |
-| Error taxonomy | `error-taxonomy.instructions.md` |
-| Provider dispatch | `provider-dispatch.instructions.md` |
-| Preset dispatch | `preset-dispatch.instructions.md` |
+| Concern                            | Instruction file                                     |
+| ---------------------------------- | ---------------------------------------------------- |
+| CLI entry & service orchestration  | `src/mediapm/AGENTS.md`                              |
+| Tool requirements                  | `tool-requirements.instructions.md`                  |
+| State persistence                  | `state-persistence.instructions.md`                  |
+| Coordinator & identity             | `tool-sync-coordinator-and-identity.instructions.md` |
+| 3-phase provisioning               | `tool-sync-3-phase-provisioning.instructions.md`     |
+| Tool config (companion deps + env) | `tool-sync-tool-config.instructions.md`              |
+| Document I/O lifecycle             | `document-io-lifecycle.instructions.md`              |
+| Paths layout                       | `paths-layout.instructions.md`                       |
+| Cache & HTTP                       | `cache-and-http.instructions.md`                     |
+| Error taxonomy                     | `error-taxonomy.instructions.md`                     |
+| Provider dispatch                  | `provider-dispatch.instructions.md`                  |
+| Preset dispatch                    | `preset-dispatch.instructions.md`                    |
 
 ## mediapm-rust-writer agent
 

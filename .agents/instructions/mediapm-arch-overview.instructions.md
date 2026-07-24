@@ -21,13 +21,13 @@ Managed tool payloads are downloaded for all supported OSes regardless of the ho
 
 ## Module-layer index
 
-| Crate | Role |
-|---|---|
-| `mediapm-cas/` | Content-addressed storage, async CAS API |
-| `mediapm-conductor/` | Workflow orchestration, Nickel config evaluation |
+| Crate                           | Role                                               |
+| ------------------------------- | -------------------------------------------------- |
+| `mediapm-cas/`                  | Content-addressed storage, async CAS API           |
+| `mediapm-conductor/`            | Workflow orchestration, Nickel config evaluation   |
 | `mediapm-conductor-builtins/*/` | Built-in tools (echo, fs, archive, import, export) |
-| `mediapm/` | Media-facing API, CLI, managed-tool lifecycle |
-| `mediapm-utils/` | Shared utilities for builtins |
+| `mediapm/`                      | Media-facing API, CLI, managed-tool lifecycle      |
+| `mediapm-utils/`                | Shared utilities for builtins                      |
 
 ## Cross-references
 

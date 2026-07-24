@@ -60,10 +60,10 @@ maps each spec item to its test status. Update it when:
 
 ## Validation Gates
 
-| Gate | What it validates | Frequency |
-|------|-------------------|-----------|
-| Pre-commit (`prek`) | `cargo fmt`, linting, basic checks | Every commit |
-| Selective tests | `cargo test -p <crate>` for iterating | During development |
-| Full workspace | `cargo test --no-fail-fast` | Before push |
-| Demos | `cargo run --example mediapm_demo` (and _online) | Before push |
-| Coverage review | Compare spec items vs test status | Per-release |
+| Gate                | What it validates                                 | Frequency          |
+| ------------------- | ------------------------------------------------- | ------------------ |
+| Pre-commit (`prek`) | `cargo fmt`, linting, basic checks                | Every commit       |
+| Selective tests     | `cargo test -p <crate>` for iterating             | During development |
+| Full workspace      | `cargo test --no-fail-fast`                       | Before push        |
+| Demos               | `cargo run --example mediapm_demo` (and \_online) | Before push        |
+| Coverage review     | Compare spec items vs test status                 | Per-release        |
