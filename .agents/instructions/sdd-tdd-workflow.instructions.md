@@ -14,7 +14,6 @@ across the mediapm workspace.
 1. **Write the spec** — Update the relevant `AGENTS.md` with:
    - Invariants, contracts, and edge cases for the new functionality
    - Cross-crate integration boundaries if applicable
-   - Any changes to the `spec-development-index.instructions.md`
 
 2. **Write tests** — In this order:
    - **Unit tests** (`#[cfg(test)]` in the same file) for internal logic

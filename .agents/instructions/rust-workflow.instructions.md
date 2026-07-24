@@ -104,7 +104,7 @@ When refactoring touches multiple crates or splits large modules:
 
 ## Docstring requirements
 
-See `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` for Rustdoc/docstring depth requirements (module-level `//!`, item-level `///`, invariants, side effects, and error behavior for all touched items).
+See `.agents/instructions/rust-conventions.instructions.md` for Rustdoc/docstring depth requirements (module-level `//!`, item-level `///`, invariants, side effects, and error behavior for all touched items).
 
 ## Lint suppression policy
 

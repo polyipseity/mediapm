@@ -155,7 +155,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - Do not regress to bootstrap assumptions (single-crate `src/main.rs` with only minimal `Cargo.toml` + `rust-toolchain.toml`). This repository is a multi-member Rust workspace with crate members under `src/`.
 - When docs mention `application`, `configuration`, `domain`, `infrastructure`, and `support`, treat them as conceptual layering terms unless matching directories are explicitly introduced in the workspace.
 - Before writing stack-specific guidance, inspect concrete evidence such as manifests, lockfiles, source tree layout, scripts, CI workflows, editor settings, and dedicated config files.
-- See `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` for Rustdoc/docstring depth requirements.
+- See `.agents/instructions/rust-conventions.instructions.md` for Rustdoc/docstring depth requirements.
 - When you detect a real stack, add instructions for it carefully and thoroughly in a narrow, well-named instruction file whose `description` and `applyTo` target the relevant files.
 - Prefer linking to canonical config files instead of copying large policy blocks into multiple customization files.
 - Keep customization files narrowly scoped: repo-wide defaults in `AGENTS.md`, detailed file-specific guidance in `.agents/instructions/`.
@@ -177,10 +177,9 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - `Cargo.toml`, `.cargo/config.toml`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml` — Rust package and quality configuration
 - `.agents/instructions/rust-workflow.instructions.md` — Rust editing and validation guidance
 - `.agents/instructions/mediapm-architecture.instructions.md` — crate boundaries and cross-crate invariants
-- `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` — test expectations and Rustdoc/docstring depth requirements
+- `.agents/instructions/rust-conventions.instructions.md` — test expectations and Rustdoc/docstring depth requirements
 - `.agents/instructions/nickel.instructions.md` — Nickel (.ncl) schema and migration conventions
 - `.agents/instructions/toml.instructions.md` — TOML formatting and file-specific conventions
-- `.agents/instructions/spec-development-index.instructions.md` — index linking to per-crate AGENTS.md for all specification and edge-case content (replaces the deleted `crate-specifications.md` and `elaboration-pass-edge-cases.md`)
 - `src/mediapm-cas/AGENTS.md`, `src/mediapm-conductor/AGENTS.md`, `src/mediapm/AGENTS.md` — crate-level detailed behavioral contracts
 - `memories/session/spec-test-coverage.md` — spec-to-test coverage matrix (SDD/TDD compliance tracking)
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`, `.agents/.markdownlint.jsonc` — formatting and line-ending rules
