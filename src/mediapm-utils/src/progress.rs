@@ -839,6 +839,7 @@ mod inner {
         prefix: RwLock<String>,
         message: RwLock<String>,
         status: AtomicU8,
+        dirty: AtomicBool,
         start_time: Instant,
         finished_elapsed: RwLock<Option<Duration>>,
         time_source: Arc<dyn TimeSource>,
@@ -861,6 +862,7 @@ mod inner {
                 prefix: RwLock::new(label.to_string()),
                 message: RwLock::new(String::new()),
                 status: AtomicU8::new(0),
+                dirty: AtomicBool::new(true),
                 start_time: time_source.now(),
                 finished_elapsed: RwLock::new(None),
                 time_source,
@@ -896,6 +898,7 @@ mod inner {
         }
 
         pub(crate) fn mark_finished(&self) {
+            self.dirty.store(true, Ordering::Release);
             let elapsed = self.time_source.now() - self.start_time;
             *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") =
                 Some(elapsed);
@@ -988,16 +991,19 @@ mod inner {
         /// Change the total mid-flight for dynamic workloads.
         pub fn set_total(&self, total: u64) {
             self.state.total.store(total, Ordering::Relaxed);
+            self.state.dirty.store(true, Ordering::Release);
         }
 
         /// Advance the bar by `delta` work units.
         pub fn advance(&self, delta: u64) {
             self.state.position.fetch_add(delta, Ordering::Relaxed);
+            self.state.dirty.store(true, Ordering::Release);
         }
 
         /// Jump to an absolute position.
         pub fn set_position(&self, pos: u64) {
             self.state.position.store(pos, Ordering::Relaxed);
+            self.state.dirty.store(true, Ordering::Release);
         }
 
         /// Set the prefix shown before the bar.
@@ -1008,6 +1014,7 @@ mod inner {
         pub fn set_prefix(&self, prefix: impl Into<String>) {
             let prefix: String = prefix.into();
             (*self.state.prefix.write().expect("shared_state prefix lock")).clone_from(&prefix);
+            self.state.dirty.store(true, Ordering::Release);
         }
 
         /// Set a custom message appended to the auto-computed right-hand side.
@@ -1024,6 +1031,7 @@ mod inner {
                 return; // disabled handle
             }
             *self.state.message.write().expect("shared_state message lock") = message.into();
+            self.state.dirty.store(true, Ordering::Release);
         }
 
         /// Mark the bar as finished (keeps it visible).
