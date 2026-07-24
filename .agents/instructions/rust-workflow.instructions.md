@@ -50,15 +50,6 @@ When editing Rust source, validate changes with selective checks first:
     - `cargo run --package mediapm --example mediapm_demo`
     - `cargo run --package mediapm --example mediapm_demo_online`
 
-- **CI parity reference** (`.github/workflows/ci.yml`):
-  - CI runs: `scripts/run-all-tests.sh` (nextest + doctests), `cargo clippy-all`, `cargo fmt-check`, `cargo build-all`
-  - CI also runs: `cargo bin rumdl check` (project-specific check)
-  - The `test-all` alias now runs nextest (not `cargo test`); doctests run separately via `cargo test --doc`.
-
-- Equivalent explicit forms are acceptable when aliases are unavailable:
-  - `cargo test -p mediapm --all-targets --all-features` → same as `cargo test-pkg mediapm`
-  - `cargo clippy -p mediapm --all-targets --all-features` → same as `cargo clippy-pkg mediapm` when workspace lints are enabled
-
 - For edits under `src/mediapm/**`, avoid full online demo runs during normal development.
   - Run selective tests only while iterating.
   - Reserve full integration/demo runs for push/pre-push workflows handled by hooks/CI unless a reviewer explicitly asks for local runtime verification.
@@ -71,61 +62,6 @@ When refactoring touches multiple crates or splits large modules:
 
 1. Run targeted checks on each affected crate first
 2. Then rely on `prek.toml` pre-push hooks for full-workspace validation before pushing, rather than running manual full workspace commands.
-
-## Git hooks and pre-commit
-
-This repository uses the pre-commit framework (configured via `prek.toml`) to manage local git hooks. The hooks run automatically on `git commit` and `git push` to catch issues early and auto-fix formatting:
-
-- **pre-commit stage** (on `git commit`):
-  - `check-case-conflict`
-  - `check-executables-have-shebangs`
-  - `check-illegal-windows-names`
-  - `check-merge-conflict`
-  - `check-shebang-scripts-are-executable`
-  - `check-symlinks`
-  - `destroyed-symlinks`
-  - `detect-private-key`
-  - `end-of-file-fixer`
-  - `fix-byte-order-marker`
-  - `name-tests-test`
-  - `trailing-whitespace`
-  - `rumdl-fmt`
-  - `fmt` (`cargo fmt` on changed `.rs` files)
-- **commit-msg stage**: runs `commitlint`
-- **pre-push stage** (on `git push`): runs workspace `cargo-check`, `clippy`, and `test` (nextest + test-docs for doctests)
-
-Treat these hooks as the canonical lint/format/check gate. During normal coding, prefer selective test/build runs and rely on commit/push hooks for full lint/format/check execution.
-
-To install or update hooks locally, run:
-
-```bash
-pre-commit install
-```
-
-You can also run hooks manually:
-
-```bash
-pre-commit run --all-files          # Run all hooks
-pre-commit run test                # Run the nextest hook
-pre-commit run test-docs            # Run the doctests hook
-```
-
-To temporarily skip hooks during a commit, use `SKIP`:
-
-```bash
-SKIP=test git commit -m "message"          # Skip nextest
-SKIP=test-docs git commit -m "message"     # Skip doctests
-```
-
-## Known nextest caveats
-
-cargo-nextest has several behavioral differences from `cargo test`. Be aware of these when using nextest in this template:
-
-1. **No doctest support.** Nextest does not run doctests. This is why `scripts/run-all-tests.sh` runs `cargo test --doc --workspace` separately after nextest, and why pre-push hooks include a separate `test-docs` step.
-2. **Binary/test executable detection only.** Nextest only discovers binary and test crate targets. It does not run examples or benchmarks. Use `cargo build --examples` or `cargo bench` separately for those.
-3. **`#[should_panic]` tests may timeout.** Nextest has a default per-test timeout. A `#[should_panic]` test that panics via an infinite loop or deadlock will eventually be killed by the timeout rather than hanging indefinitely. This is usually desirable, but adjust `slow-timeout` in `.config/nextest.toml` if needed.
-4. **Leak detection is experimental.** Nextest's leak detection (configured via `leak-timeout` in `.config/nextest.toml`) can produce false positives for tests that hold OS resources (file descriptors, sockets). Disable it globally or per-test if it causes CI flakiness.
-5. **No `--nocapture` by default.** Nextest captures stdout/stderr per test and displays it grouped by pass/fail. To see live output, use `cargo nextest run --show-output`. The cargo alias `test-all` does not pass `--show-output`; use `cargo bin cargo-nextest run --show-output` for debugging.
 
 ## Editing conventions
 

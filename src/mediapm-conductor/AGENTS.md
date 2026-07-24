@@ -513,7 +513,7 @@ For touched Rust code in this crate:
 
 ## Detailed specification cross-reference
 
-- The monolithic `crate-specifications.md` and `elaboration-pass-edge-cases.md` have been deleted. All specification and edge-case content is now inlined above or linked via `.agents/instructions/spec-development-index.instructions.md`.
+- The monolithic `crate-specifications.md` and `elaboration-pass-edge-cases.md` have been deleted. All specification and edge-case content is now inlined above. See each crate's `AGENTS.md` for the authoritative source of invariants and edge cases.
 - Keep this conductor-local guide as the authoritative source for orchestration/config/tool invariants.
 
 ---
