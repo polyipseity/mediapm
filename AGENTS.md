@@ -100,7 +100,7 @@ Get up and running in minutes:
   - Managed `media-tagger` cache defaults to `<mediapm_dir>/cache` (shared CAS/index layout). See `.agents/instructions/preset-dispatch.instructions.md` for cache path defaults.
   - Schema exports default to `<mediapm_dir>/config/mediapm` for mediapm; standalone conductor defaults to `<conductor_dir>/config/conductor`; and mediapm-driven conductor defaults to `<mediapm_dir>/config/conductor`.
   - Tool requirements may set `ffmpeg_version` for `yt-dlp`, `rsgain`, and `media-tagger` (inherit/global semantics when omitted).
-  - Managed-tool dependency classes (same-step companion vs cross-step) follow strict separation. See `.agents/instructions/tool-sync-companion-dependencies.instructions.md` for the full contract.
+  - Managed-tool dependency classes (same-step companion vs cross-step) follow strict separation. See `.agents/instructions/tool-sync-tool-config.instructions.md` for the full contract.
   - yt-dlp `output_variants` values must not embed `format`; any explicit format selector belongs in step `options.format`.
   - output-variant values are object-driven across managed tools: `kind` controls default file-vs-folder capture policy, and optional `capture_kind = "file"|"folder"` may override that default per variant.
   - output-variant kind naming is strict (no legacy aliases): use `primary` for main transform outputs; yt-dlp folder-family kinds must use plural names (`subtitles`, `thumbnails`, `links`, `chapters`) while file-family kinds remain singular (`primary`, `description`, `infojson`, `comment`, `archive`, `annotation`, playlist file sidecars).

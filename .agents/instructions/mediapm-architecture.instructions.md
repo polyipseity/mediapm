@@ -117,7 +117,7 @@ See `.agents/instructions/rust-workflow.instructions.md` for module split conven
   - relative `runtime.hierarchy_root_dir` resolves relative to the topmost `mediapm.ncl` directory,
   - managed-tool downloads use a shared user-level cache (default `<os-cache-dir>/mediapm/cache/` with 30-day eviction). This cache domain is distinct from workspace tool-content materialization. See `.agents/instructions/cache-and-http.instructions.md` for the full three-tier cache spec.
   - ffmpeg slot limits default to 16 input / 4 output; see `.agents/instructions/preset-dispatch.instructions.md` for ffmpeg spec builder defaults.
-  - runtime dotenv loading follows generated-env-output conventions. See `.agents/instructions/tool-sync-generated-env-output.instructions.md` for the `.env.generated` format and quoting rules.
+  - runtime dotenv loading follows generated-env-output conventions. See `.agents/instructions/tool-sync-tool-config.instructions.md` for the `.env.generated` format and quoting rules.
   - relative `runtime.conductor_config`, `runtime.conductor_generated_config`, `runtime.conductor_state_config`, and `runtime.media_state_config` resolve relative to the topmost `mediapm.ncl` directory (see `.agents/instructions/paths-layout.instructions.md`).
   - local-source ingest created by `mediapm media add-local` is represented as an `import` step (`options.kind = "cas_hash"`, `options.hash = "blake3:<hex>"`),
   - media source schema may additionally keep manual payload pointers in `variant_hashes` (variant name -> CAS hash),
@@ -166,7 +166,7 @@ See `.agents/instructions/rust-workflow.instructions.md` for module split conven
   - archive-backed managed tool payloads should prefer compact directory-form `content_map` entries (trailing `/` keys with ZIP bytes) over one-entry-per-file maps when possible,
   - managed executable payloads keep all-platform `content_map` coverage; see `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` for content-map conventions and command selector patterns.
   - managed runtime defaults and executable paths resolve via `<tools_dir>/<tool-id>/payload/<os>/...`; see `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md`.
-  - managed-tool dependencies are split into same-step companion (inline payload + fold selector) and cross-step (separate payload + ids). See `.agents/instructions/tool-sync-companion-dependencies.instructions.md` for the full contract.
+  - managed-tool dependencies are split into same-step companion (inline payload + fold selector) and cross-step (separate payload + ids). See `.agents/instructions/tool-sync-tool-config.instructions.md` for the full contract.
   - step execution order is the declared `steps` list order,
   - step `options` are tool-specific and unknown keys are rejected,
   - materialization uses stage -> verify -> commit semantics with staging under effective `.mediapm/tmp` and atomic commit into library roots,
@@ -273,11 +273,9 @@ The `mediapm tool sync` pipeline is documented across focused instruction files,
 | CLI entry & service orchestration | `src/mediapm/AGENTS.md`                                | `main.rs`, `service.rs`                         |
 | Tool requirements                 | `tool-requirements.instructions.md`                    | `config/mod.rs`, `config/source_types.rs`       |
 | State persistence                 | `state-persistence.instructions.md`                    | `config/mod.rs`, `config/versions/`             |
-| Reconciliation coordinator        | `tool-sync-coordinator.instructions.md`                | `conductor_bridge/sync/mod.rs`                  |
-| 3-phase provisioning pipeline     | `tool-sync-3-phase-provisioning.instructions.md`       | `conductor_bridge/sync/provision.rs`            |
-| Content-addressed tool identity   | `tool-sync-content-addressed-identity.instructions.md` | `conductor_bridge/sync/mod.rs`, `documents.rs`  |
-| Companion dependency binding      | `tool-sync-companion-dependencies.instructions.md`     | `conductor_bridge/sync/tool_config.rs`          |
-| Generated env output              | `tool-sync-generated-env-output.instructions.md`       | `conductor_bridge/sync/tool_config.rs`          |
+| Coordinator and content-addressed identity | `tool-sync-coordinator-and-identity.instructions.md` | `conductor_bridge/sync/mod.rs`, `documents.rs` |
+| 3-phase provisioning pipeline              | `tool-sync-3-phase-provisioning.instructions.md`       | `conductor_bridge/sync/provision.rs`            |
+| Tool config (companion deps + env output)  | `tool-sync-tool-config.instructions.md`                 | `conductor_bridge/sync/tool_config.rs`          |
 | Document I/O and lifecycle        | `document-io-lifecycle.instructions.md`                | `conductor_bridge/documents.rs`, `lifecycle.rs` |
 | Paths layout                      | `paths-layout.instructions.md`                         | `paths.rs`                                      |
 | Cache architecture & HTTP client  | `cache-and-http.instructions.md`                       | `tools/downloader.rs`, `http_client.rs`         |

@@ -1,17 +1,19 @@
 ---
-description: "Use when editing tool-sync reconciliation coordination in src/mediapm/src/conductor_bridge/sync/mod.rs. Covers the reconcile_desired_tools full flow, progress orchestration, and ToolSyncReport contract."
-name: "Tool Sync Reconciliation Coordinator"
-applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
+description: "Use when editing tool-sync reconciliation coordination and content-addressed identity keys in src/mediapm/src/conductor_bridge/sync/mod.rs and documents.rs."
+name: "Tool Sync Coordinator and Content-Addressed Identity"
+applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conductor_bridge/documents.rs"
 ---
 
-# Tool sync reconciliation coordinator
+# Tool sync coordinator and content-addressed identity
 
-## Purpose
+## Reconciliation coordinator
+
+### Purpose
 
 - Orchestrate the full tool-sync lifecycle: document init → provisioning → spec assembly → env output → save.
 - Produce a `ToolSyncReport` summarizing added/updated/removed tools and non-fatal warnings.
 
-## `reconcile_desired_tools()` flow
+### `reconcile_desired_tools()` flow
 
 1. **Load generated document** — `load_conductor_generated_document(paths)`. Returns empty `NickelDocument` if file doesn't exist.
 2. **Register builtins** — `register_missing_builtin_tools()`, `apply_builtin_runtime_defaults()`.
@@ -33,7 +35,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 8. **Write env file** — `write_generated_runtime_env_file()`.
 9. **Save generated document** — `save_conductor_generated_document()`.
 
-## `ToolSyncReport` fields
+### `ToolSyncReport` fields
 
 | Field           | Type          | Purpose                                                               |
 | --------------- | ------------- | --------------------------------------------------------------------- |
@@ -43,7 +45,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 | `tools_skipped` | `usize`       | Tools skipped because their canonical version was already provisioned. Shown in the resolve bar with `set_message("skipped")`. |
 | `warnings`      | `Vec<String>` | Non-fatal warnings (provision failures)                               |
 
-## Invariants
+### Invariants
 
 - Provision failures produce warnings only — they never abort the loop or return `Err`. The failed tool will be retried on next sync.
 - Content-addressed hash is computed from `serde_json::to_string(&payload.content_map)` → `blake3::hash()` → hex.
@@ -52,8 +54,42 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs"
 - Progress bar shows `desired_tools.len()` total items; bar finishes success (no warnings) or error (warnings present).
 - `content_map ⊆ external_data` invariant: every CAS hash referenced in any tool's `runtime.content_map` must have a matching `ExternalDataEntry` in `generated_doc.external_data`. Enforced on both encode (`encode_document()`) and decode (`decode_document()`) of conductor NCL documents.
 
-## Testing invariants
+### Testing invariants
 
 - Tests must be hermetic: never read from or write to the real OS-level user cache dir. Use `cache_root_override` to inject a tempdir.
 - The `default_mediapm_user_download_cache_root().is_none()` skip guard is macOS-ineffective and must not be relied upon. Use `cache_root_override` instead.
 - Test assertions should verify the override path was used (e.g., cache index files exist under the override path rather than the default).
+
+## Content-addressed identity
+
+### Purpose
+
+- Provide deterministic, content-addressed tool identity keys so identical payloads produce identical keys (idempotency) and version changes produce new keys (orphaning).
+
+### Key scheme
+
+Format: `"{name}@{blake3(content_map_json)}"`
+
+- `name` is the tool identifier (e.g. `"yt-dlp"`).
+- `hash` is the lowercase hex blake3 hash of the content_map JSON serialized with `serde_json::to_string`.
+- When content_map is empty (no payload fetched, internal launcher), the bare `"{name}"` is used — no `@` suffix.
+
+### Semantics
+
+- **Idempotent**: same payload content_map → same hash → same key. Re-running sync with identical tool version produces the same key, so the generated document entry is overwritten in-place (no orphaned entries).
+- **Orphaned on version change**: new payload → new content_map → new hash → new key. The old `"{name}@{old_hash}"` entry remains in the generated document until the next garbage collection pass.
+- **Bare keys for no-payload tools**: tools that don't fetch a payload (no provider sources, or internal launchers) use bare `"{name}"`. These entries are always overwritten in-place.
+
+### Key parsing in `list_tools`
+
+In `list_tools()` (`documents.rs`), keys are parsed by splitting on the last `@`:
+
+- `key.rfind('@')` splits `"{name}@{version}"` into `(name, version)`.
+- Bare keys (no `@`) use the entire key as `name` with an empty `version` string.
+- This parsing is used for `mediapm tool list` output.
+
+### Hash domain
+
+- The hash covers only the content_map JSON, not the tool binary bytes or any other metadata.
+- The content_map is a `BTreeMap<String, String>` — its JSON serialization is deterministic due to BTreeMap's sorted key order.
+- CAS hash of the tool binary itself is stored separately in `content_map` values.
