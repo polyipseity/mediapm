@@ -32,7 +32,7 @@ Get up and running in minutes:
 
 - Agent customization is file-driven:
   - `opencode.jsonc` registers `.agents/instructions/**/*.md` and `.agents/skills/`
-  - `.opencode/commands/` mirrors prompt workflows for OpenCode consumers
+  - `.opencode/` mirrors OpenCode config and agent/command definitions
   - `.vscode/settings.json` defines terminal auto-approve patterns and editor behavior
 - Repository automation currently lives in:
   - `.github/workflows/ci.yml` for CI scaffolding
@@ -163,7 +163,6 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - Prefer updating `AGENTS.md` and `.agents/instructions/*.instructions.md` directly for durable repository policy. Do not keep long-lived policy only in `/memories/repo/`; if temporary repo memory notes are used, merge them into instruction files and remove them.
 - See `.agents/instructions/rust-workflow.instructions.md` for module split conventions.
 - Do not deliberately rename examples/tests solely to force workspace-wide unique target names. Shared canonical names (for example `demo`) are allowed; when running examples, use package-qualified invocations to disambiguate.
-- Preserve mirrored prompt content between `.agents/prompts/` and `.opencode/commands/` when both copies exist.
 - Respect the repository newline policy: Markdown and shell scripts use LF; PowerShell and batch scripts use CRLF.
 
 ## Key References
@@ -171,7 +170,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - `AGENTS.md` — workspace-wide defaults
 - `.agents/instructions/*.instructions.md` — focused authoring rules by file type
 - `.agents/instructions/commit-message-policy.instructions.md` — Conventional Commit scope policy and crate-prefix header ban
-- `.agents/prompts/commit-staged.prompt.md` and `.opencode/commands/commit-staged.prompt.md` — mirrored commit workflow prompt
+- `.agents/prompts/commit-staged.prompt.md` — commit workflow prompt
 - `opencode.jsonc` — instruction and skill discovery
 - `.vscode/settings.json` — terminal auto-approve and editor behavior
 - `.github/workflows/ci.yml`, `.github/dependabot.yml`, `.commitlintrc.mjs` — automation and policy
