@@ -1494,6 +1494,12 @@ mod inner {
                     slot.bar.tick();
                 }
             }
+
+            // Step 5: Re-enable buffering until next tick — property setters
+            // called between ticks are suppressed at the TermLike level.
+            if let Some(ref flag) = self.buffer_enabled {
+                flag.store(true, Ordering::Release);
+            }
         }
 
         /// Apply a snapshot's position/length/message/prefix to the
@@ -1645,6 +1651,11 @@ mod inner {
         fn finalize(&self) {
             if self.finalized.replace(true) {
                 return;
+            }
+            // Disable buffering so the final draw goes through to the
+            // terminal.  Intermediate sync writes are also released.
+            if let Some(ref flag) = self.buffer_enabled {
+                flag.store(false, Ordering::Release);
             }
             // Finish all bound bars that have reached a terminal state:
             // sync their final state FIRST (so position/total/elapsed/message
@@ -1800,7 +1811,7 @@ mod inner {
             let (mp, buffer_enabled) = if let Some(mp) = self.mp {
                 (mp, None)
             } else {
-                let flag = Arc::new(AtomicBool::new(false));
+                let flag = Arc::new(AtomicBool::new(true));
                 let term =
                     BufferedTerm { inner: console::Term::stderr(), buffer_enabled: flag.clone() };
                 let mp =
@@ -1837,7 +1848,7 @@ mod inner {
             let (mp, buffer_enabled) = if let Some(mp) = self.mp {
                 (mp, None)
             } else {
-                let flag = Arc::new(AtomicBool::new(false));
+                let flag = Arc::new(AtomicBool::new(true));
                 let term =
                     BufferedTerm { inner: console::Term::stderr(), buffer_enabled: flag.clone() };
                 let mp =
