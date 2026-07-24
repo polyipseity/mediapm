@@ -1427,10 +1427,28 @@ mod inner {
                 flag.store(true, Ordering::Release);
             }
 
-            // Step 2: Existing update logic (unchanged).
-            self.maybe_adjust_for_resize();
+            // Step 2: Existing update logic with dirty tracking.
+            let resized = self.maybe_adjust_for_resize();
+
+            // When resize happened, mark all bound slots as dirty so they
+            // get re-synced even if no other mutation occurred.
+            if resized {
+                for slot in &self.slots {
+                    if let Some(ref source) = *slot.source.borrow() {
+                        source.dirty.store(true, Ordering::Release);
+                    }
+                }
+            }
+
+            let mut any_dirty = resized;
             for (i, slot) in self.slots.iter().enumerate() {
                 if let Some(ref source) = *slot.source.borrow() {
+                    // Skip clean slots — nothing changed since last tick.
+                    let dirty = resized || source.dirty.swap(false, Ordering::AcqRel);
+                    if !dirty {
+                        continue;
+                    }
+                    any_dirty = true;
                     let snap = source.snapshot();
 
                     // Compute EMA-smoothed rate for display in active bars only.
@@ -1491,15 +1509,13 @@ mod inner {
                 flag.store(false, Ordering::Release);
             }
 
-            // Step 4: Tick all bound bars to advance spinner counters.
-            // In production the buffer is already disabled, so each tick()
-            // triggers a real terminal draw.  In test mode (no buffer),
-            // tick() draws go directly to InMemoryTerm.
-            // MultiState::draw() renders ALL members on each tick() call,
-            // so the final tick's draw shows the latest state for all bars.
-            for slot in &self.slots {
-                if slot.source.borrow().is_some() {
-                    slot.bar.tick();
+            // Step 4: Tick only when any slot was actually dirty — skip
+            // expensive MultiProgress::draw() when nothing changed.
+            if any_dirty {
+                for slot in &self.slots {
+                    if slot.source.borrow().is_some() {
+                        slot.bar.tick();
+                    }
                 }
             }
 
@@ -1591,12 +1607,16 @@ mod inner {
         /// Adjusts the slot capacity when height changes (prepending or
         /// draining blank slots) and re-applies bar styles when width
         /// crosses the 60-column compact/full template boundary.
-        fn maybe_adjust_for_resize(&mut self) {
+        ///
+        /// Returns `true` if any dimension actually changed.
+        fn maybe_adjust_for_resize(&mut self) -> bool {
             let (rows, cols) = self.dim_source.dimensions();
+            let mut changed = false;
 
             // --- Width reactivity ---
             if self.last_width != Some(cols) {
                 self.last_width = Some(cols);
+                changed = true;
                 for i in 0..self.slots.len() {
                     if self.slots[i].source.borrow().is_some() {
                         self.sync_slot(i);
@@ -1609,6 +1629,7 @@ mod inner {
                 let desired_cap = (rows as usize).clamp(1, MAX_SLOTS);
                 let current_cap = self.slots.len();
                 if desired_cap > current_cap {
+                    changed = true;
                     // Grow: prepend blank slots at the top, reattaching orphans.
                     for _ in 0..(desired_cap - current_cap) {
                         let pb = ProgressBar::new(0);
@@ -1632,6 +1653,7 @@ mod inner {
                         self.sync_slot(i);
                     }
                 } else if desired_cap < current_cap {
+                    changed = true;
                     // Shrink: evict from top until desired capacity is met.
                     while self.slots.len() > desired_cap
                         && self.slots.len().saturating_sub(usize::from(self.has_overall)) > 0
@@ -1645,6 +1667,7 @@ mod inner {
                     }
                 }
             }
+            changed
         }
 
         /// Remove blank (unbound) reserved slots from [`MultiProgress`] and
