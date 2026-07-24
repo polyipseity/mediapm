@@ -268,17 +268,17 @@ CAS integrity verification ensures stored objects have not been corrupted on rea
 
 The `mediapm tool sync` pipeline is documented across focused instruction files, one per concern:
 
-| Concern                           | Instruction file                                       | Target files                                    |
-| --------------------------------- | ------------------------------------------------------ | ----------------------------------------------- |
-| CLI entry & service orchestration | `src/mediapm/AGENTS.md`                                | `main.rs`, `service.rs`                         |
-| Tool requirements                 | `tool-requirements.instructions.md`                    | `config/mod.rs`, `config/source_types.rs`       |
-| State persistence                 | `state-persistence.instructions.md`                    | `config/mod.rs`, `config/versions/`             |
-| Coordinator and content-addressed identity | `tool-sync-coordinator-and-identity.instructions.md` | `conductor_bridge/sync/mod.rs`, `documents.rs` |
-| 3-phase provisioning pipeline              | `tool-sync-3-phase-provisioning.instructions.md`       | `conductor_bridge/sync/provision.rs`            |
-| Tool config (companion deps + env output)  | `tool-sync-tool-config.instructions.md`                 | `conductor_bridge/sync/tool_config.rs`          |
-| Document I/O and lifecycle        | `document-io-lifecycle.instructions.md`                | `conductor_bridge/documents.rs`, `lifecycle.rs` |
-| Paths layout                      | `paths-layout.instructions.md`                         | `paths.rs`                                      |
-| Cache architecture & HTTP client  | `cache-and-http.instructions.md`                       | `tools/downloader.rs`, `http_client.rs`         |
-| Error taxonomy                    | `error-taxonomy.instructions.md`                       | `error.rs`                                      |
-| Provider dispatch                 | `provider-dispatch.instructions.md`                    | `tools/provider/`                               |
-| Preset dispatch                   | `preset-dispatch.instructions.md`                      | `tools/preset/`, `tools/workflows/`             |
+| Concern                                    | Instruction file                                     | Target files                                    |
+| ------------------------------------------ | ---------------------------------------------------- | ----------------------------------------------- |
+| CLI entry & service orchestration          | `src/mediapm/AGENTS.md`                              | `main.rs`, `service.rs`                         |
+| Tool requirements                          | `tool-requirements.instructions.md`                  | `config/mod.rs`, `config/source_types.rs`       |
+| State persistence                          | `state-persistence.instructions.md`                  | `config/mod.rs`, `config/versions/`             |
+| Coordinator and content-addressed identity | `tool-sync-coordinator-and-identity.instructions.md` | `conductor_bridge/sync/mod.rs`, `documents.rs`  |
+| 3-phase provisioning pipeline              | `tool-sync-3-phase-provisioning.instructions.md`     | `conductor_bridge/sync/provision.rs`            |
+| Tool config (companion deps + env output)  | `tool-sync-tool-config.instructions.md`              | `conductor_bridge/sync/tool_config.rs`          |
+| Document I/O and lifecycle                 | `document-io-lifecycle.instructions.md`              | `conductor_bridge/documents.rs`, `lifecycle.rs` |
+| Paths layout                               | `paths-layout.instructions.md`                       | `paths.rs`                                      |
+| Cache architecture & HTTP client           | `cache-and-http.instructions.md`                     | `tools/downloader.rs`, `http_client.rs`         |
+| Error taxonomy                             | `error-taxonomy.instructions.md`                     | `error.rs`                                      |
+| Provider dispatch                          | `provider-dispatch.instructions.md`                  | `tools/provider/`                               |
+| Preset dispatch                            | `preset-dispatch.instructions.md`                    | `tools/preset/`, `tools/workflows/`             |

@@ -7,17 +7,17 @@ name: "mediapm-test"
 
 ## Selective crate tests
 
-| What changed                  | Command |
-|-------------------------------|---------|
-| mediapm crate only            | `cargo test -p mediapm` |
-| mediapm lib tests             | `cargo test -p mediapm -- lib` |
-| mediapm CLI tests             | `cargo test -p mediapm -- main` |
-| mediapm integration tests     | `cargo test -p mediapm -- integration` |
-| A specific test               | `cargo test -p mediapm -- <test_name>` |
-| Conductor crate               | `cargo test -p mediapm-conductor` |
-| CAS crate                     | `cargo test -p mediapm-cas` |
-| A conductor builtin           | `cargo test -p mediapm-conductor-builtin-<name>` |
-| Utilities                     | `cargo test -p mediapm-utils` |
+| What changed              | Command                                          |
+| ------------------------- | ------------------------------------------------ |
+| mediapm crate only        | `cargo test -p mediapm`                          |
+| mediapm lib tests         | `cargo test -p mediapm -- lib`                   |
+| mediapm CLI tests         | `cargo test -p mediapm -- main`                  |
+| mediapm integration tests | `cargo test -p mediapm -- integration`           |
+| A specific test           | `cargo test -p mediapm -- <test_name>`           |
+| Conductor crate           | `cargo test -p mediapm-conductor`                |
+| CAS crate                 | `cargo test -p mediapm-cas`                      |
+| A conductor builtin       | `cargo test -p mediapm-conductor-builtin-<name>` |
+| Utilities                 | `cargo test -p mediapm-utils`                    |
 
 ## Demo runs (end-to-end validation)
 

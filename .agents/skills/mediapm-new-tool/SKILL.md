@@ -84,14 +84,14 @@ cargo run --package mediapm --example mediapm_demo
 
 ## Files reference
 
-| Step | Files to create/modify |
-|------|------------------------|
-| Provider | `src/mediapm/src/tools/provider/<tool_name>.rs` |
-| Provider dispatch | `src/mediapm/src/tools/provider/mod.rs` |
-| Preset | `src/mediapm/src/tools/preset/<tool_name>.rs` |
-| Preset dispatch | `src/mediapm/src/tools/preset/mod.rs` |
-| Workflow (if used) | `src/mediapm/src/tools/workflows/<tool_name>.rs` |
-| Tests (provider) | `src/mediapm/src/tools/provider/<tool_name>.rs` |
-| Tests (preset/workflow) | `src/mediapm/src/tools/preset/<tool_name>.rs` |
-| Tests (integration) | `src/mediapm/tests/int/<tool_name>.rs` |
-| Spec | `src/mediapm/AGENTS.md` |
+| Step                    | Files to create/modify                           |
+| ----------------------- | ------------------------------------------------ |
+| Provider                | `src/mediapm/src/tools/provider/<tool_name>.rs`  |
+| Provider dispatch       | `src/mediapm/src/tools/provider/mod.rs`          |
+| Preset                  | `src/mediapm/src/tools/preset/<tool_name>.rs`    |
+| Preset dispatch         | `src/mediapm/src/tools/preset/mod.rs`            |
+| Workflow (if used)      | `src/mediapm/src/tools/workflows/<tool_name>.rs` |
+| Tests (provider)        | `src/mediapm/src/tools/provider/<tool_name>.rs`  |
+| Tests (preset/workflow) | `src/mediapm/src/tools/preset/<tool_name>.rs`    |
+| Tests (integration)     | `src/mediapm/tests/int/<tool_name>.rs`           |
+| Spec                    | `src/mediapm/AGENTS.md`                          |

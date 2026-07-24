@@ -37,13 +37,13 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
 
 ### `ToolSyncReport` fields
 
-| Field           | Type          | Purpose                                                               |
-| --------------- | ------------- | --------------------------------------------------------------------- |
-| `tools_added`   | `usize`       | Tools newly registered (not previously in generated doc)              |
-| `tools_updated` | `usize`       | Tools updated to match desired version                                |
-| `tools_removed` | `usize`       | Tools removed (no longer in desired set)                              |
+| Field           | Type          | Purpose                                                                                                                        |
+| --------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `tools_added`   | `usize`       | Tools newly registered (not previously in generated doc)                                                                       |
+| `tools_updated` | `usize`       | Tools updated to match desired version                                                                                         |
+| `tools_removed` | `usize`       | Tools removed (no longer in desired set)                                                                                       |
 | `tools_skipped` | `usize`       | Tools skipped because their canonical version was already provisioned. Shown in the resolve bar with `set_message("skipped")`. |
-| `warnings`      | `Vec<String>` | Non-fatal warnings (provision failures)                               |
+| `warnings`      | `Vec<String>` | Non-fatal warnings (provision failures)                                                                                        |
 
 ### Invariants
 
