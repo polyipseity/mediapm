@@ -3420,6 +3420,170 @@ mod tests {
             assert!(result.contains("1/2"), "{status_name} count/total absent: {result:?}");
         }
     }
+
+    // ---- Phase 4: BufferedTerm / dirty tracking tests ----------------------
+
+    #[test]
+    fn dirty_tracking_initial_state_starts_dirty() {
+        // The SharedState dirty flag starts true so the very first tick always
+        // draws, even without explicit mutations.
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+        let _bar = group.add_bar(100, "test");
+
+        group.tick();
+        let content = term.contents();
+        assert!(!content.is_empty(), "first tick must draw, got empty");
+    }
+
+    #[test]
+    fn multiple_mutations_before_tick_single_draw() {
+        // Several mutations between ticks should all be reflected in a single
+        // coherent draw after the next tick, without intermediate draws.
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+        let bar = group.add_bar(100, "test");
+
+        bar.set_position(20);
+        bar.set_total(200);
+        bar.set_prefix("multi");
+
+        group.tick();
+        let content = term.contents();
+        assert!(content.contains("20/200"), "expected 20/200 in output: {content:?}");
+        assert!(content.contains("multi"), "expected prefix 'multi' in output: {content:?}");
+    }
+
+    #[test]
+    fn finalize_produces_final_output() {
+        // join_and_clear (finalize) must produce visible output showing the
+        // final state of all bars.
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let (group, overall) = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .capacity(4)
+            .with_overall("overall", 10)
+            .build_with_overall();
+        let bar = group.add_bar(100, "child");
+        bar.advance(50);
+        overall.advance(5);
+
+        // Sync state from SharedState to bars before finalize (finalize
+        // only syncs non-Active bars).
+        group.tick();
+        group.join_and_clear();
+        let content = term.contents();
+        assert!(!content.is_empty(), "finalize must produce output, got empty");
+        assert!(content.contains("50"), "expected position 50 in output: {content:?}");
+    }
+
+    #[test]
+    fn dirty_tracking_skips_clean_ticks() {
+        // A tick without any mutation must produce identical terminal content
+        // to the previous tick (dirty tracking skips the slot, bar.tick() is
+        // not called, no redraw occurs).
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .capacity(4)
+            .build();
+        let bar = group.add_bar(100, "test");
+        bar.set_position(42);
+        ts.advance(std::time::Duration::from_millis(100));
+
+        // Tick 1: baseline (bar appears).
+        group.tick();
+        let baseline = term.contents();
+        assert!(!baseline.is_empty(), "baseline must have content");
+
+        // Helper: extract the body (everything after the spinner char).
+        fn content_body(s: &str) -> &str {
+            s.lines().filter_map(|l| l.get(1..)).next().unwrap_or("")
+        }
+        let baseline_body = content_body(&baseline);
+
+        // Tick 2: no mutations → content body (everything except spinner)
+        // must be identical.  The spinner itself may advance due to the
+        // daemon ticker thread, so we cannot compare the full output.
+        ts.advance(std::time::Duration::from_millis(50));
+        group.tick();
+        let second = term.contents();
+        assert_eq!(
+            content_body(&second),
+            baseline_body,
+            "clean tick should not change content body\n\
+         expected body: {baseline_body:?}\n\
+         got body:      {:?}",
+            content_body(&second)
+        );
+
+        // Tick 3: still no mutations → content body remains unchanged.
+        ts.advance(std::time::Duration::from_millis(50));
+        group.tick();
+        let third = term.contents();
+        assert_eq!(
+            content_body(&third),
+            baseline_body,
+            "second clean tick should also not change content body\n\
+         expected body: {baseline_body:?}\n\
+         got body:      {:?}",
+            content_body(&third)
+        );
+    }
+
+    #[test]
+    fn dirty_tracking_draws_on_mutation() {
+        // A tick after mutation must reflect the new state in the output.
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .capacity(4)
+            .build();
+        let bar = group.add_bar(100, "test");
+        bar.set_position(10);
+        ts.advance(std::time::Duration::from_millis(100));
+
+        // Tick 1: baseline shows 10/100.
+        group.tick();
+        let baseline = term.contents();
+        assert!(baseline.contains("10/100"), "baseline must contain 10/100, got: {baseline:?}");
+
+        // Mutate position between ticks.
+        bar.set_position(80);
+        ts.advance(std::time::Duration::from_millis(50));
+
+        // Tick 2: must show the new position (body changes even if
+        // the spinner also advanced via daemon ticker).
+        group.tick();
+        let after = term.contents();
+        assert!(after.contains("80/100"), "expected 80/100 after mutation+tick, got: {after:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
