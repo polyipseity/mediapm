@@ -20,29 +20,13 @@ fn color_active_child_text() {
     let child = group.add_bar(5, "child");
     child.set_position(0);
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    // H=2, capacity=2+overall → line[0]=child, line[1]=overall, no blanks
-    assert_eq!(lines.len(), 2, "expected 2 visible lines");
-    let child_line = lines[0];
-    let overall_line = lines[1];
-    // Label visible
-    assert!(child_line.contains("child"), "child label: {child_line:?}");
-    assert!(overall_line.contains("overall"), "overall label: {overall_line:?}");
-    // Count/total values correct
-    assert!(child_line.contains("0/5"), "child count/total 0/5: {child_line:?}");
-    assert!(overall_line.contains("0/1"), "overall count/total 0/1: {overall_line:?}");
-    // Rate visible for active child
-    assert!(
-        child_line.contains("/d") || child_line.contains("/s"),
-        "rate units in active child: {child_line:?}"
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠼                     child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
     );
-    // Elapsed visible
-    assert!(child_line.contains("0s"), "elapsed '0s': {child_line:?}");
-    // No brackets on active bar
-    assert!(!child_line.contains("[F]"), "no [F] in active child: {child_line:?}");
-    assert!(!child_line.contains("[A]"), "no [A] in active child: {child_line:?}");
-    assert!(!child_line.contains("[S]"), "no [S] in active child: {child_line:?}");
 }
 
 /// Failed bar: [F] bracket shown, values correct.
@@ -58,16 +42,13 @@ fn color_failed_bracket_text() {
     group.tick();
     child.finish_error();
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    assert_eq!(lines.len(), 2, "expected 2 visible lines");
-    let child_line = lines[0];
-    // [F] bracket visible
-    assert!(child_line.contains("[F]"), "failed bar should show [F] bracket: {child_line:?}");
-    // Count/total correct
-    assert!(child_line.contains("0/5"), "failed bar count/total: {child_line:?}");
-    // No yellow bracket
-    assert!(!child_line.contains("[A]"), "no [A] on failed: {child_line:?}");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                 [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
 }
 
 /// Abandoned bar: [A] bracket shown, values correct.
@@ -83,16 +64,13 @@ fn color_abandoned_bracket_text() {
     group.tick();
     child.abandon();
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    assert_eq!(lines.len(), 2, "expected 2 visible lines");
-    let child_line = lines[0];
-    // [A] bracket visible
-    assert!(child_line.contains("[A]"), "abandoned bar should show [A] bracket: {child_line:?}");
-    // Count/total correct
-    assert!(child_line.contains("0/5"), "abandoned bar count/total: {child_line:?}");
-    // No red bracket
-    assert!(!child_line.contains("[F]"), "no [F] on abandoned: {child_line:?}");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                 [A] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
 }
 
 /// Success bar: full count/total, no brackets.
@@ -109,16 +87,13 @@ fn color_success_text() {
     group.tick();
     child.finish_success();
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    assert_eq!(lines.len(), 2, "expected 2 visible lines");
-    let child_line = lines[0];
-    // Full count/total
-    assert!(child_line.contains("5/5"), "success bar full count/total: {child_line:?}");
-    // No brackets
-    assert!(!child_line.contains("[F]"), "no [F] on success: {child_line:?}");
-    assert!(!child_line.contains("[A]"), "no [A] on success: {child_line:?}");
-    assert!(!child_line.contains("[S]"), "no [S] on success: {child_line:?}");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                     child █████████████████████  5/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
 }
 
 /// Finished bar (via `finish()`): full count/total, no [S] bracket.
@@ -135,14 +110,13 @@ fn color_finished_text() {
     group.tick();
     child.finish();
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    assert_eq!(lines.len(), 2, "expected 2 visible lines");
-    let child_line = lines[0];
-    // Full count/total
-    assert!(child_line.contains("5/5"), "finished bar full count/total: {child_line:?}");
-    // No brackets
-    assert!(!child_line.contains("[S]"), "no [S] on finished: {child_line:?}");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                     child █████████████████████  5/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
 }
 
 /// No [S] or [=] brackets appear anywhere in the output.
@@ -158,10 +132,13 @@ fn color_no_success_brackets() {
     group.tick();
     child.finish_success();
     group.tick();
-    let contents = term.contents();
-    // No [S] or [=] anywhere in the output
-    assert!(!contents.contains("[S]"), "[S] bracket must not appear in output");
-    assert!(!contents.contains("[=]"), "[=] bracket must not appear in output");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                     child █████████████████████  0/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

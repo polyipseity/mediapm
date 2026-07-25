@@ -25,19 +25,12 @@ fn rate_stable_on_stale_ticks() {
     group.tick();
     time_source.advance(std::time::Duration::from_millis(60));
     let after_progress = term.contents();
-    assert!(
-        after_progress.contains("500/1.0k"),
-        "count/total visible after advance: {after_progress:?}"
-    );
-    // Rate must be shown for active bars.
-    assert!(
-        after_progress.contains("/s")
-            || after_progress.contains("k/s")
-            || after_progress.contains("M/s")
-            || after_progress.contains("/m")
-            || after_progress.contains("/h")
-            || after_progress.contains("/d"),
-        "rate must appear after progress: {after_progress:?}"
+    assert_eq!(
+        after_progress,
+        concat!(
+            "⠼                      test ██████████░░░░░░░░░░░  500/1.0k 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        ),
     );
 
     // Now tick 20× with realistic ticker-interval delays.
@@ -47,20 +40,12 @@ fn rate_stable_on_stale_ticks() {
     }
 
     let after_stale = term.contents();
-    // Rate must still be present (must not have decayed to empty).
-    assert!(
-        after_stale.contains("/s")
-            || after_stale.contains("k/s")
-            || after_stale.contains("M/s")
-            || after_stale.contains("/m")
-            || after_stale.contains("/h")
-            || after_stale.contains("/d"),
-        "rate must survive stale ticks: {after_stale:?}"
-    );
-    // Count/total unchanged.
-    assert!(
-        after_stale.contains("500/1.0k"),
-        "count/total unchanged after stale ticks: {after_stale:?}"
+    assert_eq!(
+        after_stale,
+        concat!(
+            "⠦                      test ██████████░░░░░░░░░░░  500/1.0k 0s 455/s 1s\n",
+            "⠴                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        ),
     );
 }
 
@@ -91,18 +76,20 @@ fn rate_updates_on_progress() {
     time_source.advance(std::time::Duration::from_millis(60));
     let after_large = term.contents();
 
-    // Both must show rate.
-    assert!(
-        after_small.contains("/s") || after_small.contains("k/s") || after_small.contains("M/s"),
-        "rate after small progress: {after_small:?}"
+    assert_eq!(
+        after_small,
+        concat!(
+            "⠼                      test ░░░░░░░░░░░░░░░░░░░░░  10/2.0k 0s 500/s 3s\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        ),
     );
-    assert!(
-        after_large.contains("/s") || after_large.contains("k/s") || after_large.contains("M/s"),
-        "rate after large progress: {after_large:?}"
+    assert_eq!(
+        after_large,
+        concat!(
+            "⠦                      test ███████████████░░░░░░  1.5k/2.0k 0s 2.9k/s 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        ),
     );
-    // The two outputs should differ because position changed significantly.
-    // (The spinner may also differ, but that's fine — we just need *some* change
-    // rather than identical frozen output.)
     assert_ne!(after_small, after_large, "rate/progress must differ between 10 and 1500");
 }
 
@@ -121,16 +108,12 @@ fn rate_always_shown() {
     // No progress made — bar is still active.
     group.tick();
     time_source.advance(std::time::Duration::from_millis(60));
-    let contents = term.contents();
-    // Rate must appear even with zero progress.
-    assert!(
-        contents.contains("/s")
-            || contents.contains("k/s")
-            || contents.contains("M/s")
-            || contents.contains("/m")
-            || contents.contains("/h")
-            || contents.contains("/d"),
-        "rate must appear even on idle active bar: {contents:?}"
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠼                      idle ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        ),
     );
 }
 

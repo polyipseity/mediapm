@@ -41,10 +41,12 @@ fn wide_terminal_single_bar() {
     let (mp, term) = mk_with_size(24, 120);
     let pb = add_bar(&mp, 4, "overall");
     pb.tick();
-    let s = term.contents();
-    assert_eq!(s.lines().count(), 1, "single line at W=120");
-    assert!(s.starts_with(" overall [00:00:00] "));
-    assert!(s.ends_with(" 0/4"));
+    assert_eq!(
+        term.contents(),
+        concat!(
+            " overall [00:00:00] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0/4",
+        )
+    );
 }
 
 #[test]
@@ -54,13 +56,13 @@ fn wide_terminal_two_lines() {
     let c = ins_bar(&mp, &o, 2, "tool1");
     c.tick();
     o.tick();
-    let s = term.contents();
-    let lines: Vec<&str> = s.lines().collect();
-    assert_eq!(lines.len(), 2, "two lines at W=120");
-    assert!(lines[0].starts_with("   tool1 [00:00:00] "));
-    assert!(lines[0].ends_with(" 0/2"));
-    assert!(lines[1].starts_with(" overall [00:00:00] "));
-    assert!(lines[1].ends_with(" 0/4"));
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   tool1 [00:00:00] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0/2\n",
+            " overall [00:00:00] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0/4",
+        )
+    );
 }
 
 // ── Extreme height ───────────────────────────────────────────────────────────

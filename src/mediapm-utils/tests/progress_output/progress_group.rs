@@ -21,15 +21,16 @@ fn progress_group_with_overall_shows_fixed_height() {
         .with_overall("overall", 10)
         .build_with_overall();
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5, "must use exactly 5 lines (terminal height)");
-    for (i, line) in lines[..4].iter().enumerate() {
-        assert!(line.trim().is_empty(), "line {i} should be blank filler but got: {line:?}");
-    }
-    assert!(lines[4].contains("overall"), "overall bar visible: {}", lines[4]);
-    assert!(lines[4].contains("0/10"), "overall shows 0/10: {}", lines[4]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+        )
+    );
 }
 
 #[test]
@@ -44,25 +45,27 @@ fn progress_group_add_bar_reuses_bottom_child() {
 
     let _c1 = group.add_bar(5, "tool1");
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 4, "always 4 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank filler");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank filler");
-    assert!(lines[2].contains("tool1"), "line 2 has tool1: {0}", lines[2]);
-    assert!(lines[3].contains("overall"), "line 3 has overall");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠼                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        )
+    );
 
     let _c2 = group.add_bar(3, "tool2");
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 4, "still 4 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank filler");
-    assert!(lines[1].contains("tool1"), "line 1 still has tool1: {0}", lines[1]);
-    assert!(lines[2].contains("tool2"), "line 2 has tool2: {0}", lines[2]);
-    assert!(lines[3].contains("overall"), "line 3 has overall");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "⠸                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠧                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        )
+    );
 }
 
 // No diagnostics below this line — they were removed after confirming
@@ -79,27 +82,21 @@ fn progress_group_no_overall_always_reuses_bottom() {
 
     let _c1 = group.add_bar(5, "task1");
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    // 4 slots. task1 at slot[3] (bottom), blanks at lines[0..2].
-    // task1 at bottom avoids InMemoryTerm trimming → 4 lines.
-    assert_eq!(lines.len(), 4);
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("task1"), "line 3 has task1: {0}", lines[3]);
+    assert_eq!(
+        term.contents(),
+        concat!("\n", "\n", "\n", "⠴                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",)
+    );
 
     let _c2 = group.add_bar(3, "task2");
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    // 4 slots, no overall → 4 lines (task1 at slot[2], task2 at slot[3], both non-empty)
-    assert_eq!(lines.len(), 4);
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].contains("task1"), "line 2 still has task1: {0}", lines[2]);
-    assert!(lines[3].contains("task2"), "line 3 has task2: {0}", lines[3]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠙                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠦                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        )
+    );
 }
 
 #[test]
@@ -111,10 +108,15 @@ fn progress_group_never_changes_bar_count() {
         let _c = group.add_bar(1, &format!("tool{i}"));
         group.tick();
     }
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 4, "count must never change: 30 add_bar calls, still 4 lines");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠙                     tool0 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
+            "⠸                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
+            "⠦                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
+            "⠼                     tool3 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
 }
 
 #[test]
@@ -132,33 +134,29 @@ fn progress_group_with_overall_add_child_updates_slot() {
 
     let _c1 = group.add_bar(5, "tool1");
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5, "always 5 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("tool1"), "line 3 has tool1: {0}", lines[3]);
-    assert!(lines[3].contains("0/5"), "line 3 shows 0/5: {0}", lines[3]);
-    assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
-    assert!(lines[4].contains("0/3"), "line 4 shows 0/3: {0}", lines[4]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠼                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        )
+    );
 
     let _c2 = group.add_bar(3, "tool2");
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5, "still 5 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].contains("tool1"), "line 2 still has tool1: {0}", lines[2]);
-    assert!(lines[2].contains("0/5"), "line 2 shows 0/5: {0}", lines[2]);
-    assert!(lines[3].contains("tool2"), "line 3 has tool2: {0}", lines[3]);
-    assert!(lines[3].contains("0/3"), "line 3 shows 0/3: {0}", lines[3]);
-    assert!(!lines[0].contains("tool1"), "line 0 must not show tool1: {0}", lines[0]);
-    assert!(!lines[1].contains("tool2"), "line 1 must not show tool2: {0}", lines[1]);
-    assert!(lines[4].contains("overall"), "line 4 still has overall: {0}", lines[4]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠸                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠧                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        )
+    );
 }
 
 #[test]
@@ -179,23 +177,16 @@ fn progress_group_with_overall_multiple_children_reuse_slot() {
         let _c = group.add_bar(2, &format!("task{i}"));
         group.tick();
     }
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5, "always 5 lines regardless of children added");
-    // First 4 children occupy sequential slots from top to bottom (task0 at slot[0], task1 at slot[1], etc.).
-    // 5th child has no render slot (all full, none finished).
-    assert!(lines[0].contains("task0"), "line 0 shows task0: {0}", lines[0]);
-    assert!(lines[0].contains("0/2"), "line 0 shows 0/2: {0}", lines[0]);
-    assert!(lines[1].contains("task1"), "line 1 shows task1: {0}", lines[1]);
-    assert!(lines[1].contains("0/2"), "line 1 shows 0/2: {0}", lines[1]);
-    assert!(lines[2].contains("task2"), "line 2 shows task2: {0}", lines[2]);
-    assert!(lines[2].contains("0/2"), "line 2 shows 0/2: {0}", lines[2]);
-    assert!(lines[3].contains("task3"), "line 3 shows task3: {0}", lines[3]);
-    assert!(lines[3].contains("0/2"), "line 3 shows 0/2: {0}", lines[3]);
-    // task4 has no render slot (all 4 child slots occupied, none finished).
-    assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
-    assert!(lines[4].contains("0/10"), "line 4 shows 0/10: {0}", lines[4]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠸                     task0 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠴                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠇                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠴                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠧                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+        )
+    );
 }
 
 #[test]
@@ -209,31 +200,21 @@ fn progress_group_no_overall_different_capacities() {
 
     let _c1 = group.add_bar(5, "alpha");
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    // 4 slots. alpha at slot[3] (bottom), blanks at lines[0..2].
-    // alpha at bottom avoids InMemoryTerm trimming → 4 lines.
-    assert_eq!(lines.len(), 4, "4 slots, 4 lines (child at bottom)");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("alpha"), "line 3 has alpha: {0}", lines[3]);
-    assert!(lines[3].contains("0/5"), "line 3 shows 0/5: {0}", lines[3]);
+    assert_eq!(
+        term.contents(),
+        concat!("\n", "\n", "\n", "⠴                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",)
+    );
 
     let _c2 = group.add_bar(3, "beta");
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 4, "4 slots, no overall → 4 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].contains("alpha"), "line 2 still has alpha: {0}", lines[2]);
-    assert!(lines[2].contains("0/5"), "line 2 shows 0/5: {0}", lines[2]);
-    assert!(lines[3].contains("beta"), "line 3 has beta: {0}", lines[3]);
-    assert!(lines[3].contains("0/3"), "line 3 shows 0/3: {0}", lines[3]);
-    assert!(!lines[0].contains("beta"), "line 0 must not show beta: {0}", lines[0]);
-    assert!(!lines[1].contains("alpha"), "line 1 must not show alpha: {0}", lines[1]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠙                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠦                      beta ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        )
+    );
 }
 
 #[test]
@@ -250,16 +231,15 @@ fn progress_group_compact_template_below_60_width() {
 
     let _c1 = group.add_bar(5, "tool1");
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 4, "always 4 lines at capacity=4");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].contains("tool1"), "line 2 has tool1: {0}", lines[2]);
-    assert!(lines[2].contains("0/5"), "line 2 shows 0/5: {0}", lines[2]);
-    assert!(lines[3].contains("overall"), "line 3 has overall: {0}", lines[3]);
-    assert!(lines[3].contains("0/3"), "line 3 shows 0/3: {0}", lines[3]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠼                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        )
+    );
 }
 
 #[test]
@@ -274,16 +254,15 @@ fn progress_group_child_shows_label_and_total() {
 
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 4, "always 4 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].contains("fetch"), "line 2 shows label fetch: {0}", lines[2]);
-    assert!(lines[2].contains("0/7"), "line 2 shows total 0/7: {0}", lines[2]);
-    assert!(lines[3].contains("overall"), "line 3 has overall: {0}", lines[3]);
-    assert!(lines[3].contains("0/10"), "line 3 shows 0/10: {0}", lines[3]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠼                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+        )
+    );
 }
 
 #[test]

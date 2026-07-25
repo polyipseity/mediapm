@@ -141,8 +141,7 @@ fn many_bars_hundred() {
     assert_eq!(lines.len(), 101, "100 children + 1 overall = 101 lines");
     assert_eq!(lines[0], "     t00 [00:00:00] ░░░░░░░░░░░░░░░ 0/1");
     assert_eq!(lines[99], "     t99 [00:00:00] ░░░░░░░░░░░░░░░ 0/1");
-    assert!(lines[100].starts_with(" overall [00:00:00] "));
-    assert!(lines[100].ends_with(" 0/100"));
+    assert_eq!(lines[100], " overall [00:00:00] ░░░░░░░░░░░░░ 0/100");
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
