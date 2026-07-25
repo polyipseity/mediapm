@@ -450,7 +450,7 @@ mod inner {
     ///
     /// On creation, stores `false` (buffer OFF — next draw goes to terminal).
     /// On drop, stores `true` (buffer ON — subsequent writes suppressed).
-    /// When `flag` is `None` (test mode with user-provided MultiProgress),
+    /// When `flag` is `None` (test mode with user-provided `MultiProgress`),
     /// both operations are no-ops.
     #[derive(Debug)]
     struct BufferGuard {
@@ -458,11 +458,11 @@ mod inner {
     }
 
     impl BufferGuard {
-        fn new(flag: &Option<Arc<AtomicBool>>) -> Self {
+        fn new(flag: Option<&Arc<AtomicBool>>) -> Self {
             if let Some(flag) = flag {
                 flag.store(false, Ordering::Release);
             }
-            Self { flag: flag.clone() }
+            Self { flag: flag.cloned() }
         }
     }
 
@@ -1535,7 +1535,7 @@ mod inner {
 
             // Steps 3-5: RAII guard — draws go through while guard is alive,
             // buffer re-enabled automatically when guard drops.
-            let _guard = BufferGuard::new(&self.buffer_enabled);
+            let _guard = BufferGuard::new(self.buffer_enabled.as_ref());
 
             if any_dirty {
                 for slot in &self.slots {
@@ -1704,7 +1704,7 @@ mod inner {
                 return;
             }
             // RAII guard: buffer OFF during final draw, re-enabled on drop.
-            let _guard = BufferGuard::new(&self.buffer_enabled);
+            let _guard = BufferGuard::new(self.buffer_enabled.as_ref());
             // Finish all bound bars that have reached a terminal state:
             // sync their final state FIRST (so position/total/elapsed/message
             // is up-to-date), then call finish_slot which applies the done
