@@ -116,26 +116,48 @@ fn resize_exact_height_shrink_removes_slots() {
     let term = InMemoryTerm::new(6, 80);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let mp = MultiProgress::with_draw_target(target);
+    let ts = Arc::new(TestTimeSource::new());
     let (group, _overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(6)
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(true)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
+    ts.advance(std::time::Duration::from_secs(1));
     group.tick();
 
-    // At H=6: show 6 lines with blanks above child and overall at bottom
+    // At H=6: 4 blanks + child + overall = 6 lines
     let before = term.contents();
-    assert_eq!(before.lines().count(), 6);
+    assert_eq!(
+        before,
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "⠼                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
+        ),
+        "H=6 output",
+    );
 
     dims.set((4, 80));
+    ts.advance(std::time::Duration::from_secs(1));
     group.tick();
     let after = term.contents();
-    assert_eq!(after.lines().count(), 4);
-    assert!(after.contains("fetch"), "child preserved after shrink");
-    assert!(after.contains("overall"), "overall preserved after shrink");
+    assert_eq!(
+        after,
+        concat!(
+            "\n",
+            "\n",
+            "⠴                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
+        ),
+        "H=4 output",
+    );
 }
 
 #[test]
