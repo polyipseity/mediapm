@@ -47,3 +47,11 @@ being overwritten during bar draws.
 - `pre_roll_term` field stores `Option<Box<dyn TermLike>>`: `Some(...)` in
   production (writes to `console::Term::stderr()`), `None` or user-provided
   term in test mode.
+
+### Test convention
+
+When writing or modifying unit/integration tests for progress bar rendering
+(in `src/progress.rs` `mod tests` or `tests/progress_output/`), prefer exact
+`assert_eq!(term.contents(), concat!(...))` matching over substring
+assertions. See `.agents/instructions/rust-conventions.instructions.md`
+("Terminal output matching") for the full rule and capture strategy.

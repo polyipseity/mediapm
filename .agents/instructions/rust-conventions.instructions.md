@@ -92,6 +92,62 @@ Place `#[cfg(test)]` blocks inline in the source file they test. If the inline b
 
 `FileSystemCas::open()` acquires an exclusive `flock` on `{root}/lock`. When a test opens CAS at `cas_root` and later passes `&cas_root` to `sync_hierarchy()` (which opens the same store internally), the second open hits `CasError::StoreLocked`. The fix is to `drop(cas)` before calling `sync_hierarchy()`, then reopen with `FileSystemCas::open(&cas_root).await` if CAS access is needed after the sync completes. The same pattern applies to `ToolDownloadCache::open()` at the global cache path — defer opening the cache until provisioning is actually needed.
 
+### Terminal output matching
+
+When writing progress bar tests that use `InMemoryTerm` to capture rendered
+output, prefer exact `assert_eq!(term.contents(), concat!(...))` matching
+over substring or count-only assertions. The expected output string must
+appear **literally** in the test source code via `concat!(...)` — never
+read from an external file, environment variable, or runtime-constructed
+string.
+
+**Why.** An exact-string assertion catches every class of rendering defect
+with a single failing assertion: missing blank lines, extra phantom lines,
+wrong bar ordering, stale position/total values, wrong bar-fill characters,
+missing status brackets, wrong elapsed times, and truncated or wrapped output.
+A substring assertion such as `assert!(lines[0].contains("3/5"))` only checks
+one dimension — the bar could be on the wrong line with wrong neighbors and
+the test still passes silently. Over time, multiple ad-hoc substring assertions
+accumulate and still fail to detect structural regressions (e.g. slot order
+corruption, blank-line leaks after finalize, overall-bar displacement).
+
+**Exception.** Substring or count-only assertions are acceptable when:
+
+- The test validates behavior across non-deterministic timing (e.g. spinner
+  animation cycles with real time sources).
+- The test validates behavior across terminal resize events where exact
+  content is dimension-dependent and the dimension change is what is being
+  tested.
+- The assertion is a preliminary debug check and an exact assertion follows
+  on the same output.
+
+**Capture strategy.** When the exact expected output is not known in advance:
+
+1. Write the test body with a deliberately wrong expected string (e.g.
+   `assert_eq!(term.contents(), "WRONG")`).
+2. Run the test — it fails and prints the actual `term.contents()` output.
+3. Copy the actual output verbatim into the `concat!(...)` assertion.
+4. Re-run to confirm PASS.
+
+This avoids manual arithmetic of `█` fill characters and bar-template width
+computation.
+
+**Inline expected output in source code.** The expected terminal output must
+be written **literally** in the test body using `concat!(...)`. Do not read
+expected output from external snapshot files, golden files, environment
+variables, or runtime-constructed strings. An inline `concat!(...)` is
+self-documenting — the reader sees the exact expected content without opening
+a second file, and test failures show the mismatch directly in the assertion
+line without indirection.
+
+**Conventions.** Use `H=24, W=40` from `common::mk()` as the default terminal
+size unless the test specifically targets narrow/wide/short/tall behavior.
+For tests with `ProgressGroup`, use `mk_with_size(h, w)` with the minimum
+height that fits the expected number of bars (children + overall + blank
+reserve). Name tests with a suffix that signals exact matching
+(e.g. `consumer_exact_parallel_worker_output`), making the assertion style
+self-documenting.
+
 ## Behavior change expectations
 
 ### Atomic test updates

@@ -21,6 +21,12 @@ across the mediapm workspace.
    - **Property tests** (`#[cfg(feature = "proptest")]`) for determinism,
      idempotency, and round-trip behavior
    - **Demo examples** (for mediapm) validate the full pipeline
+   - **Exact-output matching for terminal-rendering tests** — When writing
+     tests that validate progress bar, spinner, or any
+     terminal-rendered output, prefer `assert_eq!(actual, expected)` with
+     exact `concat!(...)` string matching over substring or count-only
+     assertions. See Rust Conventions (`rust-conventions.instructions.md`,
+     "Terminal output matching") for the full rationale and capture strategy.
 
 3. **Implement** — Code against the spec and tests. Verify all tests pass
    before moving to the next step.
