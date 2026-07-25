@@ -350,9 +350,21 @@ fn spinner_advances_without_dirty() {
     let t3 = term.contents();
 
     // All must show 0/10 (no progress made).
-    assert!(t1.contains("0/10"), "tick 1 shows 0/10");
-    assert!(t2.contains("0/10"), "tick 2 shows 0/10");
-    assert!(t3.contains("0/10"), "tick 3 shows 0/10");
+    assert_eq!(
+        t1,
+        concat!("\n", "\n", "\n", "⠴                      test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",),
+        "tick 1 shows 0/10",
+    );
+    assert_eq!(
+        t2,
+        concat!("\n", "\n", "\n", "⠦                      test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",),
+        "tick 2 shows 0/10",
+    );
+    assert_eq!(
+        t3,
+        concat!("\n", "\n", "\n", "⠧                      test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",),
+        "tick 3 shows 0/10",
+    );
 
     // Spinner must advance between each tick (time frozen → only spinner differs).
     assert_ne!(t1, t2, "spinner must advance on tick 1→2 (no dirty)");
@@ -417,7 +429,11 @@ fn spinner_active_among_finished() {
     // Finished bar must stay frozen.
     assert_eq!(lines[2], finished_line, "finished bar must stay frozen");
     // Active bar shows progress.
-    assert!(lines[3].contains("2/10"), "active bar shows 2/10: {}", lines[3]);
+    assert_eq!(
+        lines[3], "⠇                   working ████░░░░░░░░░░░░░░░░░  2/10 0s 0/d",
+        "active bar shows 2/10: {}",
+        lines[3],
+    );
     // Active bar content changed from previous tick (spinner + position).
     assert_ne!(lines[3], first_active_line, "active bar line changed");
 }
@@ -444,10 +460,26 @@ fn regression_spinner_dirty_independence() {
     let t4 = term.contents();
 
     // All ticks show 5/10 (stable position).
-    assert!(t1.contains("5/10"), "tick 1: 5/10");
-    assert!(t2.contains("5/10"), "tick 2: 5/10");
-    assert!(t3.contains("5/10"), "tick 3: 5/10");
-    assert!(t4.contains("5/10"), "tick 4: 5/10");
+    assert_eq!(
+        t1,
+        concat!("\n", "\n", "\n", "⠴                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
+        "tick 1: 5/10",
+    );
+    assert_eq!(
+        t2,
+        concat!("\n", "\n", "\n", "⠦                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
+        "tick 2: 5/10",
+    );
+    assert_eq!(
+        t3,
+        concat!("\n", "\n", "\n", "⠧                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
+        "tick 3: 5/10",
+    );
+    assert_eq!(
+        t4,
+        concat!("\n", "\n", "\n", "⠇                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
+        "tick 4: 5/10",
+    );
 
     // Spinner advances on each tick (content differs).
     assert_ne!(t1, t2, "spinner must advance tick 1→2 (no dirty)");

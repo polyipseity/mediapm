@@ -244,27 +244,16 @@ fn regression_concurrent_set_and_sync() {
     group.tick();
 
     let output = term.contents();
-    let expected_content = concat!(
-        "\n",
-        "\n",
-        "\n",
-        // Spinner character masked — background ticker makes it non-deterministic.
-        "                    worker ███████████████░░░░░░  38/50 0s 0/d\n",
-        "                   overall ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d",
+    assert_eq!(
+        output,
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠼                    worker ███████████████░░░░░░  38/50 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d",
+        ),
     );
-    let actual_lines: Vec<&str> = output.lines().collect();
-    let expected_lines: Vec<&str> = expected_content.lines().collect();
-    assert_eq!(actual_lines.len(), expected_lines.len());
-    for (i, (actual, expected)) in actual_lines.iter().zip(expected_lines.iter()).enumerate() {
-        if expected.is_empty() {
-            assert_eq!(*actual, "", "line {i} should be empty");
-        } else {
-            assert!(
-                actual.ends_with(expected),
-                "line {i}:\n  expected suffix: {expected:?}\n  actual:          {actual:?}",
-            );
-        }
-    }
 }
 
 // ── Regression: recycle finished slot after full ──────────────────────
