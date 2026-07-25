@@ -700,7 +700,7 @@ mod inner {
     const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>25.25} {msg:<12.40}";
 
     /// Maximum number of pre-allocated slot bars (safety cap).
-    const MAX_SLOTS: usize = 200;
+    const MAX_SLOTS: usize = 256;
 
     /// ANSI SGR foreground color code matching the `{wide_bar}` template color.
     pub(super) fn bar_color_code(status: TrackStatus, is_overall: bool) -> &'static str {
