@@ -101,15 +101,7 @@ appear **literally** in the test source code via `concat!(...)` — never
 read from an external file, environment variable, or runtime-constructed
 string.
 
-**Why.** An exact-string assertion catches every class of rendering defect
-with a single failing assertion: missing blank lines, extra phantom lines,
-wrong bar ordering, stale position/total values, wrong bar-fill characters,
-missing status brackets, wrong elapsed times, and truncated or wrapped output.
-A substring assertion such as `assert!(lines[0].contains("3/5"))` only checks
-one dimension — the bar could be on the wrong line with wrong neighbors and
-the test still passes silently. Over time, multiple ad-hoc substring assertions
-accumulate and still fail to detect structural regressions (e.g. slot order
-corruption, blank-line leaks after finalize, overall-bar displacement).
+**Why.** An exact-string assertion is self-documenting — the expected output appears inline in the test body, so a human reader immediately sees what the rendered output should look like without running the test or cross-referencing snapshot files. It also replaces chains of ad-hoc `lines()[i].contains(...)` calls that are tedious to write and ugly to read, collapsing multiple fragile assertions into a single clean `assert_eq!`. Furthermore, it catches every class of rendering defect with that single failing assertion: missing blank lines, extra phantom lines, wrong bar ordering, stale position/total values, wrong bar-fill characters, missing status brackets, wrong elapsed times, and truncated or wrapped output. A substring assertion such as `assert!(lines[0].contains("3/5"))` only checks one dimension — the bar could be on the wrong line with wrong neighbors and the test still passes silently. Over time, multiple ad-hoc substring assertions accumulate and still fail to detect structural regressions (e.g. slot order corruption, blank-line leaks after finalize, overall-bar displacement).
 
 **Exception.** Substring or count-only assertions are acceptable when:
 
