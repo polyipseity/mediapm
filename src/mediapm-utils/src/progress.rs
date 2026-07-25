@@ -1178,6 +1178,10 @@ mod inner {
         /// performed?  Used to push intervening stderr content into scrollback
         /// before indicatif's first draw.
         pre_rolled: AtomicBool,
+
+        /// Terminal to write pre-roll newlines to.  `None` in test mode
+        /// (user-provided `MultiProgress` via `with_multi_progress`).
+        pre_roll_term: Option<Box<dyn TermLike>>,
     }
 
     /// EMA-smoothed rate tracking for a render slot.
@@ -1227,6 +1231,7 @@ mod inner {
             dim_source: Arc<dyn DimensionSource>,
             buffer_enabled: Option<Arc<AtomicBool>>,
             time_source: Arc<dyn TimeSource>,
+            pre_roll_term: Option<Box<dyn TermLike>>,
         ) -> Self {
             let mut slots = Vec::with_capacity(capacity);
             for _ in 0..capacity {
@@ -1263,6 +1268,7 @@ mod inner {
                 slots_timing,
                 buffer_enabled,
                 pre_rolled: AtomicBool::new(false),
+                pre_roll_term,
             }
         }
 
@@ -1276,6 +1282,7 @@ mod inner {
             dim_source: Arc<dyn DimensionSource>,
             buffer_enabled: Option<Arc<AtomicBool>>,
             time_source: Arc<dyn TimeSource>,
+            pre_roll_term: Option<Box<dyn TermLike>>,
         ) -> (Self, Arc<SharedState>) {
             let mut slots = Vec::with_capacity(capacity);
             for _ in 0..capacity.saturating_sub(1) {
@@ -1318,6 +1325,7 @@ mod inner {
                     slots_timing,
                     buffer_enabled,
                     pre_rolled: AtomicBool::new(false),
+                    pre_roll_term,
                 },
                 overall_state,
             )
@@ -1633,26 +1641,28 @@ mod inner {
             slot.bar.tick();
         }
 
-        /// Write newlines before the first indicatif draw to push any
-        /// intervening stderr content into scrollback, preventing overwrite.
+        /// Reserve the full terminal height before the first indicatif draw.
         ///
-        /// On first call: writes `n + 1` newlines to the real terminal
-        /// (bypassing `BufferedTerm`), then moves cursor back up `n` lines.
-        /// Subsequent calls are no-ops.  In test mode (`buffer_enabled` is
-        /// `None`) this is always a no-op.
+        /// Writes `rows` newlines to bypass [`BufferedTerm`] so they go
+        /// directly to the terminal, then moves cursor back up `rows` lines.
+        /// This reserves the entire terminal screen for progress bar content,
+        /// preventing intervening stderr content from being overwritten during
+        /// bar draws.
+        ///
+        /// One-shot: only the first call writes; subsequent calls are no-ops.
+        /// In test mode (`pre_roll_term` is `None`) this is always a no-op.
         fn pre_roll_if_needed(&self) {
-            if self.buffer_enabled.is_none() {
+            let Some(ref term) = self.pre_roll_term else {
                 return;
-            }
+            };
             if self.pre_rolled.swap(true, Ordering::AcqRel) {
                 return;
             }
-            let term = console::Term::stderr();
-            let n = self.slots.len();
-            for _ in 0..=n {
+            let rows = self.dim_source.dimensions().0 as usize;
+            for _ in 0..rows {
                 let _ = term.write_line("");
             }
-            let _ = term.move_cursor_up(n);
+            let _ = term.move_cursor_up(rows);
         }
 
         /// Respond to terminal dimension changes since the last tick.
@@ -1810,7 +1820,6 @@ mod inner {
     /// let group = ProgressGroup::builder().build();
     /// let (group, overall) = ProgressGroup::builder().with_overall("sync", 10).build_with_overall();
     /// ```
-    #[derive(Clone)]
     pub struct ProgressGroupBuilder {
         mp: Option<MultiProgress>,
         dim_source: Arc<dyn DimensionSource>,
@@ -1818,6 +1827,7 @@ mod inner {
         capacity: Option<usize>,
         dynamic_height: bool,
         time_source: Arc<dyn TimeSource>,
+        pre_roll_term: Option<Box<dyn TermLike>>,
     }
 
     impl Default for ProgressGroupBuilder {
@@ -1829,6 +1839,7 @@ mod inner {
                 capacity: None,
                 dynamic_height: false,
                 time_source: Arc::new(RealTimeSource),
+                pre_roll_term: None,
             }
         }
     }
@@ -1877,6 +1888,18 @@ mod inner {
             self
         }
 
+        /// Use an injectable term for pre-roll capture (for test assertions).
+        ///
+        /// When called, pre-roll newlines are written to `term` instead of
+        /// `console::Term::stderr()`.  The user must also pass a compatible
+        /// [`MultiProgress`] created from the same term via
+        /// `ProgressDrawTarget::term_like`.
+        #[must_use]
+        pub fn with_pre_roll_capture(mut self, term: Box<dyn TermLike>) -> Self {
+            self.pre_roll_term = Some(term);
+            self
+        }
+
         /// Build a group without an overall bar.
         ///
         /// # Panics
@@ -1894,15 +1917,19 @@ mod inner {
                 let (rows, _) = self.dim_source.dimensions();
                 (rows as usize).clamp(1, MAX_SLOTS)
             });
-            let (mp, buffer_enabled) = if let Some(mp) = self.mp {
-                (mp, None)
+            let (mp, buffer_enabled, pre_roll_term): (
+                MultiProgress,
+                Option<Arc<AtomicBool>>,
+                Option<Box<dyn TermLike>>,
+            ) = if let Some(ref mp) = self.mp {
+                (mp.clone(), None, self.pre_roll_term)
             } else {
                 let flag = Arc::new(AtomicBool::new(true));
                 let term =
                     BufferedTerm { inner: console::Term::stderr(), buffer_enabled: flag.clone() };
                 let mp =
                     MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
-                (mp, Some(flag))
+                (mp, Some(flag), Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
             };
             let mut renderer = ProgressRenderer::from_mp(
                 mp,
@@ -1910,6 +1937,7 @@ mod inner {
                 self.dim_source,
                 buffer_enabled,
                 self.time_source,
+                pre_roll_term,
             );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Some(Arc::new(Mutex::new(renderer)));
@@ -1931,15 +1959,19 @@ mod inner {
                 let (rows, _) = self.dim_source.dimensions();
                 (rows as usize).clamp(1, MAX_SLOTS)
             });
-            let (mp, buffer_enabled) = if let Some(mp) = self.mp {
-                (mp, None)
+            let (mp, buffer_enabled, pre_roll_term): (
+                MultiProgress,
+                Option<Arc<AtomicBool>>,
+                Option<Box<dyn TermLike>>,
+            ) = if let Some(ref mp) = self.mp {
+                (mp.clone(), None, self.pre_roll_term)
             } else {
                 let flag = Arc::new(AtomicBool::new(true));
                 let term =
                     BufferedTerm { inner: console::Term::stderr(), buffer_enabled: flag.clone() };
                 let mp =
                     MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
-                (mp, Some(flag))
+                (mp, Some(flag), Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
             };
             let (mut renderer, state) = ProgressRenderer::from_mp_with_overall(
                 mp,
@@ -1949,6 +1981,7 @@ mod inner {
                 self.dim_source,
                 buffer_enabled,
                 self.time_source,
+                pre_roll_term,
             );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Arc::new(Mutex::new(renderer));
@@ -3664,6 +3697,160 @@ mod tests {
         group.tick();
         let after = term.contents();
         assert!(after.contains("80/100"), "expected 80/100 after mutation+tick, got: {after:?}");
+    }
+
+    // ---- Pre-roll tests ----------------------------------------------------
+
+    #[test]
+    fn pre_roll_reserves_full_terminal_height() {
+        // When pre_roll fires, it must write exactly `rows` newlines (one per
+        // terminal row) and move the cursor back up by the same amount.
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let mp_term = indicatif::InMemoryTerm::new(10, 80);
+        let cap_term = indicatif::InMemoryTerm::new(100, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let _group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_pre_roll_capture(Box::new(cap_term.clone()))
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .build();
+
+        // Wait for the background ticker to fire pre_roll.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let moves = cap_term.moves_since_last_check();
+        let newline_count = moves.lines().filter(|l| l.trim() == "NewLine").count();
+        assert_eq!(
+            newline_count, 10,
+            "pre_roll should write exactly 10 blank lines (rows=10), got {newline_count}:\n{moves}"
+        );
+        assert!(moves.contains("Up(10)"), "pre_roll should move cursor up 10 rows:\n{moves}");
+    }
+
+    #[test]
+    fn pre_roll_one_shot() {
+        // After pre_roll fires once, subsequent ticks must not write
+        // additional newlines.
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let mp_term = indicatif::InMemoryTerm::new(10, 80);
+        let cap_term = indicatif::InMemoryTerm::new(100, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_pre_roll_capture(Box::new(cap_term.clone()))
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .build();
+
+        // Wait for the background ticker to fire pre_roll.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Drain the pre_roll moves from the first ticker tick.
+        let first_moves = cap_term.moves_since_last_check();
+        let first_newlines = first_moves.lines().filter(|l| l.trim() == "NewLine").count();
+        assert_eq!(first_newlines, 10, "first tick should write 10 pre_roll newlines");
+
+        // Tick explicitly — pre_roll must not fire again.
+        group.tick();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let second_moves = cap_term.moves_since_last_check();
+        let second_newlines = second_moves.lines().filter(|l| l.trim() == "NewLine").count();
+        assert_eq!(
+            second_newlines, 0,
+            "second tick should NOT fire pre_roll again, got {second_newlines} newlines"
+        );
+    }
+
+    #[test]
+    fn pre_roll_with_overall() {
+        // Same as pre_roll_reserves_full_terminal_height but with an overall
+        // aggregate bar.
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let mp_term = indicatif::InMemoryTerm::new(10, 80);
+        let cap_term = indicatif::InMemoryTerm::new(100, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let (_group, _overall) = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_pre_roll_capture(Box::new(cap_term.clone()))
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .with_overall("total", 100)
+            .build_with_overall();
+
+        // Wait for the background ticker to fire pre_roll.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let moves = cap_term.moves_since_last_check();
+        let newline_count = moves.lines().filter(|l| l.trim() == "NewLine").count();
+        assert_eq!(
+            newline_count, 10,
+            "pre_roll (with overall) should write exactly 10 blank lines, got {newline_count}:\n{moves}"
+        );
+        assert!(
+            moves.contains("Up(10)"),
+            "pre_roll (with overall) should move cursor up 10 rows:\n{moves}"
+        );
+    }
+
+    #[test]
+    fn pre_roll_height_changes_no_effect() {
+        // Once pre_roll has fired, a subsequent terminal height change must
+        // NOT trigger a second pre_roll (one-shot invariant).
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let mp_term = indicatif::InMemoryTerm::new(10, 80);
+        let cap_term = indicatif::InMemoryTerm::new(100, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_pre_roll_capture(Box::new(cap_term.clone()))
+            .with_dim_source(dims.clone() as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .build();
+
+        // Wait for pre_roll to fire at H=10.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = cap_term.moves_since_last_check();
+
+        // Change terminal height — pre_roll must NOT re-fire.
+        dims.set((20, 80));
+        group.tick();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let moves = cap_term.moves_since_last_check();
+        let newline_count = moves.lines().filter(|l| l.trim() == "NewLine").count();
+        assert_eq!(
+            newline_count, 0,
+            "height change should NOT trigger pre_roll again, got {newline_count} newlines"
+        );
     }
 }
 
