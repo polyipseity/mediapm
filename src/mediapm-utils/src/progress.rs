@@ -126,7 +126,7 @@ impl ByteBudget {
         let mut old = self.total.load(Ordering::Acquire);
         loop {
             let new = if delta >= 0 {
-                old.saturating_add(delta as u64)
+                old.saturating_add(delta.unsigned_abs())
             } else {
                 old.saturating_sub(delta.unsigned_abs())
             };
@@ -153,8 +153,18 @@ impl ByteBudget {
     /// Panics (hard `assert!`) if the resulting total < current position.
     pub fn reconcile(&self, estimate: u64, actual: u64) {
         match actual.cmp(&estimate) {
-            std::cmp::Ordering::Greater => self.adjust((actual - estimate) as i64),
-            std::cmp::Ordering::Less => self.adjust(-((estimate - actual) as i64)),
+            std::cmp::Ordering::Greater => {
+                // actual > estimate is guaranteed by the match arm, so the
+                // difference is positive and fits in i64 for all real-world
+                // byte budgets (< 9.2 EB).
+                self.adjust(i64::try_from(actual - estimate).expect("diff fits in i64"));
+            }
+            std::cmp::Ordering::Less => {
+                // estimate > actual is guaranteed by the match arm, so the
+                // difference is positive and fits in i64 for all real-world
+                // byte budgets (< 9.2 EB).
+                self.adjust(-i64::try_from(estimate - actual).expect("diff fits in i64"));
+            }
             std::cmp::Ordering::Equal => {}
         }
     }
@@ -1274,6 +1284,7 @@ mod inner {
 
         /// Pre-allocate `capacity` bars with an overall bar at the bottom,
         /// using an existing [`MultiProgress`].  Returns `(renderer, overall_state)`.
+        #[allow(clippy::too_many_arguments)]
         fn from_mp_with_overall(
             mp: MultiProgress,
             capacity: usize,
@@ -1557,10 +1568,10 @@ mod inner {
             // Skip finished/abandoned/failed bars — their spinner is frozen on
             // the final frame set by `finish_slot`.
             for slot in &self.slots {
-                if let Some(ref source) = *slot.source.borrow() {
-                    if !source.is_finished() {
-                        slot.bar.tick();
-                    }
+                if let Some(ref source) = *slot.source.borrow()
+                    && !source.is_finished()
+                {
+                    slot.bar.tick();
                 }
             }
         }
