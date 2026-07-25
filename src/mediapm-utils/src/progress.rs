@@ -444,6 +444,36 @@ mod inner {
         }
     }
 
+    // ---- RAII buffer guard -----------------------------------------------
+
+    /// RAII guard that temporarily disables buffering and restores it on drop.
+    ///
+    /// On creation, stores `false` (buffer OFF — next draw goes to terminal).
+    /// On drop, stores `true` (buffer ON — subsequent writes suppressed).
+    /// When `flag` is `None` (test mode with user-provided MultiProgress),
+    /// both operations are no-ops.
+    #[derive(Debug)]
+    struct BufferGuard {
+        flag: Option<Arc<AtomicBool>>,
+    }
+
+    impl BufferGuard {
+        fn new(flag: &Option<Arc<AtomicBool>>) -> Self {
+            if let Some(flag) = flag {
+                flag.store(false, Ordering::Release);
+            }
+            Self { flag: flag.clone() }
+        }
+    }
+
+    impl Drop for BufferGuard {
+        fn drop(&mut self) {
+            if let Some(ref flag) = self.flag {
+                flag.store(true, Ordering::Release);
+            }
+        }
+    }
+
     // ---- dimension source (injectable for tests) -------------------------
 
     /// Source of terminal dimensions for responsive progress rendering.
@@ -1503,26 +1533,16 @@ mod inner {
                 }
             }
 
-            // Step 3: Disable buffering (production mode).
-            // After this point, draws go to the real terminal.
-            if let Some(ref flag) = self.buffer_enabled {
-                flag.store(false, Ordering::Release);
-            }
+            // Steps 3-5: RAII guard — draws go through while guard is alive,
+            // buffer re-enabled automatically when guard drops.
+            let _guard = BufferGuard::new(&self.buffer_enabled);
 
-            // Step 4: Tick only when any slot was actually dirty — skip
-            // expensive MultiProgress::draw() when nothing changed.
             if any_dirty {
                 for slot in &self.slots {
                     if slot.source.borrow().is_some() {
                         slot.bar.tick();
                     }
                 }
-            }
-
-            // Step 5: Re-enable buffering until next tick — property setters
-            // called between ticks are suppressed at the TermLike level.
-            if let Some(ref flag) = self.buffer_enabled {
-                flag.store(true, Ordering::Release);
             }
         }
 
@@ -1683,11 +1703,8 @@ mod inner {
             if self.finalized.replace(true) {
                 return;
             }
-            // Disable buffering so the final draw goes through to the
-            // terminal.  Intermediate sync writes are also released.
-            if let Some(ref flag) = self.buffer_enabled {
-                flag.store(false, Ordering::Release);
-            }
+            // RAII guard: buffer OFF during final draw, re-enabled on drop.
+            let _guard = BufferGuard::new(&self.buffer_enabled);
             // Finish all bound bars that have reached a terminal state:
             // sync their final state FIRST (so position/total/elapsed/message
             // is up-to-date), then call finish_slot which applies the done
