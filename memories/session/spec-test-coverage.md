@@ -1,4 +1,6 @@
-# Spec-to-test coverage matrix: MultiItemBudget architecture
+# Spec-to-test coverage matrix
+
+## MultiItemBudget architecture
 
 | Spec item | Test(s) | Status |
 |---|---|---|
@@ -18,3 +20,17 @@
 | ProgressGroup spinner: advances without dirty state | `spinner_advances_without_dirty`, `regression_spinner_dirty_independence` | 🟢 |
 | ProgressGroup spinner: frozen on finished/abandoned/failed | `spinner_does_not_advance_on_finished_bar`, `spinner_stops_on_abandoned_bar`, `spinner_stops_on_failed_bar` | 🟢 |
 | ProgressGroup spinner: active among finished | `spinner_active_among_finished` | 🟢 |
+
+## Progress output exact-output matching
+
+Integration tests in `tests/progress_output/` converted from substring/contains/count assertions to `assert_eq!(term.contents(), concat!(...))`.
+
+| Test module | Tests | Status |
+|---|---|---|
+| `terminal.rs` — overflow behavior, dimension edge cases | 18 tests, all exact `concat!()` | 🟢 |
+| `consumer.rs` — bar retention, parallel worker output | 2 tests, exact | 🟢 |
+| `transition.rs` — bar state transitions | subset, exact | 🟢 |
+| `progress_group.rs` — gap conversions: child visibility, lifecycle, join-and-clear | 5 tests, exact `concat!()` | 🟢 |
+| `spinner.rs` — deterministic spinner animation with `TestTimeSource` | 3 tests (8 contains → exact), also covers `regression_spinner_dirty_independence` | 🟢 |
+| `regression.rs` — concurrent set-and-sync (deterministic), child order, swap-slot, finish-and-clear, overall stability, masked-spinner ends_with | 6 tests, all exact | 🟢 |
+| `single_bar.rs` — first/last/only-bar lines exact | 1 structural `.len()` remaining | 🟢 |
