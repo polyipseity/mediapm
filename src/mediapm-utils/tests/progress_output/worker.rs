@@ -144,3 +144,129 @@ fn many_bars_hundred() {
     assert!(lines[100].starts_with(" overall [00:00:00] "));
     assert!(lines[100].ends_with(" 0/100"));
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 6: Worker exact-output tests
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Exact output: 3 workers with mixed finish states + overall.
+#[test]
+fn worker_exact_mixed_finish_states() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 3)
+        .build_with_overall();
+    let c1 = group.add_bar(2, "worker-a");
+    let c2 = group.add_bar(2, "worker-b");
+    let c3 = group.add_bar(2, "worker-c");
+    c1.advance(2);
+    c1.finish_success();
+    c2.set_position(1);
+    c2.finish_error();
+    c3.set_position(1);
+    c3.abandon();
+    overall.advance(3);
+    overall.finish();
+    group.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                  worker-a █████████████████████  2/2 0s\n",
+            "⠏              [F] worker-b ██████████░░░░░░░░░░░  1/2 0s\n",
+            "⠏              [A] worker-c ██████████░░░░░░░░░░░  1/2 0s\n",
+            "⠏                   overall █████████████████████  3/3 0s",
+        ),
+    );
+}
+
+/// Exact output: all 3 workers + overall finish successfully.
+#[test]
+fn worker_exact_all_finish_with_overall() {
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 3)
+        .build_with_overall();
+    let c1 = group.add_bar(2, "worker-a");
+    let c2 = group.add_bar(2, "worker-b");
+    let c3 = group.add_bar(2, "worker-c");
+    c1.advance(2);
+    c1.finish_success();
+    c2.advance(2);
+    c2.finish_success();
+    c3.advance(2);
+    c3.finish_success();
+    overall.advance(3);
+    overall.finish();
+    group.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                  worker-a █████████████████████  2/2 0s\n",
+            "⠏                  worker-b █████████████████████  2/2 0s\n",
+            "⠏                  worker-c █████████████████████  2/2 0s\n",
+            "⠏                   overall █████████████████████  3/3 0s",
+        ),
+    );
+}
+
+/// Exact output: 2 workers with interleaved advance rates.
+#[test]
+fn worker_exact_interleaved_advances() {
+    let (mp, term) = mk_with_size(5, 80);
+    let ts = Arc::new(TestTimeSource::new());
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .with_time_source(ts.clone())
+        .build_with_overall();
+    let c1 = group.add_bar(10, "fast");
+    let c2 = group.add_bar(10, "slow");
+    c1.set_position(8);
+    c2.set_position(3);
+    overall.advance(11);
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "⠼                      fast ████████████████░░░░░  8/10 1s 48/m 2s\n",
+            "⠴                      slow ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
+            "⠸                   overall █████████████████████  11/10 1s 1.1/s",
+        ),
+    );
+}
+
+/// Exact output: 3 children, no overall bar visible (pushed off-screen at H=4).
+#[test]
+fn worker_exact_no_overall_multiple_children() {
+    let (mp, term) = mk_with_size(4, 80);
+    let ts = Arc::new(TestTimeSource::new());
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(3)
+        .with_overall("overall", 1)
+        .with_time_source(ts.clone())
+        .build_with_overall();
+    let c1 = group.add_bar(5, "child-a");
+    let c2 = group.add_bar(5, "child-b");
+    let c3 = group.add_bar(5, "child-c");
+    c1.set_position(2);
+    c2.set_position(4);
+    c3.set_position(5);
+    ts.advance(std::time::Duration::from_millis(1));
+    group.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠼                   child-a ████████░░░░░░░░░░░░░  2/5 0s 0/d\n",
+            "⠴                   child-b ████████████████░░░░░  4/5 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        ),
+    );
+}

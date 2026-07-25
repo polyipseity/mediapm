@@ -133,3 +133,54 @@ fn rate_always_shown() {
         "rate must appear even on idle active bar: {contents:?}"
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 8: Rate exact-output tests
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Exact output: known rate after 500/1000 in 1s → 50/s.
+#[test]
+fn rate_exact_output_with_known_rate() {
+    let (mp, term) = mk_with_size(2, 80);
+    let ts = Arc::new(TestTimeSource::new());
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 1)
+        .with_time_source(ts.clone())
+        .build_with_overall();
+    let child = group.add_bar(1000, "test");
+    child.set_position(500);
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠼                      test ██████████░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d",
+        ),
+    );
+}
+
+/// Exact output: idle bar with zero progress shows 0/d rate.
+#[test]
+fn rate_exact_output_idle() {
+    let (mp, term) = mk_with_size(2, 80);
+    let ts = Arc::new(TestTimeSource::new());
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 1)
+        .with_time_source(ts.clone())
+        .build_with_overall();
+    let _child = group.add_bar(100, "idle");
+    ts.advance(std::time::Duration::from_secs(2));
+    group.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠼                      idle ░░░░░░░░░░░░░░░░░░░░░  0/100 2s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+        ),
+    );
+}

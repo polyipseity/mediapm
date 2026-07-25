@@ -242,3 +242,73 @@ fn worker_surge_with_overflow() {
     // Still only 3 lines visible.
     assert_eq!(term.contents().lines().count(), 3);
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 7: Terminal edge-case exact-output tests
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Exact output: very narrow terminal (W=5) wraps each line.
+#[test]
+fn terminal_exact_very_narrow_single_bar() {
+    let (mp, term) = mk_with_size(24, 5);
+    let pb = add_bar(&mp, 4, "test");
+    pb.tick();
+    assert_eq!(term.contents(), concat!("    t\n", "est [\n", "00:00\n", ":00]\n", " 0/4",),);
+}
+
+/// Exact output: child+overall at W=5 wraps across 10 short lines.
+#[test]
+fn terminal_exact_very_narrow_two_lines() {
+    let (mp, term) = mk_with_size(24, 5);
+    let o = add_bar(&mp, 5, "overall");
+    let c = ins_bar(&mp, &o, 3, "tool1");
+    c.tick();
+    o.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "   to\n", "ol1 [\n", "00:00\n", ":00]\n", " 0/3\n", " over\n", "all [\n", "00:00\n",
+            ":00]\n", " 0/5",
+        ),
+    );
+}
+
+/// Exact output: H=1 shows a single non-wrapped progress bar line.
+#[test]
+fn terminal_exact_h1_single_bar() {
+    let (mp, term) = mk_with_size(1, 40);
+    let pb = add_bar(&mp, 4, "test");
+    pb.tick();
+    assert_eq!(term.contents(), concat!("    test [00:00:00] ░░░░░░░░░░░░░░░ 0/4"),);
+}
+
+/// Exact output: H=2 with 2 children + overall shows only 1 line (overall off-screen).
+#[test]
+fn terminal_exact_h2_no_overall_two_children() {
+    let (mp, term) = mk_with_size(2, 40);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 1)
+        .build_with_overall();
+    let _c1 = group.add_bar(3, "alpha");
+    let _c2 = group.add_bar(3, "beta");
+    group.tick();
+    assert_eq!(term.contents(), concat!("⠼                     alpha   0/3 0s 0/d\n"),);
+}
+
+/// Exact output: H=2 with 3 children + overall shows only 1 line.
+#[test]
+fn terminal_exact_h2_no_overall_overflow() {
+    let (mp, term) = mk_with_size(2, 40);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 1)
+        .build_with_overall();
+    let _c1 = group.add_bar(3, "alpha");
+    let _c2 = group.add_bar(3, "beta");
+    let _c3 = group.add_bar(3, "gamma");
+    group.tick();
+    assert_eq!(term.contents(), concat!("⠼                     alpha   0/3 0s 0/d\n"),);
+}

@@ -6,6 +6,7 @@ use mediapm_utils::progress::{
     DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TimeSource, TrackedHandle,
 };
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::common::*;
 
@@ -29,13 +30,15 @@ fn renderer_with_overall_always_bottom() {
     overall.finish();
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    // H=4: children at lines[0..2], overall at lines[3].
-    assert_eq!(lines.len(), 4, "4 lines — children + overall");
-    assert!(lines.iter().any(|l| l.contains("child")), "children visible: {lines:?}");
-    assert!(lines.last().unwrap().contains("overall"), "overall at bottom: {lines:?}");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                    child0 █████████████████████  2/2 0s\n",
+            "⠏                    child1 █████████████████████  2/2 0s\n",
+            "⠏                    child2 █████████████████████  2/2 0s\n",
+            "⠏                   overall █████████████████████  4/10 0s",
+        ),
+    );
 }
 
 // ── Regression: child ordering is chronological top-to-bottom ──────────
@@ -54,18 +57,18 @@ fn regression_child_order_chronological_top_to_bottom() {
     let _c3 = group.add_bar(5, "third");
     group.tick();
 
-    let lines = poll_lines(&group, &term, 5);
-    for (_i, _line) in lines.iter().enumerate() {}
-    // 4 child slots + 1 overall: line[1]=first, line[2]=second, line[3]=third
-    assert_eq!(lines.len(), 5, "always 5 lines");
-    assert!(lines[0].trim().is_empty(), "line 0 is blank: {0}", lines[0]);
-    assert!(lines[1].contains("first"), "line 1 has first: {0}", lines[1]);
-    assert!(lines[1].contains("0/5"), "line 1 shows 0/5: {0}", lines[1]);
-    assert!(lines[2].contains("second"), "line 2 has second: {0}", lines[2]);
-    assert!(lines[2].contains("0/5"), "line 2 shows 0/5: {0}", lines[2]);
-    assert!(lines[3].contains("third"), "line 3 has third: {0}", lines[3]);
-    assert!(lines[3].contains("0/5"), "line 3 shows 0/5: {0}", lines[3]);
-    assert!(lines[4].contains("overall"), "line 4 has overall: {0}", lines[4]);
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "⠴                     first ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠦                    second ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠧                     third ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+        ),
+    );
 }
 
 // ── Regression: swap slot does not corrupt display ────────────────────
@@ -75,48 +78,50 @@ fn regression_swap_slot_does_not_corrupt_display() {
     // Add 2 children, advance both, add 3rd (triggers shift). Verify all
     // children have correct positions and values.
     let (mp, term) = mk_with_size(5, 80);
+    let ts = Arc::new(TestTimeSource::new());
     let (group, _overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 10)
+        .with_time_source(ts.clone())
         .build_with_overall();
 
     let c1 = group.add_bar(10, "alpha");
     let c2 = group.add_bar(10, "beta");
     c1.advance(3);
     c2.advance(7);
+    ts.advance(Duration::from_secs(1));
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5);
-    assert!(lines[0].trim().is_empty(), "line 0 blank: {0}", lines[0]);
-    assert!(lines[1].trim().is_empty(), "line 1 blank: {0}", lines[1]);
-    assert!(lines[2].contains("alpha"), "line 2 alpha: {0}", lines[2]);
-    assert!(lines[2].contains("3/10"), "line 2 alpha 3/10: {0}", lines[2]);
-    assert!(lines[3].contains("beta"), "line 3 beta: {0}", lines[3]);
-    assert!(lines[3].contains("7/10"), "line 3 beta 7/10: {0}", lines[3]);
-    assert!(lines[4].contains("overall"), "line 4 overall: {0}", lines[4]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠼                     alpha ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
+            "⠴                      beta ██████████████░░░░░░░  7/10 1s 42/m 4s\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
+        ),
+        "SWAP_BEFORE",
+    );
 
     // Add 3rd child — triggers slot shift.
     let c3 = group.add_bar(10, "gamma");
     c3.advance(5);
+    ts.advance(Duration::from_secs(1));
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5);
-    // Chronological: alpha shifted up to line[1], beta to line[2], gamma at line[3].
-    assert!(lines[0].trim().is_empty(), "line 0 blank: {0}", lines[0]);
-    assert!(lines[1].contains("alpha"), "line 1 alpha: {0}", lines[1]);
-    assert!(lines[1].contains("3/10"), "line 1 alpha 3/10: {0}", lines[1]);
-    assert!(lines[2].contains("beta"), "line 2 beta: {0}", lines[2]);
-    assert!(lines[2].contains("7/10"), "line 2 beta 7/10: {0}", lines[2]);
-    assert!(lines[3].contains("gamma"), "line 3 gamma: {0}", lines[3]);
-    assert!(lines[3].contains("5/10"), "line 3 gamma 5/10: {0}", lines[3]);
-    assert!(lines[4].contains("overall"), "line 4 overall: {0}", lines[4]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "⠸                     alpha ██████░░░░░░░░░░░░░░░  3/10 2s 18/m 23s\n",
+            "⠧                      beta ██████████████░░░░░░░  7/10 2s 42/m 4s\n",
+            "⠇                     gamma ██████████░░░░░░░░░░░  5/10 1s 30/m 10s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
+        ),
+        "SWAP_AFTER",
+    );
 }
 
 // ── Regression: overall bar never shifts ──────────────────────────────
@@ -124,10 +129,12 @@ fn regression_swap_slot_does_not_corrupt_display() {
 #[test]
 fn regression_overall_never_shifts() {
     let (mp, term) = mk_with_size(4, 80);
+    let ts = Arc::new(TestTimeSource::new());
     let (group, overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 10)
+        .with_time_source(ts.clone())
         .build_with_overall();
 
     // Fill all 3 child slots + overall.
@@ -135,45 +142,36 @@ fn regression_overall_never_shifts() {
     let _c2 = group.add_bar(1, "b");
     let _c3 = group.add_bar(1, "c");
     overall.advance(3);
+    ts.advance(Duration::from_secs(1));
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 4);
-    assert!(
-        lines.last().unwrap().contains("overall"),
-        "overall at bottom: {0}",
-        lines.last().unwrap()
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠼                         a ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d\n",
+            "⠴                         b ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d\n",
+            "⠦                         c ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d\n",
+            "⠸                   overall ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s",
+        ),
+        "OVERALL_NEVER1",
     );
 
     // Add more children than capacity.  Overall must stay at bottom.
     let _ = group.add_bar(1, "d");
     let _ = group.add_bar(1, "e");
     overall.advance(2);
+    ts.advance(Duration::from_secs(1));
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 4, "height never changes");
-    assert!(
-        lines.last().unwrap().contains("overall"),
-        "overall still at bottom after overflow: {0}",
-        lines.last().unwrap()
-    );
-    // Children are visible somewhere.
-    assert!(
-        lines[0].contains("a") || lines[1].contains("a") || lines[2].contains("a"),
-        "'a' visible somewhere"
-    );
-    assert!(
-        lines[0].contains("b") || lines[1].contains("b") || lines[2].contains("b"),
-        "'b' visible somewhere"
-    );
-    assert!(
-        lines[0].contains("c") || lines[1].contains("c") || lines[2].contains("c"),
-        "'c' visible somewhere"
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠴                         a ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d\n",
+            "⠦                         b ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d\n",
+            "⠧                         c ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d\n",
+            "⠴                   overall ██████████░░░░░░░░░░░  5/10 2s 28/m 10s",
+        ),
+        "OVERALL_NEVER2",
     );
 }
 
@@ -196,32 +194,33 @@ fn regression_finish_and_clear_with_tick_fn() {
     let _ = c2.finish_and_clear();
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    // c2's slot is now blank. c1 still visible.
-    assert!(lines.iter().any(|l| l.contains("keep")), "'keep' visible: {lines:?}");
-    // The cleared slot should be blank (line[2] if chronological: [blank, keep, blank, clear, overall]
-    // After clear of c2: slot goes blank. Wait — c2 was at line[3] (newest), now blank.
-    assert!(
-        lines.iter().any(|l| l.trim().is_empty()),
-        "at least one blank line for cleared slot: {lines:?}"
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠴                      keep ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        ),
+        "FINISH_CLEAR1",
     );
-    assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
 
     // Ensure cleared bar is counted as finished — its state should not shift on next add_bar.
     let _c3 = group.add_bar(5, "new");
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    // Chronological: keep at line[1], new at line[3], line[2] may be blank if clear
-    // wasn't recycled, or new may have reused the cleared slot.
-    // Either way, keep and new are both visible, overall at bottom.
-    assert!(lines.iter().any(|l| l.contains("keep")), "'keep' still visible: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("new")), "'new' visible: {lines:?}");
-    assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "⠹                      keep ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠦                     clear ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠇                       new ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠴                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        ),
+        "FINISH_CLEAR2",
+    );
 }
 
 // ── Regression: concurrent set_position/set_message + renderer.tick() ──
@@ -242,11 +241,16 @@ fn regression_concurrent_set_and_sync() {
     }
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert!(lines.iter().any(|l| l.contains("38/50")), "position 38/50 visible: {lines:?}");
-    assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠼                    worker ███████████████░░░░░░  38/50 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d",
+        ),
+    );
 }
 
 // ── Regression: recycle finished slot after full ──────────────────────
@@ -254,48 +258,66 @@ fn regression_concurrent_set_and_sync() {
 #[test]
 fn regression_recycle_finished_slot_after_full() {
     let (mp, term) = mk_with_size(5, 80);
+    let ts = Arc::new(TestTimeSource::new());
     let (group, overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 5)
+        .with_time_source(ts.clone())
         .build_with_overall();
 
     // Fill all 4 child slots.
     let children: Vec<_> = (0..4).map(|i| group.add_bar(2, &format!("task{i}"))).collect();
     for _c in &children {}
     overall.advance(4);
+    ts.advance(Duration::from_secs(1));
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5);
-    assert!(lines[0].contains("task0"), "task0 at line[0]: {0}", lines[0]);
-    assert!(lines[3].contains("task3"), "task3 at line[3]: {0}", lines[3]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠼                     task0 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠴                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠦                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠧                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠸                   overall ████████████████░░░░░  4/5 1s 24/m 2s",
+        ),
+        "RECYCLE_FULL_PRE_CLEAR",
+    );
 
     // Finish and clear task0 — must not panic or corrupt display.
     children[0].finish_and_clear();
+    ts.advance(Duration::from_secs(1));
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    // task0 slot is now blank or reused.
-    assert!(lines.iter().any(|l| l.contains("task1")), "task1 visible: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("task2")), "task2 visible: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("task3")), "task3 visible: {lines:?}");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "⠦                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠧                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠇                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠼                   overall ████████████████░░░░░  4/5 2s 24/m 2s",
+        ),
+        "RECYCLE_FULL_CLEARED",
+    );
 
     // Add a 5th child — it should reuse the recycled slot.
     let _c4 = group.add_bar(2, "task4");
+    ts.advance(Duration::from_secs(1));
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5, "height unchanged");
-    // task4 should be visible somewhere (it reused the finished slot).
-    assert!(lines.iter().any(|l| l.contains("task4")), "task4 visible: {lines:?}");
-    assert!(lines[4].contains("overall"), "overall at bottom: {0}", lines[4]);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠦                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠇                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠋                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠹                     task4 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠴                   overall ████████████████░░░░░  4/5 2s 24/m 2s",
+        ),
+        "RECYCLE_FULL_DUMP",
+    );
 }
 
 // ── Regression: newest finished bars survive Phase 2 compact ────────────
@@ -305,10 +327,12 @@ fn regression_recycle_oldest_finished_slot() {
     // Use W=80 so the overall bar's rate+ETA message (which can be 18+
     // visible chars) fits without wrapping in the compact template.
     let (mp, term) = mk_with_size(10, 80);
+    let ts = Arc::new(TestTimeSource::new());
     let (group, overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(6)
         .with_overall("overall", 5)
+        .with_time_source(ts.clone())
         .build_with_overall();
     // child_cap = 5, overall at slot 5
 
@@ -325,13 +349,22 @@ fn regression_recycle_oldest_finished_slot() {
     b1.finish();
     b2.finish();
     overall.advance(2);
+    ts.advance(Duration::from_secs(1));
     group.tick();
 
-    // All bars visible.
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    assert!(lines.iter().any(|l| l.contains("a [resolve]")), "a [resolve] visible pre-compact");
-    assert!(lines.iter().any(|l| l.contains("b [fetch]")), "b [fetch] visible pre-compact");
+    // All bars visible pre-compact.
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏               a [resolve] █████████████████████  0/1 0s\n",
+            "⠏                 a [fetch] █████████████████████  0/1 0s\n",
+            "⠏               a [process] █████████████████████  0/1 0s\n",
+            "⠏               b [resolve] █████████████████████  0/1 0s\n",
+            "⠏                 b [fetch] █████████████████████  0/1 0s\n",
+            "⠸                   overall ████████░░░░░░░░░░░░░  2/5 1s 12/m 15s",
+        ),
+        "RECYCLE_OLDEST_PRE_COMPACT",
+    );
 
     // Add b [process] — triggers Phase 2 compact (all slots occupied).
     let b3 = group.add_bar(1, "b [process]");
@@ -342,12 +375,16 @@ fn regression_recycle_oldest_finished_slot() {
 
     // After compact: oldest (a1 at old_i=0) is recycled, everything
     // shifts up, b3 at bottom.  All 3 b-specific bars must be visible.
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    assert!(lines.iter().any(|l| l.contains("b [resolve]")), "b [resolve] visible after compact");
-    assert!(lines.iter().any(|l| l.contains("b [fetch]")), "b [fetch] visible after compact");
-    assert!(lines.iter().any(|l| l.contains("b [process]")), "b [process] visible after compact");
-
-    // a [resolve] was recycled, should NOT be visible after compact
-    assert!(!lines.iter().any(|l| l.contains("a [resolve]")), "a [resolve] recycled after compact");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                 a [fetch] █████████████████████  0/1 0s\n",
+            "⠏               a [process] █████████████████████  0/1 0s\n",
+            "⠏               b [resolve] █████████████████████  0/1 0s\n",
+            "⠏                 b [fetch] █████████████████████  0/1 0s\n",
+            "⠏               b [process] █████████████████████  0/1 0s\n",
+            "⠏                   overall █████████████████████  3/5 1s",
+        ),
+        "RECYCLE_OLDEST_POST_COMPACT",
+    );
 }

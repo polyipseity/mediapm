@@ -39,20 +39,6 @@ pub fn mk() -> (MultiProgress, InMemoryTerm) {
     mk_with_size(H, W)
 }
 
-/// Read terminal contents and assert the expected number of lines appear.
-pub fn poll_lines(group: &ProgressGroup, term: &InMemoryTerm, expected: usize) -> Vec<String> {
-    group.tick();
-    let contents = term.contents();
-    let lines: Vec<String> = contents.lines().map(String::from).collect();
-    assert_eq!(
-        lines.len(),
-        expected,
-        "poll_lines: expected {expected} lines, got {}\ncontents:\n{contents}",
-        lines.len(),
-    );
-    lines
-}
-
 /// Create a [`MultiProgress`] + [`InMemoryTerm`] pair at a custom size.
 pub fn mk_with_size(h: u16, w: u16) -> (MultiProgress, InMemoryTerm) {
     let term = InMemoryTerm::new(h, w);

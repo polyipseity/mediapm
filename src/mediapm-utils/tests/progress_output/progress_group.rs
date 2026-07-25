@@ -1311,33 +1311,31 @@ fn finalize_exact_terminal_match_after_full_lifecycle() {
 
     // Before finalize: 5 lines (2 blanks + alpha + beta + overall).
     let before = term.contents();
-    let before_lines: Vec<&str> = before.lines().collect();
-    assert_eq!(before_lines.len(), 5, "5 lines before finalize");
-    assert!(before_lines[0].trim().is_empty(), "line 0 is blank before finalize");
-    assert!(before_lines[1].trim().is_empty(), "line 1 is blank before finalize");
-    assert!(before_lines[2].contains("alpha"), "alpha visible before: {0}", before_lines[2]);
-    assert!(before_lines[3].contains("beta"), "beta visible before: {0}", before_lines[3]);
-    assert!(before_lines[4].contains("overall"), "overall visible before: {0}", before_lines[4]);
+    assert_eq!(
+        before,
+        concat!(
+            "\n",
+            "\n",
+            "⠏                     alpha █████████████████████  5/5 0s\n",
+            "⠏                      beta █████████████████████  3/3 0s\n",
+            "⠏                   overall █████████████████████  10/10 0s",
+        ),
+        "before finalize",
+    );
 
     group.join_and_clear();
 
     // After finalize: exactly 3 visible lines (alpha + beta + overall).
     let after = term.contents();
-    let after_lines: Vec<&str> = after.lines().collect();
-    assert_eq!(after_lines.len(), 3, "3 bars after removing blanks");
-    assert!(after_lines[0].contains("alpha"), "alpha at line 0: {0}", after_lines[0]);
-    assert!(after_lines[0].contains("5/5"), "alpha 5/5: {0}", after_lines[0]);
-    assert!(after_lines[1].contains("beta"), "beta at line 1: {0}", after_lines[1]);
-    assert!(after_lines[1].contains("3/3"), "beta 3/3: {0}", after_lines[1]);
-    assert!(after_lines[2].contains("overall"), "overall at line 2: {0}", after_lines[2]);
-    assert!(after_lines[2].contains("10/10"), "overall 10/10: {0}", after_lines[2]);
-
-    // No blank/empty lines between bars.
-    for (i, line) in after_lines.iter().enumerate() {
-        assert!(!line.trim().is_empty(), "line {i} must not be blank after finalize:\n{after}");
-    }
-    // No consecutive blank lines.
-    assert!(!after.contains("\n\n"), "no consecutive blank lines:\n{after}");
+    assert_eq!(
+        after,
+        concat!(
+            "⠏                     alpha █████████████████████  5/5 0s\n",
+            "⠏                      beta █████████████████████  3/3 0s\n",
+            "⠏                   overall █████████████████████  10/10 0s",
+        ),
+        "after finalize",
+    );
 }
 
 /// Verify that content written before ProgressGroup creation survives
@@ -1367,9 +1365,16 @@ fn finalize_preserves_content_written_before_progress() {
     group.join_and_clear();
 
     let after = term.contents();
-    // Pre-existing content must survive finalize (test mode: pre_roll no-op).
-    assert!(after.contains("PRE-EXISTING"), "pre-existing content visible after finalize\n{after}");
-    assert!(after.contains("work"), "work bar visible after finalize\n{after}");
+    assert_eq!(
+        after,
+        concat!(
+            "== PRE-EXISTING OUTPUT ==\n",
+            "line before progress bars\n",
+            "⠏                      work █████████████████████  3/3 0s\n",
+            "⠏                   overall █████████████████████  5/5 0s",
+        ),
+        "pre-existing content + bars after finalize",
+    );
 }
 
 /// Dedicated regression test for the Phase 4 padding bug: after finalize,
@@ -1400,26 +1405,30 @@ fn finalize_no_blank_lines_in_output() {
 
     // Before finalize: all lines must be non-blank (all slots occupied).
     let before = term.contents();
-    for (i, line) in before.lines().enumerate() {
-        assert!(!line.trim().is_empty(), "line {i} is blank before finalize:\n{before}");
-    }
+    assert_eq!(
+        before,
+        concat!(
+            // All 4 slots filled: no blank lines.
+            "⠏                     alpha █████████████████████  5/5 0s\n",
+            "⠏                      beta █████████████████████  5/5 0s\n",
+            "⠏                     gamma █████████████████████  5/5 0s\n",
+            "⠏                   overall █████████████████████  3/3 0s",
+        ),
+        "before finalize (all slots filled)",
+    );
 
     group.join_and_clear();
 
     // After finalize: ALL lines must still be non-blank.
-    // This directly detects the Phase 4 regression where padding newlines
-    // pushed bar content into scrollback, causing visible terminal to show
-    // blank/garbage lines.
     let after = term.contents();
-    for (i, line) in after.lines().enumerate() {
-        assert!(
-            !line.trim().is_empty(),
-            "line {i} is blank after finalize (regression!):\n{after}"
-        );
-    }
-    // All 4 bars still visible.
-    assert!(after.contains("alpha"), "alpha present after finalize");
-    assert!(after.contains("beta"), "beta present after finalize");
-    assert!(after.contains("gamma"), "gamma present after finalize");
-    assert!(after.contains("overall"), "overall present after finalize");
+    assert_eq!(
+        after,
+        concat!(
+            "⠏                     alpha █████████████████████  5/5 0s\n",
+            "⠏                      beta █████████████████████  5/5 0s\n",
+            "⠏                     gamma █████████████████████  5/5 0s\n",
+            "⠏                   overall █████████████████████  3/3 0s",
+        ),
+        "after finalize (no blank lines regression)",
+    );
 }

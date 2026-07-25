@@ -163,3 +163,99 @@ fn color_no_success_brackets() {
     assert!(!contents.contains("[S]"), "[S] bracket must not appear in output");
     assert!(!contents.contains("[=]"), "[=] bracket must not appear in output");
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 2: Exact-output regression tests
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Exact output match for active child with overall bar.
+#[test]
+fn exact_color_active_child_with_overall() {
+    let (mp, term) = mk_with_size(2, 80);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 1)
+        .build_with_overall();
+    let child = group.add_bar(5, "child");
+    child.set_position(0);
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠼                     child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
+}
+
+/// Exact output match for failed child with overall bar.
+#[test]
+fn exact_color_failed_child_with_overall() {
+    let (mp, term) = mk_with_size(2, 80);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 1)
+        .build_with_overall();
+    let child = group.add_bar(5, "child");
+    group.tick();
+    child.finish_error();
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                 [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
+}
+
+/// Exact output match for abandoned child with overall bar.
+#[test]
+fn exact_color_abandoned_child_with_overall() {
+    let (mp, term) = mk_with_size(2, 80);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 1)
+        .build_with_overall();
+    let child = group.add_bar(5, "child");
+    group.tick();
+    child.abandon();
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                 [A] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
+}
+
+/// Exact output match for successful child with overall bar.
+#[test]
+fn exact_color_success_child_with_overall() {
+    let (mp, term) = mk_with_size(2, 80);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 1)
+        .build_with_overall();
+    let child = group.add_bar(5, "child");
+    child.set_position(5);
+    group.tick();
+    child.finish_success();
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                     child █████████████████████  5/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+        )
+    );
+}
