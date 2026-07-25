@@ -1173,6 +1173,11 @@ mod inner {
         /// during [`tick`](Self::tick).  `None` when the user provided
         /// their own [`MultiProgress`] (tests via `InMemoryTerm`).
         buffer_enabled: Option<Arc<AtomicBool>>,
+
+        /// One-shot flag: has the first-draw pre-roll (newline scroll) been
+        /// performed?  Used to push intervening stderr content into scrollback
+        /// before indicatif's first draw.
+        pre_rolled: AtomicBool,
     }
 
     /// EMA-smoothed rate tracking for a render slot.
@@ -1257,6 +1262,7 @@ mod inner {
                 time_source,
                 slots_timing,
                 buffer_enabled,
+                pre_rolled: AtomicBool::new(false),
             }
         }
 
@@ -1311,6 +1317,7 @@ mod inner {
                     time_source,
                     slots_timing,
                     buffer_enabled,
+                    pre_rolled: AtomicBool::new(false),
                 },
                 overall_state,
             )
@@ -1533,7 +1540,10 @@ mod inner {
                 }
             }
 
-            // Steps 3-5: RAII guard — draws go through while guard is alive,
+            // Step 3: Pre-roll newlines before first draw (bypasses buffer).
+            self.pre_roll_if_needed();
+
+            // Steps 4-6: RAII guard — draws go through while guard is alive,
             // buffer re-enabled automatically when guard drops.
             let _guard = BufferGuard::new(self.buffer_enabled.as_ref());
 
@@ -1620,6 +1630,28 @@ mod inner {
                 _ => slot.bar.finish(),
             }
             slot.bar.tick();
+        }
+
+        /// Write newlines before the first indicatif draw to push any
+        /// intervening stderr content into scrollback, preventing overwrite.
+        ///
+        /// On first call: writes `n + 1` newlines to the real terminal
+        /// (bypassing `BufferedTerm`), then moves cursor back up `n` lines.
+        /// Subsequent calls are no-ops.  In test mode (`buffer_enabled` is
+        /// `None`) this is always a no-op.
+        fn pre_roll_if_needed(&self) {
+            if self.buffer_enabled.is_none() {
+                return;
+            }
+            if self.pre_rolled.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            let term = console::Term::stderr();
+            let n = self.slots.len();
+            for _ in 0..=n {
+                let _ = term.write_line("");
+            }
+            let _ = term.move_cursor_up(n);
         }
 
         /// Respond to terminal dimension changes since the last tick.
