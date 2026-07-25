@@ -34,3 +34,9 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `spinner.rs` — deterministic spinner animation with `TestTimeSource` | 3 tests (8 contains → exact), also covers `regression_spinner_dirty_independence` | 🟢 |
 | `regression.rs` — concurrent set-and-sync (deterministic), child order, swap-slot, finish-and-clear, overall stability, masked-spinner ends_with | 6 tests, all exact | 🟢 |
 | `single_bar.rs` — first/last/only-bar lines exact | 1 structural `.len()` remaining | 🟢 |
+
+## Pre-roll regression
+
+| Spec item | Test(s) | Status |
+|---|---|---|
+| Pre-roll scrolls existing terminal content into scrollback (bug fix) | `pre_roll_with_existing_content_scrolls_it_away` — exact `concat!()` body matching + no-substring assertion | 🟢 |

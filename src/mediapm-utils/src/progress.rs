@@ -1662,6 +1662,15 @@ mod inner {
         ///
         /// One-shot: only the first call writes; subsequent calls are no-ops.
         /// In test mode (`pre_roll_term` is `None`) this is always a no-op.
+        ///
+        /// # Scroll guarantee
+        ///
+        /// Moves the cursor to the absolute bottom of the terminal *before*
+        /// writing blank lines.  This ensures every blank `write_line` triggers
+        /// a scroll — newlines from a cursor partway down the screen would
+        /// only fill remaining rows below it, leaving visible content above
+        /// exposed.  After the blank lines the cursor returns to the top so
+        /// indicatif can overwrite the now-empty visible area.
         fn pre_roll_if_needed(&self) {
             let Some(ref term) = self.pre_roll_term else {
                 return;
@@ -1670,6 +1679,8 @@ mod inner {
                 return;
             }
             let rows = self.dim_source.dimensions().0 as usize;
+            // Move to the bottom first so every write_line causes a scroll.
+            let _ = term.move_cursor_down(rows);
             for _ in 0..rows {
                 let _ = term.write_line("");
             }
@@ -3861,6 +3872,84 @@ mod tests {
         assert_eq!(
             newline_count, 0,
             "height change should NOT trigger pre_roll again, got {newline_count} newlines"
+        );
+    }
+
+    #[test]
+    fn pre_roll_with_existing_content_scrolls_it_away() {
+        // Regression test: when the terminal has existing content and the
+        // cursor is NOT at the bottom, pre_roll must write enough newlines
+        // to push ALL visible content into the scrollback buffer.
+        //
+        // In this scenario: cursor is at row 0 (top), terminal has 10 rows
+        // with content at rows 0-4.  Pre-roll with only `rows` newlines
+        // would scroll only 1 line (cursor reaches bottom after 9 newlines,
+        // then 1 scroll), leaving rows 1-4 visible.
+        use super::inner::DimensionSource;
+        use indicatif::TermLike;
+        use std::sync::Arc;
+
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        // Write content BEFORE progress group (simulates terminal state).
+        for i in 1..=5 {
+            let _ = term.write_line(&format!("existing content line {i}"));
+        }
+        // At this point cursor is at row 5 (after writing 5 lines).
+        // Move cursor UP 5 to simulate cursor at top (worst case).
+        let _ = term.move_cursor_up(5);
+        // Cursor is now at row 0, content at rows 0-4.
+        let initial_content = term.contents();
+        assert!(initial_content.contains("existing content line 1"), "content must be written");
+        assert!(initial_content.contains("existing content line 5"), "content must be written");
+
+        // Same InMemoryTerm for both draw target AND pre_roll capture.
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_pre_roll_capture(Box::new(term.clone()))
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .build();
+        // Wait for the background ticker to fire pre_roll (at 50ms, 3-4
+        // ticks should be enough).
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Pre_roll has now pushed all existing content away.
+
+        let bar = group.add_bar(100, "work");
+        bar.set_position(100);
+        ts.advance(std::time::Duration::from_millis(100));
+        bar.finish();
+
+        // Sync state from SharedState to indicatif, then finalize for
+        // deterministic finished-bar output (no spinner animation).
+        group.tick();
+        group.join_and_clear();
+
+        // The visible content must contain ONLY the finished bar output.
+        // All "existing content line *" must be gone (scrolled into
+        // scrollback by pre_roll).
+        // All existing content must have been scrolled into scrollback by
+        // pre_roll.  The visible content must contain ONLY the finished bar
+        // line (pure text — InMemoryTerm::contents strips ANSI codes).
+        let after = term.contents();
+        assert!(
+            !after.contains("existing content"),
+            "existing content must be scrolled away, got: {after:?}",
+        );
+        // Exactly one visible line with a spinner prefix and deterministic
+        // body.  Strip the multi-byte spinner char for exact body matching.
+        let bar_line = after.lines().next().expect("expected at least one bar line");
+        let spinner_len = bar_line.chars().next().unwrap().len_utf8();
+        let body = &bar_line[spinner_len..];
+        assert_eq!(
+            body,
+            concat!("                      work ", "█████████████████████  ", "100/100 0s",),
+            "bar body after spinner must match exactly",
         );
     }
 }
