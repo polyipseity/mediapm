@@ -398,3 +398,101 @@ fn two_lines_child_finish_and_clear_early() {
     o.tick();
     assert_eq!(term.contents(), " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/4");
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 4: Two-line exact-output tests (missing)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Exact output: both child and overall finish successfully.
+#[test]
+fn two_lines_exact_both_finished() {
+    let term = InMemoryTerm::new(2, 80);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let mp = MultiProgress::with_draw_target(target);
+    let ts = Arc::new(TestTimeSource::new());
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 3)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build_with_overall();
+    let child = group.add_bar(5, "child");
+    child.set_position(5);
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+    child.finish_success();
+    overall.advance(3);
+    overall.finish_success();
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                     child █████████████████████  5/5 1s\n",
+            "⠏                   overall █████████████████████  3/3 1s",
+        )
+    );
+}
+
+/// Exact output: child finishes successfully, overall abandons.
+#[test]
+fn two_lines_exact_overall_abandoned() {
+    let term = InMemoryTerm::new(2, 80);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let mp = MultiProgress::with_draw_target(target);
+    let ts = Arc::new(TestTimeSource::new());
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 3)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build_with_overall();
+    let child = group.add_bar(5, "child");
+    child.set_position(5);
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+    child.finish_success();
+    overall.abandon();
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                     child █████████████████████  5/5 1s\n",
+            "⠏               [A] overall ░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
+        )
+    );
+}
+
+/// Exact output: child finishes successfully, overall errors.
+#[test]
+fn two_lines_exact_overall_error() {
+    let term = InMemoryTerm::new(2, 80);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let mp = MultiProgress::with_draw_target(target);
+    let ts = Arc::new(TestTimeSource::new());
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 3)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build_with_overall();
+    let child = group.add_bar(5, "child");
+    child.set_position(5);
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+    child.finish_success();
+    overall.finish_error();
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                     child █████████████████████  5/5 1s\n",
+            "⠏               [F] overall ░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
+        )
+    );
+}

@@ -284,3 +284,71 @@ fn transition_exact_success_with_overall() {
         )
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 5: Completed lifecycle exact-output tests (missing)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Exact output: partial progress then finishes with success.
+#[test]
+fn transition_exact_partial_progress_then_finish() {
+    let term = InMemoryTerm::new(2, 80);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let mp = MultiProgress::with_draw_target(target);
+    let ts = Arc::new(TestTimeSource::new());
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 5)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build_with_overall();
+    let child = group.add_bar(5, "child");
+    // Advance to 3/5
+    child.set_position(3);
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+    // Then finish all the way
+    child.set_position(5);
+    child.finish_success();
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                     child █████████████████████  5/5 1s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
+        )
+    );
+}
+
+/// Exact output: child abandons with message, overall still present.
+#[test]
+fn transition_exact_abandon_with_message_and_overall() {
+    let term = InMemoryTerm::new(2, 80);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let mp = MultiProgress::with_draw_target(target);
+    let ts = Arc::new(TestTimeSource::new());
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(2)
+        .with_overall("overall", 5)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build_with_overall();
+    let child = group.add_bar(5, "child");
+    child.set_position(3);
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+    child.set_message("aborted");
+    child.abandon();
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                 [A] child ████████████░░░░░░░░░  3/5 1s  aborted\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
+        )
+    );
+}

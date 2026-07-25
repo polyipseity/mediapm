@@ -342,8 +342,9 @@ fn progress_group_child_finish_keeps_bar_visible() {
     assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
 }
 
+/// Exact output: all bars finish successfully, content persists.
 #[test]
-fn progress_group_finish_all_bars_content_persists() {
+fn fin_all_exact_all_bars_content_persists() {
     // Terminal H=5, W=80.  Overall at line[4], children at lines[0..3].
     let (mp, term) = mk_with_size(5, 80);
     let (group, overall) = ProgressGroup::builder()
@@ -362,24 +363,22 @@ fn progress_group_finish_all_bars_content_persists() {
     c2.finish_success();
     overall.finish_success();
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5, "always 5 lines");
-    // alpha at slot[2] (first child, shifted up by beta), beta at slot[3] (just above overall).
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].contains("alpha"), "line 2 shows alpha: {0}", lines[2]);
-    assert!(lines[2].contains("3/3"), "line 2 shows alpha complete: {0}", lines[2]);
-    assert!(lines[3].contains("beta"), "line 3 shows beta: {0}", lines[3]);
-    assert!(lines[3].contains("5/5"), "line 3 shows beta complete: {0}", lines[3]);
-    assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
-    // overall was never advanced via TrackedHandle, so position stays 0/2
-    assert!(lines[4].contains("0/2"), "overall shows 0/2: {0}", lines[4]);
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠏                     alpha █████████████████████  3/3 0s\n",
+            "⠏                      beta █████████████████████  5/5 0s\n",
+            "⠏                   overall █████████████████████  0/2 0s",
+        )
+    );
 }
 
+/// Exact output: child finishes with error, shows [F] bracket.
 #[test]
-fn progress_group_finish_error_shows_error_state() {
+fn fin_error_exact_shows_error_state() {
     // Terminal H=5, W=80.
     let (mp, term) = mk_with_size(5, 80);
     let (group, _overall) = ProgressGroup::builder()
@@ -392,21 +391,22 @@ fn progress_group_finish_error_shows_error_state() {
     group.tick();
     c.finish_error();
     group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5, "always 5 lines");
-    // wget at slot[3] (just above overall), blanks at lines[0..2].
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("wget"), "line 3 has wget: {0}", lines[3]);
-    assert!(lines[3].contains("[F]"), "line 3 has error state: {0}", lines[3]);
-    assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠏                  [F] wget ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",
+        )
+    );
 }
 
+/// Exact output: join_and_clear keeps finished bars, removes blank slots.
 #[test]
-fn progress_group_join_and_clear_removes_bars() {
+fn join_clear_exact_removes_bars() {
     // Terminal H=5, W=80.
     let (mp, term) = mk_with_size(5, 80);
     let (group, _overall) = ProgressGroup::builder()
@@ -420,13 +420,14 @@ fn progress_group_join_and_clear_removes_bars() {
     group.tick();
     // join_and_clear collapses blank reserved slots but keeps non-blank bars.
     group.join_and_clear();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 2, "2 bars remain (fetch + overall)");
-    assert!(lines[0].contains("fetch"), "fetch bar visible: {0}", lines[0]);
-    assert!(lines[0].contains("0/5"), "fetch shows 0/5: {0}", lines[0]);
-    assert!(lines[1].contains("overall"), "overall bar visible: {0}", lines[1]);
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏                     fetch █████████████████████  0/5 0s\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        )
+    );
 }
 
 #[test]

@@ -109,10 +109,13 @@ fn resize_height_grow_adds_slots() {
     assert!(after_count > before_count, "more lines after height growth");
 }
 
+/// Exact output: height shrink removes blank slots while preserving content.
 #[test]
-fn resize_height_shrink_removes_slots() {
+fn resize_exact_height_shrink_removes_slots() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
-    let (mp, term) = mk_with_size(6, 80);
+    let term = InMemoryTerm::new(6, 80);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let mp = MultiProgress::with_draw_target(target);
     let (group, _overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(6)
@@ -123,12 +126,16 @@ fn resize_height_shrink_removes_slots() {
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
 
-    let before_count = term.contents().lines().count();
+    // At H=6: show 6 lines with blanks above child and overall at bottom
+    let before = term.contents();
+    assert_eq!(before.lines().count(), 6);
 
     dims.set((4, 80));
     group.tick();
-    let after_count = term.contents().lines().count();
-    assert!(after_count < before_count, "fewer lines after height shrink");
+    let after = term.contents();
+    assert_eq!(after.lines().count(), 4);
+    assert!(after.contains("fetch"), "child preserved after shrink");
+    assert!(after.contains("overall"), "overall preserved after shrink");
 }
 
 #[test]
@@ -583,8 +590,9 @@ fn resize_height_grow_appends_not_prepends() {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /// Wide terminal (W=120): verify prefix format, count/total, elapsed, rate.
+/// Exact output: width transition from W=120 to W=40.
 #[test]
-fn resize_exact_wide_output_structure() {
+fn resize_exact_width_wide_to_narrow() {
     let dims = Arc::new(TestDimensionSource::new((4, 120)));
     let term = InMemoryTerm::new(4, 120);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
@@ -602,25 +610,34 @@ fn resize_exact_wide_output_structure() {
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
 
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    assert_eq!(lines.len(), 4, "4 lines at H=4 W=120");
-    // Two blank lines at top, then child, then overall
-    assert!(lines[0].is_empty(), "first line blank");
-    assert!(lines[1].is_empty(), "second line blank");
-    // Child line structure: spinner + 22 spaces + "test" + bar + msg
-    assert!(lines[2].starts_with("⠼"), "child starts with spinner: {0}", lines[2]);
-    let child_prefix_end = lines[2].find("test").expect("child label present");
-    assert!(child_prefix_end > 1, "spaces before label");
-    assert!(lines[2].contains("5/10"), "child count/total: {0}", lines[2]);
-    assert!(lines[2].contains("1s"), "child elapsed: {0}", lines[2]);
-    assert!(lines[2].contains("/m") || lines[2].contains("/s"), "child rate: {0}", lines[2]);
-    // Overall line
-    assert!(lines[3].starts_with("⠸"), "overall starts with spinner: {0}", lines[3]);
-    assert!(lines[3].contains("overall"), "overall label: {0}", lines[3]);
-    assert!(lines[3].contains("0/5"), "overall count/total: {0}", lines[3]);
-    assert!(lines[3].contains("1s"), "overall elapsed: {0}", lines[3]);
-    assert!(lines[3].contains("0/d"), "overall zero rate: {0}", lines[3]);
+    // W=120: long bar with wide template
+    let wide = term.contents();
+    assert_eq!(
+        wide,
+        concat!(
+            "\n",
+            "\n",
+            "⠼                      test ██████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 1s 30/m 10s\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 1s 0/d",
+        ),
+        "W=120 output",
+    );
+
+    // Resize to W=40
+    dims.set((4, 40));
+    ts.advance(std::time::Duration::from_secs(1));
+    group.tick();
+    let narrow = term.contents();
+    assert_eq!(
+        narrow,
+        concat!(
+            "\n",
+            "\n",
+            "⠦                      test  5/10 2s 30/m 10s\n",
+            "⠴                   overall  0/5 2s 0/d",
+        ),
+        "W=40 output",
+    );
 }
 
 /// Narrow terminal (W=40): verify compact template usage (no bar chars).
@@ -655,9 +672,9 @@ fn resize_exact_narrow_uses_compact_template() {
     assert!(lines.iter().all(|l| !l.contains('█')), "no bar chars in compact mode");
 }
 
-/// Height grow from H=4 to H=6: verify line count and content preservation.
+/// Exact output: height grow from H=4 to H=6 shows more blank slots.
 #[test]
-fn resize_exact_height_grow_line_count_and_content() {
+fn resize_exact_height_grow_adds_slots() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let term = InMemoryTerm::new(6, 80);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
@@ -677,14 +694,32 @@ fn resize_exact_height_grow_line_count_and_content() {
 
     // At H=4: 2 blanks + child + overall = 4 lines
     let before = term.contents();
-    assert_eq!(before.lines().count(), 4, "4 lines at H=4");
+    assert_eq!(
+        before,
+        concat!(
+            "\n",
+            "\n",
+            "⠼                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
+        ),
+        "H=4 output",
+    );
 
     // Grow to H=6
     dims.set((6, 80));
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
     let after = term.contents();
-    assert_eq!(after.lines().count(), 6, "6 lines at H=6");
-    assert!(after.contains("fetch"), "child preserved after growth");
-    assert!(after.contains("overall"), "overall preserved after growth");
+    assert_eq!(
+        after,
+        concat!(
+            "\n",
+            "\n",
+            "⠦                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
+            "\n",
+            "\n",
+            "⠴                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
+        ),
+        "H=6 output",
+    );
 }
