@@ -1682,10 +1682,14 @@ mod inner {
                 let current_cap = self.slots.len();
                 if desired_cap > current_cap {
                     changed = true;
-                    // Grow: prepend blank slots at the top, reattaching orphans.
+                    // Grow: append blank slots before the overall bar (or at
+                    // end when no overall bar exists).  New terminal space
+                    // appears at the bottom, so extending downward fills it
+                    // naturally instead of shifting existing bars.
+                    let insert_pos = self.slots.len() - usize::from(self.has_overall);
                     for _ in 0..(desired_cap - current_cap) {
                         let pb = ProgressBar::new(0);
-                        let bar = self.inner.insert(0, pb);
+                        let bar = self.inner.insert(insert_pos, pb);
                         bar.set_style(blank_bar_style());
                         bar.set_message(" ");
                         bar.set_prefix("");
@@ -1697,8 +1701,8 @@ mod inner {
                         if let Some(orphan) = self.orphaned_states.borrow_mut().pop_back() {
                             slot.source.replace(Some(orphan));
                         }
-                        self.slots.insert(0, slot);
-                        self.slots_timing.insert(0, SlotTiming::new(&*self.time_source));
+                        self.slots.insert(insert_pos, slot);
+                        self.slots_timing.insert(insert_pos, SlotTiming::new(&*self.time_source));
                     }
                     // Sync slots that may have been reattached.
                     for i in 0..self.slots.len() {
