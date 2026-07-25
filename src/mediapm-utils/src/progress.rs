@@ -1755,11 +1755,25 @@ mod inner {
                 }
             }
             // Remove all blank (unbound) slots from MultiProgress.
+            let blank_count = self.slots.iter().filter(|s| s.source.borrow().is_none()).count();
             for slot in &self.slots {
                 if slot.source.borrow().is_none() {
                     self.inner.remove(&slot.bar);
                 }
             }
+
+            // Pad terminal when blank bars were removed: write newlines
+            // to fill the gap so indicatif's draw (which still uses the
+            // old bar_count that included blanks) doesn't leave cleared
+            // empty space at the bottom.
+            if self.buffer_enabled.is_some() && blank_count > 0 {
+                let term = console::Term::stderr();
+                for _ in 0..blank_count {
+                    let _ = term.write_line("");
+                }
+                let _ = term.move_cursor_up(blank_count);
+            }
+
             // Trigger one final draw with the reduced bar set.
             for slot in &self.slots {
                 if slot.source.borrow().is_some() {
