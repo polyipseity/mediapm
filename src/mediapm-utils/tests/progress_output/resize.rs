@@ -523,3 +523,57 @@ fn resize_height_sequence_without_overall() {
     assert!(h3_restored.contains("bar 2"), "bar 2 reappears on growth");
     assert!(h3_restored.contains("bar 1"), "bar 1 reappears on growth");
 }
+
+/// Height growth appends new blank slots before the overall bar (not at the
+/// top), so the child bar position stays stable.
+#[test]
+fn resize_height_grow_appends_not_prepends() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (mp, term) = mk_with_size(6, 80);
+    let (group, _overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(true)
+        .build_with_overall();
+
+    // Add one child — it goes to the bottom of the child region (index 2).
+    let _c1 = group.add_bar(7, "fetch");
+    group.tick();
+    let before = term.contents();
+    let before_lines: Vec<&str> = before.lines().collect();
+    assert_eq!(before_lines.len(), 4, "4 lines at H=4");
+    // index 0-1: blanks, index 2: child, index 3: overall
+    assert!(before_lines[2].contains("fetch"), "child at line 2 before grow: {0}", before_lines[2]);
+
+    // Grow to H=6.
+    dims.set((6, 80));
+    group.tick();
+    let after = term.contents();
+    let after_lines: Vec<&str> = after.lines().collect();
+    assert_eq!(after_lines.len(), 6, "6 lines at H=6");
+    // With append behavior, child stays at index 2, new blanks at 3-4,
+    // overall at 5. With prepend behavior, child would shift to index 4.
+    assert!(
+        after_lines[2].contains("fetch"),
+        "child stayed at line 2 after grow (append): {0}",
+        after_lines[2],
+    );
+    assert!(
+        after_lines[5].contains("overall"),
+        "overall at line 5 after grow: {0}",
+        after_lines[5],
+    );
+    // Verify the new slots are before overall (indices 3-4 are blank).
+    assert!(
+        after_lines[3].trim().is_empty(),
+        "line 3 is new blank after grow: {0:?}",
+        after_lines[3],
+    );
+    assert!(
+        after_lines[4].trim().is_empty(),
+        "line 4 is new blank after grow: {0:?}",
+        after_lines[4],
+    );
+}

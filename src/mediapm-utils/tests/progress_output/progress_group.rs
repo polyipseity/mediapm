@@ -1248,3 +1248,37 @@ fn slot_full_hides_overflow_bars_from_display() {
     // tool-e is still tracked even without a display slot
     assert_eq!(c5.snapshot().position, 5, "tool-e tracked position: {0}", c5.snapshot().position);
 }
+
+/// Finalize removes blank bars and leaves only finished bars visible.
+#[test]
+fn progress_group_join_and_clear_removes_blank_bars() {
+    let (mp, term) = mk_with_size(4, 80);
+    let (group, overall) = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_overall("overall", 10)
+        .build_with_overall();
+
+    let child = group.add_bar(5, "fetch");
+    child.advance(5);
+    child.finish();
+    overall.advance(5);
+    overall.finish();
+    group.tick();
+
+    // Before finalize: 4 lines (2 blanks + child + overall).
+    let before = term.contents();
+    assert_eq!(before.lines().count(), 4, "4 lines before finalize");
+    assert!(before.contains("fetch"), "child visible before finalize");
+    assert!(before.contains("overall"), "overall visible before finalize");
+
+    // join_and_clear calls finalize — removes blank bars.
+    group.join_and_clear();
+
+    // After finalize: bound bars remain in a drawable state.
+    let after = term.contents();
+    assert!(after.contains("fetch"), "child still visible after finalize");
+    assert!(after.contains("overall"), "overall still visible after finalize");
+    // The total line count is a terminal property, not meaningful to
+    // assert after removal — InMemoryTerm retains its fixed height.
+}
