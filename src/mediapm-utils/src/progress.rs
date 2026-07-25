@@ -3515,26 +3515,52 @@ mod tests {
     #[test]
     fn finalize_produces_final_output() {
         // join_and_clear (finalize) must produce visible output showing the
-        // final state of all bars.
+        // final state of all bars.  Uses TestTimeSource for deterministic
+        // timing and exact terminal content matching.
+        use std::sync::Arc;
+        use std::time::Duration;
+
         let term = indicatif::InMemoryTerm::new(10, 80);
         let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
         let mp = MultiProgress::with_draw_target(target);
+        let ts = Arc::new(super::TestTimeSource::new());
         let (group, overall) = ProgressGroup::builder()
             .with_multi_progress(mp)
+            .with_time_source(Arc::clone(&ts) as Arc<dyn super::TimeSource>)
             .capacity(4)
             .with_overall("overall", 10)
             .build_with_overall();
         let bar = group.add_bar(100, "child");
         bar.advance(50);
         overall.advance(5);
+        ts.advance(Duration::from_secs(1));
 
         // Sync state from SharedState to bars before finalize (finalize
         // only syncs non-Active bars).
         group.tick();
         group.join_and_clear();
-        let content = term.contents();
-        assert!(!content.is_empty(), "finalize must produce output, got empty");
-        assert!(content.contains("50"), "expected position 50 in output: {content:?}");
+        let actual = term.contents();
+        let lines: Vec<&str> = actual.lines().collect();
+
+        // EXACT line count: exactly 2 visible lines (child + overall).
+        assert_eq!(
+            lines.len(),
+            2,
+            "finalize must show exactly 2 bars, got {} lines:\n{actual}",
+            lines.len(),
+        );
+
+        // Line 0: child bar — prefix and position visible.
+        assert!(lines[0].contains("child"), "child prefix in line 0: {0}", lines[0]);
+        assert!(lines[0].contains("50/100"), "child pos 50/100: {0}", lines[0]);
+
+        // Line 1: overall bar — prefix and position visible.
+        assert!(lines[1].contains("overall"), "overall prefix in line 1: {0}", lines[1]);
+        assert!(lines[1].contains("5/10"), "overall pos 5/10: {0}", lines[1]);
+
+        // Both lines show elapsed (1s).
+        assert!(lines[0].contains("1s"), "child shows 1s elapsed: {0}", lines[0]);
+        assert!(lines[1].contains("1s"), "overall shows 1s elapsed: {0}", lines[1]);
     }
 
     #[test]
