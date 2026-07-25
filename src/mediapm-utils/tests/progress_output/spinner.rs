@@ -323,3 +323,190 @@ fn spinner_on_both_finish() {
         ),
     );
 }
+
+// ── ProgressGroup spinner tests: dirty-independent redraw ────────────────────
+//
+// These tests verify the spec: every tick() advances the spinner character on
+// active bars regardless of dirty state, and finished bars' spinners are frozen.
+
+#[test]
+fn spinner_advances_without_dirty() {
+    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
+    let _child = group.add_bar(10, "test");
+
+    // First tick establishes initial spinner frame.
+    group.tick();
+    let t1 = term.contents();
+
+    // Subsequent ticks should advance the spinner even without dirty state.
+    group.tick();
+    let t2 = term.contents();
+    group.tick();
+    let t3 = term.contents();
+
+    // All must show 0/10 (no progress made).
+    assert!(t1.contains("0/10"), "tick 1 shows 0/10");
+    assert!(t2.contains("0/10"), "tick 2 shows 0/10");
+    assert!(t3.contains("0/10"), "tick 3 shows 0/10");
+
+    // Spinner must advance between each tick (time frozen → only spinner differs).
+    assert_ne!(t1, t2, "spinner must advance on tick 1→2 (no dirty)");
+    assert_ne!(t2, t3, "spinner must advance on tick 2→3 (no dirty)");
+}
+
+#[test]
+fn spinner_does_not_advance_on_finished_bar() {
+    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
+    let finished = group.add_bar(3, "done");
+    finished.finish_success();
+    let active = group.add_bar(10, "working");
+    group.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    let finished_line = lines[2].to_string();
+    drop(contents);
+
+    for i in 0..5 {
+        active.advance(1);
+        group.tick();
+        let contents = term.contents();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(
+            lines[2], finished_line,
+            "finished bar must stay frozen across ticks (iteration {i})"
+        );
+    }
+}
+
+#[test]
+fn spinner_active_among_finished() {
+    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
+    let finished = group.add_bar(3, "done");
+    finished.finish_success();
+    let active = group.add_bar(10, "working");
+    group.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    let finished_line = lines[2].to_string();
+    let first_active_line = lines[3].to_string();
+    drop(contents);
+
+    // Advance the active bar.
+    active.advance(2);
+    group.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+
+    // Finished bar must stay frozen.
+    assert_eq!(lines[2], finished_line, "finished bar must stay frozen");
+    // Active bar shows progress.
+    assert!(lines[3].contains("2/10"), "active bar shows 2/10: {}", lines[3]);
+    // Active bar content changed from previous tick (spinner + position).
+    assert_ne!(lines[3], first_active_line, "active bar line changed");
+}
+
+#[test]
+fn regression_spinner_dirty_independence() {
+    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
+    let child = group.add_bar(10, "test");
+    child.set_position(5);
+    group.tick(); // Initial draw: 5/10, spinner at some frame
+    let t1 = term.contents();
+
+    // Three more ticks with NO changes.
+    group.tick();
+    let t2 = term.contents();
+    group.tick();
+    let t3 = term.contents();
+    group.tick();
+    let t4 = term.contents();
+
+    // All ticks show 5/10 (stable position).
+    assert!(t1.contains("5/10"), "tick 1: 5/10");
+    assert!(t2.contains("5/10"), "tick 2: 5/10");
+    assert!(t3.contains("5/10"), "tick 3: 5/10");
+    assert!(t4.contains("5/10"), "tick 4: 5/10");
+
+    // Spinner advances on each tick (content differs).
+    assert_ne!(t1, t2, "spinner must advance tick 1→2 (no dirty)");
+    assert_ne!(t2, t3, "spinner must advance tick 2→3 (no dirty)");
+    assert_ne!(t3, t4, "spinner must advance tick 3→4 (no dirty)");
+}
+
+#[test]
+fn spinner_stops_on_abandoned_bar() {
+    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
+    let abandoned = group.add_bar(5, "abandoned");
+    abandoned.set_position(2);
+    abandoned.abandon();
+    let active = group.add_bar(3, "active");
+    group.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    let abandoned_line = lines[2].to_string();
+    drop(contents);
+
+    for i in 0..5 {
+        active.advance(1);
+        group.tick();
+        let contents = term.contents();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines[2], abandoned_line, "abandoned bar must stay frozen (iteration {i})");
+    }
+}
+
+#[test]
+fn spinner_stops_on_failed_bar() {
+    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .build();
+    let failed = group.add_bar(5, "failed");
+    failed.set_position(2);
+    failed.finish_error();
+    let active = group.add_bar(3, "active");
+    group.tick();
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    let failed_line = lines[2].to_string();
+    drop(contents);
+
+    for i in 0..5 {
+        active.advance(1);
+        group.tick();
+        let contents = term.contents();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines[2], failed_line, "failed bar must stay frozen (iteration {i})");
+    }
+}
