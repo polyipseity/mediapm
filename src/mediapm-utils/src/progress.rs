@@ -1477,7 +1477,6 @@ mod inner {
                 }
             }
 
-            let mut any_dirty = resized;
             for (i, slot) in self.slots.iter().enumerate() {
                 if let Some(ref source) = *slot.source.borrow() {
                     // Skip clean slots — nothing changed since last tick.
@@ -1485,7 +1484,6 @@ mod inner {
                     if !dirty {
                         continue;
                     }
-                    any_dirty = true;
                     let snap = source.snapshot();
 
                     // Compute EMA-smoothed rate for display in active bars only.
@@ -1547,9 +1545,12 @@ mod inner {
             // buffer re-enabled automatically when guard drops.
             let _guard = BufferGuard::new(self.buffer_enabled.as_ref());
 
-            if any_dirty {
-                for slot in &self.slots {
-                    if slot.source.borrow().is_some() {
+            // Always tick active bars for spinner animation (dirty-independent).
+            // Skip finished/abandoned/failed bars — their spinner is frozen on
+            // the final frame set by `finish_slot`.
+            for slot in &self.slots {
+                if let Some(ref source) = *slot.source.borrow() {
+                    if !source.is_finished() {
                         slot.bar.tick();
                     }
                 }

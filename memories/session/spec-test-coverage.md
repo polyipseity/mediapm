@@ -15,3 +15,6 @@
 | CountingReader plain-u64 cleanup | Updated CountingReader tests | 🟢 |
 | Regression test suite | `postprocess_budget_pos_never_exceeds_total`, `fetch_budget_pos_never_exceeds_total`, `postprocess_fires_progress_per_source_entry`, `full_pipeline_progress_monotonic` | 🟢 |
 | Provider pipeline (Phases 2–8) | All unit + integration tests | 🟢 |
+| ProgressGroup spinner: advances without dirty state | `spinner_advances_without_dirty`, `regression_spinner_dirty_independence` | 🟢 |
+| ProgressGroup spinner: frozen on finished/abandoned/failed | `spinner_does_not_advance_on_finished_bar`, `spinner_stops_on_abandoned_bar`, `spinner_stops_on_failed_bar` | 🟢 |
+| ProgressGroup spinner: active among finished | `spinner_active_among_finished` | 🟢 |
