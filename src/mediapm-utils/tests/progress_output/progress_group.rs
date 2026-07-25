@@ -309,16 +309,16 @@ fn progress_group_child_finish_keeps_bar_visible() {
     c.finish_success();
     group.tick();
     let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5, "always 5 lines");
-    // fetch is at slot[3] (just above overall), blanks at lines[0..2].
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].trim().is_empty(), "line 2 is blank");
-    assert!(lines[3].contains("fetch"), "line 3 has fetch: {0}", lines[3]);
-    assert!(lines[3].contains("0/5"), "line 3 shows position: {0}", lines[3]);
-    assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
+    assert_eq!(
+        contents,
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠏                     fetch █████████████████████  0/5 0s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        ),
+    );
 }
 
 /// Exact output: all bars finish successfully, content persists.
@@ -437,18 +437,16 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
     // group.join() would be called here — it's a no-op.
 
     let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    assert_eq!(lines.len(), 5, "always 5 lines");
-    // c1(fetch) at slot[2] (first child, shifted up by parse), c2(parse) at slot[3] (just above overall).
-    assert!(lines[0].trim().is_empty(), "line 0 is blank");
-    assert!(lines[1].trim().is_empty(), "line 1 is blank");
-    assert!(lines[2].contains("fetch"), "line 2 shows fetch: {0}", lines[2]);
-    assert!(lines[2].contains("fetched") || lines[2].contains("5/5"), "c1 complete: {0}", lines[2]);
-    assert!(lines[3].contains("parse"), "line 3 shows parse: {0}", lines[3]);
-    assert!(lines[3].contains("parsed") || lines[3].contains("2/2"), "c2 complete: {0}", lines[3]);
-    assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
-    assert!(lines[4].contains("3/3"), "overall shows complete: {0}", lines[4]);
+    assert_eq!(
+        contents,
+        concat!(
+            "\n",
+            "\n",
+            "⠏                     fetch █████████████████████  5/5 0s\n",
+            "⠏                     parse █████████████████████  2/2 0s\n",
+            "⠏                   overall █████████████████████  3/3 0s",
+        ),
+    );
 }
 
 // ── Finalize (join_and_clear) behavior ──
@@ -481,16 +479,13 @@ fn progress_group_overall_finish_and_join_clear_persists() {
     // blank slots, then draws.  Finished overall must persist in output.
     group.join_and_clear();
     let actual = term.contents();
-    let lines: Vec<&str> = actual.lines().collect();
-    // 2 bars remain (fetch + overall), blanks removed.
-    assert_eq!(lines.len(), 2, "exactly 2 bars after finalize");
-    assert!(lines[0].contains("fetch"), "fetch prefix visible: {0}", lines[0]);
-    assert!(lines[0].contains("5/5"), "fetch 5/5: {0}", lines[0]);
-    assert!(lines[1].contains("overall"), "overall visible: {0}", lines[1]);
-    assert!(lines[1].contains("3/3"), "overall 3/3: {0}", lines[1]);
-    // No consecutive blank lines — confirms blank slots were removed
-    // without leaving padding/ghost rows.
-    assert!(!actual.contains("\n\n"), "no consecutive blank lines in output");
+    assert_eq!(
+        actual,
+        concat!(
+            "⠏                     fetch █████████████████████  5/5 0s\n",
+            "⠏                   overall █████████████████████  3/3 0s",
+        ),
+    );
 }
 
 #[test]
@@ -512,29 +507,13 @@ fn progress_group_active_bars_survive_join_and_clear() {
     group.join_and_clear();
     group.tick();
     let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
-    // 2 bars remain (alpha + overall), blanks removed.
-    assert_eq!(lines.len(), 2, "2 bars after finalize (alpha + overall)");
-    assert!(lines[0].contains("alpha"), "line 0 shows alpha: {0}", lines[0]);
-    assert!(lines[0].contains("0/5"), "line 0 shows 0/5: {0}", lines[0]);
-    // Active bar has rate visible.
-    assert!(
-        lines[0].contains("/s")
-            || lines[0].contains("/m")
-            || lines[0].contains("/d")
-            || lines[0].contains("/h"),
-        "active bar shows rate: {0}",
-        lines[0],
+    assert_eq!(
+        contents,
+        concat!(
+            "⠦                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        ),
     );
-    // No brackets on active bar.
-    assert!(!lines[0].contains("[F]"), "no [F] on active: {0}", lines[0]);
-    assert!(!lines[0].contains("[A]"), "no [A] on active: {0}", lines[0]);
-    assert!(!lines[0].contains("[S]"), "no [S] on active: {0}", lines[0]);
-    assert!(lines[1].contains("overall"), "line 1 shows overall: {0}", lines[1]);
-    assert!(lines[1].contains("0/3"), "line 1 shows 0/3: {0}", lines[1]);
-    // Overall is also active (not finished).
-    assert!(!lines[1].contains("[S]"), "no [S] on active overall: {0}", lines[1]);
 }
 
 #[test]
@@ -1251,20 +1230,30 @@ fn progress_group_join_and_clear_removes_blank_bars() {
     group.tick();
 
     // Before finalize: 4 lines (2 blanks + child + overall).
-    let before = term.contents();
-    assert_eq!(before.lines().count(), 4, "4 lines before finalize");
-    assert!(before.contains("fetch"), "child visible before finalize");
-    assert!(before.contains("overall"), "overall visible before finalize");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠏                     fetch █████████████████████  5/5 0s\n",
+            "⠏                   overall █████████████████████  5/10 0s",
+        ),
+        "4 lines before finalize",
+    );
 
     // join_and_clear calls finalize — removes blank bars.
     group.join_and_clear();
 
     // After finalize: bound bars remain in a drawable state.
     let after = term.contents();
-    let after_lines: Vec<&str> = after.lines().collect();
-    assert_eq!(after_lines.len(), 2, "2 bars remain after removing blanks");
-    assert!(after_lines[0].contains("fetch"), "fetch survives: {0}", after_lines[0]);
-    assert!(after_lines[1].contains("overall"), "overall survives: {0}", after_lines[1]);
+    assert_eq!(
+        after,
+        concat!(
+            "⠏                     fetch █████████████████████  5/5 0s\n",
+            "⠏                   overall █████████████████████  5/10 0s",
+        ),
+        "2 bars remain after removing blanks",
+    );
 }
 
 /// Comprehensive lifecycle test: add → progress → finish → finalize, with

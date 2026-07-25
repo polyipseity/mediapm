@@ -136,7 +136,14 @@ fn overflow_h3_5children() {
     }
     o.tick();
     // At H=3: first 3 children visible (child0, child1, child2).
-    assert_eq!(term.contents().lines().count(), 3);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  child0 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child1 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+    );
 }
 
 #[test]
@@ -152,13 +159,29 @@ fn overflow_h3_5children_clear_last() {
     }
     o.tick();
     // At H=3: first 3 children visible (child0, child1, child2).
-    assert_eq!(term.contents().lines().count(), 3, "3 lines visible at H=3");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  child0 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child1 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+        "3 lines visible at H=3",
+    );
     // Clear the last created child (child4, not visible at H=3).
     kids[4].finish_and_clear();
     kids[4].tick();
     o.tick();
     // Still only 3 lines.
-    assert_eq!(term.contents().lines().count(), 3, "still 3 lines visible after clear");
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  child0 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child1 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+        "still 3 lines visible after clear",
+    );
 }
 
 #[test]
@@ -173,7 +196,14 @@ fn overflow_h3_10children() {
         kids.push(c);
     }
     o.tick();
-    assert_eq!(term.contents().lines().count(), 3);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  child0 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child1 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+    );
 }
 
 #[test]
@@ -189,7 +219,15 @@ fn overflow_h4_6children_finish_clear_all() {
     }
     o.tick();
     // At H=4: first 4 children visible.
-    assert_eq!(term.contents().lines().count(), 4);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  child0 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child1 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child3 [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+    );
     // Clear children that were past the visible window.
     kids[4].finish_and_clear();
     kids[5].finish_and_clear();
@@ -197,7 +235,15 @@ fn overflow_h4_6children_finish_clear_all() {
     kids[5].tick();
     o.tick();
     // Still 4 lines.
-    assert_eq!(term.contents().lines().count(), 4);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  child0 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child1 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child3 [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+    );
 }
 
 // ── Combined stress ──────────────────────────────────────────────────────────
@@ -216,7 +262,14 @@ fn overflow_with_spinner() {
         kids.push(c);
     }
     o.tick();
-    assert_eq!(term.contents().lines().count(), 3);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠙   child0 [00:00:00] ░░░░░░░░░░░░░ 0/3\n",
+            "⠙   child1 [00:00:00] ░░░░░░░░░░░░░ 0/3\n",
+            "⠙   child2 [00:00:00] ░░░░░░░░░░░░░ 0/3",
+        ),
+    );
 }
 
 #[test]
@@ -232,7 +285,14 @@ fn worker_surge_with_overflow() {
     }
     o.tick();
     // At H=3: first 3 children visible.
-    assert_eq!(term.contents().lines().count(), 3);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  child0 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child1 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+    );
     // Surge: add 5 more children.
     for i in 5..10 {
         let p = format!("child{i}");
@@ -242,7 +302,14 @@ fn worker_surge_with_overflow() {
     }
     o.tick();
     // Still only 3 lines visible.
-    assert_eq!(term.contents().lines().count(), 3);
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "  child0 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child1 [00:00:00] ░░░░░░░░░░░░░░░ 0/3\n",
+            "  child2 [00:00:00] ░░░░░░░░░░░░░░░ 0/3",
+        ),
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
