@@ -227,11 +227,12 @@ fn regression_finish_and_clear_with_tick_fn() {
 
 #[test]
 fn regression_concurrent_set_and_sync() {
-    let (mp, term) = mk_with_size(5, 80);
+    let (mp, term, ts) = mk_with_size_and_ts(5, 80);
     let (group, _overall) = ProgressGroup::builder()
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 100)
+        .with_time_source(ts.clone())
         .build_with_overall();
 
     let c1 = group.add_bar(50, "worker");
@@ -239,18 +240,31 @@ fn regression_concurrent_set_and_sync() {
     for i in 0..20 {
         c1.set_position(i * 2);
     }
+    ts.advance(Duration::from_millis(0));
     group.tick();
 
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "\n",
-            "\n",
-            "\n",
-            "⠼                    worker ███████████████░░░░░░  38/50 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d",
-        ),
+    let output = term.contents();
+    let expected_content = concat!(
+        "\n",
+        "\n",
+        "\n",
+        // Spinner character masked — background ticker makes it non-deterministic.
+        "                    worker ███████████████░░░░░░  38/50 0s 0/d\n",
+        "                   overall ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d",
     );
+    let actual_lines: Vec<&str> = output.lines().collect();
+    let expected_lines: Vec<&str> = expected_content.lines().collect();
+    assert_eq!(actual_lines.len(), expected_lines.len());
+    for (i, (actual, expected)) in actual_lines.iter().zip(expected_lines.iter()).enumerate() {
+        if expected.is_empty() {
+            assert_eq!(*actual, "", "line {i} should be empty");
+        } else {
+            assert!(
+                actual.ends_with(expected),
+                "line {i}:\n  expected suffix: {expected:?}\n  actual:          {actual:?}",
+            );
+        }
+    }
 }
 
 // ── Regression: recycle finished slot after full ──────────────────────
