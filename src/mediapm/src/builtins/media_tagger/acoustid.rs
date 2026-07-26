@@ -195,6 +195,12 @@ pub(super) struct AcoustIdMatch {
 }
 
 /// Calls AcoustID lookup API and returns highest-scoring MBID pair.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from [`crate::http_client`].
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 pub(super) async fn lookup_acoustid_match(
     endpoint: &str,
     api_key: &str,

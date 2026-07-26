@@ -33,6 +33,12 @@ pub(crate) async fn resolve_btbn_tag(
 /// Returns `(version, metadata_cached)` where `metadata_cached` is `true` when
 /// the result was served from the metadata cache.
 ///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from [`crate::http_client`].
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance (no redirect).
+///
 /// # Errors
 ///
 /// Returns [`mediapm_conductor::ConductorError`] when the HTTP request or

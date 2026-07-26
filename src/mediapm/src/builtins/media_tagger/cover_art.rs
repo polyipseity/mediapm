@@ -571,6 +571,12 @@ pub(super) async fn collect_musicbrainz_cover_art(
 }
 
 /// Queries one Cover Art Archive endpoint and returns one selected URL per entry.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from [`crate::http_client`].
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 async fn fetch_cover_art_entries(
     endpoint: &str,
     cache: &MediaTaggerHttpCache,
@@ -964,6 +970,12 @@ pub(super) fn select_cover_art_for_tag_embedding(
 }
 
 /// Writes deterministic cover-art slot members consumed by apply-stage ffmpeg.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from [`crate::http_client`].
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 pub(super) async fn persist_cover_art_slot_artifacts(
     output_path: &Path,
     selected_cover_art: &[SelectedCoverArt],

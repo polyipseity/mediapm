@@ -287,6 +287,12 @@ pub async fn fetch_tool_sources(
 /// Advances the budget item per HTTP chunk and fires the progress callback
 /// after each chunk, so the progress bar updates smoothly during large
 /// downloads instead of freezing until the payload is fully received.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from [`crate::http::client`].
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 #[cfg(feature = "tool-presets")]
 async fn fetch_bytes_from_candidates(
     urls: &[String],

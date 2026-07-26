@@ -13,7 +13,8 @@ use reqwest::Client;
 use crate::error::MediaPmError;
 
 /// User-Agent header used for outbound HTTP requests.
-pub(crate) const MEDIAPM_USER_AGENT: &str = "mediapm/0.0.0 (+https://github.com/mediapm/mediapm)";
+pub(crate) const MEDIAPM_USER_AGENT: &str =
+    concat!("mediapm/", env!("CARGO_PKG_VERSION"), " (+https://github.com/mediapm/mediapm)");
 
 /// Default TCP connect timeout used for outbound HTTP requests.
 const DEFAULT_CONNECT_TIMEOUT_SECONDS: u64 = 30;
@@ -22,7 +23,7 @@ const DEFAULT_CONNECT_TIMEOUT_SECONDS: u64 = 30;
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 60 * 30;
 
 /// Environment variable used to override request timeout seconds.
-const REQUEST_TIMEOUT_ENV: &str = "MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS";
+const REQUEST_TIMEOUT_ENV: &str = "MEDIAPM_HTTP_TIMEOUT_SECONDS";
 
 /// Process-wide shared `reqwest::Client` initialization state.
 static SHARED_HTTP_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();

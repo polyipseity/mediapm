@@ -73,6 +73,12 @@ impl<'a> MetadataCacheTracker<'a> {
 /// The caller must NOT call `touch()` on the metadata cache — the 1-day TTL is
 /// anchored to creation time, not last use.
 ///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from [`crate::http_client`].
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
+///
 /// # Errors
 ///
 /// Returns [`mediapm_conductor::ConductorError`] when the HTTP request or
@@ -168,6 +174,12 @@ pub(crate) async fn resolve_latest_github_tag(
 /// from the `/releases/latest` endpoint. This function uses the releases list
 /// endpoint (`/releases?per_page=10`) and picks the first non-placeholder release
 /// matching the `autobuild-*` pattern.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from [`crate::http_client`].
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 ///
 /// # Errors
 ///

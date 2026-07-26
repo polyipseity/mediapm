@@ -249,6 +249,12 @@ pub(super) async fn fetch_and_import_tool_payload(
     }))
 }
 
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from [`crate::http_client`].
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
+///
 /// Sends HEAD requests to populate `expected_size` on each `Fetch`-producer
 /// source.  Failures are silently ignored — `expected_size` stays `None` and
 /// the existing Content-Length fallback in phase 2 applies.

@@ -232,7 +232,11 @@ fn shared_http_client() -> Result<&'static Client, String> {
         .get_or_init(|| {
             Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
-                .user_agent("mediapm/0.0.0 (+https://github.com/mediapm/mediapm)")
+                .user_agent(concat!(
+                    "mediapm/",
+                    env!("CARGO_PKG_VERSION"),
+                    " (+https://github.com/mediapm/mediapm)"
+                ))
                 .build()
                 .map_err(|e| format!("building import HTTP client failed: {e}"))
         })
@@ -241,6 +245,12 @@ fn shared_http_client() -> Result<&'static Client, String> {
 }
 
 /// Performs URL fetch with strict integrity pinning.
+///
+/// # HTTP client policy
+///
+/// Uses the module-level shared client [`shared_http_client`].
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 #[cfg(feature = "fetch")]
 fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
     let url = params.get("url").ok_or_else(|| "import kind='fetch' requires 'url'".to_string())?;
