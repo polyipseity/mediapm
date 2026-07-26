@@ -901,7 +901,7 @@ async fn run_tools_update_precheck(
         return Err("tools-update precheck must start with empty media/hierarchy".into());
     }
 
-    let summary = service.sync_tools_with_tag_update_checks(false).await?;
+    let summary = service.sync_tools_with_tag_update_checks(false, false).await?;
     if summary.updated_tools != expected_updated_tools {
         return Err(format!(
             "tools-update precheck expected {expected_updated_tools} updated tools but observed {}",

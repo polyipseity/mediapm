@@ -25,6 +25,7 @@ use crate::hierarchy::{
     insert_hierarchy_preset_node, remove_hierarchy_nodes_by_id, remove_hierarchy_nodes_by_media_id,
 };
 use crate::materializer;
+use crate::output::{ProgressGroup, ProgressGroupApi};
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
@@ -692,7 +693,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ///
     /// Delegates to [`sync_tools_from_document`](Self::sync_tools_from_document).
     pub async fn sync_tools(&mut self) -> Result<ToolsSyncSummary, MediaPmError> {
-        self.sync_tools_with_tag_update_checks(false).await
+        self.sync_tools_with_tag_update_checks(false, false).await
     }
 
     /// Runs a full tool sync with optional tag-update checks.
@@ -703,11 +704,13 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     pub async fn sync_tools_with_tag_update_checks(
         &mut self,
         check_tag_updates: bool,
+        no_progress: bool,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         let effective_paths = self.resolve_effective_paths()?;
         let merged = self.resolve_effective_runtime_storage()?;
 
-        self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates).await
+        self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates, no_progress)
+            .await
     }
 
     /// Internal tool-sync implementation that reconciles desired tools from
@@ -722,6 +725,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         effective_paths: &MediaPmPaths,
         runtime_storage: &MediaRuntimeStorage,
         check_tag_updates: bool,
+        no_progress: bool,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         // Build the desired tools map from runtime storage.
         let desired_tools: BTreeMap<String, serde_json::Value> = runtime_storage
@@ -741,6 +745,13 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         // Load current state before reconciliation (needed for skip logic).
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
 
+        // When --no-progress is set, use a disabled ProgressGroup that produces
+        // zero-cost no-op handles — no ticker thread, no terminal output.
+        let progress_group: Option<ProgressGroup> =
+            if no_progress { Some(ProgressGroup::disabled()) } else { None };
+        let pg_ref: Option<&dyn ProgressGroupApi> =
+            progress_group.as_ref().map(|g| g as &dyn ProgressGroupApi);
+
         let report = reconcile_desired_tools(
             &**self.conductor.cas(),
             effective_paths,
@@ -749,7 +760,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             check_tag_updates,
             &state,
             None, // cache_root_override — use default OS cache dir
-            None, // progress_group
+            pg_ref,
         )
         .await?;
 
@@ -892,8 +903,9 @@ impl MediaPmService<FileSystemCas> {
         self.refresh_runtime_configuration()?;
 
         // 2. Sync tools.
-        let tools_report =
-            self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates).await?;
+        let tools_report = self
+            .sync_tools_from_document(&effective_paths, &merged, check_tag_updates, false)
+            .await?;
 
         // 3. Load mediapm document and state.
         let document = load_mediapm_document(&effective_paths.mediapm_ncl)?;

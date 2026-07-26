@@ -138,7 +138,10 @@ async fn main_cli() -> anyhow::Result<()> {
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
                 let check_tag_updates = args.tag_update_policy.resolve(true);
-                let summary = service.sync_tools_with_tag_update_checks(check_tag_updates).await?;
+                let no_progress = args.no_progress;
+                let summary = service
+                    .sync_tools_with_tag_update_checks(check_tag_updates, no_progress)
+                    .await?;
                 print_result(
                     StatusIcon::Success,
                     "tools synced",
@@ -946,6 +949,9 @@ struct SyncArgs {
     /// Optional override for materialization verification.
     #[command(flatten)]
     verify_materialization: VerifyMaterializationArgs,
+    /// Suppress all progress bar output (for headless/scripted use).
+    #[arg(long, env = "MEDIAPM_NO_PROGRESS")]
+    no_progress: bool,
 }
 
 // ---------------------------------------------------------------------------
