@@ -148,23 +148,23 @@ pub(super) async fn fetch_and_import_tool_payload(
         PreResolveOutcome::Resolved(_, _, _, count) => *count,
         PreResolveOutcome::Skip { .. } => 1,
     };
-    // Ensure metadata_fetch_count is at least 1 for the progress bar.
-    let metadata_fetch_count = metadata_fetch_count.max(1);
-    let resolve_bar = group.add_bar(metadata_fetch_count.into(), &format!("{tool_id} [resolve]"));
+    // Ensure metadata_fetch_count is at least 1 for the progress bar total.
+    let bar_total = metadata_fetch_count.max(1);
+    let resolve_bar = group.add_bar(bar_total.into(), &format!("{tool_id} [resolve]"));
     error_bars.push(resolve_bar.clone());
     let (mut fetch, canonical_version) = match outcome {
-        PreResolveOutcome::Resolved(f, cv, metadata_cached, metadata_fetch_count) => {
+        PreResolveOutcome::Resolved(f, cv, metadata_cached, _metadata_fetch_count) => {
             if metadata_cached {
                 resolve_bar.set_message("cached");
             }
-            resolve_bar.set_position(metadata_fetch_count.into());
+            resolve_bar.set_position(bar_total.into());
             resolve_bar.finish();
             (f, cv)
         }
         PreResolveOutcome::Skip { metadata_cached, .. } => {
             // Tool is already provisioned at this version — show resolve bar
             // with "skipped" indicator, then return early.
-            resolve_bar.set_position(metadata_fetch_count.into());
+            resolve_bar.set_position(bar_total.into());
             if metadata_cached {
                 resolve_bar.set_message("skipped (cached)");
             } else {
@@ -308,7 +308,7 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
 mod tests {
     use mediapm_cas::storage::in_memory::new_in_memory_cas;
     use mediapm_conductor::cache_user_level::UserLevelCache;
-    use mediapm_utils::progress::recording::RecordingProgressTracker;
+    use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -543,6 +543,221 @@ mod tests {
             Ok(None) => panic!("media-tagger should return Ok(Some(...)), got Ok(None)"),
             Err(e) => panic!("media-tagger should succeed, got Err({e:?})"),
         }
+    }
+
+    // -- Phase 3: metadata_cached / metadata_fetch_count progress bar tests --
+
+    #[tokio::test]
+    async fn resolve_bar_shows_cached_when_metadata_cached() {
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), true, 1);
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "media-tagger",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
+        assert!(result.is_ok(), "resolve should succeed");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "cached")),
+            "expected SetMessage(\"cached\") in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_bar_shows_total_two_when_metadata_fetch_count_two() {
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), false, 2);
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "media-tagger",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
+        assert!(result.is_ok(), "resolve should succeed");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::AddBar { total: 2, .. })),
+            "expected AddBar total=2 in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::SetPosition { pos: 2 })),
+            "expected SetPosition pos=2 in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_bar_shows_skipped_cached_when_metadata_cached() {
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
+        let outcome = PreResolveOutcome::Skip {
+            name: "test-tool".to_string(),
+            version: "v1.0.0".to_string(),
+            metadata_cached: true,
+        };
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "test-tool",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
+        assert!(result.is_ok(), "Skip should return Ok");
+        assert!(result.unwrap().is_none(), "Skip should return Ok(None)");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped (cached)")),
+            "expected SetMessage(\"skipped (cached)\") in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
+            "expected FinishSuccess in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_bar_shows_skipped_when_metadata_not_cached() {
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
+        let outcome = PreResolveOutcome::Skip {
+            name: "test-tool".to_string(),
+            version: "v1.0.0".to_string(),
+            metadata_cached: false,
+        };
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "test-tool",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
+        assert!(result.is_ok(), "Skip should return Ok");
+        assert!(result.unwrap().is_none(), "Skip should return Ok(None)");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped")),
+            "expected SetMessage(\"skipped\") in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
+            "expected FinishSuccess in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_bar_no_cached_message_when_not_cached() {
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), false, 1);
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "media-tagger",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
+        assert!(result.is_ok(), "resolve should succeed");
+
+        let ops = tracker.ops();
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "cached")),
+            "unexpected SetMessage(\"cached\") in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_bar_zero_metadata_fetch_count_uses_min_one() {
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), false, 0);
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "media-tagger",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
+        assert!(result.is_ok(), "resolve should succeed");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::AddBar { total: 1, .. })),
+            "expected AddBar total=1 in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::SetPosition { pos: 1 })),
+            "expected SetPosition pos=1 in ops\ngot: {ops:#?}",
+        );
     }
 
     #[test]

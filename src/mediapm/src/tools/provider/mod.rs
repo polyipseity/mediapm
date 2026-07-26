@@ -968,10 +968,11 @@ mod tests {
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
         cache.store_bytes("https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
-        let version = ffmpeg::resolve_evermeet_version(Some(&cache))
+        let (version, cached) = ffmpeg::resolve_evermeet_version(Some(&cache))
             .await
             .expect("should return cached evermeet version");
         assert_eq!(version, "8.1.2");
+        assert!(cached, "should indicate metadata was cached");
     }
 
     #[tokio::test]
