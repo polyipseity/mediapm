@@ -22,12 +22,14 @@ The caller resolves the tool fetch before calling
 `fetch_and_import_tool_payload()` and passes the outcome as
 `PreResolveOutcome`:
 
-- **`Resolved(fetch, canonical_version)`** — normal provisioning path.
-  The pipeline enters all three phases.
-- **`Skip { name, version }`** — tool is already provisioned at the
-  given canonical version. Only the resolve bar is shown (with
-  `set_message("skipped")`), then the function returns `Ok(None)`
-  immediately.
+- **`Resolved(fetch, canonical_version, metadata_cached, metadata_fetch_count)`** — normal provisioning path.
+  The pipeline enters all three phases. `metadata_cached` (bool) indicates all
+  version/tag lookups were cache hits; `metadata_fetch_count` (u32) is the
+  number of metadata lookups (e.g., ffmpeg has 2: btbn tag + evermeet version).
+- **`Skip { name, version, metadata_cached }`** — tool is already provisioned
+  at the given canonical version. Only the resolve bar is shown, then the
+  function returns `Ok(None)` immediately. `metadata_cached` controls
+  whether the message shows `"skipped (cached)"` vs `"skipped"`.
 
 This separation keeps the function single-responsibility: it renders a
 resolve bar for every tool (avoiding a bare `pb.advance(1)` with no
@@ -37,7 +39,9 @@ per-tool visual feedback).
 
 - Receives the resolved `ResolvedToolFetch` from the `PreResolveOutcome::Resolved` variant.
 - No longer calls `provider::resolve_tool_fetch()` internally — that is done by the caller.
-- Progress: resolve bar shows 1 item (single resolve call).
+- Progress: resolve bar shows `metadata_fetch_count` items (one per metadata
+  lookup, e.g., ffmpeg shows 2). When `metadata_cached` is true, the bar shows
+  `"cached"` in its message.
 
 ### Phase 1b: HEAD prefetch
 
@@ -82,4 +86,4 @@ per-tool visual feedback).
 - Progress bar values are relayed directly from conductor's `ProviderProgressCallback` — the bridge does not interpret item or byte counts.
 - All progress bars are `group.add_bar()` — they are owned by the calling coordinator's progress group.
 - The metadata cache must NOT have `touch()` called — its TTL (1 day) is anchored to creation time, not last use.
-- `set_message("skipped")` is called on the resolve bar before `finish_success()`; `set_message("cached (N)")` is called on the fetch bar before `finish()`. Both work because the daemon ticker still syncs `SharedState` to the indicatif bar until the bar is removed from `MultiProgress`.
+- `set_message("skipped")` or `set_message("skipped (cached)")` is called on the resolve bar before `finish_success()` (depending on `metadata_cached`); `set_message("cached (N)")` is called on the fetch bar before `finish()`. Both work because the daemon ticker still syncs `SharedState` to the indicatif bar until the bar is removed from `MultiProgress`.
