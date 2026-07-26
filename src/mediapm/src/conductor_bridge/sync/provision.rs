@@ -46,7 +46,8 @@ pub(super) struct FetchedToolPayload {
 #[allow(dead_code)]
 pub(super) enum PreResolveOutcome {
     /// Tool should be fetched and imported normally.
-    Resolved(ResolvedToolFetch, String),
+    /// Fields: (ResolvedToolFetch, canonical_version, metadata_cached, metadata_fetch_count)
+    Resolved(ResolvedToolFetch, String, bool, u32),
     /// Tool is already provisioned at the given canonical version (skip).
     Skip {
         /// Tool identifier.
@@ -55,6 +56,9 @@ pub(super) enum PreResolveOutcome {
         /// Canonical version that was already provisioned.
         #[allow(dead_code)]
         version: String,
+        /// Whether the version/tag lookups were served from metadata cache.
+        #[allow(dead_code)]
+        metadata_cached: bool,
     },
 }
 
@@ -107,7 +111,9 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// phase 2 progress bars start with an accurate byte total. Evermeet and
 /// getrelease URLs are skipped (dynamic endpoints).
 ///
-/// The resolve bar shows 1 item (one resolve call).  Fetch bar shows
+/// The resolve bar shows `metadata_fetch_count` items (one per metadata lookup,
+/// e.g., ffmpeg has 2: btbn tag + evermeet version). When all metadata lookups
+/// were cache hits, the bar shows `"cached"`.  Fetch bar shows
 /// `sources.len()` items (one per source).  Postprocess bar shows the sum
 /// of per-source items: archive sources contribute 2 items (decompress +
 /// compress), binary/launcher sources contribute 1 item (import).  Phase 2
@@ -138,22 +144,36 @@ pub(super) async fn fetch_and_import_tool_payload(
     };
 
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
-    let resolve_bar = group.add_bar(1, &format!("{tool_id} [resolve]"));
+    let metadata_fetch_count = match &outcome {
+        PreResolveOutcome::Resolved(_, _, _, count) => *count,
+        PreResolveOutcome::Skip { .. } => 1,
+    };
+    // Ensure metadata_fetch_count is at least 1 for the progress bar.
+    let metadata_fetch_count = metadata_fetch_count.max(1);
+    let resolve_bar = group.add_bar(metadata_fetch_count.into(), &format!("{tool_id} [resolve]"));
     error_bars.push(resolve_bar.clone());
     let (mut fetch, canonical_version) = match outcome {
-        PreResolveOutcome::Resolved(f, cv) => (f, cv),
-        PreResolveOutcome::Skip { .. } => {
+        PreResolveOutcome::Resolved(f, cv, metadata_cached, metadata_fetch_count) => {
+            if metadata_cached {
+                resolve_bar.set_message("cached");
+            }
+            resolve_bar.set_position(metadata_fetch_count.into());
+            resolve_bar.finish();
+            (f, cv)
+        }
+        PreResolveOutcome::Skip { metadata_cached, .. } => {
             // Tool is already provisioned at this version — show resolve bar
             // with "skipped" indicator, then return early.
-            resolve_bar.set_position(1);
-            resolve_bar.set_message("skipped");
+            resolve_bar.set_position(metadata_fetch_count.into());
+            if metadata_cached {
+                resolve_bar.set_message("skipped (cached)");
+            } else {
+                resolve_bar.set_message("skipped");
+            }
             resolve_bar.finish_success();
             return Ok(None);
         }
     };
-    // Resolve is a single operation — total stays at 1 from add_bar(1, ...).
-    resolve_bar.set_position(1);
-    resolve_bar.finish();
 
     // Phase 1b: Prefetch expected sizes via HEAD requests.
     prefetch_expected_sizes(&mut fetch.sources).await;
@@ -329,7 +349,7 @@ mod tests {
             crate::tools::provider::resolve_tool_fetch("media-tagger", Some(&metadata_cache))
                 .await
                 .unwrap();
-        let outcome = PreResolveOutcome::Resolved(fetch, canonical);
+        let outcome = PreResolveOutcome::Resolved(fetch, canonical, false, 1);
         let result = fetch_and_import_tool_payload(
             &cas,
             "media-tagger",
@@ -441,7 +461,7 @@ mod tests {
             }
         }
 
-        let outcome = PreResolveOutcome::Resolved(fetch, canonical);
+        let outcome = PreResolveOutcome::Resolved(fetch, canonical, false, 1);
         let result = fetch_and_import_tool_payload(
             &cas,
             "yt-dlp",
@@ -501,7 +521,7 @@ mod tests {
 
         // Use media_tagger's sources as a known ResolvedToolFetch.
         let fetch = provider::media_tagger::sources();
-        let outcome = PreResolveOutcome::Resolved(fetch, "test-canonical".to_string());
+        let outcome = PreResolveOutcome::Resolved(fetch, "test-canonical".to_string(), false, 1);
 
         let result = fetch_and_import_tool_payload(
             &cas,

@@ -146,9 +146,18 @@ pub(crate) async fn reconcile_desired_tools(
                 });
 
                 if should_skip {
-                    PreResolveOutcome::Skip { name: tool_id.clone(), version: canonical_version }
+                    PreResolveOutcome::Skip {
+                        name: tool_id.clone(),
+                        version: canonical_version,
+                        metadata_cached: _metadata_cached,
+                    }
                 } else {
-                    PreResolveOutcome::Resolved(fetch, canonical_version)
+                    PreResolveOutcome::Resolved(
+                        fetch,
+                        canonical_version,
+                        _metadata_cached,
+                        _metadata_fetch_count,
+                    )
                 }
             }
             Err(e) => {
