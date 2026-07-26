@@ -16,9 +16,12 @@ use crate::tools::downloader::ToolDownloadCache;
 /// BtbN's `/releases/latest` endpoint returns `"tag_name":"latest"`, which
 /// is useless. This function lists recent releases and picks the first
 /// `autobuild-*` tag.
+///
+/// Returns `(tag, metadata_cached)` where `metadata_cached` is `true` when
+/// the result was served from the metadata cache.
 pub(crate) async fn resolve_btbn_tag(
     metadata_cache: Option<&ToolDownloadCache>,
-) -> Result<String, mediapm_conductor::ConductorError> {
+) -> Result<(String, bool), mediapm_conductor::ConductorError> {
     super::resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", metadata_cache).await
 }
 
@@ -27,13 +30,16 @@ pub(crate) async fn resolve_btbn_tag(
 /// Makes a `HEAD` request to `https://evermeet.cx/ffmpeg/getrelease/zip` and
 /// extracts the semver from the `Location` header (e.g. `.../ffmpeg-8.1.2.zip`).
 ///
+/// Returns `(version, metadata_cached)` where `metadata_cached` is `true` when
+/// the result was served from the metadata cache.
+///
 /// # Errors
 ///
 /// Returns [`mediapm_conductor::ConductorError`] when the HTTP request or
 /// header parsing fails.
 pub(crate) async fn resolve_evermeet_version(
     metadata_cache: Option<&ToolDownloadCache>,
-) -> Result<String, mediapm_conductor::ConductorError> {
+) -> Result<(String, bool), mediapm_conductor::ConductorError> {
     let url = "https://evermeet.cx/ffmpeg/getrelease/zip";
 
     // Cache lookup.
@@ -41,7 +47,7 @@ pub(crate) async fn resolve_evermeet_version(
         if let Some(bytes) = cache.lookup_bytes(url).await {
             if let Ok(version) = String::from_utf8(bytes.to_vec()) {
                 if !version.is_empty() {
-                    return Ok(version);
+                    return Ok((version, true));
                 }
             }
         }
@@ -82,7 +88,7 @@ pub(crate) async fn resolve_evermeet_version(
         cache.store_bytes(url, version.as_bytes()).await;
     }
 
-    Ok(version)
+    Ok((version, false))
 }
 
 /// Returns the resolved sources for `ffmpeg`.

@@ -325,7 +325,7 @@ mod tests {
             .await
             .expect("metadata cache open");
         let tracker = RecordingProgressTracker::new();
-        let (fetch, canonical) =
+        let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
             crate::tools::provider::resolve_tool_fetch("media-tagger", Some(&metadata_cache))
                 .await
                 .unwrap();
@@ -424,7 +424,7 @@ mod tests {
         metadata_cache.store_bytes(api_key, format!("{tag}\n{hash}").as_bytes()).await;
 
         // Resolve normally — metadata cache returns the pre-seeded tag.
-        let (mut fetch, canonical) =
+        let (mut fetch, canonical, _metadata_cached, _metadata_fetch_count) =
             crate::tools::provider::resolve_tool_fetch("yt-dlp", Some(&metadata_cache))
                 .await
                 .unwrap();

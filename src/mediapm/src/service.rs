@@ -195,7 +195,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             // Resolve the canonical version from the provider and compare
             // against the recorded canonical_version in state.
             match crate::tools::provider::resolve_tool_fetch(tool_id, None).await {
-                Ok((_, resolved_canonical_version)) => Ok(existing.canonical_version
+                Ok((_, resolved_canonical_version, _, _)) => Ok(existing.canonical_version
                     != resolved_canonical_version
                     || existing.fetch_hash.is_none()),
                 Err(_) => {

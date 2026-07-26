@@ -10,11 +10,13 @@ use crate::tools::downloader::ToolDownloadCache;
 
 /// Resolves the latest tag for deno from GitHub releases.
 ///
-/// Returns `(tag, commit_hash)` where `tag` is used for URL substitution
-/// and `commit_hash` is the canonical version identifier.
+/// Returns `(tag, commit_hash, metadata_cached)` where `tag` is used for URL
+/// substitution and `commit_hash` is the canonical version identifier.
+/// `metadata_cached` is `true` when the result was served from the metadata
+/// cache.
 pub(crate) async fn resolve_tag(
     metadata_cache: Option<&ToolDownloadCache>,
-) -> Result<(String, String), mediapm_conductor::ConductorError> {
+) -> Result<(String, String, bool), mediapm_conductor::ConductorError> {
     super::resolve_latest_github_tag("denoland", "deno", metadata_cache).await
 }
 

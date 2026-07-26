@@ -136,7 +136,7 @@ pub(crate) async fn reconcile_desired_tools(
         let mut resolved_canonical_version = String::new();
         let pre_resolved = match provider::resolve_tool_fetch(tool_id, Some(&metadata_cache)).await
         {
-            Ok((fetch, canonical_version)) => {
+            Ok((fetch, canonical_version, _metadata_cached, _metadata_fetch_count)) => {
                 resolved_canonical_version = canonical_version.clone();
 
                 // Check skip: if state has an entry with the same canonical_version
