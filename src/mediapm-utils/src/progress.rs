@@ -1370,10 +1370,6 @@ mod inner {
                     apply_bar_style(&slot.bar, cols);
                 }
                 slot.bar.set_prefix(build_prefix(snap.status, &snap.prefix));
-                let elapsed_str = format_elapsed(snap.elapsed);
-                let count_str = format_count(snap.position);
-                let total_str = format_count(snap.total);
-                let color_code = bar_color_code(snap.status, is_overall);
                 let rate_str: Option<String> = if snap.status == TrackStatus::Active {
                     if self.slots_timing[i].rate > 0.0 {
                         Some(format_rate(self.slots_timing[i].rate))
@@ -1383,17 +1379,7 @@ mod inner {
                 } else {
                     None
                 };
-                let msg = build_right_msg(
-                    color_code,
-                    &count_str,
-                    &total_str,
-                    &elapsed_str,
-                    rate_str.as_deref(),
-                    None,
-                );
-                slot.bar.set_message(msg);
-                slot.bar.set_length(snap.total);
-                slot.bar.set_position(snap.position);
+                self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), None);
             } else {
                 slot.bar.set_style(blank_bar_style());
                 slot.bar.set_message(" ");
@@ -1591,9 +1577,11 @@ mod inner {
         }
 
         /// Apply a snapshot's position/length/message/prefix to the
-        /// indicatif bar at slot `i`.  This is the single place where
-        /// `SharedState` is pushed to indicatif — both the daemon ticker
-        /// and [`finalize`](Self::finalize) call through here.
+        /// indicatif bar at slot `i`.  **This is the single authoritative
+        /// push point for SharedState → indicatif.** All code paths that
+        /// reflect SharedState (position, total, message, prefix) on the
+        /// terminal bar must call through here — both the daemon ticker
+        /// and [`finalize`](Self::finalize) do.
         ///
         /// Does **not** change the bar's style — callers manage style
         /// independently via [`finish_slot`](Self::finish_slot) or
@@ -4022,6 +4010,64 @@ mod tests {
             moves.contains("Up(10)"),
             "finalize pre_roll must move cursor up 10 rows:\n{moves}",
         );
+    }
+
+    #[test]
+    fn sync_slot_preserves_custom_message_on_attach() {
+        // Regression: when `add_bar` triggers `attach` → `sync_slot`, the
+        // slot is synced with only the auto-computed RHS message, dropping
+        // any custom message that was set via `set_message`.
+        //
+        // Without the fix, sync_slot overwrites the message with only the
+        // auto-computed RHS, dropping the custom part.  With the fix,
+        // sync_slot delegates to sync_snapshot_to_bar which appends the
+        // custom message.
+        //
+        // Bar A is kept ACTIVE (not finished) so the tick drain-loop (which
+        // unconditionally re-syncs non-active bars) does not rescue the
+        // message.  Only the dirty-tracking loop processes A — and without
+        // the fix A is not dirty after the attach, so the wrong message
+        // persists.
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = indicatif::MultiProgress::with_draw_target(target);
+        let ts = Arc::new(super::TestTimeSource::new());
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_time_source(Arc::clone(&ts) as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .build();
+
+        // Phase 1: add bar A, set custom message and partial progress, sync.
+        let bar_a = group.add_bar(100, "resolve");
+        bar_a.set_position(50);
+        bar_a.set_message("cached (1)");
+        ts.advance(Duration::from_millis(100));
+        group.tick();
+
+        // Baseline: custom message is visible after first tick.
+        let baseline = term.contents();
+        assert!(
+            baseline.contains("cached (1)"),
+            "baseline must show custom message after tick:\n{baseline}",
+        );
+
+        // Phase 2: add bar B — triggers attach → shift → sync_slot on A.
+        let bar_b = group.add_bar(100, "fetch");
+        bar_b.set_position(0);
+
+        // Check terminal output IMMEDIATELY after add_bar + set_position.
+        let after_attach = term.contents();
+        assert!(
+            after_attach.contains("cached (1)"),
+            "custom message lost after add_bar + set_position (before tick).\n\
+             Terminal output:\n{after_attach}",
+        );
+        std::mem::drop(bar_a);
+        std::mem::drop(bar_b);
     }
 }
 

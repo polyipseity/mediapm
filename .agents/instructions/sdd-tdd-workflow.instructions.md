@@ -118,6 +118,14 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------ |
 | Pre-roll scrolls existing terminal content into scrollback (bug fix) | `pre_roll_with_existing_content_scrolls_it_away` — exact `concat!()` body matching + no-substring assertion | 🟢     |
 
+### Single push point: `sync_snapshot_to_bar`
+
+| Spec item                                                                                       | Test(s)                                                                        | Status |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------ |
+| `sync_snapshot_to_bar` is single authoritative push point for SharedState → indicatif           | `sync_slot_preserves_custom_message_on_attach`                                 | �     |
+| Custom message set via `set_message` survives `add_bar` of another bar (sync_slot delegation)   | `sync_slot_preserves_custom_message_on_attach`                                 | �     |
+| Cache guard is updated by delegate path (no stale-cache skip on next tick)                      | `sync_slot_preserves_custom_message_on_attach`                                 | �     |
+
 ### Metadata cache awareness on resolve bar
 
 | Spec item                                                                                   | Test(s)                                                                                                                                                                                                                     | Status |
