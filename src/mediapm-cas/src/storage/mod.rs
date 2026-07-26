@@ -3,6 +3,7 @@
 
 pub mod bg_engine;
 pub mod blob_store;
+pub(crate) mod directory_lock;
 pub mod file_system;
 pub mod in_memory;
 pub mod metadata_store;

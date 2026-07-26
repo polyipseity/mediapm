@@ -1,5 +1,7 @@
 //! CAS error types.
 
+use std::path::PathBuf;
+
 use thiserror::Error;
 
 use crate::hash::Hash;
@@ -39,6 +41,13 @@ pub enum CasError {
         /// The maximum size allowed for this operation.
         limit: u64,
     },
+
+    /// Another process or thread already holds an exclusive lock on this
+    /// CAS directory.
+    LockContention {
+        /// Path to the lock file where contention was detected.
+        path: PathBuf,
+    },
 }
 
 /// Display implementation for [`CasError`].
@@ -54,6 +63,9 @@ impl std::fmt::Display for CasError {
             Self::Internal(msg) => write!(f, "internal error: {msg}"),
             Self::TooLarge { hash, size, limit } => {
                 write!(f, "object {hash} too large ({size} bytes, limit {limit})")
+            }
+            Self::LockContention { path } => {
+                write!(f, "CAS directory '{}' is locked by another process", path.display())
             }
             Self::Io(inner) => write!(f, "I/O error: {inner}"),
         }
@@ -71,6 +83,7 @@ impl Clone for CasError {
             Self::TooLarge { hash, size, limit } => {
                 Self::TooLarge { hash: *hash, size: *size, limit: *limit }
             }
+            Self::LockContention { path } => Self::LockContention { path: path.clone() },
             Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), format!("{e}"))),
             Self::CorruptObject { hash, details } => {
                 Self::CorruptObject { hash: *hash, details: details.clone() }
