@@ -70,6 +70,11 @@ impl FileSystemCas {
     ///
     /// # Errors
     ///
+    /// Returns [`CasError::LockContention`] if the directory is already
+    /// locked by another [`FileSystemCas`] instance (same or different
+    /// process). Share the [`Arc<FileSystemCas>`] between consumers instead
+    /// of opening multiple instances.
+    ///
     /// Delegates to WAL creation, blob store creation, and metadata rebuild.
     pub async fn open_with_strategies_and_interval(
         dir: &Path,
@@ -118,6 +123,9 @@ impl FileSystemCas {
     ///
     /// # Errors
     ///
+    /// Returns [`CasError::LockContention`] if the directory is already
+    /// locked by another [`FileSystemCas`] instance.
+    ///
     /// Delegates to WAL creation, blob store creation, and metadata rebuild.
     pub async fn open_with_strategies(
         dir: &Path,
@@ -131,6 +139,9 @@ impl FileSystemCas {
     /// integrity verification enabled.
     ///
     /// # Errors
+    ///
+    /// Returns [`CasError::LockContention`] if the directory is already
+    /// locked by another [`FileSystemCas`] instance.
     ///
     /// Delegates to [`open_with_strategies`](Self::open_with_strategies).
     pub async fn open(dir: &Path) -> Result<Self, CasError> {
