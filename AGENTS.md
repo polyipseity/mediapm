@@ -114,7 +114,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 
 ## SDD/TDD compliance
 
-- Spec-to-test coverage is tracked in `memories/session/spec-test-coverage.md`. Update it when spec items or tests change.
+- Spec-to-test coverage is tracked in `sdd-tdd-workflow.instructions.md` (see "Coverage matrix" section). Update it when spec items or test changes.
 - All new features follow spec-first, test-first implementation per `.agents/instructions/sdd-tdd-workflow.instructions.md`.
 - High-priority test gaps must be closed before feature work in the same area.
 
@@ -181,5 +181,4 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - `.agents/instructions/nickel.instructions.md` — Nickel (.ncl) schema and migration conventions
 - `.agents/instructions/toml.instructions.md` — TOML formatting and file-specific conventions
 - `src/mediapm-cas/AGENTS.md`, `src/mediapm-conductor/AGENTS.md`, `src/mediapm/AGENTS.md` — crate-level detailed behavioral contracts
-- `memories/session/spec-test-coverage.md` — spec-to-test coverage matrix (SDD/TDD compliance tracking)
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`, `.agents/.markdownlint.jsonc` — formatting and line-ending rules
