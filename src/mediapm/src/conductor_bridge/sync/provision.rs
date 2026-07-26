@@ -59,6 +59,9 @@ pub(super) enum PreResolveOutcome {
         /// Whether the version/tag lookups were served from metadata cache.
         #[allow(dead_code)]
         metadata_cached: bool,
+        /// Number of individual version/tag lookups performed (e.g., ffmpeg = 2, all others = 1).
+        #[allow(dead_code)]
+        metadata_fetch_count: u32,
     },
 }
 
@@ -629,6 +632,7 @@ mod tests {
             name: "test-tool".to_string(),
             version: "v1.0.0".to_string(),
             metadata_cached: true,
+            metadata_fetch_count: 1,
         };
         let result = fetch_and_import_tool_payload(
             &cas,
@@ -668,6 +672,7 @@ mod tests {
             name: "test-tool".to_string(),
             version: "v1.0.0".to_string(),
             metadata_cached: false,
+            metadata_fetch_count: 1,
         };
         let result = fetch_and_import_tool_payload(
             &cas,

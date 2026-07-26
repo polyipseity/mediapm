@@ -150,6 +150,7 @@ pub(crate) async fn reconcile_desired_tools(
                         name: tool_id.clone(),
                         version: canonical_version,
                         metadata_cached: _metadata_cached,
+                        metadata_fetch_count: _metadata_fetch_count,
                     }
                 } else {
                     PreResolveOutcome::Resolved(
