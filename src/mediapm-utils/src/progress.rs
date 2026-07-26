@@ -1772,6 +1772,12 @@ mod inner {
             if self.finalized.replace(true) {
                 return;
             }
+            // Ensure pre_roll fires before the final draw.  When all bars
+            // finish before the first ticker tick (≈50 ms), the ticker
+            // never calls pre_roll_if_needed(), so bars would draw at the
+            // current cursor position and overwrite existing terminal
+            // content instead of scrolling it into scrollback.
+            self.pre_roll_if_needed();
             // RAII guard: buffer OFF during final draw, re-enabled on drop.
             let _guard = BufferGuard::new(self.buffer_enabled.as_ref());
             // Finish all bound bars that have reached a terminal state:
