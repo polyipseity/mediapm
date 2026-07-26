@@ -1384,17 +1384,23 @@ mod tests {
     #[tokio::test]
     async fn fetch_progress_uses_size_hint_bytes_when_expected_size_none() {
         let cache_root = tempfile::tempdir().expect("tempdir for cache");
-        let cache = crate::cache_user_level::UserLevelCache::open(
+        use crate::cache::CacheDomainConfig;
+        let cache = crate::cache::Cache::open(
             cache_root.path(),
-            "tools.json",
-            30 * 24 * 60 * 60,
+            &[CacheDomainConfig {
+                domain: "download".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
         )
         .await
-        .expect("open UserLevelCache");
+        .expect("open Cache with download domain");
+
+        let cache = crate::cache_user_level::UserLevelCache::from_cache(cache);
 
         // Pre-seed cache with small bytes under fake URLs.
-        cache.store_bytes("default", "mock://a", &[0u8; 50]).await;
-        cache.store_bytes("default", "mock://b", &[1u8; 30]).await;
+        cache.store_bytes("download", "mock://a", &[0u8; 50]).await;
+        cache.store_bytes("download", "mock://b", &[1u8; 30]).await;
 
         let fetch = ResolvedToolFetch {
             tool_id: "test".to_string(),
