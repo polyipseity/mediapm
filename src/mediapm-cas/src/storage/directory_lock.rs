@@ -30,7 +30,6 @@ use crate::error::CasError;
 ///
 /// Each entry is an `Arc<Mutex<()>>` so the mutex can be owned by the guard
 /// via `try_lock_owned` without borrowing from the [`DashMap`] entry.
-#[allow(dead_code)]
 static DIR_LOCKS: LazyLock<DashMap<PathBuf, Arc<Mutex<()>>>> = LazyLock::new(DashMap::new);
 
 /// An RAII guard that holds both an in-process mutex and an inter-process
@@ -39,7 +38,6 @@ static DIR_LOCKS: LazyLock<DashMap<PathBuf, Arc<Mutex<()>>>> = LazyLock::new(Das
 /// Dropping this guard releases both locks in reverse acquisition order:
 /// the flock first (via [`tokio::fs::File::drop`]), then the in-process
 /// mutex (via [`OwnedMutexGuard::drop`]).
-#[allow(dead_code)]
 pub(super) struct DirectoryLockGuard {
     // Dropped FIRST (flock released), then `_in_process_guard` (mutex
     // released). This is reverse of acquisition order — correct.
@@ -47,7 +45,6 @@ pub(super) struct DirectoryLockGuard {
     _in_process_guard: OwnedMutexGuard<()>,
 }
 
-#[allow(dead_code)]
 impl DirectoryLockGuard {
     /// Acquires both locks: in-process mutex first, then inter-process
     /// flock.

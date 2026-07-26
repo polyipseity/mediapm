@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::blob_store::{BlobStore, FileSystemBlobStore};
+use super::directory_lock::DirectoryLockGuard;
 use super::metadata_store::{FileSystemMetadataStore, MetadataStore};
 use super::store::CasStore;
 use super::wal::FileWal;
@@ -30,11 +31,16 @@ use crate::storage::metadata_store::MetadataEntry;
 pub struct FileSystemCas {
     store: Arc<CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>>,
     _bg_guard: Arc<BackgroundMaintenanceGuard>,
+    _dir_lock: Arc<DirectoryLockGuard>,
 }
 
 impl Clone for FileSystemCas {
     fn clone(&self) -> Self {
-        Self { store: self.store.clone(), _bg_guard: self._bg_guard.clone() }
+        Self {
+            store: self.store.clone(),
+            _bg_guard: self._bg_guard.clone(),
+            _dir_lock: self._dir_lock.clone(),
+        }
     }
 }
 
@@ -100,7 +106,11 @@ impl FileSystemCas {
         });
         let guard = BackgroundMaintenanceGuard { cancelled, handle: Some(handle) };
 
-        Ok(Self { store, _bg_guard: Arc::new(guard) })
+        // Acquire exclusive directory lock (intra-process then inter-process).
+        // The lock is held for the full CAS lifetime via Arc sharing.
+        let dir_lock = Arc::new(DirectoryLockGuard::lock(dir).await?);
+
+        Ok(Self { store, _bg_guard: Arc::new(guard), _dir_lock: dir_lock })
     }
 
     /// Open or create a file-system CAS store at `dir` with the given
