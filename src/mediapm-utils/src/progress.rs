@@ -3958,6 +3958,54 @@ mod tests {
             "bar body after spinner must match exactly",
         );
     }
+
+    #[test]
+    fn pre_roll_fires_on_join_and_clear_before_ticker() {
+        // Regression test: when all bars finish before the first ticker tick
+        // (≈50 ms), join_and_clear() → finalize() must still call
+        // pre_roll_if_needed().  Without this, bars draw at the current
+        // cursor position and overwrite existing terminal content.
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let mp_term = indicatif::InMemoryTerm::new(10, 80);
+        let cap_term = indicatif::InMemoryTerm::new(100, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_pre_roll_capture(Box::new(cap_term.clone()))
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .build();
+
+        // Add a bar and complete it immediately — before the 50ms ticker
+        // thread fires its first tick.
+        let bar = group.add_bar(1, "instant");
+        bar.set_position(1);
+        ts.advance(std::time::Duration::from_millis(1));
+        bar.finish();
+
+        // Finalize immediately — the background ticker has slept only
+        // microseconds, nowhere near its 50ms interval.
+        group.join_and_clear();
+
+        // Pre_roll must have been called (via finalize).
+        let moves = cap_term.moves_since_last_check();
+        let newline_count = moves.lines().filter(|l| l.trim() == "NewLine").count();
+        assert!(
+            newline_count > 0,
+            "finalize must trigger pre_roll (rows=10), got {newline_count}:\n{moves}",
+        );
+        assert!(
+            moves.contains("Up(10)"),
+            "finalize pre_roll must move cursor up 10 rows:\n{moves}",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
