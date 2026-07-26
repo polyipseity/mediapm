@@ -92,12 +92,14 @@ Place `#[cfg(test)]` blocks inline in the source file they test. If the inline b
 
 `FileSystemCas::open()` acquires an exclusive `flock` on `{root}/lock`. When a test opens CAS at `cas_root` and later passes `&cas_root` to `sync_hierarchy()` (which opens the same store internally), the second open hits `CasError::StoreLocked`. The fix is to `drop(cas)` before calling `sync_hierarchy()`, then reopen with `FileSystemCas::open(&cas_root).await` if CAS access is needed after the sync completes. The same pattern applies to `ToolDownloadCache::open()` at the global cache path — defer opening the cache until provisioning is actually needed.
 
-### Terminal output matching
+## Terminal output matching
+
+> **Hard rule:** This is a mandatory convention for all terminal-rendering tests.
 
 When writing progress bar tests that use `InMemoryTerm` to capture rendered
-output, prefer exact `assert_eq!(term.contents(), concat!(...))` matching
-over substring or count-only assertions. The expected output string must
-appear **literally** in the test source code via `concat!(...)` — never
+output, **MUST** use exact `assert_eq!(term.contents(), concat!(...))`
+matching over substring or count-only assertions. The expected output string
+must appear **literally** in the test source code via `concat!(...)` — never
 read from an external file, environment variable, or runtime-constructed
 string.
 

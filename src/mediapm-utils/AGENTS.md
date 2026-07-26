@@ -50,8 +50,10 @@ being overwritten during bar draws.
 
 ### Test convention
 
+> **Hard rule:** Exact-output matching is mandatory for all progress bar rendering tests.
+
 When writing or modifying unit/integration tests for progress bar rendering
-(in `src/progress.rs` `mod tests` or `tests/progress_output/`), prefer exact
-`assert_eq!(term.contents(), concat!(...))` matching over substring
+(in `src/progress.rs` `mod tests` or `tests/progress_output/`), **MUST** use
+exact `assert_eq!(term.contents(), concat!(...))` matching over substring
 assertions. See `.agents/instructions/rust-conventions.instructions.md`
 ("Terminal output matching") for the full rule and capture strategy.
