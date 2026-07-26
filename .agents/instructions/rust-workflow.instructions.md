@@ -42,6 +42,11 @@ When editing Rust source, validate changes with selective checks first:
     - `cargo build-pkg mediapm-conductor` builds only mediapm-conductor
     - `cargo test -p mediapm-cas locator_parser_expands_environment_variables`
   - See `.cargo/config.toml` for alias definitions
+  - **Troubleshooting stale build artifacts**: The test
+    `passthrough_conductor_tool_run_help_is_routable` in `src/mediapm/src/main.rs` can
+    fail spuriously due to stale incremental compilation artifacts affecting clap's
+    `try_parse_from`. If this happens without relevant changes, clean and rebuild:
+    `cargo clean -p mediapm -p mediapm-conductor`.
 
 - **Before submitting**:
   - `prek.toml` handles full workspace validation on `git push` via pre-push hooks.
