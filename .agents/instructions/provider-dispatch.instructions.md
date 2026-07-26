@@ -29,6 +29,14 @@ Returns a `ResolvedToolFetch` containing:
 - `sources`: per-OS `Vec<ResolvedSource>` with URL, expected size (optional), and producer type.
 - Optional `GenerateLauncher` entries for script-based tool bootstrap.
 
+## `MetadataCacheTracker`
+
+The `MetadataCacheTracker` type wraps `&ToolDownloadCache` and automatically
+counts every `lookup_bytes` call. `resolve_tool_fetch` uses this to auto-derive
+`metadata_fetch_count` (the fourth tuple element) instead of maintaining a
+manually-updated per-tool constant. When a resolver is added or removed, the
+count adjusts automatically — no manual update needed.
+
 ## `resolve_latest_github_tag(owner, repo, metadata_cache)`
 
 - Cache-first: looks up `https://api.github.com/repos/{owner}/{repo}/releases/latest` in metadata cache.

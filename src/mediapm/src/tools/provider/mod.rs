@@ -14,9 +14,49 @@ pub(crate) mod rsgain;
 pub(crate) mod sd;
 pub(crate) mod yt_dlp;
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use mediapm_conductor::tools::provider::{ResolvedToolFetch, SourceProducer};
 
 use crate::tools::downloader::ToolDownloadCache;
+
+/// Wraps a [`ToolDownloadCache`] reference and counts every `lookup_bytes` call.
+///
+/// This enables `resolve_tool_fetch` to auto-derive `metadata_fetch_count` from
+/// the actual number of metadata cache lookups performed, rather than requiring
+/// a manually maintained per-tool count that drifts when resolvers are added or
+/// removed.
+#[derive(Debug)]
+pub(crate) struct MetadataCacheTracker<'a> {
+    inner: &'a ToolDownloadCache,
+    count: AtomicU32,
+}
+
+impl<'a> MetadataCacheTracker<'a> {
+    /// Creates a new tracker wrapping the given cache.
+    #[must_use]
+    pub(crate) fn new(inner: &'a ToolDownloadCache) -> Self {
+        Self { inner, count: AtomicU32::new(0) }
+    }
+
+    /// Delegates to [`ToolDownloadCache::lookup_bytes`] and increments the
+    /// internal lookup counter.
+    pub(crate) async fn lookup_bytes(&self, key: &str) -> Option<Vec<u8>> {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.inner.lookup_bytes(key).await
+    }
+
+    /// Delegates to [`ToolDownloadCache::store_bytes`] (not counted).
+    pub(crate) async fn store_bytes(&self, key: &str, payload: &[u8]) {
+        self.inner.store_bytes(key, payload).await;
+    }
+
+    /// Returns the number of `lookup_bytes` calls made so far.
+    #[must_use]
+    pub(crate) fn lookup_count(&self) -> u32 {
+        self.count.load(Ordering::Relaxed)
+    }
+}
 
 /// Resolves the latest GitHub release tag and its commit hash for `owner/repo`.
 ///
@@ -197,7 +237,9 @@ pub(crate) async fn resolve_latest_autobuild_tag(
 /// - Third element (`metadata_cached`) is `true` when all version/tag lookups
 ///   were served from the metadata cache.
 /// - Fourth element (`metadata_fetch_count`) is the number of individual
-///   version/tag lookups performed (e.g., ffmpeg = 2, all others = 1).
+///   version/tag lookups performed, auto-derived by counting
+///   [`MetadataCacheTracker::lookup_bytes`] calls (e.g., ffmpeg = 2, all others =
+///   1). The count is fully automatic — it reflects actual cache operations.
 /// The semantic kind (VCS hash, version, or tag) is fixed at code-writing time
 /// per tool.
 ///
