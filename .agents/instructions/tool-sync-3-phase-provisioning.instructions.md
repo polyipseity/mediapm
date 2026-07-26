@@ -73,11 +73,11 @@ per-tool visual feedback).
 
 ## `FetchedToolPayload` fields
 
-| Field               | Type                       | Purpose                                                                                                                                   |
-| ------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `content_map`       | `BTreeMap<String, String>` | Sandbox-relative path → CAS hash hex                                                                                                      |
-| `os_exec_paths`     | `BTreeMap<String, String>` | OS label → relative executable path (no OS prefix)                                                                                        |
-| `canonical_version` | `String`                   | Canonical version for skip-if-up-to-date logic. Populated from the resolved fetch metadata.                                               |
+| Field               | Type                       | Purpose                                                                                     |
+| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------- |
+| `content_map`       | `BTreeMap<String, String>` | Sandbox-relative path → CAS hash hex                                                        |
+| `os_exec_paths`     | `BTreeMap<String, String>` | OS label → relative executable path (no OS prefix)                                          |
+| `canonical_version` | `String`                   | Canonical version for skip-if-up-to-date logic. Populated from the resolved fetch metadata. |
 
 ## Error handling
 
