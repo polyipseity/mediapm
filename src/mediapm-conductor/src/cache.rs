@@ -159,6 +159,44 @@ impl Cache {
         Ok(cache)
     }
 
+    /// Opens a cache backed by an already-open CAS store with a custom TTL.
+    ///
+    /// This is useful when sharing a single CAS store between multiple cache
+    /// instances (e.g., content cache and metadata cache at the same root).
+    /// Starts a background prune loop at the default interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError`] when filesystem preparation or index loading
+    /// fails.
+    pub async fn open_with_index_file_name_and_ttl_and_cas(
+        root: &Path,
+        index_file_name: &str,
+        entry_ttl_seconds: u64,
+        cas: Arc<dyn CasApi>,
+    ) -> Result<Self, ConductorError> {
+        let mut cache = Self::open_with_cas(root, index_file_name, entry_ttl_seconds, cas).await?;
+        // Start background prune loop.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+        let cache_clone = cache.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = cache_clone.prune_expired_inner(now_unix_seconds()).await;
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(CACHE_PRUNE_INTERVAL_SECONDS)).await;
+            }
+        });
+        cache.bg_guard =
+            Some(Arc::new(BackgroundMaintenanceGuard { cancelled, handle: Some(handle) }));
+        Ok(cache)
+    }
+
     /// Opens one cache root and binds this handle to a specific index file
     /// with a custom TTL.
     ///

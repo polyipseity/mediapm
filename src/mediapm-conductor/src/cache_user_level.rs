@@ -64,6 +64,15 @@ impl Deref for UserLevelCache {
 }
 
 impl UserLevelCache {
+    /// Wraps an existing [`Cache`] instance as a user-level cache.
+    ///
+    /// Useful when constructing a cache with a pre-opened CAS store via
+    /// [`Cache::open_with_index_file_name_and_ttl_and_cas`].
+    #[must_use]
+    pub fn from_cache(cache: Cache) -> Self {
+        Self(cache)
+    }
+
     /// Opens at the default user-level root with tools.json index and 30 day TTL.
     ///
     /// # Errors

@@ -16,8 +16,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use mediapm_cas::{CasApi, Hash};
+use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::ToolRuntime;
+use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::config::ExternalDataEntry;
 use mediapm_conductor::state::OutputSaveMode;
@@ -99,12 +100,29 @@ pub(crate) async fn reconcile_desired_tools(
             MediaPmError::Workflow("could not determine default tool cache root".to_string())
         })?,
     };
-    let cache = ToolDownloadCache::open(&cache_root, "tools.json", 30 * 24 * 60 * 60)
+    let store_dir = cache_root.join("store");
+    let filestore = FileSystemCas::open(&store_dir)
         .await
-        .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
-    let metadata_cache = ToolDownloadCache::open(&cache_root, "tool_metadata.json", 24 * 60 * 60)
-        .await
-        .map_err(|e| MediaPmError::Workflow(format!("failed to open tool metadata cache: {e}")))?;
+        .map_err(|e| MediaPmError::Workflow(format!("failed to open cache store: {e}")))?;
+    let shared_cas: Arc<dyn CasApi> = Arc::new(filestore);
+    let cache = Cache::open_with_index_file_name_and_ttl_and_cas(
+        &cache_root,
+        "tools.json",
+        30 * 24 * 60 * 60,
+        shared_cas.clone(),
+    )
+    .await
+    .map(ToolDownloadCache::from_cache)
+    .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
+    let metadata_cache = Cache::open_with_index_file_name_and_ttl_and_cas(
+        &cache_root,
+        "tool_metadata.json",
+        24 * 60 * 60,
+        shared_cas,
+    )
+    .await
+    .map(ToolDownloadCache::from_cache)
+    .map_err(|e| MediaPmError::Workflow(format!("failed to open tool metadata cache: {e}")))?;
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = desired_tools.len() as u64;
