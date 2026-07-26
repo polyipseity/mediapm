@@ -363,6 +363,7 @@ pub fn merge_runtime_storage(
         verify_materialization: override_value.verify_materialization,
         retry_impure: override_value.retry_impure,
         path_sanitization: override_value.path_sanitization.clone(),
+        cache_root_override: override_value.cache_root_override.clone(),
     }
 }
 

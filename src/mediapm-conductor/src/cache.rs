@@ -548,6 +548,36 @@ impl Cache {
         Self::open_internal(root, index_file_name, entry_ttl_seconds, maintenance_interval_seconds)
             .await
     }
+
+    /// Test-only: opens cache with a shared CAS and a configurable background
+    /// maintenance interval.
+    pub(crate) async fn open_with_ttl_and_maintenance_interval_and_cas(
+        root: &Path,
+        index_file_name: &str,
+        entry_ttl_seconds: u64,
+        maintenance_interval_seconds: u64,
+        cas: Arc<dyn CasApi>,
+    ) -> Result<Self, ConductorError> {
+        let mut cache = Self::open_with_cas(root, index_file_name, entry_ttl_seconds, cas).await?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+        let cache_clone = cache.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = cache_clone.prune_expired_inner(now_unix_seconds()).await;
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(maintenance_interval_seconds)).await;
+            }
+        });
+        cache.bg_guard =
+            Some(Arc::new(BackgroundMaintenanceGuard { cancelled, handle: Some(handle) }));
+        Ok(cache)
+    }
 }
 
 #[cfg(test)]
@@ -555,6 +585,7 @@ mod tests {
     use super::{Cache, ENTRY_TTL_SECONDS, PRUNE_INTERVAL_SECONDS, TOUCH_PERSIST_INTERVAL_SECONDS};
     use mediapm_cas::{CasApi, FileSystemCas, Hash};
     use std::str::FromStr;
+    use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
     // Compile-time assertions: TTL constants must be at least one day/hour/minute.
@@ -724,13 +755,26 @@ mod tests {
     #[tokio::test]
     async fn prune_cross_index_payload_gc_keeps_shared_references() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache_a = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
-            .await
-            .expect("open cache_a");
-        let cache_b =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tool_metadata.json", 0)
-                .await
-                .expect("open cache_b");
+        let store_dir = root.path().join("store");
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let cas = FileSystemCas::open(&store_dir).await.expect("open cas");
+        let cas_arc: Arc<dyn CasApi> = Arc::new(cas);
+        let cache_a = Cache::open_with_index_file_name_and_ttl_and_cas(
+            root.path(),
+            "tools.json",
+            0,
+            cas_arc.clone(),
+        )
+        .await
+        .expect("open cache_a");
+        let cache_b = Cache::open_with_index_file_name_and_ttl_and_cas(
+            root.path(),
+            "tool_metadata.json",
+            0,
+            cas_arc,
+        )
+        .await
+        .expect("open cache_b");
 
         let payload = b"shared-payload".to_vec();
         cache_a.store_bytes("key-a", &payload).await;
@@ -792,6 +836,9 @@ mod tests {
         assert!(report.removed_entries >= 1, "expired entry must be pruned");
         assert!(report.removed_payloads >= 1, "payload blob must be reported as removed");
 
+        // Drop cache to release directory lock before opening fresh CAS.
+        drop(cache);
+
         // Verify blob is gone from CAS by opening a fresh FileSystemCas on the
         // same store directory and attempting to get the hash.
         let store_dir = root.path().join("store");
@@ -831,13 +878,26 @@ mod tests {
     #[tokio::test]
     async fn prune_expired_cross_index_shared_hash_preserves_blob() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache_a = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 1)
-            .await
-            .expect("open cache_a");
-        let cache_b =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tool_metadata.json", 3600)
-                .await
-                .expect("open cache_b");
+        let store_dir = root.path().join("store");
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let cas = FileSystemCas::open(&store_dir).await.expect("open cas");
+        let cas_arc: Arc<dyn CasApi> = Arc::new(cas);
+        let cache_a = Cache::open_with_index_file_name_and_ttl_and_cas(
+            root.path(),
+            "tools.json",
+            1,
+            cas_arc.clone(),
+        )
+        .await
+        .expect("open cache_a");
+        let cache_b = Cache::open_with_index_file_name_and_ttl_and_cas(
+            root.path(),
+            "tool_metadata.json",
+            3600,
+            cas_arc,
+        )
+        .await
+        .expect("open cache_b");
 
         let payload = b"cross-index-shared".to_vec();
         cache_a.store_bytes("key-a", &payload).await;
@@ -861,13 +921,26 @@ mod tests {
     #[tokio::test]
     async fn prune_expired_removes_blob_when_no_index_references_hash() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache_a = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
-            .await
-            .expect("open cache_a");
-        let cache_b =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tool_metadata.json", 0)
-                .await
-                .expect("open cache_b");
+        let store_dir = root.path().join("store");
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let cas = FileSystemCas::open(&store_dir).await.expect("open cas");
+        let cas_arc: Arc<dyn CasApi> = Arc::new(cas);
+        let cache_a = Cache::open_with_index_file_name_and_ttl_and_cas(
+            root.path(),
+            "tools.json",
+            0,
+            cas_arc.clone(),
+        )
+        .await
+        .expect("open cache_a");
+        let cache_b = Cache::open_with_index_file_name_and_ttl_and_cas(
+            root.path(),
+            "tool_metadata.json",
+            0,
+            cas_arc,
+        )
+        .await
+        .expect("open cache_b");
 
         let payload = b"double-expired".to_vec();
         cache_a.store_bytes("key-a", &payload).await;
@@ -880,8 +953,11 @@ mod tests {
         cache_a.prune_expired_entries().await.expect("prune a");
         cache_b.prune_expired_entries().await.expect("prune b");
 
+        // Drop caches to release directory lock before opening fresh CAS.
+        drop(cache_a);
+        drop(cache_b);
+
         // Blob must be gone from CAS.
-        let store_dir = root.path().join("store");
         let fresh_cas = FileSystemCas::open(&store_dir).await.expect("open fresh cas");
         let hash = Hash::from_str(&hash_text).expect("valid hash");
         assert!(
@@ -961,22 +1037,30 @@ mod tests {
     #[tokio::test]
     async fn background_maintenance_cross_index_preserves_blob() {
         let root = tempfile::tempdir().expect("tempdir");
+        let store_dir = root.path().join("store");
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        let cas = FileSystemCas::open(&store_dir).await.expect("open cas");
+        let cas_arc: Arc<dyn CasApi> = Arc::new(cas);
         // Cache with background maintenance and short TTL.
-        let cache_a = Cache::open_with_ttl_and_maintenance_interval(
+        let cache_a = Cache::open_with_ttl_and_maintenance_interval_and_cas(
             root.path(),
             "tools.json",
             0, // TTL = 0: entries expire immediately
             1, // maintenance interval = 1s
+            cas_arc.clone(),
         )
         .await
         .expect("open cache_a");
         // Second cache pointing at the same store with normal TTL and
-        // no background maintenance (default 24h interval is effectively
-        // inert during the test window).
-        let cache_b =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tool_metadata.json", 3600)
-                .await
-                .expect("open cache_b");
+        // default 24h prune interval.
+        let cache_b = Cache::open_with_index_file_name_and_ttl_and_cas(
+            root.path(),
+            "tool_metadata.json",
+            3600,
+            cas_arc,
+        )
+        .await
+        .expect("open cache_b");
 
         let payload = b"cross-index-background".to_vec();
         cache_a.store_bytes("key-a", &payload).await;
@@ -998,6 +1082,9 @@ mod tests {
         assert_eq!(retrieved, Some(payload), "blob must survive cross-index background prune");
 
         // The blob must still exist on disk.
+        // Drop caches to release lock before opening fresh CAS.
+        drop(cache_a);
+        drop(cache_b);
         let store_dir = root.path().join("store");
         let fresh_cas = FileSystemCas::open(&store_dir).await.expect("open fresh cas");
         let hash = Hash::from_str(&hash_text).expect("valid hash");

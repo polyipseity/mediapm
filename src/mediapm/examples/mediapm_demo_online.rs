@@ -1206,6 +1206,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         // Default: 3600 (1 hour).
         reconstructed_cache_ttl_seconds: 3600,
         retry_impure: false,
+        cache_root_override: None,
         tools: BTreeMap::new(),
     };
 

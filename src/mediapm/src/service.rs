@@ -759,7 +759,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             &inherited_env_vars,
             check_tag_updates,
             &state,
-            None, // cache_root_override — use default OS cache dir
+            runtime_storage.cache_root_override.as_deref(),
             pg_ref,
         )
         .await?;

@@ -27,7 +27,11 @@ use tempfile::tempdir;
 #[tokio::test]
 async fn sync_empty_workspace_succeeds() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     let _summary = service.sync_tools().await?;
     Ok(())
 }
@@ -36,7 +40,11 @@ async fn sync_empty_workspace_succeeds() -> Result<(), mediapm::MediaPmError> {
 #[tokio::test]
 async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
     let paths = service.paths();
     assert!(paths.runtime_root.exists(), "runtime root .mediapm/ should exist");
@@ -48,7 +56,11 @@ async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError>
 #[tokio::test]
 async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
     let state_path = &service.paths().mediapm_state_json;
     assert!(state_path.exists(), "state.json should exist");
@@ -62,7 +74,11 @@ async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
 #[tokio::test]
 async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
     let generated_path = &service.paths().conductor_generated_ncl;
     assert!(generated_path.exists(), "conductor.generated.ncl should exist");
@@ -76,7 +92,11 @@ async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> 
 #[tokio::test]
 async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
     let env_path = &service.paths().env_generated_file;
     assert!(env_path.exists(), ".env.generated should exist");
@@ -111,7 +131,11 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
 #[tokio::test]
 async fn sync_is_idempotent() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
     let state_after_first =
         std::fs::read(&service.paths().mediapm_state_json).expect("state.json should exist");
@@ -171,7 +195,9 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
 #[tokio::test]
 async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("tempdir for cache");
     let mut overrides = MediaRuntimeStorage::default();
+    overrides.cache_root_override = Some(cache_root.path().to_path_buf());
     overrides.tools.insert(
         "media-tagger".to_string(),
         ToolRequirement {

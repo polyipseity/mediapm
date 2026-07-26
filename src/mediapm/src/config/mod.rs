@@ -278,6 +278,13 @@ pub struct MediaRuntimeStorage {
     /// Hierarchy filename sanitization mode.
     #[serde(default = "defaults::default_path_sanitization")]
     pub path_sanitization: hierarchy_types::SanitizeNamesConfig,
+    /// Override for the download cache root directory.
+    ///
+    /// Only intended for test use; hidden from documentation. When set, all
+    /// download cache operations use this path instead of the OS-level default.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub cache_root_override: Option<std::path::PathBuf>,
 }
 
 impl MediaRuntimeStorage {
@@ -337,6 +344,7 @@ impl Default for MediaRuntimeStorage {
             verify_materialization: defaults::default_verify_materialization(),
             retry_impure: defaults::default_retry_impure(),
             path_sanitization: defaults::default_path_sanitization(),
+            cache_root_override: None,
         }
     }
 }

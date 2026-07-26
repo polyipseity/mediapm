@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mediapm_cas::{FileSystemCas, Hash, InMemoryCas};
+use mediapm_cas::{CasApi, FileSystemCas, Hash, InMemoryCas};
+use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::provision::ProvisionCache;
 
@@ -59,18 +60,26 @@ async fn download_cache_and_provision_cache_use_different_roots() {
 async fn provision_cache_prune_does_not_affect_download_cache() {
     let root = tempfile::tempdir().expect("tempdir");
 
-    // Open download cache — creates <root>/store/ for CAS.
-    let download = UserLevelCache::open(root.path(), "tools.json", 30 * 24 * 60 * 60)
+    // Open download cache backed by a shared FileSystemCas.
+    let store_path = root.path().join("store");
+    std::fs::create_dir_all(&store_path).expect("create store dir");
+    let cas = Arc::new(FileSystemCas::open(&store_path).await.expect("open FileSystemCas"));
+    let download = UserLevelCache::from_cache(
+        Cache::open_with_index_file_name_and_ttl_and_cas(
+            root.path(),
+            "tools.json",
+            30 * 24 * 60 * 60,
+            cas.clone() as Arc<dyn CasApi>,
+        )
         .await
-        .expect("open download cache");
+        .expect("open download cache"),
+    );
     download.store_bytes("survivor", b"keep-me").await;
 
     // Compute the hash directly from the known payload.
     let hash = Hash::from_content(b"keep-me");
 
-    // Open provision cache backed by the same FileSystemCas store.
-    let store_path = root.path().join("store");
-    let cas = Arc::new(FileSystemCas::open(&store_path).await.expect("open FileSystemCas"));
+    // Open provision cache backed by the same FileSystemCas.
     let tools_dir = root.path().join("tools");
     let provision = ProvisionCache::new(tools_dir, cas, None);
 
