@@ -15,6 +15,7 @@ pub mod config;
 pub mod defaults;
 pub mod error;
 pub mod gc;
+pub mod http;
 pub mod orchestration;
 pub mod provision;
 pub mod runtime_env;

@@ -32,6 +32,11 @@ use std::path::{Path, PathBuf};
 
 #[cfg(feature = "fetch")]
 use reqwest::blocking::Client;
+#[cfg(feature = "fetch")]
+use std::sync::OnceLock;
+
+#[cfg(feature = "fetch")]
+static SHARED_HTTP_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = META.tool_id;
@@ -213,6 +218,28 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
+/// Returns the process-wide shared blocking HTTP client for import builtin.
+///
+/// # Decoupling
+///
+/// This function is self-contained within the import crate. It does not
+/// depend on `mediapm-conductor` or any other mediapm crate. The blocking
+/// client is required because the import builtin runs in a synchronous
+/// context (not a tokio runtime).
+#[cfg(feature = "fetch")]
+fn shared_http_client() -> Result<&'static Client, String> {
+    SHARED_HTTP_CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .user_agent("mediapm/0.0.0 (+https://github.com/mediapm/mediapm)")
+                .build()
+                .map_err(|e| format!("building import HTTP client failed: {e}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 /// Performs URL fetch with strict integrity pinning.
 #[cfg(feature = "fetch")]
 fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
@@ -239,10 +266,7 @@ fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
         );
     }
 
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_mins(1))
-        .build()
-        .map_err(|err| format!("building import fetch HTTP client failed: {err}"))?;
+    let client = shared_http_client()?;
 
     let response =
         client.get(url).send().map_err(|err| format!("import fetch request failed: {err}"))?;

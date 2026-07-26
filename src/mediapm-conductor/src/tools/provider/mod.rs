@@ -301,12 +301,8 @@ async fn fetch_bytes_from_candidates(
     use crate::error::ConductorError;
     use futures_util::StreamExt;
 
-    const CONDUCTOR_USER_AGENT: &str = concat!("mediapm-conductor/", env!("CARGO_PKG_VERSION"));
-
-    let client = reqwest::Client::builder()
-        .user_agent(CONDUCTOR_USER_AGENT)
-        .build()
-        .map_err(|e| ConductorError::Workflow(format!("building HTTP client failed: {e}")))?;
+    let client = crate::http::client::shared_http_client()
+        .map_err(|e| ConductorError::Workflow(format!("HTTP client unavailable: {e}")))?;
 
     for url in urls {
         let request = client.get(url);

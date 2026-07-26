@@ -1,7 +1,7 @@
 ---
-description: "Use when editing cache and HTTP client in src/mediapm/src/tools/downloader.rs and http_client.rs. Covers three-tier cache hierarchy, TTL policies, and shared HTTP client configuration."
-name: "Cache and HTTP Client"
-applyTo: "src/mediapm/src/tools/downloader.rs, src/mediapm/src/http_client.rs"
+description: "Use when editing cache and HTTP client configuration. Covers three-tier cache hierarchy, TTL policies, shared HTTP client configuration, and decoupling invariants for HTTP modules."
+name: "Cache and HTTP Client Invariants"
+applyTo: "src/mediapm/src/tools/downloader.rs, src/mediapm/src/http_client.rs, src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins/import/src/lib.rs"
 ---
 
 # Cache and HTTP client
@@ -51,3 +51,39 @@ Configured once via `OnceLock`:
 - Workspace-scoped conductor tool-content storage (`<runtime_root>/tools/`) and user-level download cache (`<os-cache-dir>/mediapm/`) are **never interchangeable**.
 - The content cache holds raw downloaded bytes for cross-workspace reuse.
 - The tools directory holds materialized (extracted) binaries for one specific workspace.
+
+## HTTP client invariants
+
+The codebase has **two** shared HTTP clients (async + blocking), each gated behind its own Cargo feature. Both use the `OnceLock` pattern.
+
+| Client | Crate | Feature | Runtime |
+| ------ | ----- | ------- | ------- |
+| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm-conductor` | `tool-presets` | Tokio (reqwest async) |
+| `shared_http_client()` | `mediapm-conductor-builtins/import` | `fetch` | Sync (reqwest blocking) |
+
+### Decoupling invariant (critical)
+
+The HTTP client module in `mediapm-conductor` (`src/http/`) must be **fully self-contained**:
+
+- **Zero `use crate::` imports** — the module must import nothing from its own crate.
+- **Zero `ConductorError` references** — define and use `HttpClientError` instead.
+- The module must be designed so it can be extracted into a standalone crate by copying the directory and adjusting `Cargo.toml` dependencies — no code changes to the module body.
+
+Error mapping from `HttpClientError` to `ConductorError` happens **at the call site** (`src/tools/provider/mod.rs`), never inside the `http/` module.
+
+### Decoupling enforcement (three layers)
+
+1. **Build-time regression** — `build.rs` in `mediapm-conductor` scans `src/http/` for `use crate::` and `ConductorError` and panics on violation.
+2. **Module-scoped types** — `HttpClientError` is the only error type used inside `http/`.
+3. **Review checklist** — when editing `src/http/`, verify no new dependencies on `crate::` or `ConductorError` were introduced.
+
+### Client configuration policy
+
+| Setting         | Default                                               | Override (env var)                       |
+| --------------- | ----------------------------------------------------- | ---------------------------------------- |
+| Connect timeout | 30s (conductor) / 60s (import)                        | —                                        |
+| Request timeout | 30 min (conductor) / 60s (import)                     | `MEDIAPM_HTTP_TIMEOUT_SECONDS` (min 30s) |
+| User-Agent      | `mediapm/<version> (+https://github.com/mediapm/mediapm)` | —                                        |
+
+- The import builtin uses a **blocking** client because it runs in a synchronous context (not a tokio runtime). It must not depend on `mediapm-conductor` (the dependency direction is the opposite).
+- Both clients use the same User-Agent format with their respective `CARGO_PKG_VERSION`.
