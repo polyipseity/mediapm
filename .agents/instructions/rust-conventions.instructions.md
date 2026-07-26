@@ -317,14 +317,14 @@ The conductor _library_ (`mediapm-conductor`) must not depend on indicatif direc
 
 ### Architecture — type location reference
 
-| Type / module | Crate | Feature gate | Available to |
-|---|---|---|---|
-| `mediapm_utils::progress::DownloadProgressSnapshot` | `mediapm-utils` | always | All crates |
-| `mediapm_utils::progress::ProgressCallback` | `mediapm-utils` | always | All crates |
-| `mediapm_utils::progress::{ProgressGroup, TrackedHandle}` | `mediapm-utils` | `progress` | Crates with indicatif |
-| `mediapm_utils::progress::{set_progress_enabled, format_bytes, format_count}` | `mediapm-utils` | `progress` | Crates with indicatif |
-| `crate::output::report::{StatusIcon, print_result, print_warning, print_hint, print_error, print_heading, print_status_report}` | `mediapm` | `cli` | `mediapm` crate only |
-| `crate::output::progress::{ProgressGroup, TrackedHandle, set_progress_enabled, progress_enabled}` | `mediapm` | `cli` | `mediapm` crate only |
+| Type / module                                                                                                                   | Crate           | Feature gate | Available to          |
+| ------------------------------------------------------------------------------------------------------------------------------- | --------------- | ------------ | --------------------- |
+| `mediapm_utils::progress::DownloadProgressSnapshot`                                                                             | `mediapm-utils` | always       | All crates            |
+| `mediapm_utils::progress::ProgressCallback`                                                                                     | `mediapm-utils` | always       | All crates            |
+| `mediapm_utils::progress::{ProgressGroup, TrackedHandle}`                                                                       | `mediapm-utils` | `progress`   | Crates with indicatif |
+| `mediapm_utils::progress::{set_progress_enabled, format_bytes, format_count}`                                                   | `mediapm-utils` | `progress`   | Crates with indicatif |
+| `crate::output::report::{StatusIcon, print_result, print_warning, print_hint, print_error, print_heading, print_status_report}` | `mediapm`       | `cli`        | `mediapm` crate only  |
+| `crate::output::progress::{ProgressGroup, TrackedHandle, set_progress_enabled, progress_enabled}`                               | `mediapm`       | `cli`        | `mediapm` crate only  |
 
 ### Common usage pattern in handlers
 
