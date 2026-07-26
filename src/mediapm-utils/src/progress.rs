@@ -880,6 +880,7 @@ mod inner {
         message: RwLock<String>,
         status: AtomicU8,
         dirty: AtomicBool,
+        disabled: AtomicBool,
         start_time: Instant,
         finished_elapsed: RwLock<Option<Duration>>,
         time_source: Arc<dyn TimeSource>,
@@ -903,6 +904,7 @@ mod inner {
                 message: RwLock::new(String::new()),
                 status: AtomicU8::new(0),
                 dirty: AtomicBool::new(true),
+                disabled: AtomicBool::new(false),
                 start_time: time_source.now(),
                 finished_elapsed: RwLock::new(None),
                 time_source,
@@ -999,7 +1001,9 @@ mod inner {
         /// Create a no-op handle (all methods are zero-cost).
         #[must_use]
         pub fn disabled() -> Self {
-            Self { state: Arc::new(SharedState::new(0, "")) }
+            let state = Arc::new(SharedState::new(0, ""));
+            state.disabled.store(true, Ordering::Release);
+            Self { state }
         }
 
         /// Create a standalone progress handle (not managed by a
@@ -1067,7 +1071,7 @@ mod inner {
         ///
         /// Panics if the shared-state `RwLock` is poisoned.
         pub fn set_message(&self, message: impl Into<String>) {
-            if self.state.total.load(Ordering::Relaxed) == 0 {
+            if self.state.disabled.load(Ordering::Relaxed) {
                 return; // disabled handle
             }
             *self.state.message.write().expect("shared_state message lock") = message.into();
