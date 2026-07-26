@@ -43,7 +43,7 @@ the narrow exceptions documented in Rust Conventions
    relevant `tests/` directory or `#[cfg(test)]` block
 2. **Fix the implementation** — run the test suite to confirm the fix
 3. **Verify no regressions** — run `cargo test --no-fail-fast` and compare
-   against the baseline in `/memories/repo/pre-existing-test-failures.json`
+   against the baseline in `.config/pre-existing-test-failures.json`
 4. **Add a spec entry** if the bug revealed a gap in `AGENTS.md`
 
 ## When Adding a New Managed Tool

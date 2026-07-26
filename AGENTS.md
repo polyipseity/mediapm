@@ -160,7 +160,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - Prefer linking to canonical config files instead of copying large policy blocks into multiple customization files.
 - Keep customization files narrowly scoped: repo-wide defaults in `AGENTS.md`, detailed file-specific guidance in `.agents/instructions/`.
 - Commit headers must use Conventional Commits with mandatory scope (`type(scope): subject`). Do not use crate/tool-prefixed headers like `mediapm: ...`, `conductor: ...`, `cas: ...`, or similar `<name>:` forms; put crate/tool identity in `scope` instead.
-- Prefer updating `AGENTS.md` and `.agents/instructions/*.instructions.md` directly for durable repository policy. Do not keep long-lived policy only in `/memories/repo/`; if temporary repo memory notes are used, merge them into instruction files and remove them.
+- Prefer updating `AGENTS.md` and `.agents/instructions/*.instructions.md` directly for durable repository policy.
 - See `.agents/instructions/rust-workflow.instructions.md` for module split conventions.
 - Do not deliberately rename examples/tests solely to force workspace-wide unique target names. Shared canonical names (for example `demo`) are allowed; when running examples, use package-qualified invocations to disambiguate.
 - Respect the repository newline policy: Markdown and shell scripts use LF; PowerShell and batch scripts use CRLF.
