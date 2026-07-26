@@ -41,11 +41,11 @@ All caches live under `default_mediapm_user_download_cache_root()` (OS-specific 
 Configured once via `OnceLock`. All three shared clients use the same
 configuration pattern:
 
-| Client | Connect timeout | Request timeout | User-Agent |
-| ------ | --------------- | --------------- | ---------- |
-| `mediapm` (async) | 30s | 30 min | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
-| `mediapm-conductor` (async, `tool-presets`) | 30s | 30 min | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
-| `mediapm-conductor-builtins/import` (blocking, `fetch`) | 60s | 60s | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
+| Client                                                  | Connect timeout | Request timeout | User-Agent                                                |
+| ------------------------------------------------------- | --------------- | --------------- | --------------------------------------------------------- |
+| `mediapm` (async)                                       | 30s             | 30 min          | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
+| `mediapm-conductor` (async, `tool-presets`)             | 30s             | 30 min          | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
+| `mediapm-conductor-builtins/import` (blocking, `fetch`) | 60s             | 60s             | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
 
 All three override the request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` env var (minimum 30s).
 
@@ -59,11 +59,11 @@ All three override the request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` env va
 
 The codebase has **three** shared HTTP clients (two async + one blocking), each gated behind its own Cargo feature. All use the `OnceLock` pattern.
 
-| Client | Crate | Feature | Runtime |
-| ------ | ----- | ------- | ------- |
-| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm` | unconditional | Tokio (reqwest async) |
-| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm-conductor` | `tool-presets` | Tokio (reqwest async) |
-| `shared_http_client()` | `mediapm-conductor-builtins/import` | `fetch` | Sync (reqwest blocking) |
+| Client                                                      | Crate                               | Feature        | Runtime                 |
+| ----------------------------------------------------------- | ----------------------------------- | -------------- | ----------------------- |
+| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm`                           | unconditional  | Tokio (reqwest async)   |
+| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm-conductor`                 | `tool-presets` | Tokio (reqwest async)   |
+| `shared_http_client()`                                      | `mediapm-conductor-builtins/import` | `fetch`        | Sync (reqwest blocking) |
 
 - The import builtin uses a **blocking** client because it runs in a synchronous context (not a tokio runtime). It must not depend on `mediapm-conductor` (the dependency direction is the opposite).
 - All three clients use the same User-Agent format with their respective `CARGO_PKG_VERSION`.
