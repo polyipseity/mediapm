@@ -16,38 +16,42 @@ pub(crate) mod yt_dlp;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use mediapm_conductor::cache::Cache;
 use mediapm_conductor::tools::provider::{ResolvedToolFetch, SourceProducer};
 
+#[cfg(test)]
 use crate::tools::downloader::ToolDownloadCache;
 
-/// Wraps a [`ToolDownloadCache`] reference and counts every `lookup_bytes` call.
+/// Wraps a [`Cache`] reference and domain, counting every `lookup_bytes` call.
 ///
 /// This enables `resolve_tool_fetch` to auto-derive `metadata_fetch_count` from
 /// the actual number of metadata cache lookups performed, rather than requiring
 /// a manually maintained per-tool count that drifts when resolvers are added or
 /// removed.
 pub(crate) struct MetadataCacheTracker<'a> {
-    inner: &'a ToolDownloadCache,
+    inner: &'a Cache,
+    domain: String,
     count: AtomicU32,
 }
 
 impl<'a> MetadataCacheTracker<'a> {
-    /// Creates a new tracker wrapping the given cache.
+    /// Creates a new tracker wrapping the given cache and domain.
     #[must_use]
-    pub(crate) fn new(inner: &'a ToolDownloadCache) -> Self {
-        Self { inner, count: AtomicU32::new(0) }
+    pub(crate) fn new(inner: &'a Cache, domain: &str) -> Self {
+        Self { inner, domain: domain.to_string(), count: AtomicU32::new(0) }
     }
 
-    /// Delegates to [`ToolDownloadCache::lookup_bytes`] and increments the
-    /// internal lookup counter.
+    /// Delegates to [`Cache::lookup_bytes`] for the tracked domain and
+    /// increments the internal lookup counter.
     pub(crate) async fn lookup_bytes(&self, key: &str) -> Option<Vec<u8>> {
         self.count.fetch_add(1, Ordering::Relaxed);
-        self.inner.lookup_bytes(key).await
+        self.inner.lookup_bytes(&self.domain, key).await
     }
 
-    /// Delegates to [`ToolDownloadCache::store_bytes`] (not counted).
+    /// Delegates to [`Cache::store_bytes`] for the tracked domain (not
+    /// counted).
     pub(crate) async fn store_bytes(&self, key: &str, payload: &[u8]) {
-        self.inner.store_bytes(key, payload).await;
+        self.inner.store_bytes(&self.domain, key, payload).await;
     }
 
     /// Returns the number of `lookup_bytes` calls made so far.
@@ -252,10 +256,9 @@ pub(crate) async fn resolve_latest_autobuild_tag(
 /// Returns an error when the tool name is not recognised.
 pub(crate) async fn resolve_tool_fetch(
     tool_name: &str,
-    metadata_cache: Option<&ToolDownloadCache>,
+    metadata_cache: Option<(&Cache, &str)>,
 ) -> Result<(ResolvedToolFetch, String, bool, u32), mediapm_conductor::ConductorError> {
-    // Wrap the cache in a tracker that counts every lookup_bytes call.
-    let tracker = metadata_cache.map(MetadataCacheTracker::new);
+    let tracker = metadata_cache.map(|(cache, domain)| MetadataCacheTracker::new(cache, domain));
     let tracker_ref = tracker.as_ref();
 
     let (fetch, canonical, metadata_cached) = match tool_name {
@@ -369,19 +372,20 @@ mod tests {
                 "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3",
             ),
         ] {
-            cache.store_bytes(api_url, format!("{tag}\n{hash}").as_bytes()).await;
+            cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
         // ffmpeg: autobuild tag + evermeet version
         cache
             .store_bytes(
+                "default",
                 "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "sd"] {
-            let result = resolve_tool_fetch(name, Some(&cache)).await;
+            let result = resolve_tool_fetch(name, Some((&*cache, "default"))).await;
             assert!(result.is_ok(), "tool {name}: resolve should succeed");
             let (fetch, canonical, _metadata_cached, _metadata_fetch_count) = result.unwrap();
             assert_eq!(fetch.tool_id, *name, "tool_id should match input name");
@@ -448,16 +452,17 @@ mod tests {
                 "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3",
             ),
         ] {
-            cache.store_bytes(api_url, format!("{tag}\n{hash}").as_bytes()).await;
+            cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
         // ffmpeg: autobuild tag + evermeet version
         cache
             .store_bytes(
+                "default",
                 "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         // media-tagger is an internal launcher — no external sources.
         let expected_oses = ["windows", "linux", "macos"];
@@ -470,7 +475,7 @@ mod tests {
         ];
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd"] {
             let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-                resolve_tool_fetch(name, Some(&cache)).await.unwrap();
+                resolve_tool_fetch(name, Some((&*cache, "default"))).await.unwrap();
             let expected_canonical = expected_canonicals
                 .iter()
                 .find(|(n, _)| *n == *name)
@@ -523,20 +528,21 @@ mod tests {
         ];
 
         for (_, api_url, tag, hash) in &test_data {
-            cache.store_bytes(api_url, format!("{tag}\n{hash}").as_bytes()).await;
+            cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
         // ffmpeg: autobuild tag + evermeet version
         cache
             .store_bytes(
+                "default",
                 "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         for (tool_name, _, tag, _hash) in &test_data {
             let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-                resolve_tool_fetch(tool_name, Some(&cache)).await.unwrap();
+                resolve_tool_fetch(tool_name, Some((&*cache, "default"))).await.unwrap();
             assert_eq!(fetch.tool_id, *tool_name, "tool_id should match input name",);
             // Canonical version is the git hash for GitHub-sourced tools.
             assert_ne!(
@@ -576,7 +582,7 @@ mod tests {
         // Also verify ffmpeg separately (different cache structure, composite canonical).
         {
             let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-                resolve_tool_fetch("ffmpeg", Some(&cache)).await.unwrap();
+                resolve_tool_fetch("ffmpeg", Some((&*cache, "default"))).await.unwrap();
             assert_eq!(fetch.tool_id, "ffmpeg");
             assert_eq!(
                 canonical, "autobuild-2025-07-15-12-00+evermeet-8.1.2",
@@ -604,7 +610,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&cache);
+        let tracker = MetadataCacheTracker::new(&*cache, "default");
 
         let owner = "testowner";
         let repo = "testrepo";
@@ -613,7 +619,9 @@ mod tests {
         let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
 
         // Pre-seed metadata cache with "{tag}\n{hash}" format.
-        cache.store_bytes(&api_url, format!("{expected_tag}\n{expected_hash}").as_bytes()).await;
+        cache
+            .store_bytes("default", &api_url, format!("{expected_tag}\n{expected_hash}").as_bytes())
+            .await;
 
         let (tag, commit_hash, _metadata_cached) =
             resolve_latest_github_tag(owner, repo, Some(&tracker))
@@ -654,21 +662,22 @@ mod tests {
                 "s1s2s3s4s5s6s7s8s9s0s1s2s3s4s5s6s7s8s9s0s1s2s3",
             ),
         ] {
-            cache.store_bytes(api_url, format!("{tag}\n{hash}").as_bytes()).await;
+            cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
         // ffmpeg: autobuild tag + evermeet version
         cache
             .store_bytes(
+                "default",
                 "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         // — yt-dlp (tag "2025.07.15", no v-prefix, no filename rewrite) —
         {
             let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-                resolve_tool_fetch("yt-dlp", Some(&cache)).await.unwrap();
+                resolve_tool_fetch("yt-dlp", Some((&*cache, "default"))).await.unwrap();
             assert_eq!(
                 canonical, "y1y2y3y4y5y6y7y8y9y0y1y2y3y4y5y6y7y8y9y0y1y2y3",
                 "yt-dlp canonical version"
@@ -701,7 +710,7 @@ mod tests {
         // — ffmpeg (composite canonical, BtbN URLs keep /latest/download/, Evermeet unchanged) —
         {
             let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-                resolve_tool_fetch("ffmpeg", Some(&cache)).await.unwrap();
+                resolve_tool_fetch("ffmpeg", Some((&*cache, "default"))).await.unwrap();
             assert_eq!(
                 canonical, "autobuild-2025-07-15-12-00+evermeet-8.1.2",
                 "ffmpeg canonical version"
@@ -739,7 +748,7 @@ mod tests {
         // — deno (tag "v2.2.12", v-prefixed, no filename rewrite) —
         {
             let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-                resolve_tool_fetch("deno", Some(&cache)).await.unwrap();
+                resolve_tool_fetch("deno", Some((&*cache, "default"))).await.unwrap();
             assert_eq!(
                 canonical, "d1d2d3d4d5d6d7d8d9d0d1d2d3d4d5d6d7d8d9d0d1d2d3",
                 "deno canonical version"
@@ -772,7 +781,7 @@ mod tests {
         // — rsgain (tag "v3.7", path + filename rewrite: rsgain-latest → rsgain-3.7) —
         {
             let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-                resolve_tool_fetch("rsgain", Some(&cache)).await.unwrap();
+                resolve_tool_fetch("rsgain", Some((&*cache, "default"))).await.unwrap();
             assert_eq!(
                 canonical, "r1r2r3r4r5r6r7r8r9r0r1r2r3r4r5r6r7r8r9r0r1r2r3",
                 "rsgain canonical version"
@@ -810,7 +819,7 @@ mod tests {
         // — sd (tag "v1.1.0", path + filename rewrite: sd-latest → sd-v1.1.0) —
         {
             let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-                resolve_tool_fetch("sd", Some(&cache)).await.unwrap();
+                resolve_tool_fetch("sd", Some((&*cache, "default"))).await.unwrap();
             assert_eq!(
                 canonical, "s1s2s3s4s5s6s7s8s9s0s1s2s3s4s5s6s7s8s9s0s1s2s3",
                 "sd canonical version"
@@ -883,20 +892,23 @@ mod tests {
             ),
         ];
         for (url, tag_hash) in seeds {
-            cache.store_bytes(url, tag_hash.as_bytes()).await;
+            cache.store_bytes("default", url, tag_hash.as_bytes()).await;
         }
         // ffmpeg: autobuild tag + evermeet version
         cache
             .store_bytes(
+                "default",
                 "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         for tool in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd", "media-tagger"] {
-            let (_, cv1, _, _) = resolve_tool_fetch(tool, Some(&cache)).await.unwrap();
-            let (_, cv2, _, _) = resolve_tool_fetch(tool, Some(&cache)).await.unwrap();
+            let (_, cv1, _, _) =
+                resolve_tool_fetch(tool, Some((&*cache, "default"))).await.unwrap();
+            let (_, cv2, _, _) =
+                resolve_tool_fetch(tool, Some((&*cache, "default"))).await.unwrap();
             assert_eq!(cv1, cv2, "canonical_version for {tool} must be deterministic");
         }
     }
@@ -926,20 +938,21 @@ mod tests {
                 "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2",
             ),
         ] {
-            cache.store_bytes(api_url, format!("{tag}\n{hash}").as_bytes()).await;
+            cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
         // ffmpeg: autobuild tag + evermeet version
         cache
             .store_bytes(
+                "default",
                 "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         // All managed tools whose provider type is Fetch must have size_hint_bytes.
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain"] {
-            let (fetch, _canonical, _, _) = resolve_tool_fetch(name, Some(&cache))
+            let (fetch, _canonical, _, _) = resolve_tool_fetch(name, Some((&*cache, "default")))
                 .await
                 .unwrap_or_else(|e| panic!("resolve {name}: {e}"));
             for source in &fetch.sources {
@@ -958,7 +971,8 @@ mod tests {
 
         // media-tagger is a builtin launcher — all sources are GenerateLauncher.
         {
-            let (fetch, _, _, _) = resolve_tool_fetch("media-tagger", Some(&cache)).await.unwrap();
+            let (fetch, _, _, _) =
+                resolve_tool_fetch("media-tagger", Some((&*cache, "default"))).await.unwrap();
             for source in &fetch.sources {
                 assert!(
                     matches!(source.producer, super::SourceProducer::GenerateLauncher { .. }),
@@ -973,7 +987,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&cache);
+        let tracker = MetadataCacheTracker::new(&*cache, "default");
 
         // Pre-seed cache with non-UTF-8 bytes — String::from_utf8 conversion
         // fails, triggering fallthrough to the HTTP fetch. Without a real GitHub
@@ -981,7 +995,7 @@ mod tests {
         let owner = "testowner";
         let repo = "testrepo";
         let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
-        cache.store_bytes(&api_url, b"\xff\xfe\x00latest").await;
+        cache.store_bytes("default", &api_url, b"\xff\xfe\x00latest").await;
 
         let err = resolve_latest_github_tag(owner, repo, Some(&tracker)).await.unwrap_err();
         let msg = format!("{err}");
@@ -998,9 +1012,9 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&cache);
+        let tracker = MetadataCacheTracker::new(&*cache, "default");
         let api_url = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10";
-        cache.store_bytes(api_url, b"autobuild-2025-07-15-12-00").await;
+        cache.store_bytes("default", api_url, b"autobuild-2025-07-15-12-00").await;
 
         let (tag, _metadata_cached) =
             resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", Some(&tracker))
@@ -1014,8 +1028,8 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&cache);
-        cache.store_bytes("https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        let tracker = MetadataCacheTracker::new(&*cache, "default");
+        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         let (version, cached) = ffmpeg::resolve_evermeet_version(Some(&tracker))
             .await
@@ -1029,10 +1043,16 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&cache);
+        let tracker = MetadataCacheTracker::new(&*cache, "default");
         let api_url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
         // Cache seeded with "{tag}\n{hash}" format.
-        cache.store_bytes(api_url, b"2025.07.15\na1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0").await;
+        cache
+            .store_bytes(
+                "default",
+                api_url,
+                b"2025.07.15\na1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+            )
+            .await;
 
         let (tag, commit_hash, _metadata_cached) =
             resolve_latest_github_tag("yt-dlp", "yt-dlp", Some(&tracker))

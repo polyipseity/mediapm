@@ -10,8 +10,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mediapm_cas::{CasApi, FileSystemCas, Hash, InMemoryCas};
-use mediapm_conductor::cache::Cache;
+use mediapm_cas::{CasApi, Hash, InMemoryCas};
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::provision::ProvisionCache;
 
@@ -20,9 +19,8 @@ use mediapm_conductor::provision::ProvisionCache;
 ///
 /// The download cache writes into `<cache_root>/store/` and the provision
 /// cache materializes into a separate `<tools_dir>/` tree.  Even when sharing
-/// the same CAS backend, the provision cache materialize call requires a
-/// content map that points into the shared CAS — but the download cache's
-/// logical-key entry is invisible to the provision cache's per-tool metadata.
+/// the same `store/` directory, the download cache's logical-key entry is
+/// invisible to the provision cache's per-tool metadata.
 #[tokio::test]
 async fn download_cache_and_provision_cache_use_different_roots() {
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
@@ -32,7 +30,7 @@ async fn download_cache_and_provision_cache_use_different_roots() {
     let download = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open download cache");
-    download.store_bytes("my-key", b"shared-payload").await;
+    download.store_bytes("default", "my-key", b"shared-payload").await;
 
     // Compute the hash directly from the known payload.
     let hash = Hash::from_content(b"shared-payload");
@@ -53,49 +51,42 @@ async fn download_cache_and_provision_cache_use_different_roots() {
 
 /// Pruning the provision cache must not invalidate download cache entries.
 ///
-/// Both caches share the same CAS backend (same `store/` directory) but
-/// the provision cache prune only removes expired tool extraction
-/// directories, not CAS payload objects.
+/// Both caches use separate roots (download cache stores under
+/// `<root>/store/`, provision cache extracts under `<root>/tools/`).
+/// The provision cache prune only removes expired tool extraction
+/// directories, not CAS payload objects in the download cache store.
 #[tokio::test]
 async fn provision_cache_prune_does_not_affect_download_cache() {
     let root = tempfile::tempdir().expect("tempdir");
 
-    // Open download cache backed by a shared FileSystemCas.
-    let store_path = root.path().join("store");
-    std::fs::create_dir_all(&store_path).expect("create store dir");
-    let cas = Arc::new(FileSystemCas::open(&store_path).await.expect("open FileSystemCas"));
-    let download = UserLevelCache::from_cache(
-        Cache::open_with_index_file_name_and_ttl_and_cas(
-            root.path(),
-            "tools.json",
-            30 * 24 * 60 * 60,
-            cas.clone() as Arc<dyn CasApi>,
-        )
+    // Open download cache — it creates its own FileSystemCas in store/.
+    let download = UserLevelCache::open(root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
-        .expect("open download cache"),
-    );
-    download.store_bytes("survivor", b"keep-me").await;
+        .expect("open download cache");
+    download.store_bytes("default", "survivor", b"keep-me").await;
 
-    // Compute the hash directly from the known payload.
-    let hash = Hash::from_content(b"keep-me");
-
-    // Open provision cache backed by the same FileSystemCas.
+    // Open provision cache at a separate tools directory (no shared CAS).
     let tools_dir = root.path().join("tools");
-    let provision = ProvisionCache::new(tools_dir, cas, None);
+    let provision_cas = Arc::new(InMemoryCas::new());
+    // Write the same payload into the provision cache's CAS so materialize
+    // succeeds.
+    let hash = provision_cas.put(b"keep-me".to_vec().into()).await.expect("store in provision CAS");
 
-    // Materialize a tool using the shared CAS payload.
+    let provision = ProvisionCache::new(tools_dir, provision_cas, None);
+
+    // Materialize a tool using the payload in the provision cache's CAS.
     let content_map = BTreeMap::from([("binary".to_string(), hash)]);
     let _provisioned = provision
         .materialize("shared-tool", &content_map)
         .await
-        .expect("provision cache materialize must succeed with shared CAS");
+        .expect("provision cache materialize must succeed with its own CAS");
 
     // Prune the provision cache (all entries are fresh, so nothing should
-    // be removed, but the prune operation must not touch CAS data).
+    // be removed, but the prune operation must not touch the download cache).
     provision.prune_expired().await.expect("prune provision cache");
 
     // Verify the download cache entry is still intact.
-    let data = download.lookup_bytes("survivor").await;
+    let data = download.lookup_bytes("default", "survivor").await;
     assert_eq!(
         data,
         Some(b"keep-me".to_vec()),

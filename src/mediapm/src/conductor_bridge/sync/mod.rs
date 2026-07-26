@@ -16,9 +16,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_cas::{CasApi, Hash};
 use mediapm_conductor::ToolRuntime;
 use mediapm_conductor::cache::Cache;
+use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::config::ExternalDataEntry;
 use mediapm_conductor::state::OutputSaveMode;
@@ -100,29 +101,21 @@ pub(crate) async fn reconcile_desired_tools(
             MediaPmError::Workflow("could not determine default tool cache root".to_string())
         })?,
     };
-    let store_dir = cache_root.join("store");
-    let filestore = FileSystemCas::open(&store_dir)
+    let _store_dir = cache_root.join("store");
+    let content_domain = CacheDomainConfig {
+        domain: "tools".to_string(),
+        index_file_name: "tools.json".to_string(),
+        entry_ttl_seconds: 30 * 24 * 60 * 60,
+    };
+    let metadata_domain = CacheDomainConfig {
+        domain: "tool_metadata".to_string(),
+        index_file_name: "tool_metadata.json".to_string(),
+        entry_ttl_seconds: 24 * 60 * 60,
+    };
+    let cache = Cache::open(&cache_root, &[content_domain, metadata_domain])
         .await
-        .map_err(|e| MediaPmError::Workflow(format!("failed to open cache store: {e}")))?;
-    let shared_cas: Arc<dyn CasApi> = Arc::new(filestore);
-    let cache = Cache::open_with_index_file_name_and_ttl_and_cas(
-        &cache_root,
-        "tools.json",
-        30 * 24 * 60 * 60,
-        shared_cas.clone(),
-    )
-    .await
-    .map(ToolDownloadCache::from_cache)
-    .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
-    let metadata_cache = Cache::open_with_index_file_name_and_ttl_and_cas(
-        &cache_root,
-        "tool_metadata.json",
-        24 * 60 * 60,
-        shared_cas,
-    )
-    .await
-    .map(ToolDownloadCache::from_cache)
-    .map_err(|e| MediaPmError::Workflow(format!("failed to open tool metadata cache: {e}")))?;
+        .map(ToolDownloadCache::from_cache)
+        .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = desired_tools.len() as u64;
@@ -152,54 +145,49 @@ pub(crate) async fn reconcile_desired_tools(
         // arm always runs before any read (other paths `continue`).
         #[allow(unused_assignments)]
         let mut resolved_canonical_version = String::new();
-        let pre_resolved = match provider::resolve_tool_fetch(tool_id, Some(&metadata_cache)).await
-        {
-            Ok((fetch, canonical_version, _metadata_cached, _metadata_fetch_count)) => {
-                resolved_canonical_version = canonical_version.clone();
+        let pre_resolved =
+            match provider::resolve_tool_fetch(tool_id, Some((&*cache, "tool_metadata"))).await {
+                Ok((fetch, canonical_version, _metadata_cached, _metadata_fetch_count)) => {
+                    resolved_canonical_version = canonical_version.clone();
 
-                // Check skip: if state has an entry with the same canonical_version
-                // AND a non-empty fetch_hash, skip provisioning entirely.
-                let should_skip = state.managed_tools.get(tool_id).is_some_and(|existing| {
-                    existing.canonical_version == canonical_version && existing.fetch_hash.is_some()
-                });
+                    // Check skip: if state has an entry with the same canonical_version
+                    // AND a non-empty fetch_hash, skip provisioning entirely.
+                    let should_skip = state.managed_tools.get(tool_id).is_some_and(|existing| {
+                        existing.canonical_version == canonical_version
+                            && existing.fetch_hash.is_some()
+                    });
 
-                if should_skip {
-                    PreResolveOutcome::Skip {
-                        name: tool_id.clone(),
-                        version: canonical_version,
-                        metadata_cached: _metadata_cached,
-                        metadata_fetch_count: _metadata_fetch_count,
+                    if should_skip {
+                        PreResolveOutcome::Skip {
+                            name: tool_id.clone(),
+                            version: canonical_version,
+                            metadata_cached: _metadata_cached,
+                            metadata_fetch_count: _metadata_fetch_count,
+                        }
+                    } else {
+                        PreResolveOutcome::Resolved(
+                            fetch,
+                            canonical_version,
+                            _metadata_cached,
+                            _metadata_fetch_count,
+                        )
                     }
-                } else {
-                    PreResolveOutcome::Resolved(
-                        fetch,
-                        canonical_version,
-                        _metadata_cached,
-                        _metadata_fetch_count,
-                    )
                 }
-            }
-            Err(e) => {
-                let error_bar = effective_group.add_bar(1, &format!("{tool_id} [resolve]"));
-                error_bar.finish_error();
-                report.warnings.push(format!(
-                    "tool {tool_id}: resolve failed (will retry on next sync): {e}",
-                ));
-                pb.advance(1);
-                continue;
-            }
-        };
+                Err(e) => {
+                    let error_bar = effective_group.add_bar(1, &format!("{tool_id} [resolve]"));
+                    error_bar.finish_error();
+                    report.warnings.push(format!(
+                        "tool {tool_id}: resolve failed (will retry on next sync): {e}",
+                    ));
+                    pb.advance(1);
+                    continue;
+                }
+            };
 
         let was_skip = matches!(&pre_resolved, PreResolveOutcome::Skip { .. });
-        let payload_result = fetch_and_import_tool_payload(
-            cas,
-            tool_id,
-            &cache,
-            &metadata_cache,
-            effective_group,
-            pre_resolved,
-        )
-        .await;
+        let payload_result =
+            fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group, pre_resolved)
+                .await;
 
         if was_skip {
             report.tools_skipped += 1;

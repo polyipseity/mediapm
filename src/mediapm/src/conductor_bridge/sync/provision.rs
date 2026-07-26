@@ -134,7 +134,6 @@ pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
     tool_id: &str,
     cache: &ToolDownloadCache,
-    _metadata_cache: &ToolDownloadCache,
     group: &dyn ProgressGroupApi,
     outcome: PreResolveOutcome,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
@@ -209,7 +208,7 @@ pub(super) async fn fetch_and_import_tool_payload(
         fetch_bar_cb.set_position(snap.bytes.0);
         fetch_bar_cb.set_total(snap.bytes.1);
     }));
-    let downloaded = match fetch_tool_sources(&fetch, cache, fetch_progress).await {
+    let downloaded = match fetch_tool_sources(&fetch, cache, "tools", fetch_progress).await {
         Ok(d) => d,
         Err(e) => {
             finish_error_bars(&error_bars);
@@ -311,6 +310,8 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
 #[cfg(test)]
 mod tests {
     use mediapm_cas::storage::in_memory::new_in_memory_cas;
+    use mediapm_conductor::cache::Cache;
+    use mediapm_conductor::cache::CacheDomainConfig;
     use mediapm_conductor::cache_user_level::UserLevelCache;
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
     use tempfile::TempDir;
@@ -323,19 +324,32 @@ mod tests {
     async fn fetch_and_import_rejects_unknown_tool() {
         let _cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let _cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let _tracker = RecordingProgressTracker::new();
         // Resolution is now handled before fetch_and_import_tool_payload;
         // verify that resolve_tool_fetch rejects unknown tools.
-        let resolve_result =
-            crate::tools::provider::resolve_tool_fetch("nonexistent-tool", Some(&metadata_cache))
-                .await;
+        let resolve_result = crate::tools::provider::resolve_tool_fetch(
+            "nonexistent-tool",
+            Some((&*cache, "tool_metadata")),
+        )
+        .await;
         assert!(resolve_result.is_err(), "resolve_tool_fetch should reject unknown tools");
     }
 
@@ -343,28 +357,35 @@ mod tests {
     async fn fetch_and_import_generate_launcher_succeeds() {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let (fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-            crate::tools::provider::resolve_tool_fetch("media-tagger", Some(&metadata_cache))
-                .await
-                .unwrap();
+            crate::tools::provider::resolve_tool_fetch(
+                "media-tagger",
+                Some((&*cache, "tool_metadata")),
+            )
+            .await
+            .unwrap();
         let outcome = PreResolveOutcome::Resolved(fetch, canonical, false, 1);
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "media-tagger",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         match result {
             Ok(Some(payload)) => {
                 // GenerateLauncher returns 3 inline sources (windows/macos/linux).
@@ -434,13 +455,24 @@ mod tests {
 
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
 
         // Pre-seed the metadata cache with a stable tag+hash (no network).
@@ -448,11 +480,11 @@ mod tests {
         let tag = "2025.07.15";
         let hash = "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9";
         let api_key = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
-        metadata_cache.store_bytes(api_key, format!("{tag}\n{hash}").as_bytes()).await;
+        cache.store_bytes("tool_metadata", api_key, format!("{tag}\n{hash}").as_bytes()).await;
 
         // Resolve normally — metadata cache returns the pre-seeded tag.
         let (mut fetch, canonical, _metadata_cached, _metadata_fetch_count) =
-            crate::tools::provider::resolve_tool_fetch("yt-dlp", Some(&metadata_cache))
+            crate::tools::provider::resolve_tool_fetch("yt-dlp", Some((&*cache, "tool_metadata")))
                 .await
                 .unwrap();
 
@@ -469,15 +501,7 @@ mod tests {
         }
 
         let outcome = PreResolveOutcome::Resolved(fetch, canonical, false, 1);
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "yt-dlp",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result = fetch_and_import_tool_payload(&cas, "yt-dlp", &cache, &tracker, outcome).await;
         let filenames: Vec<&str> = binaries.iter().map(|(n, _)| *n).collect();
         let os_labels = ["windows", "macos", "linux"];
         match result {
@@ -518,28 +542,32 @@ mod tests {
     async fn fetch_and_import_with_pre_resolved_canonical_version() {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
 
         // Use media_tagger's sources as a known ResolvedToolFetch.
         let fetch = provider::media_tagger::sources();
         let outcome = PreResolveOutcome::Resolved(fetch, "test-canonical".to_string(), false, 1);
 
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "media-tagger",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         match result {
             Ok(Some(payload)) => {
                 assert_eq!(
@@ -559,25 +587,29 @@ mod tests {
     async fn resolve_bar_shows_cached_when_metadata_cached() {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
         let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), true, 1);
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "media-tagger",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
 
         let ops = tracker.ops();
@@ -593,25 +625,29 @@ mod tests {
     async fn resolve_bar_shows_total_two_when_metadata_fetch_count_two() {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
         let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), false, 2);
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "media-tagger",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
 
         let ops = tracker.ops();
@@ -629,13 +665,24 @@ mod tests {
     async fn skip_bar_shows_skipped_cached_when_metadata_cached() {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let outcome = PreResolveOutcome::Skip {
             name: "test-tool".to_string(),
@@ -643,15 +690,8 @@ mod tests {
             metadata_cached: true,
             metadata_fetch_count: 1,
         };
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "test-tool",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "Skip should return Ok");
         assert!(result.unwrap().is_none(), "Skip should return Ok(None)");
 
@@ -670,13 +710,24 @@ mod tests {
     async fn skip_bar_shows_skipped_when_metadata_not_cached() {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let outcome = PreResolveOutcome::Skip {
             name: "test-tool".to_string(),
@@ -684,15 +735,8 @@ mod tests {
             metadata_cached: false,
             metadata_fetch_count: 1,
         };
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "test-tool",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "Skip should return Ok");
         assert!(result.unwrap().is_none(), "Skip should return Ok(None)");
 
@@ -712,25 +756,29 @@ mod tests {
     async fn resolve_bar_no_cached_message_when_not_cached() {
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
         let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), false, 1);
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "media-tagger",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
 
         let ops = tracker.ops();
@@ -748,25 +796,29 @@ mod tests {
         // was moved out of the total==0 proxy check).
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
         let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), false, 0);
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "media-tagger",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
 
         let ops = tracker.ops();
@@ -787,25 +839,29 @@ mod tests {
         // "cached (2)" (not bare "cached" without count).
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
         let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), true, 2);
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "media-tagger",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
 
         let ops = tracker.ops();
@@ -838,13 +894,24 @@ mod tests {
         // bar to position = total.
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let outcome = PreResolveOutcome::Skip {
             name: "test-tool".to_string(),
@@ -852,15 +919,8 @@ mod tests {
             metadata_cached: true,
             metadata_fetch_count: 2,
         };
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "test-tool",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "Skip should return Ok");
         assert!(result.unwrap().is_none(), "Skip should return Ok(None)");
 
@@ -891,13 +951,24 @@ mod tests {
         // (indeterminate bar — set_message works correctly).
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
-        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("cache open");
-        let metadata_cache =
-            UserLevelCache::open(&tmp.path().join("metadata"), "tool_metadata.json", 24 * 60 * 60)
-                .await
-                .expect("metadata cache open");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let outcome = PreResolveOutcome::Skip {
             name: "test-tool".to_string(),
@@ -905,15 +976,8 @@ mod tests {
             metadata_cached: false,
             metadata_fetch_count: 0,
         };
-        let result = fetch_and_import_tool_payload(
-            &cas,
-            "test-tool",
-            &cache,
-            &metadata_cache,
-            &tracker,
-            outcome,
-        )
-        .await;
+        let result =
+            fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "Skip should return Ok");
         assert!(result.unwrap().is_none(), "Skip should return Ok(None)");
 

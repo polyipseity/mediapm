@@ -197,6 +197,7 @@ pub async fn resolve_tool_fetch(
 pub async fn fetch_tool_sources(
     fetch: &ResolvedToolFetch,
     cache: &crate::cache_user_level::UserLevelCache,
+    domain: &str,
     progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<DownloadedSources, crate::error::ConductorError> {
     let mut entries = Vec::with_capacity(fetch.sources.len());
@@ -214,8 +215,8 @@ pub async fn fetch_tool_sources(
         match &source.producer {
             SourceProducer::Fetch { urls } => {
                 let cache_key = &urls[0];
-                let bytes = if let Some(cached) = cache.lookup_bytes(cache_key).await {
-                    cache.touch(cache_key);
+                let bytes = if let Some(cached) = cache.lookup_bytes(domain, cache_key).await {
+                    cache.touch(domain, cache_key);
                     // Set total to cached size so advance works (item may have
                     // been created with total=0 when no estimate was available).
                     budget.set_total(idx, cached.len() as u64);
@@ -240,7 +241,7 @@ pub async fn fetch_tool_sources(
                         progress_cb.as_ref(),
                     )
                     .await?;
-                    cache.store_bytes(cache_key, &downloaded).await;
+                    cache.store_bytes(domain, cache_key, &downloaded).await;
                     downloaded
                 };
                 entries.push(DownloadedSource {
@@ -1392,8 +1393,8 @@ mod tests {
         .expect("open UserLevelCache");
 
         // Pre-seed cache with small bytes under fake URLs.
-        cache.store_bytes("mock://a", &[0u8; 50]).await;
-        cache.store_bytes("mock://b", &[1u8; 30]).await;
+        cache.store_bytes("default", "mock://a", &[0u8; 50]).await;
+        cache.store_bytes("default", "mock://b", &[1u8; 30]).await;
 
         let fetch = ResolvedToolFetch {
             tool_id: "test".to_string(),
@@ -1420,7 +1421,7 @@ mod tests {
             snap_clone.lock().unwrap().push(snap);
         });
 
-        let _downloaded = fetch_tool_sources(&fetch, &cache, Some(cb))
+        let _downloaded = fetch_tool_sources(&fetch, &cache, "download", Some(cb))
             .await
             .expect("fetch should succeed with cached data");
 
@@ -1922,7 +1923,8 @@ mod tests {
             snap_clone.lock().unwrap().push(snap);
         }));
 
-        let _result = fetch_tool_sources(&fetch, &cache, cb).await.expect("fetch should succeed");
+        let _result =
+            fetch_tool_sources(&fetch, &cache, "download", cb).await.expect("fetch should succeed");
 
         let all = snapshots.lock().unwrap().clone();
         assert!(!all.is_empty(), "should have recorded at least one fetch snapshot");

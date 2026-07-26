@@ -76,7 +76,8 @@ async fn fetch_echo_produces_launcher_scripts_via_cache() {
         .await
         .expect("open UserLevelCache");
 
-    let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo sources");
+    let downloaded =
+        fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo sources");
 
     assert_eq!(downloaded.tool_id, "echo");
     assert_eq!(downloaded.entries.len(), ECHO_OS_LABELS.len());
@@ -116,8 +117,8 @@ async fn fetch_echo_is_cached_idempotently() {
         .await
         .expect("open UserLevelCache");
 
-    let first = fetch_tool_sources(&fetch, &cache, None).await.expect("first fetch");
-    let second = fetch_tool_sources(&fetch, &cache, None).await.expect("second fetch");
+    let first = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("first fetch");
+    let second = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("second fetch");
 
     assert_eq!(first.entries.len(), second.entries.len());
     for (a, b) in first.entries.iter().zip(second.entries.iter()) {
@@ -136,7 +137,7 @@ async fn postprocess_echo_produces_correct_content_map_and_os_exec_paths() {
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
-    let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo");
+    let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
     let cas = InMemoryCas::default();
 
     let result = postprocess_tool_sources(&downloaded, &cas, None).await.expect("postprocess echo");
@@ -180,7 +181,7 @@ async fn full_pipeline_echo_all_hashes_retrievable_from_cas() {
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
-    let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo");
+    let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
     let cas = InMemoryCas::default();
 
     let result = postprocess_tool_sources(&downloaded, &cas, None).await.expect("postprocess echo");
@@ -223,7 +224,7 @@ async fn postprocess_fires_progress_per_source_entry() {
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
-    let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo");
+    let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
     let cas = InMemoryCas::default();
     let source_count = downloaded.entries.len();
 
@@ -267,7 +268,7 @@ async fn full_pipeline_progress_monotonic() {
     });
 
     let downloaded =
-        fetch_tool_sources(&fetch, &cache, Some(cb.clone())).await.expect("fetch echo");
+        fetch_tool_sources(&fetch, &cache, "default", Some(cb.clone())).await.expect("fetch echo");
     let _result =
         postprocess_tool_sources(&downloaded, &cas, Some(cb)).await.expect("postprocess echo");
 
@@ -309,7 +310,7 @@ async fn postprocess_mixed_archive_binary_progress() {
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
-    let downloaded = fetch_tool_sources(&fetch, &cache, None).await.expect("fetch echo");
+    let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
 
     let decompressed = pseudo_random_buffer(20_000);
     let zip = synthetic_zip(&[("extra.bin", &decompressed)]);
