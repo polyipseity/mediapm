@@ -116,7 +116,9 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 ///
 /// The resolve bar shows `metadata_fetch_count` items (one per metadata lookup,
 /// e.g., ffmpeg has 2: btbn tag + evermeet version). When all metadata lookups
-/// were cache hits, the bar shows `"cached"`.  Fetch bar shows
+/// were cache hits, the bar shows `"cached (N)"` where N = `metadata_fetch_count`.
+/// When the tool is already up-to-date (Skip), the bar shows `"skipped cached (N)"`
+/// if cached or `"skipped"` otherwise. Fetch bar shows
 /// `sources.len()` items (one per source).  Postprocess bar shows the sum
 /// of per-source items: archive sources contribute 2 items (decompress +
 /// compress), binary/launcher sources contribute 1 item (import).  Phase 2
