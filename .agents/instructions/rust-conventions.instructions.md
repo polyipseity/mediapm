@@ -222,7 +222,22 @@ All diagnostic helpers write to stderr. `print_warning(msg)` produces `"  Δ {ms
 
 ### Progress bar architecture
 
-`mediapm-utils::progress::ProgressGroup` wraps `MultiProgress` from the indicatif crate. `TrackedHandle` wraps an `Arc<SharedState>` with an optional `ProgressBar` instance. Construction uses `ProgressGroup::new()` for a simple group without an overall bar, or `ProgressGroup::with_overall(label, total)` to pin an aggregate bar at the bottom of the group. Finalization calls `finish_success("done")` on each tracked handle followed by `group.join()`, which keeps bars visible until the group drops. Use `join_and_clear()` only when the terminal must be cleared before subsequent output — for example, before printing a result line.
+`mediapm-utils::progress::ProgressGroup` wraps `MultiProgress` from the indicatif crate. `TrackedHandle` wraps an `Arc<SharedState>` with an optional `ProgressBar` instance. Clones share state. `TrackedHandle` methods include: `advance(delta)`, `set_position(pos)`, `set_message(msg)`, `set_prefix(prefix)`, `set_total(total)`, `total()`, `finish()`, `finish_success(msg)`, `finish_error(msg)`, `finish_and_clear()`, `abandon()`, `snapshot()`, `is_finished()`. `ProgressHandle` is a deprecated alias.
+
+Construction uses `ProgressGroup::new()` for a simple group without an overall bar, or `ProgressGroup::with_overall(label, total)` to pin an aggregate bar at the bottom of the group:
+
+```rust
+// Simple group, one bar:
+let group = ProgressGroup::new();
+let pb = group.add_bar(total, "materializing");
+
+// Group with overall bar at bottom:
+let (group, overall) = ProgressGroup::with_overall("sync", phase_count);
+let pb1 = group.add_bar(sub_total, "phase 1");
+let pb2 = group.add_bar(sub_total, "phase 2");
+```
+
+Finalization calls `finish_success("done")` on each tracked handle followed by `group.join()`, which keeps bars visible until the group drops. Use `join_and_clear()` only when the terminal must be cleared before subsequent output — for example, before printing a result line.
 
 ### Global toggle and auto-detection
 
@@ -236,9 +251,31 @@ Every progress bar automatically enables a steady tick at 100 ms intervals via `
 
 The styling stack uses `indicatif` 0.17 (`ProgressBar`, `MultiProgress`, `ProgressStyle`, `HumanBytes`, `HumanCount`) and `console` 0.15 (`Term::stderr().size()` for terminal width detection, `style()` for ANSI coloring). Do not add `owo-colors`, `colored`, `termion`, or other styling crates — `console::style()` is the single styling entry point.
 
+### Visual templates
+
+The active template is chosen automatically via `apply_bar_style()` which checks `terminal_width()`.
+
+**Wide terminal (≥ 60 cols) — child bar:**
+
+```text
+{spinner:.green} {prefix:>12.12} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {msg} ({eta})
+```
+
+**Wide terminal — overall bar:**
+
+```text
+{prefix:>12.12} [{elapsed_precise}] {wide_bar:.green/dim} {pos}/{len} {msg}
+```
+
+**Narrow terminal (< 60 cols) — compact fallback:**
+
+```text
+{spinner:.green} {prefix} [{elapsed_precise}] {pos}/{len} {msg}
+```
+
 ### Styling rules
 
-The spinner glyph is green. The prefix is bold and right-aligned to 12 characters. The elapsed timer is cyan. For child bars, the bar fill is cyan on blue. For the overall bar, the bar fill is green on dim. The ETA display is dim. Progress characters use `█` for fill and `░` for empty. The active visual template is chosen automatically via `apply_bar_style()` which checks `terminal_width()`.
+The spinner glyph is green. The prefix is bold and right-aligned to 12 characters. The elapsed timer is cyan. For child bars, the bar fill is cyan on blue. For the overall bar, the bar fill is green on dim. The ETA display is dim. Progress characters use `█` for fill and `░` for empty.
 
 ### Narrow terminal fallback
 
@@ -277,6 +314,17 @@ Located in the `mediapm-utils` crate. Two availability tiers: `DownloadProgressS
 ### Dependency boundary rule
 
 The conductor _library_ (`mediapm-conductor`) must not depend on indicatif directly. It receives progress updates via `Fn` callbacks typed as `ProgressCallback`. Only the conductor _CLI binary_ and the `mediapm` crate may use indicatif, accessed through `mediapm-utils/progress` with the `progress` feature enabled. This boundary ensures that downstream consumers of the conductor library (such as alternative frontends or test harnesses) are not forced to pull in indicatif and its transitive dependencies.
+
+### Architecture — type location reference
+
+| Type / module | Crate | Feature gate | Available to |
+|---|---|---|---|
+| `mediapm_utils::progress::DownloadProgressSnapshot` | `mediapm-utils` | always | All crates |
+| `mediapm_utils::progress::ProgressCallback` | `mediapm-utils` | always | All crates |
+| `mediapm_utils::progress::{ProgressGroup, TrackedHandle}` | `mediapm-utils` | `progress` | Crates with indicatif |
+| `mediapm_utils::progress::{set_progress_enabled, format_bytes, format_count}` | `mediapm-utils` | `progress` | Crates with indicatif |
+| `crate::output::report::{StatusIcon, print_result, print_warning, print_hint, print_error, print_heading, print_status_report}` | `mediapm` | `cli` | `mediapm` crate only |
+| `crate::output::progress::{ProgressGroup, TrackedHandle, set_progress_enabled, progress_enabled}` | `mediapm` | `cli` | `mediapm` crate only |
 
 ### Common usage pattern in handlers
 
