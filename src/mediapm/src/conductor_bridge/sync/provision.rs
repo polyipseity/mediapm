@@ -149,27 +149,27 @@ pub(super) async fn fetch_and_import_tool_payload(
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
     let metadata_fetch_count = match &outcome {
         PreResolveOutcome::Resolved(_, _, _, count) => *count,
-        PreResolveOutcome::Skip { .. } => 1,
+        PreResolveOutcome::Skip { metadata_fetch_count, .. } => *metadata_fetch_count,
     };
     // Ensure metadata_fetch_count is at least 1 for the progress bar total.
     let bar_total = metadata_fetch_count.max(1);
     let resolve_bar = group.add_bar(bar_total.into(), &format!("{tool_id} [resolve]"));
     error_bars.push(resolve_bar.clone());
     let (mut fetch, canonical_version) = match outcome {
-        PreResolveOutcome::Resolved(f, cv, metadata_cached, _metadata_fetch_count) => {
+        PreResolveOutcome::Resolved(f, cv, metadata_cached, metadata_fetch_count) => {
             if metadata_cached {
-                resolve_bar.set_message("cached");
+                resolve_bar.set_message(&format!("cached ({metadata_fetch_count})"));
             }
             resolve_bar.set_position(bar_total.into());
             resolve_bar.finish();
             (f, cv)
         }
-        PreResolveOutcome::Skip { metadata_cached, .. } => {
+        PreResolveOutcome::Skip { metadata_cached, metadata_fetch_count, .. } => {
             // Tool is already provisioned at this version — show resolve bar
             // with "skipped" indicator, then return early.
             resolve_bar.set_position(bar_total.into());
             if metadata_cached {
-                resolve_bar.set_message("skipped (cached)");
+                resolve_bar.set_message(&format!("skipped cached ({metadata_fetch_count})"));
             } else {
                 resolve_bar.set_message("skipped");
             }
@@ -576,9 +576,10 @@ mod tests {
 
         let ops = tracker.ops();
         assert!(
-            ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "cached")),
-            "expected SetMessage(\"cached\") in ops\ngot: {ops:#?}",
+            ops.iter().any(
+                |op| matches!(op, ProgressOp::SetMessage { message } if message == "cached (1)")
+            ),
+            "expected SetMessage(\"cached (1)\") in ops\ngot: {ops:#?}",
         );
     }
 
@@ -648,8 +649,8 @@ mod tests {
 
         let ops = tracker.ops();
         assert!(
-            ops.iter().any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped (cached)")),
-            "expected SetMessage(\"skipped (cached)\") in ops\ngot: {ops:#?}",
+            ops.iter().any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped cached (1)")),
+            "expected SetMessage(\"skipped cached (1)\") in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
