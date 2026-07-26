@@ -9,7 +9,7 @@
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 
-use crate::tools::downloader::ToolDownloadCache;
+use super::MetadataCacheTracker;
 
 /// Resolves the latest `autobuild-*` tag for BtbN/FFmpeg-Builds.
 ///
@@ -20,7 +20,7 @@ use crate::tools::downloader::ToolDownloadCache;
 /// Returns `(tag, metadata_cached)` where `metadata_cached` is `true` when
 /// the result was served from the metadata cache.
 pub(crate) async fn resolve_btbn_tag(
-    metadata_cache: Option<&ToolDownloadCache>,
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
 ) -> Result<(String, bool), mediapm_conductor::ConductorError> {
     super::resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", metadata_cache).await
 }
@@ -38,7 +38,7 @@ pub(crate) async fn resolve_btbn_tag(
 /// Returns [`mediapm_conductor::ConductorError`] when the HTTP request or
 /// header parsing fails.
 pub(crate) async fn resolve_evermeet_version(
-    metadata_cache: Option<&ToolDownloadCache>,
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
 ) -> Result<(String, bool), mediapm_conductor::ConductorError> {
     let url = "https://evermeet.cx/ffmpeg/getrelease/zip";
 

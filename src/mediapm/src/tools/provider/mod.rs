@@ -26,7 +26,6 @@ use crate::tools::downloader::ToolDownloadCache;
 /// the actual number of metadata cache lookups performed, rather than requiring
 /// a manually maintained per-tool count that drifts when resolvers are added or
 /// removed.
-#[derive(Debug)]
 pub(crate) struct MetadataCacheTracker<'a> {
     inner: &'a ToolDownloadCache,
     count: AtomicU32,
@@ -77,7 +76,7 @@ impl<'a> MetadataCacheTracker<'a> {
 pub(crate) async fn resolve_latest_github_tag(
     owner: &str,
     repo: &str,
-    metadata_cache: Option<&ToolDownloadCache>,
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
 ) -> Result<(String, String, bool), mediapm_conductor::ConductorError> {
     let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
 
@@ -173,7 +172,7 @@ pub(crate) async fn resolve_latest_github_tag(
 pub(crate) async fn resolve_latest_autobuild_tag(
     owner: &str,
     repo: &str,
-    metadata_cache: Option<&ToolDownloadCache>,
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
 ) -> Result<(String, bool), mediapm_conductor::ConductorError> {
     let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases?per_page=10");
 
@@ -255,10 +254,13 @@ pub(crate) async fn resolve_tool_fetch(
     tool_name: &str,
     metadata_cache: Option<&ToolDownloadCache>,
 ) -> Result<(ResolvedToolFetch, String, bool, u32), mediapm_conductor::ConductorError> {
-    match tool_name {
+    // Wrap the cache in a tracker that counts every lookup_bytes call.
+    let tracker = metadata_cache.map(MetadataCacheTracker::new);
+    let tracker_ref = tracker.as_ref();
+
+    let (fetch, canonical, metadata_cached) = match tool_name {
         n if n.eq_ignore_ascii_case("yt-dlp") => {
-            let (tag, commit_hash, metadata_cached) =
-                yt_dlp::resolve_latest_tag(metadata_cache).await?;
+            let (tag, commit_hash, mc) = yt_dlp::resolve_latest_tag(tracker_ref).await?;
             let mut fetch = yt_dlp::sources();
             for source in &mut fetch.sources {
                 if let SourceProducer::Fetch { urls } = &mut source.producer {
@@ -267,21 +269,18 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok((fetch, commit_hash, metadata_cached, 1))
+            (fetch, commit_hash, mc)
         }
         n if n.eq_ignore_ascii_case("ffmpeg") => {
-            let (autobuild_tag, btbn_cached) = ffmpeg::resolve_btbn_tag(metadata_cache).await?;
+            let (autobuild_tag, btbn_cached) = ffmpeg::resolve_btbn_tag(tracker_ref).await?;
             let (evermeet_version, evermeet_cached) =
-                ffmpeg::resolve_evermeet_version(metadata_cache).await?;
+                ffmpeg::resolve_evermeet_version(tracker_ref).await?;
             let canonical_version = format!("{autobuild_tag}+evermeet-{evermeet_version}");
-            // Do NOT substitute URLs. The "latest" release assets always use
-            // ffmpeg-master-latest-* naming; autobuild releases use a
-            // different naming scheme (`ffmpeg-N-{revision}-g{hash}-*`).
             let fetch = ffmpeg::sources();
-            Ok((fetch, canonical_version, btbn_cached || evermeet_cached, 2))
+            (fetch, canonical_version, btbn_cached || evermeet_cached)
         }
         n if n.eq_ignore_ascii_case("deno") => {
-            let (tag, commit_hash, metadata_cached) = deno::resolve_tag(metadata_cache).await?;
+            let (tag, commit_hash, mc) = deno::resolve_tag(tracker_ref).await?;
             let mut fetch = deno::sources();
             for source in &mut fetch.sources {
                 if let SourceProducer::Fetch { urls } = &mut source.producer {
@@ -290,10 +289,10 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok((fetch, commit_hash, metadata_cached, 1))
+            (fetch, commit_hash, mc)
         }
         n if n.eq_ignore_ascii_case("rsgain") => {
-            let (tag, commit_hash, metadata_cached) = rsgain::resolve_tag(metadata_cache).await?;
+            let (tag, commit_hash, mc) = rsgain::resolve_tag(tracker_ref).await?;
             let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
             let mut fetch = rsgain::sources();
             for source in &mut fetch.sources {
@@ -305,14 +304,14 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok((fetch, commit_hash, metadata_cached, 1))
+            (fetch, commit_hash, mc)
         }
         n if n.eq_ignore_ascii_case("media-tagger") => {
             let canonical = crate::global::MEDIAPM_GIT_HASH.to_string();
-            Ok((media_tagger::sources(), canonical, false, 1))
+            (media_tagger::sources(), canonical, false)
         }
         n if n.eq_ignore_ascii_case("sd") => {
-            let (tag, commit_hash, metadata_cached) = sd::resolve_tag(metadata_cache).await?;
+            let (tag, commit_hash, mc) = sd::resolve_tag(tracker_ref).await?;
             let mut fetch = sd::sources();
             for source in &mut fetch.sources {
                 if let SourceProducer::Fetch { urls } = &mut source.producer {
@@ -323,12 +322,16 @@ pub(crate) async fn resolve_tool_fetch(
                     }
                 }
             }
-            Ok((fetch, commit_hash, metadata_cached, 1))
+            (fetch, commit_hash, mc)
         }
-        _ => Err(mediapm_conductor::ConductorError::Workflow(format!(
-            "tool {tool_name}: no provider registered for resolution"
-        ))),
-    }
+        _ => {
+            return Err(mediapm_conductor::ConductorError::Workflow(format!(
+                "tool {tool_name}: no provider registered for resolution"
+            )));
+        }
+    };
+    let metadata_fetch_count = tracker_ref.map(|t| t.lookup_count()).unwrap_or(0);
+    Ok((fetch, canonical, metadata_cached, metadata_fetch_count))
 }
 
 #[cfg(test)]
@@ -601,6 +604,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+        let tracker = MetadataCacheTracker::new(&cache);
 
         let owner = "testowner";
         let repo = "testrepo";
@@ -612,7 +616,7 @@ mod tests {
         cache.store_bytes(&api_url, format!("{expected_tag}\n{expected_hash}").as_bytes()).await;
 
         let (tag, commit_hash, _metadata_cached) =
-            resolve_latest_github_tag(owner, repo, Some(&cache))
+            resolve_latest_github_tag(owner, repo, Some(&tracker))
                 .await
                 .expect("resolve_latest_github_tag should succeed with cached data");
 
@@ -969,6 +973,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+        let tracker = MetadataCacheTracker::new(&cache);
 
         // Pre-seed cache with non-UTF-8 bytes — String::from_utf8 conversion
         // fails, triggering fallthrough to the HTTP fetch. Without a real GitHub
@@ -978,7 +983,7 @@ mod tests {
         let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
         cache.store_bytes(&api_url, b"\xff\xfe\x00latest").await;
 
-        let err = resolve_latest_github_tag(owner, repo, Some(&cache)).await.unwrap_err();
+        let err = resolve_latest_github_tag(owner, repo, Some(&tracker)).await.unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("GitHub API request failed")
@@ -993,11 +998,12 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+        let tracker = MetadataCacheTracker::new(&cache);
         let api_url = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10";
         cache.store_bytes(api_url, b"autobuild-2025-07-15-12-00").await;
 
         let (tag, _metadata_cached) =
-            resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", Some(&cache))
+            resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", Some(&tracker))
                 .await
                 .expect("should return cached autobuild tag");
         assert_eq!(tag, "autobuild-2025-07-15-12-00");
@@ -1008,9 +1014,10 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+        let tracker = MetadataCacheTracker::new(&cache);
         cache.store_bytes("https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
-        let (version, cached) = ffmpeg::resolve_evermeet_version(Some(&cache))
+        let (version, cached) = ffmpeg::resolve_evermeet_version(Some(&tracker))
             .await
             .expect("should return cached evermeet version");
         assert_eq!(version, "8.1.2");
@@ -1022,12 +1029,13 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+        let tracker = MetadataCacheTracker::new(&cache);
         let api_url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
         // Cache seeded with "{tag}\n{hash}" format.
         cache.store_bytes(api_url, b"2025.07.15\na1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0").await;
 
         let (tag, commit_hash, _metadata_cached) =
-            resolve_latest_github_tag("yt-dlp", "yt-dlp", Some(&cache))
+            resolve_latest_github_tag("yt-dlp", "yt-dlp", Some(&tracker))
                 .await
                 .expect("should return cached (tag, hash)");
         assert_eq!(tag, "2025.07.15");

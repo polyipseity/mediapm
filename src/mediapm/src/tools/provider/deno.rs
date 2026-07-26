@@ -6,7 +6,7 @@
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 
-use crate::tools::downloader::ToolDownloadCache;
+use super::MetadataCacheTracker;
 
 /// Resolves the latest tag for deno from GitHub releases.
 ///
@@ -15,7 +15,7 @@ use crate::tools::downloader::ToolDownloadCache;
 /// `metadata_cached` is `true` when the result was served from the metadata
 /// cache.
 pub(crate) async fn resolve_tag(
-    metadata_cache: Option<&ToolDownloadCache>,
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
 ) -> Result<(String, String, bool), mediapm_conductor::ConductorError> {
     super::resolve_latest_github_tag("denoland", "deno", metadata_cache).await
 }
