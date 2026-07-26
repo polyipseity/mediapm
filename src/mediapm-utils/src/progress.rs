@@ -1467,6 +1467,16 @@ mod inner {
             self.orphaned_states.borrow_mut().push_back(Arc::clone(state));
         }
 
+        /// Returns `true` when at least one tracked slot still has an active
+        /// (non-terminal) source.  When this returns `false`, the daemon ticker
+        /// can sleep longer since no spinner animation or progress updates are
+        /// needed.
+        fn has_active_slots(&self) -> bool {
+            self.slots
+                .iter()
+                .any(|slot| slot.source.borrow().as_ref().is_some_and(|s| !s.is_finished()))
+        }
+
         /// Defensive sync: refresh all render slots from their tracked sources.
         ///
         /// Includes resize reactivity and full style re-application.
@@ -2124,13 +2134,16 @@ mod inner {
             let weak = Arc::downgrade(renderer);
             match std::thread::Builder::new().name("mediapm-progress-ticker".into()).spawn(
                 move || {
+                    let mut all_done = false;
                     loop {
-                        std::thread::sleep(Duration::from_millis(50));
+                        let sleep_ms = if all_done { 1000 } else { 50 };
+                        std::thread::sleep(Duration::from_millis(sleep_ms));
                         let Some(r) = weak.upgrade() else { break };
                         let Ok(mut guard) = r.lock() else {
                             break;
                         };
                         guard.tick();
+                        all_done = !guard.has_active_slots();
                     }
                 },
             ) {
