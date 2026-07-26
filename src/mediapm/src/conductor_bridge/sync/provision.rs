@@ -153,8 +153,7 @@ pub(super) async fn fetch_and_import_tool_payload(
         PreResolveOutcome::Resolved(_, _, _, count) => *count,
         PreResolveOutcome::Skip { metadata_fetch_count, .. } => *metadata_fetch_count,
     };
-    // Ensure metadata_fetch_count is at least 1 for the progress bar total.
-    let bar_total = metadata_fetch_count.max(1);
+    let bar_total = metadata_fetch_count;
     let resolve_bar = group.add_bar(bar_total.into(), &format!("{tool_id} [resolve]"));
     error_bars.push(resolve_bar.clone());
     let (mut fetch, canonical_version) = match outcome {
@@ -735,6 +734,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_bar_zero_metadata_fetch_count_uses_min_one() {
+        // Regression: resolve bar with metadata_fetch_count=0 gets total=0
+        // (indeterminate bar — set_message works correctly after disabled flag
+        // was moved out of the total==0 proxy check).
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
         let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
@@ -759,12 +761,166 @@ mod tests {
 
         let ops = tracker.ops();
         assert!(
-            ops.iter().any(|op| matches!(op, ProgressOp::AddBar { total: 1, .. })),
-            "expected AddBar total=1 in ops\ngot: {ops:#?}",
+            ops.iter().any(|op| matches!(op, ProgressOp::AddBar { total: 0, .. })),
+            "expected AddBar total=0 in ops\ngot: {ops:#?}",
         );
         assert!(
-            ops.iter().any(|op| matches!(op, ProgressOp::SetPosition { pos: 1 })),
+            ops.iter().any(|op| matches!(op, ProgressOp::SetPosition { pos: 0 })),
+            "expected SetPosition pos=0 in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_bar_cached_two_shows_cached_two() {
+        // Regression: resolve bar with metadata_cached=true and
+        // metadata_fetch_count=2 (e.g., ffmpeg btbn + evermeet) must show
+        // "cached (2)" (not bare "cached" without count).
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(fetch, "v1.0.0".to_string(), true, 2);
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "media-tagger",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
+        assert!(result.is_ok(), "resolve should succeed");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::AddBar { total: 2, .. })),
+            "expected AddBar total=2 in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::SetPosition { pos: 2 })),
+            "expected SetPosition pos=2 in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(
+                |op| matches!(op, ProgressOp::SetMessage { message } if message == "cached (2)")
+            ),
+            "expected SetMessage(\"cached (2)\") in ops\ngot: {ops:#?}",
+        );
+        // Also verify bare "cached" (without count) never appears.
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "cached")),
+            "unexpected SetMessage(\"cached\") in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_bar_shows_skipped_cached_two() {
+        // Regression: skip bar with metadata_cached=true and
+        // metadata_fetch_count=2 must show "skipped cached (2)" and fill the
+        // bar to position = total.
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
+        let outcome = PreResolveOutcome::Skip {
+            name: "test-tool".to_string(),
+            version: "v1.0.0".to_string(),
+            metadata_cached: true,
+            metadata_fetch_count: 2,
+        };
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "test-tool",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
+        assert!(result.is_ok(), "Skip should return Ok");
+        assert!(result.unwrap().is_none(), "Skip should return Ok(None)");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::AddBar { total: 2, .. })),
+            "expected AddBar total=2 in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::SetPosition { pos: 2 })),
+            "expected SetPosition pos=2 in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(
+                |op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped cached (2)")
+            ),
+            "expected SetMessage(\"skipped cached (2)\") in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
+            "expected FinishSuccess in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_bar_zero_metadata_fetch_count_uses_min_one() {
+        // Regression: skip bar with metadata_fetch_count=0 uses total=0
+        // (indeterminate bar — set_message works correctly).
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = UserLevelCache::open(tmp.path(), "tools.json", 30 * 24 * 60 * 60)
+            .await
+            .expect("cache open");
+        let metadata_cache = UserLevelCache::open(tmp.path(), "tool_metadata.json", 24 * 60 * 60)
+            .await
+            .expect("metadata cache open");
+        let tracker = RecordingProgressTracker::new();
+        let outcome = PreResolveOutcome::Skip {
+            name: "test-tool".to_string(),
+            version: "v1.0.0".to_string(),
+            metadata_cached: false,
+            metadata_fetch_count: 0,
+        };
+        let result = fetch_and_import_tool_payload(
+            &cas,
+            "test-tool",
+            &cache,
+            &metadata_cache,
+            &tracker,
+            outcome,
+        )
+        .await;
+        assert!(result.is_ok(), "Skip should return Ok");
+        assert!(result.unwrap().is_none(), "Skip should return Ok(None)");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::AddBar { total: 0, .. })),
+            "expected AddBar total=0 in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::SetPosition { pos: 0 })),
             "expected SetPosition pos=1 in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped")),
+            "expected SetMessage(\"skipped\") in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
+            "expected FinishSuccess in ops\ngot: {ops:#?}",
         );
     }
 
