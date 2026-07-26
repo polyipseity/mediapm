@@ -31,7 +31,7 @@ Returns a `ResolvedToolFetch` containing:
 
 ## `MetadataCacheTracker`
 
-The `MetadataCacheTracker` type wraps `&ToolDownloadCache` and automatically
+The `MetadataCacheTracker` type wraps `(&Cache, domain: &str)` and automatically
 counts every `lookup_bytes` call. `resolve_tool_fetch` uses this to auto-derive
 `metadata_fetch_count` (the fourth tuple element) instead of maintaining a
 manually-updated per-tool constant. When a resolver is added or removed, the

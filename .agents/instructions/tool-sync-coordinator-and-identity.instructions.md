@@ -17,9 +17,10 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
 
 1. **Load generated document** — `load_conductor_generated_document(paths)`. Returns empty `NickelDocument` if file doesn't exist.
 2. **Register builtins** — `register_missing_builtin_tools()`, `apply_builtin_runtime_defaults()`.
-3. **Open caches** — `ToolDownloadCache::open()` for content cache (30d TTL) and metadata cache (1d TTL) under the user-level cache root. The cache root path is determined by the `cache_root_override` parameter:
+3. **Open cache** — `Cache::open()` with two domains: `"tools"` (content, 30d TTL) and `"tool_metadata"` (metadata, 1d TTL) under the user-level cache root. The cache root path is determined by the `cache_root_override` parameter:
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
-   - `Some(path)` → use the provided path as the cache root for both content and metadata caches
+   - `Some(path)` → use the provided path as the cache root
+   A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
 4. **Provision skip** — before fetching each tool, compare `state.managed_tools[tool_id].canonical_version` against the resolved canonical version using direct string equality. If they match AND the stored `fetch_hash` is non-empty, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar.
 5. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).

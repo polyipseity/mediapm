@@ -21,4 +21,4 @@ Unified policy for all background maintenance tasks across the mediapm workspace
 
 1. **WAL consumer** — `src/mediapm-cas/src/storage/file_system.rs`. Interval 300s hardcoded. Stored as `Arc<BackgroundMaintenanceGuard>`. Field name `_bg_guard`.
 2. **Conductor CAS GC** — `src/mediapm-conductor/src/orchestration/coordinator.rs`. Interval 86400s default, configurable via `start_background_gc(interval_secs)`. Stored as `BackgroundMaintenanceGuard` in `WorkflowCoordinator`. Field name `background_gc_guard`.
-3. **Cache prune** — `src/mediapm-conductor/src/cache.rs`. Interval 86400s fixed. Stored as `Option<Arc<BackgroundMaintenanceGuard>>` in `Cache`. Started automatically inside `open_with_index_file_name_and_ttl`. Field name `bg_guard`.
+3. **Cache prune** — `src/mediapm-conductor/src/cache.rs`. Interval 86400s fixed. Stored as `Option<Arc<BackgroundMaintenanceGuard>>` in `Cache`. Started automatically inside `Cache::open()` (and its backward-compat wrapper `open_with_index_file_name_and_ttl`). Field name `bg_guard`.
