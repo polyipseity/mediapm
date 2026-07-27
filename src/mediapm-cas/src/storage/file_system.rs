@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::blob_store::{BlobStore, FileSystemBlobStore};
+use super::directory_lock::DirectoryLockGuard;
 use super::metadata_store::{FileSystemMetadataStore, MetadataStore};
 use super::store::CasStore;
 use super::wal::FileWal;
@@ -30,11 +31,16 @@ use crate::storage::metadata_store::MetadataEntry;
 pub struct FileSystemCas {
     store: Arc<CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>>,
     _bg_guard: Arc<BackgroundMaintenanceGuard>,
+    _dir_lock: Arc<DirectoryLockGuard>,
 }
 
 impl Clone for FileSystemCas {
     fn clone(&self) -> Self {
-        Self { store: self.store.clone(), _bg_guard: self._bg_guard.clone() }
+        Self {
+            store: self.store.clone(),
+            _bg_guard: self._bg_guard.clone(),
+            _dir_lock: self._dir_lock.clone(),
+        }
     }
 }
 
@@ -61,6 +67,13 @@ impl FileSystemCas {
     /// synchronously during open. This ensures the store is immediately
     /// readable after construction. See [`CasStore::new`] for the
     /// rationale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::LockContention`] if the directory is already
+    /// locked by another [`FileSystemCas`] instance (same or different
+    /// process). Share the [`Arc<FileSystemCas>`] between consumers instead
+    /// of opening multiple instances.
     ///
     /// Delegates to WAL creation, blob store creation, and metadata rebuild.
     pub async fn open_with_strategies_and_interval(
@@ -98,11 +111,19 @@ impl FileSystemCas {
         });
         let guard = BackgroundMaintenanceGuard { cancelled, handle: Some(handle) };
 
-        Ok(Self { store, _bg_guard: Arc::new(guard) })
+        // Acquire exclusive directory lock (intra-process then inter-process).
+        // The lock is held for the full CAS lifetime via Arc sharing.
+        let dir_lock = Arc::new(DirectoryLockGuard::lock(dir).await?);
+
+        Ok(Self { store, _bg_guard: Arc::new(guard), _dir_lock: dir_lock })
     }
 
     /// Open or create a file-system CAS store at `dir` with the given
     /// verify strategies, spawning a background WAL consumer.
+    /// # Errors
+    ///
+    /// Returns [`CasError::LockContention`] if the directory is already
+    /// locked by another [`FileSystemCas`] instance.
     ///
     /// Delegates to WAL creation, blob store creation, and metadata rebuild.
     pub async fn open_with_strategies(
@@ -115,6 +136,10 @@ impl FileSystemCas {
 
     /// Open or create a file-system CAS store at `dir` with no
     /// integrity verification enabled.
+    /// # Errors
+    ///
+    /// Returns [`CasError::LockContention`] if the directory is already
+    /// locked by another [`FileSystemCas`] instance.
     ///
     /// Delegates to [`open_with_strategies`](Self::open_with_strategies).
     pub async fn open(dir: &Path) -> Result<Self, CasError> {
