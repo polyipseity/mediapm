@@ -235,7 +235,20 @@ struct CountingReader<'a> {
 }
 ```
 
-Wraps a byte slice to track compressed bytes consumed during tar extraction. Uses `Cell<u64>` (not `AtomicU64`) since extraction is single-threaded. Fires `progress_cb` at `COMPRESSED_CHUNK` (128 KB) boundaries. The callback maps to `budget.set_pos(item_idx, pos)` created by `process_single_source`.
+Wraps a byte slice to track compressed bytes consumed during tar extraction. Uses `Cell<u64>` (not `AtomicU64`) since extraction is single-threaded. Fires `progress_cb` at `SUB_ENTRY_CHUNK` (64 KB) boundaries. The callback maps to `budget.set_pos(item_idx, pos)` created by `process_single_source`.
+
+## Unified sub-entry chunk policy
+
+All process-phase progress now uses a single chunk threshold: `SUB_ENTRY_CHUNK = 65536 (64 KB)`.
+
+| Path | Granularity mechanism | Chunk threshold |
+|------|----------------------|-----------------|
+| ZIP extraction | Proportional estimate per read | `SUB_ENTRY_CHUNK` (same as read buffer) |
+| tar.gz extraction | `CountingReader` gate | `SUB_ENTRY_CHUNK` |
+| tar.xz extraction | `CountingReader` gate | `SUB_ENTRY_CHUNK` |
+| Pack (compress) | Chunked read + write | `SUB_ENTRY_CHUNK` |
+
+This ensures consistent ~64 KB callback granularity across all archive formats and phases, providing smooth ~20 Hz progress updates without excessive callback overhead.
 
 ## Placement
 

@@ -192,8 +192,14 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | GzDecoder read-ahead (~32 KB jumps) mitigated by per-entry callbacks                                | `extract_tar_gz_large_entry_fires_sub_entry_progress`                                    | 🟢     |
 | XzDecoder total_in() vs CountingReader responsiveness design decision                               | `extract_tar_xz_progress_position_non_decreasing`                                        | 🟢     |
 | Compress ZIP metadata overhead (~KB) vs payload (MB–GB) — negligible undercount                     | (no dedicated test — accepted approximation)                                             | 🟡     |
+| Compress sub-entry chunking: callback fires per SUB_ENTRY_CHUNK                                      | `compress_budget_total_matches_output_size`, `compress_monotonic_non_decreasing`          | 🟢     |
 | Fidelity over precision: smooth visual updates prioritized over byte-exact accuracy                 | (architectural invariant — verified by all monotonicity tests)                           | 🟢     |
-| CountingReader sub-entry callback fires every COMPRESSED_CHUNK bytes                                | `extract_zip_large_entry_fires_multiple_sub_entry_callbacks`                             | 🟢     |
+| CountingReader sub-entry callback fires every SUB_ENTRY_CHUNK bytes                                 | `extract_zip_large_entry_fires_multiple_sub_entry_callbacks`                             | 🟢     |
+|                                                                                                     | `counting_reader_tracks_exact_compressed_bytes`                                          | 🟢     |
 | CountingReader plain-u64 cleanup                                                                     | Updated `CountingReader` tests (Cell<u64> → correct field access)                        | 🟢     |
 | per-entry callback fires after every tar entry (fills gaps where no sub-entry callback fires)       | `extract_tar_gz_fires_per_entry_progress`                                                | 🟢     |
 |                                                                                                     | `extract_tar_xz_fires_per_entry_progress`                                                | 🟢     |
+| GzDecoder + CountingReader integration                                                              | `gzdecoder_with_counting_reader_tracks_consumption`                                      | 🟢     |
+| ZIP extraction end-position equals entry compressed total                                           | `zip_extraction_end_position_equals_entry_compressed`                                    | 🟢     |
+| ZIP extraction: all snapshots have position ≤ total, non-decreasing                                 | `zip_position_never_exceeds_entry_total`                                                 | 🟢     |
+| Unified sub-entry chunk policy: SUB_ENTRY_CHUNK = 65536                                              | All sub-entry tests pass at 64 KB threshold                                               | 🟢     |
