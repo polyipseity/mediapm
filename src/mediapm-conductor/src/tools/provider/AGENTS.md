@@ -34,6 +34,32 @@ The `total_items` field is not part of `ResolvedToolFetch` — consumers derive 
 - **Bytes are always aggregate**: `ProviderProgressSnapshot.bytes` reports values summed across all sources/entries in the phase. Individual source/entry sizes are never exposed. This is an architectural invariant that decouples the bridge adapter and progress bar from internal provider structure.
 - **SI prefixes are 1000-based**: `format_count` and friends use SI decimal prefixes (`k` = 1,000, `M` = 1,000,000, `G` = 1,000,000,000), not binary prefixes (`Ki` = 1,024, etc.). Progress rates (`format_rate`) follow the same convention.
 
+### Counting mechanism invariants
+
+The byte-level progress tracking system across all three phases guarantees:
+
+- **Monotonic non-decreasing**: position never decreases within a phase.
+- **Position never exceeds total**: per-item `pos ≤ total` enforced by hard `assert!`.
+- **Eventual completion**: position reaches total at the end of each phase.
+- **Per-format extraction tracking**:
+  - **ZIP**: proportional estimation via `(written * entry_compressed) / entry_decompressed` —
+    endpoint is exact (final position = entry compressed size), mid-entry is approximate
+    (assumes uniform compression ratio across the entry).
+  - **tar.gz**: [`CountingReader`] tracks compressed bytes consumed by `GzDecoder`.
+    GzDecoder may read ahead of the compressed stream, causing occasional progress
+    "jumps" of up to the decoder's internal buffer size (~32 KB). Per-entry callbacks
+    after each tar entry smooth the visual appearance.
+  - **tar.xz**: [`CountingReader`] tracks compressed bytes consumed by `XzDecoder`.
+    `XzDecoder::total_in()` could provide exact tracking but `CountingReader` is used
+    for more responsive sub-block progress (xz block boundaries can be multi-MB).
+  - **Compress (packing to ZIP)**: file sizes are accumulated as decompressed bytes
+    are written. ZIP metadata overhead (~KB) is not included in the total, causing
+    a small undercount vs final ZIP file size — negligible for payloads in the
+    MB–GB range.
+- **Fidelity over precision**: progress tracking prioritizes smooth visual updates
+  and monotonic progress over byte-exact accuracy. All counting paths guarantee
+  monotonicity and eventual completion.
+
 ### Progress size tracking (MultiItemBudget)
 
 Progress size tracking uses the [`MultiItemBudget`](../../../../.agents/instructions/progress-budget.instructions.md)

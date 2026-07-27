@@ -134,6 +134,30 @@ This is a deliberate design choice (Option 1). The tradeoff is:
 
 No explicit `DOWNLOAD_CHUNK_SIZE` constant is introduced. The chunk size is left to `reqwest`/`hyper` defaults. If hyper ever changes its default buffer size, progress granularity shifts proportionally — the visual result remains smooth because the daemon ticker governs draw frequency, not chunk size.
 
+### Counting mechanism accuracy guarantees
+
+The provider pipeline's byte-level progress across all phases follows these
+invariants:
+
+- **Monotonic non-decreasing**: position never decreases within a phase.
+- **Position never exceeds total**: per-item `pos ≤ total` enforced by hard `assert!`.
+- **Eventual completion**: position equals total at the end of each phase.
+- **Multi-archive format accuracy**:
+  - **ZIP extraction**: proportional estimation `(written * entry_compressed) /
+    entry_decompressed`. Endpoint is exact; mid-entry is approximate (uniform
+    compression ratio assumed).
+  - **tar.gz extraction**: `CountingReader` tracks compressed bytes consumed.
+    GzDecoder may read ahead causing jumps up to ~32 KB — mitigated by
+    per-entry callbacks.
+  - **tar.xz extraction**: `CountingReader` tracks compressed bytes consumed.
+    More responsive than `XzDecoder::total_in()` (which only updates at xz
+    block boundaries, potentially multi-MB apart).
+  - **Compress packing**: file sizes accumulate as decompressed bytes written.
+    ZIP metadata overhead (~KB) excluded from total — negligible vs payload
+    sizes.
+- **Fidelity over precision**: tracking prioritizes smooth visual updates over
+  byte-exact accuracy. All paths guarantee monotonicity and eventual completion.
+
 ### Postprocess phase loop (`postprocess_tool_sources`)
 
 Archive sources use **2 budget items** (decompress + compress); binary/launcher sources use **1 item** (CAS import).

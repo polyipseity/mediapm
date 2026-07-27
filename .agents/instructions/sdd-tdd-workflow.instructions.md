@@ -177,3 +177,23 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | FileSystemCas cross-process contention (flock barrier detection)      | `file_system_cas_contention_with_flock_barrier`                                                                            | 🟢     |
 | FileSystemCas concurrent clones share lock (no contention)            | `file_system_cas_concurrent_clones_no_contention`                                                                          | 🟢     |
 | FileSystemCas symlink canonicalization (symlink → same dir detected)  | `file_system_cas_contention_with_canonical_symlink`                                                                        | 🟢     |
+
+### Counting mechanism
+
+| Spec item                                                                                           | Test(s)                                                                                  | Status |
+| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------ |
+| Monotonic non-decreasing position within a phase                                                    | `extract_zip_progress_position_non_decreasing_and_total_constant`                        | 🟢     |
+|                                                                                                     | `extract_tar_gz_progress_position_non_decreasing`                                        | 🟢     |
+|                                                                                                     | `extract_tar_xz_progress_position_non_decreasing`                                        | 🟢     |
+| Position never exceeds total per item (hard assert)                                                 | `multi_item_budget_invariant_panics`                                                     | 🟢     |
+| Position equals total at endpoint of each phase                                                     | `postprocess_budget_pos_never_exceeds_total` (pos=total at end)                          | 🟢     |
+| ZIP proportional estimation: endpoint exact                                                         | `postprocess_budget_pos_never_exceeds_total`                                             | 🟢     |
+| ZIP proportional estimation: mid-entry approximate                                                  | (no exactness test — accepted approximation)                                             | 🟡     |
+| GzDecoder read-ahead (~32 KB jumps) mitigated by per-entry callbacks                                | `extract_tar_gz_large_entry_fires_sub_entry_progress`                                    | 🟢     |
+| XzDecoder total_in() vs CountingReader responsiveness design decision                               | `extract_tar_xz_progress_position_non_decreasing`                                        | 🟢     |
+| Compress ZIP metadata overhead (~KB) vs payload (MB–GB) — negligible undercount                     | (no dedicated test — accepted approximation)                                             | 🟡     |
+| Fidelity over precision: smooth visual updates prioritized over byte-exact accuracy                 | (architectural invariant — verified by all monotonicity tests)                           | 🟢     |
+| CountingReader sub-entry callback fires every COMPRESSED_CHUNK bytes                                | `extract_zip_large_entry_fires_multiple_sub_entry_callbacks`                             | 🟢     |
+| CountingReader plain-u64 cleanup                                                                     | Updated `CountingReader` tests (Cell<u64> → correct field access)                        | 🟢     |
+| per-entry callback fires after every tar entry (fills gaps where no sub-entry callback fires)       | `extract_tar_gz_fires_per_entry_progress`                                                | 🟢     |
+|                                                                                                     | `extract_tar_xz_fires_per_entry_progress`                                                | 🟢     |
