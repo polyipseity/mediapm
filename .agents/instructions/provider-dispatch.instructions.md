@@ -40,7 +40,7 @@ count adjusts automatically — no manual update needed.
 ## `resolve_latest_github_tag(owner, repo, metadata_cache)`
 
 - Cache-first: looks up `https://api.github.com/repos/{owner}/{repo}/releases/latest` in metadata cache.
-- On miss: sends GET request via `shared_http_client()`, parses `tag_name` from JSON response.
+- On miss: sends GET request via `mediapm_conductor::http::client::shared_http_client()`, parses `tag_name` from JSON response.
 - On hit: stores result in metadata cache with key = API URL.
 - **Metadata cache rules**: caller must NOT call `touch()` — TTL (1 day) is anchored to creation time, not last use.
 

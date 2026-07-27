@@ -1,7 +1,7 @@
 ---
 description: "Use when editing cache and HTTP client configuration. Covers three-tier cache hierarchy, TTL policies, shared HTTP client configuration, and decoupling invariants for HTTP modules."
 name: "Cache and HTTP Client Invariants"
-applyTo: "src/mediapm/src/tools/downloader.rs, src/mediapm/src/http_client.rs, src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins/import/src/lib.rs"
+applyTo: "src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins/import/src/lib.rs, src/mediapm/src/conductor_bridge/sync/provision.rs"
 ---
 
 # Cache and HTTP client
@@ -43,11 +43,10 @@ configuration pattern:
 
 | Client                                                  | Connect timeout | Request timeout | User-Agent                                                |
 | ------------------------------------------------------- | --------------- | --------------- | --------------------------------------------------------- |
-| `mediapm` (async)                                       | 30s             | 30 min          | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
-| `mediapm-conductor` (async, `tool-presets`)             | 30s             | 30 min          | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
+| `mediapm-conductor` (async, unconditional)              | 30s             | 30 min          | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
 | `mediapm-conductor-builtins/import` (blocking, `fetch`) | 60s             | 60s             | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
 
-All three override the request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` env var (minimum 30s).
+Both override the request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` env var (minimum 30s).
 
 ## Hard boundary rules
 
@@ -57,17 +56,17 @@ All three override the request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` env va
 
 ## HTTP client invariants
 
-The codebase has **three** shared HTTP clients (two async + one blocking), each gated behind its own Cargo feature. All use the `OnceLock` pattern.
+The codebase has **two** shared HTTP clients (one async + one blocking), both using the `OnceLock` pattern.
 
 | Client                                                      | Crate                               | Feature        | Runtime                 |
 | ----------------------------------------------------------- | ----------------------------------- | -------------- | ----------------------- |
-| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm`                           | unconditional  | Tokio (reqwest async)   |
-| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm-conductor`                 | `tool-presets` | Tokio (reqwest async)   |
+| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm-conductor`                 | unconditional  | Tokio (reqwest async)   |
 | `shared_http_client()`                                      | `mediapm-conductor-builtins/import` | `fetch`        | Sync (reqwest blocking) |
 
 - The import builtin uses a **blocking** client because it runs in a synchronous context (not a tokio runtime). It must not depend on `mediapm-conductor` (the dependency direction is the opposite).
-- All three clients use the same User-Agent format with their respective `CARGO_PKG_VERSION`.
-- The `shared_no_redirect_http_client()` variant (mediapm and conductor) disables redirect following. Use it for download sources that should not follow redirects (e.g. binary distribution mirrors).
+- Both clients use the same User-Agent format with their respective `CARGO_PKG_VERSION`.
+- The `shared_no_redirect_http_client()` variant (conductor) disables redirect following. Use it for download sources that should not follow redirects (e.g. binary distribution mirrors).
+- MediaPM crate code imports the shared client via `mediapm_conductor::http::client::shared_http_client()`.
 
 ### Decoupling invariant (critical)
 
@@ -85,13 +84,6 @@ Error mapping from `HttpClientError` to `ConductorError` happens **at the call s
 2. **Module-scoped types** — `HttpClientError` is the only error type used inside `http/`.
 3. **Review checklist** — when editing `src/http/`, verify no new dependencies on `crate::` or `ConductorError` were introduced.
 
-### Consistency enforcement (mediapm crate)
-
-`build.rs` in `src/mediapm/` scans `http_client.rs` for the correct env var name
-(`MEDIAPM_HTTP_TIMEOUT_SECONDS`) and User-Agent format
-(`env!("CARGO_PKG_VERSION")`). If either pattern is missing or renamed, the
-build panics at compile time.
-
 ## Docstring policy
 
 Every function that calls a shared HTTP client must include an `HTTP client
@@ -100,14 +92,13 @@ policy` subsection in its docstring:
 ```rust
 /// # HTTP client policy
 ///
-/// Uses the process-wide shared client from [`crate::http_client`].
+/// Uses the process-wide shared client from [`mediapm_conductor::http::client`].
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared
 /// instance.
 ```
 
-- Link to the crate's HTTP client module (`[`crate::http_client`]` or
-  `[`crate::http::client`]`).
+- Link to the conductor HTTP client module (`[`mediapm_conductor::http::client`]`).
 - If the call site uses the no-redirect variant, mention it explicitly.
 - This section must appear in the function's doc comment, before any
   `# Panics` or `# Errors` sections.
