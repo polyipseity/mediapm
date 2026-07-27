@@ -13,6 +13,7 @@
 //! | **Tracking** (unlimited) | [`TrackedHandle`] | None (pure state) |
 //! | **Rendering** (terminal-limited) | [`ProgressGroup`] | `indicatif` (behind feature) |
 //! | **Recording** (testing) | [`recording::RecordingTrackedHandle`], [`recording::RecordingProgressTracker`] | None behind feature |
+//! | **Debug** | [`ProgressDebugSink`] | `serde_json` (behind feature) |
 //!
 //! # Types across feature boundaries
 //!
@@ -27,6 +28,9 @@
 //! | [`recording::RecordingProgressTracker`] | ❌ | ✅ |
 //! | [`recording::RecordingTrackedHandle`] | ❌ | ✅ |
 //! | [`recording::ProgressOp`] | ❌ | ✅ |
+//! | [`ProgressDebugSink`] | ❌ | ✅ |
+//! | [`DebugSlotState`] | ❌ | ✅ |
+//! | [`DebugTickSnapshot`] | ❌ | ✅ |
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
