@@ -2021,6 +2021,241 @@ mod tests {
         }
     }
 
+    // ── Counting mechanism regression tests ─────────────────────────
+    //
+    // These tests verify the byte-counting behavior of extraction and
+    // packing helpers. All tests pass with the CURRENT code (pre-Phase 3
+    // chunk-policy changes).
+
+    #[test]
+    fn counting_reader_tracks_exact_compressed_bytes() {
+        // Feed 1 MB of data through CountingReader and verify consumed == 1 MB.
+        let data = vec![0xABu8; 1_000_000];
+        let consumed = Cell::new(0u64);
+        let positions: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let positions_clone = Arc::clone(&positions);
+        let cb = move |pos: u64| {
+            positions_clone.lock().unwrap().push(pos);
+        };
+        {
+            let reader = CountingReader {
+                cursor: std::io::Cursor::new(&data[..]),
+                bytes_read: &consumed,
+                last_cb_pos: Cell::new(0),
+                progress_cb: Some(&cb),
+            };
+            // Read all bytes through CountingReader.
+            let mut buf = Vec::new();
+            std::io::Read::by_ref(&mut std::io::Read::take(reader, u64::MAX))
+                .read_to_end(&mut buf)
+                .unwrap();
+        }
+        assert_eq!(
+            consumed.get(),
+            1_000_000,
+            "CountingReader should track exactly all bytes consumed"
+        );
+        let recorded = positions.lock().unwrap();
+        assert!(!recorded.is_empty(), "CountingReader should have fired at least one callback");
+        for (i, pos) in recorded.iter().enumerate() {
+            assert!(*pos <= 1_000_000, "position {pos} should never exceed total at callback {i}");
+        }
+    }
+
+    #[test]
+    fn gzdecoder_with_counting_reader_tracks_consumption() {
+        // Compress 500 KB via GzEncoder, decompress through GzDecoder +
+        // CountingReader, verify consumed >= original size (gzip framing
+        // adds ~20-40 bytes overhead, so consumed > original).
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+
+        let original = vec![0x42u8; 500_000];
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&original).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert!(compressed.len() < original.len(), "gzip should compress 500 KB of uniform bytes");
+
+        let consumed = Cell::new(0u64);
+        let reader = CountingReader {
+            cursor: std::io::Cursor::new(&compressed[..]),
+            bytes_read: &consumed,
+            last_cb_pos: Cell::new(0),
+            progress_cb: None,
+        };
+        let decoder = flate2::read::GzDecoder::new(reader);
+        let mut decompressed = Vec::new();
+        std::io::Read::by_ref(&mut std::io::Read::take(decoder, u64::MAX))
+            .read_to_end(&mut decompressed)
+            .unwrap();
+
+        assert_eq!(decompressed.len(), original.len(), "decompressed data should match original");
+        assert!(
+            consumed.get() <= compressed.len() as u64,
+            "CountingReader consumed {} should not exceed compressed input size {}",
+            consumed.get(),
+            compressed.len()
+        );
+        // GzDecoder consumes all compressed data to fully decompress,
+        // so consumed should be the compressed size (or very close).
+        assert!(
+            consumed.get() as usize >= compressed.len() - 100,
+            "CountingReader consumed {} should be close to compressed size {}",
+            consumed.get(),
+            compressed.len()
+        );
+    }
+
+    #[test]
+    fn zip_extraction_end_position_equals_entry_compressed() {
+        // Extract a synthetic ZIP, verify the final callback position equals
+        // the sum of entry compressed sizes.
+        use std::io::Write;
+        use zip::ZipWriter;
+        use zip::write::SimpleFileOptions;
+
+        // Build ZIP with entries of known sizes.
+        let mut zip_buf = Vec::new();
+        let entry_data: [(&str, &[u8]); 3] =
+            [("a.bin", &[0xAAu8; 1000]), ("b.bin", &[0xBBu8; 2000]), ("c.bin", &[0xCCu8; 3000])];
+        {
+            let mut writer = ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            for (name, data) in &entry_data {
+                writer.start_file(*name, SimpleFileOptions::default()).expect("start zip entry");
+                writer.write_all(data).expect("write zip entry");
+            }
+            writer.finish().expect("finish zip");
+        }
+        // Compute expected compressed total from central directory.
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&zip_buf)).unwrap();
+        let expected_total: u64 =
+            (0..archive.len()).map(|i| archive.by_index(i).unwrap().compressed_size()).sum();
+
+        let positions: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let positions_clone = Arc::clone(&positions);
+        let cb = move |pos: u64| {
+            positions_clone.lock().unwrap().push(pos);
+        };
+        let dir = tempfile::tempdir().unwrap();
+        extract_zip(&zip_buf, dir.path(), Some(&cb)).expect("extract_zip");
+
+        let recorded = positions.lock().unwrap();
+        assert!(!recorded.is_empty(), "should have recorded positions");
+        let last_pos = *recorded.last().unwrap();
+        assert_eq!(
+            last_pos, expected_total,
+            "final callback position {last_pos} should equal total compressed size {expected_total}"
+        );
+    }
+
+    #[test]
+    fn zip_position_never_exceeds_entry_total() {
+        // Like zip_extraction_end_position_equals_entry_compressed but
+        // verify EVERY snapshot: position ≤ total and position is
+        // non-decreasing.
+        let entry_data: [(&str, &[u8]); 4] = [
+            ("a.bin", &[0xAAu8; 5000]),
+            ("b.bin", &[0xBBu8; 1000]),
+            ("c.bin", &[0xCCu8; 2000]),
+            ("d.bin", &[0xDDu8; 8000]),
+        ];
+        let zip_buf = synthetic_zip(&entry_data);
+
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&zip_buf)).unwrap();
+        let expected_total: u64 =
+            (0..archive.len()).map(|i| archive.by_index(i).unwrap().compressed_size()).sum();
+        drop(archive);
+
+        let positions: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let positions_clone = Arc::clone(&positions);
+        let cb = move |pos: u64| {
+            positions_clone.lock().unwrap().push(pos);
+        };
+        let dir = tempfile::tempdir().unwrap();
+        extract_zip(&zip_buf, dir.path(), Some(&cb)).expect("extract_zip");
+
+        let recorded = positions.lock().unwrap();
+        assert!(!recorded.is_empty(), "should have recorded positions");
+        let mut prev = 0u64;
+        for (i, &pos) in recorded.iter().enumerate() {
+            assert!(pos >= prev, "position decreased at callback {i}: {pos} < {prev}");
+            assert!(
+                pos <= expected_total,
+                "position {pos} exceeds total {expected_total} at callback {i}"
+            );
+            prev = pos;
+        }
+        let last_pos = *recorded.last().unwrap();
+        assert_eq!(
+            last_pos, expected_total,
+            "final position {last_pos} should equal total compressed size {expected_total}"
+        );
+    }
+
+    #[test]
+    fn compress_budget_total_matches_output_size() {
+        // Pack a directory with known files. The callback fires at content
+        // byte position (sum of uncompressed file payloads), not at the
+        // final ZIP output size (central directory + EOCD overhead is
+        // appended after all entries). Verify that the final position equals
+        // the total uncompressed content size.
+        let dir = tempfile::tempdir().unwrap();
+        let content_sizes: [(&str, usize); 3] =
+            [("large.bin", 100_000), ("small.bin", 500), ("nested/data.bin", 2000)];
+        for (path, size) in &content_sizes {
+            let full_path = dir.path().join(path);
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(full_path, vec![0x11u8; *size]).unwrap();
+        }
+        let expected_uncompressed_total: u64 = content_sizes.iter().map(|(_, s)| *s as u64).sum();
+
+        let positions: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let positions_clone = Arc::clone(&positions);
+        let cb = move |pos: u64| {
+            positions_clone.lock().unwrap().push(pos);
+        };
+
+        let _zip_bytes =
+            pack_directory_to_uncompressed_zip_bytes(dir.path(), 0, Some(&cb)).unwrap();
+
+        let recorded = positions.lock().unwrap();
+        assert!(!recorded.is_empty(), "should have recorded at least one position");
+        let last_pos = *recorded.last().unwrap();
+        assert_eq!(
+            last_pos, expected_uncompressed_total,
+            "final callback position {last_pos} should equal uncompressed total {expected_uncompressed_total} (ZIP central directory overhead is not tracked)"
+        );
+    }
+
+    #[test]
+    fn compress_monotonic_non_decreasing() {
+        // Verify position never decreases during packing.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), &[0xAAu8; 10_000]).unwrap();
+        std::fs::write(dir.path().join("b.bin"), &[0xBBu8; 20_000]).unwrap();
+        std::fs::write(dir.path().join("c.bin"), &[0xCCu8; 30_000]).unwrap();
+
+        let positions: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let positions_clone = Arc::clone(&positions);
+        let cb = move |pos: u64| {
+            positions_clone.lock().unwrap().push(pos);
+        };
+
+        let _zip_bytes =
+            pack_directory_to_uncompressed_zip_bytes(dir.path(), 0, Some(&cb)).unwrap();
+
+        let recorded = positions.lock().unwrap();
+        assert!(!recorded.is_empty(), "should have recorded at least one position");
+        let mut prev = 0u64;
+        for (i, &pos) in recorded.iter().enumerate() {
+            assert!(pos >= prev, "position decreased at callback {i}: {pos} < {prev}");
+            prev = pos;
+        }
+    }
+
     // ── estimate_uncompressed_size ─────────────────────────────────
 
     #[test]
