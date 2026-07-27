@@ -143,6 +143,36 @@ WAL + blob store + metadata constraints persisted on disk; blob metadata in-memo
 
 Override of `FileSystemCas::object_path_for_hash` returns `Option<PathBuf>` (returns `None` for in-memory stores, `Some(path)` for filesystem stores).
 
+##### DirectoryLockGuard — two-layer directory lock
+
+`FileSystemCas::open()` acquires a `DirectoryLockGuard` that is held for
+the entire CAS lifetime via `Arc<DirectoryLockGuard>` (shared across
+clones). It implements a two-layer architecture:
+
+1. **In-process layer** (`DashMap<PathBuf, Arc<Mutex<()>>>` + `try_lock_owned()`):
+   detects when two `FileSystemCas` instances in the same process try to
+   open the same directory. Non-blocking: returns immediately with
+   `CasError::LockContention` if the path is already held.
+
+2. **Inter-process layer** (`fs4::AsyncFileExt::try_lock()` on `<dir>/lock`):
+   uses OS-level file locking to detect cross-process contention.
+   Non-blocking: returns immediately with `CasError::LockContention` if
+   the lock file is already held.
+
+Both layers are fail-fast — they never block waiting for a lock to
+become available. This means opening two `FileSystemCas` instances on
+the same directory in any configuration (same-process, cross-process,
+via symlink) is a hard error. Paths are canonicalized via
+`std::fs::canonicalize()` before checking, so symlinks pointing to the
+same directory are correctly identified as contention.
+
+| Behavior | Layer 1 (DashMap) | Layer 2 (flock) |
+|---|---|---|
+| Scope | Same process | Cross process |
+| Lock acquisition | `try_lock_owned()` | `try_lock()` |
+| Blocking? | No (fail-fast) | No (fail-fast) |
+| Error variant | `CasError::LockContention` | `CasError::LockContention` |
+
 #### ConfiguredCas — dispatch enum
 
 ```rust
