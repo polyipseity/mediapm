@@ -120,11 +120,11 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Single push point: `sync_snapshot_to_bar`
 
-| Spec item                                                                                       | Test(s)                                                                        | Status |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------ |
-| `sync_snapshot_to_bar` is single authoritative push point for SharedState → indicatif           | `sync_slot_preserves_custom_message_on_attach`                                 | �     |
-| Custom message set via `set_message` survives `add_bar` of another bar (sync_slot delegation)   | `sync_slot_preserves_custom_message_on_attach`                                 | �     |
-| Cache guard is updated by delegate path (no stale-cache skip on next tick)                      | `sync_slot_preserves_custom_message_on_attach`                                 | �     |
+| Spec item                                                                                     | Test(s)                                        | Status |
+| --------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------ |
+| `sync_snapshot_to_bar` is single authoritative push point for SharedState → indicatif         | `sync_slot_preserves_custom_message_on_attach` | �      |
+| Custom message set via `set_message` survives `add_bar` of another bar (sync_slot delegation) | `sync_slot_preserves_custom_message_on_attach` | �      |
+| Cache guard is updated by delegate path (no stale-cache skip on next tick)                    | `sync_slot_preserves_custom_message_on_attach` | �      |
 
 ### Metadata cache awareness on resolve bar
 
@@ -144,11 +144,11 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### DirectoryLockGuard
 
-| Spec item                                                                         | Test(s)                                                                                                                                                                                                                       | Status |
-| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| DirectoryLockGuard two-layer architecture: DashMap + flock                        | `directory_lock_new_releases_on_drop`, `directory_lock_same_process_contention`, `directory_lock_cross_process_contention`                                                                                                     | 🟢     |
-| DirectoryLockGuard fail-fast (non-blocking) contract                              | `directory_lock_fail_fast_no_blocking`                                                                                                                                                                                         | 🟢     |
-| FileSystemCas same-process contention (`LockContention` on dual open)             | `file_system_cas_same_process_contention`                                                                                                                                                                                      | 🟢     |
-| FileSystemCas cross-process contention (flock barrier detection)                  | `file_system_cas_contention_with_flock_barrier`                                                                                                                                                                                | 🟢     |
-| FileSystemCas concurrent clones share lock (no contention)                        | `file_system_cas_concurrent_clones_no_contention`                                                                                                                                                                              | 🟢     |
-| FileSystemCas symlink canonicalization (symlink → same dir detected)              | `file_system_cas_contention_with_canonical_symlink`                                                                                                                                                                            | 🟢     |
+| Spec item                                                             | Test(s)                                                                                                                    | Status |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------ |
+| DirectoryLockGuard two-layer architecture: DashMap + flock            | `directory_lock_new_releases_on_drop`, `directory_lock_same_process_contention`, `directory_lock_cross_process_contention` | 🟢     |
+| DirectoryLockGuard fail-fast (non-blocking) contract                  | `directory_lock_fail_fast_no_blocking`                                                                                     | 🟢     |
+| FileSystemCas same-process contention (`LockContention` on dual open) | `file_system_cas_same_process_contention`                                                                                  | 🟢     |
+| FileSystemCas cross-process contention (flock barrier detection)      | `file_system_cas_contention_with_flock_barrier`                                                                            | 🟢     |
+| FileSystemCas concurrent clones share lock (no contention)            | `file_system_cas_concurrent_clones_no_contention`                                                                          | 🟢     |
+| FileSystemCas symlink canonicalization (symlink → same dir detected)  | `file_system_cas_contention_with_canonical_symlink`                                                                        | 🟢     |
