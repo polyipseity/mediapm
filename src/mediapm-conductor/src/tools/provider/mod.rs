@@ -35,8 +35,9 @@ const ARCHIVE_TAR_XZ: &str = "tar.xz";
 /// Covers all current tools (≤3 sources) with headroom.
 pub const MAX_LOOKAHEAD: usize = 16;
 
-/// Compressed byte threshold between sub-entry progress callbacks (128 KB).
-const COMPRESSED_CHUNK: u64 = 131072;
+/// Byte threshold between sub-entry progress callbacks during
+/// extraction/compression (64 KB).
+const SUB_ENTRY_CHUNK: u64 = 65536;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -432,9 +433,9 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 /// through the full process pipeline.
 ///
 /// [`MAX_LOOKAHEAD`] (16) bounds the number of concurrent HEAD probes
-/// during phase 1 (resolve). [`COMPRESSED_CHUNK`] (128 KiB) controls the
-/// minimum compressed-byte interval between sub-entry progress callbacks
-/// during tar.gz/xz extraction, preventing excessive callback overhead.
+/// during phase 1 (resolve). [`SUB_ENTRY_CHUNK`] (64 KiB) controls the
+/// minimum byte interval between sub-entry progress callbacks during
+/// extraction/compression, preventing excessive callback overhead.
 ///
 /// # Errors
 ///
@@ -713,7 +714,7 @@ async fn process_single_source(
 /// `bytes_read` uses [`Cell`] so the consuming code can read the current value
 /// without owning the reader (which is deeply nested inside decoder + tar
 /// archive wrappers).  `progress_cb` fires sub-entry callbacks every
-/// [`COMPRESSED_CHUNK`] bytes consumed.
+/// [`SUB_ENTRY_CHUNK`] bytes consumed.
 struct CountingReader<'a> {
     cursor: std::io::Cursor<&'a [u8]>,
     bytes_read: &'a Cell<u64>,
@@ -726,9 +727,9 @@ impl Read for CountingReader<'_> {
         let n = self.cursor.read(buf)?;
         let new = self.bytes_read.get() + n as u64;
         self.bytes_read.set(new);
-        // Fire sub-entry callback at COMPRESSED_CHUNK boundaries.
+        // Fire sub-entry callback at SUB_ENTRY_CHUNK boundaries.
         if let Some(cb) = self.progress_cb {
-            if new - self.last_cb_pos.get() >= COMPRESSED_CHUNK {
+            if new - self.last_cb_pos.get() >= SUB_ENTRY_CHUNK {
                 self.last_cb_pos.set(new);
                 cb(new);
             }
@@ -743,7 +744,7 @@ impl Read for CountingReader<'_> {
 /// for each, and fires the progress callback after every entry using
 /// `consumed` (compressed bytes consumed so far from [`CountingReader`])
 /// as the progress metric.  Sub-entry progress callbacks are handled by
-/// the [`CountingReader`] itself (fires at [`COMPRESSED_CHUNK`] boundaries
+/// the [`CountingReader`] itself (fires at [`SUB_ENTRY_CHUNK`] boundaries
 /// during decompression).
 fn extract_tar_entries_with_progress<R: Read>(
     mut archive: tar::Archive<R>,
@@ -984,20 +985,27 @@ fn pack_directory_entries(
             writer.start_file(relative.clone(), *options).map_err(|e| {
                 ConductorError::Workflow(format!("failed to start zip entry '{relative}': {e}"))
             })?;
-            let mut contents = Vec::new();
-            file.read_to_end(&mut contents).map_err(|source| {
-                ConductorError::io(
-                    &format!("reading file '{}' for zip", path.display()),
-                    &path,
-                    source,
-                )
-            })?;
-            writer.write_all(&contents).map_err(|e| {
-                ConductorError::Workflow(format!("failed to write zip entry '{relative}': {e}"))
-            })?;
-            if let Some(cb) = local_cb.as_ref() {
-                *decompressed_accumulator += contents.len() as u64;
-                cb(*decompressed_accumulator);
+            // Read and write in SUB_ENTRY_CHUNK chunks to fire sub-entry
+            // progress callbacks for large files.
+            let mut sub_buf = vec![0u8; SUB_ENTRY_CHUNK as usize];
+            loop {
+                let n = file.read(&mut sub_buf).map_err(|source| {
+                    ConductorError::io(
+                        &format!("reading file '{}' for zip", path.display()),
+                        &path,
+                        source,
+                    )
+                })?;
+                if n == 0 {
+                    break;
+                }
+                writer.write_all(&sub_buf[..n]).map_err(|e| {
+                    ConductorError::Workflow(format!("failed to write zip entry '{relative}': {e}"))
+                })?;
+                if let Some(cb) = local_cb.as_ref() {
+                    *decompressed_accumulator += n as u64;
+                    cb(*decompressed_accumulator);
+                }
             }
         }
     }
@@ -1833,7 +1841,7 @@ mod tests {
     // one callback per entry.  A 200 KB hard-to-compress entry in a ZIP
     // with 64 KB read chunks produces ~4 chunk callbacks.  A 300 KB
     // hard-to-compress tar.gz entry triggers ~2 CountingReader callbacks
-    // at COMPRESSED_CHUNK (128 KB) boundaries.
+    // at SUB_ENTRY_CHUNK (64 KB) boundaries.
 
     #[test]
     fn extract_zip_large_entry_fires_multiple_sub_entry_callbacks() {
