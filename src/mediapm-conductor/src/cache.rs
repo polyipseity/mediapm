@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, FileSystemCas, Hash};
+use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasError, FileSystemCas, Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
@@ -209,19 +209,30 @@ impl Cache {
     #[must_use]
     pub async fn lookup_bytes(&self, domain: &str, key: &str) -> Option<Vec<u8>> {
         let domain_state = self.domains.get(domain)?;
-        let entry = {
+        let hash = {
             let index = domain_state.index.lock().ok()?;
-            index.entries.get(key).cloned()
-        }?;
-        let Ok(hash) = Hash::from_str(entry.hash.trim()) else {
-            self.remove_index_entry(domain, key);
-            return None;
+            let entry = index.entries.get(key).cloned()?;
+            let Ok(hash) = Hash::from_str(entry.hash.trim()) else {
+                // Hash text corrupted — remove the bad entry.
+                self.remove_index_entry(domain, key);
+                return None;
+            };
+            hash
         };
-        let Ok(bytes) = self.cas.get(hash).await else {
-            self.remove_index_entry(domain, key);
-            return None;
-        };
-        Some(bytes.to_vec())
+        match self.cas.get(hash).await {
+            Ok(bytes) => Some(bytes.to_vec()),
+            Err(CasError::NotFound(_)) => {
+                // Payload disappeared — remove stale entry.
+                self.remove_index_entry(domain, key);
+                None
+            }
+            Err(e) => {
+                // Transient CAS error — log and return miss
+                // without deleting entry (may succeed next time).
+                tracing::warn!("cache lookup failed for domain={domain} key={key}: {e}");
+                None
+            }
+        }
     }
 
     /// Stores payload bytes under one logical key in a domain.
