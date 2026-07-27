@@ -118,6 +118,22 @@ for (idx, source) in sources:
 
 Key: `fetch_bytes_from_candidates` receives `&MultiItemBudget` + `item_idx` + `progress_cb`. During download it calls `budget.set_total` + `budget.advance` per HTTP chunk and fires the progress callback with the aggregate after each chunk. For cached sources the advance is a single step; for launcher sources it is immediate. The end-of-source callback in the outer loop provides additional coverage for cached/launcher sources where no per-chunk callbacks fire.
 
+#### Fetch phase progress granularity
+
+The progress callback fires after **every chunk** yielded by `reqwest::Response::bytes_stream()`. Chunk size is determined by the underlying HTTP library:
+
+- **HTTP/1.1**: ~8 KB (hyper's internal body buffer)
+- **HTTP/2**: ~16 KB (default DATA frame size)
+- **HTTP/1.1 chunked TE**: varies by server (typically 4–16 KB)
+
+This is a deliberate design choice (Option 1). The tradeoff is:
+
+- **Download performance unaffected** — hyper's TCP/TLS read buffer is independent of the chunk size reported to the application. There is no syscall overhead difference; the bytes are already buffered in-kernel or in hyper's internal buffers before `bytes_stream()` yields them.
+- **Progress granularity is fine (per-chunk)** — the daemon ticker (50 ms) consolidates intermediate dirty-flag updates into at most 20 Hz draws, so the rendered bar never flickers despite high callback volume.
+- **Explicit chunk buffering was considered and rejected** — accumulating chunks to a minimum byte threshold (Option 3) would reduce callback count but add local state and flush logic for zero observable benefit, since the ticker already prevents rendering overhead.
+
+No explicit `DOWNLOAD_CHUNK_SIZE` constant is introduced. The chunk size is left to `reqwest`/`hyper` defaults. If hyper ever changes its default buffer size, progress granularity shifts proportionally — the visual result remains smooth because the daemon ticker governs draw frequency, not chunk size.
+
 ### Postprocess phase loop (`postprocess_tool_sources`)
 
 Archive sources use **2 budget items** (decompress + compress); binary/launcher sources use **1 item** (CAS import).
