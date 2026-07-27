@@ -25,7 +25,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasError, FileSystemCas, Hash};
+use mediapm_cas::{
+    BackgroundMaintenanceGuard, CasApi, CasError, FileSystemCas, Hash, VerifyTriggerStrategy,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
@@ -120,6 +122,7 @@ pub struct Cache {
 async fn open_domain_setup(
     root: &Path,
     domains: &[CacheDomainConfig],
+    verify_strategies: Vec<VerifyTriggerStrategy>,
 ) -> Result<(FileSystemCas, BTreeMap<String, DomainState>), ConductorError> {
     let store_dir = root.join("store");
     fs::create_dir_all(&store_dir).map_err(|source| ConductorError::Io {
@@ -127,12 +130,14 @@ async fn open_domain_setup(
         path: store_dir.clone(),
         source,
     })?;
-    let cas = FileSystemCas::open(&store_dir).await.map_err(|source| {
-        ConductorError::Workflow(format!(
-            "opening cache CAS store at '{}' failed: {source}",
-            store_dir.display()
-        ))
-    })?;
+    let cas = FileSystemCas::open_with_strategies(&store_dir, verify_strategies).await.map_err(
+        |source| {
+            ConductorError::Workflow(format!(
+                "opening cache CAS store at '{}' failed: {source}",
+                store_dir.display()
+            ))
+        },
+    )?;
 
     let mut domains_map = BTreeMap::new();
     for config in domains {
@@ -169,7 +174,7 @@ impl Cache {
     /// Returns [`ConductorError`] when filesystem preparation or CAS opening
     /// fails.
     pub async fn open(root: &Path, domains: &[CacheDomainConfig]) -> Result<Self, ConductorError> {
-        let (cas, domains_map) = open_domain_setup(root, domains).await?;
+        let (cas, domains_map) = open_domain_setup(root, domains, Vec::new()).await?;
         let mut cache = Self { cas, domains: domains_map, bg_guard: None };
 
         // Start background prune loop that iterates all domains.
@@ -668,6 +673,46 @@ impl Cache {
     }
 
     /// Test-only: opens cache with a configurable background maintenance
+    /// interval for a single domain named `"test"`, using the given verify
+    /// strategies for the underlying CAS.
+    pub(crate) async fn open_with_verify_strategies(
+        root: &Path,
+        index_file_name: &str,
+        entry_ttl_seconds: u64,
+        verify_strategies: Vec<VerifyTriggerStrategy>,
+        maintenance_interval_seconds: u64,
+    ) -> Result<Self, ConductorError> {
+        let config = CacheDomainConfig {
+            domain: "test".to_string(),
+            index_file_name: index_file_name.to_string(),
+            entry_ttl_seconds,
+        };
+        let (cas, domains_map) = open_domain_setup(root, &[config], verify_strategies).await?;
+        let mut cache = Self { cas, domains: domains_map, bg_guard: None };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+        let cache_clone = cache.clone();
+        let domain_names: Vec<String> = cache.domains.keys().cloned().collect();
+        let handle = tokio::spawn(async move {
+            loop {
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                for domain in &domain_names {
+                    let _ = cache_clone.prune_expired_inner(domain, now_unix_seconds()).await;
+                }
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(maintenance_interval_seconds)).await;
+            }
+        });
+        cache.bg_guard =
+            Some(Arc::new(BackgroundMaintenanceGuard { cancelled, handle: Some(handle) }));
+        Ok(cache)
+    }
+
+    /// Test-only: opens cache with a configurable background maintenance
     /// interval for a single domain named `"test"`.
     pub(crate) async fn open_with_ttl_and_maintenance_interval(
         root: &Path,
@@ -680,7 +725,7 @@ impl Cache {
             index_file_name: index_file_name.to_string(),
             entry_ttl_seconds,
         };
-        let (cas, domains_map) = open_domain_setup(root, &[config]).await?;
+        let (cas, domains_map) = open_domain_setup(root, &[config], Vec::new()).await?;
         let mut cache = Self { cas, domains: domains_map, bg_guard: None };
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancelled_clone = cancelled.clone();
@@ -712,7 +757,7 @@ mod tests {
         Cache, CacheDomainConfig, ENTRY_TTL_SECONDS, PRUNE_INTERVAL_SECONDS,
         TOUCH_PERSIST_INTERVAL_SECONDS,
     };
-    use mediapm_cas::{CasApi, FileSystemCas, Hash};
+    use mediapm_cas::{CasApi, FileSystemCas, Hash, VerifyTriggerStrategy};
     use std::str::FromStr;
     use std::sync::atomic::Ordering;
 
@@ -1433,5 +1478,59 @@ mod tests {
             Some(payload),
             "payload must survive restart when touch() was in-memory-only"
         );
+    }
+
+    /// Verifies that `lookup_bytes` keeps the index entry intact when the
+    /// underlying CAS returns a transient error (non-`NotFound`).
+    ///
+    /// Opens the cache with [`VerifyTriggerStrategy::Always`] so that every
+    /// read triggers content-hash verification. After corrupting the blob
+    /// file on disk, the CAS read returns [`CasError::CorruptObject`] —
+    /// `lookup_bytes` must return `None` but leave the index entry in place
+    /// so a future retry can succeed.
+    #[tokio::test]
+    async fn lookup_bytes_keeps_entry_on_transient_cas_error() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = Cache::open_with_verify_strategies(
+            root.path(),
+            "tools.json",
+            30 * 24 * 60 * 60,
+            vec![VerifyTriggerStrategy::Always],
+            3600,
+        )
+        .await
+        .expect("open cache with always-verify");
+
+        // Use a payload larger than WAL_INLINE_LIMIT (1 MiB) so put()
+        // writes directly to the blob store and the WAL entry is
+        // PresentExternal (never read from WAL inline).
+        let wal_inline_limit: usize = 1024 * 1024;
+        let mut payload = vec![0xabu8; wal_inline_limit + 1];
+        payload[0] = 0x42;
+        payload[wal_inline_limit] = 0x99;
+
+        cache.store_bytes("test", "key-a", &payload).await;
+        let hash_text =
+            cache.get_entry_hash("test", "key-a").expect("entry must exist after store");
+
+        // Parse the hash text (stored as `"blake3:<hex>"` from Display).
+        let hash: Hash = hash_text.parse().expect("valid hash text");
+
+        // Derive the blob path from the CAS itself (authoritative).
+        let blob_path = cache
+            .cas()
+            .object_path_for_hash(hash)
+            .expect("object path must exist after materialization for large object");
+
+        // Overwrite the blob with garbage to trigger CorruptObject on next read.
+        tokio::fs::write(&blob_path, b"garbage data").await.expect("overwrite blob with garbage");
+
+        // lookup_bytes must return None (transient error surfaced as miss).
+        let retrieved = cache.lookup_bytes("test", "key-a").await;
+        assert!(retrieved.is_none(), "corrupted blob must produce a cache miss");
+
+        // The index entry must survive — transient errors do NOT remove it.
+        let survived = cache.get_entry_hash("test", "key-a");
+        assert!(survived.is_some(), "index entry must survive transient CAS error");
     }
 }

@@ -112,7 +112,25 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `regression.rs` — concurrent set-and-sync (deterministic), child order, swap-slot, finish-and-clear, overall stability, masked-spinner ends_with | 6 tests, all exact                                                                | 🟢     |
 | `single_bar.rs` — first/last/only-bar lines exact                                                                                                | 1 structural `.len()` remaining                                                   | 🟢     |
 
-### Pre-roll regression
+### CasApi: `get()` delegates to `get_to_writer()`
+
+| Spec item                                                                                                                              | Test(s)                                                                                                                                                                                               | Status |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| `InMemoryCas::get()` works above `WAL_INLINE_LIMIT` (2 MiB)                                                                            | `in_memory_get_succeeds_above_wal_inline_limit`                                                                                                                                                       | 🟢     |
+| `FileSystemCas::get()` works above `WAL_INLINE_LIMIT` (65 MiB, `#[cfg(feature = "large-tests")]`)                                     | `filesystem_get_succeeds_above_wal_inline_limit`                                                                                                                                                      | 🟢     |
+| `InMemoryCas::get()` delegates to `get_to_writer()` internally                                                                         | Already verified by `in_memory_get_succeeds_above_wal_inline_limit` (no separate unit test for delegation mechanics)                                                                                  | 🟢     |
+| `FileSystemCas::get()` delegates to `get_to_writer()` internally                                                                       | Already verified by `filesystem_get_succeeds_above_wal_inline_limit` (no separate unit test for delegation mechanics)                                                                                 | 🟢     |
+| `CasApi` section in `mediapm-cas/AGENTS.md` already documents the delegation                                                          | Section 10 of `src/mediapm-cas/AGENTS.md` — verified accurate, no change needed                                                                                                                       | 🟢     |
+
+### Cache::lookup_bytes error handling
+
+| Spec item                                                                                   | Test(s)                                                                                         | Status |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------ |
+| `lookup_bytes` returns `None` on transient CAS error (non-`NotFound`)                       | `lookup_bytes_keeps_entry_on_transient_cas_error`                                              | 🟢     |
+| `lookup_bytes` leaves index entry intact on transient error                                 | `lookup_bytes_keeps_entry_on_transient_cas_error` (asserts `get_entry_hash` is `Some`)         | 🟢     |
+| `lookup_bytes` removes index entry on `NotFound` error                                      | `lookup_bytes_nonexistent_key_returns_none` (existing, checks `None` return)                   | 🟢     |
+| `Cache::open` accepts verify strategies via `open_with_verify_strategies` (test-only)        | `lookup_bytes_keeps_entry_on_transient_cas_error` (uses `Always` verify)                       | 🟢     |
+| Transient error test uses large payload (>1 MiB) to force blob-store path                   | `lookup_bytes_keeps_entry_on_transient_cas_error` (1025 × 1024 = 1 048 577 bytes)              | 🟢     |
 
 | Spec item                                                            | Test(s)                                                                                                     | Status |
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------ |
