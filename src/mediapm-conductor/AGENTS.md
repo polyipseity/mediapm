@@ -145,7 +145,7 @@ enforced at both encoding (via `encode_document()` calling
 - **Consumer**: Phase 2 (fetch) calls `cache.touch(key)` on cache hit, so last use reflects when the content was last downloaded, NOT when the tool was last run.
 - **Purpose**: Avoid re-downloading identical binary payloads across tool versions, projects, or sync runs.
 - **Pruning**: `prune_expired_entries()` removes entries where `last_access_unix_seconds` is older than TTL. Cooldown: 24h between full prune scans. Orphaned CAS payloads (not referenced by any index file in the cache root) are garbage-collected.
-- **Key**: Download URI (first URL in the source's URL list).
+- **Key**: Download URI (actual URL used for download).
 - **API**: `store_bytes(uri, bytes)` / `lookup_bytes(uri)` / `touch(uri)`.
 - **Module**: `src/mediapm-conductor/src/cache.rs` and `cache_user_level.rs`.
 

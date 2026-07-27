@@ -214,35 +214,50 @@ pub async fn fetch_tool_sources(
     for (idx, source) in fetch.sources.iter().enumerate() {
         match &source.producer {
             SourceProducer::Fetch { urls } => {
-                let cache_key = &urls[0];
-                let bytes = if let Some(cached) = cache.lookup_bytes(domain, cache_key).await {
-                    cache.touch(domain, cache_key);
-                    // Set total to cached size so advance works (item may have
-                    // been created with total=0 when no estimate was available).
-                    budget.set_total(idx, cached.len() as u64);
-                    budget.advance(idx, cached.len() as u64);
-                    cached_count += 1;
-                    cached
-                } else {
-                    let estimate = source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
-                    // Ensure the item total reflects any estimate so aggregate
-                    // includes it even before download starts.
-                    budget.set_total(idx, estimate);
+                let bytes = {
+                    // Try each URL in order for cache lookup.  A prior download
+                    // from a previous run may have been stored under any of the
+                    // fallback URLs, so we check each one.
+                    let mut cache_hit = None;
+                    for url in urls {
+                        if let Some(cached) = cache.lookup_bytes(domain, url).await {
+                            cache.touch(domain, url);
+                            cache_hit = Some((url.clone(), cached));
+                            break;
+                        }
+                    }
+                    match cache_hit {
+                        Some((_cache_key, cached)) => {
+                            // Set total to cached size so advance works (item may have
+                            // been created with total=0 when no estimate was available).
+                            budget.set_total(idx, cached.len() as u64);
+                            budget.advance(idx, cached.len() as u64);
+                            cached_count += 1;
+                            cached
+                        }
+                        None => {
+                            let estimate =
+                                source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
+                            // Ensure the item total reflects any estimate so aggregate
+                            // includes it even before download starts.
+                            budget.set_total(idx, estimate);
 
-                    let total_sources = fetch.sources.len() as u64;
-                    let downloaded = fetch_bytes_from_candidates(
-                        urls,
-                        &fetch.tool_id,
-                        &source.os,
-                        &budget,
-                        idx,
-                        idx,
-                        total_sources,
-                        progress_cb.as_ref(),
-                    )
-                    .await?;
-                    cache.store_bytes(domain, cache_key, &downloaded).await;
-                    downloaded
+                            let total_sources = fetch.sources.len() as u64;
+                            let (downloaded, actual_url) = fetch_bytes_from_candidates(
+                                urls,
+                                &fetch.tool_id,
+                                &source.os,
+                                &budget,
+                                idx,
+                                idx,
+                                total_sources,
+                                progress_cb.as_ref(),
+                            )
+                            .await?;
+                            cache.store_bytes(domain, &actual_url, &downloaded).await;
+                            downloaded
+                        }
+                    }
                 };
                 entries.push(DownloadedSource {
                     os: source.os.clone(),
@@ -284,6 +299,9 @@ pub async fn fetch_tool_sources(
 
 /// Downloads bytes from URL candidates (tried in order).
 ///
+/// On success, returns the downloaded bytes and the URL that was actually used
+/// (the first URL that returned HTTP 200).
+///
 /// Advances the budget item per HTTP chunk and fires the progress callback
 /// after each chunk, so the progress bar updates smoothly during large
 /// downloads instead of freezing until the payload is fully received.
@@ -303,7 +321,7 @@ async fn fetch_bytes_from_candidates(
     source_idx: usize,
     total_sources: u64,
     progress_cb: Option<&ProviderProgressCallback>,
-) -> Result<Vec<u8>, crate::error::ConductorError> {
+) -> Result<(Vec<u8>, String), crate::error::ConductorError> {
     use crate::error::ConductorError;
     use futures_util::StreamExt;
 
@@ -334,7 +352,7 @@ async fn fetch_bytes_from_candidates(
                         });
                     }
                 }
-                return Ok(buffer);
+                return Ok((buffer, url.clone()));
             }
             Ok(response) => {
                 tracing::warn!("HTTP {} for {}, skipping", response.status(), url);
