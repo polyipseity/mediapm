@@ -220,6 +220,9 @@ pub fn run_cli_command<W: Write>(
 
 /// Returns the process-wide shared blocking HTTP client for import builtin.
 ///
+/// The HTTP client timeout is configurable via the `MEDIAPM_HTTP_TIMEOUT_SECONDS`
+/// environment variable (minimum 30, defaults to 60).
+///
 /// # Decoupling
 ///
 /// This function is self-contained within the import crate. It does not
@@ -230,8 +233,13 @@ pub fn run_cli_command<W: Write>(
 fn shared_http_client() -> Result<&'static Client, String> {
     SHARED_HTTP_CLIENT
         .get_or_init(|| {
+            let timeout_seconds = std::env::var("MEDIAPM_HTTP_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .filter(|value| *value >= 30)
+                .unwrap_or(60);
             Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
+                .timeout(std::time::Duration::from_secs(timeout_seconds))
                 .user_agent(concat!(
                     "mediapm/",
                     env!("CARGO_PKG_VERSION"),
