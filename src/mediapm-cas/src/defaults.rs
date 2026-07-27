@@ -26,7 +26,7 @@ pub const WAL_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 /// All tool binaries (~8-50 MiB) exceed this threshold, so they are stored as
 /// `PutLarge` with zero inline data in the pending map, preventing memory
 /// accumulation during WAL replay and consumer operations.
-pub const WAL_INLINE_THRESHOLD: u64 = 1024 * 1024;
+pub const WAL_INLINE_LIMIT: u64 = 1024 * 1024;
 
 /// Default buffer size for streaming I/O (256 KiB).
 pub const OBJECT_STREAM_BUFFER_SIZE: u32 = 262_144;

@@ -19,7 +19,6 @@ use bytes::Bytes;
 use tokio::io::AsyncWriteExt;
 
 use crate::api::ObjectEncoding;
-use crate::defaults;
 use crate::delta::object::StoredObject;
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -47,8 +46,6 @@ pub(crate) trait ReadView: Send + Sync {
 
     /// Write object contents into `writer` directly (streaming).
     /// Returns [`CasError::NotFound`] if the object does not exist.
-    /// Returns [`CasError::TooLarge`] if the object exceeds the inline
-    /// threshold — callers should fall back to a file-based streaming path.
     async fn get_to_writer(
         &self,
         hash: &Hash,
@@ -258,27 +255,6 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
     for ComposedReadView<M, J, B>
 {
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
-        // Check size: if object is large, require caller to use
-        // get_to_writer (streaming) instead.
-        if let Ok(Some(entry)) = self.metadata.get(hash).await
-            && entry.len > defaults::WAL_INLINE_THRESHOLD
-        {
-            return Err(CasError::TooLarge {
-                hash: *hash,
-                size: entry.len,
-                limit: defaults::WAL_INLINE_THRESHOLD,
-            });
-        } else if let PendingState::PresentExternal { content_len } =
-            self.wal.check_pending(hash).await
-            && content_len > defaults::WAL_INLINE_THRESHOLD
-        {
-            return Err(CasError::TooLarge {
-                hash: *hash,
-                size: content_len,
-                limit: defaults::WAL_INLINE_THRESHOLD,
-            });
-        }
-
         self.pending
             .execute(*hash, || self.fetch_inner(hash))
             .await?

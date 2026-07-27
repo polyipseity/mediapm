@@ -95,10 +95,15 @@ pub trait CasApi: Send + Sync {
     /// Store bytes, return the canonical content-addressed hash.
     async fn put(&self, data: Bytes) -> Result<Hash, CasError>;
 
-    /// Retrieve bytes by hash.
+    /// Retrieve bytes by hash. Default impl buffers into memory via
+    /// `get_to_writer()`. Prefer `get_to_writer()` for large objects.
     ///
     /// Returns [`CasError::NotFound`] if the object does not exist.
-    async fn get(&self, hash: Hash) -> Result<Bytes, CasError>;
+    async fn get(&self, hash: Hash) -> Result<Bytes, CasError> {
+        let mut buf = Vec::new();
+        self.get_to_writer(hash, &mut buf).await?;
+        Ok(Bytes::from(buf))
+    }
 
     /// Get metadata for an object.
     ///
@@ -147,21 +152,11 @@ pub trait CasApi: Send + Sync {
     /// Retrieve bytes by hash and write to an async writer.
     ///
     /// Returns [`CasError::NotFound`] if the object does not exist.
-    /// Returns [`CasError::TooLarge`] if the object exceeds the inline
-    /// threshold — override to handle large objects via streaming.
     async fn get_to_writer<W: tokio::io::AsyncWrite + Send + Unpin>(
         &self,
         hash: Hash,
-        mut writer: W,
-    ) -> Result<(), CasError>
-    where
-        Self: Sized,
-    {
-        use tokio::io::AsyncWriteExt;
-        let data = self.get(hash).await?;
-        writer.write_all(&data).await?;
-        Ok(())
-    }
+        writer: W,
+    ) -> Result<(), CasError>;
 }
 
 // ---------------------------------------------------------------------------

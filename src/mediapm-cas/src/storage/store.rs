@@ -31,7 +31,7 @@ use crate::api::{
     CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding, ObjectMeta,
     OptimizeReport, PruneReport,
 };
-use crate::defaults::WAL_INLINE_THRESHOLD;
+use crate::defaults::WAL_INLINE_LIMIT;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -144,7 +144,7 @@ impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> CasStore<J,
 impl<J: Wal, M: MetadataStore, B: BlobStore> CasApi for CasStore<J, M, B> {
     async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
         let hash = Hash::from_content(&data);
-        if data.len() as u64 > WAL_INLINE_THRESHOLD {
+        if data.len() as u64 > WAL_INLINE_LIMIT {
             // Large blob: write to blob store immediately, log PutLarge in WAL.
             self.blob.write(hash, ObjectEncoding::Full, data.clone()).await?;
             self.metadata
