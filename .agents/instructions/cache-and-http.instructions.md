@@ -13,11 +13,11 @@ applyTo: "src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins
 
 ## Three-tier cache hierarchy
 
-| Cache                                     | TTL | Basis         | Content                                               | Key                        |
-| ----------------------------------------- | --- | ------------- | ----------------------------------------------------- | -------------------------- |
+| Cache                                     | TTL | Basis         | Content                                               | Key                                         |
+| ----------------------------------------- | --- | ------------- | ----------------------------------------------------- | ------------------------------------------- |
 | **Content cache** (`tools.json`)          | 30d | Last-use      | Raw downloaded tool payload bytes                     | Download URI (actual URL used for download) |
-| **Metadata cache** (`tool_metadata.json`) | 1d  | Creation-time | GitHub API responses (tag names, versions)            | API endpoint URL           |
-| **Provision cache** (RAII)                | 24h | Creation-time | Extracted tool binaries (per-platform unpack results) | Tool identity hash         |
+| **Metadata cache** (`tool_metadata.json`) | 1d  | Creation-time | GitHub API responses (tag names, versions)            | API endpoint URL                            |
+| **Provision cache** (RAII)                | 24h | Creation-time | Extracted tool binaries (per-platform unpack results) | Tool identity hash                          |
 
 ### Important: TTL basis differences
 
@@ -58,10 +58,10 @@ Both override the request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` env var (mi
 
 The codebase has **two** shared HTTP clients (one async + one blocking), both using the `OnceLock` pattern.
 
-| Client                                                      | Crate                               | Feature        | Runtime                 |
-| ----------------------------------------------------------- | ----------------------------------- | -------------- | ----------------------- |
-| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm-conductor`                 | unconditional  | Tokio (reqwest async)   |
-| `shared_http_client()`                                      | `mediapm-conductor-builtins/import` | `fetch`        | Sync (reqwest blocking) |
+| Client                                                      | Crate                               | Feature       | Runtime                 |
+| ----------------------------------------------------------- | ----------------------------------- | ------------- | ----------------------- |
+| `shared_http_client()` / `shared_no_redirect_http_client()` | `mediapm-conductor`                 | unconditional | Tokio (reqwest async)   |
+| `shared_http_client()`                                      | `mediapm-conductor-builtins/import` | `fetch`       | Sync (reqwest blocking) |
 
 - The import builtin uses a **blocking** client because it runs in a synchronous context (not a tokio runtime). It must not depend on `mediapm-conductor` (the dependency direction is the opposite).
 - Both clients use the same User-Agent format with their respective `CARGO_PKG_VERSION`.

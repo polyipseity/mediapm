@@ -144,10 +144,10 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Content cache key: actual download URL
 
-| Spec item                                                                                       | Test(s)                                                                        | Status |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------ |
-| Cache key is actual URL used for download, not blindly `urls[0]`                                | `fetch_cache_key_uses_actual_url_not_first_url`                                | 🟢     |
-| Cache key survives first-URL cache miss — iterates all URLs for lookup                          | `fetch_cache_key_uses_actual_url_not_first_url`                                | 🟢     |
+| Spec item                                                              | Test(s)                                         | Status |
+| ---------------------------------------------------------------------- | ----------------------------------------------- | ------ |
+| Cache key is actual URL used for download, not blindly `urls[0]`       | `fetch_cache_key_uses_actual_url_not_first_url` | 🟢     |
+| Cache key survives first-URL cache miss — iterates all URLs for lookup | `fetch_cache_key_uses_actual_url_not_first_url` | 🟢     |
 
 ### DirectoryLockGuard
 
