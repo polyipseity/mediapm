@@ -2,39 +2,12 @@
 //!
 //! A thin newtype wrapper around the generic [`Cache`] that anchors the cache
 //! root at a user-level directory (OS cache dir).
-//!
-//! # Three-tier cache model
-//!
-//! This crate provides two user-level cache tiers that share a CAS `store/`
-//! but have independent index files and TTL policies:
-//!
-//! 1. **Tool content cache** (`tools.json`, 30-day TTL, last-use-based): stores
-//!    raw downloaded bytes for tool binaries. The phase 2 (fetch) consumer calls
-//!    `touch()` on cache hit so TTL measures last-download.
-//! 2. **Tool metadata cache** (`tool_metadata.json`, 1-day TTL, creation-time-based):
-//!    stores version/tag resolution results. The phase 1 (resolve) consumer MUST
-//!    NOT call `touch()` on read — TTL is anchored to creation time.
-//! 3. **Provision cache** (separate mechanism, see `crate::provision`): manages
-//!    extracted tool trees with file locks under `<workspace>/tools/`. This is a
-//!    fundamentally different mechanism and never interchangeable with the above
-//!    two tiers.
-//!
-//! The provision cache lives in the `provision` module and is not a `Cache` variant.
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use crate::cache::Cache;
+use crate::cache::{Cache, CacheDomainConfig};
 use crate::error::ConductorError;
-
-/// Returns the default user-scoped cache root for conductor standalone
-/// invocations.
-///
-/// Path: `<os-cache-dir>/mediapm-conductor/cache`
-#[must_use]
-pub fn default_user_download_cache_root() -> Option<PathBuf> {
-    dirs::cache_dir().map(|root| root.join("mediapm-conductor").join("cache"))
-}
 
 /// Returns the default user-scoped cache root for `mediapm` invocations.
 ///
@@ -46,13 +19,7 @@ pub fn default_mediapm_user_download_cache_root() -> Option<PathBuf> {
 
 /// User-level download cache wrapping the generic Cache engine.
 ///
-/// All Cache methods are accessible via Deref.  Consumers open separate
-/// instances for different cache domains:
-///
-/// - `open_tool_cache()` — tool binary payloads (30 day TTL, tools.json)
-/// - `open_metadata_cache()` — metadata/version-check payloads (1 day TTL,
-///   tool_metadata.json)
-/// - `open(root, name, ttl)` — fully custom
+/// All Cache methods are accessible via Deref.
 #[derive(Clone)]
 pub struct UserLevelCache(Cache);
 
@@ -70,37 +37,6 @@ impl UserLevelCache {
         Self(cache)
     }
 
-    /// Opens at the default user-level root with tools.json index and 30 day TTL.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails or the default cache root cannot be determined.
-    pub async fn open_tool_cache() -> Result<Self, ConductorError> {
-        let root = default_user_download_cache_root().ok_or_else(|| {
-            ConductorError::Workflow("could not determine default tool cache root".to_string())
-        })?;
-        Cache::open_with_index_file_name_and_ttl(&root, "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .map(Self)
-    }
-
-    /// Opens at the default user-level root with tool_metadata.json index and
-    /// 1 day TTL.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails or the default cache root cannot be determined.
-    pub async fn open_metadata_cache() -> Result<Self, ConductorError> {
-        let root = default_user_download_cache_root().ok_or_else(|| {
-            ConductorError::Workflow("could not determine default metadata cache root".to_string())
-        })?;
-        Cache::open_with_index_file_name_and_ttl(&root, "tool_metadata.json", 24 * 60 * 60)
-            .await
-            .map(Self)
-    }
-
     /// Opens at an explicit root with custom index file and TTL.
     ///
     /// # Errors
@@ -112,42 +48,35 @@ impl UserLevelCache {
         index_file_name: &str,
         entry_ttl_seconds: u64,
     ) -> Result<Self, ConductorError> {
-        Cache::open_with_index_file_name_and_ttl(root, index_file_name, entry_ttl_seconds)
-            .await
-            .map(Self)
+        Cache::open(
+            root,
+            &[CacheDomainConfig {
+                domain: "default".to_string(),
+                index_file_name: index_file_name.to_string(),
+                entry_ttl_seconds,
+            }],
+        )
+        .await
+        .map(Self)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{default_mediapm_user_download_cache_root, default_user_download_cache_root};
+    use super::default_mediapm_user_download_cache_root;
 
     /// Protects crate-level cache roots so conductor and mediapm resolve to
     /// distinct base directories with the same flat `cache/` layout.
     #[test]
     fn default_cache_roots_use_flat_cache_layout() {
-        let conductor_root = default_user_download_cache_root();
         let mediapm_root = default_mediapm_user_download_cache_root();
-        if let (Some(conductor_root), Some(mediapm_root)) = (conductor_root, mediapm_root) {
-            assert_ne!(conductor_root, mediapm_root);
-            assert!(
-                conductor_root.ends_with("cache"),
-                "conductor root must end with 'cache', got: {}",
-                conductor_root.display()
-            );
+        if let Some(mediapm_root) = mediapm_root {
             assert!(
                 mediapm_root.ends_with("cache"),
                 "mediapm root must end with 'cache', got: {}",
                 mediapm_root.display()
             );
-            let conductor_parent = conductor_root.parent().unwrap();
             let mediapm_parent = mediapm_root.parent().unwrap();
-            assert_ne!(conductor_parent, mediapm_parent);
-            assert!(
-                conductor_parent.ends_with("mediapm-conductor"),
-                "conductor cache base must be 'mediapm-conductor', got: {}",
-                conductor_parent.display()
-            );
             assert!(
                 mediapm_parent.ends_with("mediapm"),
                 "mediapm cache base must be 'mediapm', got: {}",

@@ -124,9 +124,11 @@ async fn open_domain_setup(
     for config in domains {
         let normalized_index_file_name = normalize_index_file_name(&config.index_file_name);
         let index_path = root.join(normalized_index_file_name);
-        let index = load_index_file(&index_path);
+        let index = load_index_file(&index_path).await;
         if !index_path.exists() {
-            let _ = write_index_file(&index_path, &index);
+            let ip = index_path.clone();
+            let idx = index.clone();
+            let _ = tokio::task::spawn_blocking(move || write_index_file(&ip, &idx)).await;
         }
         domains_map.insert(
             config.domain.clone(),
@@ -183,26 +185,6 @@ impl Cache {
     #[must_use]
     pub fn cas(&self) -> &FileSystemCas {
         &self.cas
-    }
-
-    /// Opens one cache root and binds this handle to a specific index file
-    /// with a custom TTL, using a single domain named `"default"`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open_with_index_file_name_and_ttl(
-        root: &Path,
-        index_file_name: &str,
-        entry_ttl_seconds: u64,
-    ) -> Result<Self, ConductorError> {
-        let config = CacheDomainConfig {
-            domain: "default".to_string(),
-            index_file_name: index_file_name.to_string(),
-            entry_ttl_seconds,
-        };
-        Self::open(root, &[config]).await
     }
 
     /// Looks up cached payload bytes for one logical key in a domain.
@@ -314,18 +296,26 @@ impl Cache {
     ///
     /// Used by the background maintenance loop so background prunes do not
     /// interfere with [`prune_expired_entries`] cooldown tracking.
+    ///
+    /// Synchronous filesystem I/O (index write, hash-refererence scan) is
+    /// offloaded to [`tokio::task::spawn_blocking`] to avoid blocking the
+    /// async runtime.
     async fn prune_expired_inner(
         &self,
         domain: &str,
         now: u64,
     ) -> Result<CachePruneReport, ConductorError> {
-        let domain_state = self
-            .domains
-            .get(domain)
-            .ok_or_else(|| ConductorError::Workflow(format!("unknown cache domain '{domain}'")))?;
-        let cutoff = now.saturating_sub(domain_state.entry_ttl_seconds);
-
-        let (expired_keys, expired_hashes) = {
+        // ── Phase 1: collect expired entries and snapshot the index ──
+        //
+        // All domain_state borrows are dropped before any await so the
+        // resulting Future is Send (required by tokio::spawn background
+        // loop).
+        let (_cutoff, index_path, expired_keys, expired_hashes, index_snapshot) = {
+            let domain_state = self.domains.get(domain).ok_or_else(|| {
+                ConductorError::Workflow(format!("unknown cache domain '{domain}'"))
+            })?;
+            let cutoff = now.saturating_sub(domain_state.entry_ttl_seconds);
+            let index_path = domain_state.index_path.clone();
             let mut index = domain_state.index.lock().map_err(|_| {
                 ConductorError::Internal("locking cache index mutex failed".to_string())
             })?;
@@ -342,17 +332,32 @@ impl Cache {
                     index.entries.remove(key);
                 }
             }
-            write_index_file(&domain_state.index_path, &index)?;
-            (expired_keys, expired_hashes)
+            let index_snapshot = index.clone();
+            // domain_state and index (MutexGuard) dropped here.
+            (cutoff, index_path, expired_keys, expired_hashes, index_snapshot)
         };
+
+        // ── Phase 2: persist mutated index via spawn_blocking ──
+        // Clone index_path before move into closure; the original is
+        // still needed below for cache_root resolution.
+        let write_path = index_path.clone();
+        tokio::task::spawn_blocking(move || write_index_file(&write_path, &index_snapshot))
+            .await
+            .map_err(|e| ConductorError::Workflow(format!("prune index join error: {e}")))??;
 
         if expired_keys.is_empty() {
             return Ok(CachePruneReport::default());
         }
 
-        let active_hash_union = collect_referenced_hashes_from_indexes(
-            domain_state.index_path.parent().unwrap_or(Path::new("")),
-        );
+        // ── Phase 3: collect active hash references via spawn_blocking ──
+        let cache_root = index_path.parent().unwrap_or(Path::new("")).to_path_buf();
+        let active_hash_union = tokio::task::spawn_blocking(move || {
+            collect_referenced_hashes_from_indexes(&cache_root)
+        })
+        .await
+        .map_err(|e| ConductorError::Workflow(format!("prune hash-scan join error: {e}")))?;
+
+        // ── Phase 4: async CAS payload removal ──
         let mut removed_payloads = 0usize;
         for hash_text in expired_hashes {
             if active_hash_union.contains(&hash_text) {
@@ -462,10 +467,23 @@ struct CacheIndexEntry {
     last_access_unix_seconds: u64,
 }
 
-/// Loads one index file from disk, falling back to an empty index when absent
-/// or malformed.
+/// Loads one index file from disk asynchronously, falling back to an empty
+/// index when absent or malformed.
 #[must_use]
-fn load_index_file(index_path: &Path) -> CacheIndex {
+async fn load_index_file(index_path: &Path) -> CacheIndex {
+    let Ok(raw) = tokio::fs::read_to_string(index_path).await else {
+        return CacheIndex::default();
+    };
+    let Ok(parsed) = serde_json::from_str::<CacheIndex>(&raw) else {
+        return CacheIndex::default();
+    };
+    if parsed.version == INDEX_VERSION { parsed } else { CacheIndex::default() }
+}
+
+/// Synchronous version of [`load_index_file`] for use inside
+/// [`spawn_blocking`](tokio::task::spawn_blocking) closures.
+#[must_use]
+fn load_index_file_sync(index_path: &Path) -> CacheIndex {
     let Ok(raw) = fs::read_to_string(index_path) else {
         return CacheIndex::default();
     };
@@ -495,7 +513,7 @@ fn collect_referenced_hashes_from_indexes(cache_root: &Path) -> BTreeSet<String>
         if !is_index {
             continue;
         }
-        let index = load_index_file(&path);
+        let index = load_index_file_sync(&path);
         for row in index.entries.values() {
             referenced.insert(row.hash.clone());
         }
@@ -572,7 +590,7 @@ impl Cache {
     }
 
     /// Test-only: opens cache with a configurable background maintenance
-    /// interval for a single domain named `"default"`.
+    /// interval for a single domain named `"test"`.
     pub(crate) async fn open_with_ttl_and_maintenance_interval(
         root: &Path,
         index_file_name: &str,
@@ -580,7 +598,7 @@ impl Cache {
         maintenance_interval_seconds: u64,
     ) -> Result<Self, ConductorError> {
         let config = CacheDomainConfig {
-            domain: "default".to_string(),
+            domain: "test".to_string(),
             index_file_name: index_file_name.to_string(),
             entry_ttl_seconds,
         };
@@ -630,18 +648,24 @@ mod tests {
     #[tokio::test]
     async fn cache_round_trips_bytes_by_logical_key() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
-                .await
-                .expect("open cache");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache");
         let payload = b"shared-cache".to_vec();
         let key = "test-tool-v1.0.0";
-        cache.store_bytes("default", key, &payload).await;
-        let retrieved = cache.lookup_bytes("default", key).await;
+        cache.store_bytes("test", key, &payload).await;
+        let retrieved = cache.lookup_bytes("test", key).await;
         assert_eq!(retrieved, Some(payload.clone()), "round-trip must return original bytes");
-        cache.prune_expired_entries("default").await.expect("prune should succeed");
+        cache.prune_expired_entries("test").await.expect("prune should succeed");
         // Immediate prune should not remove fresh entry
-        let retrieved_after = cache.lookup_bytes("default", key).await;
+        let retrieved_after = cache.lookup_bytes("test", key).await;
         assert_eq!(retrieved_after, Some(payload), "fresh entry must survive prune");
     }
 
@@ -649,11 +673,17 @@ mod tests {
     #[tokio::test]
     async fn lookup_bytes_nonexistent_key_returns_none() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
-                .await
-                .expect("open cache");
-        let retrieved = cache.lookup_bytes("default", "no-such-key").await;
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache");
+        let retrieved = cache.lookup_bytes("test", "no-such-key").await;
         assert!(retrieved.is_none(), "nonexistent key must return None");
     }
 
@@ -662,14 +692,20 @@ mod tests {
     #[tokio::test]
     async fn store_bytes_overwrite_updates_payload() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
-                .await
-                .expect("open cache");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache");
         let key = "overwrite-key";
-        cache.store_bytes("default", key, b"first-value").await;
-        cache.store_bytes("default", key, b"second-value").await;
-        let retrieved = cache.lookup_bytes("default", key).await;
+        cache.store_bytes("test", key, b"first-value").await;
+        cache.store_bytes("test", key, b"second-value").await;
+        let retrieved = cache.lookup_bytes("test", key).await;
         assert_eq!(retrieved, Some(b"second-value".to_vec()), "second store must overwrite first");
     }
 
@@ -678,16 +714,23 @@ mod tests {
     async fn prune_expired_removes_expired_entries() {
         let root = tempfile::tempdir().expect("tempdir");
         // Use zero TTL so entries expire immediately.
-        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
-            .await
-            .expect("open cache");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 0,
+            }],
+        )
+        .await
+        .expect("open cache");
         let key = "expiring-key";
-        cache.store_bytes("default", key, b"ephemeral").await;
+        cache.store_bytes("test", key, b"ephemeral").await;
         // Entry was stored with last_access = now; with TTL = 0, cutoff = now,
         // so the entry is eligible for pruning on the first prune call.
-        let report = cache.prune_expired_entries("default").await.expect("prune should succeed");
+        let report = cache.prune_expired_entries("test").await.expect("prune should succeed");
         assert!(report.removed_entries >= 1, "expired entry must be pruned");
-        let retrieved = cache.lookup_bytes("default", key).await;
+        let retrieved = cache.lookup_bytes("test", key).await;
         assert!(retrieved.is_none(), "pruned entry must not be retrievable");
     }
 
@@ -696,14 +739,18 @@ mod tests {
     #[tokio::test]
     async fn prune_on_empty_cache_does_not_crash() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
-                .await
-                .expect("open cache");
-        let report = cache
-            .prune_expired_entries("default")
-            .await
-            .expect("prune on empty cache must succeed");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache");
+        let report =
+            cache.prune_expired_entries("test").await.expect("prune on empty cache must succeed");
         assert_eq!(report.removed_entries, 0, "no entries in empty cache");
         assert_eq!(report.removed_payloads, 0, "no payloads in empty cache");
     }
@@ -712,14 +759,20 @@ mod tests {
     #[tokio::test]
     async fn store_empty_bytes_does_not_create_entry() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
-                .await
-                .expect("open cache");
-        cache.store_bytes("default", "empty-key", b"").await;
-        assert_eq!(cache.entry_count("default"), 0, "empty payload must not create an entry");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache");
+        cache.store_bytes("test", "empty-key", b"").await;
+        assert_eq!(cache.entry_count("test"), 0, "empty payload must not create an entry");
         assert!(
-            cache.lookup_bytes("default", "empty-key").await.is_none(),
+            cache.lookup_bytes("test", "empty-key").await.is_none(),
             "empty key must not be findable"
         );
     }
@@ -728,23 +781,30 @@ mod tests {
     #[tokio::test]
     async fn touch_bumps_last_access_and_prevents_prune() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 1)
-            .await
-            .expect("open cache");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 1,
+            }],
+        )
+        .await
+        .expect("open cache");
 
-        cache.store_bytes("default", "key", b"data").await;
+        cache.store_bytes("test", "key", b"data").await;
 
         // Wait for TTL to expire (1 second).
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         // Touch moves last_access forward to now.
-        cache.touch("default", "key");
+        cache.touch("test", "key");
 
         // Prune — entry should survive because touch moved last_access
         // past the cutoff (now - 1s).
-        let report = cache.prune_expired_entries("default").await.expect("prune");
+        let report = cache.prune_expired_entries("test").await.expect("prune");
         assert_eq!(report.removed_entries, 0, "touched entry must survive prune");
-        let retrieved = cache.lookup_bytes("default", "key").await;
+        let retrieved = cache.lookup_bytes("test", "key").await;
         assert_eq!(retrieved, Some(b"data".to_vec()));
     }
 
@@ -752,18 +812,24 @@ mod tests {
     #[tokio::test]
     async fn lookup_bytes_does_not_bump_last_access() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
-                .await
-                .expect("open cache");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache");
 
-        cache.store_bytes("default", "key", b"data").await;
-        let before = cache.get_entry_last_access("default", "key").expect("entry exists");
+        cache.store_bytes("test", "key", b"data").await;
+        let before = cache.get_entry_last_access("test", "key").expect("entry exists");
 
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
-        let _ = cache.lookup_bytes("default", "key").await;
-        let after = cache.get_entry_last_access("default", "key").expect("entry still exists");
+        let _ = cache.lookup_bytes("test", "key").await;
+        let after = cache.get_entry_last_access("test", "key").expect("entry still exists");
         assert_eq!(before, after, "lookup_bytes must not bump last_access");
     }
 
@@ -771,19 +837,25 @@ mod tests {
     #[tokio::test]
     async fn touch_bumps_last_access() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache =
-            Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 30 * 24 * 60 * 60)
-                .await
-                .expect("open cache");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache");
 
-        cache.store_bytes("default", "key", b"data").await;
-        let before = cache.get_entry_last_access("default", "key").expect("entry exists");
+        cache.store_bytes("test", "key", b"data").await;
+        let before = cache.get_entry_last_access("test", "key").expect("entry exists");
 
         // Timestamps are in seconds; sleep 1s to guarantee a different second.
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-        cache.touch("default", "key");
-        let after = cache.get_entry_last_access("default", "key").expect("entry still exists");
+        cache.touch("test", "key");
+        let after = cache.get_entry_last_access("test", "key").expect("entry still exists");
         assert!(after > before, "touch must bump last_access");
     }
 
@@ -829,25 +901,32 @@ mod tests {
     #[tokio::test]
     async fn prune_cooldown_respects_interval() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
-            .await
-            .expect("open cache");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 0,
+            }],
+        )
+        .await
+        .expect("open cache");
 
         // First prune — removes the immediately-expired entry.
-        cache.store_bytes("default", "expiring-key", b"ephemeral").await;
-        let report = cache.prune_expired_entries("default").await.expect("first prune");
+        cache.store_bytes("test", "expiring-key", b"ephemeral").await;
+        let report = cache.prune_expired_entries("test").await.expect("first prune");
         assert!(report.removed_entries >= 1);
 
         // Store a fresh entry.
-        cache.store_bytes("default", "fresh-key", b"fresh").await;
+        cache.store_bytes("test", "fresh-key", b"fresh").await;
 
         // Second prune within cooldown — must return empty report.
-        let report = cache.prune_expired_entries("default").await.expect("second prune");
+        let report = cache.prune_expired_entries("test").await.expect("second prune");
         assert_eq!(report.removed_entries, 0, "cooldown must prevent pruning");
         assert_eq!(report.removed_payloads, 0, "cooldown must prevent payload removal");
 
         // Fresh entry survives because prune didn't run.
-        let retrieved = cache.lookup_bytes("default", "fresh-key").await;
+        let retrieved = cache.lookup_bytes("test", "fresh-key").await;
         assert_eq!(retrieved, Some(b"fresh".to_vec()));
     }
 
@@ -856,17 +935,24 @@ mod tests {
     #[tokio::test]
     async fn prune_expired_removes_payload_blob_from_cas() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
-            .await
-            .expect("open cache");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 0,
+            }],
+        )
+        .await
+        .expect("open cache");
         let payload = b"ephemeral-blob".to_vec();
-        cache.store_bytes("default", "expiring-key", &payload).await;
+        cache.store_bytes("test", "expiring-key", &payload).await;
 
         // Capture the hash before prune.
-        let hash_text = cache.get_entry_hash("default", "expiring-key").expect("entry must exist");
+        let hash_text = cache.get_entry_hash("test", "expiring-key").expect("entry must exist");
 
         // Prune.
-        let report = cache.prune_expired_entries("default").await.expect("prune");
+        let report = cache.prune_expired_entries("test").await.expect("prune");
         assert!(report.removed_entries >= 1, "expired entry must be pruned");
         assert!(report.removed_payloads >= 1, "payload blob must be reported as removed");
 
@@ -887,24 +973,31 @@ mod tests {
     #[tokio::test]
     async fn prune_expired_same_hash_multiple_keys_survives_one_expiry() {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache = Cache::open_with_index_file_name_and_ttl(root.path(), "tools.json", 0)
-            .await
-            .expect("open cache");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 0,
+            }],
+        )
+        .await
+        .expect("open cache");
         let payload = b"shared-payload".to_vec();
-        cache.store_bytes("default", "key-a", &payload).await;
+        cache.store_bytes("test", "key-a", &payload).await;
         // Store the same payload under a different key.
-        cache.store_bytes("default", "key-b", &payload).await;
+        cache.store_bytes("test", "key-b", &payload).await;
 
         // Prune — both entries are expired (TTL=0).
-        let report = cache.prune_expired_entries("default").await.expect("prune");
+        let report = cache.prune_expired_entries("test").await.expect("prune");
         assert!(report.removed_entries >= 2, "both expired entries must be pruned");
         // The hash of key-a and key-b are identical; at most one blob should
         // be removed. With blob-level dedup, cas.delete() is idempotent.
         assert!(report.removed_payloads <= 1, "shared payload must be deleted at most once");
 
         // Both keys gone from index.
-        assert!(cache.lookup_bytes("default", "key-a").await.is_none());
-        assert!(cache.lookup_bytes("default", "key-b").await.is_none());
+        assert!(cache.lookup_bytes("test", "key-a").await.is_none());
+        assert!(cache.lookup_bytes("test", "key-b").await.is_none());
     }
 
     /// Verifies that a blob referenced by two separate domain index files
@@ -1007,11 +1100,11 @@ mod tests {
         )
         .await
         .expect("open cache");
-        cache.store_bytes("default", "expiring-key", b"ephemeral").await;
+        cache.store_bytes("test", "expiring-key", b"ephemeral").await;
         // Wait for background prune to run (interval is 1s).
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         assert!(
-            cache.lookup_bytes("default", "expiring-key").await.is_none(),
+            cache.lookup_bytes("test", "expiring-key").await.is_none(),
             "expired entry must be pruned by background task"
         );
     }
@@ -1028,11 +1121,11 @@ mod tests {
         )
         .await
         .expect("open cache");
-        cache.store_bytes("default", "fresh-key", b"fresh").await;
+        cache.store_bytes("test", "fresh-key", b"fresh").await;
         // Wait for background prune to run (interval is 1s).
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         assert!(
-            cache.lookup_bytes("default", "fresh-key").await.is_some(),
+            cache.lookup_bytes("test", "fresh-key").await.is_some(),
             "fresh entry must survive background prune"
         );
     }
@@ -1114,6 +1207,52 @@ mod tests {
         assert!(
             fresh_cas.get(hash).await.is_ok(),
             "blob must still exist on disk after cross-domain GC"
+        );
+    }
+
+    /// Verifies that cache data persists across a close-reopen cycle.
+    ///
+    /// Opens a cache, writes an entry, drops the cache handle, then re-opens
+    /// at the same root and verifies the entry (both index metadata and
+    /// payload bytes) is still accessible. This exercises the CAS store +
+    /// JSON index file round-trip.
+    #[tokio::test]
+    async fn cross_session_persistence_preserves_data() {
+        let root = tempfile::tempdir().expect("tempdir");
+
+        // ── Session 1: store entries ──
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache session 1");
+        cache.store_bytes("test", "persist-key", b"persistent data").await;
+        let entry_count = cache.entry_count("test");
+        assert_eq!(entry_count, 1, "session 1 must have 1 entry");
+        drop(cache);
+
+        // ── Session 2: re-open and verify ──
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache session 2");
+        assert_eq!(cache.entry_count("test"), 1, "session 2 must see the same entry count");
+        let retrieved = cache.lookup_bytes("test", "persist-key").await;
+        assert_eq!(
+            retrieved,
+            Some(b"persistent data".to_vec()),
+            "payload must survive close-reopen"
         );
     }
 }
