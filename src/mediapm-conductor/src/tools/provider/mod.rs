@@ -1,4 +1,4 @@
-//! Tool provider: three-phase pipeline for resolving, fetching, and postprocessing
+//! Tool provider: three-phase pipeline for resolving, fetching, and processing
 //! downloadable tool payloads (and generating launcher scripts for builtins).
 //!
 //! # Architecture
@@ -8,7 +8,7 @@
 //!
 //! 1. **Resolve** — gather metadata, resolve versions, determine sources.
 //! 2. **Fetch** — download or generate bytes for each source.
-//! 3. **Postprocess** — extract archives, repack, import to CAS, build content map.
+//! 3. **Process** — extract archives, repack, import to CAS, build content map.
 //!
 //! The entire module is gated behind the `tool-presets` feature since all types
 //! reference progress types from `mediapm-utils` that are behind that gate.
@@ -385,10 +385,10 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 }
 
 // ██████████████████████████████████████████████████████████████████████████████
-// Phase 3 — Postprocess
+// Phase 3 — Process
 // ██████████████████████████████████████████████████████████████████████████████
 
-/// Postprocesses downloaded sources: extract archives, import to CAS, build
+/// Processes downloaded sources: extract archives, import to CAS, build
 /// content map and per-OS executable paths.
 ///
 /// For archive formats (ZIP, tar.gz, tar.xz) the extracted directory is
@@ -429,7 +429,7 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 /// aggregated byte total (falling back to `bytes.len()` when unset).  The
 /// total accounts for both compressed input bytes during extraction and
 /// decompressed bytes during repacking, keeping the progress bar smooth
-/// through the full postprocess pipeline.
+/// through the full process pipeline.
 ///
 /// [`MAX_LOOKAHEAD`] (16) bounds the number of concurrent HEAD probes
 /// during phase 1 (resolve). [`COMPRESSED_CHUNK`] (128 KiB) controls the
@@ -440,7 +440,7 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 ///
 /// Returns [`ConductorError`] when extraction, packing, or CAS import fails.
 #[cfg(feature = "tool-presets")]
-pub async fn postprocess_tool_sources(
+pub async fn process_tool_sources(
     downloaded: &DownloadedSources,
     cas: &impl mediapm_cas::CasApi,
     progress_cb: Option<ProviderProgressCallback>,
@@ -525,7 +525,7 @@ pub async fn postprocess_tool_sources(
         if let Some(cb) = progress_cb.as_ref() {
             let bytes = budget.aggregate();
             cb(ProviderProgressSnapshot {
-                phase: ProviderPhase::Postprocess,
+                phase: ProviderPhase::Process,
                 items: ((next_item_idx + item_count) as u64, total_items_u64),
                 bytes,
             });
@@ -1604,10 +1604,10 @@ mod tests {
         assert!(total1 >= content.len() as u64);
     }
 
-    // ── postprocess position ≤ total ───────────────────────────────
+    // ── process position ≤ total ───────────────────────────────
 
     #[tokio::test]
-    async fn postprocess_position_never_exceeds_total_with_archive_entries() {
+    async fn process_position_never_exceeds_total_with_archive_entries() {
         // Use a large enough pseudo-random buffer so the zip container overhead
         // is negligible compared to the decompressed size.
         let decompressed = pseudo_random_buffer(200_000);
@@ -1646,31 +1646,31 @@ mod tests {
             snap_clone.lock().unwrap().push(snap);
         });
 
-        let _result = postprocess_tool_sources(&downloaded, &cas, Some(cb))
+        let _result = process_tool_sources(&downloaded, &cas, Some(cb))
             .await
-            .expect("postprocess should succeed with synthetic entries");
+            .expect("process should succeed with synthetic entries");
 
         let all = snapshots.lock().unwrap().clone();
         assert!(!all.is_empty(), "should have recorded at least one snapshot");
 
-        // Verify monotonicity and pos ≤ total across ALL postprocess snapshots.
+        // Verify monotonicity and pos ≤ total across ALL process snapshots.
         let mut prev_pos = 0u64;
         for (i, snap) in all.iter().enumerate() {
-            if snap.phase != ProviderPhase::Postprocess {
+            if snap.phase != ProviderPhase::Process {
                 continue;
             }
             let pos = snap.bytes.0;
             let tot = snap.bytes.1;
             assert!(
                 pos >= prev_pos,
-                "Postprocess position decreased at snapshot {i}: {pos} < {prev_pos}",
+                "Process position decreased at snapshot {i}: {pos} < {prev_pos}",
             );
-            assert!(pos <= tot, "Postprocess position {pos} exceeds total {tot} at snapshot {i}",);
+            assert!(pos <= tot, "Process position {pos} exceeds total {tot} at snapshot {i}",);
             prev_pos = pos;
         }
 
         // Verify the final snapshot total reflects decompressed cost.
-        let final_snap = all.iter().rev().find(|s| s.phase == ProviderPhase::Postprocess).unwrap();
+        let final_snap = all.iter().rev().find(|s| s.phase == ProviderPhase::Process).unwrap();
         let final_total = final_snap.bytes.1;
         let compressed_total = (zip.len() + binary_bytes.len()) as u64;
         assert!(

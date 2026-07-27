@@ -1,5 +1,5 @@
 //! Integration tests for the tool provider pipeline
-//! (resolve → fetch → postprocess).
+//! (resolve → fetch → process).
 //!
 //! These tests validate the full 3-phase pipeline end-to-end using
 //! launcher-based (GenerateLauncher) tools that don't require network
@@ -13,7 +13,7 @@ use mediapm_cas::CasApi;
 use mediapm_cas::InMemoryCas;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::{
-    fetch_tool_sources, postprocess_tool_sources, resolve_tool_fetch,
+    fetch_tool_sources, process_tool_sources, resolve_tool_fetch,
 };
 use mediapm_utils::progress::ProviderProgressSnapshot;
 use std::str::FromStr;
@@ -127,11 +127,11 @@ async fn fetch_echo_is_cached_idempotently() {
     }
 }
 
-/// Postprocessing echo launchers produces a content map with one entry per OS
+/// Processing echo launchers produces a content map with one entry per OS
 /// (binary format → `{os_label}/{tool_id}` keys) and an `os_exec_paths` map
 /// with one entry per OS.
 #[tokio::test]
-async fn postprocess_echo_produces_correct_content_map_and_os_exec_paths() {
+async fn process_echo_produces_correct_content_map_and_os_exec_paths() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
@@ -140,7 +140,7 @@ async fn postprocess_echo_produces_correct_content_map_and_os_exec_paths() {
     let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
     let cas = InMemoryCas::default();
 
-    let result = postprocess_tool_sources(&downloaded, &cas, None).await.expect("postprocess echo");
+    let result = process_tool_sources(&downloaded, &cas, None).await.expect("process echo");
 
     // Content map: one binary-format entry per OS
     assert_eq!(result.content_map.len(), ECHO_OS_LABELS.len(), "content map size");
@@ -169,7 +169,7 @@ async fn postprocess_echo_produces_correct_content_map_and_os_exec_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// Full pipeline (resolve → fetch → postprocess)
+// Full pipeline (resolve → fetch → process)
 // ---------------------------------------------------------------------------
 
 /// The full pipeline for echo produces a usable `ProvisionResult` where
@@ -184,7 +184,7 @@ async fn full_pipeline_echo_all_hashes_retrievable_from_cas() {
     let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
     let cas = InMemoryCas::default();
 
-    let result = postprocess_tool_sources(&downloaded, &cas, None).await.expect("postprocess echo");
+    let result = process_tool_sources(&downloaded, &cas, None).await.expect("process echo");
 
     // Every content-map hash should be retrievable
     for (key, hex_hash) in &result.content_map {
@@ -215,10 +215,10 @@ async fn resolve_tool_fetch_matches_sources_len_for_all_providers() {
     }
 }
 
-/// Postprocessing with a progress callback fires at least one callback per
+/// Processing with a progress callback fires at least one callback per
 /// source entry (launcher-based tools still trigger per-source progress).
 #[tokio::test]
-async fn postprocess_fires_progress_per_source_entry() {
+async fn process_fires_progress_per_source_entry() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = tempfile::tempdir().expect("tempdir for cache");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
@@ -231,14 +231,13 @@ async fn postprocess_fires_progress_per_source_entry() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let cc = Arc::clone(&call_count);
     let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> = Arc::new(move |snap| {
-        // Only count postprocess phase callbacks.
-        if matches!(snap.phase, mediapm_utils::progress::ProviderPhase::Postprocess) {
+        // Only count process phase callbacks.
+        if matches!(snap.phase, mediapm_utils::progress::ProviderPhase::Process) {
             cc.fetch_add(1, Ordering::Relaxed);
         }
     });
 
-    let _result =
-        postprocess_tool_sources(&downloaded, &cas, Some(cb)).await.expect("postprocess echo");
+    let _result = process_tool_sources(&downloaded, &cas, Some(cb)).await.expect("process echo");
 
     let total_calls = call_count.load(Ordering::Relaxed);
     assert!(
@@ -247,7 +246,7 @@ async fn postprocess_fires_progress_per_source_entry() {
     );
 }
 
-/// Full-pipeline progress monotonicity: fetch and postprocess phases must
+/// Full-pipeline progress monotonicity: fetch and process phases must
 /// produce monotonically non-decreasing position within each phase, and
 /// position must never exceed total.  This is a regression test for the
 /// input-size policy fix (prevents backward jumps, total instability).
@@ -269,8 +268,7 @@ async fn full_pipeline_progress_monotonic() {
 
     let downloaded =
         fetch_tool_sources(&fetch, &cache, "default", Some(cb.clone())).await.expect("fetch echo");
-    let _result =
-        postprocess_tool_sources(&downloaded, &cas, Some(cb)).await.expect("postprocess echo");
+    let _result = process_tool_sources(&downloaded, &cas, Some(cb)).await.expect("process echo");
 
     let all = snapshots.lock().unwrap().clone();
     assert!(!all.is_empty(), "should have recorded at least one snapshot");
@@ -278,7 +276,7 @@ async fn full_pipeline_progress_monotonic() {
     // Group by phase, verify monotonicity within each phase.
     for phase in &[
         mediapm_utils::progress::ProviderPhase::Fetch,
-        mediapm_utils::progress::ProviderPhase::Postprocess,
+        mediapm_utils::progress::ProviderPhase::Process,
     ] {
         let phase_snaps: Vec<&ProviderProgressSnapshot> =
             all.iter().filter(|s| &s.phase == phase).collect();
@@ -302,7 +300,7 @@ async fn full_pipeline_progress_monotonic() {
 }
 
 #[tokio::test]
-async fn postprocess_mixed_archive_binary_progress() {
+async fn process_mixed_archive_binary_progress() {
     // Use echo (launcher-only) for binary sources and add a synthetic
     // zip archive as an extra source to validate mixed progress.
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
@@ -339,25 +337,21 @@ async fn postprocess_mixed_archive_binary_progress() {
         snap_clone.lock().unwrap().push(snap);
     });
 
-    let _result = postprocess_tool_sources(&mixed, &cas, Some(cb))
-        .await
-        .expect("postprocess mixed echo+archive");
+    let _result =
+        process_tool_sources(&mixed, &cas, Some(cb)).await.expect("process mixed echo+archive");
 
     let all = snapshots.lock().unwrap().clone();
     assert!(!all.is_empty(), "should have recorded at least one snapshot");
 
     let mut prev_pos = 0u64;
     for (i, snap) in all.iter().enumerate() {
-        if snap.phase != mediapm_utils::progress::ProviderPhase::Postprocess {
+        if snap.phase != mediapm_utils::progress::ProviderPhase::Process {
             continue;
         }
         let pos = snap.bytes.0;
         let tot = snap.bytes.1;
-        assert!(
-            pos >= prev_pos,
-            "Postprocess position decreased at snapshot {i}: {pos} < {prev_pos}",
-        );
-        assert!(pos <= tot, "Postprocess position {pos} exceeds total {tot} at snapshot {i}",);
+        assert!(pos >= prev_pos, "Process position decreased at snapshot {i}: {pos} < {prev_pos}",);
+        assert!(pos <= tot, "Process position {pos} exceeds total {tot} at snapshot {i}",);
         prev_pos = pos;
     }
 }

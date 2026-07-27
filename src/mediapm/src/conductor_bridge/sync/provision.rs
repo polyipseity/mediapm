@@ -4,7 +4,7 @@
 //! phase 1 (resolve), then to the conductor's
 //! [`fetch_tool_sources`](mediapm_conductor::tools::provider::fetch_tool_sources)
 //! for phase 2 (fetch) and
-//! [`postprocess_tool_sources`](mediapm_conductor::tools::provider::postprocess_tool_sources)
+//! [`process_tool_sources`](mediapm_conductor::tools::provider::process_tool_sources)
 //! for phase 3 (extract → CAS import → content map). This module adapts
 //! the mediapm progress-bar API to the provider's callback-based progress
 //! reporting and converts error and result types.
@@ -15,7 +15,7 @@ use std::sync::Arc;
 use mediapm_cas::CasApi;
 use mediapm_conductor::tools::provider::{
     MAX_LOOKAHEAD, ResolvedSource, ResolvedToolFetch, SourceProducer, fetch_tool_sources,
-    postprocess_tool_sources,
+    process_tool_sources,
 };
 use mediapm_utils::progress::ProviderProgressCallback;
 use tokio::sync::Semaphore;
@@ -103,7 +103,7 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// and builds an OS-conditional command-selector template.
 ///
 /// `group` provides 3 phase-agnostic progress bars per tool (resolve, fetch,
-/// postprocess). Routes [`ProviderProgressSnapshot`] callbacks to the matching
+/// process). Routes [`ProviderProgressSnapshot`] callbacks to the matching
 /// bar by `snap.phase`. Item counters are displayed via `set_prefix`; byte
 /// counters drive bar position (`set_position`/`set_total`). The bridge does
 /// not interpret the meaning of items or bytes — it only relays the values
@@ -119,11 +119,11 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// were cache hits, the bar shows `"cached (N)"` where N = `metadata_fetch_count`.
 /// When the tool is already up-to-date (Skip), the bar shows `"skipped cached (N)"`
 /// if cached or `"skipped"` otherwise. Fetch bar shows
-/// `sources.len()` items (one per source).  Postprocess bar shows the sum
+/// `sources.len()` items (one per source).  Process bar shows the sum
 /// of per-source items: archive sources contribute 2 items (decompress +
 /// compress), binary/launcher sources contribute 1 item (import).  Phase 2
 /// and 3 bars are created on-demand — one before fetching, one before
-/// postprocessing — so bars only appear when their phase actively runs.
+/// processing — so bars only appear when their phase actively runs.
 ///
 /// `metadata_cache` is passed to the resolve phase for caching version/tag
 /// resolution results. The consumer must NOT call `touch()` on the metadata
@@ -189,9 +189,9 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     let total = fetch.sources.len() as u64;
 
-    // Compute total postprocess items: archive sources get 2 (decompress + compress),
+    // Compute total process items: archive sources get 2 (decompress + compress),
     // binary/launcher sources get 1 (import).
-    let total_postprocess_items: u64 = fetch
+    let total_process_items: u64 = fetch
         .sources
         .iter()
         .map(|s| if is_archive_source(&s.producer) { 2u64 } else { 1u64 })
@@ -221,26 +221,26 @@ pub(super) async fn fetch_and_import_tool_payload(
     }
     fetch_bar.finish();
 
-    // Phase 3: Postprocess — extract archives, repack to uncompressed ZIP,
+    // Phase 3: Process — extract archives, repack to uncompressed ZIP,
     // import to CAS, build content map + command selector.
-    let postprocess_bar = group.add_bar(total_postprocess_items, &format!("{tool_id} [process]"));
-    error_bars.push(postprocess_bar.clone());
-    let postprocess_bar_cb = postprocess_bar.clone();
+    let process_bar = group.add_bar(total_process_items, &format!("{tool_id} [process]"));
+    error_bars.push(process_bar.clone());
+    let process_bar_cb = process_bar.clone();
     let pp_tool_id = tool_id.to_string();
     let pp_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
-        postprocess_bar_cb
+        process_bar_cb
             .set_prefix(&format!("{pp_tool_id} [process] {}/{}", snap.items.0, snap.items.1));
-        postprocess_bar_cb.set_position(snap.bytes.0);
-        postprocess_bar_cb.set_total(snap.bytes.1);
+        process_bar_cb.set_position(snap.bytes.0);
+        process_bar_cb.set_total(snap.bytes.1);
     }));
-    let result = match postprocess_tool_sources(&downloaded, cas, pp_progress).await {
+    let result = match process_tool_sources(&downloaded, cas, pp_progress).await {
         Ok(r) => r,
         Err(e) => {
             finish_error_bars(&error_bars);
-            return Err(MediaPmError::Workflow(format!("tool {tool_id}: postprocess failed: {e}")));
+            return Err(MediaPmError::Workflow(format!("tool {tool_id}: process failed: {e}")));
         }
     };
-    postprocess_bar.finish();
+    process_bar.finish();
 
     Ok(Some(FetchedToolPayload {
         content_map: result.content_map,
@@ -436,7 +436,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_import_ytdlp_full_pipeline() {
-        // Full 3-phase pipeline (resolve → fetch → postprocess) for a tool
+        // Full 3-phase pipeline (resolve → fetch → process) for a tool
         // with URL-based Fetch sources. Uses wiremock to serve download
         // payloads and pre-seeds the metadata cache for tag resolution.
 
@@ -1063,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn total_postprocess_items_three_sources_three_archives() {
+    fn total_process_items_three_sources_three_archives() {
         let fetch = ResolvedToolFetch {
             tool_id: "ffmpeg".to_string(),
             sources: vec![
@@ -1098,11 +1098,11 @@ mod tests {
             .iter()
             .map(|s| if is_archive_source(&s.producer) { 2u64 } else { 1u64 })
             .sum();
-        assert_eq!(total, 6, "3 archive sources should produce 6 postprocess items");
+        assert_eq!(total, 6, "3 archive sources should produce 6 process items");
     }
 
     #[test]
-    fn total_postprocess_items_mixed_archives_and_binaries() {
+    fn total_process_items_mixed_archives_and_binaries() {
         let fetch = ResolvedToolFetch {
             tool_id: "mixed".to_string(),
             sources: vec![
@@ -1136,6 +1136,6 @@ mod tests {
             .map(|s| if is_archive_source(&s.producer) { 2u64 } else { 1u64 })
             .sum();
         // 1 archive (2) + 1 binary (1) + 1 launcher (1) = 4
-        assert_eq!(total, 4, "mixed sources should produce correct postprocess total");
+        assert_eq!(total, 4, "mixed sources should produce correct process total");
     }
 }

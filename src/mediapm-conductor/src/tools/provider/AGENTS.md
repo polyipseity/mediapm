@@ -1,6 +1,6 @@
 # `provider/` — Tool provider source descriptors
 
-Three-phase provisioning pipeline: **resolve → fetch → postprocess**.
+Three-phase provisioning pipeline: **resolve → fetch → process**.
 Each file defines per-OS source descriptors consumed by
 `provider::mod::resolve_tool_fetch()`.
 
@@ -8,7 +8,7 @@ Phases:
 
 1. **Resolve** — Select the correct source URL/launcher for the target OS
 2. **Fetch** — Download bytes, extract archives, generate launcher scripts
-3. **Postprocess** — Import into CAS, create content maps, build sandbox payload
+3. **Process** — Import into CAS, create content maps, build sandbox payload
 
 Dispatched tool IDs: `sd`, `echo`, `archive`, `export`, `fs`, `import`.
 
@@ -25,9 +25,9 @@ Progress item counters (`items_done`/`total`) measure **distinct operations in e
 |-------|-------|--------------------------|
 | Resolve | `1` | One `resolve_tool_fetch()` call |
 | Fetch | `sources.len()` | One download or launcher generation per source |
-| Postprocess | `∑(2 if archive else 1)` per source | Decompress + compress for archives, CAS-import for binaries |
+| Process | `∑(2 if archive else 1)` per source | Decompress + compress for archives, CAS-import for binaries |
 
-For postprocess, archive sources contribute **2 items**: item `i` tracks decompress progress (compressed bytes consumed), item `i+1` tracks compress progress (decompressed bytes packed). Binary/launcher sources contribute **1 item** for direct CAS import.
+For process, archive sources contribute **2 items**: item `i` tracks decompress progress (compressed bytes consumed), item `i+1` tracks compress progress (decompressed bytes packed). Binary/launcher sources contribute **1 item** for direct CAS import.
 
 The `total_items` field is not part of `ResolvedToolFetch` — consumers derive phase-specific totals from `sources.len()` or the literal `1` for resolve.
 

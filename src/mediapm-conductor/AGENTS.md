@@ -199,7 +199,7 @@ Use `sd` for deterministic text rewrites where possible so workflow behavior sta
 Tool provisioning uses a two-module architecture in `src/mediapm-conductor/src/tools/`:
 
 - `preset/` — Per-tool `ToolSpec`/`ToolRuntime` builders (configuration/declarative intent)
-- `provider/` — Three-phase pipeline (resolve → fetch → postprocess) handling download, archive extraction, binary CAS-import, and content-map construction. Postprocess returns `ProvisionResult { content_map, os_exec_paths }`.
+- `provider/` — Three-phase pipeline (resolve → fetch → process) handling download, archive extraction, binary CAS-import, and content-map construction. Process returns `ProvisionResult { content_map, os_exec_paths }`.
 
 Source definitions use `SourceProducer::Fetch` (URL-based download) for managed tools and `SourceProducer::GenerateLauncher` (inline launcher script) for builtins. Each entry defines per-OS download URLs for all three supported platforms (`windows`, `linux`, `macos`).
 

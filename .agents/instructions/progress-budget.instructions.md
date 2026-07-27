@@ -8,7 +8,7 @@ applyTo: "src/mediapm-utils/src/progress.rs, src/mediapm-conductor/src/tools/pro
 
 ## Purpose
 
-`MultiItemBudget` is the primary mechanism for tracking byte-level progress across all three provider phases (Resolve, Fetch, and Postprocess). Each tracked entity (a tool source, a metadata URL) gets its own `ItemBudget` — progress is the aggregate of all items. `ByteBudget` (the legacy single-position type) still exists in the library but is no longer used in the provider pipeline.
+`MultiItemBudget` is the primary mechanism for tracking byte-level progress across all three provider phases (Resolve, Fetch, and Process). Each tracked entity (a tool source, a metadata URL) gets its own `ItemBudget` — progress is the aggregate of all items. `ByteBudget` (the legacy single-position type) still exists in the library but is no longer used in the provider pipeline.
 
 ## Core type
 
@@ -158,7 +158,7 @@ invariants:
 - **Fidelity over precision**: tracking prioritizes smooth visual updates over
   byte-exact accuracy. All paths guarantee monotonicity and eventual completion.
 
-### Postprocess phase loop (`postprocess_tool_sources`)
+### Process phase loop (`process_tool_sources`)
 
 Archive sources use **2 budget items** (decompress + compress); binary/launcher sources use **1 item** (CAS import).
 
@@ -184,7 +184,7 @@ for source in entries:
     #   budget.advance(item_idx, bytes.len())             # single CAS import
 
     cb(ProviderProgressSnapshot {
-        phase: Postprocess,
+        phase: Process,
         items: (next_item_idx + item_count, total_items),  # (completed_items, total_items)
         bytes: budget.aggregate(),                          # (sum_pos, sum_total)
     })
@@ -203,7 +203,7 @@ for source in entries:
 pub enum ProviderPhase {
     Resolve,
     Fetch,
-    Postprocess,
+    Process,
 }
 
 pub struct ProviderProgressSnapshot {
@@ -211,14 +211,14 @@ pub struct ProviderProgressSnapshot {
     /// Items completed vs total: (completed, total).
     /// Resolve: metadata URLs resolved.
     /// Fetch: sources fetched.
-    /// Postprocess: sources postprocessed.
+    /// Process: sources processed.
     pub items: (u64, u64),
     /// Bytes completed vs total: (completed, total).
     pub bytes: (u64, u64),
 }
 ```
 
-The `items` field reports `(completed_items, total_items)` in fetch and postprocess — this drives the `{tool} [process] 1/3` → `2/3` → `3/3` prefix in progress bars.
+The `items` field reports `(completed_items, total_items)` in fetch and process — this drives the `{tool} [process] 1/3` → `2/3` → `3/3` prefix in progress bars.
 
 ## ByteBudget (legacy)
 

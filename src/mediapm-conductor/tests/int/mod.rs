@@ -17,7 +17,7 @@ mod schema_sync;
 /// the explicit link_to_sandbox_filtered API.
 mod platform_filtering;
 
-/// Provider pipeline: resolve → fetch → postprocess for tool provisioning.
+/// Provider pipeline: resolve → fetch → process for tool provisioning.
 mod provider_pipeline;
 
 /// Provision cache and download cache domain separation.

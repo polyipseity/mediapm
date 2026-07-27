@@ -63,9 +63,9 @@ per-tool visual feedback).
 - **Cached sources**: when `DownloadedSources.cached_count > 0`, the fetch bar
   shows `"cached (N)"` via `set_message()` before finishing.
 
-### Phase 3: Postprocess
+### Phase 3: Process
 
-- Delegates to `mediapm_conductor::tools::provider::postprocess_tool_sources(downloaded, cas, progress)`.
+- Delegates to `mediapm_conductor::tools::provider::process_tool_sources(downloaded, cas, progress)`.
 - Extracts archives (ZIP, tgz), re-packs to uncompressed ZIP, imports files to CAS with `./{os}/` key prefixes.
 - Builds OS-conditional command-selector template.
 - Progress: per-source bar showing items and bytes.

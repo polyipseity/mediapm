@@ -336,8 +336,8 @@ pub enum ProviderPhase {
     Resolve,
     /// Phase 2: fetching or generating bytes.
     Fetch,
-    /// Phase 3: postprocessing (extract, repack, CAS import).
-    Postprocess,
+    /// Phase 3: processing (extract, repack, CAS import).
+    Process,
 }
 
 /// Snapshot of provider progress at one point in time across all three phases.
@@ -346,7 +346,7 @@ pub struct ProviderProgressSnapshot {
     /// Current phase.
     pub phase: ProviderPhase,
     /// Items completed vs total `(completed, total)`.
-    /// Phase 1: sources resolved; Phase 2: files fetched; Phase 3: entries postprocessed.
+    /// Phase 1: sources resolved; Phase 2: files fetched; Phase 3: entries processed.
     pub items: (u64, u64),
     /// Bytes completed vs total `(completed, total)`.
     /// Phase 1: `(0, 0)`; Phase 2: downloaded bytes; Phase 3: CAS-imported bytes.
