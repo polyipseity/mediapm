@@ -46,14 +46,13 @@ No standalone `exists()` method — use `stat()` or `get()`. Both return `NotFou
 
 **put**: Hash data with `Hash::from_content`. Dispatches by size:
 
-- **≤ WAL_INLINE_THRESHOLD (1 MiB)**: Append `WalEntry::Put` to WAL (inline data).
-- **> WAL_INLINE_THRESHOLD (1 MiB)**: Immediately materialize to blob, then append `WalEntry::PutLarge { content_len }` to WAL (external — already on disk).
+- **≤ WAL_INLINE_LIMIT (1 MiB)**: Append `WalEntry::Put` to WAL (inline data).
+- **> WAL_INLINE_LIMIT (1 MiB)**: Immediately materialize to blob, then append `WalEntry::PutLarge { content_len }` to WAL (external — already on disk).
 
 Write-through vs write-back is compile-time configured via `B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE`: write-through materializes Blob + Metadata synchronously (immediate visibility); write-back defers to the WAL consumer. Only `Hash::from_content(b"")` produces `Hash::empty()` — normal non-empty content never collides with it.
 
 **get**: Three-layer lookup (Metadata → Blob → WAL fallback) via `ComposedReadView`.
-Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
-Returns `CasError::TooLarge { hash, size, limit }` if the object exceeds `WAL_INLINE_THRESHOLD` (1 MiB) — use `get_to_writer` instead for streaming large objects.
+Delta reconstruction is transparent. Delegates to `get_to_writer` internally, buffering into memory. Returns `CasError::NotFound` if absent.
 
 **stat**: Returns `ObjectMeta { len, encoding }`. Encoding is informational only (Full or Delta { base_hash }). Callers must NOT make decisions based on encoding.
 
@@ -77,8 +76,8 @@ pub enum CasError {
 }
 ```
 
-Returned by `get()` when the object exceeds `WAL_INLINE_THRESHOLD` (1 MiB).
-The caller should fall back to `get_to_writer()` for streaming.
+Returned when a delta chain exceeds `MAX_DELTA_CHAIN_DEPTH = 5`.
+The `get()` method no longer returns `TooLarge` — it delegates to `get_to_writer()` internally.
 
 ### 2.3 ConstraintApi — delta-compression hints
 
@@ -207,7 +206,7 @@ Singular location for all tunable constants in [`defaults`](crate::defaults):
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `WAL_INLINE_THRESHOLD` | 1 MiB | Max object size inlined in WAL. Beyond this → `PutLarge` + external blob. |
+| `WAL_INLINE_LIMIT` | 1 MiB | Max object size inlined in WAL. Beyond this → `PutLarge` + external blob. |
 | `DELTA_THRESHOLD` | 16 MiB | Max object size eligible for delta compression. Larger objects stored as Full. |
 | `CACHE_MAX_FRACTION_OF_TOTAL_SIZE` | 0.10 | Fraction of total store consumed by bg_engine cache at most. |
 | `CACHE_TTL` | 60 s | TTL for cached entries in bg_engine. |
@@ -265,15 +264,14 @@ src/mediapm-cas/src/
 
 ```text
 put(data) → Hash(data)
-  │ ≤ WAL_INLINE_THRESHOLD (1 MiB) → Wal.append(Put{hash, data})
-  │ > WAL_INLINE_THRESHOLD (1 MiB) → Blob.write(hash, data) → Wal.append(PutLarge{hash, content_len})
+  │ ≤ WAL_INLINE_LIMIT (1 MiB) → Wal.append(Put{hash, data})
+  │ > WAL_INLINE_LIMIT (1 MiB) → Blob.write(hash, data) → Wal.append(PutLarge{hash, content_len})
   ↓
 WAL consumer (bg_engine) → Blob.write(hash) + Metadata.put(hash) → checkpoint
   (PutLarge: already materialized, just advance checkpoint + add metadata)
                                                                     ↓
-get(hash) → ReadView: Metadata → Blob.read/read_delta → WAL fallback (tombstone check)
-  ↓ (if size > WAL_INLINE_THRESHOLD = 1 MiB)
-  returns TooLarge — caller should use get_to_writer() for streaming
+get(hash) → delegates to get_to_writer → buffers result in memory
+  (full- and delta-object resolution handled transparently)
                                                                     ↓
 get_to_writer(hash, writer) → ReadView: Metadata → Blob.read_to_writer
   (streams directly to writer, bypasses in-memory Bytes buffer)
@@ -339,7 +337,7 @@ Three-layer lookup for get/stat, plus streaming path.
 
 **get_to_writer**: Streaming path. For Full objects, reads blob directly to writer via `BlobStore::read_to_writer` (chunked copy). For Delta objects, reconstructs in memory then writes. Object-safe (`&mut (dyn AsyncWrite + Send + Unpin)`).
 
-**TooLarge enforcement**: If the resolved object exceeds `WAL_INLINE_THRESHOLD` (1 MiB), `get()` returns `CasError::TooLarge`. The caller should use `get_to_writer()` for streaming. Delta chain resolution enforces `MAX_DELTA_CHAIN_DEPTH = 5`; beyond that, `TooLarge` is returned to prevent unbounded recursion.
+**Delta chain depth enforcement**: Delta chain resolution enforces `MAX_DELTA_CHAIN_DEPTH = 5`; beyond that, `TooLarge` is returned to prevent unbounded recursion. The `get()` method no longer enforces inline-size limits — all sizes resolve via `get_to_writer()` internally.
 
 **Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent callers wait for shared result.
 
@@ -432,9 +430,9 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 
 ### 8.6 Object size limits
 
-- **WAL_INLINE_THRESHOLD** (1 MiB): `get()` returns `TooLarge` for larger objects. Use `get_to_writer()` for streaming retrieval.
+- **WAL_INLINE_LIMIT** (1 MiB): Controls whether `put()` inlines data in the WAL or writes to an external blob immediately. `get()` delegates to `get_to_writer()` internally and handles all sizes transparently.
 - **DELTA_THRESHOLD** (16 MiB): Objects above this size are never delta-compressed (stored as Full only).
-- **TooLarge error**: Contains `hash`, `size`, and `limit` fields for diagnostics.
+- **TooLarge error**: Now only returned when a delta chain exceeds `MAX_DELTA_CHAIN_DEPTH = 5`. Contains `hash`, `size`, and `limit` fields for diagnostics.
 
 ### 8.7 Constraint invariants
 
@@ -478,6 +476,6 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 - Streaming/large-file tests (`tests/int/streaming_large.rs`) verify:
   - `put_stream` propagates `content_len` through metadata.
   - `put_stream` + `get_to_writer` round-trip with 1 MiB payload.
-  - `get()` returns `CasError::TooLarge` for objects > `WAL_INLINE_THRESHOLD` (1 MiB).
-  - `get_to_writer()` succeeds for objects > `WAL_INLINE_THRESHOLD` (1 MiB).
+  - `get()` delegates to `get_to_writer()` internally; resolves objects of any size.
+  - `get_to_writer()` succeeds for large objects (tested with 65 MiB).
   - Both `InMemoryCas` and `FileSystemCas` are exercised.

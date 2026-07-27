@@ -31,8 +31,7 @@ pub enum CasError {
 
     /// Object too large for the requested operation.
     ///
-    /// Returned by `get()` when the object exceeds the inline threshold.
-    /// Callers should use `get_to_writer()` instead.
+    /// Returned when a delta chain exceeds `MAX_DELTA_CHAIN_DEPTH`.
     TooLarge {
         /// The hash of the object.
         hash: Hash,
