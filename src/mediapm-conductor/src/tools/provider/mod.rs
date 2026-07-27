@@ -1475,6 +1475,62 @@ mod tests {
         }
     }
 
+    // ── Regression: cache key using actual URL ───────────────────────
+
+    /// Regression test: content cache key must be the actual URL used, not
+    /// blindly `urls[0]`.  When the first URL in the list is NOT cached but
+    /// a later URL IS cached, `fetch_tool_sources` must find the cached data
+    /// via the later URL.
+    ///
+    /// Before the fix, the cache key was hardcoded to `urls[0]`, so a source
+    /// with `urls = ["a", "b"]` where only "b" is cached would not hit the
+    /// cache — it would fall through to network download (and fail in tests).
+    #[tokio::test]
+    async fn fetch_cache_key_uses_actual_url_not_first_url() {
+        let cache_root = tempfile::tempdir().expect("tempdir for cache");
+        use crate::cache::CacheDomainConfig;
+        let cache = crate::cache::Cache::open(
+            cache_root.path(),
+            &[CacheDomainConfig {
+                domain: "download".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open Cache with download domain");
+        let cache = crate::cache_user_level::UserLevelCache::from_cache(cache);
+
+        // Pre-seed cache with data under URL "b" only (not URL "a").
+        let cached_data = b"cached-content-from-url-b";
+        cache.store_bytes("download", "mock://b", cached_data).await;
+
+        let fetch = ResolvedToolFetch {
+            tool_id: "regression-test".to_string(),
+            sources: vec![ResolvedSource {
+                os: "linux".to_string(),
+                producer: SourceProducer::Fetch {
+                    // "a" is not cached, "b" is cached — old code would miss
+                    // on "a" and fail.
+                    urls: vec!["mock://a".to_string(), "mock://b".to_string()],
+                },
+                expected_size: Some(cached_data.len() as u64),
+                size_hint_bytes: None,
+            }],
+        };
+
+        let result = fetch_tool_sources(&fetch, &cache, "download", None)
+            .await
+            .expect("fetch should succeed via cached URL 'b'");
+
+        assert_eq!(result.cached_count, 1, "exactly one source should be served from cache");
+        assert_eq!(result.entries.len(), 1, "should have exactly one entry");
+        assert_eq!(
+            result.entries[0].bytes, cached_data,
+            "returned bytes should match cached content from URL 'b'"
+        );
+    }
+
     // ── process_single_source budget tracking ────────────────────────
 
     #[tokio::test]

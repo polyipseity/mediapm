@@ -142,6 +142,13 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Skip bar uses raw `metadata_fetch_count` for bar total (0 = indeterminate)                  | `skip_bar_zero_metadata_fetch_count_uses_min_one` (total=0, pos=0, no cached message)                                                                                                                                       | 🟢     |
 | Bare `"cached"` (without count) never appears in any resolve bar message                    | `resolve_bar_no_cached_message_when_not_cached`, `resolve_bar_cached_two_shows_cached_two` (also asserts bare absent)                                                                                                       | 🟢     |
 
+### Content cache key: actual download URL
+
+| Spec item                                                                                       | Test(s)                                                                        | Status |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------ |
+| Cache key is actual URL used for download, not blindly `urls[0]`                                | `fetch_cache_key_uses_actual_url_not_first_url`                                | 🟢     |
+| Cache key survives first-URL cache miss — iterates all URLs for lookup                          | `fetch_cache_key_uses_actual_url_not_first_url`                                | 🟢     |
+
 ### DirectoryLockGuard
 
 | Spec item                                                             | Test(s)                                                                                                                    | Status |
