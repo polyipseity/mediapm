@@ -3,6 +3,7 @@
 mod color;
 mod common;
 mod consumer;
+mod debug;
 mod progress_group;
 mod rate;
 mod regression;

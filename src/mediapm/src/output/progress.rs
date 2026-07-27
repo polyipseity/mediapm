@@ -6,8 +6,9 @@
 
 #[doc(inline)]
 pub use mediapm_utils::progress::{
-    DimensionSource, ProgressBarApi, ProgressGroup, ProgressGroupApi, TestDimensionSource,
-    TestTimeSource, TimeSource, TrackedHandle,
+    DebugSlotState, DebugTickSnapshot, DimensionSource, ProgressBarApi, ProgressDebugSink,
+    ProgressGroup, ProgressGroupApi, TestDimensionSource, TestTimeSource, TimeSource,
+    TrackedHandle,
 };
 
 #[cfg(test)]

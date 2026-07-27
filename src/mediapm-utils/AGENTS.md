@@ -21,6 +21,23 @@ Crate: `mediapm-utils`
 - New shared utilities should go here only if used by multiple builtins. Builtin-specific code stays in the respective builtin crate.
 - Path utilities in `path` must remain cross-platform and avoid host-specific assumptions beyond POSIX/macOS/Windows norms.
 
+### MEDIAPM_PROGRESS_DEBUG
+
+When set, progress bar renderers emit one JSONL line per tick (every ~50ms)
+with the full state of every bar slot. Values:
+
+- `auto` (or empty) — writes to `progress-debug-<pid>.jsonl` in the current
+  working directory.
+- Any other value is treated as a file path to write to.
+
+Stderr output is intentionally not supported — debug output must not compete
+with terminal rendering. Monitor live with `tail -f <file>`.
+
+The JSONL format is documented in [`ProgressDebugSink`]. Each record includes
+`"type": "tick"` for self-describing, extensible event streams.
+
+All field names use `snake_case`.
+
 ## Optional `progress` feature
 
 - When enabled, pulls in `indicatif` + `console` and provides `ProgressGroup`, `ProgressHandle`, `format_bytes`, `format_count`.

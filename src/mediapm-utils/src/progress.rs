@@ -364,9 +364,13 @@ pub type ProviderProgressCallback = Arc<dyn Fn(ProviderProgressSnapshot) + Send 
 mod inner {
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
+    use std::io::Write;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::{Duration, Instant};
+
+    use serde::Serialize;
+    use serde_json;
 
     use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike};
 
@@ -670,6 +674,106 @@ mod inner {
             format!("{:.0}/h", rate * 3600.0)
         } else {
             format!("{:.0}/d", rate * 86400.0)
+        }
+    }
+
+    // ---- progress debug instrumentation ----------------------------------
+
+    /// JSONL sink for progress debug snapshots.
+    ///
+    /// Every tick cycle writes one JSON line to the configured writer with a
+    /// snapshot of all bar states.  Controlled via
+    /// [`ProgressGroupBuilder::with_progress_debug_sink`] or the
+    /// `MEDIAPM_PROGRESS_DEBUG` environment variable.
+    pub struct ProgressDebugSink {
+        /// Output writer (e.g. file, stderr).
+        writer: Mutex<Box<dyn Write + Send>>,
+        /// Monotonic tick counter — incremented on every emit.
+        tick_count: AtomicU64,
+        /// Time the sink was created.
+        start: Instant,
+    }
+
+    impl std::fmt::Debug for ProgressDebugSink {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ProgressDebugSink")
+                .field("writer", &"Box<dyn Write + Send>")
+                .field("tick_count", &self.tick_count)
+                .field("start", &self.start)
+                .finish()
+        }
+    }
+
+    /// Snapshot of one bar slot at a point in time, ready for JSON
+    /// serialization.
+    #[derive(Debug, Serialize)]
+    pub struct DebugSlotState {
+        /// Slot index within the renderer's fixed grid.
+        pub slot: usize,
+        /// Whether this slot is bound to a tracked source.
+        pub bound: bool,
+        /// Current label (always present).
+        pub label: String,
+        /// Current prefix (always present).
+        pub prefix: String,
+        /// Current position (work completed).
+        pub position: u64,
+        /// Total work units (0 = indeterminate).
+        pub total: u64,
+        /// Current status as debug string (e.g. `"Active"`, `"Finished"`).
+        pub status: String,
+        /// Elapsed seconds since the handle was created.
+        pub elapsed_secs: f64,
+        /// Rate in bytes/second (0.0 when inactive or indeterminate).
+        pub rate_bytes_per_sec: f64,
+        /// Estimated seconds remaining (None when unknown or inactive).
+        pub eta_secs: Option<f64>,
+        /// Custom message (empty string when none).
+        pub message: String,
+        /// Whether the source had the dirty flag set this tick.
+        pub dirty: bool,
+    }
+
+    /// Snapshot of a single tick cycle, serialized as one JSON line.
+    #[derive(Debug, Serialize)]
+    pub struct DebugTickSnapshot {
+        /// Discriminant: `"tick"` (and later `"attach"`, `"finish"` etc.).
+        pub r#type: String,
+        /// Monotonic tick counter from the sink.
+        pub tick: u64,
+        /// Seconds since the sink was created.
+        pub elapsed_secs: f64,
+        /// Per-slot bar states.
+        pub bars: Vec<DebugSlotState>,
+    }
+
+    impl ProgressDebugSink {
+        /// Create a new debug sink that writes JSONL to `writer`.
+        #[must_use]
+        pub fn new(writer: Box<dyn Write + Send>) -> Self {
+            Self {
+                writer: Mutex::new(writer),
+                tick_count: AtomicU64::new(0),
+                start: Instant::now(),
+            }
+        }
+
+        /// Emit one JSONL line with the given snapshot.
+        ///
+        /// Increments `tick_count`, serializes the snapshot as compact JSON,
+        /// writes it followed by a newline, and flushes the writer.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the writer mutex is poisoned or the writer returns an
+        /// I/O error.
+        pub fn emit(&self, snapshot: &DebugTickSnapshot) {
+            self.tick_count.fetch_add(1, Ordering::Relaxed);
+            let json = serde_json::to_string(snapshot).expect("debug snapshot serialization");
+            let mut writer = self.writer.lock().expect("debug sink writer lock");
+            writer.write_all(json.as_bytes()).expect("debug sink write");
+            writer.write_all(b"\n").expect("debug sink newline");
+            writer.flush().expect("debug sink flush");
         }
     }
 
@@ -1196,6 +1300,9 @@ mod inner {
         /// Terminal to write pre-roll newlines to.  `None` in test mode
         /// (user-provided `MultiProgress` via `with_multi_progress`).
         pre_roll_term: Option<Box<dyn TermLike>>,
+
+        /// Optional JSONL debug sink — emits bar-state snapshots on every tick.
+        debug_sink: Option<ProgressDebugSink>,
     }
 
     /// EMA-smoothed rate tracking for a render slot.
@@ -1246,6 +1353,7 @@ mod inner {
             buffer_enabled: Option<Arc<AtomicBool>>,
             time_source: Arc<dyn TimeSource>,
             pre_roll_term: Option<Box<dyn TermLike>>,
+            debug_sink: Option<ProgressDebugSink>,
         ) -> Self {
             let mut slots = Vec::with_capacity(capacity);
             for _ in 0..capacity {
@@ -1283,6 +1391,7 @@ mod inner {
                 buffer_enabled,
                 pre_rolled: AtomicBool::new(false),
                 pre_roll_term,
+                debug_sink,
             }
         }
 
@@ -1298,6 +1407,7 @@ mod inner {
             buffer_enabled: Option<Arc<AtomicBool>>,
             time_source: Arc<dyn TimeSource>,
             pre_roll_term: Option<Box<dyn TermLike>>,
+            debug_sink: Option<ProgressDebugSink>,
         ) -> (Self, Arc<SharedState>) {
             let mut slots = Vec::with_capacity(capacity);
             for _ in 0..capacity.saturating_sub(1) {
@@ -1341,6 +1451,7 @@ mod inner {
                     buffer_enabled,
                     pre_rolled: AtomicBool::new(false),
                     pre_roll_term,
+                    debug_sink,
                 },
                 overall_state,
             )
@@ -1555,6 +1666,71 @@ mod inner {
                         self.finish_slot(i, snap.status);
                     }
                 }
+            }
+
+            // Emit debug snapshot (if enabled) — all bar states are fresh from sync.
+            if let Some(ref sink) = self.debug_sink {
+                let bars: Vec<DebugSlotState> = self
+                    .slots
+                    .iter()
+                    .enumerate()
+                    .map(|(i, slot)| {
+                        let (bound, snap) = match slot.source.borrow().as_ref() {
+                            Some(s) => (true, s.snapshot()),
+                            None => (
+                                false,
+                                TrackSnapshot {
+                                    position: 0,
+                                    total: 0,
+                                    label: String::new(),
+                                    prefix: String::new(),
+                                    message: String::new(),
+                                    status: TrackStatus::Active,
+                                    elapsed: Duration::ZERO,
+                                },
+                            ),
+                        };
+                        let rate = if bound && snap.status == TrackStatus::Active {
+                            self.slots_timing[i].rate
+                        } else {
+                            0.0
+                        };
+                        let eta = if bound
+                            && snap.status == TrackStatus::Active
+                            && snap.total > snap.position
+                            && self.slots_timing[i].rate > 0.0
+                        {
+                            Some((snap.total - snap.position) as f64 / self.slots_timing[i].rate)
+                        } else {
+                            None
+                        };
+                        DebugSlotState {
+                            slot: i,
+                            bound,
+                            label: snap.label.clone(),
+                            prefix: snap.prefix.clone(),
+                            position: snap.position,
+                            total: snap.total,
+                            status: format!("{:?}", snap.status),
+                            elapsed_secs: snap.elapsed.as_secs_f64(),
+                            rate_bytes_per_sec: rate,
+                            eta_secs: eta,
+                            message: snap.message.clone(),
+                            dirty: slot
+                                .source
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(|s| s.dirty.load(Ordering::Acquire)),
+                        }
+                    })
+                    .collect();
+                let snapshot = DebugTickSnapshot {
+                    r#type: "tick".to_string(),
+                    tick: sink.tick_count.load(Ordering::Relaxed),
+                    elapsed_secs: self.time_source.now().duration_since(sink.start).as_secs_f64(),
+                    bars,
+                };
+                sink.emit(&snapshot);
             }
 
             // Step 3: Pre-roll newlines before first draw (bypasses buffer).
@@ -1858,6 +2034,7 @@ mod inner {
         dynamic_height: bool,
         time_source: Arc<dyn TimeSource>,
         pre_roll_term: Option<Box<dyn TermLike>>,
+        debug_sink: Option<ProgressDebugSink>,
     }
 
     impl Default for ProgressGroupBuilder {
@@ -1870,6 +2047,7 @@ mod inner {
                 dynamic_height: false,
                 time_source: Arc::new(RealTimeSource),
                 pre_roll_term: None,
+                debug_sink: None,
             }
         }
     }
@@ -1930,6 +2108,13 @@ mod inner {
             self
         }
 
+        /// Attach a JSONL debug sink for progress bar state snapshots.
+        #[must_use]
+        pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
+            self.debug_sink = Some(sink);
+            self
+        }
+
         /// Build a group without an overall bar.
         ///
         /// # Panics
@@ -1961,6 +2146,7 @@ mod inner {
                     MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
                 (mp, Some(flag), Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
             };
+            let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
             let mut renderer = ProgressRenderer::from_mp(
                 mp,
                 cap,
@@ -1968,6 +2154,7 @@ mod inner {
                 buffer_enabled,
                 self.time_source,
                 pre_roll_term,
+                debug_sink,
             );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Some(Arc::new(Mutex::new(renderer)));
@@ -2003,6 +2190,7 @@ mod inner {
                     MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
                 (mp, Some(flag), Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
             };
+            let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
             let (mut renderer, state) = ProgressRenderer::from_mp_with_overall(
                 mp,
                 cap,
@@ -2012,6 +2200,7 @@ mod inner {
                 buffer_enabled,
                 self.time_source,
                 pre_roll_term,
+                debug_sink,
             );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Arc::new(Mutex::new(renderer));
@@ -2165,12 +2354,35 @@ mod inner {
             }
         }
     }
+
+    /// Detect `MEDIAPM_PROGRESS_DEBUG` environment variable and create a
+    /// [`ProgressDebugSink`] if set.
+    ///
+    /// - When the value is `"auto"` or empty: creates a file named
+    ///   `progress-debug-<PID>.jsonl` in the current directory.
+    /// - Otherwise: interprets the value as a file path and creates/overwrites
+    ///   it.
+    ///
+    /// Returns `None` when the env var is not set (the normal case).
+    fn detect_progress_debug_env() -> Option<ProgressDebugSink> {
+        let val = std::env::var("MEDIAPM_PROGRESS_DEBUG").ok()?;
+        let writer: Box<dyn Write + Send> = if val == "auto" || val.is_empty() {
+            let path =
+                std::path::PathBuf::from(format!("progress-debug-{}.jsonl", std::process::id()));
+            Box::new(std::fs::File::create(&path).expect("failed to create progress debug file"))
+        } else {
+            let path = std::path::PathBuf::from(&val);
+            Box::new(std::fs::File::create(&path).expect("failed to create progress debug file"))
+        };
+        Some(ProgressDebugSink::new(writer))
+    }
 }
 
 #[cfg(feature = "progress")]
 pub use inner::{
-    DimensionSource, ProgressGroup, ProgressRenderer, RealTerminalSource, RealTimeSource,
-    TestDimensionSource, TestTimeSource, TimeSource, TrackSnapshot, TrackStatus, TrackedHandle,
+    DebugSlotState, DebugTickSnapshot, DimensionSource, ProgressDebugSink, ProgressGroup,
+    ProgressRenderer, RealTerminalSource, RealTimeSource, TestDimensionSource, TestTimeSource,
+    TimeSource, TrackSnapshot, TrackStatus, TrackedHandle,
 };
 
 #[cfg(feature = "progress")]
