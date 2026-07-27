@@ -18,7 +18,5 @@
 //! this type. The caller in `crate::tools::provider` maps it to
 //! [`ConductorError`] at the call site, never inside this module.
 
-#[cfg(feature = "tool-presets")]
 pub mod client;
-#[cfg(feature = "tool-presets")]
 pub use client::*;

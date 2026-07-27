@@ -106,7 +106,7 @@ pub(crate) async fn resolve_latest_github_tag(
     }
 
     // Fetch from GitHub API.
-    let http_client = crate::http_client::shared_http_client().map_err(|e| {
+    let http_client = mediapm_conductor::http::client::shared_http_client().map_err(|e| {
         mediapm_conductor::ConductorError::Workflow(format!("HTTP client unavailable: {e}"))
     })?;
 
@@ -205,7 +205,7 @@ pub(crate) async fn resolve_latest_autobuild_tag(
     }
 
     // Fetch releases list from GitHub API.
-    let http_client = crate::http_client::shared_http_client().map_err(|e| {
+    let http_client = mediapm_conductor::http::client::shared_http_client().map_err(|e| {
         mediapm_conductor::ConductorError::Workflow(format!("HTTP client unavailable: {e}"))
     })?;
     let response = http_client.get(&api_url).send().await.map_err(|e| {

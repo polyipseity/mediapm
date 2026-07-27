@@ -17,7 +17,6 @@ mod config;
 mod error;
 pub(crate) mod global;
 pub(crate) mod hierarchy;
-pub(crate) mod http_client;
 pub(crate) mod materializer;
 pub(crate) mod metadata_cache;
 pub mod output;

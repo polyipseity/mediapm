@@ -7,7 +7,7 @@ use chromaprint::{Algorithm, fingerprint_audio};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-use crate::http_client::shared_http_client;
+use mediapm_conductor::http::client::shared_http_client;
 
 use super::util::{normalize_optional_text, resolve_ffmpeg_executable};
 use super::{ACOUSTID_API_KEY_ENV, FINGERPRINT_CHANNELS, FINGERPRINT_SAMPLE_RATE};

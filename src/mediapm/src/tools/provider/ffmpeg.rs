@@ -63,9 +63,10 @@ pub(crate) async fn resolve_evermeet_version(
     // Use the no-redirect shared client so the redirect response (with
     // Location header) is returned instead of being transparently followed
     // to the final zip URL.
-    let no_redirect_client = crate::http_client::shared_no_redirect_http_client().map_err(|e| {
-        mediapm_conductor::ConductorError::Workflow(format!("HTTP client unavailable: {e}"))
-    })?;
+    let no_redirect_client = mediapm_conductor::http::client::shared_no_redirect_http_client()
+        .map_err(|e| {
+            mediapm_conductor::ConductorError::Workflow(format!("HTTP client unavailable: {e}"))
+        })?;
     let response = no_redirect_client.head(url).send().await.map_err(|e| {
         mediapm_conductor::ConductorError::Workflow(format!("evermeet HEAD request failed: {e}"))
     })?;

@@ -265,7 +265,7 @@ pub(super) async fn fetch_and_import_tool_payload(
 ///
 /// Uses fully concurrent HEAD requests with a semaphore to limit concurrency.
 async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
-    let client = match crate::http_client::shared_http_client() {
+    let client = match mediapm_conductor::http::client::shared_http_client() {
         Ok(c) => c,
         Err(_) => return,
     };

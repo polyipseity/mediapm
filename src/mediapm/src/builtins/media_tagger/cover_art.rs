@@ -12,7 +12,7 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::time::sleep;
 
-use crate::http_client::shared_http_client;
+use mediapm_conductor::http::client::shared_http_client;
 
 use super::musicbrainz::{MusicBrainzPayload, musicbrainz_payload_cache_key};
 use super::util::{join_unique, normalize_optional_text};

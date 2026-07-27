@@ -24,7 +24,7 @@ use std::time::Duration;
 use reqwest::Client;
 
 /// User-Agent header used for outbound HTTP requests.
-pub(crate) const MEDIAPM_USER_AGENT: &str =
+pub const MEDIAPM_USER_AGENT: &str =
     concat!("mediapm/", env!("CARGO_PKG_VERSION"), " (+https://github.com/mediapm/mediapm)");
 
 /// Default TCP connect timeout used for outbound HTTP requests.
@@ -63,7 +63,7 @@ impl std::error::Error for HttpClientError {}
 static SHARED_HTTP_CLIENT: OnceLock<Result<Client, HttpClientError>> = OnceLock::new();
 
 /// Returns the process-wide shared async HTTP client (follows redirects).
-pub(crate) fn shared_http_client() -> Result<&'static Client, &'static HttpClientError> {
+pub fn shared_http_client() -> Result<&'static Client, &'static HttpClientError> {
     match SHARED_HTTP_CLIENT.get_or_init(|| build_shared_http_client(true)) {
         Ok(client) => Ok(client),
         Err(err) => Err(err),
@@ -79,8 +79,7 @@ static SHARED_NO_REDIRECT_HTTP_CLIENT: OnceLock<Result<Client, HttpClientError>>
 /// (e.g. capture the `Location` header) rather than transparently following
 /// them to the final destination.
 #[allow(dead_code)]
-pub(crate) fn shared_no_redirect_http_client() -> Result<&'static Client, &'static HttpClientError>
-{
+pub fn shared_no_redirect_http_client() -> Result<&'static Client, &'static HttpClientError> {
     match SHARED_NO_REDIRECT_HTTP_CLIENT.get_or_init(|| build_shared_http_client(false)) {
         Ok(client) => Ok(client),
         Err(err) => Err(err),
