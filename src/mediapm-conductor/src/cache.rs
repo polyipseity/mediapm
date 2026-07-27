@@ -21,7 +21,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -71,7 +71,6 @@ pub struct CacheDomainConfig {
 }
 
 /// Internal state for one named cache domain.
-#[derive(Clone)]
 struct DomainState {
     /// Path to the JSON metadata index file on disk.
     index_path: PathBuf,
@@ -79,6 +78,21 @@ struct DomainState {
     index: Arc<Mutex<CacheIndex>>,
     /// Entry TTL in seconds for automatic cache eviction.
     entry_ttl_seconds: u64,
+    /// Unix seconds of the last `touch()`-driven index persistence.
+    /// 0 means "not persisted yet" — first `touch()` after construction
+    /// or restart always persists.
+    last_touch_persist: AtomicU64,
+}
+
+impl Clone for DomainState {
+    fn clone(&self) -> Self {
+        Self {
+            index_path: self.index_path.clone(),
+            index: self.index.clone(),
+            entry_ttl_seconds: self.entry_ttl_seconds,
+            last_touch_persist: AtomicU64::new(self.last_touch_persist.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 /// Generic CAS-backed multi-domain cache.
@@ -136,6 +150,7 @@ async fn open_domain_setup(
                 index_path,
                 index: Arc::new(Mutex::new(index)),
                 entry_ttl_seconds: config.entry_ttl_seconds,
+                last_touch_persist: AtomicU64::new(0),
             },
         );
     }
@@ -237,16 +252,38 @@ impl Cache {
     }
 
     /// Updates `last_access_unix_seconds` for a key in a domain without
-    /// changing its hash.
+    /// changing its hash. Persists the index with domain-level throttling.
     pub fn touch(&self, domain: &str, key: &str) {
         let Some(domain_state) = self.domains.get(domain) else {
             return;
         };
+        let now = now_unix_seconds();
+
+        // Check throttle before acquiring the index lock.
+        let should_persist = {
+            let last = domain_state.last_touch_persist.load(Ordering::Relaxed);
+            if now.saturating_sub(last) >= TOUCH_PERSIST_INTERVAL_SECONDS {
+                domain_state.last_touch_persist.store(now, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        };
+
+        // Update timestamp in memory (always).
         let Ok(mut index) = domain_state.index.lock() else {
             return;
         };
-        if let Some(entry) = index.entries.get_mut(key) {
-            entry.last_access_unix_seconds = now_unix_seconds();
+        let Some(entry) = index.entries.get_mut(key) else {
+            return;
+        };
+        entry.last_access_unix_seconds = now;
+
+        // Persist if throttle allows. MutexGuard drops before I/O.
+        if should_persist {
+            if let Err(e) = write_index_file(&domain_state.index_path, &index) {
+                tracing::warn!("cache touch persist failed for domain {domain}: {e}");
+            }
         }
     }
 
@@ -378,11 +415,18 @@ impl Cache {
         let Some(domain_state) = self.domains.get(domain) else {
             return;
         };
-        let Ok(mut index) = domain_state.index.lock() else {
-            return;
-        };
-        if index.entries.remove(key).is_some() {
-            let _ = write_index_file(&domain_state.index_path, &index);
+        let (path, index_clone) = {
+            let Ok(mut index) = domain_state.index.lock() else {
+                return;
+            };
+            let removed = index.entries.remove(key);
+            if removed.is_none() {
+                return;
+            }
+            (domain_state.index_path.clone(), index.clone())
+        }; // MutexGuard dropped here
+        if let Err(e) = write_index_file(&path, &index_clone) {
+            tracing::warn!("cache index remove persist failed for domain {domain}: {e}");
         }
     }
 
@@ -392,26 +436,31 @@ impl Cache {
         let Some(domain_state) = self.domains.get(domain) else {
             return;
         };
-        let Ok(mut index) = domain_state.index.lock() else {
-            return;
-        };
-        let now = now_unix_seconds();
-        let hash_text = hash.to_string();
-        let mut should_persist = true;
-        if let Some(existing) = index.entries.get_mut(key) {
-            let hash_changed = existing.hash != hash_text;
-            existing.hash = hash_text;
-            let elapsed = now.saturating_sub(existing.last_access_unix_seconds);
-            existing.last_access_unix_seconds = now;
-            should_persist = hash_changed || elapsed >= TOUCH_PERSIST_INTERVAL_SECONDS;
-        } else {
-            index.entries.insert(
-                key.to_string(),
-                CacheIndexEntry { hash: hash_text, last_access_unix_seconds: now },
-            );
-        }
+        let (path, index_clone, should_persist) = {
+            let Ok(mut index) = domain_state.index.lock() else {
+                return;
+            };
+            let now = now_unix_seconds();
+            let hash_text = hash.to_string();
+            let mut should_persist = true;
+            if let Some(existing) = index.entries.get_mut(key) {
+                let hash_changed = existing.hash != hash_text;
+                existing.hash = hash_text;
+                let elapsed = now.saturating_sub(existing.last_access_unix_seconds);
+                existing.last_access_unix_seconds = now;
+                should_persist = hash_changed || elapsed >= TOUCH_PERSIST_INTERVAL_SECONDS;
+            } else {
+                index.entries.insert(
+                    key.to_string(),
+                    CacheIndexEntry { hash: hash_text, last_access_unix_seconds: now },
+                );
+            }
+            (domain_state.index_path.clone(), index.clone(), should_persist)
+        }; // MutexGuard dropped here
         if should_persist {
-            let _ = write_index_file(&domain_state.index_path, &index);
+            if let Err(e) = write_index_file(&path, &index_clone) {
+                tracing::warn!("cache index persist failed for domain {domain}: {e}");
+            }
         }
     }
 }
@@ -564,6 +613,24 @@ fn write_index_file(index_path: &Path, index: &CacheIndex) -> Result<(), Conduct
 #[must_use]
 fn now_unix_seconds() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+/// Flushes all domain indexes on drop so throttle-deferred writes are not lost.
+impl Drop for Cache {
+    fn drop(&mut self) {
+        for (domain, state) in &self.domains {
+            let (path, index) = {
+                let Ok(guard) = state.index.lock() else {
+                    tracing::warn!("cache domain {domain} mutex poisoned on drop, skipping");
+                    continue;
+                };
+                (state.index_path.clone(), guard.clone())
+            }; // MutexGuard dropped here
+            if let Err(e) = write_index_file(&path, &index) {
+                tracing::warn!("cache domain {domain} flush on drop failed: {e}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1253,6 +1320,107 @@ mod tests {
             retrieved,
             Some(b"persistent data".to_vec()),
             "payload must survive close-reopen"
+        );
+    }
+
+    /// Verifies that `touch()` persists the updated timestamp across cache
+    /// open/close cycles via the `Drop` flush.
+    #[tokio::test]
+    async fn touch_persists_across_restart() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let domain = "test";
+        let key = "touch-survive-key";
+
+        // ── First session ──
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: domain.to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache");
+        let payload = b"touch-persistence-payload".to_vec();
+        cache.store_bytes(domain, key, &payload).await;
+        let original_access =
+            cache.get_entry_last_access(domain, key).expect("entry exists after store");
+
+        // Advance time enough to make the touch bump observable.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        cache.touch(domain, key);
+        drop(cache); // Drop flushes indexes
+
+        // ── Second session ──
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: domain.to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("reopen cache");
+
+        let retrieved = cache.lookup_bytes(domain, key).await;
+        assert_eq!(retrieved, Some(payload), "payload must survive restart");
+
+        let new_access =
+            cache.get_entry_last_access(domain, key).expect("entry exists after restart");
+        assert!(
+            new_access > original_access,
+            "touch must persist last_access bump across restart: {new_access} <= {original_access}"
+        );
+    }
+
+    /// Verifies that a `touch()` within the throttle window still persists
+    /// on `Drop`, so no timestamp update is lost on clean shutdown.
+    #[tokio::test]
+    async fn store_survives_restart_with_in_memory_touch() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let domain = "test";
+        let key = "store-touch-key";
+
+        // ── First session ──
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: domain.to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("open cache");
+        let payload = b"store-then-touch-payload".to_vec();
+        cache.store_bytes(domain, key, &payload).await;
+
+        // Second touch within the same second — throttle window (5 min)
+        // guarantees this is NOT persisted via `touch()` itself.
+        cache.touch(domain, key);
+        // Without Drop-flush this in-memory-only update would be lost.
+        drop(cache);
+
+        // ── Second session ──
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: domain.to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 30 * 24 * 60 * 60,
+            }],
+        )
+        .await
+        .expect("reopen cache");
+
+        let retrieved = cache.lookup_bytes(domain, key).await;
+        assert_eq!(
+            retrieved,
+            Some(payload),
+            "payload must survive restart when touch() was in-memory-only"
         );
     }
 }
