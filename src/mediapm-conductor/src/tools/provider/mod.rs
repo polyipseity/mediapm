@@ -1808,6 +1808,70 @@ mod tests {
         assert!(total1 >= content.len() as u64);
     }
 
+    // ── process_single_source progress_cb ─────────────────────
+
+    #[tokio::test]
+    async fn process_progress_cb_fires_during_extraction() {
+        // Create a tar.gz with multiple large pseudo-random entries so
+        // sub-entry callbacks fire per SUB_ENTRY_CHUNK (64 KB) during
+        // both decompress and compress.  3 × 200 KB = 600 KB total,
+        // which at 64 KB/chunk gives ~9-10 callbacks per item, ~20 total.
+        let entries: [(&str, &[u8]); 3] = [
+            ("file1.bin", &pseudo_random_buffer(200_000)),
+            ("file2.bin", &pseudo_random_buffer(200_000)),
+            ("file3.bin", &pseudo_random_buffer(200_000)),
+        ];
+        let tgz = synthetic_tar_gz(&entries);
+        let cas = InMemoryCas::default();
+        let os_dir = tempfile::tempdir().unwrap();
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(tgz.len() as u64);
+        budget.add_item(0); // compress estimate — will be refined
+
+        let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let snap_clone = Arc::clone(&snapshots);
+        let cb: ProviderProgressCallback = Arc::new(move |snap| {
+            snap_clone.lock().unwrap().push(snap);
+        });
+
+        let _result = process_single_source(
+            &tgz,
+            Some(ARCHIVE_TAR_GZ),
+            "linux",
+            "tool",
+            os_dir.path(),
+            "",
+            &cas,
+            &budget,
+            0usize,
+            2usize,
+            Some(&cb),
+            0u64,
+            2u64,
+        )
+        .await
+        .unwrap();
+
+        let all = snapshots.lock().unwrap().clone();
+        assert!(!all.is_empty(), "should have recorded at least one snapshot");
+        assert!(
+            all.len() > 2,
+            "should have more snapshots than budget items (got {}), per-chunk callbacks must fire",
+            all.len()
+        );
+
+        // Verify monotonicity and pos ≤ total for all snapshots.
+        let mut prev_pos = 0u64;
+        for (i, snap) in all.iter().enumerate() {
+            let pos = snap.bytes.0;
+            let tot = snap.bytes.1;
+            assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}",);
+            assert!(pos <= tot, "position {pos} exceeds total {tot} at snapshot {i}",);
+            prev_pos = pos;
+        }
+    }
+
     // ── process position ≤ total ───────────────────────────────
 
     #[tokio::test]
@@ -1856,6 +1920,18 @@ mod tests {
 
         let all = snapshots.lock().unwrap().clone();
         assert!(!all.is_empty(), "should have recorded at least one snapshot");
+
+        // With per-chunk callbacks, we should have more process snapshots
+        // than sources (the archive source fires sub-entry callbacks during
+        // decompress and compress, not just once at completion).
+        let process_snapshots: Vec<_> =
+            all.iter().filter(|s| s.phase == ProviderPhase::Process).collect();
+        assert!(
+            process_snapshots.len() > downloaded.entries.len(),
+            "expected more process snapshots ({}) than sources ({}) — sub-entry callbacks should fire during extraction",
+            process_snapshots.len(),
+            downloaded.entries.len()
+        );
 
         // Verify monotonicity and pos ≤ total across ALL process snapshots.
         let mut prev_pos = 0u64;
