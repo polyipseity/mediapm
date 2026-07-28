@@ -143,3 +143,23 @@ fallback chain exists.
 When comparing canonical versions for skip-if-up-to-date logic, use exact
 string equality. All providers use the resolved tag verbatim — no prefix
 transformation is applied.
+
+## State write policy
+
+`state.json` is written unconditionally via `std::fs::write` after every sync
+pass. No byte-level change detection is applied. This is intentional:
+
+- `state.json` serves as the runtime audit trail, recording every sync
+  invocation's observed metadata (canonical version, deploy timestamp, fetch
+  hash).
+- A change in `canonical_version` (e.g., a rotating autobuild tag) that
+  produces identical binary payloads is still a meaningful state change — the
+  tool's upstream label advanced, and `state.json` records that.
+- The companion document `conductor.generated.ncl` absorbs the
+  artifact-stability concern via its own change-detected write policy
+  (`write_bytes_if_changed`).
+
+**Invariant:** `state.json` content changes are not errors. A diff showing only
+`canonical_version`, `deployed_at`, or `tag` changes with unchanged
+`fetch_hash` indicates metadata churn without payload change — expected
+behavior.
