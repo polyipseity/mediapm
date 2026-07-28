@@ -135,7 +135,7 @@ pub(crate) async fn reconcile_desired_tools(
         .or(progress_group)
         .expect("at least one progress group available");
 
-    for (_i, (tool_id, _requirement_value)) in desired_tools.iter().enumerate() {
+    for (_i, (tool_id, _)) in desired_tools.iter().enumerate() {
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
@@ -147,7 +147,13 @@ pub(crate) async fn reconcile_desired_tools(
         let mut resolved_canonical_version = String::new();
         let pre_resolved =
             match provider::resolve_tool_fetch(tool_id, Some((&*cache, "tool_metadata"))).await {
-                Ok((fetch, canonical_version, _metadata_cached, _metadata_fetch_count)) => {
+                Ok((
+                    fetch,
+                    human_readable_version,
+                    canonical_version,
+                    _metadata_cached,
+                    _metadata_fetch_count,
+                )) => {
                     resolved_canonical_version = canonical_version.clone();
 
                     // Check skip: if state has an entry with the same canonical_version
@@ -160,6 +166,7 @@ pub(crate) async fn reconcile_desired_tools(
                     if should_skip {
                         PreResolveOutcome::Skip {
                             name: tool_id.clone(),
+                            human_readable_version: human_readable_version.clone(),
                             version: canonical_version,
                             metadata_cached: _metadata_cached,
                             metadata_fetch_count: _metadata_fetch_count,
@@ -167,6 +174,7 @@ pub(crate) async fn reconcile_desired_tools(
                     } else {
                         PreResolveOutcome::Resolved(
                             fetch,
+                            human_readable_version,
                             canonical_version,
                             _metadata_cached,
                             _metadata_fetch_count,
@@ -233,15 +241,10 @@ pub(crate) async fn reconcile_desired_tools(
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                let req_tag = _requirement_value
-                    .get("tag")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
                 report.tool_records.insert(
                     tool_id.clone(),
                     ToolRegistryEntry {
-                        tag: if req_tag.is_empty() { None } else { Some(req_tag) },
+                        version: payload.human_readable_version.clone(),
                         canonical_version: payload.canonical_version.clone(),
                         fetch_hash: content_hash.as_ref().map(|h| h.to_string()),
                         deployed_at: now,
@@ -297,7 +300,7 @@ pub(crate) async fn reconcile_desired_tools(
                 report.tool_records.insert(
                     tool_id.clone(),
                     ToolRegistryEntry {
-                        tag: None,
+                        version: String::new(),
                         canonical_version: resolved_canonical_version.clone(),
                         fetch_hash: None,
                         deployed_at: now,

@@ -513,9 +513,12 @@ pub struct MediaPmImpureTimestamp {
 /// Entry in the managed-tool registry tracking fetch/deployment metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRegistryEntry {
-    /// Tag as fetched.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tag: Option<String>,
+    /// Human-readable version string. Has zero semantic use in state logic —
+    /// version comparison, skip-if-up-to-date, and update decisions all use
+    /// `canonical_version`. This field is informational only, populated by
+    /// the provider resolution layer. The provider determines the format; no
+    /// prefix stripping or normalization is performed.
+    pub version: String,
     /// Canonical version identifier for skip-if-up-to-date logic.
     /// Non-optional — always populated by the provisioning pipeline.
     /// Defaults to empty string (`""`) for backward-compat with old state files.
@@ -599,10 +602,7 @@ impl MediaPmState {
                 && !record.media_id.trim().is_empty()
                 && !record.hash.trim().is_empty()
         });
-        self.managed_tools.retain(|_, entry| {
-            entry.tag.as_ref().is_none_or(|t| !t.trim().is_empty())
-                || !entry.canonical_version.trim().is_empty()
-        });
+        self.managed_tools.retain(|_, entry| !entry.canonical_version.trim().is_empty());
     }
 }
 

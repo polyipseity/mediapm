@@ -41,7 +41,7 @@ fn v2_round_trip() {
         managed_tools: BTreeMap::from([(
             "yt-dlp".to_string(),
             ToolRegistryEntry {
-                tag: None,
+                version: String::new(),
                 canonical_version: String::new(),
                 fetch_hash: Some("blake3:def456".to_string()),
                 deployed_at: 1_700_000_000,
@@ -197,7 +197,7 @@ fn json_save_idempotent() {
         managed_tools: BTreeMap::from([(
             "tool-a".to_string(),
             ToolRegistryEntry {
-                tag: None,
+                version: String::new(),
                 canonical_version: String::new(),
                 fetch_hash: Some("blake3:y".to_string()),
                 deployed_at: 1_700_000_000,
@@ -262,7 +262,7 @@ fn load_missing_state_returns_default() {
 #[test]
 fn tool_registry_entry_round_trip() {
     let entry = ToolRegistryEntry {
-        tag: None,
+        version: String::new(),
         canonical_version: "abc123".to_string(),
         fetch_hash: None,
         deployed_at: 0,
@@ -292,7 +292,7 @@ fn tool_registry_entry_normalize_drops_blank_entry() {
     state.managed_tools.insert(
         "tool".to_string(),
         ToolRegistryEntry {
-            tag: Some(String::new()),
+            version: String::new(),
             canonical_version: "".to_string(),
             fetch_hash: None,
             deployed_at: 0,
@@ -308,7 +308,7 @@ fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
     state.managed_tools.insert(
         "tool".to_string(),
         ToolRegistryEntry {
-            tag: None,
+            version: String::new(),
             canonical_version: "abc123".to_string(),
             fetch_hash: None,
             deployed_at: 0,
@@ -324,7 +324,7 @@ fn state_normalize_retains_tool_with_canonical_version() {
     state.managed_tools.insert(
         "media-tagger".to_string(),
         ToolRegistryEntry {
-            tag: None,
+            version: String::new(),
             canonical_version: "abc123".to_string(),
             fetch_hash: None,
             deployed_at: 0,
@@ -343,7 +343,7 @@ fn state_normalize_drops_tool_with_all_blank() {
     state.managed_tools.insert(
         "blank-tool".to_string(),
         ToolRegistryEntry {
-            tag: Some(String::new()),
+            version: String::new(),
             canonical_version: "".to_string(),
             fetch_hash: None,
             deployed_at: 0,
@@ -359,7 +359,7 @@ fn canonical_version_json_round_trip() {
     let versions = vec!["", "abc123", "v1.0.0", "2025.07.15", "L2025-07-15", &long];
     for v in &versions {
         let entry = ToolRegistryEntry {
-            tag: None,
+            version: String::new(),
             canonical_version: (*v).to_string(),
             fetch_hash: None,
             deployed_at: 0,
@@ -371,9 +371,9 @@ fn canonical_version_json_round_trip() {
 }
 
 #[test]
-fn tool_registry_entry_serialization_omits_version_field() {
+fn tool_registry_entry_serialization_includes_version() {
     let entry = ToolRegistryEntry {
-        tag: None,
+        version: "v1.0.0".to_string(),
         canonical_version: "v1.0.0".to_string(),
         fetch_hash: None,
         deployed_at: 0,
@@ -381,29 +381,33 @@ fn tool_registry_entry_serialization_omits_version_field() {
     let json = serde_json::to_value(&entry).unwrap();
     let map = json.as_object().expect("ToolRegistryEntry should serialize to a JSON object");
     assert!(
-        !map.contains_key("version"),
-        "serialized ToolRegistryEntry must NOT contain a 'version' field"
+        map.contains_key("version"),
+        "serialized ToolRegistryEntry must contain a 'version' field"
+    );
+    assert_eq!(
+        map.get("version").and_then(|v| v.as_str()),
+        Some("v1.0.0"),
+        "version field should round-trip correctly"
     );
 }
 
 #[test]
-fn tool_registry_entry_backward_compat_ignores_unknown_version_field() {
+fn tool_registry_entry_deserializes_version() {
     let json = serde_json::json!({
-        "tag": null,
-        "canonical_version": "v1.0.0",
+        "canonical_version": "abc123",
         "fetch_hash": null,
         "deployed_at": 0,
         "version": "v1.0.0"
     });
     let entry: ToolRegistryEntry =
-        serde_json::from_value(json).expect("should deserialize even with unknown 'version' field");
-    assert_eq!(entry.canonical_version, "v1.0.0");
+        serde_json::from_value(json).expect("should deserialize with 'version' field");
+    assert_eq!(entry.canonical_version, "abc123");
+    assert_eq!(entry.version, "v1.0.0", "version should be deserialized");
 }
 
 #[test]
-fn tool_registry_entry_backward_compat_ignores_version_with_canonical_null() {
+fn tool_registry_entry_deserializes_empty_version() {
     let json = serde_json::json!({
-        "tag": null,
         "canonical_version": "",
         "fetch_hash": null,
         "deployed_at": 0,
@@ -412,4 +416,5 @@ fn tool_registry_entry_backward_compat_ignores_version_with_canonical_null() {
     let entry: ToolRegistryEntry =
         serde_json::from_value(json).expect("should deserialize with empty canonical_version");
     assert_eq!(entry.canonical_version, "");
+    assert_eq!(entry.version, "v2.0.0", "version should be deserialized");
 }
