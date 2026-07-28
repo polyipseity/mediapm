@@ -4,7 +4,7 @@
 //! generates runtime environment files, and manages content-map prefixing
 //! for same-step companion dependencies.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use mediapm_conductor::ToolRuntime;
@@ -107,10 +107,12 @@ fn strip_tool_key_hash(tool_key: &str) -> &str {
 
 /// Writes the generated runtime `.env` file with tool binary paths.
 ///
-/// Iterates over resolved tool runtimes and emits one dotenv entry per
-/// content-map key mapping the resolved tool id and OS label to an
-/// env var of the form `MEDIAPM_<TOOL_ID_UPPER>_<OS_UPPER>` (binary entry)
-/// or `MEDIAPM_<TOOL_ID_UPPER>_<OS_UPPER>_DIR` (archive directory entry).
+/// Iterates over resolved tool runtimes and emits dotenv entries per
+/// content-map key. For each key, **always** emits a `_DIR` env var pointing
+/// to the OS directory. When the key is a binary entry (has a filename part),
+/// additionally emits the non-`_DIR` binary env var pointing to the binary
+/// file itself. A dedup set prevents duplicate `_DIR` entries for the same
+/// tool+OS.
 ///
 /// The tool id used for env var names and paths is the **plain** tool id —
 /// any `@hash` suffix from content-addressed keys is stripped first.
@@ -125,17 +127,40 @@ pub(super) fn write_generated_runtime_env_file(
     let mut content = String::from(GENERATED_RUNTIME_ENV_HEADER);
     for (tool_id, runtime) in tool_runtimes {
         let plain_tool_id = strip_tool_key_hash(tool_id);
+        let tool_id_upper = plain_tool_id.to_uppercase().replace(['-', '.'], "_");
+        let mut emitted_dirs: BTreeSet<&str> = BTreeSet::new();
         for key in runtime.content_map.keys() {
-            let tool_id_upper = plain_tool_id.to_uppercase().replace(['-', '.'], "_");
-            let (env_name, env_key) = content_key_to_env_name(&tool_id_upper, key);
-            let env_value = paths
-                .tools_dir
-                .join(plain_tool_id)
-                .join("payload")
-                .join(env_key)
-                .to_string_lossy()
-                .to_string();
-            let _ = writeln!(content, "{env_name}={}", render_dotenv_quoted_value(&env_value));
+            let mut parts = key.splitn(2, '/');
+            let os = parts.next().unwrap_or("");
+
+            // Always emit the _DIR entry pointing to the OS directory.
+            let dir_env_name = format!("MEDIAPM_{}_{}_DIR", tool_id_upper, os.to_uppercase());
+            if emitted_dirs.insert(os) {
+                let dir_key = format!("{os}/");
+                let dir_value = paths
+                    .tools_dir
+                    .join(plain_tool_id)
+                    .join("payload")
+                    .join(&dir_key)
+                    .to_string_lossy()
+                    .to_string();
+                let _ =
+                    writeln!(content, "{dir_env_name}={}", render_dotenv_quoted_value(&dir_value));
+            }
+
+            // If this is a binary entry, also emit the binary env var.
+            let rest = parts.next().unwrap_or("");
+            if !rest.is_empty() {
+                let (env_name, _env_key) = content_key_to_env_name(&tool_id_upper, key);
+                let env_value = paths
+                    .tools_dir
+                    .join(plain_tool_id)
+                    .join("payload")
+                    .join(key)
+                    .to_string_lossy()
+                    .to_string();
+                let _ = writeln!(content, "{env_name}={}", render_dotenv_quoted_value(&env_value));
+            }
         }
     }
 
@@ -158,12 +183,15 @@ fn render_dotenv_quoted_value(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// Derives an env var name from an already-uppercased tool id and a
-/// content-map key.
+/// Derives the binary-entry env var name from an already-uppercased tool id
+/// and a content-map key.
 ///
 /// The key has the form `{os}/` (archive directory entry) or
-/// `{os}/{tool_id}` (binary entry).  Returns the env var name and the
+/// `{os}/{tool_id}` (binary entry). Returns the env var name and the
 /// key to use for the filesystem path.
+///
+/// Note: this function is now used only for binary-entry naming. The
+/// `_DIR` entry is emitted inline by `write_generated_runtime_env_file`.
 ///
 /// # Examples
 ///
@@ -292,6 +320,14 @@ mod tests {
             content.contains(&expected_prefix),
             "env file must point to yt-dlp/payload/ directory"
         );
+        // After dual-emission change, both _DIR and binary forms should appear.
+        let tools_dir_str = paths.tools_dir.to_string_lossy();
+        let dir_line =
+            format!("MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/yt-dlp/payload/linux/\"");
+        let bin_line =
+            format!("MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp/payload/linux/yt-dlp\"");
+        assert!(content.contains(&dir_line), "env must contain _DIR entry:\ncontent:\n{content}",);
+        assert!(content.contains(&bin_line), "env must contain binary entry:\ncontent:\n{content}",);
     }
 
     #[test]
@@ -303,5 +339,108 @@ mod tests {
         let content = std::fs::read_to_string(&paths.env_generated_file)
             .expect("env file should be readable");
         assert_eq!(content, GENERATED_RUNTIME_ENV_HEADER);
+    }
+
+    #[test]
+    fn write_runtime_env_binary_produces_dir_and_binary() {
+        let dir = tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(dir.path());
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "hash".to_string());
+        let mut runtimes = BTreeMap::new();
+        runtimes.insert(
+            "yt-dlp".to_string(),
+            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+        );
+        write_generated_runtime_env_file(&paths, &runtimes).expect("write should succeed");
+        let content = std::fs::read_to_string(&paths.env_generated_file)
+            .expect("env file should be readable");
+
+        let tools_dir_str = paths.tools_dir.to_string_lossy();
+        let dir_line =
+            format!("MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/yt-dlp/payload/linux/\"");
+        let bin_line =
+            format!("MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp/payload/linux/yt-dlp\"");
+
+        assert!(content.contains(&dir_line), "env must contain _DIR entry\ncontent:\n{content}",);
+        assert!(content.contains(&bin_line), "env must contain binary entry\ncontent:\n{content}",);
+    }
+
+    #[test]
+    fn write_runtime_env_dir_produces_dir_only() {
+        let dir = tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(dir.path());
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/".to_string(), "hash".to_string());
+        let mut runtimes = BTreeMap::new();
+        runtimes.insert(
+            "ffmpeg".to_string(),
+            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+        );
+        write_generated_runtime_env_file(&paths, &runtimes).expect("write should succeed");
+        let content = std::fs::read_to_string(&paths.env_generated_file)
+            .expect("env file should be readable");
+
+        let tools_dir_str = paths.tools_dir.to_string_lossy();
+        let dir_line =
+            format!("MEDIAPM_FFMPEG_LINUX_DIR=\"{tools_dir_str}/ffmpeg/payload/linux/\"");
+        let bin_var = "MEDIAPM_FFMPEG_LINUX=";
+
+        assert!(content.contains(&dir_line), "env must contain _DIR entry\ncontent:\n{content}",);
+        assert!(
+            !content.contains(bin_var),
+            "env must not contain binary env var\ncontent:\n{content}",
+        );
+    }
+
+    #[test]
+    fn write_runtime_env_mixed_os_produces_no_duplicate_dirs() {
+        let dir = tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(dir.path());
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "h1".to_string());
+        content_map.insert("macos/yt-dlp".to_string(), "h2".to_string());
+        let mut runtimes = BTreeMap::new();
+        runtimes.insert(
+            "yt-dlp".to_string(),
+            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+        );
+        write_generated_runtime_env_file(&paths, &runtimes).expect("write should succeed");
+        let content = std::fs::read_to_string(&paths.env_generated_file)
+            .expect("env file should be readable");
+
+        let tools_dir_str = paths.tools_dir.to_string_lossy();
+
+        // Check both _DIR entries exist.
+        assert!(
+            content.contains(&format!(
+                "MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/yt-dlp/payload/linux/\""
+            )),
+            "missing linux _DIR entry"
+        );
+        assert!(
+            content.contains(&format!(
+                "MEDIAPM_YT_DLP_MACOS_DIR=\"{tools_dir_str}/yt-dlp/payload/macos/\""
+            )),
+            "missing macos _DIR entry"
+        );
+
+        // Check both binary entries exist.
+        assert!(
+            content.contains(&format!(
+                "MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp/payload/linux/yt-dlp\""
+            )),
+            "missing linux binary entry"
+        );
+        assert!(
+            content.contains(&format!(
+                "MEDIAPM_YT_DLP_MACOS=\"{tools_dir_str}/yt-dlp/payload/macos/yt-dlp\""
+            )),
+            "missing macos binary entry"
+        );
+
+        // Exactly 2 _DIR entries (one per OS, no duplicates).
+        let dir_count = content.matches("_DIR=").count();
+        assert_eq!(dir_count, 2, "expected exactly 2 _DIR entries, got {dir_count}");
     }
 }

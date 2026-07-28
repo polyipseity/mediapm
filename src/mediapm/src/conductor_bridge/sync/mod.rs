@@ -599,8 +599,16 @@ mod tests {
             "env file should have MEDIAPM_MEDIA_TAGGER_LINUX\n--- content:\n{content}",
         );
         assert!(
+            content.contains("MEDIAPM_MEDIA_TAGGER_LINUX_DIR"),
+            "env file should have MEDIAPM_MEDIA_TAGGER_LINUX_DIR\n--- content:\n{content}",
+        );
+        assert!(
             content.contains("MEDIAPM_MEDIA_TAGGER_MACOS"),
             "env file should have MEDIAPM_MEDIA_TAGGER_MACOS\n--- content:\n{content}",
+        );
+        assert!(
+            content.contains("MEDIAPM_MEDIA_TAGGER_MACOS_DIR"),
+            "env file should have MEDIAPM_MEDIA_TAGGER_MACOS_DIR\n--- content:\n{content}",
         );
         assert!(
             content.contains("/media-tagger/payload/"),
