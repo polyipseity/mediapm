@@ -106,6 +106,68 @@ async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
     Ok(())
 }
 
+/// Env var names in `.env.generated` must not contain the `@` character
+/// (no content-addressed hash leakage into env var names).
+///
+/// This integration test runs through the full sync pipeline. Without
+/// network-provisioned payload tools there will be no content-map entries,
+/// but the assertion guards against regression where `@` could appear in
+/// generated header lines or future entries.
+#[tokio::test]
+async fn sync_env_has_no_hash_in_names() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    service.sync_tools().await?;
+    let env_path = &service.paths().env_generated_file;
+    let content = std::fs::read_to_string(env_path).expect("env file should be readable");
+    for line in content.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some(name) = line.split('=').next() {
+            assert!(!name.contains('@'), "env var name must not contain @: '{name}' in env file");
+        }
+    }
+    Ok(())
+}
+
+/// Env var values in `.env.generated` must contain the `/payload/` path
+/// segment, matching the `ProvisionCache` layout.
+///
+/// Without network-provisioned payloads there will be no entries, so the
+/// assertion only applies to non-comment, non-empty lines. The unit tests
+/// in `tool_config.rs` verify the actual path construction with content
+/// maps.
+#[tokio::test]
+async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    service.sync_tools().await?;
+    let env_path = &service.paths().env_generated_file;
+    let content = std::fs::read_to_string(env_path).expect("env file should be readable");
+    for line in content.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        // Each non-comment line should be KEY=VALUE
+        if let Some((_name, value)) = line.split_once('=') {
+            assert!(
+                value.contains("/payload/"),
+                "env var value must contain /payload/ segment: {value} in env file"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Sync registers all five built-in tools in the generated conductor
 /// document.
 #[tokio::test]

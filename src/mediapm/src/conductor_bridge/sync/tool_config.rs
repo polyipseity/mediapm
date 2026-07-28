@@ -92,12 +92,30 @@ pub(super) fn prefix_same_step_companion_content_entries(
     prefix_same_step_companion_content_map(companion_prefix, entries)
 }
 
+/// Strips the content-addressed `@hash` suffix from a tool key.
+///
+/// Tool keys in the `tool_runtimes` map may use content-addressed form
+/// (`yt-dlp@<hash>`) when the tool has a payload. Since only one tool
+/// version is active at a time, the hash is unnecessary for env var names
+/// and paths — return the plain tool id.
+///
+/// Returns the input unchanged when no `@` separator is present.
+#[must_use]
+fn strip_tool_key_hash(tool_key: &str) -> &str {
+    tool_key.split('@').next().unwrap_or(tool_key)
+}
+
 /// Writes the generated runtime `.env` file with tool binary paths.
 ///
 /// Iterates over resolved tool runtimes and emits one dotenv entry per
 /// content-map key mapping the resolved tool id and OS label to an
 /// env var of the form `MEDIAPM_<TOOL_ID_UPPER>_<OS_UPPER>` (binary entry)
 /// or `MEDIAPM_<TOOL_ID_UPPER>_<OS_UPPER>_DIR` (archive directory entry).
+///
+/// The tool id used for env var names and paths is the **plain** tool id —
+/// any `@hash` suffix from content-addressed keys is stripped first.
+/// Env var values point to the `ProvisionCache` payload layout:
+/// `<tools_dir>/<plain_tool_id>/payload/<content_map_key>`.
 pub(super) fn write_generated_runtime_env_file(
     paths: &MediaPmPaths,
     tool_runtimes: &BTreeMap<String, ToolRuntime>,
@@ -106,10 +124,17 @@ pub(super) fn write_generated_runtime_env_file(
 
     let mut content = String::from(GENERATED_RUNTIME_ENV_HEADER);
     for (tool_id, runtime) in tool_runtimes {
+        let plain_tool_id = strip_tool_key_hash(tool_id);
         for key in runtime.content_map.keys() {
-            let tool_id_upper = tool_id.to_uppercase().replace(['-', '.'], "_");
+            let tool_id_upper = plain_tool_id.to_uppercase().replace(['-', '.'], "_");
             let (env_name, env_key) = content_key_to_env_name(&tool_id_upper, key);
-            let env_value = paths.tools_dir.join(env_key).to_string_lossy().to_string();
+            let env_value = paths
+                .tools_dir
+                .join(plain_tool_id)
+                .join("payload")
+                .join(env_key)
+                .to_string_lossy()
+                .to_string();
             let _ = writeln!(content, "{env_name}={}", render_dotenv_quoted_value(&env_value));
         }
     }
@@ -164,5 +189,119 @@ fn content_key_to_env_name<'a>(tool_id_upper: &str, key: &'a str) -> (String, &'
     } else {
         // Binary entry: {os}/{tool_id}
         (format!("MEDIAPM_{tool_id_upper}_{os_upper}"), key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use mediapm_conductor::ToolRuntime;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::paths::MediaPmPaths;
+
+    #[test]
+    fn content_key_to_env_name_binary() {
+        assert_eq!(
+            content_key_to_env_name("YT_DLP", "linux/yt-dlp"),
+            ("MEDIAPM_YT_DLP_LINUX".to_string(), "linux/yt-dlp"),
+        );
+    }
+
+    #[test]
+    fn content_key_to_env_name_dir() {
+        assert_eq!(
+            content_key_to_env_name("FFMPEG", "linux/"),
+            ("MEDIAPM_FFMPEG_LINUX_DIR".to_string(), "linux/"),
+        );
+    }
+
+    #[test]
+    fn strip_tool_key_hash_removes_suffix() {
+        assert_eq!(strip_tool_key_hash("yt-dlp@abc123"), "yt-dlp");
+        assert_eq!(strip_tool_key_hash("ffmpeg@deadbeef"), "ffmpeg");
+    }
+
+    #[test]
+    fn strip_tool_key_hash_no_hash() {
+        assert_eq!(strip_tool_key_hash("yt-dlp"), "yt-dlp");
+        assert_eq!(strip_tool_key_hash("media-tagger"), "media-tagger");
+    }
+
+    #[test]
+    fn content_key_to_env_name_strips_hash() {
+        let plain = strip_tool_key_hash("yt-dlp@abc123");
+        let tool_id_upper = plain.to_uppercase().replace(['-', '.'], "_");
+        let (name, key) = content_key_to_env_name(&tool_id_upper, "linux/yt-dlp");
+        assert_eq!(name, "MEDIAPM_YT_DLP_LINUX");
+        assert!(!name.contains('@'), "env var name must not contain @");
+        assert_eq!(key, "linux/yt-dlp");
+    }
+
+    #[test]
+    fn write_runtime_env_strips_hash_in_names() {
+        let dir = tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(dir.path());
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "hash".to_string());
+        let mut runtimes = BTreeMap::new();
+        runtimes.insert(
+            "yt-dlp@abc123".to_string(),
+            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+        );
+        write_generated_runtime_env_file(&paths, &runtimes).expect("write should succeed");
+        let content = std::fs::read_to_string(&paths.env_generated_file)
+            .expect("env file should be readable");
+        for line in content.lines() {
+            if line.starts_with('#') {
+                continue;
+            }
+            // Split on '=' and check the name part (left of first '=').
+            if let Some(name) = line.split('=').next() {
+                assert!(
+                    !name.contains('@'),
+                    "env var name must not contain @: '{name}' in {content}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn write_runtime_env_paths_contain_payload() {
+        let dir = tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(dir.path());
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "hash".to_string());
+        let mut runtimes = BTreeMap::new();
+        runtimes.insert(
+            "yt-dlp@abc123".to_string(),
+            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+        );
+        write_generated_runtime_env_file(&paths, &runtimes).expect("write should succeed");
+        let content = std::fs::read_to_string(&paths.env_generated_file)
+            .expect("env file should be readable");
+        assert!(
+            content.contains("/payload/"),
+            "env file paths must contain /payload/ segment: {content}"
+        );
+        let expected_prefix =
+            paths.tools_dir.join("yt-dlp").join("payload").to_string_lossy().to_string();
+        assert!(
+            content.contains(&expected_prefix),
+            "env file must point to yt-dlp/payload/ directory"
+        );
+    }
+
+    #[test]
+    fn write_runtime_env_empty_content_map_produces_header_only() {
+        let dir = tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(dir.path());
+        let runtimes = BTreeMap::new();
+        write_generated_runtime_env_file(&paths, &runtimes).expect("write should succeed");
+        let content = std::fs::read_to_string(&paths.env_generated_file)
+            .expect("env file should be readable");
+        assert_eq!(content, GENERATED_RUNTIME_ENV_HEADER);
     }
 }
