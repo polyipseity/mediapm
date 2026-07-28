@@ -49,7 +49,7 @@ Currently these helpers are defined but companion binding is not yet wired in th
 - Write a `.env.generated` file so processes (run by mediapm via conductor) can discover peer tool binary/directory paths via environment variables.
 - Operates at the **mediapm** layer, not the conductor layer. Conductor has its own `ProvisionCache` system for materializing tool payloads; the `.env.generated` file exists so the mediapm runtime can expose those provisioned paths to other tools.
 - Only one tool version is active at a time (conductor's reconciliation selects a single version per logical tool). Therefore env var names use the plain tool id — no content-addressed hash suffix is needed.
-- Emit one dotenv entry per content-map key per resolved tool runtime.
+- For each content-map key, always emit the `_DIR` env var pointing to the OS directory. When the key is a binary entry (has a filename part), additionally emit the non-`_DIR` binary env var.
 
 ### `.env.generated` format
 
@@ -71,9 +71,27 @@ Each value path follows the `ProvisionCache` layout: `<tools_dir>/<sanitized_too
 Content-map keys have the form `{os}/` (archive directory) or `{os}/{tool_id}` (binary entry):
 
 - **Binary entry** (e.g. `"linux/yt-dlp"`): produces `MEDIAPM_<TOOL>_<OS>` with the key unchanged.
+  The env writer inlines a separate `_DIR` entry (see dual-emission rule below).
 - **Archive directory entry** (e.g. `"linux/"`): produces `MEDIAPM_<TOOL>_<OS>_DIR` with the key unchanged.
 
 Tool id is upper-cased with `-` and `.` replaced by `_`. OS label is upper-cased after splitting on `/`. The tool id used to derive the env var name is the **plain tool id** — any `@hash` suffix from content-addressed keys is stripped before name generation.
+
+### Dual-emission rule
+
+For each content-map key, the env writer always emits the `_DIR` env var pointing to the OS directory. When the key is a binary entry (has a filename part), the writer additionally emits the non-`_DIR` binary env var. A dedup set prevents duplicate `_DIR` entries for the same tool+OS.
+
+Example for binary key `"linux/yt-dlp"`:
+
+```text
+MEDIAPM_YT_DLP_LINUX=<tools_dir>/yt-dlp/payload/linux/yt-dlp
+MEDIAPM_YT_DLP_LINUX_DIR=<tools_dir>/yt-dlp/payload/linux/
+```
+
+Example for dir-only key `"linux/"`:
+
+```text
+MEDIAPM_FFMPEG_LINUX_DIR=<tools_dir>/ffmpeg/payload/linux/
+```
 
 ### `render_dotenv_quoted_value(value)`
 
