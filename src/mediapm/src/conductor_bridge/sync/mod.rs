@@ -157,10 +157,10 @@ pub(crate) async fn reconcile_desired_tools(
                     resolved_canonical_version = canonical_version.clone();
 
                     // Check skip: if state has an entry with the same canonical_version
-                    // AND a non-empty fetch_hash, skip provisioning entirely.
+                    // AND a non-empty content_map_hash, skip provisioning entirely.
                     let should_skip = state.managed_tools.get(tool_id).is_some_and(|existing| {
                         existing.canonical_version == canonical_version
-                            && existing.fetch_hash.is_some()
+                            && existing.content_map_hash.is_some()
                     });
 
                     if should_skip {
@@ -215,12 +215,12 @@ pub(crate) async fn reconcile_desired_tools(
             Ok(Some(payload)) => {
                 // Compute content-addressed hash from content_map before it's
                 // moved into build_tool_spec.
-                let content_hash = if payload.content_map.is_empty() {
+                let content_map_hash = if payload.content_map.is_empty() {
                     None
                 } else {
                     let json = serde_json::to_string(&payload.content_map)
                         .expect("content_map serializes to JSON");
-                    Some(blake3::hash(json.as_bytes()).to_hex())
+                    Some(format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex()))
                 };
 
                 // Determine ffmpeg slot limits (default for now; overrides
@@ -254,7 +254,7 @@ pub(crate) async fn reconcile_desired_tools(
                     ToolRegistryEntry {
                         version: payload.human_readable_version.clone(),
                         canonical_version: payload.canonical_version.clone(),
-                        fetch_hash: content_hash.as_ref().map(|h| h.to_string()),
+                        content_map_hash: content_map_hash.clone(),
                         deployed_at: now,
                     },
                 );
@@ -266,7 +266,7 @@ pub(crate) async fn reconcile_desired_tools(
                 full_runtime.inherited_env_vars = inherited;
 
                 // Use content-addressed key: "{name}@{hash}".
-                let tool_key = if let Some(ref hash) = content_hash {
+                let tool_key = if let Some(ref hash) = content_map_hash {
                     format!("{}@{}", tool_id, hash)
                 } else {
                     tool_id.to_string()
@@ -314,7 +314,7 @@ pub(crate) async fn reconcile_desired_tools(
                             crate::global::MEDIAPM_GIT_HASH
                         ),
                         canonical_version: resolved_canonical_version.clone(),
-                        fetch_hash: None,
+                        content_map_hash: None,
                         deployed_at: now,
                     },
                 );
@@ -555,7 +555,7 @@ mod tests {
         let doc = NickelDocument { tools, ..Default::default() };
         save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
 
-        // State with matching canonical_version and fetch_hash → triggers skip.
+        // State with matching canonical_version and content_map_hash → triggers skip.
         let mut state = MediaPmState::default();
         state.managed_tools.insert(
             "media-tagger".to_string(),
@@ -566,7 +566,7 @@ mod tests {
                     crate::global::MEDIAPM_GIT_HASH
                 ),
                 canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
-                fetch_hash: Some("blake3:abc".to_string()),
+                content_map_hash: Some("blake3:abc".to_string()),
                 deployed_at: 0,
             },
         );

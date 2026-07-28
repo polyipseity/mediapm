@@ -524,9 +524,9 @@ pub struct ToolRegistryEntry {
     /// Defaults to empty string (`""`) for backward-compat with old state files.
     #[serde(default)]
     pub canonical_version: String,
-    /// CAS content hash of the fetched payload.
+    /// blake3 hash of the content_map JSON (used for content-addressed identity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fetch_hash: Option<String>,
+    pub content_map_hash: Option<String>,
     /// Unix-epoch seconds when the payload was deployed (0 = not yet deployed).
     #[serde(default)]
     pub deployed_at: u64,
