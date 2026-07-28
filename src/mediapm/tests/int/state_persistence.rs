@@ -44,7 +44,7 @@ fn v2_round_trip() {
             ToolRegistryEntry {
                 version: String::new(),
                 canonical_version: String::new(),
-                fetch_hash: Some("blake3:def456".to_string()),
+                content_map_hash: Some("blake3:def456".to_string()),
                 deployed_at: 1_700_000_000,
             },
         )]),
@@ -200,7 +200,7 @@ fn json_save_idempotent() {
             ToolRegistryEntry {
                 version: String::new(),
                 canonical_version: String::new(),
-                fetch_hash: Some("blake3:y".to_string()),
+                content_map_hash: Some("blake3:y".to_string()),
                 deployed_at: 1_700_000_000,
             },
         )]),
@@ -265,7 +265,7 @@ fn tool_registry_entry_round_trip() {
     let entry = ToolRegistryEntry {
         version: String::new(),
         canonical_version: "abc123".to_string(),
-        fetch_hash: None,
+        content_map_hash: None,
         deployed_at: 0,
     };
     let json = serde_json::to_value(&entry).expect("serialize");
@@ -277,7 +277,7 @@ fn tool_registry_entry_round_trip() {
 fn tool_registry_entry_backward_compat_deserialize_without_canonical_version() {
     let json = serde_json::json!({
         "version": "1.0",
-        "fetch_hash": "blake3:x",
+        "content_map_hash": "blake3:x",
         "deployed_at": 0
     });
     let entry: ToolRegistryEntry = serde_json::from_value(json).expect("deserialize old format");
@@ -295,7 +295,7 @@ fn tool_registry_entry_normalize_drops_blank_entry() {
         ToolRegistryEntry {
             version: String::new(),
             canonical_version: "".to_string(),
-            fetch_hash: None,
+            content_map_hash: None,
             deployed_at: 0,
         },
     );
@@ -311,7 +311,7 @@ fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
         ToolRegistryEntry {
             version: String::new(),
             canonical_version: "abc123".to_string(),
-            fetch_hash: None,
+            content_map_hash: None,
             deployed_at: 0,
         },
     );
@@ -327,7 +327,7 @@ fn state_normalize_retains_tool_with_canonical_version() {
         ToolRegistryEntry {
             version: String::new(),
             canonical_version: "abc123".to_string(),
-            fetch_hash: None,
+            content_map_hash: None,
             deployed_at: 0,
         },
     );
@@ -346,7 +346,7 @@ fn state_normalize_drops_tool_with_all_blank() {
         ToolRegistryEntry {
             version: String::new(),
             canonical_version: "".to_string(),
-            fetch_hash: None,
+            content_map_hash: None,
             deployed_at: 0,
         },
     );
@@ -362,7 +362,7 @@ fn canonical_version_json_round_trip() {
         let entry = ToolRegistryEntry {
             version: String::new(),
             canonical_version: (*v).to_string(),
-            fetch_hash: None,
+            content_map_hash: None,
             deployed_at: 0,
         };
         let json = serde_json::to_value(&entry).unwrap();
@@ -376,7 +376,7 @@ fn tool_registry_entry_serialization_includes_version() {
     let entry = ToolRegistryEntry {
         version: "v1.0.0".to_string(),
         canonical_version: "v1.0.0".to_string(),
-        fetch_hash: None,
+        content_map_hash: None,
         deployed_at: 0,
     };
     let json = serde_json::to_value(&entry).unwrap();
@@ -396,7 +396,7 @@ fn tool_registry_entry_serialization_includes_version() {
 fn tool_registry_entry_deserializes_version() {
     let json = serde_json::json!({
         "canonical_version": "abc123",
-        "fetch_hash": null,
+        "content_map_hash": null,
         "deployed_at": 0,
         "version": "v1.0.0"
     });
@@ -410,7 +410,7 @@ fn tool_registry_entry_deserializes_version() {
 fn tool_registry_entry_deserializes_empty_version() {
     let json = serde_json::json!({
         "canonical_version": "",
-        "fetch_hash": null,
+        "content_map_hash": null,
         "deployed_at": 0,
         "version": "v2.0.0"
     });

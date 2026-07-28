@@ -877,7 +877,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
             ToolRegistryEntry {
                 version: String::new(),
                 canonical_version: String::new(),
-                fetch_hash: Some(stale_hash.to_string()),
+                content_map_hash: Some(stale_hash.to_string()),
                 deployed_at: unix_timestamp_seconds(),
             },
         );
