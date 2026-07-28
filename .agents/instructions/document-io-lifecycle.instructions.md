@@ -62,6 +62,12 @@ applyTo: "src/mediapm/src/conductor_bridge/documents.rs, src/mediapm/src/conduct
 
 ## Key invariants
 
-- `write_bytes_if_changed` is the gate for all NCL writes — the coordinator only saves when something actually changed.
+- `write_bytes_if_changed` is the gate for all NCL document saves — the coordinator
+  only writes when encoded bytes differ from the existing file. This prevents
+  filesystem and git churn when tool payloads are identical across sync runs. State
+  JSON files do not use this gate (see state-persistence spec).
 - Builtin tools are always re-registered on every sync (idempotent `insert` semantics).
 - `list_tools` key parsing uses `rfind('@')` to handle tool names containing `@`.
+- Conductor NCL files are artifact-manifest documents: their content only changes when
+  binary payload hashes change. Metadata-only updates (version tag rotations without
+  payload change) are absorbed by `state.json`, not by NCL files.
