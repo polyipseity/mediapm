@@ -197,7 +197,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             match crate::tools::provider::resolve_tool_fetch(tool_id, None).await {
                 Ok((_, _, resolved_canonical_version, _, _)) => Ok(existing.canonical_version
                     != resolved_canonical_version
-                    || existing.fetch_hash.is_none()),
+                    || existing.content_map_hash.is_none()),
                 Err(_) => {
                     // Conservatively recommend sync on provider resolution failure.
                     Ok(true)
