@@ -36,6 +36,28 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
 8. **Write env file** — `write_generated_runtime_env_file()`.
 9. **Save generated document** — `save_conductor_generated_document()`.
 
+### Dual-write strategy
+
+The sync coordinator persists two distinct documents with different write policies:
+
+- **`state.json` (metadata-driven, always-write):** Updated unconditionally after every
+  sync pass. Records the latest sync metadata (canonical version, deploy timestamp,
+  fetch hash) even when tool payloads are unchanged. This is the runtime audit trail
+  for every invocation.
+
+- **`conductor.generated.ncl` (artifact-driven, change-detected):** Updated only when
+  tool content-map hashes (the actual binary payloads) differ from the previous write.
+  Uses `write_bytes_if_changed()` — reads the existing file and skips the write when
+  bytes are identical. This is the artifact manifest — it only changes when deployable
+  artifacts change.
+
+**Rationale:** Canonical version tags (e.g., daily autobuild timestamps from BtbN) can
+change without producing different binaries. An unconditional conductor-file write
+would create git noise for every upstream tag rotation. The dual strategy gives:
+
+- Zero git churn in the conductor file when payloads are stable.
+- A complete sync history in state.json for debugging and audit.
+
 ### `ToolSyncReport` fields
 
 | Field           | Type          | Purpose                                                                                                                        |
@@ -54,12 +76,18 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
 - Builtin source-ingest tools (`import`) skip hash-key generation and use bare name.
 - Progress bar shows `desired_tools.len()` total items; bar finishes success (no warnings) or error (warnings present).
 - `content_map ⊆ external_data` invariant: every CAS hash referenced in any tool's `runtime.content_map` must have a matching `ExternalDataEntry` in `generated_doc.external_data`. Enforced on both encode (`encode_document()`) and decode (`decode_document()`) of conductor NCL documents.
+- State churn without conductor-file churn is expected and correct. A change to
+  `state.json` alone means only metadata changed; a change to
+  `conductor.generated.ncl` means binary artifacts changed.
 
 ### Testing invariants
 
 - Tests must be hermetic: never read from or write to the real OS-level user cache dir. Use `cache_root_override` to inject a tempdir.
 - The `default_mediapm_user_download_cache_root().is_none()` skip guard is macOS-ineffective and must not be relied upon. Use `cache_root_override` instead.
 - Test assertions should verify the override path was used (e.g., cache index files exist under the override path rather than the default).
+- Tests must verify both the skip-if-up-to-date path (state.json-only change) and the
+  full-provision path (both files change). A hermetic test should assert that re-running
+  sync with identical tool payloads produces identical conductor file bytes.
 
 ## Content-addressed identity
 
