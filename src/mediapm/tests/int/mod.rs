@@ -13,5 +13,7 @@ mod tool_sync;
 /// All-platform document structure integration: verifies that managed
 /// tools have per-OS content-map entries and non-empty command selectors.
 mod all_platform;
+/// Dual-write strategy: state.json always-writes, NCL files skip when unchanged.
+mod dual_write;
 /// State JSON persistence and migration tests.
 mod state_persistence;

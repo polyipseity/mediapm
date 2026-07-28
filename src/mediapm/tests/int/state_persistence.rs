@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 use mediapm::{
     ManagedFileRecord, MediaPmState, ToolRegistryEntry, load_mediapm_state_document,
+    save_mediapm_state_document,
     state::ser::{from_json_value, migrate_from_old_nickel, to_json_value},
 };
 use serde_json::json;
@@ -417,4 +418,45 @@ fn tool_registry_entry_deserializes_empty_version() {
         serde_json::from_value(json).expect("should deserialize with empty canonical_version");
     assert_eq!(entry.canonical_version, "");
     assert_eq!(entry.version, "v2.0.0", "version should be deserialized");
+}
+
+// ---------------------------------------------------------------------------
+// Dual-write: state.json always-writes
+// ---------------------------------------------------------------------------
+
+/// state.json is always written to disk, even when content is identical.
+///
+/// This verifies the always-write half of the dual-write strategy:
+/// state.json is metadata-driven and must update its mtime for audit-trail
+/// purposes. Companion NCL documents use change-detected writes (tested
+/// separately in `dual_write.rs`).
+#[test]
+fn state_json_always_writes_to_disk() {
+    let tmp = tempdir().expect("tempdir");
+    let path = tmp.path().join("state.json");
+
+    let state = MediaPmState {
+        version: 2,
+        managed_files: BTreeMap::new(),
+        managed_tools: BTreeMap::new(),
+        workflow_states: BTreeMap::new(),
+    };
+
+    // First save: create the file.
+    save_mediapm_state_document(&path, &state).expect("first save should succeed");
+    let meta1 = std::fs::metadata(&path).expect("state.json metadata after first save");
+    let mtime1 = meta1.modified().expect("mtime after first save");
+
+    // Brief sleep to advance clock.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    // Second save with identical content: must still write to disk.
+    save_mediapm_state_document(&path, &state).expect("second save should succeed");
+    let meta2 = std::fs::metadata(&path).expect("state.json metadata after second save");
+    let mtime2 = meta2.modified().expect("mtime after second save");
+
+    assert!(
+        mtime2 > mtime1,
+        "state.json mtime must advance even when content is identical (always-write policy)"
+    );
 }
