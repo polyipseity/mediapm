@@ -198,6 +198,14 @@ pub(crate) async fn reconcile_desired_tools(
                 .await;
 
         if was_skip {
+            // Skipped tools still need env var entries. Reconstruct runtime
+            // from the existing spec in the generated document.
+            for (key, spec) in &generated_doc.tools {
+                if spec.name == *tool_id {
+                    tool_runtimes.insert(key.clone(), spec.runtime.clone());
+                    break;
+                }
+            }
             report.tools_skipped += 1;
             pb.advance(1);
             continue;
@@ -380,7 +388,11 @@ mod tests {
 
     use mediapm_cas::InMemoryCas;
     use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
+    use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
+
+    use crate::config::ToolRequirement;
+    use serde_json;
 
     use super::*;
 
@@ -518,5 +530,81 @@ mod tests {
         );
         let report = result.unwrap();
         assert!(report.warnings.is_empty(), "no warnings expected: {:?}", report.warnings);
+    }
+
+    #[tokio::test]
+    async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let cas = InMemoryCas::default();
+
+        // Pre-populate generated doc with a tool that has content_map entries.
+        // The skip branch should reconstruct the runtime from this doc.
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/media-tagger".to_string(), "blake3:abc123".to_string());
+        content_map.insert("macos/media-tagger".to_string(), "blake3:def456".to_string());
+        let tool_spec = ToolSpec {
+            name: "media-tagger".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let mut tools = BTreeMap::new();
+        tools.insert("media-tagger".to_string(), tool_spec);
+        let doc = NickelDocument { tools, ..Default::default() };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        // State with matching canonical_version and fetch_hash → triggers skip.
+        let mut state = MediaPmState::default();
+        state.managed_tools.insert(
+            "media-tagger".to_string(),
+            ToolRegistryEntry {
+                version: format!(
+                    "{}+{}",
+                    env!("CARGO_PKG_VERSION"),
+                    crate::global::MEDIAPM_GIT_HASH
+                ),
+                canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
+                fetch_hash: Some("blake3:abc".to_string()),
+                deployed_at: 0,
+            },
+        );
+
+        // Desired tools with media-tagger.
+        let mut desired_tools = BTreeMap::new();
+        let req = ToolRequirement::default();
+        desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
+
+        let result = reconcile_desired_tools(
+            &cas,
+            &paths,
+            &desired_tools,
+            &BTreeMap::new(),
+            false,
+            &state,
+            Some(cache_root.path()),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
+
+        // Verify env file has entries reconstructed from the generated doc.
+        let env_path = &paths.env_generated_file;
+        assert!(env_path.exists(), ".env.generated should exist");
+        let content = std::fs::read_to_string(env_path).expect("env file readable");
+        assert!(
+            content.contains("MEDIAPM_MEDIA_TAGGER_LINUX"),
+            "env file should have MEDIAPM_MEDIA_TAGGER_LINUX\n--- content:\n{content}",
+        );
+        assert!(
+            content.contains("MEDIAPM_MEDIA_TAGGER_MACOS"),
+            "env file should have MEDIAPM_MEDIA_TAGGER_MACOS\n--- content:\n{content}",
+        );
+        assert!(
+            content.contains("/media-tagger/payload/"),
+            "env file paths should contain /media-tagger/payload/\n--- content:\n{content}",
+        );
     }
 }
