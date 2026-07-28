@@ -395,13 +395,39 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 ///
 /// Archive format is inferred from the URL extension.
 ///
-/// # Progress bar smoothness
+/// # Progress behavior
+///
+/// ## Initial bar total is item count (intentional)
+///
+/// The progress bar is created with `total = total_process_items` (e.g., 6 for
+/// 3 archive sources × 2 items each). Before the first source starts
+/// processing, the byte-level aggregate is just the sum of initial totals.
+/// The bar briefly shows the item count as the byte total — this is
+/// intentional and unavoidable: the byte total can only be computed from the
+/// actual payload sizes, which are known only when processing begins.
+///
+/// ## Total refining across sources (expected)
+///
+/// The aggregate byte total grows as each source is processed because each
+/// source's budget items are added to the total when the source begins
+/// processing. This is expected: the total is the sum of all processed bytes
+/// across all sources, and it increases as more sources are accounted for.
+/// The per-source estimate refines further after extraction (from compressed
+/// estimate to actual directory size), which is also expected behavior
+/// documented in [`estimate_uncompressed_size`].
+///
+/// ## Progress bar smoothness
 ///
 /// Progress callbacks are threaded through [`process_single_source`] and
-/// the extraction helpers so that per-entry callbacks fire during archive
-/// extraction. This gives the progress bar smooth 20Hz updates instead of
-/// freezing for seconds at a time during the decompression of large
-/// archives (yt-dlp, ffmpeg, deno, rsgain).
+/// the extraction helpers so that per-chunk callbacks fire during archive
+/// extraction (and during repacking to CAS). This gives the progress bar
+/// smooth ~20Hz updates instead of freezing for seconds at a time during
+/// the decompression of large archives (yt-dlp, ffmpeg, deno, rsgain).
+///
+/// The [`fire_progress`] helper function is the single push point for all
+/// progress snapshots. It aggregates the budget state and dispatches it
+/// through the provider's progress callback. Both the fetch and process
+/// phases use this shared helper, ensuring consistent snapshot semantics.
 ///
 /// - **ZIP extraction**: each entry's `compressed_size()` from the ZIP
 ///   central directory is used as the position weight, so progress tracks
@@ -411,15 +437,21 @@ fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
 /// - **tar.gz / tar.xz extraction**: the compressed payload size is used
 ///   as the total, and a [`CountingReader`] tracks how many compressed
 ///   bytes have been consumed by the decoder. A callback fires after each
-///   tar entry.
+///   tar entry, and sub-entry callbacks fire every [`SUB_ENTRY_CHUNK`] (64
+///   KiB) bytes consumed.
 ///
-/// - **Binary / launcher sources**: no intermediate callbacks are needed
-///   because CAS import is an instant in-memory operation.
+/// - **Binary / launcher sources**: a single callback fires after the
+///   source is fully processed (CAS import is an instant in-memory
+///   operation).
 ///
-/// The per-source item callback (fired at the end of each source iteration
-/// in the main loop below) advances the item counter — the prefix shows
-/// `{tool} [process] 1/3`, `2/3`, `3/3` — while the per-entry extraction
-/// callbacks above smoothly fill the bytes bar.
+/// - **Repacking (compress item)**: the [`pack_directory_to_uncompressed_zip_bytes`]
+///   function fires sub-entry callbacks every [`SUB_ENTRY_CHUNK`] bytes
+///   written, keeping the bar smooth during the repack phase.
+///
+/// The per-source item callback in the main loop below advances the item
+/// counter — the prefix shows `{tool} [process] 1/3`, `2/3`, `3/3` — while
+/// the per-chunk extraction/repack callbacks above smoothly fill the bytes
+/// bar.
 ///
 /// Progress reporting uses [`DownloadedSource.expected_size`] for the
 /// aggregated byte total (falling back to `bytes.len()` when unset).  The

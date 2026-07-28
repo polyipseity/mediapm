@@ -203,3 +203,35 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | ZIP extraction end-position equals entry compressed total                                           | `zip_extraction_end_position_equals_entry_compressed`                                    | 🟢     |
 | ZIP extraction: all snapshots have position ≤ total, non-decreasing                                 | `zip_position_never_exceeds_entry_total`                                                 | 🟢     |
 | Unified sub-entry chunk policy: SUB_ENTRY_CHUNK = 65536                                              | All sub-entry tests pass at 64 KB threshold                                               | 🟢     |
+
+### Compress estimate improvement (Phase 1)
+
+| Spec item                                                                     | Test(s)                                                                                      | Status |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------ |
+| Compress estimate never starts at 0 (moved before add_item)                   | `process_single_source_archive_two_items_completed` (budget starts with estimate, not 0)      | 🟢     |
+| gzip ISIZE parsing for tar.gz exact uncompressed size                         | `estimate_uncompressed_size_tar_gz_uses_isize`                                                | 🟢     |
+| xz Index parsing for tar.xz exact uncompressed size                           | `estimate_uncompressed_size_tar_xz_uses_index`                                                | 🟢     |
+| `resolve_format_and_filename` helper extracted from inline matching           | (compiles — verified by existing tests)                                                       | 🟢     |
+| Redundant `set_total` removed from `process_single_source`                    | (compiles — verified by snapshot tests)                                                       | 🟢     |
+
+### Progress callback threading (Phase 2)
+
+| Spec item                                                                     | Test(s)                                                                                      | Status |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------ |
+| `fire_progress` helper deduplicates aggregate+snapshot pattern                | (manual review — used in fetch_tool_sources, fetch_bytes_from_candidates, process_tool_sources) | 🟢     |
+| `progress_cb` threads through `process_single_source` for per-chunk updates   | `process_progress_cb_fires_during_extraction`                                                  | 🟢     |
+| Decompress per-chunk callbacks fire during tar.gz/xz extraction               | `process_progress_cb_fires_during_extraction` (callback_count > item_count)                    | 🟢     |
+| Compress per-chunk callbacks fire during repack to CAS                        | `process_progress_cb_fires_during_extraction`                                                  | 🟢     |
+| Binary/launcher progress_cb fires after completion                            | `process_position_never_exceeds_total_with_archive_entries`                                    | 🟢     |
+| Initial progress_cb fire before processing loop starts                        | `process_position_never_exceeds_total_with_archive_entries` (first snapshot exists)            | 🟢     |
+| Fetch side callbacks deduplicated via `fire_progress`                         | `fetch_progress_uses_size_hint_bytes_when_expected_size_none`                                  | 🟢     |
+| Progress snapsnots count >> source count (per-chunk rather than per-source)   | `process_position_never_exceeds_total_with_archive_entries` (snapshot_count > entries count)    | 🟢     |
+
+### Process-phase documentation
+
+| Spec item                                                                     | Test(s)                                                                                      | Status |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------ |
+| Initial bar total is item count (intentional) documented                      | Doc comment in `process_tool_sources`, comment in `provision.rs`                              | 🟢     |
+| Total refining across sources (expected) documented                           | Doc comment in `process_tool_sources`                                                         | 🟢     |
+| Callback architecture docs updated with per-chunk threading                   | Doc comment in `process_tool_sources`                                                         | 🟢     |
+| Coverage matrix updated                                                       | This file                                                                                     | 🟢     |

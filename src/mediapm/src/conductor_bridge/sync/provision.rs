@@ -223,6 +223,11 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     // Phase 3: Process — extract archives, repack to uncompressed ZIP,
     // import to CAS, build content map + command selector.
+    // The bar total is set to total_process_items (item count). This is
+    // intentional — the byte-level total isn't known until the budget is
+    // populated with source byte sizes. The budget starts with item count
+    // as the aggregate total and refines to actual payload sizes as each
+    // source begins processing.
     let process_bar = group.add_bar(total_process_items, &format!("{tool_id} [process]"));
     error_bars.push(process_bar.clone());
     let process_bar_cb = process_bar.clone();
