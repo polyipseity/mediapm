@@ -286,12 +286,7 @@ pub async fn fetch_tool_sources(
             }
         }
         if let Some(cb) = progress_cb.as_ref() {
-            let bytes = budget.aggregate();
-            cb(ProviderProgressSnapshot {
-                phase: ProviderPhase::Fetch,
-                items: ((idx + 1) as u64, total),
-                bytes,
-            });
+            fire_progress(cb, ProviderPhase::Fetch, ((idx + 1) as u64, total), &budget);
         }
     }
 
@@ -345,12 +340,12 @@ async fn fetch_bytes_from_candidates(
                     budget.set_total(item_idx, current_estimate);
                     budget.advance(item_idx, chunk.len() as u64);
                     if let Some(cb) = progress_cb {
-                        let bytes = budget.aggregate();
-                        cb(ProviderProgressSnapshot {
-                            phase: ProviderPhase::Fetch,
-                            items: (source_idx as u64 + 1, total_sources),
-                            bytes,
-                        });
+                        fire_progress(
+                            cb,
+                            ProviderPhase::Fetch,
+                            (source_idx as u64 + 1, total_sources),
+                            budget,
+                        );
                     }
                 }
                 return Ok((buffer, url.clone()));
@@ -478,6 +473,12 @@ pub async fn process_tool_sources(
     }
     let total_items_u64 = total_items as u64;
 
+    // Fire initial progress snapshot so the bar shows the byte aggregate
+    // immediately, not just the item count from bar construction.
+    if let Some(cb) = progress_cb.as_ref() {
+        fire_progress(cb, ProviderPhase::Process, (0, total_items_u64), &budget);
+    }
+
     let mut next_item_idx: usize = 0;
     for source in &downloaded.entries {
         let os_label = &source.os;
@@ -499,6 +500,9 @@ pub async fn process_tool_sources(
             &budget,
             next_item_idx,
             item_count,
+            progress_cb.as_ref(),
+            next_item_idx as u64,
+            total_items_u64,
         )
         .await?;
 
@@ -506,12 +510,12 @@ pub async fn process_tool_sources(
         os_exec_paths.insert(os_label.clone(), processed.exec_path);
 
         if let Some(cb) = progress_cb.as_ref() {
-            let bytes = budget.aggregate();
-            cb(ProviderProgressSnapshot {
-                phase: ProviderPhase::Process,
-                items: ((next_item_idx + item_count) as u64, total_items_u64),
-                bytes,
-            });
+            fire_progress(
+                cb,
+                ProviderPhase::Process,
+                ((next_item_idx + item_count) as u64, total_items_u64),
+                &budget,
+            );
         }
         next_item_idx += item_count;
     }
@@ -732,6 +736,27 @@ fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
 /// repack to uncompressed ZIP → CAS import → single trailing-slash content
 /// key (`{os}/`).
 ///
+/// Fires a progress callback with the current budget aggregate.
+///
+/// Extracted as a shared helper to prevent forgetting to push progress
+/// updates to the bar (historical regression cause).
+#[cfg(feature = "tool-presets")]
+fn fire_progress(
+    cb: &ProviderProgressCallback,
+    phase: ProviderPhase,
+    items: (u64, u64),
+    budget: &MultiItemBudget,
+) {
+    let bytes = budget.aggregate();
+    cb(ProviderProgressSnapshot { phase, items, bytes });
+}
+
+/// Processes one downloaded source: extract archives or import binaries to CAS.
+///
+/// For archive formats (ZIP, tar.gz, tar.xz): extract → find executable →
+/// repack to uncompressed ZIP → CAS import → single trailing-slash content
+/// key (`{os}/`).
+///
 /// For binary/launcher format: CAS-import bytes directly using the given
 /// `filename` (URL basename for Fetch sources, `tool_id` for launchers).
 /// Returns file-level content key (`{os}/{filename}`).
@@ -741,6 +766,14 @@ fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
 /// Archive sources use 2 consecutive budget items (`item_idx` = decompress,
 /// `item_idx + 1` = compress). Binary/launcher sources use 1 item (`item_idx`).
 /// The caller must set `item_count` to 2 for archive sources, 1 for others.
+///
+/// # Progress callbacks
+///
+/// When `progress_cb` is `Some`, fires per-chunk callbacks during extraction
+/// and compression so the progress bar updates smoothly instead of freezing
+/// for seconds at a time. The `items_completed` and `total_items` parameters
+/// let the caller report how many items have been completed before this
+/// source (for the prefix counter).
 #[cfg(feature = "tool-presets")]
 async fn process_single_source(
     bytes: &[u8],
@@ -753,11 +786,23 @@ async fn process_single_source(
     budget: &MultiItemBudget,
     item_idx: usize,
     item_count: usize,
+    progress_cb: Option<&ProviderProgressCallback>,
+    items_completed: u64,
+    total_items: u64,
 ) -> Result<ProcessedSource, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use bytes::Bytes;
 
-    let decompress_wrapper = |pos: u64| budget.set_pos(item_idx, pos);
+    let decompress_wrapper = {
+        let progress_cb = progress_cb.cloned();
+        move |pos: u64| {
+            budget.set_pos(item_idx, pos);
+            if let Some(ref cb) = progress_cb {
+                // Decompress is item 0 of this source (not yet completed)
+                fire_progress(cb, ProviderPhase::Process, (items_completed, total_items), budget);
+            }
+        }
+    };
     let local_cb: Option<&dyn Fn(u64)> = Some(&decompress_wrapper);
 
     if archive_format.is_some() {
@@ -787,7 +832,17 @@ async fn process_single_source(
         // then repack to uncompressed ZIP and import to CAS.
         let dir_total = total_dir_size(os_dir);
         budget.set_total(compress_idx, dir_total);
-        let compress_wrapper = |pos: u64| budget.set_pos(compress_idx, pos);
+        let compress_wrapper = {
+            let progress_cb = progress_cb.cloned();
+            move |pos: u64| {
+                budget.set_pos(compress_idx, pos);
+                if let Some(ref cb) = progress_cb {
+                    // Compress: decompress item (item_idx) of this source is done
+                    let completed = items_completed + 1;
+                    fire_progress(cb, ProviderPhase::Process, (completed, total_items), budget);
+                }
+            }
+        };
         let compress_cb: Option<&dyn Fn(u64)> = Some(&compress_wrapper);
 
         let zip_bytes = pack_directory_to_uncompressed_zip_bytes(os_dir, 0, compress_cb)?;
@@ -806,6 +861,11 @@ async fn process_single_source(
         let cost = bytes.len() as u64;
         budget.set_total(item_idx, cost);
         budget.advance(item_idx, cost);
+        if let Some(cb) = progress_cb.as_ref() {
+            // Binary/launcher: this single item is now complete
+            let completed = items_completed + 1;
+            fire_progress(cb, ProviderPhase::Process, (completed, total_items), budget);
+        }
         let hash =
             cas.put(Bytes::from(bytes.to_vec())).await.map_err(|e| ConductorError::Cas(e))?;
         let key = format!("{os_label}/{filename}");
@@ -1349,6 +1409,9 @@ mod tests {
             &budget,
             0usize,
             2usize,
+            None,
+            0u64,
+            2u64,
         )
         .await
         .unwrap();
@@ -1376,6 +1439,9 @@ mod tests {
             &budget,
             0usize,
             2usize,
+            None,
+            0u64,
+            2u64,
         )
         .await
         .unwrap();
@@ -1403,6 +1469,9 @@ mod tests {
             &budget,
             0usize,
             2usize,
+            None,
+            0u64,
+            2u64,
         )
         .await
         .unwrap();
@@ -1429,6 +1498,9 @@ mod tests {
             &budget,
             0usize,
             1usize,
+            None,
+            0u64,
+            1u64,
         )
         .await
         .unwrap();
@@ -1460,6 +1532,9 @@ mod tests {
             &budget,
             0usize,
             1usize,
+            None,
+            0u64,
+            1u64,
         )
         .await
         .expect("process_single_source should succeed for binary");
@@ -1674,6 +1749,9 @@ mod tests {
             &budget,
             0usize,
             1usize,
+            None,
+            0u64,
+            1u64,
         )
         .await
         .unwrap();
@@ -1706,6 +1784,9 @@ mod tests {
             &budget,
             0usize,
             2usize,
+            None,
+            0u64,
+            2u64,
         )
         .await
         .unwrap();
