@@ -300,7 +300,11 @@ pub(crate) async fn reconcile_desired_tools(
                 report.tool_records.insert(
                     tool_id.clone(),
                     ToolRegistryEntry {
-                        version: String::new(),
+                        version: format!(
+                            "{}+{}",
+                            env!("CARGO_PKG_VERSION"),
+                            crate::global::MEDIAPM_GIT_HASH
+                        ),
                         canonical_version: resolved_canonical_version.clone(),
                         fetch_hash: None,
                         deployed_at: now,

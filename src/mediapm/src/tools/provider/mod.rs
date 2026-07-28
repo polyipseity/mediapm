@@ -327,7 +327,8 @@ pub(crate) async fn resolve_tool_fetch(
         }
         n if n.eq_ignore_ascii_case("media-tagger") => {
             let canonical = crate::global::MEDIAPM_GIT_HASH.to_string();
-            (media_tagger::sources(), canonical.clone(), canonical, false)
+            let hr = format!("{}+{}", env!("CARGO_PKG_VERSION"), canonical);
+            (media_tagger::sources(), hr, canonical, false)
         }
         n if n.eq_ignore_ascii_case("sd") => {
             let (tag, commit_hash, mc) = sd::resolve_tag(tracker_ref).await?;
