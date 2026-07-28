@@ -29,7 +29,7 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 | ------------------- | ---------------- | -------------------------------------------------------------- |
 | `version`           | `Option<String>` | Tool version as fetched                                        |
 | `tag`               | `Option<String>` | Tag as fetched                                                 |
-| `fetch_hash`        | `Option<String>` | CAS content hash of the fetched payload                        |
+| `content_map_hash`  | `Option<String>` | blake3 hash of the content_map JSON (used for content-addressed identity) |
 | `canonical_version` | `String`         | Canonical version identifier used for skip-if-up-to-date logic |
 | `deployed_at`       | `u64`            | Unix-epoch seconds when deployed (0 = not yet)                 |
 
@@ -161,5 +161,5 @@ pass. No byte-level change detection is applied. This is intentional:
 
 **Invariant:** `state.json` content changes are not errors. A diff showing only
 `canonical_version`, `deployed_at`, or `tag` changes with unchanged
-`fetch_hash` indicates metadata churn without payload change — expected
+`content_map_hash` indicates metadata churn without payload change — expected
 behavior.

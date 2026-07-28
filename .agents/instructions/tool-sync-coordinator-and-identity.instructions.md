@@ -21,7 +21,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
    - `Some(path)` → use the provided path as the cache root
      A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
-4. **Provision skip** — before fetching each tool, compare `state.managed_tools[tool_id].canonical_version` against the resolved canonical version using direct string equality. If they match AND the stored `fetch_hash` is non-empty, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar.
+4. **Provision skip** — before fetching each tool, compare `state.managed_tools[tool_id].canonical_version` against the resolved canonical version using direct string equality. If they match AND the stored `content_map_hash` is non-empty, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar.
 5. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
    - Resolve the tool fetch via `provider::resolve_tool_fetch()`. If resolve fails, emit a warning and continue.

@@ -182,7 +182,7 @@ Every `ToolRegistryEntry` always has a `canonical_version` (non-optional `String
 - **Builtin tools** (media-tagger): use `MEDIAPM_GIT_HASH` (compile-time constant from `build.rs`).
 - **GitHub-release tools** (yt-dlp, ffmpeg, deno, rsgain, sd): use the resolved tag name verbatim as the canonical version.
 
-Skip logic: when `reconcile_desired_tools` resolves a tool and finds the same `canonical_version` in `state.managed_tools` with a non-empty `fetch_hash`, the provisioning pipeline is skipped for that tool.
+Skip logic: when `reconcile_desired_tools` resolves a tool and finds the same `canonical_version` in `state.managed_tools` with a non-empty `content_map_hash`, the provisioning pipeline is skipped for that tool.
 
 The `Ok(None)` branch (no payload fetched) still populates `canonical_version` from the resolved value. The migration path: `canonical_version` defaults to `""` via `#[serde(default)]` for backward-compat with old state files.
 
