@@ -244,3 +244,4 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Only one tool active at a time → env var names use plain tool id (no `@hash` suffix) | `sync_env_has_no_hash_in_names` (integration), `content_key_to_env_name_strips_hash` (unit) | 🟢     |
 | Env var values point to `ProvisionCache` payload layout (`<tool_id>/payload/<key>`)  | `sync_env_paths_contain_payload_segment` (integration)                                      | 🟢     |
 | `content_key_to_env_name` is a pure function with correct name derivation            | `content_key_to_env_name_binary`, `content_key_to_env_name_dir` (unit)                      | 🟢     |
+| Skipped tools get env var entries in `.env.generated`                                | `sync_twice_env_generated_persists` (integration)                                           | 🟢     |

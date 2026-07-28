@@ -85,3 +85,11 @@ Tool id is upper-cased with `-` and `.` replaced by `_`. OS label is upper-cased
 - Uses `write_bytes_if_changed()` — only writes to disk when content differs, avoiding unnecessary filesystem churn.
 - Written before `save_conductor_generated_document()` in the coordinator flow.
 - File path: `paths.env_generated_file` (defaults to `<runtime_root>/.env.generated`).
+
+### Skipped-tool reconstruction
+
+When a tool is skipped during reconciliation (already at the correct canonical
+version), the skip branch must still add its runtime entry to `tool_runtimes`
+for env emission. The runtime is reconstructed from the existing
+`ToolSpec.runtime` in `generated_doc.tools` — the spec persisted from a prior
+successful sync has the correct `content_map`.
