@@ -21,11 +21,11 @@ tail -f progress-debug-*.jsonl | jq .
 
 ## Env var values
 
-| Value | Behavior |
-|---|---|
-| `auto` or empty | Writes to `progress-debug-<PID>.jsonl` in CWD |
+| Value                 | Behavior                                          |
+| --------------------- | ------------------------------------------------- |
+| `auto` or empty       | Writes to `progress-debug-<PID>.jsonl` in CWD     |
 | `/path/to/file.jsonl` | Writes to the specified path (creates/overwrites) |
-| unset | No debug output (default) |
+| unset                 | No debug output (default)                         |
 
 ## JSONL schema
 
@@ -33,29 +33,29 @@ Each line is a JSON object with these fields:
 
 ### Top-level
 
-| Field | Type | Description |
-|---|---|---|
-| `type` | string | `"tick"` (discriminant, future: `"attach"`, `"finish"`) |
-| `tick` | int | Monotonic tick counter (starts at 0) |
-| `elapsed_secs` | float | Seconds since sink creation |
-| `bars` | array | Per-slot bar states (see below) |
+| Field          | Type   | Description                                             |
+| -------------- | ------ | ------------------------------------------------------- |
+| `type`         | string | `"tick"` (discriminant, future: `"attach"`, `"finish"`) |
+| `tick`         | int    | Monotonic tick counter (starts at 0)                    |
+| `elapsed_secs` | float  | Seconds since sink creation                             |
+| `bars`         | array  | Per-slot bar states (see below)                         |
 
 ### Bar slot (`bars[]`)
 
-| Field | Type | Description |
-|---|---|---|
-| `slot` | int | Slot index in renderer grid |
-| `bound` | bool | Whether a bar is attached to this slot |
-| `label` | string | Bar label (always present) |
-| `prefix` | string | Bar prefix (always present) |
-| `position` | int | Work completed |
-| `total` | int | Total work (0 = indeterminate) |
-| `status` | string | e.g. `"Active"`, `"Finished"`, `"Abandoned"` |
-| `elapsed_secs` | float | Seconds since handle creation |
-| `rate_bytes_per_sec` | float | EMA-smoothed rate (0.0 when inactive) |
-| `eta_secs` | float or null | Estimated seconds remaining (`null` when unknown) |
-| `message` | string | Custom message (empty when none) |
-| `dirty` | bool | Whether source was dirty this tick |
+| Field                | Type          | Description                                       |
+| -------------------- | ------------- | ------------------------------------------------- |
+| `slot`               | int           | Slot index in renderer grid                       |
+| `bound`              | bool          | Whether a bar is attached to this slot            |
+| `label`              | string        | Bar label (always present)                        |
+| `prefix`             | string        | Bar prefix (always present)                       |
+| `position`           | int           | Work completed                                    |
+| `total`              | int           | Total work (0 = indeterminate)                    |
+| `status`             | string        | e.g. `"Active"`, `"Finished"`, `"Abandoned"`      |
+| `elapsed_secs`       | float         | Seconds since handle creation                     |
+| `rate_bytes_per_sec` | float         | EMA-smoothed rate (0.0 when inactive)             |
+| `eta_secs`           | float or null | Estimated seconds remaining (`null` when unknown) |
+| `message`            | string        | Custom message (empty when none)                  |
+| `dirty`              | bool          | Whether source was dirty this tick                |
 
 ## Usage patterns
 
