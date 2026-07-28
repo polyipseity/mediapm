@@ -46,7 +46,9 @@ Currently these helpers are defined but companion binding is not yet wired in th
 
 ### Purpose
 
-- Write a `.env.generated` file so conductor sandbox processes can discover tool binary/directory paths via environment variables.
+- Write a `.env.generated` file so processes (run by mediapm via conductor) can discover peer tool binary/directory paths via environment variables.
+- Operates at the **mediapm** layer, not the conductor layer. Conductor has its own `ProvisionCache` system for materializing tool payloads; the `.env.generated` file exists so the mediapm runtime can expose those provisioned paths to other tools.
+- Only one tool version is active at a time (conductor's reconciliation selects a single version per logical tool). Therefore env var names use the plain tool id — no content-addressed hash suffix is needed.
 - Emit one dotenv entry per content-map key per resolved tool runtime.
 
 ### `.env.generated` format
@@ -56,11 +58,13 @@ Currently these helpers are defined but companion binding is not yet wired in th
 # Managed runtime environment variables for conductor execution.
 # Do not edit manually; values may be rewritten during sync.
 
-MEDIAPM_YT_DLP_LINUX="/path/to/tools/linux/yt-dlp"
-MEDIAPM_YT_DLP_LINUX_DIR="/path/to/tools/linux/"
-MEDIAPM_FFMPEG_MACOS="/path/to/tools/macos/ffmpeg"
+MEDIAPM_YT_DLP_LINUX="<tools_dir>/yt-dlp/payload/linux/yt-dlp"
+MEDIAPM_YT_DLP_LINUX_DIR="<tools_dir>/yt-dlp/payload/linux/"
+MEDIAPM_FFMPEG_MACOS="<tools_dir>/ffmpeg/payload/macos/ffmpeg"
 ...
 ```
+
+Each value path follows the `ProvisionCache` layout: `<tools_dir>/<sanitized_tool_id>/payload/<content_map_key>`. The tool id in the path is the plain tool name (no `@hash` suffix).
 
 ### `content_key_to_env_name(tool_id_upper, key)` rules
 
@@ -69,7 +73,7 @@ Content-map keys have the form `{os}/` (archive directory) or `{os}/{tool_id}` (
 - **Binary entry** (e.g. `"linux/yt-dlp"`): produces `MEDIAPM_<TOOL>_<OS>` with the key unchanged.
 - **Archive directory entry** (e.g. `"linux/"`): produces `MEDIAPM_<TOOL>_<OS>_DIR` with the key unchanged.
 
-Tool id is upper-cased with `-` and `.` replaced by `_`. OS label is upper-cased after splitting on `/`.
+Tool id is upper-cased with `-` and `.` replaced by `_`. OS label is upper-cased after splitting on `/`. The tool id used to derive the env var name is the **plain tool id** — any `@hash` suffix from content-addressed keys is stripped before name generation.
 
 ### `render_dotenv_quoted_value(value)`
 
