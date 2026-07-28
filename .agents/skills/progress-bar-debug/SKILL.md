@@ -1,6 +1,6 @@
 ---
 description: "Use when debugging progress bar state in mediapm by enabling JSONL tick output via MEDIAPM_PROGRESS_DEBUG."
-name: "Progress Bar Debug"
+name: "progress-bar-debug"
 ---
 
 # Progress bar debug with JSONL tick dumps
