@@ -470,7 +470,10 @@ pub async fn process_tool_sources(
         let initial_total = entry.expected_size.unwrap_or(entry.bytes.len() as u64);
         budget.add_item(initial_total); // item 0: decompress (or single binary item)
         if is_archive {
-            budget.add_item(0); // item 1: compress – starts at 0, refined during processing
+            let (archive_format, _) =
+                resolve_format_and_filename(&entry.producer, &downloaded.tool_id);
+            let compress_estimate = estimate_uncompressed_size(&entry.bytes, archive_format);
+            budget.add_item(compress_estimate); // item 1: compress — starts at accurate estimate
         }
     }
     let total_items_u64 = total_items as u64;
@@ -482,29 +485,8 @@ pub async fn process_tool_sources(
         let is_archive = is_archive_source(&source.producer);
         let item_count = if is_archive { 2usize } else { 1usize };
 
-        let (archive_format, filename) = match &source.producer {
-            SourceProducer::Fetch { urls } => {
-                let url = urls.first().map_or("", |s| s.as_str());
-                let fmt = infer_archive_format(url);
-                let fname = if fmt.is_some() {
-                    // Archive — filename unused in process_single_source
-                    String::new()
-                } else {
-                    // Binary — derive filename from URL basename
-                    url.split('/')
-                        .filter(|s| !s.is_empty())
-                        .next_back()
-                        .unwrap_or(&downloaded.tool_id)
-                        .to_string()
-                };
-                (fmt, fname)
-            }
-            SourceProducer::GenerateLauncher { .. } => {
-                // Launcher scripts are treated as binary format with
-                // filename = tool_id.
-                (None, downloaded.tool_id.clone())
-            }
-        };
+        let (archive_format, filename) =
+            resolve_format_and_filename(&source.producer, &downloaded.tool_id);
 
         let processed = process_single_source(
             &source.bytes,
@@ -571,12 +553,118 @@ fn is_archive_source(producer: &SourceProducer) -> bool {
     }
 }
 
+/// Resolves archive format and filename from a source producer and tool ID.
+///
+/// Extracted from inline code in the per-source loop of `process_tool_sources`
+/// to be reusable in budget setup (before the loop) and during processing.
+fn resolve_format_and_filename(
+    producer: &SourceProducer,
+    tool_id: &str,
+) -> (Option<&'static str>, String) {
+    match producer {
+        SourceProducer::Fetch { urls } => {
+            let url = urls.first().map_or("", |s| s.as_str());
+            let fmt = infer_archive_format(url);
+            let fname = if fmt.is_some() {
+                // Archive — filename unused in process_single_source
+                String::new()
+            } else {
+                // Binary — derive filename from URL basename
+                url.split('/').filter(|s| !s.is_empty()).next_back().unwrap_or(tool_id).to_string()
+            };
+            (fmt, fname)
+        }
+        SourceProducer::GenerateLauncher { .. } => {
+            // Launcher scripts are treated as binary format with
+            // filename = tool_id.
+            (None, tool_id.to_string())
+        }
+    }
+}
+
+/// Reads an XZ variable-length integer from `data` at position `pos`.
+///
+/// Returns `None` on EOF or overflow. The XZ varint format uses little-endian
+/// 7-bit groups with a continuation bit (bit 7 = 1 means more bytes follow).
+fn read_xz_varint(data: &[u8], pos: &mut usize) -> Option<u64> {
+    if *pos >= data.len() {
+        return None;
+    }
+    let mut result = 0u64;
+    let mut shift = 0;
+    loop {
+        let byte = *data.get(*pos)?;
+        *pos += 1;
+        result |= ((byte & 0x7F) as u64) << shift;
+        if byte & 0x80 == 0 {
+            return Some(result);
+        }
+        shift += 7;
+        if shift > 63 {
+            return None;
+        }
+    }
+}
+
+/// Parses the XZ Stream Index to determine the total uncompressed size.
+///
+/// Returns `None` on any parse failure (falling back to compressed size).
+fn parse_xz_index(bytes: &[u8]) -> Option<u64> {
+    // Minimum: Stream Footer (12 bytes) + Index Indicator (1) + No Records
+    // (1 varint for count = 0) + CRC32 (4) = 18 bytes
+    if bytes.len() < 18 {
+        return None;
+    }
+
+    // Parse Stream Footer (last 12 bytes)
+    let footer = &bytes[bytes.len() - 12..];
+
+    // Backward Size: bytes 4-7 (after CRC32 at 0-3), stored directly as
+    // (index_size / 4 - 1) in the lower 24 bits (liblzma does NOT complement
+    // despite the spec mentioning complementing).
+    let backward_size_raw = u32::from_le_bytes([footer[4], footer[5], footer[6], footer[7]]);
+    let backward_size = (backward_size_raw & 0x00FF_FFFF) as u64;
+
+    // Index size in bytes = (backward_size + 1) * 4
+    let index_size = (backward_size + 1) * 4;
+
+    let index_start = bytes.len() - 12 - index_size as usize;
+
+    if index_start >= bytes.len() {
+        return None;
+    }
+
+    let index_data = &bytes[index_start..bytes.len() - 12];
+
+    // Index Indicator: must be 0x00
+    if index_data.is_empty() || index_data[0] != 0x00 {
+        return None;
+    }
+
+    let mut pos: usize = 1;
+
+    // Number of Records (varint)
+    let num_records = read_xz_varint(index_data, &mut pos)?;
+
+    let mut total_uncompressed = 0u64;
+    for _ in 0..num_records {
+        let _unpadded_size = read_xz_varint(index_data, &mut pos)?;
+        let uncompressed_size = read_xz_varint(index_data, &mut pos)?;
+        total_uncompressed = total_uncompressed.saturating_add(uncompressed_size);
+    }
+
+    Some(total_uncompressed)
+}
+
 /// Estimates the uncompressed size of archive bytes before extraction.
 ///
 /// For ZIP archives: reads central directory metadata and sums per-entry
 /// uncompressed sizes for an accurate estimate.
-/// For tar.gz/tar.xz: falls back to compressed size (`bytes.len()`) since
-/// the uncompressed size is not knowable without full decompression.
+/// For tar.gz archives: parses the gzip trailer ISIZE field (last 4 bytes,
+/// little-endian u32) for the exact uncompressed size of single-member
+/// gzip streams.
+/// For tar.xz archives: parses the XZ Stream Index for the exact total
+/// uncompressed size.
 /// Returns 0 for non-archive (binary/launcher) formats.
 fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
     match format {
@@ -595,10 +683,39 @@ fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
             }
             total
         }
-        Some(ARCHIVE_TAR_GZ) | Some(ARCHIVE_TAR_XZ) => {
-            // Cannot know uncompressed size without full decompression;
-            // use compressed size as a conservative lower-bound estimate.
+        Some(ARCHIVE_TAR_GZ) => {
+            // Parse gzip trailer ISIZE (last 4 bytes, little-endian u32)
+            // for exact uncompressed size of single-member gzip streams.
+            // RFC 1952: ISIZE is the size of original (uncompressed) data
+            // modulo 2^32. For tool archives (<4 GiB decompressed) this is
+            // exact. Multi-member gzip is rare for tool distributions;
+            // fall back to compressed size if parsing fails or looks wrong.
+            if bytes.len() >= 18 {
+                // 10 header + 8 minimum data/trailer
+                let isize_bytes = &bytes[bytes.len() - 4..];
+                let isize = u32::from_le_bytes([
+                    isize_bytes[0],
+                    isize_bytes[1],
+                    isize_bytes[2],
+                    isize_bytes[3],
+                ]) as u64;
+                // ISIZE wraps at 4 GiB. Zero means the original was a
+                // multiple of 4 GiB — vanishingly unlikely for tool archives.
+                // Use ISIZE when non-zero; it's always more accurate than
+                // compressed size even for small payloads where ISIZE < len.
+                if isize > 0 {
+                    return isize;
+                }
+            }
             bytes.len() as u64
+        }
+        Some(ARCHIVE_TAR_XZ) => {
+            // Parse XZ Stream Index for exact total uncompressed size.
+            // This is metadata-only — no decompression required.
+            parse_xz_index(bytes).unwrap_or_else(|| {
+                // Fallback: use compressed size if Index parsing fails.
+                bytes.len() as u64
+            })
         }
         Some(other) => {
             // Unknown archive format — no estimate available.
@@ -657,11 +774,9 @@ async fn process_single_source(
 
         // Item 0: decompress — total = compressed size (input), pos updated via local_cb
         budget.set_total(item_idx, total_compressed);
-        // Pre-estimate compress item total so the progress bar has a useful
-        // value before extraction completes (refined to actual size after).
+        // Item 1: compress — total already set by process_tool_sources via
+        // estimate_uncompressed_size; refined to actual dir size after extraction.
         let compress_idx = item_idx + 1;
-        let compress_estimate = estimate_uncompressed_size(bytes, archive_format);
-        budget.set_total(compress_idx, compress_estimate);
         extract_archive(bytes, archive_format, os_dir, local_cb)?;
         // Ensure final pos = total (callbacks may already have set it)
         budget.set_pos(item_idx, total_compressed);
@@ -2277,19 +2392,43 @@ mod tests {
     }
 
     #[test]
-    fn estimate_uncompressed_size_tar_gz_returns_compressed_size() {
+    fn estimate_uncompressed_size_tar_gz_uses_isize() {
         let entries: [(&str, &[u8]); 1] = [("x.bin", &[0u8; 1000])];
         let tgz = synthetic_tar_gz(&entries);
         let estimate = estimate_uncompressed_size(&tgz, Some("tar.gz"));
-        assert_eq!(estimate, tgz.len() as u64, "tar.gz should fall back to compressed len");
+        // ISIZE = total tar stream size (header + padded data + end-of-archive)
+        let expected_uncompressed: u64 =
+            entries.iter().map(|(_, c)| 512 + ((c.len() as u64 + 511) / 512) * 512).sum::<u64>()
+                + 1024; // end-of-archive markers
+        assert!(
+            estimate > tgz.len() as u64,
+            "ISIZE estimate ({estimate}) should exceed compressed size ({})",
+            tgz.len()
+        );
+        assert_eq!(
+            estimate, expected_uncompressed,
+            "ISIZE should match expected tar stream size ({expected_uncompressed})"
+        );
     }
 
     #[test]
-    fn estimate_uncompressed_size_tar_xz_returns_compressed_size() {
+    fn estimate_uncompressed_size_tar_xz_uses_index() {
         let entries: [(&str, &[u8]); 1] = [("y.bin", &[0u8; 500])];
         let txz = synthetic_tar_xz(&entries);
         let estimate = estimate_uncompressed_size(&txz, Some("tar.xz"));
-        assert_eq!(estimate, txz.len() as u64, "tar.xz should fall back to compressed len");
+        // XZ Index should contain the total uncompressed tar stream size
+        let expected_uncompressed: u64 =
+            entries.iter().map(|(_, c)| 512 + ((c.len() as u64 + 511) / 512) * 512).sum::<u64>()
+                + 1024; // end-of-archive markers
+        assert!(
+            estimate > txz.len() as u64,
+            "Index estimate ({estimate}) should exceed compressed size ({})",
+            txz.len()
+        );
+        assert_eq!(
+            estimate, expected_uncompressed,
+            "Index should match expected tar stream size ({expected_uncompressed})"
+        );
     }
 
     #[test]
