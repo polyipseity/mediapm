@@ -13,6 +13,8 @@
 pub mod helpers;
 pub mod preset;
 pub mod provider;
+#[cfg(feature = "tool-presets")]
+pub mod spec;
 
 use std::collections::HashSet;
 

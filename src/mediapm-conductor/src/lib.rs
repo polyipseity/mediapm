@@ -50,3 +50,5 @@ pub use state::{
     AuxData, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput, ToolCallInstance,
 };
 pub use tools::registered_builtin_ids;
+#[cfg(feature = "tool-presets")]
+pub use tools::spec;
