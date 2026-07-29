@@ -381,6 +381,15 @@ pub struct ToolRequirement {
         deserialize_with = "custom_deserializers::deserialize_u32_from_number"
     )]
     pub max_output_slots: u32,
+    /// Pin to a specific git hash (exact string match).
+    #[serde(default)]
+    pub desired_git_hash: String,
+    /// Pin to a specific git tag (exact string match).
+    #[serde(default)]
+    pub desired_tag: String,
+    /// Pin to a specific version string (exact string match).
+    #[serde(default)]
+    pub desired_version: String,
 }
 
 /// Selector-based dependency version requirements for managed tools.
@@ -475,10 +484,13 @@ impl MediaPmDocument {
             let trimmed = source.artist.trim().to_string();
             source.artist = trimmed;
         }
-        // Remove tool entries without meaningful version or tag.
+        // Remove tool entries without meaningful version, tag, or desired fields.
         self.tools.retain(|_, tool_req| {
             normalized_version(&tool_req.version).is_some()
                 || normalized_tag(&tool_req.tag).is_some()
+                || !tool_req.desired_git_hash.trim().is_empty()
+                || !tool_req.desired_tag.trim().is_empty()
+                || !tool_req.desired_version.trim().is_empty()
         });
     }
 }
@@ -516,7 +528,7 @@ pub struct ToolRegistryEntry {
     /// Human-readable version string. Has zero semantic use in state logic —
     /// version comparison, skip-if-up-to-date, and update decisions all use
     /// `canonical_version`. This field is informational only, populated by
-    /// the provider resolution layer. The provider determines the format; no
+    /// the provider Resolution layer. The provider determines the format; no
     /// prefix stripping or normalization is performed.
     pub version: String,
     /// Canonical version identifier for skip-if-up-to-date logic.
@@ -530,6 +542,18 @@ pub struct ToolRegistryEntry {
     /// Unix-epoch seconds when the payload was deployed (0 = not yet deployed).
     #[serde(default)]
     pub deployed_at: u64,
+    /// The git tag that was resolved during the last resolve phase.
+    /// Empty string if the provider does not resolve from tags.
+    #[serde(default)]
+    pub resolved_tag: String,
+    /// The version string that was resolved during the last resolve phase.
+    /// Empty string if the provider does not produce a version string.
+    #[serde(default)]
+    pub resolved_version: String,
+    /// The git hash that was resolved during the last resolve phase.
+    /// Empty string if the provider does not resolve from git hashes.
+    #[serde(default)]
+    pub resolved_git_hash: String,
 }
 
 /// Active instance of a managed tool deployed to the local filesystem.
@@ -602,7 +626,12 @@ impl MediaPmState {
                 && !record.media_id.trim().is_empty()
                 && !record.hash.trim().is_empty()
         });
-        self.managed_tools.retain(|_, entry| !entry.canonical_version.trim().is_empty());
+        self.managed_tools.retain(|_, entry| {
+            !entry.canonical_version.trim().is_empty()
+                || !entry.resolved_tag.trim().is_empty()
+                || !entry.resolved_version.trim().is_empty()
+                || !entry.resolved_git_hash.trim().is_empty()
+        });
     }
 }
 

@@ -95,6 +95,9 @@ fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
         recheck_seconds: 0,
         max_input_slots: 16,
         max_output_slots: 4,
+        desired_git_hash: String::new(),
+        desired_tag: String::new(),
+        desired_version: String::new(),
     }
 }
 

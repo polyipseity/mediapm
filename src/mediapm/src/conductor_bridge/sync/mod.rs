@@ -256,6 +256,9 @@ pub(crate) async fn reconcile_desired_tools(
                         canonical_version: payload.canonical_version.clone(),
                         content_map_hash: content_map_hash.clone(),
                         deployed_at: now,
+                        resolved_tag: String::new(),
+                        resolved_version: String::new(),
+                        resolved_git_hash: String::new(),
                     },
                 );
 
@@ -316,6 +319,9 @@ pub(crate) async fn reconcile_desired_tools(
                         canonical_version: resolved_canonical_version.clone(),
                         content_map_hash: None,
                         deployed_at: now,
+                        resolved_tag: String::new(),
+                        resolved_version: String::new(),
+                        resolved_git_hash: String::new(),
                     },
                 );
 
@@ -568,6 +574,9 @@ mod tests {
                 canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
                 content_map_hash: Some("blake3:abc".to_string()),
                 deployed_at: 0,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_git_hash: String::new(),
             },
         );
 

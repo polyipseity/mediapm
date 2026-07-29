@@ -692,6 +692,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                desired_git_hash: String::new(),
+                desired_tag: String::new(),
+                desired_version: String::new(),
             },
         ),
         (
@@ -703,6 +706,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                desired_git_hash: String::new(),
+                desired_tag: String::new(),
+                desired_version: String::new(),
             },
         ),
         (
@@ -714,6 +720,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                desired_git_hash: String::new(),
+                desired_tag: String::new(),
+                desired_version: String::new(),
             },
         ),
         (
@@ -729,6 +738,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                desired_git_hash: String::new(),
+                desired_tag: String::new(),
+                desired_version: String::new(),
             },
         ),
         (
@@ -740,6 +752,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                desired_git_hash: String::new(),
+                desired_tag: String::new(),
+                desired_version: String::new(),
             },
         ),
         (
@@ -755,6 +770,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                desired_git_hash: String::new(),
+                desired_tag: String::new(),
+                desired_version: String::new(),
             },
         ),
         (
@@ -766,6 +784,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                desired_git_hash: String::new(),
+                desired_tag: String::new(),
+                desired_version: String::new(),
             },
         ),
     ]);
@@ -1269,6 +1290,9 @@ fn seed_old_synced_tools_state_for_update_precheck(
                 canonical_version: String::new(),
                 content_map_hash: Some(stale_hash.to_string()),
                 deployed_at: unix_timestamp_seconds(),
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_git_hash: String::new(),
             },
         );
     }

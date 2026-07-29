@@ -290,6 +290,9 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
             canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
             content_map_hash: Some("blake3:abc".to_string()),
             deployed_at: 0,
+            resolved_tag: String::new(),
+            resolved_version: String::new(),
+            resolved_git_hash: String::new(),
         },
     );
     assert!(!service.logical_tool_requires_sync("media-tagger", &state).await?);
