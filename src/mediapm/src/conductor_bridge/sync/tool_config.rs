@@ -137,11 +137,13 @@ pub(super) fn write_generated_runtime_env_file(
             let dir_env_name = format!("MEDIAPM_{}_{}_DIR", tool_id_upper, os.to_uppercase());
             if emitted_dirs.insert(os) {
                 let dir_key = format!("{os}/");
-                let dir_value = paths
-                    .tools_dir
-                    .join(plain_tool_id)
-                    .join("payload")
-                    .join(&dir_key)
+                let dir_path = paths.tools_dir.join(plain_tool_id).join("payload").join(&dir_key);
+                let dir_value = std::path::absolute(&dir_path)
+                    .map_err(|e| MediaPmError::Io {
+                        operation: "resolving absolute path for .env.generated dir entry".into(),
+                        path: dir_path,
+                        source: e,
+                    })?
                     .to_string_lossy()
                     .to_string();
                 let _ =
@@ -152,11 +154,13 @@ pub(super) fn write_generated_runtime_env_file(
             let rest = parts.next().unwrap_or("");
             if !rest.is_empty() {
                 let (env_name, _env_key) = content_key_to_env_name(&tool_id_upper, key);
-                let env_value = paths
-                    .tools_dir
-                    .join(plain_tool_id)
-                    .join("payload")
-                    .join(key)
+                let bin_path = paths.tools_dir.join(plain_tool_id).join("payload").join(key);
+                let env_value = std::path::absolute(&bin_path)
+                    .map_err(|e| MediaPmError::Io {
+                        operation: "resolving absolute path for .env.generated binary entry".into(),
+                        path: bin_path,
+                        source: e,
+                    })?
                     .to_string_lossy()
                     .to_string();
                 let _ = writeln!(content, "{env_name}={}", render_dotenv_quoted_value(&env_value));
@@ -229,6 +233,25 @@ mod tests {
 
     use super::*;
     use crate::paths::MediaPmPaths;
+
+    /// Asserts that all non-comment, non-empty lines in the env file have
+    /// absolute paths (start with `/` on unix, drive letter on Windows).
+    fn assert_env_lines_have_absolute_paths(content: &str) {
+        for line in content.lines() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            if let Some((_name, value)) = line.split_once('=') {
+                let raw = value.trim_matches('"');
+                assert!(
+                    raw.starts_with('/')
+                        || raw.starts_with("\\\\")
+                        || raw.chars().nth(1) == Some(':'),
+                    "path must be absolute: {raw}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn content_key_to_env_name_binary() {
@@ -328,6 +351,7 @@ mod tests {
             format!("MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp/payload/linux/yt-dlp\"");
         assert!(content.contains(&dir_line), "env must contain _DIR entry:\ncontent:\n{content}",);
         assert!(content.contains(&bin_line), "env must contain binary entry:\ncontent:\n{content}",);
+        assert_env_lines_have_absolute_paths(&content);
     }
 
     #[test]
@@ -364,6 +388,7 @@ mod tests {
 
         assert!(content.contains(&dir_line), "env must contain _DIR entry\ncontent:\n{content}",);
         assert!(content.contains(&bin_line), "env must contain binary entry\ncontent:\n{content}",);
+        assert_env_lines_have_absolute_paths(&content);
     }
 
     #[test]
@@ -391,6 +416,7 @@ mod tests {
             !content.contains(bin_var),
             "env must not contain binary env var\ncontent:\n{content}",
         );
+        assert_env_lines_have_absolute_paths(&content);
     }
 
     #[test]
@@ -442,5 +468,28 @@ mod tests {
         // Exactly 2 _DIR entries (one per OS, no duplicates).
         let dir_count = content.matches("_DIR=").count();
         assert_eq!(dir_count, 2, "expected exactly 2 _DIR entries, got {dir_count}");
+        assert_env_lines_have_absolute_paths(&content);
+    }
+
+    #[test]
+    fn write_runtime_env_uses_absolute_paths() {
+        let dir = tempdir().expect("tempdir");
+        let cwd = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(dir.path()).expect("cd to tempdir");
+        let content = {
+            let paths = MediaPmPaths::from_root(".");
+            let mut content_map = BTreeMap::new();
+            content_map.insert("linux/yt-dlp".to_string(), "hash".to_string());
+            let mut runtimes = BTreeMap::new();
+            runtimes.insert(
+                "yt-dlp".to_string(),
+                ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+            );
+            write_generated_runtime_env_file(&paths, &runtimes).expect("write should succeed");
+            std::fs::read_to_string(&paths.env_generated_file).expect("read .env.generated")
+        };
+        std::env::set_current_dir(&cwd).expect("restore cwd");
+
+        assert_env_lines_have_absolute_paths(&content);
     }
 }

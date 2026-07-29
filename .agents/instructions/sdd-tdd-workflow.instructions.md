@@ -258,6 +258,8 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Dir-only entry produces only `_DIR` env var                                             | `write_runtime_env_dir_produces_dir_only` (unit)                                                               | [covered] |
 | No duplicate `_DIR` entries when processing multiple keys per OS                        | `write_runtime_env_mixed_os_produces_no_duplicate_dirs` (unit)                                                 | [covered] |
 | Skipped tools get env var entries in `.env.generated`                                  | `sync_twice_env_generated_persists` (integration)                                                              | [covered] |
+| `.env.generated` paths are always absolute                                              | `write_runtime_env_uses_absolute_paths` (unit), absolute assertion in `sync_env_paths_contain_payload_segment` (integration) | [covered] |
+| Regression: existing path structure, env names, dedup unaffected                         | All existing unit + integration tests                                                                                        | [covered] |
 
 ### Dual-write strategy (state.json always-write vs NCL change-detected)
 

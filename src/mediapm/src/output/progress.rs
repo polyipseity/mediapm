@@ -190,12 +190,22 @@ mod tests {
         let _child = group.add_bar(10, "materialize");
         group.tick();
         let original = term.contents();
+        eprintln!("=== ORIGINAL H=4 ===");
+        for (i, l) in original.lines().enumerate() {
+            eprintln!("  [{i}] {:?} len={}", l, l.len());
+        }
+        eprintln!("original lines count: {}", original.lines().count());
         assert!(original.contains("materialize"), "child visible at start");
 
         // Grow height.
         dims.set((6, 80));
         group.tick();
         let grown = term.contents();
+        eprintln!("=== GROWN H=6 ===");
+        for (i, l) in grown.lines().enumerate() {
+            eprintln!("  [{i}] {:?} len={}", l, l.len());
+        }
+        eprintln!("grown lines count: {}", grown.lines().count());
         assert!(grown.contains("materialize"), "child visible after growth");
         assert!(grown.lines().count() > original.lines().count(), "more lines after growth");
 
@@ -203,6 +213,11 @@ mod tests {
         dims.set((4, 80));
         group.tick();
         let restored = term.contents();
+        eprintln!("=== RESTORED H=4 ===");
+        for (i, l) in restored.lines().enumerate() {
+            eprintln!("  [{i}] {:?} len={}", l, l.len());
+        }
+        eprintln!("restored lines count: {}", restored.lines().count());
         assert!(restored.contains("materialize"), "child visible after restore");
         assert_eq!(
             restored.lines().count(),

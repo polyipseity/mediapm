@@ -58,13 +58,15 @@ Currently these helpers are defined but companion binding is not yet wired in th
 # Managed runtime environment variables for conductor execution.
 # Do not edit manually; values may be rewritten during sync.
 
-MEDIAPM_YT_DLP_LINUX="<tools_dir>/yt-dlp/payload/linux/yt-dlp"
-MEDIAPM_YT_DLP_LINUX_DIR="<tools_dir>/yt-dlp/payload/linux/"
-MEDIAPM_FFMPEG_MACOS="<tools_dir>/ffmpeg/payload/macos/ffmpeg"
+MEDIAPM_YT_DLP_LINUX="<abs_tools_dir>/yt-dlp/payload/linux/yt-dlp"
+MEDIAPM_YT_DLP_LINUX_DIR="<abs_tools_dir>/yt-dlp/payload/linux/"
+MEDIAPM_FFMPEG_MACOS="<abs_tools_dir>/ffmpeg/payload/macos/ffmpeg"
 ...
 ```
 
 Each value path follows the `ProvisionCache` layout: `<tools_dir>/<sanitized_tool_id>/payload/<content_map_key>`. The tool id in the path is the plain tool name (no `@hash` suffix).
+
+- All paths are absolute — relative workspace roots are resolved via `std::path::absolute()` at write time.
 
 ### `content_key_to_env_name(tool_id_upper, key)` rules
 

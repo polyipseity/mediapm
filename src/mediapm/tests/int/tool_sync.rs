@@ -163,6 +163,11 @@ async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPm
                 value.contains("/payload/"),
                 "env var value must contain /payload/ segment: {value} in env file"
             );
+            let raw = value.trim_matches('"');
+            assert!(
+                raw.starts_with('/') || raw.starts_with("\\\\") || raw.chars().nth(1) == Some(':'),
+                "env var value must be absolute: {raw}"
+            );
         }
     }
     Ok(())
@@ -186,6 +191,45 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
             "builtin {id} must have kind=builtin"
         );
     }
+    Ok(())
+}
+
+/// Skipped tools (already at canonical version) still get entries in
+/// `.env.generated` after re-sync.
+#[tokio::test]
+async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    runtime.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement {
+            version: mediapm::MediaMetadataValue::Literal(String::new()),
+            ..Default::default()
+        },
+    );
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    service.sync_tools().await?;
+
+    let env_path = service.paths().env_generated_file.clone();
+    let content_after_first =
+        std::fs::read_to_string(&env_path).expect("env file should be readable after first sync");
+
+    // Second sync — media-tagger should be skipped (already at canonical version)
+    service.sync_tools().await?;
+    let content_after_second =
+        std::fs::read_to_string(&env_path).expect("env file should be readable after second sync");
+
+    assert!(
+        content_after_second.contains("MEDIAPM_MEDIA_TAGGER"),
+        "env must contain media-tagger entry after re-sync where it is skipped"
+    );
+    assert_eq!(
+        content_after_first, content_after_second,
+        "env content must be identical after re-sync"
+    );
     Ok(())
 }
 
