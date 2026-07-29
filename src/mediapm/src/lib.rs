@@ -56,6 +56,7 @@ pub use materializer::MaterializeReport;
 pub use paths::MediaPmPaths;
 pub use service::MediaPmService;
 pub use service_standalone::{registered_builtin_ids, resolve_effective_paths_for_root};
+pub use tools::provider::RecheckPolicy;
 
 /// Media package descriptor returned by source processing.
 #[derive(Debug, Clone, PartialEq, Eq)]

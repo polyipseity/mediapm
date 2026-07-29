@@ -25,6 +25,8 @@ use crate::output::ProgressGroupApi;
 use crate::tools::downloader::ToolDownloadCache;
 #[cfg(test)]
 use crate::tools::provider;
+#[cfg(test)]
+use crate::tools::provider::RecheckPolicy;
 
 /// Result of fetching and importing a tool payload into CAS.
 #[derive(Debug, Clone)]
@@ -50,8 +52,8 @@ pub(super) struct FetchedToolPayload {
 #[allow(dead_code)]
 pub(super) enum PreResolveOutcome {
     /// Tool should be fetched and imported normally.
-    /// Fields: (ResolvedToolFetch, human_readable_version, canonical_version, metadata_cached, metadata_fetch_count)
-    Resolved(ResolvedToolFetch, String, String, bool, u32),
+    /// Fields: (ResolvedToolFetch, human_readable_version, canonical_version, metadata_cached, metadata_fetch_count, resolved_tag)
+    Resolved(ResolvedToolFetch, String, String, bool, u32, String),
     /// Tool is already provisioned at the given canonical version (skip).
     Skip {
         /// Tool identifier.
@@ -68,6 +70,8 @@ pub(super) enum PreResolveOutcome {
         /// Number of individual version/tag lookups performed (e.g., ffmpeg = 2, all others = 1).
         #[allow(dead_code)]
         metadata_fetch_count: u32,
+        /// The git tag resolved from the provider (empty string when no tag).
+        resolved_tag: String,
     },
 }
 
@@ -155,14 +159,21 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
     let metadata_fetch_count = match &outcome {
-        PreResolveOutcome::Resolved(_, _, _, _, count) => *count,
+        PreResolveOutcome::Resolved(_, _, _, _, count, _) => *count,
         PreResolveOutcome::Skip { metadata_fetch_count, .. } => *metadata_fetch_count,
     };
     let bar_total = metadata_fetch_count;
     let resolve_bar = group.add_bar(bar_total.into(), &format!("{tool_id} [resolve]"));
     error_bars.push(resolve_bar.clone());
     let (mut fetch, human_readable_version, canonical_version) = match outcome {
-        PreResolveOutcome::Resolved(f, hr, cv, metadata_cached, metadata_fetch_count) => {
+        PreResolveOutcome::Resolved(
+            f,
+            hr,
+            cv,
+            metadata_cached,
+            metadata_fetch_count,
+            _resolved_tag,
+        ) => {
             if metadata_cached {
                 resolve_bar.set_message(&format!("cached ({metadata_fetch_count})"));
             }
@@ -371,6 +382,7 @@ mod tests {
         let resolve_result = crate::tools::provider::resolve_tool_fetch(
             "nonexistent-tool",
             Some((&*cache, "tool_metadata")),
+            RecheckPolicy::default(),
         )
         .await;
         assert!(resolve_result.is_err(), "resolve_tool_fetch should reject unknown tools");
@@ -399,14 +411,22 @@ mod tests {
         .expect("cache open");
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
-        let (fetch, _human_readable, canonical, _metadata_cached, _metadata_fetch_count) =
-            crate::tools::provider::resolve_tool_fetch(
-                "media-tagger",
-                Some((&*cache, "tool_metadata")),
-            )
-            .await
-            .unwrap();
-        let outcome = PreResolveOutcome::Resolved(fetch, String::new(), canonical, false, 1);
+        let (
+            fetch,
+            _human_readable,
+            canonical,
+            _metadata_cached,
+            _metadata_fetch_count,
+            _resolved_tag,
+        ) = crate::tools::provider::resolve_tool_fetch(
+            "media-tagger",
+            Some((&*cache, "tool_metadata")),
+            RecheckPolicy::default(),
+        )
+        .await
+        .unwrap();
+        let outcome =
+            PreResolveOutcome::Resolved(fetch, String::new(), canonical, false, 1, String::new());
         let result =
             fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         match result {
@@ -506,10 +526,20 @@ mod tests {
         cache.store_bytes("tool_metadata", api_key, format!("{tag}\n{hash}").as_bytes()).await;
 
         // Resolve normally — metadata cache returns the pre-seeded tag.
-        let (mut fetch, _human_readable, canonical, _metadata_cached, _metadata_fetch_count) =
-            crate::tools::provider::resolve_tool_fetch("yt-dlp", Some((&*cache, "tool_metadata")))
-                .await
-                .unwrap();
+        let (
+            mut fetch,
+            _human_readable,
+            canonical,
+            _metadata_cached,
+            _metadata_fetch_count,
+            _resolved_tag,
+        ) = crate::tools::provider::resolve_tool_fetch(
+            "yt-dlp",
+            Some((&*cache, "tool_metadata")),
+            RecheckPolicy::default(),
+        )
+        .await
+        .unwrap();
 
         // Patch download URLs to point at wiremock (so HEAD prefetch and
         // download hit the local server instead of GitHub).
@@ -523,7 +553,8 @@ mod tests {
             }
         }
 
-        let outcome = PreResolveOutcome::Resolved(fetch, String::new(), canonical, false, 1);
+        let outcome =
+            PreResolveOutcome::Resolved(fetch, String::new(), canonical, false, 1, String::new());
         let result = fetch_and_import_tool_payload(&cas, "yt-dlp", &cache, &tracker, outcome).await;
         let filenames: Vec<&str> = binaries.iter().map(|(n, _)| *n).collect();
         let os_labels = ["windows", "macos", "linux"];
@@ -593,6 +624,7 @@ mod tests {
             "test-canonical".to_string(),
             false,
             1,
+            String::new(),
         );
 
         let result =
@@ -636,8 +668,14 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
-        let outcome =
-            PreResolveOutcome::Resolved(fetch, String::new(), "v1.0.0".to_string(), true, 1);
+        let outcome = PreResolveOutcome::Resolved(
+            fetch,
+            String::new(),
+            "v1.0.0".to_string(),
+            true,
+            1,
+            String::new(),
+        );
         let result =
             fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
@@ -675,8 +713,14 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
-        let outcome =
-            PreResolveOutcome::Resolved(fetch, String::new(), "v1.0.0".to_string(), false, 2);
+        let outcome = PreResolveOutcome::Resolved(
+            fetch,
+            String::new(),
+            "v1.0.0".to_string(),
+            false,
+            2,
+            String::new(),
+        );
         let result =
             fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
@@ -721,6 +765,7 @@ mod tests {
             version: "v1.0.0".to_string(),
             metadata_cached: true,
             metadata_fetch_count: 1,
+            resolved_tag: String::new(),
         };
         let result =
             fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
@@ -767,6 +812,7 @@ mod tests {
             version: "v1.0.0".to_string(),
             metadata_cached: false,
             metadata_fetch_count: 1,
+            resolved_tag: String::new(),
         };
         let result =
             fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
@@ -809,8 +855,14 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
-        let outcome =
-            PreResolveOutcome::Resolved(fetch, String::new(), "v1.0.0".to_string(), false, 1);
+        let outcome = PreResolveOutcome::Resolved(
+            fetch,
+            String::new(),
+            "v1.0.0".to_string(),
+            false,
+            1,
+            String::new(),
+        );
         let result =
             fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
@@ -850,8 +902,14 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
-        let outcome =
-            PreResolveOutcome::Resolved(fetch, String::new(), "v1.0.0".to_string(), false, 0);
+        let outcome = PreResolveOutcome::Resolved(
+            fetch,
+            String::new(),
+            "v1.0.0".to_string(),
+            false,
+            0,
+            String::new(),
+        );
         let result =
             fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
@@ -894,8 +952,14 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let fetch = provider::media_tagger::sources();
-        let outcome =
-            PreResolveOutcome::Resolved(fetch, String::new(), "v1.0.0".to_string(), true, 2);
+        let outcome = PreResolveOutcome::Resolved(
+            fetch,
+            String::new(),
+            "v1.0.0".to_string(),
+            true,
+            2,
+            String::new(),
+        );
         let result =
             fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
         assert!(result.is_ok(), "resolve should succeed");
@@ -955,6 +1019,7 @@ mod tests {
             version: "v1.0.0".to_string(),
             metadata_cached: true,
             metadata_fetch_count: 2,
+            resolved_tag: String::new(),
         };
         let result =
             fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
@@ -1013,6 +1078,7 @@ mod tests {
             version: "v1.0.0".to_string(),
             metadata_cached: false,
             metadata_fetch_count: 0,
+            resolved_tag: String::new(),
         };
         let result =
             fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
