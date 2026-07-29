@@ -5,11 +5,12 @@
 //! methods to add/remove sources, sync tools, sync the library, and
 //! invalidate cached steps.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash, InMemoryCas};
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
+use mediapm_conductor::tools::provider::VersionSpec;
 use mediapm_conductor::{RuntimeStoragePaths, SimpleConductor};
 use url::Url;
 
@@ -564,9 +565,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     pub fn add_tool_requirement(
         &mut self,
         tool_id: &str,
-        desired_git_hash: Option<&str>,
-        desired_tag: Option<&str>,
-        desired_version: Option<&str>,
+        version_spec: Option<VersionSpec>,
     ) -> Result<(), MediaPmError> {
         if tool_id.is_empty() {
             return Err(MediaPmError::Workflow("tool id must not be empty".to_string()));
@@ -582,9 +581,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
         let requirement = ToolRequirement {
-            desired_git_hash: desired_git_hash.unwrap_or_default().to_string(),
-            desired_tag: desired_tag.unwrap_or_default().to_string(),
-            desired_version: desired_version.unwrap_or_default().to_string(),
+            version_spec: version_spec.unwrap_or(VersionSpec::Latest),
             ..ToolRequirement::default()
         };
 
@@ -763,10 +760,12 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         let pg_ref: Option<&dyn ProgressGroupApi> =
             progress_group.as_ref().map(|g| g as &dyn ProgressGroupApi);
 
+        let step_tool_ids: HashSet<String> = HashSet::new();
         let report = reconcile_desired_tools(
             &**self.conductor.cas(),
             effective_paths,
             &desired_tools,
+            &step_tool_ids,
             &inherited_env_vars,
             recheck_policy,
             &state,
