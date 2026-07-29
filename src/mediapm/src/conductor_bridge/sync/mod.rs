@@ -228,6 +228,7 @@ pub(crate) async fn reconcile_desired_tools(
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
         if !is_used {
+            let prune_bar = effective_group.add_bar(1, &format!("{tool_id} [prune]"));
             // Tool not in active set — register with empty runtime and skip provisioning.
             // Record minimal deployment state (no payload).
             let now = std::time::SystemTime::now()
@@ -263,6 +264,9 @@ pub(crate) async fn reconcile_desired_tools(
                     },
                 );
             }
+            prune_bar.set_position(1);
+            prune_bar.set_message("pruned");
+            prune_bar.finish_success();
             pb.advance(1);
             continue;
         }
