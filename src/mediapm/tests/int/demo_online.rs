@@ -66,7 +66,7 @@ async fn add_one_remote_tool_requirement_persists() -> Result<(), mediapm::Media
     let root = tempdir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
-    service.add_tool_requirement("yt-dlp", None, None)?;
+    service.add_tool_requirement("yt-dlp", None, None, None)?;
 
     let doc = read_doc(&service.paths().mediapm_ncl);
     assert!(doc.tools.contains_key("yt-dlp"));

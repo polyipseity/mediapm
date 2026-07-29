@@ -99,7 +99,7 @@ async fn add_tool_without_version_persists() -> Result<(), mediapm::MediaPmError
     let root = tempdir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
-    service.add_tool_requirement("ffmpeg", None, None)?;
+    service.add_tool_requirement("ffmpeg", None, None, None)?;
 
     let doc = read_doc(&service.paths().mediapm_ncl);
     assert!(doc.tools.contains_key("ffmpeg"), "ffmpeg should be registered");
