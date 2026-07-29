@@ -19,6 +19,8 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io::Read;
 
+use serde::{Deserialize, Serialize};
+
 use mediapm_utils::progress::{
     MultiItemBudget, ProviderPhase, ProviderProgressCallback, ProviderProgressSnapshot,
 };
@@ -43,18 +45,119 @@ const SUB_ENTRY_CHUNK: u64 = 65536;
 // Public types
 // ---------------------------------------------------------------------------
 
-/// User-facing version specifier. Consumed in phase 1 (resolve), discarded
-/// after concrete sources are determined.
+/// Unified version specification for managed tools and their dependencies.
+///
+/// Deserialized from:
+/// - `"latest"` → fetch the latest available version
+/// - `"inherit"` → use the dependency tool's global version spec (deps only)
+/// - `{ vcs_hash?, version?, tag? }` → exact specification with optional fields
+///
+/// Custom serde is used instead of `#[serde(untagged)]` because unit variants
+/// in an untagged enum serialize to JSON `null`, but we need string values
+/// `"latest"` and `"inherit"` (matching the Nickel schema and JSON output).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionSpec {
-    /// Fetch the latest stable release.
+    /// `"latest"` — fetch the latest available version.
     Latest,
-    /// Resolve from a specific git commit hash.
-    GitHash(String),
-    /// Resolve from a specific git tag.
-    GitTag(String),
-    /// Resolve from a specific version string.
-    Version(String),
+    /// `"inherit"` — use the dependency tool's global version spec.
+    Inherit,
+    /// `{ vcs_hash?, version?, tag? }` — exact fields.
+    Exact(VersionSpecFields),
+}
+
+impl Serialize for VersionSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            VersionSpec::Latest => serializer.serialize_str("latest"),
+            VersionSpec::Inherit => serializer.serialize_str("inherit"),
+            VersionSpec::Exact(fields) => fields.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for VersionSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct VersionSpecVisitor;
+
+        impl<'de> de::Visitor<'de> for VersionSpecVisitor {
+            type Value = VersionSpec;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str(
+                    "\"latest\", \"inherit\", or an object with vcs_hash/version/tag fields",
+                )
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<VersionSpec, E> {
+                match v {
+                    "latest" => Ok(VersionSpec::Latest),
+                    "inherit" => Ok(VersionSpec::Inherit),
+                    other => Err(de::Error::invalid_value(de::Unexpected::Str(other), &self)),
+                }
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<VersionSpec, A::Error> {
+                let fields =
+                    VersionSpecFields::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(VersionSpec::Exact(fields))
+            }
+        }
+
+        deserializer.deserialize_any(VersionSpecVisitor)
+    }
+}
+
+/// Fields for exact version specification.
+///
+/// At least one field MUST be non-None (enforced at deserialization via
+/// custom validator). Multiple fields may be present; when they are, they
+/// must resolve to the same canonical version or provisioning will error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VersionSpecFields {
+    /// Version-control-system hash (git, mercurial, etc.). Exact string match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcs_hash: Option<String>,
+    /// Version string. Exact string match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// VCS tag. Exact string match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for VersionSpecFields {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            #[serde(default)]
+            vcs_hash: Option<String>,
+            #[serde(default)]
+            version: Option<String>,
+            #[serde(default)]
+            tag: Option<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let has_any = raw.vcs_hash.is_some() || raw.version.is_some() || raw.tag.is_some();
+        if !has_any {
+            return Err(serde::de::Error::custom(
+                "version_spec object must have at least one of: vcs_hash, version, tag",
+            ));
+        }
+        Ok(Self { vcs_hash: raw.vcs_hash, version: raw.version, tag: raw.tag })
+    }
 }
 
 /// How phase 2 produces bytes for one source.
