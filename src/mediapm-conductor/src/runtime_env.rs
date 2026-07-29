@@ -61,7 +61,7 @@ const RUNTIME_DOTENV_GENERATED_TEMPLATE: &str = concat!(
 
 /// Canonical colocated `.gitignore` content for conductor runtime dotenv files.
 const RUNTIME_DOTENV_GITIGNORE: &str =
-    concat!("/.env\n", "/.env.generated\n", "/cache/\n", "/store/index-backups/\n", "/tools/\n");
+    concat!("/.env\n", "/.env.generated\n", "/cache/\n", "/tools/\n");
 
 /// Returns the canonical `.env` path for one conductor runtime root.
 #[must_use]
@@ -299,9 +299,8 @@ mod tests {
         assert!(merged.contains("/.env\n"));
         assert!(merged.contains("/.env.generated\n"));
         assert!(merged.contains("/cache/\n"));
-        assert!(merged.contains("/store/index-backups/\n"));
         assert!(merged.contains("/tools/\n"));
-        assert_eq!(merged, "/.env\n/.env.generated\n/cache/\n/store/index-backups/\n/tools/\n");
+        assert_eq!(merged, "/.env\n/.env.generated\n/cache/\n/tools/\n");
     }
 
     /// Protects no-overwrite behavior by preserving existing custom ignore
@@ -321,7 +320,6 @@ mod tests {
         assert!(rendered.contains("/.env\n"));
         assert!(rendered.contains("/.env.generated\n"));
         assert!(rendered.contains("/cache/\n"));
-        assert!(rendered.contains("/store/index-backups/\n"));
         assert!(rendered.contains("/tools/\n"));
     }
 }
