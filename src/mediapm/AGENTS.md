@@ -205,7 +205,7 @@ Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sampl
 ## Cross-Crate Invariants
 
 - **Content identity**: BLAKE3-256 multihash; `Hash::composite(&[Hash])` for deterministic composite hashing.
-- **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence.
+- **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence, runtime env files (`.env`, `.env.generated`), and gitignore. MediaPM delegates gitignore creation to conductor's `extend_runtime_gitignore()` at service construction time, and generated dotenv writing to `write_generated_dotenv()` during tool sync.
 - **MediaPM → CAS**: Materialization reads from CAS; all outputs read-only after commit. Hash mismatch → no fallback.
 - **NCL→Rust sync**: Typed envelope pattern — `deny_unknown_fields` on envelope, `#[serde(flatten)]` inner. Custom deserializers for Nickel f64→u64. All user-facing config fields must be non-Option in domain types; absent config keys are resolved to explicit defaults at the serde boundary, so downstream code never handles `Option`.
 - **Lock→CAS referential integrity**: Prune must not remove hashes referenced by lock records.
@@ -236,4 +236,4 @@ Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all`.
 - `paths.rs` — Path resolution
 - `service.rs` — MediaPmService orchestration
 - `error.rs` — Error taxonomy
-- `.agents/instructions/*.instructions.md` — Focused guidance by concern (error taxonomy, paths, cache, provider dispatch, preset dispatch, state persistence, document lifecycle, tool sync coordinator, 3-phase provisioning, content-addressed identity, companion dependencies, generated env output)
+- `.agents/instructions/*.instructions.md` — Focused guidance by concern (error taxonomy, paths, cache, provider dispatch, preset dispatch, state persistence, document lifecycle, tool sync coordinator, 3-phase provisioning, content-addressed identity, companion dependencies)
