@@ -274,3 +274,13 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Dual-write strategy documented in coordinator spec                                                         | `tool-sync-coordinator-and-identity.instructions.md` — "Dual-write strategy" subsection                                                                                  | [covered] |
 | State write policy documented in state persistence spec                                                    | `state-persistence.instructions.md` — "State write policy" section                                                                                                       | [covered] |
 | `write_bytes_if_changed` as artifact gate documented in document I/O spec                                  | `document-io-lifecycle.instructions.md` — `write_bytes_if_changed` bullet                                                                                                | [covered] |
+
+### Provisioning pruning (generated doc + filesystem)
+
+| Spec item                                                                        | Test(s)                                                                                                    | Status |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------ |
+| Old `tool_id@hash` keys pruned from generated doc when content_map_hash changes  | `reconcile_prunes_old_tool_version_from_generated_doc`                                                     | [covered] |
+| `pruned_tools` field in `ToolSyncReport` tracks pruned key count                 | `reconcile_prunes_old_tool_version_from_generated_doc` (asserts `report.pruned_tools >= 1`)                | [covered] |
+| `pruned_tools` is wired through to `ToolsSyncSummary`                            | compilation check (service.rs uses `report.pruned_tools` instead of `0` stub)                              | [covered] |
+| `retain_only_tool_dirs` called after save to prune filesystem tool directories   | compilation check (import + call in reconcile)                                                             | [covered] |
+| Pruning preserves keys for remaining tools (no false positives)                  | `reconcile_prunes_old_tool_version_from_generated_doc` (asserts new key exists after prune)                | [covered] |
