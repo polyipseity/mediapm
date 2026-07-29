@@ -89,8 +89,8 @@ Use only ASCII markers in the Status column:
 
 ### MultiItemBudget architecture
 
-| Spec item                                                                                            | Test(s)                                                                                                                                                                                                                                                                                                                                                                                                                    | Status |
-| ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Spec item                                                                                            | Test(s)                                                                                                                                                                                                                                                                                                                                                                                                                    | Status    |
+| ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
 | MultiItemBudget struct (new, with_capacity, add_item, item_count, set_total, advance, set_pos, snap) | `multi_item_budget_new`, `multi_item_budget_with_capacity`, `multi_item_budget_add_item`, `multi_item_budget_item_count`, `multi_item_budget_set_total`, `multi_item_budget_advance`, `multi_item_budget_set_pos`, `multi_item_budget_snap`                                                                                                                                                                                | [covered] |
 | MultiItemBudget aggregate() for progress bars                                                        | `multi_item_budget_aggregate`                                                                                                                                                                                                                                                                                                                                                                                              | [covered] |
 | MultiItemBudget concurrent safety (Send + Sync)                                                      | `multi_item_budget_concurrent_read_write`, `multi_item_budget_send_sync`                                                                                                                                                                                                                                                                                                                                                   | [covered] |
@@ -112,8 +112,8 @@ Use only ASCII markers in the Status column:
 
 Integration tests in `tests/progress_output/` converted from substring/contains/count assertions to `assert_eq!(term.contents(), concat!(...))`.
 
-| Test module                                                                                                                                      | Tests                                                                             | Status |
-| ------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- | ------ |
+| Test module                                                                                                                                      | Tests                                                                             | Status    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- | --------- |
 | `terminal.rs` — overflow behavior, dimension edge cases                                                                                          | 18 tests, all exact `concat!()`                                                   | [covered] |
 | `consumer.rs` — bar retention, parallel worker output                                                                                            | 2 tests, exact                                                                    | [covered] |
 | `transition.rs` — bar state transitions                                                                                                          | subset, exact                                                                     | [covered] |
@@ -124,8 +124,8 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### CasApi: `get()` delegates to `get_to_writer()`
 
-| Spec item                                                                                         | Test(s)                                                                                                               | Status |
-| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------ |
+| Spec item                                                                                         | Test(s)                                                                                                               | Status    |
+| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------- |
 | `InMemoryCas::get()` works above `WAL_INLINE_LIMIT` (2 MiB)                                       | `in_memory_get_succeeds_above_wal_inline_limit`                                                                       | [covered] |
 | `FileSystemCas::get()` works above `WAL_INLINE_LIMIT` (65 MiB, `#[cfg(feature = "large-tests")]`) | `filesystem_get_succeeds_above_wal_inline_limit`                                                                      | [covered] |
 | `InMemoryCas::get()` delegates to `get_to_writer()` internally                                    | Already verified by `in_memory_get_succeeds_above_wal_inline_limit` (no separate unit test for delegation mechanics)  | [covered] |
@@ -134,30 +134,30 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Cache::lookup_bytes error handling
 
-| Spec item                                                                             | Test(s)                                                                                | Status |
-| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------ |
+| Spec item                                                                             | Test(s)                                                                                | Status    |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------- |
 | `lookup_bytes` returns `None` on transient CAS error (non-`NotFound`)                 | `lookup_bytes_keeps_entry_on_transient_cas_error`                                      | [covered] |
 | `lookup_bytes` leaves index entry intact on transient error                           | `lookup_bytes_keeps_entry_on_transient_cas_error` (asserts `get_entry_hash` is `Some`) | [covered] |
 | `lookup_bytes` removes index entry on `NotFound` error                                | `lookup_bytes_nonexistent_key_returns_none` (existing, checks `None` return)           | [covered] |
 | `Cache::open` accepts verify strategies via `open_with_verify_strategies` (test-only) | `lookup_bytes_keeps_entry_on_transient_cas_error` (uses `Always` verify)               | [covered] |
 | Transient error test uses large payload (>1 MiB) to force blob-store path             | `lookup_bytes_keeps_entry_on_transient_cas_error` (1025 × 1024 = 1 048 577 bytes)      | [covered] |
 
-| Spec item                                                            | Test(s)                                                                                                     | Status |
-| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------ |
+| Spec item                                                            | Test(s)                                                                                                     | Status    |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | --------- |
 | Pre-roll scrolls existing terminal content into scrollback (bug fix) | `pre_roll_with_existing_content_scrolls_it_away` — exact `concat!()` body matching + no-substring assertion | [covered] |
 
 ### Single push point: `sync_snapshot_to_bar`
 
-| Spec item                                                                                     | Test(s)                                        | Status |
-| --------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------ |
+| Spec item                                                                                     | Test(s)                                        | Status    |
+| --------------------------------------------------------------------------------------------- | ---------------------------------------------- | --------- |
 | `sync_snapshot_to_bar` is single authoritative push point for SharedState → indicatif         | `sync_slot_preserves_custom_message_on_attach` | [covered] |
 | Custom message set via `set_message` survives `add_bar` of another bar (sync_slot delegation) | `sync_slot_preserves_custom_message_on_attach` | [covered] |
 | Cache guard is updated by delegate path (no stale-cache skip on next tick)                    | `sync_slot_preserves_custom_message_on_attach` | [covered] |
 
 ### Metadata cache awareness on resolve bar
 
-| Spec item                                                                                   | Test(s)                                                                                                                                                                                                                     | Status |
-| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Spec item                                                                                   | Test(s)                                                                                                                                                                                                                     | Status    |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
 | `resolve_tool_fetch` returns `metadata_cached` (bool) and `metadata_fetch_count` (u32)      | Production dispatch: all per-tool resolvers updated (`resolve_latest_github_tag`, `resolve_latest_autobuild_tag`, per-tool `resolve_tag` functions return tuples with new fields)                                           | [covered] |
 | ffmpeg uses metadata_fetch_count=2 (btbn + evermeet), `metadata_cached=btbn\|\|evermeet`    | `resolve_tool_fetch` ffmpeg arm destructures both resolvers                                                                                                                                                                 | [covered] |
 | `MetadataCacheTracker` auto-derives `metadata_fetch_count` from actual `lookup_bytes` calls | Auto-derived via `tracker.lookup_count()` after match in `resolve_tool_fetch` — no per-tool hardcoded values; `media-tagger` count=0, bar is indeterminate                                                                  | [covered] |
@@ -172,15 +172,15 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Content cache key: actual download URL
 
-| Spec item                                                              | Test(s)                                         | Status |
-| ---------------------------------------------------------------------- | ----------------------------------------------- | ------ |
+| Spec item                                                              | Test(s)                                         | Status    |
+| ---------------------------------------------------------------------- | ----------------------------------------------- | --------- |
 | Cache key is actual URL used for download, not blindly `urls[0]`       | `fetch_cache_key_uses_actual_url_not_first_url` | [covered] |
 | Cache key survives first-URL cache miss — iterates all URLs for lookup | `fetch_cache_key_uses_actual_url_not_first_url` | [covered] |
 
 ### DirectoryLockGuard
 
-| Spec item                                                             | Test(s)                                                                                                                    | Status |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Spec item                                                             | Test(s)                                                                                                                    | Status    |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------- |
 | DirectoryLockGuard two-layer architecture: DashMap + flock            | `directory_lock_new_releases_on_drop`, `directory_lock_same_process_contention`, `directory_lock_cross_process_contention` | [covered] |
 | DirectoryLockGuard fail-fast (non-blocking) contract                  | `directory_lock_fail_fast_no_blocking`                                                                                     | [covered] |
 | FileSystemCas same-process contention (`LockContention` on dual open) | `file_system_cas_same_process_contention`                                                                                  | [covered] |
@@ -190,8 +190,8 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Counting mechanism
 
-| Spec item                                                                                     | Test(s)                                                                          | Status |
-| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ------ |
+| Spec item                                                                                     | Test(s)                                                                          | Status    |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------- |
 | Monotonic non-decreasing position within a phase                                              | `extract_zip_progress_position_non_decreasing_and_total_constant`                | [covered] |
 |                                                                                               | `extract_tar_gz_progress_position_non_decreasing`                                | [covered] |
 |                                                                                               | `extract_tar_xz_progress_position_non_decreasing`                                | [covered] |
@@ -216,8 +216,8 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Compress estimate improvement (Phase 1)
 
-| Spec item                                                           | Test(s)                                                                                  | Status |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------ |
+| Spec item                                                           | Test(s)                                                                                  | Status    |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------- |
 | Compress estimate never starts at 0 (moved before add_item)         | `process_single_source_archive_two_items_completed` (budget starts with estimate, not 0) | [covered] |
 | gzip ISIZE parsing for tar.gz exact uncompressed size               | `estimate_uncompressed_size_tar_gz_uses_isize`                                           | [covered] |
 | xz Index parsing for tar.xz exact uncompressed size                 | `estimate_uncompressed_size_tar_xz_uses_index`                                           | [covered] |
@@ -226,8 +226,8 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Progress callback threading (Phase 2)
 
-| Spec item                                                                   | Test(s)                                                                                         | Status |
-| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------ |
+| Spec item                                                                   | Test(s)                                                                                         | Status    |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------- |
 | `fire_progress` helper deduplicates aggregate+snapshot pattern              | (manual review — used in fetch_tool_sources, fetch_bytes_from_candidates, process_tool_sources) | [covered] |
 | `progress_cb` threads through `process_single_source` for per-chunk updates | `process_progress_cb_fires_during_extraction`                                                   | [covered] |
 | Decompress per-chunk callbacks fire during tar.gz/xz extraction             | `process_progress_cb_fires_during_extraction` (callback_count > item_count)                     | [covered] |
@@ -239,8 +239,8 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Process-phase documentation
 
-| Spec item                                                   | Test(s)                                                          | Status |
-| ----------------------------------------------------------- | ---------------------------------------------------------------- | ------ |
+| Spec item                                                   | Test(s)                                                          | Status    |
+| ----------------------------------------------------------- | ---------------------------------------------------------------- | --------- |
 | Initial bar total is item count (intentional) documented    | Doc comment in `process_tool_sources`, comment in `provision.rs` | [covered] |
 | Total refining across sources (expected) documented         | Doc comment in `process_tool_sources`                            | [covered] |
 | Callback architecture docs updated with per-chunk threading | Doc comment in `process_tool_sources`                            | [covered] |
@@ -248,57 +248,57 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### `.env.generated` env var names and paths
 
-| Spec item                                                                              | Test(s)                                                                                                        | Status |
-| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------ |
-| `.env.generated` operates at mediapm layer, not conductor layer                        | `tool-sync-tool-config.instructions.md` — spec section                                                         | [covered] |
-| Only one tool active at a time → env var names use plain tool id (no `@hash` suffix)   | `sync_env_has_no_hash_in_names` (integration), `content_key_to_env_name_strips_hash` (unit)                    | [covered] |
-| Env var values point to `ProvisionCache` payload layout (`<tool_id>/payload/<key>`)    | `sync_env_paths_contain_payload_segment` (integration)                                                         | [covered] |
-| `content_key_to_env_name` is a pure function for binary-entry name derivation          | `content_key_to_env_name_binary` (unit)                                                                        | [covered] |
-| Binary entry produces both `_DIR` and binary env var per content-map key               | `write_runtime_env_binary_produces_dir_and_binary` (unit)                                                      | [covered] |
-| Dir-only entry produces only `_DIR` env var                                             | `write_runtime_env_dir_produces_dir_only` (unit)                                                               | [covered] |
-| No duplicate `_DIR` entries when processing multiple keys per OS                        | `write_runtime_env_mixed_os_produces_no_duplicate_dirs` (unit)                                                 | [covered] |
-| Skipped tools get env var entries in `.env.generated`                                  | `sync_twice_env_generated_persists` (integration)                                                              | [covered] |
-| `.env.generated` paths are always absolute                                              | `write_runtime_env_uses_absolute_paths` (unit), absolute assertion in `sync_env_paths_contain_payload_segment` (integration) | [covered] |
-| Regression: existing path structure, env names, dedup unaffected                         | All existing unit + integration tests                                                                                        | [covered] |
+| Spec item                                                                            | Test(s)                                                                                                                      | Status    |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `.env.generated` operates at mediapm layer, not conductor layer                      | `tool-sync-tool-config.instructions.md` — spec section                                                                       | [covered] |
+| Only one tool active at a time → env var names use plain tool id (no `@hash` suffix) | `sync_env_has_no_hash_in_names` (integration), `content_key_to_env_name_strips_hash` (unit)                                  | [covered] |
+| Env var values point to `ProvisionCache` payload layout (`<tool_id>/payload/<key>`)  | `sync_env_paths_contain_payload_segment` (integration)                                                                       | [covered] |
+| `content_key_to_env_name` is a pure function for binary-entry name derivation        | `content_key_to_env_name_binary` (unit)                                                                                      | [covered] |
+| Binary entry produces both `_DIR` and binary env var per content-map key             | `write_runtime_env_binary_produces_dir_and_binary` (unit)                                                                    | [covered] |
+| Dir-only entry produces only `_DIR` env var                                          | `write_runtime_env_dir_produces_dir_only` (unit)                                                                             | [covered] |
+| No duplicate `_DIR` entries when processing multiple keys per OS                     | `write_runtime_env_mixed_os_produces_no_duplicate_dirs` (unit)                                                               | [covered] |
+| Skipped tools get env var entries in `.env.generated`                                | `sync_twice_env_generated_persists` (integration)                                                                            | [covered] |
+| `.env.generated` paths are always absolute                                           | `write_runtime_env_uses_absolute_paths` (unit), absolute assertion in `sync_env_paths_contain_payload_segment` (integration) | [covered] |
+| Regression: existing path structure, env names, dedup unaffected                     | All existing unit + integration tests                                                                                        | [covered] |
 
 ### Dual-write strategy (state.json always-write vs NCL change-detected)
 
-| Spec item                                                                                                 | Test(s)                                                                                                                                                                  | Status |
-| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
-| state.json always-write policy (metadata-driven, updates mtime even when content is identical)            | `state_json_always_writes_to_disk` (integration)                                                                                                                         | [covered] |
-| conductor.generated.ncl skip-if-unchanged (artifact-driven, uses `write_bytes_if_changed`)                | `conductor_ncl_skips_write_when_unchanged` (integration)                                                                                                                 | [covered] |
-| State-only churn (canonical_version change without payload change) does not touch conductor file           | `regression_state_only_churn_does_not_touch_conductor_file` (integration)                                                                                                | [covered] |
-| `write_bytes_if_changed` writes when content differs (unit)                                               | `write_bytes_if_changed_writes_when_content_differs` (unit)                                                                                                              | [covered] |
-| `write_bytes_if_changed` skips write when content identical, verified via mtime (unit)                    | `write_bytes_if_changed_skips_write_when_content_identical` (unit)                                                                                                       | [covered] |
-| `write_bytes_if_changed` creates parent directories (unit)                                                | `write_bytes_if_changed_creates_parent_directories` (unit)                                                                                                               | [covered] |
-| Dual-write strategy documented in coordinator spec                                                         | `tool-sync-coordinator-and-identity.instructions.md` — "Dual-write strategy" subsection                                                                                  | [covered] |
-| State write policy documented in state persistence spec                                                    | `state-persistence.instructions.md` — "State write policy" section                                                                                                       | [covered] |
-| `write_bytes_if_changed` as artifact gate documented in document I/O spec                                  | `document-io-lifecycle.instructions.md` — `write_bytes_if_changed` bullet                                                                                                | [covered] |
+| Spec item                                                                                        | Test(s)                                                                                 | Status    |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- | --------- |
+| state.json always-write policy (metadata-driven, updates mtime even when content is identical)   | `state_json_always_writes_to_disk` (integration)                                        | [covered] |
+| conductor.generated.ncl skip-if-unchanged (artifact-driven, uses `write_bytes_if_changed`)       | `conductor_ncl_skips_write_when_unchanged` (integration)                                | [covered] |
+| State-only churn (canonical_version change without payload change) does not touch conductor file | `regression_state_only_churn_does_not_touch_conductor_file` (integration)               | [covered] |
+| `write_bytes_if_changed` writes when content differs (unit)                                      | `write_bytes_if_changed_writes_when_content_differs` (unit)                             | [covered] |
+| `write_bytes_if_changed` skips write when content identical, verified via mtime (unit)           | `write_bytes_if_changed_skips_write_when_content_identical` (unit)                      | [covered] |
+| `write_bytes_if_changed` creates parent directories (unit)                                       | `write_bytes_if_changed_creates_parent_directories` (unit)                              | [covered] |
+| Dual-write strategy documented in coordinator spec                                               | `tool-sync-coordinator-and-identity.instructions.md` — "Dual-write strategy" subsection | [covered] |
+| State write policy documented in state persistence spec                                          | `state-persistence.instructions.md` — "State write policy" section                      | [covered] |
+| `write_bytes_if_changed` as artifact gate documented in document I/O spec                        | `document-io-lifecycle.instructions.md` — `write_bytes_if_changed` bullet               | [covered] |
 
 ### Provisioning pruning (generated doc + filesystem)
 
-| Spec item                                                                        | Test(s)                                                                                                    | Status |
-| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------ |
-| Old `tool_id@hash` keys pruned from generated doc when content_map_hash changes  | `reconcile_prunes_old_tool_version_from_generated_doc`                                                     | [covered] |
-| `pruned_tools` field in `ToolSyncReport` tracks pruned key count                 | `reconcile_prunes_old_tool_version_from_generated_doc` (asserts `report.pruned_tools >= 1`)                | [covered] |
-| `pruned_tools` is wired through to `ToolsSyncSummary`                            | compilation check (service.rs uses `report.pruned_tools` instead of `0` stub)                              | [covered] |
-| `retain_only_tool_dirs` called after save to prune filesystem tool directories   | compilation check (import + call in reconcile)                                                             | [covered] |
-| Pruning preserves keys for remaining tools (no false positives)                  | `reconcile_prunes_old_tool_version_from_generated_doc` (asserts new key exists after prune)                | [covered] |
+| Spec item                                                                       | Test(s)                                                                                     | Status    |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------- |
+| Old `tool_id@hash` keys pruned from generated doc when content_map_hash changes | `reconcile_prunes_old_tool_version_from_generated_doc`                                      | [covered] |
+| `pruned_tools` field in `ToolSyncReport` tracks pruned key count                | `reconcile_prunes_old_tool_version_from_generated_doc` (asserts `report.pruned_tools >= 1`) | [covered] |
+| `pruned_tools` is wired through to `ToolsSyncSummary`                           | compilation check (service.rs uses `report.pruned_tools` instead of `0` stub)               | [covered] |
+| `retain_only_tool_dirs` called after save to prune filesystem tool directories  | compilation check (import + call in reconcile)                                              | [covered] |
+| Pruning preserves keys for remaining tools (no false positives)                 | `reconcile_prunes_old_tool_version_from_generated_doc` (asserts new key exists after prune) | [covered] |
 
 ### Dependency resolution (Phase 6)
 
-| Spec item                                                                          | Test(s)                                                                                                                                                          | Status |
-| ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| `VersionSpec` enum (Latest, Inherit, Exact) + `VersionSpecFields` struct           | `version_spec_serde_latest`, `version_spec_serde_inherit`, `version_spec_serde_exact_vcs_hash`, `version_spec_serde_exact_version`, `version_spec_serde_exact_tag`, `version_spec_serde_exact_multi_field` | [covered] |
-| At-least-one-field validation on `VersionSpecFields`                              | `version_spec_serde_empty_object_error`                                                                                                                          | [covered] |
-| Deny-unknown-fields on `VersionSpecFields`                                         | `version_spec_serde_deny_unknown_fields`                                                                                                                         | [covered] |
-| `spec_matches_entry` with multi-field Exact matching                               | Existing `spec_matches_*` tests + multi-field matching                                                                                                           | [covered] |
-| `compute_used_tool_ids` function (DFS, transitive deps, visited-set termination)   | `compute_used_tool_ids_empty_desired`, `compute_used_tool_ids_single_no_deps`, `compute_used_tool_ids_with_transitive_deps`, `compute_used_tool_ids_circular_deps_terminates` | [covered] |
-| `resolve_dep_version_spec` function (Inherit, passthrough, error cases)           | `resolve_dep_version_spec_inherit_resolves`, `resolve_dep_version_spec_exact_passthrough`, `resolve_dep_version_spec_latest_passthrough`, `resolve_dep_version_spec_inherit_missing_tool_error`, `resolve_dep_version_spec_circular_inherit_error` | [covered] |
-| Pruning uses computed active set (`compute_used_tool_ids`)                        | Verified by existing `reconcile_prunes_old_tool_version_from_generated_doc` (uses step_tool_ids → active set)                                                    | [covered] |
-| Multi-field consistency check at provision time                                   | (no dedicated test yet — provision-time consistency is a future wiring concern)                                                                                  | [missing] |
-| `known_dependency_type` registry lookup function                                   | Compilation check (defined in `src/mediapm/src/tools/dependency.rs`)                                                                                             | [covered] |
-| Per-tool `dependency_types()` functions (yt-dlp, media-tagger, rsgain)            | Compilation check (each preset module returns `BTreeMap<&'static str, DependencyType>`)                                                                          | [covered] |
-| All 5 edges correctly classified (2 SameStep, 3 CrossStep)                        | Compiled verification of `known_dependency_type` mapping                                                                                                         | [covered] |
-| `CrossStep` and `Both` variants defined but unused in current classification       | Compilation check (enum defined in `src/mediapm/src/tools/dependency.rs`)                                                                                        | [covered] |
-| `dependencies` flattened to `BTreeMap<String, VersionSpec>` — serde round-trip     | `tool_requirement_serde_dependencies_flat`, `tool_requirement_serde_dependencies_empty`                                                                           | [covered] |
+| Spec item                                                                        | Test(s)                                                                                                                                                                                                                                            | Status    |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `VersionSpec` enum (Latest, Inherit, Exact) + `VersionSpecFields` struct         | `version_spec_serde_latest`, `version_spec_serde_inherit`, `version_spec_serde_exact_vcs_hash`, `version_spec_serde_exact_version`, `version_spec_serde_exact_tag`, `version_spec_serde_exact_multi_field`                                         | [covered] |
+| At-least-one-field validation on `VersionSpecFields`                             | `version_spec_serde_empty_object_error`                                                                                                                                                                                                            | [covered] |
+| Deny-unknown-fields on `VersionSpecFields`                                       | `version_spec_serde_deny_unknown_fields`                                                                                                                                                                                                           | [covered] |
+| `spec_matches_entry` with multi-field Exact matching                             | Existing `spec_matches_*` tests + multi-field matching                                                                                                                                                                                             | [covered] |
+| `compute_used_tool_ids` function (DFS, transitive deps, visited-set termination) | `compute_used_tool_ids_empty_desired`, `compute_used_tool_ids_single_no_deps`, `compute_used_tool_ids_with_transitive_deps`, `compute_used_tool_ids_circular_deps_terminates`                                                                      | [covered] |
+| `resolve_dep_version_spec` function (Inherit, passthrough, error cases)          | `resolve_dep_version_spec_inherit_resolves`, `resolve_dep_version_spec_exact_passthrough`, `resolve_dep_version_spec_latest_passthrough`, `resolve_dep_version_spec_inherit_missing_tool_error`, `resolve_dep_version_spec_circular_inherit_error` | [covered] |
+| Pruning uses computed active set (`compute_used_tool_ids`)                       | Verified by existing `reconcile_prunes_old_tool_version_from_generated_doc` (uses step_tool_ids → active set)                                                                                                                                      | [covered] |
+| Multi-field consistency check at provision time                                  | (no dedicated test yet — provision-time consistency is a future wiring concern)                                                                                                                                                                    | [missing] |
+| `known_dependency_type` registry lookup function                                 | Compilation check (defined in `src/mediapm/src/tools/dependency.rs`)                                                                                                                                                                               | [covered] |
+| Per-tool `dependency_types()` functions (yt-dlp, media-tagger, rsgain)           | Compilation check (each preset module returns `BTreeMap<&'static str, DependencyType>`)                                                                                                                                                            | [covered] |
+| All 5 edges correctly classified (2 SameStep, 3 CrossStep)                       | Compiled verification of `known_dependency_type` mapping                                                                                                                                                                                           | [covered] |
+| `CrossStep` and `Both` variants defined but unused in current classification     | Compilation check (enum defined in `src/mediapm/src/tools/dependency.rs`)                                                                                                                                                                          | [covered] |
+| `dependencies` flattened to `BTreeMap<String, VersionSpec>` — serde round-trip   | `tool_requirement_serde_dependencies_flat`, `tool_requirement_serde_dependencies_empty`                                                                                                                                                            | [covered] |

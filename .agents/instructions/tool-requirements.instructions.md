@@ -14,13 +14,13 @@ applyTo: "src/mediapm/src/config/mod.rs"
 
 ## `ToolRequirement` fields
 
-| Field              | Type                          | Default                     | Purpose                                    |
-| ------------------ | ----------------------------- | --------------------------- | ------------------------------------------ |
-| `version_spec`     | `VersionSpec`                 | `Latest`                    | Version specification: `"latest"`, `"inherit"`, or `{ vcs_hash?, version?, tag? }` |
-| `dependencies`     | `BTreeMap<String, VersionSpec>` | `{}`                       | Map of dependency tool id → version spec   |
-| `recheck_seconds`  | `u64`                         | `0` (use default heuristic) | Recheck interval for metadata freshness    |
-| `max_input_slots`  | `u32`                         | from `defaults`             | Max ffmpeg input slot count                |
-| `max_output_slots` | `u32`                         | from `defaults`             | Max ffmpeg output slot count               |
+| Field              | Type                            | Default                     | Purpose                                                                            |
+| ------------------ | ------------------------------- | --------------------------- | ---------------------------------------------------------------------------------- |
+| `version_spec`     | `VersionSpec`                   | `Latest`                    | Version specification: `"latest"`, `"inherit"`, or `{ vcs_hash?, version?, tag? }` |
+| `dependencies`     | `BTreeMap<String, VersionSpec>` | `{}`                        | Map of dependency tool id → version spec                                           |
+| `recheck_seconds`  | `u64`                           | `0` (use default heuristic) | Recheck interval for metadata freshness                                            |
+| `max_input_slots`  | `u32`                           | from `defaults`             | Max ffmpeg input slot count                                                        |
+| `max_output_slots` | `u32`                           | from `defaults`             | Max ffmpeg output slot count                                                       |
 
 `version_spec` replaces the old `version`/`tag`/`desired_git_hash`/`desired_tag`/`desired_version`
 fields. See `VersionSpec` in the conductor provider module for the full serde format.
@@ -31,19 +31,19 @@ by per-preset `known_dependency_type()` lookup, not by user config.
 
 ## `VersionSpec` enum
 
-| Variant   | Meaning                                                                 |
-| --------- | ----------------------------------------------------------------------- |
-| `Latest`  | Fetch the latest available version (`"latest"`).                        |
-| `Inherit` | Use the global tool version spec from `tools.<id>.version_spec` (`"inherit"`). |
-| `Exact(VersionSpecFields)` | Exact fields: `{ vcs_hash?, version?, tag? }`                    |
+| Variant                    | Meaning                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------ |
+| `Latest`                   | Fetch the latest available version (`"latest"`).                               |
+| `Inherit`                  | Use the global tool version spec from `tools.<id>.version_spec` (`"inherit"`). |
+| `Exact(VersionSpecFields)` | Exact fields: `{ vcs_hash?, version?, tag? }`                                  |
 
 ## `VersionSpecFields` struct
 
-| Field      | Type     | Purpose                                    |
-| ---------- | -------- | ------------------------------------------ |
+| Field      | Type             | Purpose                                   |
+| ---------- | ---------------- | ----------------------------------------- |
 | `vcs_hash` | `Option<String>` | VCS hash (git commit, etc.). Exact match. |
-| `version`  | `Option<String>` | Version string. Exact match.               |
-| `tag`      | `Option<String>` | VCS tag. Exact match.                      |
+| `version`  | `Option<String>` | Version string. Exact match.              |
+| `tag`      | `Option<String>` | VCS tag. Exact match.                     |
 
 At least one field must be non-`None` (enforced at deserialization).
 Multiple fields may be present; when they are, all must match at

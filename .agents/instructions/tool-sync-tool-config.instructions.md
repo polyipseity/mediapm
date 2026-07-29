@@ -33,11 +33,11 @@ config. The companion relationship type is defined internally per preset.
 
 #### `DependencyType` (in `crate::tools::dependency::DependencyType`)
 
-| Variant      | Meaning                                                                 |
-| ------------ | ----------------------------------------------------------------------- |
-| `SameStep`   | Folded into the same step as a companion (same-step dependency).        |
-| `CrossStep`  | Invoked as a separate workflow step (cross-step dependency).            |
-| `Both`       | Functions as both same-step AND cross-step.                             |
+| Variant     | Meaning                                                          |
+| ----------- | ---------------------------------------------------------------- |
+| `SameStep`  | Folded into the same step as a companion (same-step dependency). |
+| `CrossStep` | Invoked as a separate workflow step (cross-step dependency).     |
+| `Both`      | Functions as both same-step AND cross-step.                      |
 
 Not user-configurable. No serde derives. Defined in `src/mediapm/src/tools/dependency.rs`.
 
