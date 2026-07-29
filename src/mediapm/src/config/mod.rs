@@ -562,19 +562,6 @@ pub struct ToolRegistryEntry {
     pub resolved_vcs_hash: String,
 }
 
-/// Active instance of a managed tool deployed to the local filesystem.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[allow(dead_code)]
-pub struct ActiveToolInstance {
-    /// Tool identifier used for registry lookups.
-    pub tool_id: String,
-    /// CAS content hash of the deployed payload.
-    pub content_hash: String,
-    /// Filesystem path to the deployed executable or bundle.
-    pub deployed_path: String,
-}
-
 /// Managed file record stored in persisted state.
 ///
 /// Tracks each materialized output file with its originating media source,
