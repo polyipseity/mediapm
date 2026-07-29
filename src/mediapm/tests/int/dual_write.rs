@@ -77,13 +77,7 @@ async fn regression_state_only_churn_does_not_touch_conductor_file() {
     runtime.cache_root_override = Some(cache_root.path().to_path_buf());
     // Use media-tagger — resolves without network; its empty canonical_version
     // gives us a stable baseline.
-    runtime.tools.insert(
-        "media-tagger".to_string(),
-        ToolRequirement {
-            version: mediapm::MediaMetadataValue::Literal(String::new()),
-            ..Default::default()
-        },
-    );
+    runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime)
             .await

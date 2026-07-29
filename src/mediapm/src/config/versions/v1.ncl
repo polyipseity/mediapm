@@ -17,25 +17,11 @@ let VersionSpecV1 = std.contract.any_of [
 ]
 in
 
-let DependencySpecV1 = {
-  dep_type
-    | std.enum.TagOrString
-    | optional,
-  version_spec
-    | VersionSpecV1
-    | optional,
-  ..
-}
-in
-
 let ToolRequirementV1 = {
   version_spec
     | VersionSpecV1
     | optional,
-  dependencies | {
-    deps | {_ : DependencySpecV1} | default = {},
-    ..
-  } | default = {},
+  dependencies | {_: VersionSpecV1} | default = {},
   recheck_seconds | Number | optional,
   max_input_slots | Number | optional,
   max_output_slots | Number | optional,

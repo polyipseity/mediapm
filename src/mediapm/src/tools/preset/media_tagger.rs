@@ -6,7 +6,15 @@ use std::collections::BTreeMap;
 
 use mediapm_conductor::{ToolRuntime, ToolSpec};
 
+use crate::tools::dependency::DependencyType;
 use crate::tools::workflows;
+
+/// Returns the known `DependencyType` for each dependency of media-tagger.
+#[must_use]
+#[allow(dead_code)]
+pub(crate) fn dependency_types() -> BTreeMap<&'static str, DependencyType> {
+    BTreeMap::from([("ffmpeg", DependencyType::CrossStep)])
+}
 
 /// Builds the [`ToolSpec`] and [`ToolRuntime`] for `media-tagger`.
 #[must_use]

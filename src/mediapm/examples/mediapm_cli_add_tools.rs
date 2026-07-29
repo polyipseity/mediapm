@@ -10,8 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mediapm::{
-    DependencySpec, DependencyType, MediaPmService, ToolRequirement, ToolRequirementDependencies,
-    VersionSpec, load_mediapm_document, save_mediapm_document,
+    MediaPmService, ToolRequirement, VersionSpec, load_mediapm_document, save_mediapm_document,
 };
 use mediapm_cas::Hash;
 use mediapm_conductor::{
@@ -70,53 +69,17 @@ fn tool_id_for(logical_tool_name: &str) -> String {
 }
 
 fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
-    let dependencies = match logical_tool_name {
-        "yt-dlp" => ToolRequirementDependencies {
-            deps: BTreeMap::from([
-                (
-                    "ffmpeg".to_string(),
-                    DependencySpec {
-                        dep_type: DependencyType::Inter,
-                        version_spec: VersionSpec::Inherit,
-                    },
-                ),
-                (
-                    "deno".to_string(),
-                    DependencySpec {
-                        dep_type: DependencyType::Inter,
-                        version_spec: VersionSpec::Inherit,
-                    },
-                ),
-            ]),
-        },
-        "media-tagger" => ToolRequirementDependencies {
-            deps: BTreeMap::from([(
-                "ffmpeg".to_string(),
-                DependencySpec {
-                    dep_type: DependencyType::Inter,
-                    version_spec: VersionSpec::Inherit,
-                },
-            )]),
-        },
-        "rsgain" => ToolRequirementDependencies {
-            deps: BTreeMap::from([
-                (
-                    "ffmpeg".to_string(),
-                    DependencySpec {
-                        dep_type: DependencyType::Inter,
-                        version_spec: VersionSpec::Inherit,
-                    },
-                ),
-                (
-                    "sd".to_string(),
-                    DependencySpec {
-                        dep_type: DependencyType::Inter,
-                        version_spec: VersionSpec::Inherit,
-                    },
-                ),
-            ]),
-        },
-        _ => ToolRequirementDependencies::default(),
+    let dependencies: BTreeMap<String, VersionSpec> = match logical_tool_name {
+        "yt-dlp" => BTreeMap::from([
+            ("ffmpeg".to_string(), VersionSpec::Inherit),
+            ("deno".to_string(), VersionSpec::Inherit),
+        ]),
+        "media-tagger" => BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Inherit)]),
+        "rsgain" => BTreeMap::from([
+            ("ffmpeg".to_string(), VersionSpec::Inherit),
+            ("sd".to_string(), VersionSpec::Inherit),
+        ]),
+        _ => BTreeMap::new(),
     };
 
     ToolRequirement {

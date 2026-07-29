@@ -363,7 +363,7 @@ pub struct ToolRequirement {
     pub version_spec: VersionSpec,
     /// Cross-tool dependency version selectors.
     #[serde(default)]
-    pub dependencies: ToolRequirementDependencies,
+    pub dependencies: BTreeMap<String, VersionSpec>,
     /// Recheck interval seconds (0 = use default heuristic).
     #[serde(default, deserialize_with = "custom_deserializers::deserialize_u64_from_number")]
     pub recheck_seconds: u64,
@@ -381,54 +381,11 @@ pub struct ToolRequirement {
     pub max_output_slots: u32,
 }
 
-/// Dependency declarations keyed by dependency tool id.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolRequirementDependencies {
-    /// Map of dependency tool id → dependency spec.
-    #[serde(default)]
-    pub deps: BTreeMap<String, DependencySpec>,
-}
-
-/// Version and type spec for one dependency.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DependencySpec {
-    /// Dependency type: cross-step, interstep (same-step), or both.
-    #[serde(default)]
-    pub dep_type: DependencyType,
-    /// Version spec: "latest", "inherit", or { vcs_hash?, version?, tag? }.
-    /// Defaults to "inherit".
-    #[serde(default = "defaults::default_dep_version_spec")]
-    pub version_spec: VersionSpec,
-}
-
-/// Dependency type annotation.
-///
-/// - `Cross`: the dependency is invoked as a separate workflow step
-///   (cross-step dependency).
-/// - `Inter`: the dependency is folded into the same step as a companion
-///   (interstep / same-step dependency).
-/// - `Both`: functions as both interstep AND cross-step.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DependencyType {
-    Cross,
-    Inter,
-    Both,
-}
-
-impl Default for DependencyType {
-    fn default() -> Self {
-        Self::Inter
-    }
-}
-
 impl Default for ToolRequirement {
     fn default() -> Self {
         Self {
             version_spec: VersionSpec::Latest,
-            dependencies: ToolRequirementDependencies::default(),
+            dependencies: BTreeMap::new(),
             recheck_seconds: 0,
             max_input_slots: defaults::DEFAULT_FFMPEG_MAX_INPUT_SLOTS,
             max_output_slots: defaults::DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS,
@@ -496,7 +453,7 @@ impl MediaPmDocument {
         }
         // Remove tool entries that are Latest with no explicit dependencies.
         self.tools.retain(|_, tool_req| {
-            tool_req.version_spec != VersionSpec::Latest || !tool_req.dependencies.deps.is_empty()
+            tool_req.version_spec != VersionSpec::Latest || !tool_req.dependencies.is_empty()
         });
     }
 }

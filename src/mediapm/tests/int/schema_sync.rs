@@ -65,8 +65,8 @@ fn v1_nickel_schema_structure() {
         "v1.ncl must define ToolRequirementV1 contract for the top-level tools field"
     );
     assert!(
-        schema.contains("version | String | { .. } | optional,"),
-        "ToolRequirementV1 must have version field"
+        schema.contains("version_spec\n    | VersionSpecV1\n    | optional,"),
+        "ToolRequirementV1 must have version_spec field"
     );
     assert!(schema.contains("dependencies | {"), "ToolRequirementV1 must have dependencies field");
 

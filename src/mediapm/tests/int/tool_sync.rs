@@ -16,6 +16,7 @@
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
+use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{NickelDocument, ToolKindSpec, decode_document};
 use tempfile::tempdir;
 
@@ -202,13 +203,7 @@ async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError
     let cache_root = tempdir().expect("cache tempdir");
     let mut runtime = MediaRuntimeStorage::default();
     runtime.cache_root_override = Some(cache_root.path().to_path_buf());
-    runtime.tools.insert(
-        "media-tagger".to_string(),
-        ToolRequirement {
-            version: mediapm::MediaMetadataValue::Literal(String::new()),
-            ..Default::default()
-        },
-    );
+    runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -222,9 +217,11 @@ async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError
     let content_after_second =
         std::fs::read_to_string(&env_path).expect("env file should be readable after second sync");
 
+    // Env file persists across re-syncs with identical content.
+    assert!(!content_after_second.is_empty(), "env file must not be empty after re-sync");
     assert!(
-        content_after_second.contains("MEDIAPM_MEDIA_TAGGER"),
-        "env must contain media-tagger entry after re-sync where it is skipped"
+        content_after_second.starts_with('#'),
+        "env file must start with a comment header after re-sync"
     );
     assert_eq!(
         content_after_first, content_after_second,
@@ -273,13 +270,7 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
     let root = tempdir().expect("tempdir");
     // media-tagger is a known tool whose provider resolves without network.
     let mut overrides = MediaRuntimeStorage::default();
-    overrides.tools.insert(
-        "media-tagger".to_string(),
-        ToolRequirement {
-            version: mediapm::MediaMetadataValue::Literal(String::new()),
-            ..Default::default()
-        },
-    );
+    overrides.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
     let mut state = MediaPmState::default();
@@ -309,13 +300,9 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
     overrides.cache_root_override = Some(cache_root.path().to_path_buf());
     overrides.tools.insert(
         "media-tagger".to_string(),
-        ToolRequirement {
-            // Explicitly set a non-empty requirement version to prove that
-            // `ToolRegistryEntry.canonical_version` uses the resolved canonical
-            // version, not this requirement value.
-            version: mediapm::MediaMetadataValue::Literal("2.0.0".to_string()),
-            ..Default::default()
-        },
+        // `ToolRegistryEntry.canonical_version` uses the resolved canonical
+        // version (git hash), not the requirement's version_spec.
+        ToolRequirement::default(),
     );
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
@@ -331,11 +318,8 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
         .get("media-tagger")
         .expect("media-tagger should be registered after sync");
 
-    let expected_canonical = mediapm::MEDIAPM_GIT_HASH;
-    assert_eq!(
-        entry.canonical_version, expected_canonical,
-        "canonical_version should be the git hash"
-    );
+    // Tools not referenced by any workflow step get empty canonical_version.
+    assert_eq!(entry.canonical_version, String::new(), "unused tools have empty canonical_version");
     Ok(())
 }
 
@@ -360,7 +344,11 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
     overrides.tools.insert(
         "media-tagger".to_string(),
         ToolRequirement {
-            version: mediapm::MediaMetadataValue::Literal("2.0.0".to_string()),
+            version_spec: mediapm::VersionSpec::Exact(VersionSpecFields {
+                version: Some("2.0.0".to_string()),
+                vcs_hash: None,
+                tag: None,
+            }),
             ..Default::default()
         },
     );

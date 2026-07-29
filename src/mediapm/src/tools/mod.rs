@@ -8,6 +8,7 @@
 //! - **Provider** — per-tool source definitions for the 3-phase pipeline
 //! - **Workflows** — step synthesis and shared spec helpers
 
+pub(crate) mod dependency;
 pub(crate) mod downloader;
 pub(crate) mod preset;
 pub(crate) mod provider;

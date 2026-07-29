@@ -47,9 +47,31 @@ Per-tool `build_<tool>_spec()` functions wrap presets to produce final `(ToolSpe
 | `coverart/`  | Extracted cover art images                          |
 | `inputs/`    | Step input files staged by the conductor            |
 
+## Per-preset dependency type registry
+
+Each preset module with dependencies should provide a `dependency_types()`
+function returning `BTreeMap<&'static str, DependencyType>`. This maps
+companion tool IDs to their companion relationship type (`SameStep`,
+`CrossStep`, `Both`), overriding the default `SameStep`.
+
+The function is used by `known_dependency_type()` in
+`src/mediapm/src/tools/dependency.rs` to resolve a dependency's relationship
+without involving user config.
+
+Currently classified edges:
+
+| Requirer       | Dependency    | Type        |
+| -------------- | ------------- | ----------- |
+| `yt-dlp`       | `ffmpeg`      | `SameStep`  |
+| `yt-dlp`       | `media-tagger` | `CrossStep` |
+| `media-tagger` | `ffmpeg`      | `SameStep`  |
+| `media-tagger` | `rsgain`      | `CrossStep` |
+| `rsgain`       | `ffmpeg`      | `CrossStep` |
+
 ## Key invariants
 
 - Unknown tool name → **panics** with `"unknown managed tool: {tool_name}"` (programming error, not user error).
 - `apply_preset` is called only after successful provisioning — content_map and os_exec_paths are always populated for known managed tools.
 - `runtime.impure` must be `true` for tools with side effects (yt-dlp: network fetches, media-tagger: network lookups).
 - Concurrency defaults: 1 active concurrent call; retry: 1 outer retry for network-dependent tools.
+- `DependencyType` is defined in `src/mediapm/src/tools/dependency.rs` (internal, no serde derives, not user-configurable).

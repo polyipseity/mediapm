@@ -88,7 +88,7 @@ pub(crate) fn compute_used_tool_ids(
         }
         if let Some(value) = desired_tools.get(&tool_id) {
             if let Ok(req) = serde_json::from_value::<ToolRequirement>(value.clone()) {
-                for dep_id in req.dependencies.deps.keys() {
+                for dep_id in req.dependencies.keys() {
                     if !used.contains(dep_id.as_str()) {
                         stack.push(dep_id.clone());
                     }
@@ -618,9 +618,7 @@ mod tests {
     use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
-    use crate::config::{
-        DependencySpec, DependencyType, ToolRequirement, ToolRequirementDependencies,
-    };
+    use crate::config::ToolRequirement;
     use serde_json;
 
     use super::*;
@@ -974,24 +972,10 @@ mod tests {
         // yt-dlp depends on ffmpeg and deno
         let yt_dlp_req = ToolRequirement {
             version_spec: mediapm_conductor::tools::provider::VersionSpec::Latest,
-            dependencies: ToolRequirementDependencies {
-                deps: BTreeMap::from([
-                    (
-                        "ffmpeg".to_string(),
-                        DependencySpec {
-                            dep_type: DependencyType::Inter,
-                            version_spec: mediapm_conductor::tools::provider::VersionSpec::Inherit,
-                        },
-                    ),
-                    (
-                        "deno".to_string(),
-                        DependencySpec {
-                            dep_type: DependencyType::Inter,
-                            version_spec: mediapm_conductor::tools::provider::VersionSpec::Inherit,
-                        },
-                    ),
-                ]),
-            },
+            dependencies: BTreeMap::from([
+                ("ffmpeg".to_string(), mediapm_conductor::tools::provider::VersionSpec::Inherit),
+                ("deno".to_string(), mediapm_conductor::tools::provider::VersionSpec::Inherit),
+            ]),
             ..Default::default()
         };
         desired.insert("yt-dlp".to_string(), serde_json::to_value(yt_dlp_req).unwrap());
@@ -1022,28 +1006,18 @@ mod tests {
         // tool_a → tool_b, tool_b → tool_a (circular)
         let a_req = ToolRequirement {
             version_spec: mediapm_conductor::tools::provider::VersionSpec::Latest,
-            dependencies: ToolRequirementDependencies {
-                deps: BTreeMap::from([(
-                    "tool_b".to_string(),
-                    DependencySpec {
-                        dep_type: DependencyType::Inter,
-                        version_spec: mediapm_conductor::tools::provider::VersionSpec::Inherit,
-                    },
-                )]),
-            },
+            dependencies: BTreeMap::from([(
+                "tool_b".to_string(),
+                mediapm_conductor::tools::provider::VersionSpec::Inherit,
+            )]),
             ..Default::default()
         };
         let b_req = ToolRequirement {
             version_spec: mediapm_conductor::tools::provider::VersionSpec::Latest,
-            dependencies: ToolRequirementDependencies {
-                deps: BTreeMap::from([(
-                    "tool_a".to_string(),
-                    DependencySpec {
-                        dep_type: DependencyType::Inter,
-                        version_spec: mediapm_conductor::tools::provider::VersionSpec::Inherit,
-                    },
-                )]),
-            },
+            dependencies: BTreeMap::from([(
+                "tool_a".to_string(),
+                mediapm_conductor::tools::provider::VersionSpec::Inherit,
+            )]),
             ..Default::default()
         };
         desired.insert("tool_a".to_string(), serde_json::to_value(a_req).unwrap());

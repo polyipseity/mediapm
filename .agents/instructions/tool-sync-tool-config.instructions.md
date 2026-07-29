@@ -1,5 +1,5 @@
 ---
-description: "Use when editing companion dependency resolution via ToolRequirementDependencies in src/mediapm/src/config/mod.rs and src/mediapm/src/conductor_bridge/sync/mod.rs."
+description: "Use when editing companion dependency resolution via flattened BTreeMap dependencies in src/mediapm/src/config/mod.rs and src/mediapm/src/conductor_bridge/sync/mod.rs."
 name: "Tool Sync Dependency Resolution"
 applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/conductor_bridge/sync/mod.rs"
 ---
@@ -10,39 +10,43 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/conductor_bridge/sync/m
 
 ### Purpose
 
-- Model tool-to-tool dependency declarations (`deps: BTreeMap<String, DependencySpec>`)
-  directly on `ToolRequirementDependencies`, replacing the old flat
-  `ffmpeg_version`/`deno_version`/`sd_version` field approach.
+- Model tool-to-tool dependency declarations as a flat
+  `BTreeMap<String, VersionSpec>` on `ToolRequirement`, replacing the old
+  `ToolRequirementDependencies` wrapper and `DependencySpec` struct.
+- Dependency relationship type (`SameStep` vs `CrossStep`) is determined by
+  per-preset `known_dependency_type()` lookup, not by user config.
 - Consumed by `compute_used_tool_ids` to determine which tools are active
-  (by traversing transitive `Inter`/`Both` deps from step tool IDs).
+  (by traversing transitive `SameStep`/`Both` deps from step tool IDs).
 - Companion binding (inlining same-step deps into the requester's content map)
-  uses `dep_type: Inter` to identify same-step relationships.
+  uses `DependencyType::SameStep` to identify same-step relationships.
 
 ### Dependency data model
 
-#### `DependencySpec` (in `src/mediapm/src/config/mod.rs`)
+`ToolRequirement.dependencies` is a flat `BTreeMap<String, VersionSpec>`:
 
-| Field          | Type             | Default                          | Purpose                                                    |
-| -------------- | ---------------- | -------------------------------- | ---------------------------------------------------------- |
-| `dep_type`     | `DependencyType` | `Inter`                          | Companion relationship type (same-step vs cross-step)      |
-| `version_spec` | `VersionSpec`    | `Inherit`                        | Version spec: `"latest"`, `"inherit"`, or exact fields    |
+```nickel
+dependencies = { ffmpeg = "inherit", deno = "latest" }
+```
 
-#### `DependencyType`
+No `DependencySpec`, no `ToolRequirementDependencies`, no `dep_type` in user
+config. The companion relationship type is defined internally per preset.
 
-| Variant   | Meaning                                                                 |
-| --------- | ----------------------------------------------------------------------- |
-| `Cross`   | Invoked as a separate workflow step (cross-step dependency).            |
-| `Inter`   | Folded into the same step as a companion (interstep / same-step).       |
-| `Both`    | Functions as both interstep AND cross-step.                             |
+#### `DependencyType` (in `crate::tools::dependency::DependencyType`)
 
-Default is `Inter`.
+| Variant      | Meaning                                                                 |
+| ------------ | ----------------------------------------------------------------------- |
+| `SameStep`   | Folded into the same step as a companion (same-step dependency).        |
+| `CrossStep`  | Invoked as a separate workflow step (cross-step dependency).            |
+| `Both`       | Functions as both same-step AND cross-step.                             |
+
+Not user-configurable. No serde derives. Defined in `src/mediapm/src/tools/dependency.rs`.
 
 #### `VersionSpec::Inherit`
 
 - Signals "use the dependency tool's global version spec from `tools.<id>.version_spec`".
 - Resolved at provisioning time by `resolve_dep_version_spec()`.
 - Errors if the referenced tool is not configured in the workspace, or if
-  the global tool itself has `version_spec: inher` (circular resolution).
+  the global tool itself has `version_spec: inherit` (circular resolution).
 
 #### Spec matching (`spec_matches_entry`)
 
@@ -67,11 +71,11 @@ Default is `Inter`.
 
 ### Companion binding strategy (future)
 
-- **Same-step** (`dep_type: Inter`): companion payload bytes will be inlined
+- **Same-step** (`DependencyType::SameStep`): companion payload bytes will be inlined
   into the requester's content_map with a prefix (e.g. `companions/`).
-- **Cross-step** (`dep_type: Cross`): payload bytes and ids remain separate.
-- Not yet wired in the coordinator; `dep_type` annotations are available for
-  future binding implementation.
+- **Cross-step** (`DependencyType::CrossStep`): payload bytes and ids remain separate.
+- Not yet wired in the coordinator; `DependencyType` annotations from per-preset
+  `dependency_types()` are available for future binding implementation.
 
 _Note: the generated env output function previously documented here has moved to
 `mediapm-conductor::runtime_env::write_generated_dotenv`. See

@@ -146,9 +146,3 @@ pub fn default_retry_impure() -> bool {
 pub fn default_tool_version_spec() -> mediapm_conductor::tools::provider::VersionSpec {
     mediapm_conductor::tools::provider::VersionSpec::Latest
 }
-
-/// Default version spec for dependencies — "inherit".
-#[must_use]
-pub fn default_dep_version_spec() -> mediapm_conductor::tools::provider::VersionSpec {
-    mediapm_conductor::tools::provider::VersionSpec::Inherit
-}
