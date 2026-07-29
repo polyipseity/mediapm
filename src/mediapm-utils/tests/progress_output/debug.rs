@@ -119,16 +119,20 @@ fn progress_debug_no_bars_shows_empty_bars_array() {
 
 #[test]
 fn progress_debug_env_auto_creates_file() {
-    // Set the env var to `auto` before creating the group.
+    // Use a unique file path (not `auto` which derives from shared PID) so that
+    // other tests also calling `detect_progress_debug_env()` in the same process
+    // write to a different file and cannot truncate this test's output.
+    let unique_suffix = format!(
+        "{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    );
+    let debug_path = format!("progress-debug-test-{unique_suffix}.jsonl");
     // SAFETY: single-threaded test — no concurrent env access.
     unsafe {
-        std::env::set_var("MEDIAPM_PROGRESS_DEBUG", "auto");
+        std::env::set_var("MEDIAPM_PROGRESS_DEBUG", &debug_path);
     }
-    // Make sure we clean up after the test.
-    let _cleanup = EnvGuard("MEDIAPM_PROGRESS_DEBUG");
 
-    let pid = std::process::id();
-    let expected_path = std::path::PathBuf::from(format!("progress-debug-{pid}.jsonl"));
+    let expected_path = std::path::PathBuf::from(&debug_path);
 
     // Ensure no stale file from a previous run.
     let _ = std::fs::remove_file(&expected_path);
@@ -136,35 +140,25 @@ fn progress_debug_env_auto_creates_file() {
     let (mp, _term) = mk();
     let group = ProgressGroup::builder().with_multi_progress(mp).build();
 
+    // Remove the env var *immediately* after build() so that other tests
+    // running in parallel (cargo test runs integration tests in the same
+    // binary concurrently) do NOT also trigger detect_progress_debug_env()
+    // and overwrite this test's file.
+    // SAFETY: single-threaded test — no concurrent env access.
+    unsafe {
+        std::env::remove_var("MEDIAPM_PROGRESS_DEBUG");
+    }
+
     group.tick();
     std::thread::sleep(Duration::from_millis(10));
 
     drop(group);
 
-    assert!(
-        expected_path.exists(),
-        "expected auto-named debug file at {}",
-        expected_path.display()
-    );
+    assert!(expected_path.exists(), "expected debug file at {}", expected_path.display());
 
     let contents = std::fs::read_to_string(&expected_path).unwrap();
     assert!(!contents.is_empty(), "debug file should contain at least one tick line");
 
     // Clean up.
     let _ = std::fs::remove_file(&expected_path);
-}
-
-// ---------------------------------------------------------------------------
-// RAII guard to unset an env var on drop (regardless of test outcome)
-// ---------------------------------------------------------------------------
-
-struct EnvGuard(&'static str);
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        // SAFETY: single-threaded test — no concurrent env access.
-        unsafe {
-            std::env::remove_var(self.0);
-        }
-    }
 }
