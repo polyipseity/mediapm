@@ -59,10 +59,6 @@ const RUNTIME_DOTENV_GENERATED_TEMPLATE: &str = concat!(
     "# This file is managed by tooling. Manual edits may be overwritten.\n",
 );
 
-/// Canonical colocated `.gitignore` content for conductor runtime dotenv files.
-const RUNTIME_DOTENV_GITIGNORE: &str =
-    concat!("/.env\n", "/.env.generated\n", "/cache/\n", "/tools/\n");
-
 /// Returns the canonical `.env` path for one conductor runtime root.
 #[must_use]
 pub fn runtime_dotenv_path(conductor_dir: &Path) -> PathBuf {
@@ -75,12 +71,11 @@ pub fn runtime_generated_dotenv_path(conductor_dir: &Path) -> PathBuf {
     conductor_dir.join(RUNTIME_DOTENV_GENERATED_FILE_NAME)
 }
 
-/// Ensures runtime dotenv files and colocated `.gitignore` exist.
+/// Ensures runtime dotenv template files exist.
 ///
 /// # Errors
 ///
-/// Returns [`ConductorError`] when directory creation, file reads, or writes
-/// fail.
+/// Returns [`ConductorError`] when directory creation or file writes fail.
 pub fn ensure_runtime_env_files(conductor_dir: &Path) -> Result<(), ConductorError> {
     fs::create_dir_all(conductor_dir).map_err(|source| ConductorError::Io {
         operation: "creating conductor runtime environment directory".to_string(),
@@ -110,50 +105,7 @@ pub fn ensure_runtime_env_files(conductor_dir: &Path) -> Result<(), ConductorErr
         )?;
     }
 
-    ensure_runtime_gitignore(&conductor_dir.join(".gitignore"))?;
-
     Ok(())
-}
-
-/// Ensures runtime `.gitignore` contains the canonical generated entries.
-fn ensure_runtime_gitignore(path: &Path) -> Result<(), ConductorError> {
-    let existing = if path.exists() {
-        fs::read_to_string(path).map_err(|source| ConductorError::Io {
-            operation: "reading conductor runtime dotenv gitignore".to_string(),
-            path: path.to_path_buf(),
-            source,
-        })?
-    } else {
-        String::new()
-    };
-
-    let rendered = merge_runtime_gitignore(&existing);
-    if path.exists() && rendered == existing {
-        return Ok(());
-    }
-
-    fs::write(path, rendered.as_bytes()).map_err(|source| ConductorError::Io {
-        operation: "writing conductor runtime dotenv gitignore".to_string(),
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-/// Merges canonical runtime `.gitignore` entries into existing file content.
-#[must_use]
-fn merge_runtime_gitignore(existing: &str) -> String {
-    let mut lines = existing.lines().map(ToString::to_string).collect::<Vec<_>>();
-    let required_lines =
-        RUNTIME_DOTENV_GITIGNORE.lines().filter(|line| !line.trim().is_empty()).collect::<Vec<_>>();
-
-    for required in required_lines {
-        if lines.iter().any(|line| line.trim() == required) {
-            continue;
-        }
-        lines.push(required.to_string());
-    }
-
-    if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) }
 }
 
 /// Loads conductor runtime dotenv files in specified order.
@@ -190,22 +142,6 @@ pub fn load_runtime_env_files(
     }
 
     Ok(inherited_names)
-}
-
-/// Loads default runtime dotenv files (`.env` then `.env.generated`).
-///
-/// Convenience wrapper that creates template files on first use and delegates
-/// to [`load_runtime_env_files`] with the standard default file names.
-///
-/// # Errors
-///
-/// Returns [`ConductorError`] when template creation or dotenv loading fails.
-pub fn load_default_runtime_env_files(conductor_dir: &Path) -> Result<Vec<String>, ConductorError> {
-    ensure_runtime_env_files(conductor_dir)?;
-    load_runtime_env_files(
-        conductor_dir,
-        &[RUNTIME_DOTENV_FILE_NAME, RUNTIME_DOTENV_GENERATED_FILE_NAME],
-    )
 }
 
 /// Returns the default env file names in load order.
@@ -282,44 +218,4 @@ pub fn discover_project_root() -> Result<PathBuf, ConductorError> {
 
     // Fallback: return the original cwd
     Ok(cwd)
-}
-
-#[cfg(test)]
-mod tests {
-    use tempfile::tempdir;
-
-    use super::{ensure_runtime_env_files, merge_runtime_gitignore};
-
-    /// Protects generated runtime `.gitignore` defaults so runtime cache and
-    /// generated env files stay out of version control by default.
-    #[test]
-    fn merge_runtime_gitignore_adds_runtime_cache_entries() {
-        let merged = merge_runtime_gitignore("/.env\n");
-
-        assert!(merged.contains("/.env\n"));
-        assert!(merged.contains("/.env.generated\n"));
-        assert!(merged.contains("/cache/\n"));
-        assert!(merged.contains("/tools/\n"));
-        assert_eq!(merged, "/.env\n/.env.generated\n/cache/\n/tools/\n");
-    }
-
-    /// Protects no-overwrite behavior by preserving existing custom ignore
-    /// lines while appending any missing generated runtime entries.
-    #[test]
-    fn ensure_runtime_env_files_preserves_existing_gitignore_content() {
-        let workspace = tempdir().expect("tempdir");
-        let runtime_dir = workspace.path().join(".conductor");
-        std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
-        let gitignore_path = runtime_dir.join(".gitignore");
-        std::fs::write(&gitignore_path, "/custom/\n/.env\n").expect("seed gitignore");
-
-        ensure_runtime_env_files(&runtime_dir).expect("ensure runtime env files");
-
-        let rendered = std::fs::read_to_string(&gitignore_path).expect("read gitignore");
-        assert!(rendered.contains("/custom/\n"));
-        assert!(rendered.contains("/.env\n"));
-        assert!(rendered.contains("/.env.generated\n"));
-        assert!(rendered.contains("/cache/\n"));
-        assert!(rendered.contains("/tools/\n"));
-    }
 }
