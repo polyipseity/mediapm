@@ -5,13 +5,35 @@
 
 let shared = import "mod.ncl" in
 
+let VersionSpecV1 = std.contract.any_of [
+  std.contract.from_predicate (fun value => value == "latest"),
+  std.contract.from_predicate (fun value => value == "inherit"),
+  {
+    vcs_hash | String | optional,
+    version | String | optional,
+    tag | String | optional,
+    ..
+  },
+]
+in
+
+let DependencySpecV1 = {
+  dep_type
+    | std.enum.TagOrString
+    | optional,
+  version_spec
+    | VersionSpecV1
+    | optional,
+  ..
+}
+in
+
 let ToolRequirementV1 = {
-  version | String | { .. } | optional,
-  tag | String | optional,
+  version_spec
+    | VersionSpecV1
+    | optional,
   dependencies | {
-    ffmpeg_version | String | { .. } | optional,
-    deno_version | String | { .. } | optional,
-    sd_version | String | { .. } | optional,
+    deps | {_ : DependencySpecV1} | default = {},
     ..
   } | default = {},
   recheck_seconds | Number | optional,

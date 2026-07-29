@@ -10,8 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mediapm::{
-    MediaMetadataValue, MediaPmService, ToolRequirement, ToolRequirementDependencies,
-    load_mediapm_document, save_mediapm_document,
+    DependencySpec, DependencyType, MediaPmService, ToolRequirement, ToolRequirementDependencies,
+    VersionSpec, load_mediapm_document, save_mediapm_document,
 };
 use mediapm_cas::Hash;
 use mediapm_conductor::{
@@ -71,33 +71,60 @@ fn tool_id_for(logical_tool_name: &str) -> String {
 
 fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
     let dependencies = match logical_tool_name {
-        "yt-dlp" | "media-tagger" => ToolRequirementDependencies {
-            ffmpeg_version: MediaMetadataValue::Literal("inherit".to_string()),
-            deno_version: if logical_tool_name == "yt-dlp" {
-                MediaMetadataValue::Literal("inherit".to_string())
-            } else {
-                MediaMetadataValue::default()
-            },
-            sd_version: MediaMetadataValue::default(),
+        "yt-dlp" => ToolRequirementDependencies {
+            deps: BTreeMap::from([
+                (
+                    "ffmpeg".to_string(),
+                    DependencySpec {
+                        dep_type: DependencyType::Inter,
+                        version_spec: VersionSpec::Inherit,
+                    },
+                ),
+                (
+                    "deno".to_string(),
+                    DependencySpec {
+                        dep_type: DependencyType::Inter,
+                        version_spec: VersionSpec::Inherit,
+                    },
+                ),
+            ]),
+        },
+        "media-tagger" => ToolRequirementDependencies {
+            deps: BTreeMap::from([(
+                "ffmpeg".to_string(),
+                DependencySpec {
+                    dep_type: DependencyType::Inter,
+                    version_spec: VersionSpec::Inherit,
+                },
+            )]),
         },
         "rsgain" => ToolRequirementDependencies {
-            ffmpeg_version: MediaMetadataValue::Literal("inherit".to_string()),
-            deno_version: MediaMetadataValue::default(),
-            sd_version: MediaMetadataValue::Literal("inherit".to_string()),
+            deps: BTreeMap::from([
+                (
+                    "ffmpeg".to_string(),
+                    DependencySpec {
+                        dep_type: DependencyType::Inter,
+                        version_spec: VersionSpec::Inherit,
+                    },
+                ),
+                (
+                    "sd".to_string(),
+                    DependencySpec {
+                        dep_type: DependencyType::Inter,
+                        version_spec: VersionSpec::Inherit,
+                    },
+                ),
+            ]),
         },
         _ => ToolRequirementDependencies::default(),
     };
 
     ToolRequirement {
-        version: MediaMetadataValue::default(),
-        tag: "latest".to_string(),
+        version_spec: VersionSpec::Latest,
         dependencies,
         recheck_seconds: 0,
         max_input_slots: 16,
         max_output_slots: 4,
-        desired_git_hash: String::new(),
-        desired_tag: String::new(),
-        desired_version: String::new(),
     }
 }
 

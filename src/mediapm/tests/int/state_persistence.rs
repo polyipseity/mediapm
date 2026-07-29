@@ -48,7 +48,7 @@ fn v2_round_trip() {
                 deployed_at: 1_700_000_000,
                 resolved_tag: String::new(),
                 resolved_version: String::new(),
-                resolved_git_hash: String::new(),
+                resolved_vcs_hash: String::new(),
             },
         )]),
         workflow_states: BTreeMap::new(),
@@ -207,7 +207,7 @@ fn json_save_idempotent() {
                 deployed_at: 1_700_000_000,
                 resolved_tag: String::new(),
                 resolved_version: String::new(),
-                resolved_git_hash: String::new(),
+                resolved_vcs_hash: String::new(),
             },
         )]),
         workflow_states: BTreeMap::new(),
@@ -275,7 +275,7 @@ fn tool_registry_entry_round_trip() {
         deployed_at: 0,
         resolved_tag: String::new(),
         resolved_version: String::new(),
-        resolved_git_hash: String::new(),
+        resolved_vcs_hash: String::new(),
     };
     let json = serde_json::to_value(&entry).expect("serialize");
     let back: ToolRegistryEntry = serde_json::from_value(json).expect("deserialize");
@@ -308,7 +308,7 @@ fn tool_registry_entry_normalize_drops_blank_entry() {
             deployed_at: 0,
             resolved_tag: String::new(),
             resolved_version: String::new(),
-            resolved_git_hash: String::new(),
+            resolved_vcs_hash: String::new(),
         },
     );
     state.normalize();
@@ -327,7 +327,7 @@ fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
             deployed_at: 0,
             resolved_tag: String::new(),
             resolved_version: String::new(),
-            resolved_git_hash: String::new(),
+            resolved_vcs_hash: String::new(),
         },
     );
     state.normalize();
@@ -346,7 +346,7 @@ fn state_normalize_retains_tool_with_canonical_version() {
             deployed_at: 0,
             resolved_tag: String::new(),
             resolved_version: String::new(),
-            resolved_git_hash: String::new(),
+            resolved_vcs_hash: String::new(),
         },
     );
     state.normalize();
@@ -368,7 +368,7 @@ fn state_normalize_drops_tool_with_all_blank() {
             deployed_at: 0,
             resolved_tag: String::new(),
             resolved_version: String::new(),
-            resolved_git_hash: String::new(),
+            resolved_vcs_hash: String::new(),
         },
     );
     state.normalize();
@@ -387,7 +387,7 @@ fn canonical_version_json_round_trip() {
             deployed_at: 0,
             resolved_tag: String::new(),
             resolved_version: String::new(),
-            resolved_git_hash: String::new(),
+            resolved_vcs_hash: String::new(),
         };
         let json = serde_json::to_value(&entry).unwrap();
         let back: ToolRegistryEntry = serde_json::from_value(json).unwrap();
@@ -404,7 +404,7 @@ fn tool_registry_entry_serialization_includes_version() {
         deployed_at: 0,
         resolved_tag: String::new(),
         resolved_version: String::new(),
-        resolved_git_hash: String::new(),
+        resolved_vcs_hash: String::new(),
     };
     let json = serde_json::to_value(&entry).unwrap();
     let map = json.as_object().expect("ToolRegistryEntry should serialize to a JSON object");

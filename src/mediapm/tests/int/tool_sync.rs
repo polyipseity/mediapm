@@ -292,7 +292,7 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
             deployed_at: 0,
             resolved_tag: String::new(),
             resolved_version: String::new(),
-            resolved_git_hash: String::new(),
+            resolved_vcs_hash: String::new(),
         },
     );
     assert!(!service.logical_tool_requires_sync("media-tagger", &state).await?);

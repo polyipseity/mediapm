@@ -123,7 +123,7 @@ async fn main_cli() -> anyhow::Result<()> {
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-                service.add_tool_requirement(&name, None, None, None)?;
+                service.add_tool_requirement(&name, None)?;
                 print_result(
                     StatusIcon::Success,
                     "tool added",

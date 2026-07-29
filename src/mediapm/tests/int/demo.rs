@@ -86,7 +86,7 @@ async fn add_tool_requirement_persists_single_call() -> Result<(), mediapm::Medi
     let root = tempdir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
-    service.add_tool_requirement("media-tagger", None, None, None)?;
+    service.add_tool_requirement("media-tagger", None)?;
 
     let doc = read_doc(&service.paths().mediapm_ncl);
     assert!(doc.tools.contains_key("media-tagger"), "media-tagger should be registered");
