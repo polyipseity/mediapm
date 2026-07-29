@@ -318,8 +318,11 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
         .get("media-tagger")
         .expect("media-tagger should be registered after sync");
 
-    // Tools not referenced by any workflow step get empty canonical_version.
-    assert_eq!(entry.canonical_version, String::new(), "unused tools have empty canonical_version");
+    // All desired tools are used seeds, so canonical_version is populated.
+    assert!(
+        !entry.canonical_version.is_empty(),
+        "canonical_version must be non-empty for configured tools"
+    );
     Ok(())
 }
 
@@ -357,5 +360,26 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
     let state = MediaPmState::default();
     let needing = service.collect_tools_requiring_sync(&state).await?;
     assert_eq!(needing, vec!["media-tagger"]);
+    Ok(())
+}
+
+/// Configured tools are never pruned when all desired tools are used as
+/// seeds. Regression guard: if `compute_used_tool_ids` fails to include a
+/// desired tool, pruning would incorrectly flag it as unused.
+#[tokio::test]
+async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let summary = service.sync_tools().await?;
+    assert_eq!(
+        summary.pruned_tools, 0,
+        "configured tools must not be pruned; pruned={}",
+        summary.pruned_tools,
+    );
     Ok(())
 }
