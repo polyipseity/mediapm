@@ -38,9 +38,27 @@ use crate::{
     normalize_source_uri, validate_source_uri,
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+/// Canonical colocated `.gitignore` content for the mediapm runtime root
+/// (`.mediapm/`). Created at service construction time to keep generated
+/// and machine-managed files out of version control.
+const MEDIAPM_RUNTIME_GITIGNORE: &str =
+    concat!("/.env\n", "/.env.generated\n", "/cache/\n", "/tools/\n");
+
+/// Creates a `.gitignore` in the mediapm runtime root with defaults for
+/// generated/machine-managed files. Only writes if the file does not already
+/// exist, preserving any user customizations.
+fn ensure_mediapm_gitignore(runtime_root: &std::path::Path) -> Result<(), MediaPmError> {
+    let gitignore_path = runtime_root.join(".gitignore");
+    if gitignore_path.exists() {
+        return Ok(());
+    }
+    std::fs::write(&gitignore_path, MEDIAPM_RUNTIME_GITIGNORE).map_err(|e| MediaPmError::Io {
+        operation: "create runtime root .gitignore".to_string(),
+        path: gitignore_path,
+        source: e,
+    })?;
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Service struct
@@ -839,6 +857,7 @@ impl MediaPmService<FileSystemCas> {
             path: effective_paths.runtime_root.clone(),
             source: e,
         })?;
+        ensure_mediapm_gitignore(&effective_paths.runtime_root)?;
 
         // Open the filesystem CAS.
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths);
