@@ -336,6 +336,7 @@ fn spinner_advances_without_dirty() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build();
     let _child = group.add_bar(10, "test");
 
@@ -352,17 +353,17 @@ fn spinner_advances_without_dirty() {
     // All must show 0/10 (no progress made).
     assert_eq!(
         t1,
-        concat!("\n", "\n", "\n", "⠴                      test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",),
+        concat!("\n", "\n", "\n", "⠸                      test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",),
         "tick 1 shows 0/10",
     );
     assert_eq!(
         t2,
-        concat!("\n", "\n", "\n", "⠦                      test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",),
+        concat!("\n", "\n", "\n", "⠼                      test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",),
         "tick 2 shows 0/10",
     );
     assert_eq!(
         t3,
-        concat!("\n", "\n", "\n", "⠧                      test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",),
+        concat!("\n", "\n", "\n", "⠴                      test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",),
         "tick 3 shows 0/10",
     );
 
@@ -378,6 +379,7 @@ fn spinner_does_not_advance_on_finished_bar() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build();
     let finished = group.add_bar(3, "done");
     finished.finish_success();
@@ -408,6 +410,7 @@ fn spinner_active_among_finished() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build();
     let finished = group.add_bar(3, "done");
     finished.finish_success();
@@ -430,7 +433,7 @@ fn spinner_active_among_finished() {
     assert_eq!(lines[2], finished_line, "finished bar must stay frozen");
     // Active bar shows progress.
     assert_eq!(
-        lines[3], "⠇                   working ████░░░░░░░░░░░░░░░░░  2/10 0s 0/d",
+        lines[3], "⠦                   working ████░░░░░░░░░░░░░░░░░  2/10 0s 0/d",
         "active bar shows 2/10: {}",
         lines[3],
     );
@@ -445,6 +448,7 @@ fn regression_spinner_dirty_independence() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build();
     let child = group.add_bar(10, "test");
     child.set_position(5);
@@ -462,22 +466,22 @@ fn regression_spinner_dirty_independence() {
     // All ticks show 5/10 (stable position).
     assert_eq!(
         t1,
-        concat!("\n", "\n", "\n", "⠴                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
+        concat!("\n", "\n", "\n", "⠼                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
         "tick 1: 5/10",
     );
     assert_eq!(
         t2,
-        concat!("\n", "\n", "\n", "⠦                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
+        concat!("\n", "\n", "\n", "⠴                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
         "tick 2: 5/10",
     );
     assert_eq!(
         t3,
-        concat!("\n", "\n", "\n", "⠧                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
+        concat!("\n", "\n", "\n", "⠦                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
         "tick 3: 5/10",
     );
     assert_eq!(
         t4,
-        concat!("\n", "\n", "\n", "⠇                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
+        concat!("\n", "\n", "\n", "⠧                      test ██████████░░░░░░░░░░░  5/10 0s 0/d",),
         "tick 4: 5/10",
     );
 
@@ -494,6 +498,7 @@ fn spinner_stops_on_abandoned_bar() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build();
     let abandoned = group.add_bar(5, "abandoned");
     abandoned.set_position(2);
@@ -522,6 +527,7 @@ fn spinner_stops_on_failed_bar() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build();
     let failed = group.add_bar(5, "failed");
     failed.set_position(2);

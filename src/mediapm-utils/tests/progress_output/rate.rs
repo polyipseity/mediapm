@@ -18,6 +18,7 @@ fn rate_stable_on_stale_ticks() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(time_source.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(1000, "test");
     // Advance a significant amount so the initial rate is clearly non-zero.
@@ -28,8 +29,8 @@ fn rate_stable_on_stale_ticks() {
     assert_eq!(
         after_progress,
         concat!(
-            "⠼                      test ██████████░░░░░░░░░░░  500/1.0k 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                      test ██████████░░░░░░░░░░░  500/1.0k 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
 
@@ -43,8 +44,8 @@ fn rate_stable_on_stale_ticks() {
     assert_eq!(
         after_stale,
         concat!(
-            "⠦                      test ██████████░░░░░░░░░░░  500/1.0k 0s 455/s 1s\n",
-            "⠴                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠴                      test ██████████░░░░░░░░░░░  500/1.0k 0s 455/s 1s\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
 }
@@ -62,6 +63,7 @@ fn rate_updates_on_progress() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(time_source.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(2000, "test");
     child.set_position(10);
@@ -79,15 +81,15 @@ fn rate_updates_on_progress() {
     assert_eq!(
         after_small,
         concat!(
-            "⠼                      test ░░░░░░░░░░░░░░░░░░░░░  10/2.0k 0s 500/s 3s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                      test ░░░░░░░░░░░░░░░░░░░░░  10/2.0k 0s 500/s 3s\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
     assert_eq!(
         after_large,
         concat!(
-            "⠦                      test ███████████████░░░░░░  1.5k/2.0k 0s 2.9k/s 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠴                      test ███████████████░░░░░░  1.5k/2.0k 0s 2.9k/s 0s\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
     assert_ne!(after_small, after_large, "rate/progress must differ between 10 and 1500");
@@ -103,6 +105,7 @@ fn rate_always_shown() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(time_source.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _child = group.add_bar(100, "idle");
     // No progress made — bar is still active.
@@ -111,8 +114,8 @@ fn rate_always_shown() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠼                      idle ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠹                      idle ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
 }
@@ -131,6 +134,7 @@ fn rate_exact_output_with_known_rate() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(1000, "test");
     child.set_position(500);
@@ -139,8 +143,8 @@ fn rate_exact_output_with_known_rate() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠼                      test ██████████░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d",
+            "⠸                      test ██████████░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d",
         ),
     );
 }
@@ -155,6 +159,7 @@ fn rate_exact_output_idle() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _child = group.add_bar(100, "idle");
     ts.advance(std::time::Duration::from_secs(2));
@@ -162,8 +167,8 @@ fn rate_exact_output_idle() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠼                      idle ░░░░░░░░░░░░░░░░░░░░░  0/100 2s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠹                      idle ░░░░░░░░░░░░░░░░░░░░░  0/100 2s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         ),
     );
 }

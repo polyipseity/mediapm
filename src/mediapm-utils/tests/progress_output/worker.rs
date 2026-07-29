@@ -156,6 +156,7 @@ fn worker_exact_mixed_finish_states() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let c1 = group.add_bar(2, "worker-a");
     let c2 = group.add_bar(2, "worker-b");
@@ -188,6 +189,7 @@ fn worker_exact_all_finish_with_overall() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let c1 = group.add_bar(2, "worker-a");
     let c2 = group.add_bar(2, "worker-b");
@@ -222,6 +224,7 @@ fn worker_exact_interleaved_advances() {
         .capacity(4)
         .with_overall("overall", 10)
         .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
     let c1 = group.add_bar(10, "fast");
     let c2 = group.add_bar(10, "slow");
@@ -234,9 +237,9 @@ fn worker_exact_interleaved_advances() {
         term.contents(),
         concat!(
             "\n",
-            "⠼                      fast ████████████████░░░░░  8/10 1s 48/m 2s\n",
-            "⠴                      slow ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
-            "⠸                   overall █████████████████████  11/10 1s 1.1/s",
+            "⠸                      fast ████████████████░░░░░  8/10 1s 48/m 2s\n",
+            "⠼                      slow ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
+            "⠹                   overall █████████████████████  11/10 1s 1.1/s",
         ),
     );
 }
@@ -251,6 +254,7 @@ fn worker_exact_no_overall_multiple_children() {
         .capacity(3)
         .with_overall("overall", 1)
         .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
     let c1 = group.add_bar(5, "child-a");
     let c2 = group.add_bar(5, "child-b");
@@ -263,9 +267,9 @@ fn worker_exact_no_overall_multiple_children() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠼                   child-a ████████░░░░░░░░░░░░░  2/5 0s 0/d\n",
-            "⠴                   child-b ████████████████░░░░░  4/5 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                   child-a ████████░░░░░░░░░░░░░  2/5 0s 0/d\n",
+            "⠼                   child-b ████████████████░░░░░  4/5 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
 }

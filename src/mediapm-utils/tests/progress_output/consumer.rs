@@ -24,6 +24,7 @@ fn exact_consumer_parallel_worker_output() {
         .capacity(5)
         .with_overall("overall", 10)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let a = group.add_bar(5, "worker-a");
@@ -45,8 +46,8 @@ fn exact_consumer_parallel_worker_output() {
             "\n",
             "\n",
             "⠏              [F] worker-a ████████████░░░░░░░░░  3/5 1s\n",
-            "⠧                  worker-b ████████████░░░░░░░░░  3/5 2s 17/m 7s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
+            "⠦                  worker-b ████████████░░░░░░░░░  3/5 2s 17/m 7s\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
         )
     );
 }
@@ -55,7 +56,11 @@ fn exact_consumer_parallel_worker_output() {
 #[test]
 fn exact_consumer_sync_too_many_tools_recycles() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
 
     for i in 0..8 {
         let tool = group.add_bar(1, &format!("tool{i}"));
@@ -67,8 +72,8 @@ fn exact_consumer_sync_too_many_tools_recycles() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠴                     tool4 █████████████████████  1/1 0s\n",
-            "⠦                     tool5 █████████████████████  1/1 0s\n",
+            "⠙                     tool4 █████████████████████  1/1 0s\n",
+            "⠙                     tool5 █████████████████████  1/1 0s\n",
             "⠏                     tool6 █████████████████████  1/1 0s\n",
             "⠏                     tool7 █████████████████████  1/1 0s",
         )
@@ -79,7 +84,11 @@ fn exact_consumer_sync_too_many_tools_recycles() {
 #[test]
 fn exact_consumer_retention_finished_bar() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
 
     let a = group.add_bar(2, "alpha");
     a.advance(2);
@@ -106,7 +115,11 @@ fn exact_consumer_retention_finished_bar() {
 #[test]
 fn exact_consumer_retention_multiple_finished() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
 
     for (i, _msg) in ["first", "second", "third", "fourth"].iter().enumerate() {
         let h = group.add_bar(1, &format!("task{i}"));
@@ -119,7 +132,7 @@ fn exact_consumer_retention_multiple_finished() {
         term.contents(),
         concat!(
             "⠙                     task0 █████████████████████  1/1 0s\n",
-            "⠹                     task1 █████████████████████  1/1 0s\n",
+            "⠙                     task1 █████████████████████  1/1 0s\n",
             "⠏                     task2 █████████████████████  1/1 0s\n",
             "⠏                     task3 █████████████████████  1/1 0s",
         )

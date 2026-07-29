@@ -19,6 +19,7 @@ fn resize_width_wide_to_narrow_changes_output() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(false)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let contents_wide = term.contents();
     for (_i, _line) in contents_wide.lines().enumerate() {}
@@ -42,6 +43,7 @@ fn resize_width_narrow_to_wide_restores_content() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(false)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let contents_narrow = term.contents();
     for (_i, _line) in contents_narrow.lines().enumerate() {}
@@ -64,6 +66,7 @@ fn resize_width_noop_same_width_no_change() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(false)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let before = term.contents();
     let before_lines = before.lines().count();
@@ -92,6 +95,7 @@ fn resize_height_grow_adds_slots() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     {
         let _c1 = group.add_bar(7, "fetch");
@@ -124,6 +128,7 @@ fn resize_exact_height_shrink_removes_slots() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     ts.advance(std::time::Duration::from_secs(1));
@@ -138,8 +143,8 @@ fn resize_exact_height_shrink_removes_slots() {
             "\n",
             "\n",
             "\n",
-            "⠼                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
+            "⠹                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
         ),
         "H=6 output",
     );
@@ -153,8 +158,8 @@ fn resize_exact_height_shrink_removes_slots() {
         concat!(
             "\n",
             "\n",
-            "⠴                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
+            "⠸                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
         ),
         "H=4 output",
     );
@@ -170,6 +175,7 @@ fn resize_height_shrink_protects_overall() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -194,6 +200,7 @@ fn resize_height_grow_detached_reappear() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -216,6 +223,7 @@ fn resize_height_clamps_at_min_slots() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -241,6 +249,7 @@ fn resize_height_clamps_at_max_slots() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -263,6 +272,7 @@ fn resize_both_dimensions() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -287,6 +297,7 @@ fn resize_then_restore_original() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -320,6 +331,7 @@ fn resize_height_shrink_then_grow_restores_line_count() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
@@ -357,6 +369,7 @@ fn resize_height_partial_shrink_keeps_active_bars() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch1");
     let _c2 = group.add_bar(5, "fetch2");
@@ -384,6 +397,7 @@ fn resize_height_with_interleaved_attach() {
         .capacity(5)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build();
     let _alpha = group.add_bar(10, "alpha");
 
@@ -421,6 +435,7 @@ fn resize_height_sequence_with_three_bars() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     // Add in order: bar3 (oldest), bar2, bar1 (newest).
     let _bar3 = group.add_bar(7, "bar 3");
@@ -505,6 +520,7 @@ fn resize_height_sequence_without_overall() {
         .capacity(4)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build();
     let _bar2 = group.add_bar(5, "bar 2");
     let _bar1 = group.add_bar(3, "bar 1");
@@ -565,6 +581,7 @@ fn resize_height_grow_appends_not_prepends() {
         .with_overall("overall", 10)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     // Add one child — it goes to the bottom of the child region (index 2).
@@ -626,6 +643,7 @@ fn resize_exact_width_wide_to_narrow() {
         .with_overall("overall", 5)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(10, "test");
     child.set_position(5);
@@ -639,13 +657,11 @@ fn resize_exact_width_wide_to_narrow() {
         concat!(
             "\n",
             "\n",
-            "⠼                      test ██████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 1s 30/m 10s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 1s 0/d",
+            "⠸                      test ██████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 1s 30/m 10s\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 1s 0/d",
         ),
         "W=120 output",
     );
-
-    // Resize to W=40
     dims.set((4, 40));
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
@@ -655,8 +671,8 @@ fn resize_exact_width_wide_to_narrow() {
         concat!(
             "\n",
             "\n",
-            "⠦                      test  5/10 2s 30/m 10s\n",
-            "⠴                   overall  0/5 2s 0/d",
+            "⠼                      test  5/10 2s 30/m 10s\n",
+            "⠸                   overall  0/5 2s 0/d",
         ),
         "W=40 output",
     );
@@ -676,6 +692,7 @@ fn resize_exact_narrow_uses_compact_template() {
         .with_overall("overall", 5)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(10, "test");
     child.set_position(5);
@@ -709,6 +726,7 @@ fn resize_exact_height_grow_adds_slots() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _c1 = group.add_bar(7, "fetch");
     ts.advance(std::time::Duration::from_secs(1));
@@ -721,8 +739,8 @@ fn resize_exact_height_grow_adds_slots() {
         concat!(
             "\n",
             "\n",
-            "⠼                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
+            "⠹                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
         ),
         "H=4 output",
     );
@@ -737,10 +755,10 @@ fn resize_exact_height_grow_adds_slots() {
         concat!(
             "\n",
             "\n",
-            "⠦                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
+            "⠸                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
             "\n",
             "\n",
-            "⠴                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
         ),
         "H=6 output",
     );

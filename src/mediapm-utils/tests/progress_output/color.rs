@@ -16,6 +16,7 @@ fn color_active_child_text() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(0);
@@ -23,8 +24,8 @@ fn color_active_child_text() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠼                     child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠹                     child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -37,6 +38,7 @@ fn color_failed_bracket_text() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     group.tick();
@@ -46,7 +48,7 @@ fn color_failed_bracket_text() {
         term.contents(),
         concat!(
             "⠏                 [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -59,6 +61,7 @@ fn color_abandoned_bracket_text() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     group.tick();
@@ -68,7 +71,7 @@ fn color_abandoned_bracket_text() {
         term.contents(),
         concat!(
             "⠏                 [A] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -81,6 +84,7 @@ fn color_success_text() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(5);
@@ -91,7 +95,7 @@ fn color_success_text() {
         term.contents(),
         concat!(
             "⠏                     child █████████████████████  5/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -104,6 +108,7 @@ fn color_finished_text() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(5);
@@ -114,7 +119,7 @@ fn color_finished_text() {
         term.contents(),
         concat!(
             "⠏                     child █████████████████████  5/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -127,6 +132,7 @@ fn color_no_success_brackets() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     group.tick();
@@ -136,7 +142,7 @@ fn color_no_success_brackets() {
         term.contents(),
         concat!(
             "⠏                     child █████████████████████  0/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -153,6 +159,7 @@ fn exact_color_active_child_with_overall() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(0);
@@ -161,8 +168,8 @@ fn exact_color_active_child_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠼                     child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠹                     child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -175,6 +182,7 @@ fn exact_color_failed_child_with_overall() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     group.tick();
@@ -185,7 +193,7 @@ fn exact_color_failed_child_with_overall() {
         term.contents(),
         concat!(
             "⠏                 [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -198,6 +206,7 @@ fn exact_color_abandoned_child_with_overall() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     group.tick();
@@ -208,7 +217,7 @@ fn exact_color_abandoned_child_with_overall() {
         term.contents(),
         concat!(
             "⠏                 [A] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -221,6 +230,7 @@ fn exact_color_success_child_with_overall() {
         .with_multi_progress(mp)
         .capacity(2)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(5);
@@ -232,7 +242,7 @@ fn exact_color_success_child_with_overall() {
         term.contents(),
         concat!(
             "⠏                     child █████████████████████  5/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }

@@ -207,6 +207,7 @@ fn transition_exact_finish_error_with_overall() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(3);
@@ -220,7 +221,7 @@ fn transition_exact_finish_error_with_overall() {
         term.contents(),
         concat!(
             "⠏                 [F] child ████████████░░░░░░░░░  3/5 1s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -237,6 +238,7 @@ fn transition_exact_abandon_with_overall() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(3);
@@ -250,7 +252,7 @@ fn transition_exact_abandon_with_overall() {
         term.contents(),
         concat!(
             "⠏                 [A] child ████████████░░░░░░░░░  3/5 1s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -267,6 +269,7 @@ fn transition_exact_success_with_overall() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(5);
@@ -280,7 +283,7 @@ fn transition_exact_success_with_overall() {
         term.contents(),
         concat!(
             "⠏                     child █████████████████████  5/5 1s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -301,6 +304,7 @@ fn transition_exact_partial_progress_then_finish() {
         .capacity(2)
         .with_overall("overall", 5)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     // Advance to 3/5
@@ -317,7 +321,7 @@ fn transition_exact_partial_progress_then_finish() {
         term.contents(),
         concat!(
             "⠏                     child █████████████████████  5/5 1s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
         )
     );
 }
@@ -334,6 +338,7 @@ fn transition_exact_abandon_with_message_and_overall() {
         .capacity(2)
         .with_overall("overall", 5)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(3);
@@ -348,7 +353,7 @@ fn transition_exact_abandon_with_message_and_overall() {
         term.contents(),
         concat!(
             "⠏                 [A] child ████████████░░░░░░░░░  3/5 1s  aborted\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
         )
     );
 }

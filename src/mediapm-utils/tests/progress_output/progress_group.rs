@@ -19,6 +19,7 @@ fn progress_group_with_overall_shows_fixed_height() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
     group.tick();
     assert_eq!(
@@ -28,7 +29,7 @@ fn progress_group_with_overall_shows_fixed_height() {
             "\n",
             "\n",
             "\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         )
     );
 }
@@ -41,6 +42,7 @@ fn progress_group_add_bar_reuses_bottom_child() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _c1 = group.add_bar(5, "tool1");
@@ -50,8 +52,8 @@ fn progress_group_add_bar_reuses_bottom_child() {
         concat!(
             "\n",
             "\n",
-            "⠼                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 
@@ -61,9 +63,9 @@ fn progress_group_add_bar_reuses_bottom_child() {
         term.contents(),
         concat!(
             "\n",
-            "⠸                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠧                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -78,13 +80,17 @@ fn progress_group_no_overall_always_reuses_bottom() {
     // — this avoids InMemoryTerm trimming blank content when bars
     // fill the entire terminal height.
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
 
     let _c1 = group.add_bar(5, "task1");
     group.tick();
     assert_eq!(
         term.contents(),
-        concat!("\n", "\n", "\n", "⠴                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",)
+        concat!("\n", "\n", "\n", "⠸                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",)
     );
 
     let _c2 = group.add_bar(3, "task2");
@@ -94,7 +100,7 @@ fn progress_group_no_overall_always_reuses_bottom() {
             "\n",
             "\n",
             "⠙                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠦                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠼                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -103,7 +109,11 @@ fn progress_group_no_overall_always_reuses_bottom() {
 fn progress_group_never_changes_bar_count() {
     // Terminal H=4, W=80 so the full child template fits.
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
     for i in 0..30 {
         let _c = group.add_bar(1, &format!("tool{i}"));
         group.tick();
@@ -112,9 +122,9 @@ fn progress_group_never_changes_bar_count() {
         term.contents(),
         concat!(
             "⠙                     tool0 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
-            "⠸                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
-            "⠦                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
-            "⠼                     tool3 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
+            "⠸                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
+            "⠇                     tool3 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -130,6 +140,7 @@ fn progress_group_with_overall_add_child_updates_slot() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _c1 = group.add_bar(5, "tool1");
@@ -140,8 +151,8 @@ fn progress_group_with_overall_add_child_updates_slot() {
             "\n",
             "\n",
             "\n",
-            "⠼                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 
@@ -152,9 +163,9 @@ fn progress_group_with_overall_add_child_updates_slot() {
         concat!(
             "\n",
             "\n",
-            "⠸                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠧                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -171,6 +182,7 @@ fn progress_group_with_overall_multiple_children_reuse_slot() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     for i in 0..5 {
@@ -181,10 +193,10 @@ fn progress_group_with_overall_multiple_children_reuse_slot() {
         term.contents(),
         concat!(
             "⠸                     task0 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
-            "⠴                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
-            "⠇                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
-            "⠴                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
-            "⠧                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠼                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠴                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠋                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠦                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         )
     );
 }
@@ -196,13 +208,17 @@ fn progress_group_no_overall_different_capacities() {
     // Children fill sequentially from line[0].
     // Using H=6 > 4 to avoid InMemoryTerm blank-content trimming.
     let (mp, term) = mk_with_size(6, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
 
     let _c1 = group.add_bar(5, "alpha");
     group.tick();
     assert_eq!(
         term.contents(),
-        concat!("\n", "\n", "\n", "⠴                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",)
+        concat!("\n", "\n", "\n", "⠸                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",)
     );
 
     let _c2 = group.add_bar(3, "beta");
@@ -212,7 +228,7 @@ fn progress_group_no_overall_different_capacities() {
             "\n",
             "\n",
             "⠙                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠦                      beta ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠼                      beta ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -227,6 +243,7 @@ fn progress_group_compact_template_below_60_width() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _c1 = group.add_bar(5, "tool1");
@@ -236,8 +253,8 @@ fn progress_group_compact_template_below_60_width() {
         concat!(
             "\n",
             "\n",
-            "⠼                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -250,6 +267,7 @@ fn progress_group_child_shows_label_and_total() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _c1 = group.add_bar(7, "fetch");
@@ -259,8 +277,8 @@ fn progress_group_child_shows_label_and_total() {
         concat!(
             "\n",
             "\n",
-            "⠼                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠹                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         )
     );
 }
@@ -301,6 +319,7 @@ fn progress_group_child_finish_keeps_bar_visible() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c = group.add_bar(5, "fetch");
@@ -316,7 +335,7 @@ fn progress_group_child_finish_keeps_bar_visible() {
             "\n",
             "\n",
             "⠏                     fetch █████████████████████  0/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         ),
     );
 }
@@ -330,6 +349,7 @@ fn fin_all_exact_all_bars_content_persists() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 2)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c1 = group.add_bar(3, "alpha");
@@ -364,6 +384,7 @@ fn fin_error_exact_shows_error_state() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c = group.add_bar(5, "wget");
@@ -378,7 +399,7 @@ fn fin_error_exact_shows_error_state() {
             "\n",
             "\n",
             "⠏                  [F] wget ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",
         )
     );
 }
@@ -392,6 +413,7 @@ fn join_clear_exact_removes_bars() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c = group.add_bar(5, "fetch");
@@ -404,7 +426,7 @@ fn join_clear_exact_removes_bars() {
         term.contents(),
         concat!(
             "⠏                     fetch █████████████████████  0/5 0s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -419,6 +441,7 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c1 = group.add_bar(5, "fetch");
@@ -466,6 +489,7 @@ fn progress_group_overall_finish_and_join_clear_persists() {
         .with_multi_progress(mp)
         .capacity(3)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c = group.add_bar(5, "fetch");
@@ -497,6 +521,7 @@ fn progress_group_active_bars_survive_join_and_clear() {
         .with_multi_progress(mp)
         .capacity(3)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _c = group.add_bar(5, "alpha");
@@ -510,8 +535,8 @@ fn progress_group_active_bars_survive_join_and_clear() {
     assert_eq!(
         contents,
         concat!(
-            "⠦                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠼                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         ),
     );
 }
@@ -524,6 +549,7 @@ fn progress_group_empty_finalize_no_crash() {
         .with_multi_progress(mp)
         .capacity(3)
         .with_overall("overall", 1)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     // No children added — all slots except overall are blank.
@@ -544,6 +570,7 @@ fn finish_slot_idempotent() {
         .with_multi_progress(mp)
         .capacity(3)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c = group.add_bar(5, "fetch");
@@ -569,7 +596,11 @@ fn finish_slot_idempotent() {
 #[test]
 fn slot_pool_blank_bars_remain_invisible() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(5).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_ticker_enabled(false)
+        .build();
 
     // Add a child bar so we can verify only 5 lines total.
     let _c = group.add_bar(10, "child");
@@ -592,7 +623,11 @@ fn slot_pool_blank_bars_remain_invisible() {
 #[test]
 fn slot_pool_acquire_returns_bottommost_child() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build(); // 4 slots
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build(); // 4 slots
 
     let _c1 = group.add_bar(5, "first");
     group.tick();
@@ -627,6 +662,7 @@ fn slot_pool_acquire_with_overall_above_overall() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _c = group.add_bar(7, "worker");
@@ -649,7 +685,11 @@ fn slot_pool_acquire_with_overall_above_overall() {
 #[test]
 fn progress_group_height_never_grows_with_many_bars() {
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
 
     for i in 0..20 {
         let _c = group.add_bar(1, &format!("t{i}"));
@@ -669,6 +709,7 @@ fn progress_group_overall_always_at_bottom() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     for i in 0..5 {
@@ -696,6 +737,7 @@ fn progress_group_join_preserves_all_content() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c = group.add_bar(3, "fetch");
@@ -716,6 +758,7 @@ fn progress_group_add_bar_zero_total_renders() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 0)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _c = group.add_bar(0, "zero");
@@ -737,7 +780,11 @@ fn progress_group_add_bar_zero_total_renders() {
 #[test]
 fn consumer_lifecycle_materializer() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(5).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_ticker_enabled(false)
+        .build();
 
     let total = 3u64;
     let pb = group.add_bar(total, "materializing");
@@ -781,6 +828,7 @@ fn consumer_lifecycle_conductor_sync() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("syncing tools", 2)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     // Tool 1
@@ -821,6 +869,7 @@ fn consumer_lifecycle_conductor_cli() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("steps", 0)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     // Simulate step_progress callback: set_total(N) then set_position(1..N)
@@ -856,6 +905,7 @@ fn progress_group_finish_and_clear_child_keeps_others() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c1 = group.add_bar(3, "alpha");
@@ -879,7 +929,11 @@ fn progress_group_finish_and_clear_child_keeps_others() {
 #[test]
 fn progress_group_abandon_preserves_bar() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(5).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_ticker_enabled(false)
+        .build();
 
     let c = group.add_bar(5, "worker");
     c.advance(2);
@@ -899,7 +953,11 @@ fn progress_group_abandon_preserves_bar() {
 #[test]
 fn progress_group_long_prefix_truncation() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(5).build();
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(5)
+        .with_ticker_enabled(false)
+        .build();
 
     // Prefix > 16 chars — production uses {prefix:>16.16}
     let long_prefix = "abcdefghijklmnopqrstuvwxyz"; // 26 chars
@@ -925,6 +983,7 @@ fn progress_group_children_advance_independently() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     // Chronological allocation: tool-a at slot[3] (just above overall).
@@ -961,6 +1020,7 @@ fn child_bar_elapsed_starts_at_zero() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .capacity(4)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _child = group.add_bar(3, "tool-a");
     group.tick();
@@ -981,6 +1041,7 @@ fn child_bar_elapsed_frozen_after_finish() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .capacity(4)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(3);
@@ -1007,6 +1068,7 @@ fn child_bar_elapsed_frozen_after_finish_success() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .capacity(4)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(3);
@@ -1033,6 +1095,7 @@ fn child_bar_elapsed_frozen_after_finish_error() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .capacity(4)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(1);
@@ -1059,6 +1122,7 @@ fn child_bar_elapsed_frozen_after_abandon() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .capacity(4)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(3, "tool-a");
     child.set_position(2);
@@ -1086,6 +1150,7 @@ fn orphan_reattach_preserves_elapsed() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(true)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _child = group.add_bar(10, "worker");
 
@@ -1122,6 +1187,7 @@ fn slot_shift_preserves_elapsed() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _a = group.add_bar(10, "alpha");
@@ -1154,6 +1220,7 @@ fn no_duplicate_elapsed_template_in_child_output() {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .capacity(4)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let _child = group.add_bar(3, "tool-a");
     group.tick();
@@ -1173,7 +1240,11 @@ fn no_duplicate_elapsed_template_in_child_output() {
 #[test]
 fn slot_full_hides_overflow_bars_from_display() {
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build(); // capacity=4
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build(); // capacity=4
 
     let c1 = group.add_bar(5, "tool-a");
     let c2 = group.add_bar(5, "tool-b");
@@ -1220,6 +1291,7 @@ fn progress_group_join_and_clear_removes_blank_bars() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let child = group.add_bar(5, "fetch");
@@ -1266,6 +1338,7 @@ fn finalize_exact_terminal_match_after_full_lifecycle() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c1 = group.add_bar(5, "alpha");
@@ -1324,6 +1397,7 @@ fn finalize_preserves_content_written_before_progress() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 5)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let c = group.add_bar(3, "work");
     c.advance(3);
@@ -1356,6 +1430,7 @@ fn finalize_no_blank_lines_in_output() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     // Fill all 4 slots: 3 children + overall.

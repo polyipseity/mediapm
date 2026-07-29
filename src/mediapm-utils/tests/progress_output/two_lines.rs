@@ -23,6 +23,7 @@ fn two_lines_exact_abandoned_child() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(3);
@@ -36,7 +37,7 @@ fn two_lines_exact_abandoned_child() {
         term.contents(),
         concat!(
             "⠏                 [A] child ████████████░░░░░░░░░  3/5 1s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -53,6 +54,7 @@ fn two_lines_exact_error_child() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(3);
@@ -66,7 +68,7 @@ fn two_lines_exact_error_child() {
         term.contents(),
         concat!(
             "⠏                 [F] child ████████████░░░░░░░░░  3/5 1s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -83,6 +85,7 @@ fn two_lines_exact_success_child() {
         .capacity(2)
         .with_overall("overall", 1)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(5);
@@ -96,7 +99,7 @@ fn two_lines_exact_success_child() {
         term.contents(),
         concat!(
             "⠏                     child █████████████████████  5/5 1s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d"
         )
     );
 }
@@ -117,6 +120,7 @@ fn two_lines_exact_both_finished() {
         .capacity(2)
         .with_overall("overall", 3)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(5);
@@ -149,6 +153,7 @@ fn two_lines_exact_overall_abandoned() {
         .capacity(2)
         .with_overall("overall", 3)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(5);
@@ -180,6 +185,7 @@ fn two_lines_exact_overall_error() {
         .capacity(2)
         .with_overall("overall", 3)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
         .build_with_overall();
     let child = group.add_bar(5, "child");
     child.set_position(5);

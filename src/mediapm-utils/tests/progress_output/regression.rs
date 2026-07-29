@@ -17,6 +17,7 @@ fn renderer_with_overall_always_bottom() {
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     // Fill children
@@ -50,6 +51,7 @@ fn regression_child_order_chronological_top_to_bottom() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 10)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _c1 = group.add_bar(5, "first");
@@ -63,10 +65,10 @@ fn regression_child_order_chronological_top_to_bottom() {
         term.contents(),
         concat!(
             "\n",
-            "⠴                     first ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠦                    second ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠧                     third ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠸                     first ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                    second ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠴                     third ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         ),
     );
 }
@@ -84,6 +86,7 @@ fn regression_swap_slot_does_not_corrupt_display() {
         .capacity(5)
         .with_overall("overall", 10)
         .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c1 = group.add_bar(10, "alpha");
@@ -98,9 +101,9 @@ fn regression_swap_slot_does_not_corrupt_display() {
         concat!(
             "\n",
             "\n",
-            "⠼                     alpha ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
-            "⠴                      beta ██████████████░░░░░░░  7/10 1s 42/m 4s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
+            "⠸                     alpha ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
+            "⠼                      beta ██████████████░░░░░░░  7/10 1s 42/m 4s\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
         ),
         "SWAP_BEFORE",
     );
@@ -115,10 +118,10 @@ fn regression_swap_slot_does_not_corrupt_display() {
         term.contents(),
         concat!(
             "\n",
-            "⠸                     alpha ██████░░░░░░░░░░░░░░░  3/10 2s 18/m 23s\n",
-            "⠧                      beta ██████████████░░░░░░░  7/10 2s 42/m 4s\n",
-            "⠇                     gamma ██████████░░░░░░░░░░░  5/10 1s 30/m 10s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
+            "⠹                     alpha ██████░░░░░░░░░░░░░░░  3/10 2s 18/m 23s\n",
+            "⠴                      beta ██████████████░░░░░░░  7/10 2s 42/m 4s\n",
+            "⠧                     gamma ██████████░░░░░░░░░░░  5/10 1s 30/m 10s\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
         ),
         "SWAP_AFTER",
     );
@@ -135,6 +138,7 @@ fn regression_overall_never_shifts() {
         .capacity(4)
         .with_overall("overall", 10)
         .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     // Fill all 3 child slots + overall.
@@ -148,10 +152,10 @@ fn regression_overall_never_shifts() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠼                         a ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d\n",
-            "⠴                         b ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d\n",
-            "⠦                         c ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d\n",
-            "⠸                   overall ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s",
+            "⠹                         a ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d\n",
+            "⠹                         b ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d\n",
+            "⠼                         c ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d\n",
+            "⠹                   overall ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s",
         ),
         "OVERALL_NEVER1",
     );
@@ -166,10 +170,10 @@ fn regression_overall_never_shifts() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠴                         a ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d\n",
-            "⠦                         b ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d\n",
-            "⠧                         c ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d\n",
-            "⠴                   overall ██████████░░░░░░░░░░░  5/10 2s 28/m 10s",
+            "⠸                         a ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d\n",
+            "⠸                         b ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d\n",
+            "⠴                         c ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d\n",
+            "⠼                   overall ██████████░░░░░░░░░░░  5/10 2s 28/m 10s",
         ),
         "OVERALL_NEVER2",
     );
@@ -184,6 +188,7 @@ fn regression_finish_and_clear_with_tick_fn() {
         .with_multi_progress(mp)
         .capacity(5)
         .with_overall("overall", 3)
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let _c1 = group.add_bar(5, "keep");
@@ -199,9 +204,9 @@ fn regression_finish_and_clear_with_tick_fn() {
         concat!(
             "\n",
             "\n",
-            "⠴                      keep ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                      keep ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
             "\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         ),
         "FINISH_CLEAR1",
     );
@@ -215,9 +220,9 @@ fn regression_finish_and_clear_with_tick_fn() {
         concat!(
             "\n",
             "⠹                      keep ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠦                     clear ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠇                       new ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠴                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠸                     clear ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠴                       new ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         ),
         "FINISH_CLEAR2",
     );
@@ -233,6 +238,7 @@ fn regression_concurrent_set_and_sync() {
         .capacity(5)
         .with_overall("overall", 100)
         .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     let c1 = group.add_bar(50, "worker");
@@ -250,8 +256,8 @@ fn regression_concurrent_set_and_sync() {
             "\n",
             "\n",
             "\n",
-            "⠼                    worker ███████████████░░░░░░  38/50 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d",
+            "⠸                    worker ███████████████░░░░░░  38/50 0s 0/d\n",
+            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d",
         ),
     );
 }
@@ -267,6 +273,7 @@ fn regression_recycle_finished_slot_after_full() {
         .capacity(5)
         .with_overall("overall", 5)
         .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
 
     // Fill all 4 child slots.
@@ -279,11 +286,11 @@ fn regression_recycle_finished_slot_after_full() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠼                     task0 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
-            "⠴                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
-            "⠦                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
-            "⠧                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
-            "⠸                   overall ████████████████░░░░░  4/5 1s 24/m 2s",
+            "⠹                     task0 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠹                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠹                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠴                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠹                   overall ████████████████░░░░░  4/5 1s 24/m 2s",
         ),
         "RECYCLE_FULL_PRE_CLEAR",
     );
@@ -297,10 +304,10 @@ fn regression_recycle_finished_slot_after_full() {
         term.contents(),
         concat!(
             "\n",
-            "⠦                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
-            "⠧                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
-            "⠇                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
-            "⠼                   overall ████████████████░░░░░  4/5 2s 24/m 2s",
+            "⠸                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠸                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠦                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠸                   overall ████████████████░░░░░  4/5 2s 24/m 2s",
         ),
         "RECYCLE_FULL_CLEARED",
     );
@@ -313,11 +320,11 @@ fn regression_recycle_finished_slot_after_full() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠦                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
-            "⠇                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
-            "⠋                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
-            "⠹                     task4 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
-            "⠴                   overall ████████████████░░░░░  4/5 2s 24/m 2s",
+            "⠸                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠼                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠼                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 2s 0/d\n",
+            "⠇                     task4 ░░░░░░░░░░░░░░░░░░░░░  0/2 1s 0/d\n",
+            "⠼                   overall ████████████████░░░░░  4/5 2s 24/m 2s",
         ),
         "RECYCLE_FULL_DUMP",
     );
@@ -336,6 +343,7 @@ fn regression_recycle_oldest_finished_slot() {
         .capacity(6)
         .with_overall("overall", 5)
         .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
         .build_with_overall();
     // child_cap = 5, overall at slot 5
 
@@ -364,7 +372,7 @@ fn regression_recycle_oldest_finished_slot() {
             "⠏               a [process] █████████████████████  0/1 0s\n",
             "⠏               b [resolve] █████████████████████  0/1 0s\n",
             "⠏                 b [fetch] █████████████████████  0/1 0s\n",
-            "⠸                   overall ████████░░░░░░░░░░░░░  2/5 1s 12/m 15s",
+            "⠹                   overall ████████░░░░░░░░░░░░░  2/5 1s 12/m 15s",
         ),
         "RECYCLE_OLDEST_PRE_COMPACT",
     );

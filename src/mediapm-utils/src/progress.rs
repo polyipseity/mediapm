@@ -2039,6 +2039,7 @@ mod inner {
         time_source: Arc<dyn TimeSource>,
         pre_roll_term: Option<Box<dyn TermLike>>,
         debug_sink: Option<ProgressDebugSink>,
+        ticker_enabled: bool,
     }
 
     impl Default for ProgressGroupBuilder {
@@ -2052,6 +2053,7 @@ mod inner {
                 time_source: Arc::new(RealTimeSource),
                 pre_roll_term: None,
                 debug_sink: None,
+                ticker_enabled: true,
             }
         }
     }
@@ -2119,6 +2121,14 @@ mod inner {
             self
         }
 
+        /// Disable or enable the background render ticker thread (default:
+        /// enabled).  Disable in tests for deterministic progress bar output.
+        #[must_use]
+        pub fn with_ticker_enabled(mut self, enabled: bool) -> Self {
+            self.ticker_enabled = enabled;
+            self
+        }
+
         /// Build a group without an overall bar.
         ///
         /// # Panics
@@ -2162,7 +2172,11 @@ mod inner {
             );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Some(Arc::new(Mutex::new(renderer)));
-            let ticker = ProgressGroup::spawn_ticker(renderer.as_ref().unwrap());
+            let ticker = if self.ticker_enabled {
+                ProgressGroup::spawn_ticker(renderer.as_ref().unwrap())
+            } else {
+                None
+            };
             ProgressGroup { renderer, ticker }
         }
 
@@ -2208,7 +2222,8 @@ mod inner {
             );
             renderer.dynamic_height = self.dynamic_height;
             let renderer = Arc::new(Mutex::new(renderer));
-            let ticker = ProgressGroup::spawn_ticker(&renderer);
+            let ticker =
+                if self.ticker_enabled { ProgressGroup::spawn_ticker(&renderer) } else { None };
             let handle = TrackedHandle { state };
             (ProgressGroup { renderer: Some(renderer), ticker }, handle)
         }
