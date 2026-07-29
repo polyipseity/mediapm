@@ -67,21 +67,25 @@ pub(crate) struct ToolSyncReport {
     pub(crate) tool_records: BTreeMap<String, ToolRegistryEntry>,
 }
 
-/// Compute the set of tool IDs that are actually used by mediapm workflow
-/// steps and their transitive dependencies.
+/// Compute the set of tool IDs that are needed, seeded from ALL desired tools
+/// plus their transitive dependencies via `dependencies` field.
 ///
-/// A tool is "used" if it appears in `step_tool_ids` OR it is listed as a
-/// dependency of a used tool (transitive closure).
+/// Every tool listed in the mediapm config's `tools` section is considered
+/// "used". Additional tools that appear only as dependencies of configured
+/// tools are also included (transitive closure).
 ///
-/// Tools NOT in this set get their content_map cleared, filesystem payloads
-/// removed, and provisioning skipped entirely.
+/// Pruning only removes `content_map` entries for older versions of tools
+/// that are superseded by a newer content-addressed key (the old key is
+/// removed from the generated doc). A tool NOT in this set also has its
+/// filesystem payloads removed via `retain_only_tool_dirs`. Under normal
+/// operation every desired tool is in this set, so the payload-prune
+/// branch never fires for actively-configured tools.
 #[must_use]
 pub(crate) fn compute_used_tool_ids(
     desired_tools: &BTreeMap<String, serde_json::Value>,
-    step_tool_ids: &HashSet<String>,
 ) -> HashSet<String> {
     let mut used = HashSet::new();
-    let mut stack: Vec<String> = step_tool_ids.iter().cloned().collect();
+    let mut stack: Vec<String> = desired_tools.keys().cloned().collect();
     while let Some(tool_id) = stack.pop() {
         if !used.insert(tool_id.clone()) {
             continue;
@@ -151,7 +155,6 @@ pub(crate) async fn reconcile_desired_tools(
     cas: &impl CasApi,
     paths: &MediaPmPaths,
     desired_tools: &BTreeMap<String, serde_json::Value>,
-    step_tool_ids: &HashSet<String>,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
     recheck_policy: RecheckPolicy,
     state: &MediaPmState,
@@ -216,7 +219,7 @@ pub(crate) async fn reconcile_desired_tools(
 
     // Compute used tool set: tools that are actually referenced by workflow
     // steps or their transitive dependencies.
-    let used_tool_ids = compute_used_tool_ids(desired_tools, step_tool_ids);
+    let used_tool_ids = compute_used_tool_ids(desired_tools);
 
     let mut pruned_tools: usize = 0;
     for (_i, (tool_id, tool_value)) in desired_tools.iter().enumerate() {
@@ -599,10 +602,6 @@ pub(crate) async fn reconcile_desired_tools(
     // 6. Prune filesystem tool directories for non-active tools.
     retain_only_tool_dirs(paths.tools_dir.clone(), used_tool_ids.clone()).await?;
 
-    // Count unused tools as pruned (they were registered with empty content maps,
-    // effectively removing their payload data).
-    pruned_tools += desired_tools.len().saturating_sub(used_tool_ids.len());
-
     report.pruned_tools = pruned_tools;
 
     Ok(report)
@@ -636,7 +635,6 @@ mod tests {
             &cas,
             &paths,
             &BTreeMap::new(),
-            &HashSet::new(),
             &BTreeMap::new(),
             RecheckPolicy::default(),
             &state,
@@ -695,7 +693,6 @@ mod tests {
             &cas,
             &paths,
             &BTreeMap::new(),
-            &HashSet::new(),
             &BTreeMap::new(),
             RecheckPolicy::default(),
             &state,
@@ -744,7 +741,6 @@ mod tests {
             &cas,
             &paths,
             &BTreeMap::new(),
-            &HashSet::new(),
             &BTreeMap::new(),
             RecheckPolicy::default(),
             &state,
@@ -809,14 +805,10 @@ mod tests {
         let req = ToolRequirement::default();
         desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
 
-        let mut step_tool_ids = HashSet::new();
-        step_tool_ids.insert("media-tagger".to_string());
-
         let result = reconcile_desired_tools(
             &cas,
             &paths,
             &desired_tools,
-            &step_tool_ids,
             &BTreeMap::new(),
             RecheckPolicy::default(),
             &state,
@@ -897,14 +889,10 @@ mod tests {
         let req = ToolRequirement::default();
         desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
 
-        let mut step_tool_ids = HashSet::new();
-        step_tool_ids.insert("media-tagger".to_string());
-
         let result = reconcile_desired_tools(
             &cas,
             &paths,
             &desired_tools,
-            &step_tool_ids,
             &BTreeMap::new(),
             RecheckPolicy::default(),
             &state,
@@ -947,8 +935,7 @@ mod tests {
     #[test]
     fn compute_used_tool_ids_empty_desired() {
         let empty: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-        let step_ids = HashSet::new();
-        let used = compute_used_tool_ids(&empty, &step_ids);
+        let used = compute_used_tool_ids(&empty);
         assert!(used.is_empty(), "empty desired_tools → empty used set");
     }
 
@@ -959,9 +946,7 @@ mod tests {
             "ffmpeg".to_string(),
             serde_json::to_value(ToolRequirement::default()).unwrap(),
         );
-        let mut step_ids = HashSet::new();
-        step_ids.insert("ffmpeg".to_string());
-        let used = compute_used_tool_ids(&desired, &step_ids);
+        let used = compute_used_tool_ids(&desired);
         assert!(used.contains("ffmpeg"));
         assert_eq!(used.len(), 1);
     }
@@ -990,14 +975,15 @@ mod tests {
             serde_json::to_value(ToolRequirement::default()).unwrap(),
         );
 
-        let mut step_ids = HashSet::new();
-        step_ids.insert("yt-dlp".to_string());
-        let used = compute_used_tool_ids(&desired, &step_ids);
+        let used = compute_used_tool_ids(&desired);
         assert!(used.contains("yt-dlp"), "step tool must be in used set");
         assert!(used.contains("ffmpeg"), "dep tool must be in used set");
         assert!(used.contains("deno"), "dep tool must be in used set");
-        assert!(!used.contains("unrelated"), "non-dep tool must NOT be in used set");
-        assert_eq!(used.len(), 3);
+        assert!(
+            used.contains("unrelated"),
+            "all desired tools are now seeds, so unrelated IS used"
+        );
+        assert_eq!(used.len(), 4);
     }
 
     #[test]
@@ -1023,9 +1009,7 @@ mod tests {
         desired.insert("tool_a".to_string(), serde_json::to_value(a_req).unwrap());
         desired.insert("tool_b".to_string(), serde_json::to_value(b_req).unwrap());
 
-        let mut step_ids = HashSet::new();
-        step_ids.insert("tool_a".to_string());
-        let used = compute_used_tool_ids(&desired, &step_ids);
+        let used = compute_used_tool_ids(&desired);
         assert!(used.contains("tool_a"));
         assert!(used.contains("tool_b"));
         assert_eq!(used.len(), 2);

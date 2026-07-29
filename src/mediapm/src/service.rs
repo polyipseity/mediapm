@@ -5,7 +5,7 @@
 //! methods to add/remove sources, sync tools, sync the library, and
 //! invalidate cached steps.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash, InMemoryCas};
@@ -760,12 +760,10 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         let pg_ref: Option<&dyn ProgressGroupApi> =
             progress_group.as_ref().map(|g| g as &dyn ProgressGroupApi);
 
-        let step_tool_ids: HashSet<String> = HashSet::new();
         let report = reconcile_desired_tools(
             &**self.conductor.cas(),
             effective_paths,
             &desired_tools,
-            &step_tool_ids,
             &inherited_env_vars,
             recheck_policy,
             &state,
