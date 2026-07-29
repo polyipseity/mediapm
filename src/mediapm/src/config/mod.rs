@@ -46,6 +46,7 @@ pub use source_types::{
 
 use std::collections::BTreeMap;
 
+use mediapm_conductor::tools::provider::VersionSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -354,15 +355,12 @@ impl Default for MediaRuntimeStorage {
 // ---------------------------------------------------------------------------
 
 /// Managed tool version and dependency requirements.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolRequirement {
-    /// Version metadata value or selector binding.
-    #[serde(default)]
-    pub version: MediaMetadataValue,
-    /// Tag metadata value or selector binding.
-    #[serde(default)]
-    pub tag: String,
+    /// Version specification: "latest", "inherit", or { vcs_hash?, version?, tag? }.
+    #[serde(default = "defaults::default_tool_version_spec")]
+    pub version_spec: VersionSpec,
     /// Cross-tool dependency version selectors.
     #[serde(default)]
     pub dependencies: ToolRequirementDependencies,
@@ -381,52 +379,64 @@ pub struct ToolRequirement {
         deserialize_with = "custom_deserializers::deserialize_u32_from_number"
     )]
     pub max_output_slots: u32,
-    /// Pin to a specific git hash (exact string match).
-    #[serde(default)]
-    pub desired_git_hash: String,
-    /// Pin to a specific git tag (exact string match).
-    #[serde(default)]
-    pub desired_tag: String,
-    /// Pin to a specific version string (exact string match).
-    #[serde(default)]
-    pub desired_version: String,
 }
 
-/// Selector-based dependency version requirements for managed tools.
+/// Dependency declarations keyed by dependency tool id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolRequirementDependencies {
-    /// Selector or literal version for ffmpeg dependency.
+    /// Map of dependency tool id → dependency spec.
     #[serde(default)]
-    pub ffmpeg_version: MediaMetadataValue,
-    /// Selector or literal version for deno dependency.
+    pub deps: BTreeMap<String, DependencySpec>,
+}
+
+/// Version and type spec for one dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DependencySpec {
+    /// Dependency type: cross-step, interstep (same-step), or both.
     #[serde(default)]
-    pub deno_version: MediaMetadataValue,
-    /// Selector or literal version for sd (stable-diffusion) dependency.
-    #[serde(default)]
-    pub sd_version: MediaMetadataValue,
+    pub dep_type: DependencyType,
+    /// Version spec: "latest", "inherit", or { vcs_hash?, version?, tag? }.
+    /// Defaults to "inherit".
+    #[serde(default = "defaults::default_dep_version_spec")]
+    pub version_spec: VersionSpec,
+}
+
+/// Dependency type annotation.
+///
+/// - `Cross`: the dependency is invoked as a separate workflow step
+///   (cross-step dependency).
+/// - `Inter`: the dependency is folded into the same step as a companion
+///   (interstep / same-step dependency).
+/// - `Both`: functions as both interstep AND cross-step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyType {
+    Cross,
+    Inter,
+    Both,
+}
+
+impl Default for DependencyType {
+    fn default() -> Self {
+        Self::Inter
+    }
+}
+
+impl Default for ToolRequirement {
+    fn default() -> Self {
+        Self {
+            version_spec: VersionSpec::Latest,
+            dependencies: ToolRequirementDependencies::default(),
+            recheck_seconds: 0,
+            max_input_slots: defaults::DEFAULT_FFMPEG_MAX_INPUT_SLOTS,
+            max_output_slots: defaults::DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS,
+        }
+    }
 }
 
 impl ToolRequirement {
-    /// Returns the normalized version string from the version selector.
-    #[must_use]
-    pub fn normalized_version(&self) -> Option<String> {
-        match &self.version {
-            MediaMetadataValue::Literal(s) => {
-                let trimmed = s.trim();
-                if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
-            }
-            _ => None,
-        }
-    }
-
-    /// Returns the normalized tag string.
-    #[must_use]
-    pub fn normalized_tag(&self) -> Option<String> {
-        let trimmed = self.tag.trim();
-        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
-    }
-
     /// Returns metadata recheck seconds (0 = use default heuristic).
     #[must_use]
     pub const fn metadata_recheck_seconds(&self) -> u64 {
@@ -484,13 +494,9 @@ impl MediaPmDocument {
             let trimmed = source.artist.trim().to_string();
             source.artist = trimmed;
         }
-        // Remove tool entries without meaningful version, tag, or desired fields.
+        // Remove tool entries that are Latest with no explicit dependencies.
         self.tools.retain(|_, tool_req| {
-            normalized_version(&tool_req.version).is_some()
-                || normalized_tag(&tool_req.tag).is_some()
-                || !tool_req.desired_git_hash.trim().is_empty()
-                || !tool_req.desired_tag.trim().is_empty()
-                || !tool_req.desired_version.trim().is_empty()
+            tool_req.version_spec != VersionSpec::Latest || !tool_req.dependencies.deps.is_empty()
         });
     }
 }
@@ -550,10 +556,10 @@ pub struct ToolRegistryEntry {
     /// Empty string if the provider does not produce a version string.
     #[serde(default)]
     pub resolved_version: String,
-    /// The git hash that was resolved during the last resolve phase.
-    /// Empty string if the provider does not resolve from git hashes.
+    /// The VCS hash that was resolved during the last resolve phase.
+    /// Empty string if the provider does not resolve from hashes.
     #[serde(default)]
-    pub resolved_git_hash: String,
+    pub resolved_vcs_hash: String,
 }
 
 /// Active instance of a managed tool deployed to the local filesystem.
@@ -630,26 +636,7 @@ impl MediaPmState {
             !entry.canonical_version.trim().is_empty()
                 || !entry.resolved_tag.trim().is_empty()
                 || !entry.resolved_version.trim().is_empty()
-                || !entry.resolved_git_hash.trim().is_empty()
+                || !entry.resolved_vcs_hash.trim().is_empty()
         });
     }
-}
-
-/// Helper: normalize a version metadata selector to trimmed Option.
-#[must_use]
-pub(crate) fn normalized_version(version: &MediaMetadataValue) -> Option<String> {
-    match version {
-        MediaMetadataValue::Literal(s) => {
-            let trimmed = s.trim().to_string();
-            if trimmed.is_empty() { None } else { Some(trimmed) }
-        }
-        _ => None,
-    }
-}
-
-/// Helper: normalize a tag string to trimmed Option.
-#[must_use]
-pub(crate) fn normalized_tag(tag: &str) -> Option<String> {
-    let trimmed = tag.trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
 }

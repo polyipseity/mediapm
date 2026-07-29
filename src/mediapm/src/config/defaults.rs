@@ -140,3 +140,15 @@ pub fn default_verify_materialization() -> bool {
 pub fn default_retry_impure() -> bool {
     DEFAULT_RETRY_IMPURE
 }
+
+/// Default version spec for managed tools — "latest".
+#[must_use]
+pub fn default_tool_version_spec() -> mediapm_conductor::tools::provider::VersionSpec {
+    mediapm_conductor::tools::provider::VersionSpec::Latest
+}
+
+/// Default version spec for dependencies — "inherit".
+#[must_use]
+pub fn default_dep_version_spec() -> mediapm_conductor::tools::provider::VersionSpec {
+    mediapm_conductor::tools::provider::VersionSpec::Inherit
+}

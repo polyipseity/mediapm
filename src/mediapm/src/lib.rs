@@ -34,17 +34,18 @@ use std::path::Path;
 use url::Url;
 
 pub use config::{
-    DecodedOutputVariantConfig, GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind,
-    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, ManagedFileRecord,
-    MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
-    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmState,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
-    OutputSaveConfig, PlatformInheritedEnvVars, PlaylistEntryPathMode, PlaylistFormat,
-    PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement,
-    ToolRequirementDependencies, TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
-    flatten_hierarchy_value, load_mediapm_document, load_mediapm_state_document,
-    merge_mediapm_document_with_state, nest_hierarchy_value, regex_variant_selector,
-    save_mediapm_document, save_mediapm_state_document,
+    DecodedOutputVariantConfig, DependencySpec, DependencyType, GenericOutputVariantConfig,
+    HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
+    HierarchyNodeKind, HierarchyPath, ManagedFileRecord, MaterializationMethod,
+    MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate,
+    MediaMetadataVariantBinding, MediaPmDocument, MediaPmState, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind, OutputSaveConfig,
+    PlatformInheritedEnvVars, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef,
+    SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, ToolRequirementDependencies,
+    TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig, flatten_hierarchy_value,
+    load_mediapm_document, load_mediapm_state_document, merge_mediapm_document_with_state,
+    nest_hierarchy_value, regex_variant_selector, save_mediapm_document,
+    save_mediapm_state_document,
 };
 pub use error::MediaPmError;
 pub use global::{
@@ -53,6 +54,7 @@ pub use global::{
     global_tool_cache_status,
 };
 pub use materializer::MaterializeReport;
+pub use mediapm_conductor::tools::provider::VersionSpec;
 pub use paths::MediaPmPaths;
 pub use service::MediaPmService;
 pub use service_standalone::{registered_builtin_ids, resolve_effective_paths_for_root};
