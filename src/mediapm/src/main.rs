@@ -17,6 +17,7 @@ use clap_complete::Shell;
 #[cfg(feature = "cli")]
 use mediapm::MediaPmService;
 #[cfg(feature = "cli")]
+use mediapm::RecheckPolicy;
 use mediapm::output::{StatusIcon, print_hint, print_result, print_status_report, print_warning};
 #[cfg(feature = "cli")]
 use mediapm::{
@@ -98,8 +99,9 @@ async fn main_cli() -> anyhow::Result<()> {
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
             let mut service =
                 MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-            let check_tag_updates = args.tag_update_policy.resolve(true);
+            let recheck_policy = args.recheck_policy.resolve();
             let verify_materialization = args.verify_materialization.resolve(true);
+            let check_tag_updates = matches!(recheck_policy, RecheckPolicy::ForceReResolve);
             let summary = service
                 .sync_library_with_tag_update_checks(verify_materialization, check_tag_updates)
                 .await?;
@@ -121,7 +123,7 @@ async fn main_cli() -> anyhow::Result<()> {
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-                service.add_tool_requirement(&name, None, None)?;
+                service.add_tool_requirement(&name, None, None, None)?;
                 print_result(
                     StatusIcon::Success,
                     "tool added",
@@ -137,7 +139,8 @@ async fn main_cli() -> anyhow::Result<()> {
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-                let check_tag_updates = args.tag_update_policy.resolve(true);
+                let recheck_policy = args.recheck_policy.resolve();
+                let check_tag_updates = matches!(recheck_policy, RecheckPolicy::ForceReResolve);
                 let no_progress = args.no_progress;
                 let summary = service
                     .sync_tools_with_tag_update_checks(check_tag_updates, no_progress)
@@ -891,26 +894,26 @@ struct PassthroughArgs {
     args: Vec<String>,
 }
 
-/// Optional tag-update policy override flags for sync commands.
+/// Optional recheck policy override flags for sync commands.
 #[derive(Debug, Args, Clone, Copy, Default)]
-struct TagUpdatePolicyArgs {
-    /// Enables remote update checks for tag-only tool selectors.
-    #[arg(long, conflicts_with = "no_check_tag_updates")]
-    check_tag_updates: bool,
-    /// Disables remote update checks for tag-only tool selectors.
+struct RecheckPolicyArgs {
+    /// Force re-resolve all version selectors from remote sources.
+    #[arg(long, conflicts_with = "no_force_re_resolve")]
+    force_re_resolve: bool,
+    /// Use cached metadata; do not force re-resolve.
     #[arg(long)]
-    no_check_tag_updates: bool,
+    no_force_re_resolve: bool,
 }
 
-impl TagUpdatePolicyArgs {
-    /// Resolves effective tag-update policy using command-specific default.
-    fn resolve(self, default_value: bool) -> bool {
-        if self.check_tag_updates {
-            true
-        } else if self.no_check_tag_updates {
-            false
+impl RecheckPolicyArgs {
+    /// Resolves effective recheck policy.
+    fn resolve(self) -> RecheckPolicy {
+        if self.force_re_resolve {
+            RecheckPolicy::ForceReResolve
+        } else if self.no_force_re_resolve {
+            RecheckPolicy::UseCached
         } else {
-            default_value
+            RecheckPolicy::ForceReResolve
         }
     }
 }
@@ -943,9 +946,9 @@ impl VerifyMaterializationArgs {
 /// Arguments for top-level `mediapm sync`.
 #[derive(Debug, Args, Clone, Copy, Default)]
 struct SyncArgs {
-    /// Optional override for tag-only tool update checks.
+    /// Optional override for tool recheck policy.
     #[command(flatten)]
-    tag_update_policy: TagUpdatePolicyArgs,
+    recheck_policy: RecheckPolicyArgs,
     /// Optional override for materialization verification.
     #[command(flatten)]
     verify_materialization: VerifyMaterializationArgs,

@@ -8,11 +8,12 @@
 //! 5. Apply lifecycle transitions (tag updates, launcher files)
 //! 6. Write generated runtime env file
 /// 7. Save the generated document
+pub(crate) mod external_data;
 pub(crate) mod lifecycle;
 pub(crate) mod provision;
 pub(crate) mod tool_config;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -22,8 +23,13 @@ use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::config::ExternalDataEntry;
+use mediapm_conductor::provision::retain_only_tool_dirs;
 use mediapm_conductor::runtime_env::write_generated_dotenv;
 use mediapm_conductor::state::OutputSaveMode;
+use mediapm_conductor::tools::provider::VersionSpec;
+use mediapm_conductor::tools::spec::{resolve_desired_spec, spec_matches_entry};
+
+use crate::tools::provider::RecheckPolicy;
 
 use crate::conductor_bridge::documents::{
     apply_builtin_runtime_defaults, load_conductor_generated_document,
@@ -35,6 +41,7 @@ use crate::conductor_bridge::sync::tool_config::{
     resolve_companion_deno_selection, resolve_companion_ffmpeg_selection,
 };
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
+use crate::config::ToolRequirement;
 use crate::config::defaults;
 use crate::config::{MediaPmState, ToolRegistryEntry};
 use crate::error::MediaPmError;
@@ -54,6 +61,8 @@ pub(crate) struct ToolSyncReport {
     pub(crate) tools_updated: usize,
     /// Number of tools skipped because their canonical version was already provisioned.
     pub(crate) tools_skipped: usize,
+    /// Number of old-version tool entries pruned from machine config.
+    pub(crate) pruned_tools: usize,
     /// Non-fatal warnings collected during reconciliation.
     pub(crate) warnings: Vec<String>,
     /// Per-tool deployment records populated during provisioning.
@@ -74,7 +83,7 @@ pub(crate) async fn reconcile_desired_tools(
     paths: &MediaPmPaths,
     desired_tools: &BTreeMap<String, serde_json::Value>,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
-    _check_tag_updates: bool,
+    recheck_policy: RecheckPolicy,
     state: &MediaPmState,
     cache_root_override: Option<&Path>,
     progress_group: Option<&dyn ProgressGroupApi>,
@@ -135,9 +144,40 @@ pub(crate) async fn reconcile_desired_tools(
         .or(progress_group)
         .expect("at least one progress group available");
 
-    for (_i, (tool_id, _)) in desired_tools.iter().enumerate() {
+    let mut pruned_tools: usize = 0;
+    for (_i, (tool_id, tool_value)) in desired_tools.iter().enumerate() {
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
+
+        // --- Spec-based skip: if desired spec is already satisfied, skip. ---
+        let tool_req = serde_json::from_value::<ToolRequirement>(tool_value.clone()).ok();
+        if let Some(req) = &tool_req {
+            let spec =
+                resolve_desired_spec(&req.desired_git_hash, &req.desired_tag, &req.desired_version)
+                    .map_err(|e| MediaPmError::Workflow(e.to_string()))?;
+            if spec != VersionSpec::Latest {
+                if let Some(entry) = state.managed_tools.get(tool_id) {
+                    if spec_matches_entry(
+                        &spec,
+                        &entry.resolved_tag,
+                        &entry.resolved_version,
+                        &entry.resolved_git_hash,
+                    ) {
+                        // Already have the desired version — skip provisioning.
+                        for (key, spec) in &generated_doc.tools {
+                            if spec.name == *tool_id {
+                                tool_runtimes.insert(key.clone(), spec.runtime.clone());
+                                break;
+                            }
+                        }
+                        report.tools_skipped += 1;
+                        pb.advance(1);
+                        continue;
+                    }
+                }
+            }
+        }
+        // --- End spec-based skip ---
 
         // Initialized in the Ok(fetch) arm before the skip check;
         // used in the Ok(None) payload branch below. String::new() is
@@ -145,52 +185,98 @@ pub(crate) async fn reconcile_desired_tools(
         // arm always runs before any read (other paths `continue`).
         #[allow(unused_assignments)]
         let mut resolved_canonical_version = String::new();
-        let pre_resolved =
-            match provider::resolve_tool_fetch(tool_id, Some((&*cache, "tool_metadata"))).await {
-                Ok((
-                    fetch,
-                    human_readable_version,
-                    canonical_version,
-                    _metadata_cached,
-                    _metadata_fetch_count,
-                )) => {
-                    resolved_canonical_version = canonical_version.clone();
+        #[allow(unused_assignments)]
+        let mut resolved_tag_value = String::new();
+        let pre_resolved = match provider::resolve_tool_fetch(
+            tool_id,
+            Some((&*cache, "tool_metadata")),
+            recheck_policy,
+        )
+        .await
+        {
+            Ok((
+                fetch,
+                human_readable_version,
+                canonical_version,
+                _metadata_cached,
+                _metadata_fetch_count,
+                resolved_tag,
+            )) => {
+                resolved_canonical_version = canonical_version.clone();
+                resolved_tag_value = resolved_tag.clone();
 
-                    // Check skip: if state has an entry with the same canonical_version
-                    // AND a non-empty content_map_hash, skip provisioning entirely.
-                    let should_skip = state.managed_tools.get(tool_id).is_some_and(|existing| {
-                        existing.canonical_version == canonical_version
-                            && existing.content_map_hash.is_some()
-                    });
-
-                    if should_skip {
-                        PreResolveOutcome::Skip {
-                            name: tool_id.clone(),
-                            human_readable_version: human_readable_version.clone(),
-                            version: canonical_version,
-                            metadata_cached: _metadata_cached,
-                            metadata_fetch_count: _metadata_fetch_count,
+                // --- Post-resolve validation: verify resolved result matches desired spec ---
+                if let Some(req) = &tool_req {
+                    let spec = resolve_desired_spec(
+                        &req.desired_git_hash,
+                        &req.desired_tag,
+                        &req.desired_version,
+                    )
+                    .map_err(|e| MediaPmError::Workflow(e.to_string()))?;
+                    match &spec {
+                        VersionSpec::GitHash(hash) => {
+                            if canonical_version != *hash && resolved_tag != *hash {
+                                return Err(MediaPmError::Workflow(format!(
+                                    "tool {tool_id}: requested git hash {hash} but resolved canonical {canonical_version} and tag {resolved_tag}"
+                                )));
+                            }
                         }
-                    } else {
-                        PreResolveOutcome::Resolved(
-                            fetch,
-                            human_readable_version,
-                            canonical_version,
-                            _metadata_cached,
-                            _metadata_fetch_count,
-                        )
+                        VersionSpec::GitTag(tag) => {
+                            if resolved_tag != *tag {
+                                return Err(MediaPmError::Workflow(format!(
+                                    "tool {tool_id}: requested tag {tag} but resolved {resolved_tag}"
+                                )));
+                            }
+                        }
+                        VersionSpec::Version(ver) => {
+                            if human_readable_version != *ver {
+                                return Err(MediaPmError::Workflow(format!(
+                                    "tool {tool_id}: requested version {ver} but resolved {human_readable_version}"
+                                )));
+                            }
+                        }
+                        VersionSpec::Latest => {} // always OK
                     }
                 }
-                Err(e) => {
-                    let error_bar = effective_group.add_bar(1, &format!("{tool_id} [resolve]"));
-                    error_bar.finish_error();
-                    report.warnings.push(format!(
-                        "tool {tool_id}: resolve failed (will retry on next sync): {e}",
-                    ));
-                    pb.advance(1);
-                    continue;
+                // --- End post-resolve validation ---
+
+                // Check skip: if state has an entry with the same canonical_version
+                // AND a non-empty content_map_hash, skip provisioning entirely.
+                let should_skip = state.managed_tools.get(tool_id).is_some_and(|existing| {
+                    existing.canonical_version == canonical_version
+                        && existing.content_map_hash.is_some()
+                });
+
+                if should_skip {
+                    PreResolveOutcome::Skip {
+                        name: tool_id.clone(),
+                        human_readable_version: human_readable_version.clone(),
+                        version: canonical_version,
+                        metadata_cached: _metadata_cached,
+                        metadata_fetch_count: _metadata_fetch_count,
+                        resolved_tag: resolved_tag.clone(),
+                    }
+                } else {
+                    PreResolveOutcome::Resolved(
+                        fetch,
+                        human_readable_version,
+                        canonical_version,
+                        _metadata_cached,
+                        _metadata_fetch_count,
+                        resolved_tag,
+                    )
                 }
-            };
+            }
+            Err(e) => {
+                let error_bar = effective_group.add_bar(1, &format!("{tool_id} [resolve]"));
+                error_bar.finish_error();
+                report.warnings.push(format!(
+                    "tool {tool_id}: resolve failed (will retry on next sync): {e}",
+                ));
+                pb.advance(1);
+                continue;
+            }
+        };
 
         let was_skip = matches!(&pre_resolved, PreResolveOutcome::Skip { .. });
         let payload_result =
@@ -256,7 +342,7 @@ pub(crate) async fn reconcile_desired_tools(
                         canonical_version: payload.canonical_version.clone(),
                         content_map_hash: content_map_hash.clone(),
                         deployed_at: now,
-                        resolved_tag: String::new(),
+                        resolved_tag: resolved_tag_value.clone(),
                         resolved_version: String::new(),
                         resolved_git_hash: String::new(),
                     },
@@ -274,6 +360,20 @@ pub(crate) async fn reconcile_desired_tools(
                 } else {
                     tool_id.to_string()
                 };
+
+                // Prune old version keys from generated documents.
+                let prefix = format!("{}@", tool_id);
+                let old: Vec<String> = generated_doc
+                    .tools
+                    .keys()
+                    .filter(|k| (k.starts_with(&prefix) || *k == tool_id) && *k != &tool_key)
+                    .cloned()
+                    .collect();
+                pruned_tools += old.len();
+                for k in &old {
+                    generated_doc.tools.remove(k);
+                    tool_runtimes.remove(k);
+                }
 
                 // Populate external_data from content_map CAS hashes so the
                 // content_map ⊆ external_data invariant is satisfied.
@@ -319,7 +419,7 @@ pub(crate) async fn reconcile_desired_tools(
                         canonical_version: resolved_canonical_version.clone(),
                         content_map_hash: None,
                         deployed_at: now,
-                        resolved_tag: String::new(),
+                        resolved_tag: resolved_tag_value.clone(),
                         resolved_version: String::new(),
                         resolved_git_hash: String::new(),
                     },
@@ -385,6 +485,12 @@ pub(crate) async fn reconcile_desired_tools(
     // 5. Save generated document.
     save_conductor_generated_document(paths, &generated_doc)?;
 
+    // 6. Prune filesystem tool directories for non-active tools.
+    let active_tool_ids: HashSet<String> = desired_tools.keys().cloned().collect();
+    retain_only_tool_dirs(paths.tools_dir.clone(), active_tool_ids).await?;
+
+    report.pruned_tools = pruned_tools;
+
     Ok(report)
 }
 
@@ -416,7 +522,7 @@ mod tests {
             &paths,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            false,
+            RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
             Some(&tracker),
@@ -474,7 +580,7 @@ mod tests {
             &paths,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            false,
+            RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
             None,
@@ -522,7 +628,7 @@ mod tests {
             &paths,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            false,
+            RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
             None,
@@ -590,7 +696,7 @@ mod tests {
             &paths,
             &desired_tools,
             &BTreeMap::new(),
-            false,
+            RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
             None,
@@ -622,6 +728,89 @@ mod tests {
         assert!(
             content.contains("/media-tagger/payload/"),
             "env file paths should contain /media-tagger/payload/\n--- content:\n{content}",
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_prunes_old_tool_version_from_generated_doc() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let cas = InMemoryCas::default();
+
+        // Pre-populate generated doc with an old version key that has a bogus
+        // content hash suffix.  This simulates a stale entry from a previous
+        // sync that should be removed when a fresh key is computed.
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/media-tagger".to_string(), "blake3:abc".to_string());
+        let tool_spec = ToolSpec {
+            name: "media-tagger".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let mut tools = BTreeMap::new();
+        tools.insert("media-tagger@bogus_hash".to_string(), tool_spec);
+        let doc = NickelDocument { tools, ..Default::default() };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        // State with a different canonical_version so the skip path does not
+        // fire — forcing a fresh resolve and a new tool_key computation.
+        let mut state = MediaPmState::default();
+        state.managed_tools.insert(
+            "media-tagger".to_string(),
+            ToolRegistryEntry {
+                version: "old-version".to_string(),
+                canonical_version: "old-canonical".to_string(),
+                content_map_hash: None,
+                deployed_at: 0,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_git_hash: String::new(),
+            },
+        );
+
+        // Desired tools with media-tagger.
+        let mut desired_tools = BTreeMap::new();
+        let req = ToolRequirement::default();
+        desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
+
+        let result = reconcile_desired_tools(
+            &cas,
+            &paths,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+        let report = result.unwrap();
+
+        // The old bogus key should have been counted toward pruned_tools.
+        assert!(
+            report.pruned_tools >= 1,
+            "expected at least 1 pruned tool, got {}",
+            report.pruned_tools
+        );
+
+        // Reload generated doc and verify the old key is gone.
+        let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
+        assert!(
+            !doc.tools.contains_key("media-tagger@bogus_hash"),
+            "old version key should have been pruned"
+        );
+
+        // The new key should exist (bare media-tagger or media-tagger@<hash>).
+        let has_new_key =
+            doc.tools.keys().any(|k| k == "media-tagger" || k.starts_with("media-tagger@"));
+        assert!(
+            has_new_key,
+            "new version key should exist after sync, keys: {:?}",
+            doc.tools.keys().collect::<Vec<_>>()
         );
     }
 }

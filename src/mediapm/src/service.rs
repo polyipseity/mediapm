@@ -16,9 +16,8 @@ use url::Url;
 use crate::conductor_bridge::documents::{ConductorToolRow, list_tools};
 use crate::conductor_bridge::sync::reconcile_desired_tools;
 use crate::config::{
-    MediaMetadataValue, MediaPmState, MediaRuntimeStorage, MediaSourceSpec, ToolRequirement,
-    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
-    save_mediapm_state_document,
+    MediaPmState, MediaRuntimeStorage, MediaSourceSpec, ToolRequirement, load_mediapm_document,
+    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
 };
 use crate::error::MediaPmError;
 use crate::hierarchy::{
@@ -30,6 +29,7 @@ use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
 use crate::tools::is_known_tool_id;
+use crate::tools::provider::RecheckPolicy;
 
 use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaStepInvalidationSummary,
@@ -195,8 +195,14 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             }
             // Resolve the canonical version from the provider and compare
             // against the recorded canonical_version in state.
-            match crate::tools::provider::resolve_tool_fetch(tool_id, None).await {
-                Ok((_, _, resolved_canonical_version, _, _)) => Ok(existing.canonical_version
+            match crate::tools::provider::resolve_tool_fetch(
+                tool_id,
+                None,
+                RecheckPolicy::default(),
+            )
+            .await
+            {
+                Ok((_, _, resolved_canonical_version, _, _, _)) => Ok(existing.canonical_version
                     != resolved_canonical_version
                     || existing.content_map_hash.is_none()),
                 Err(_) => {
@@ -558,8 +564,9 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     pub fn add_tool_requirement(
         &mut self,
         tool_id: &str,
-        version: Option<&str>,
-        tag: Option<&str>,
+        desired_git_hash: Option<&str>,
+        desired_tag: Option<&str>,
+        desired_version: Option<&str>,
     ) -> Result<(), MediaPmError> {
         if tool_id.is_empty() {
             return Err(MediaPmError::Workflow("tool id must not be empty".to_string()));
@@ -575,10 +582,9 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
         let requirement = ToolRequirement {
-            version: version.map_or(MediaMetadataValue::Literal(String::new()), |v| {
-                MediaMetadataValue::Literal(v.to_string())
-            }),
-            tag: tag.unwrap_or_default().to_string(),
+            desired_git_hash: desired_git_hash.unwrap_or_default().to_string(),
+            desired_tag: desired_tag.unwrap_or_default().to_string(),
+            desired_version: desired_version.unwrap_or_default().to_string(),
             ..ToolRequirement::default()
         };
 
@@ -709,9 +715,13 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         let effective_paths = self.resolve_effective_paths()?;
         let merged = self.resolve_effective_runtime_storage()?;
+        let recheck_policy = if check_tag_updates {
+            RecheckPolicy::ForceReResolve
+        } else {
+            RecheckPolicy::UseCached
+        };
 
-        self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates, no_progress)
-            .await
+        self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, no_progress).await
     }
 
     /// Internal tool-sync implementation that reconciles desired tools from
@@ -725,7 +735,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         &mut self,
         effective_paths: &MediaPmPaths,
         runtime_storage: &MediaRuntimeStorage,
-        check_tag_updates: bool,
+        recheck_policy: RecheckPolicy,
         no_progress: bool,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         // Build the desired tools map from runtime storage.
@@ -758,7 +768,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             effective_paths,
             &desired_tools,
             &inherited_env_vars,
-            check_tag_updates,
+            recheck_policy,
             &state,
             runtime_storage.cache_root_override.as_deref(),
             pg_ref,
@@ -775,7 +785,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         Ok(ToolsSyncSummary {
             added_tools: report.tools_added,
             updated_tools: report.tools_updated,
-            pruned_tools: 0, // stub: lifecycle prune not yet wired
+            pruned_tools: report.pruned_tools,
             removed_tools: report.tools_removed,
             warnings: report.warnings,
         })
@@ -898,6 +908,11 @@ impl MediaPmService<FileSystemCas> {
     ) -> Result<SyncSummary, MediaPmError> {
         let effective_paths = self.resolve_effective_paths()?;
         let merged = self.resolve_effective_runtime_storage()?;
+        let recheck_policy = if check_tag_updates {
+            RecheckPolicy::ForceReResolve
+        } else {
+            RecheckPolicy::UseCached
+        };
 
         let mut warnings: Vec<String> = Vec::new();
 
@@ -905,9 +920,8 @@ impl MediaPmService<FileSystemCas> {
         self.refresh_runtime_configuration()?;
 
         // 2. Sync tools.
-        let tools_report = self
-            .sync_tools_from_document(&effective_paths, &merged, check_tag_updates, false)
-            .await?;
+        let tools_report =
+            self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, false).await?;
 
         // 3. Load mediapm document and state.
         let document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
