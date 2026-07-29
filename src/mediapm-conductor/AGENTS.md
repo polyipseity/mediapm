@@ -518,6 +518,42 @@ For touched Rust code in this crate:
 
 ---
 
+## Runtime environment and gitignore
+
+### ensure_runtime_env_files
+
+Creates `.env` and `.env.generated` templates in the conductor runtime root.
+Write-if-absent: existing files are never overwritten.
+
+- `.env` — user-authored environment variables with documented examples.
+- `.env.generated` — machine-managed runtime variables header.
+
+### ensure_runtime_gitignore
+
+Creates a `.gitignore` in the conductor runtime root with entries for `/.env`
+and `/.env.generated`. Write-if-absent: preserves existing `.gitignore`.
+
+### extend_runtime_gitignore
+
+Appends entries to the conductor runtime root `.gitignore`. Skips entries
+already present in the file (simple string-contains dedup).
+
+### RUNTIME_DOTENV_GENERATED_HEADER
+
+Canonical `# @generated` header constant used by `write_generated_dotenv()`.
+
+### write_generated_dotenv
+
+Overwrites `.env.generated` with the canonical header and tool binary path
+entries derived from tool runtimes' content maps. Takes `conductor_dir` (to
+derive file path), `tools_base_dir` (the root for path values), and
+`tool_runtimes` (resolved tool runtime configurations).
+
+### CLI startup
+
+`ensure_conductor()` in `cli.rs` calls both `ensure_runtime_env_files()` and
+`ensure_runtime_gitignore()` during initialization.
+
 ## A. Cross-Crate Data Flow (Conductor Context)
 
 The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Conductor perspective:

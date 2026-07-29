@@ -264,6 +264,9 @@ async fn ensure_conductor() -> Result<&'static SimpleConductor<ConfiguredCas>, C
                 .unwrap_or_else(|| root.join(defaults::DEFAULT_CONDUCTOR_DIR_NAME));
             let paths = RuntimeStoragePaths::resolve_for(&conductor_dir, &overrides);
             let cas = ConfiguredCas::FileSystem(FileSystemCas::open(&paths.cas_store_dir).await?);
+            // Ensure runtime environment files exist.
+            crate::runtime_env::ensure_runtime_env_files(&conductor_dir)?;
+            crate::runtime_env::ensure_runtime_gitignore(&conductor_dir)?;
             Ok(SimpleConductor::new(paths, cas))
         })
         .await

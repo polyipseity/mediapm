@@ -191,6 +191,72 @@ fn append_unique_env_var_name(target: &mut Vec<String>, raw_name: &str) {
     target.push(trimmed.to_string());
 }
 
+/// Canonical conductor `.gitignore` content for the runtime root.
+///
+/// Created at startup to keep generated dotenv files out of version control.
+pub const CONDUCTOR_GITIGNORE_CONTENT: &str = concat!("/.env\n", "/.env.generated\n");
+
+/// Canonical `# @generated` header for `.env.generated` files.
+///
+/// Used by `write_generated_dotenv()` when overwriting the generated env file.
+pub const RUNTIME_DOTENV_GENERATED_HEADER: &str = concat!(
+    "# @generated\n",
+    "# Managed runtime environment variables.\n",
+    "# Do not edit manually; values may be rewritten during sync.\n\n",
+);
+
+/// Ensures a `.gitignore` exists in the conductor runtime root.
+///
+/// Creates the file with [`CONDUCTOR_GITIGNORE_CONTENT`] if it does not
+/// already exist. Existing files are never overwritten.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when directory creation or file writes fail.
+pub fn ensure_runtime_gitignore(conductor_dir: &Path) -> Result<(), ConductorError> {
+    let gitignore_path = conductor_dir.join(".gitignore");
+    if gitignore_path.exists() {
+        return Ok(());
+    }
+    fs::write(&gitignore_path, CONDUCTOR_GITIGNORE_CONTENT.as_bytes()).map_err(|source| {
+        ConductorError::Io {
+            operation: "writing conductor runtime .gitignore".to_string(),
+            path: gitignore_path,
+            source,
+        }
+    })?;
+    Ok(())
+}
+
+/// Appends extra entries to the conductor runtime root `.gitignore`.
+///
+/// Skips entries already present in the file (simple string-contains dedup).
+/// The `extra` string is appended as-is if not already contained.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when file reads or writes fail.
+pub fn extend_runtime_gitignore(conductor_dir: &Path, extra: &str) -> Result<(), ConductorError> {
+    let gitignore_path = conductor_dir.join(".gitignore");
+    // Ensure the base file exists first.
+    ensure_runtime_gitignore(conductor_dir)?;
+    let content = fs::read_to_string(&gitignore_path).map_err(|source| ConductorError::Io {
+        operation: "reading conductor runtime .gitignore".to_string(),
+        path: gitignore_path.clone(),
+        source,
+    })?;
+    if content.contains(extra) {
+        return Ok(());
+    }
+    let new_content = format!("{content}{extra}");
+    fs::write(&gitignore_path, new_content.as_bytes()).map_err(|source| ConductorError::Io {
+        operation: "extending conductor runtime .gitignore".to_string(),
+        path: gitignore_path,
+        source,
+    })?;
+    Ok(())
+}
+
 /// Discovers the project root by walking up from the current working directory.
 ///
 /// Looks for a `conductor.ncl` (or `mediapm.ncl`) file to determine the
@@ -218,4 +284,140 @@ pub fn discover_project_root() -> Result<PathBuf, ConductorError> {
 
     // Fallback: return the original cwd
     Ok(cwd)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn ensure_runtime_gitignore_creates_file() {
+        let dir = tempdir().expect("tempdir");
+        let conductor_dir = dir.path().join(".conductor");
+        fs::create_dir_all(&conductor_dir).expect("create conductor dir");
+
+        ensure_runtime_gitignore(&conductor_dir).expect("ensure_runtime_gitignore");
+        let gitignore_path = conductor_dir.join(".gitignore");
+        assert!(gitignore_path.exists(), ".gitignore should exist");
+        let content = fs::read_to_string(&gitignore_path).expect("read .gitignore");
+        assert!(content.contains("/.env"), ".gitignore should contain /.env\ncontent:\n{content}");
+        assert!(
+            content.contains("/.env.generated"),
+            ".gitignore should contain /.env.generated\ncontent:\n{content}"
+        );
+    }
+
+    #[test]
+    fn ensure_runtime_gitignore_no_overwrite() {
+        let dir = tempdir().expect("tempdir");
+        let conductor_dir = dir.path().join(".conductor");
+        fs::create_dir_all(&conductor_dir).expect("create conductor dir");
+        let gitignore_path = conductor_dir.join(".gitignore");
+        fs::write(&gitignore_path, "# custom\n").expect("write custom .gitignore");
+
+        ensure_runtime_gitignore(&conductor_dir).expect("ensure_runtime_gitignore");
+        let content = fs::read_to_string(&gitignore_path).expect("read .gitignore");
+        assert_eq!(content, "# custom\n", "custom .gitignore should be preserved");
+    }
+
+    #[test]
+    fn extend_runtime_gitignore_appends() {
+        let dir = tempdir().expect("tempdir");
+        let conductor_dir = dir.path().join(".conductor");
+        fs::create_dir_all(&conductor_dir).expect("create conductor dir");
+
+        // First create the base gitignore.
+        ensure_runtime_gitignore(&conductor_dir).expect("ensure_runtime_gitignore");
+        // Then extend with extra entries.
+        extend_runtime_gitignore(&conductor_dir, "/cache/\n/tools/\n")
+            .expect("extend_runtime_gitignore");
+
+        let content =
+            fs::read_to_string(&conductor_dir.join(".gitignore")).expect("read .gitignore");
+        assert!(
+            content.contains("/cache/"),
+            ".gitignore should contain /cache/\ncontent:\n{content}"
+        );
+        assert!(
+            content.contains("/tools/"),
+            ".gitignore should contain /tools/\ncontent:\n{content}"
+        );
+        assert!(
+            content.contains("/.env"),
+            ".gitignore should still contain original entries\ncontent:\n{content}"
+        );
+    }
+
+    #[test]
+    fn extend_runtime_gitignore_no_duplicate() {
+        let dir = tempdir().expect("tempdir");
+        let conductor_dir = dir.path().join(".conductor");
+        fs::create_dir_all(&conductor_dir).expect("create conductor dir");
+
+        ensure_runtime_gitignore(&conductor_dir).expect("ensure_runtime_gitignore");
+        extend_runtime_gitignore(&conductor_dir, "/cache/\n/tools/\n")
+            .expect("extend_runtime_gitignore first");
+        extend_runtime_gitignore(&conductor_dir, "/cache/\n/tools/\n")
+            .expect("extend_runtime_gitignore second");
+
+        let content =
+            fs::read_to_string(&conductor_dir.join(".gitignore")).expect("read .gitignore");
+        // /cache/ and /tools/ should appear exactly once each.
+        let cache_count = content.matches("/cache/").count();
+        let tools_count = content.matches("/tools/").count();
+        assert_eq!(
+            cache_count, 1,
+            "/cache/ should appear exactly once, got {cache_count}\ncontent:\n{content}"
+        );
+        assert_eq!(
+            tools_count, 1,
+            "/tools/ should appear exactly once, got {tools_count}\ncontent:\n{content}"
+        );
+    }
+
+    #[test]
+    fn ensure_runtime_gitignore_wired_in_cli() {
+        // This test validates that the CLI startup path creates the .gitignore.
+        // We simulate the startup by calling the same functions ensure_conductor calls.
+        let dir = tempdir().expect("tempdir");
+        let conductor_dir = dir.path().join(".conductor");
+        fs::create_dir_all(&conductor_dir).expect("create conductor dir");
+
+        // Call the same sequence as ensure_conductor.
+        ensure_runtime_env_files(&conductor_dir).expect("ensure_runtime_env_files");
+        ensure_runtime_gitignore(&conductor_dir).expect("ensure_runtime_gitignore");
+
+        let gitignore_path = conductor_dir.join(".gitignore");
+        assert!(gitignore_path.exists(), ".gitignore should exist after startup sequence");
+        let content = fs::read_to_string(&gitignore_path).expect("read .gitignore");
+        assert!(content.contains("/.env"), ".gitignore should contain /.env\ncontent:\n{content}");
+        assert!(
+            content.contains("/.env.generated"),
+            ".gitignore should contain /.env.generated\ncontent:\n{content}"
+        );
+
+        // Ensure the .env files exist too.
+        assert!(
+            conductor_dir.join(".env").exists(),
+            ".env should exist after ensure_runtime_env_files"
+        );
+        assert!(
+            conductor_dir.join(".env.generated").exists(),
+            ".env.generated should exist after ensure_runtime_env_files"
+        );
+    }
+
+    #[test]
+    fn runtime_dotenv_generated_header_is_valid() {
+        let header = RUNTIME_DOTENV_GENERATED_HEADER;
+        assert!(
+            header.starts_with("# @generated"),
+            "header should start with # @generated\ngot:\n{header}"
+        );
+        assert!(!header.is_empty(), "header should not be empty");
+    }
 }
