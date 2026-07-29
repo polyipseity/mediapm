@@ -33,7 +33,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - On `Err`: append warning to report, continue loop.
 6. **Companion binding resolution** — `resolve_companion_ffmpeg_selection()`, `resolve_companion_deno_selection()` (currently stubs).
 7. **Create tools dir** — `std::fs::create_dir_all(&paths.tools_dir)`.
-8. **Write env file** — `write_generated_runtime_env_file()`.
+8. **Write env file** — `mediapm_conductor::runtime_env::write_generated_dotenv()`.
 9. **Save generated document** — `save_conductor_generated_document()`.
 
 ### Dual-write strategy

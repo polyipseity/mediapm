@@ -22,6 +22,7 @@ use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::config::ExternalDataEntry;
+use mediapm_conductor::runtime_env::write_generated_dotenv;
 use mediapm_conductor::state::OutputSaveMode;
 
 use crate::conductor_bridge::documents::{
@@ -32,7 +33,6 @@ use crate::conductor_bridge::sync::lifecycle::is_builtin_source_ingest_requireme
 use crate::conductor_bridge::sync::provision::{PreResolveOutcome, fetch_and_import_tool_payload};
 use crate::conductor_bridge::sync::tool_config::{
     resolve_companion_deno_selection, resolve_companion_ffmpeg_selection,
-    write_generated_runtime_env_file,
 };
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
 use crate::config::defaults;
@@ -374,7 +374,7 @@ pub(crate) async fn reconcile_desired_tools(
     })?;
 
     // 5. Write generated runtime env file from tool runtimes.
-    write_generated_runtime_env_file(paths, &tool_runtimes)?;
+    write_generated_dotenv(&paths.runtime_root, &paths.tools_dir, &tool_runtimes)?;
 
     // 5. Save generated document.
     save_conductor_generated_document(paths, &generated_doc)?;
