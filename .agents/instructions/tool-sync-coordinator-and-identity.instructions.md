@@ -22,7 +22,13 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - `Some(path)` → use the provided path as the cache root
      A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
 4. **Provision skip** — before fetching each tool, compare `state.managed_tools[tool_id].canonical_version` against the resolved canonical version using direct string equality. If they match AND the stored `content_map_hash` is non-empty, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar.
-5. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
+5. **Active-tool computation (pruning)** — before provisioning, call
+   `compute_used_tool_ids(desired_tools, step_tool_ids)` to determine the set
+   of tools that should be provisioned. This traverses transitive dependencies
+   via `deps.keys()` using DFS with a visited set. Tools NOT in the computed
+   set get their content_map cleared and filesystem payloads removed after the
+   provisioning loop.
+5b. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
    - Resolve the tool fetch via `provider::resolve_tool_fetch()`. If resolve fails, emit a warning and continue.
    - Determine `PreResolveOutcome`: `Skip` if the tool is already provisioned at the resolved version, else `Resolved`.
@@ -31,7 +37,10 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - **External data registration**: before inserting the tool spec, register every CAS hash in the tool's `content_map` as an `ExternalDataEntry` in `generated_doc.external_data` with `OutputSaveMode::Saved`. This satisfies the `content_map ⊆ external_data` invariant.
    - On `Ok(None)`: create minimal spec without content map.
    - On `Err`: append warning to report, continue loop.
-6. **Companion binding resolution** — `resolve_companion_ffmpeg_selection()`, `resolve_companion_deno_selection()` (currently stubs).
+6. **Dependency version resolution** — call `resolve_dep_version_spec()` for
+   each dependency's `version_spec`. `VersionSpec::Inherit` is resolved
+   against the global tool requirements; `Exact`/`Latest` pass through.
+   Errors on missing global tool or circular inherit resolution.
 7. **Create tools dir** — `std::fs::create_dir_all(&paths.tools_dir)`.
 8. **Write env file** — `mediapm_conductor::runtime_env::write_generated_dotenv()`.
 9. **Save generated document** — `save_conductor_generated_document()`.
@@ -79,6 +88,21 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
 - State churn without conductor-file churn is expected and correct. A change to
   `state.json` alone means only metadata changed; a change to
   `conductor.generated.ncl` means binary artifacts changed.
+
+### Provisioning pruning (generated doc + filesystem)
+
+- **Active-tool computation**: `compute_used_tool_ids(desired_tools, step_tool_ids)`
+  determines which tools should remain provisioned. It traverses transitive
+  dependency edges (`deps` on `ToolRequirementDependencies`) from step tool IDs
+  using DFS. Tools NOT reachable from any step tool ID are considered unused.
+- **Generated doc pruning**: after the provisioning loop, old `"{name}@{old_hash}"`
+  keys are pruned from the generated document when the content_map_hash changes
+  (new hash → new key → old key is stale). The `pruned_tools` field in
+  `ToolSyncReport` tracks the count of pruned keys.
+- **Filesystem pruning**: `retain_only_tool_dirs(data_dir, retained_ids)` removes
+  filesystem tool directories for tools not in the active set.
+- **Preserves keys for remaining tools**: pruning only removes stale/unused keys;
+  newly computed keys for active tools survive the prune.
 
 ### Testing invariants
 

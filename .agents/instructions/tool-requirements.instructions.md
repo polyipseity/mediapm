@@ -1,47 +1,81 @@
 ---
-description: "Use when editing tool requirement configuration in src/mediapm/src/config/mod.rs and source_types.rs. Covers ToolRequirement fields, ToolRequirementDependencies selectors, MediaMetadataValue enum, and normalization rules."
+description: "Use when editing tool requirement configuration in src/mediapm/src/config/mod.rs. Covers ToolRequirement fields, ToolRequirementDependencies selectors, and normalization rules."
 name: "Tool Requirements"
-applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/source_types.rs"
+applyTo: "src/mediapm/src/config/mod.rs"
 ---
 
 # Tool requirements
 
 ## Purpose
 
-- Model how users declare managed tool version/tag requirements in `mediapm.ncl` under `tools.<id>`.
-- Provide selector-based dependency version requirements for cross-tool companion resolution.
+- Model how users declare managed tool version requirements in `mediapm.ncl` under `tools.<id>`.
+- Provide typed dependency declarations via `DependencySpec` for cross-tool
+  companion resolution.
 
 ## `ToolRequirement` fields
 
 | Field              | Type                          | Default                     | Purpose                                    |
 | ------------------ | ----------------------------- | --------------------------- | ------------------------------------------ |
-| `version`          | `MediaMetadataValue`          | `Literal("")`               | Version metadata value or selector binding |
-| `tag`              | `String`                      | `""`                        | Tag metadata value or selector binding     |
-| `dependencies`     | `ToolRequirementDependencies` | default                     | Cross-tool dependency version selectors    |
+| `version_spec`     | `VersionSpec`                 | `Latest`                    | Version specification: `"latest"`, `"inherit"`, or `{ vcs_hash?, version?, tag? }` |
+| `dependencies`     | `ToolRequirementDependencies` | default                     | Cross-tool dependency specs                |
 | `recheck_seconds`  | `u64`                         | `0` (use default heuristic) | Recheck interval for metadata freshness    |
 | `max_input_slots`  | `u32`                         | from `defaults`             | Max ffmpeg input slot count                |
 | `max_output_slots` | `u32`                         | from `defaults`             | Max ffmpeg output slot count               |
 
-Both `version` and `tag` serve as version selectors; a tool entry must have at least one non-empty value to be retained during normalization.
+`version_spec` replaces the old `version`/`tag`/`desired_git_hash`/`desired_tag`/`desired_version`
+fields. See `VersionSpec` in the conductor provider module for the full serde format.
 
 ## `ToolRequirementDependencies` fields
 
-| Field            | Type                 | Purpose                                             |
-| ---------------- | -------------------- | --------------------------------------------------- |
-| `ffmpeg_version` | `MediaMetadataValue` | Selector or literal for ffmpeg companion dependency |
-| `deno_version`   | `MediaMetadataValue` | Selector or literal for deno companion dependency   |
-| `sd_version`     | `MediaMetadataValue` | Selector or literal for sd dependency               |
+| Field  | Type                           | Purpose                                             |
+| ------ | ------------------------------ | --------------------------------------------------- |
+| `deps` | `BTreeMap<String, DependencySpec>` | Map of dependency tool id → dependency spec          |
 
-Each dependency follows the same `MediaMetadataValue` enum. The string `"inherit"` signals "use global default" and is treated as empty by companion resolution.
+Replaces the old flat `ffmpeg_version`/`deno_version`/`sd_version` fields.
 
-## `MediaMetadataValue` enum
+## `DependencySpec` struct
 
-- `Literal(String)` — a concrete text value (e.g. `"2025.01.15"`).
-- `Variant(MediaMetadataVariantBinding)` — extract a metadata key from a produced file variant.
-- `Fallback(Vec<MediaMetadataValueCandidate>)` — ordered fallback list; first non-empty match wins.
+| Field          | Type             | Default      | Purpose                                                    |
+| -------------- | ---------------- | ------------ | ---------------------------------------------------------- |
+| `dep_type`     | `DependencyType` | `Inter`      | Companion relationship type (same-step vs cross-step)      |
+| `version_spec` | `VersionSpec`    | `Inherit`    | Version spec: `"latest"`, `"inherit"`, or exact fields    |
+
+## `DependencyType` enum
+
+| Variant   | Meaning                                                                 |
+| --------- | ----------------------------------------------------------------------- |
+| `Cross`   | Invoked as a separate workflow step (cross-step dependency).            |
+| `Inter`   | Folded into the same step as a companion (interstep / same-step).       |
+| `Both`    | Functions as both interstep AND cross-step.                             |
+
+Default is `Inter`.
+
+## `VersionSpec` enum
+
+| Variant   | Meaning                                                                 |
+| --------- | ----------------------------------------------------------------------- |
+| `Latest`  | Fetch the latest available version (`"latest"`).                        |
+| `Inherit` | Use the global tool version spec from `tools.<id>.version_spec` (`"inherit"`). |
+| `Exact(VersionSpecFields)` | Exact fields: `{ vcs_hash?, version?, tag? }`                    |
+
+## `VersionSpecFields` struct
+
+| Field      | Type     | Purpose                                    |
+| ---------- | -------- | ------------------------------------------ |
+| `vcs_hash` | `Option<String>` | VCS hash (git commit, etc.). Exact match. |
+| `version`  | `Option<String>` | Version string. Exact match.               |
+| `tag`      | `Option<String>` | VCS tag. Exact match.                      |
+
+At least one field must be non-`None` (enforced at deserialization).
+Multiple fields may be present; when they are, all must match at
+provision time or provisioning errors.
 
 ## Normalization rules
 
-- `ToolRequirement` entries without a meaningful `version` or `tag` (both empty/whitespace after trim) are **removed** during normalization.
-- `ToolRequirementDependencies` selectors with value `"inherit"` or empty are treated as "use global default" by companion resolution — they are **not** removed from the struct but are skipped during selection.
-- Normalization runs in `MediaPmDocument::normalize()` and `MediaPmState::normalize()`.
+- `ToolRequirement` entries are kept during normalization if `version_spec`
+  is set (any variant). Old `version`/`tag` fields no longer exist — the
+  single `version_spec` field is authoritative.
+- `ToolRequirementDependencies` with `VersionSpec::Inherit` are treated as
+  "use global default" — they are not removed but resolved at provision time.
+- Normalization runs in `MediaPmDocument::normalize()` and
+  `MediaPmState::normalize()`.
