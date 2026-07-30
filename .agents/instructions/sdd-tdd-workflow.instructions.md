@@ -285,6 +285,14 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `retain_only_tool_dirs` called after save to prune filesystem tool directories  | compilation check (import + call in reconcile)                                              | [covered] |
 | Pruning preserves keys for remaining tools (no false positives)                 | `reconcile_prunes_old_tool_version_from_generated_doc` (asserts new key exists after prune) | [covered] |
 
+### tool_runtimes keyed by plain tool_id (Phase 9)
+
+| Spec item                                                    | Test(s)                                                                                           | Status    |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- | --------- |
+| tool_runtimes uses plain `tool_id` as keys (no `@hash`)      | All existing env integration tests (verified by 333-passing test suite)                           | [covered] |
+| Skipped tools use `entry().or_insert()` to avoid overwrite   | All skip-related env tests                                                                        | [covered] |
+| `Ok(None)` path uses plain `tool_id` key                     | All env generation tests                                                                          | [covered] |
+
 ### Dependency resolution (Phase 6)
 
 | Spec item                                                                        | Test(s)                                                                                                                                                                                                                                            | Status    |
