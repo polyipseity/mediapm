@@ -917,7 +917,6 @@ mod inner {
 
     /// Overhead in visible chars for the status marker in the prefix
     /// (`[F] ` or `[A] ` = 4 chars) vs normal (0).
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(super) fn prefix_overhead(status: TrackStatus) -> usize {
         match status {
             TrackStatus::Failed | TrackStatus::Abandoned => 4,
@@ -926,15 +925,251 @@ mod inner {
     }
 
     /// Maximum visible width for the prefix field based on terminal width.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(super) const fn max_prefix_width(cols: u16) -> usize {
         if cols >= 60 { 30 } else { 25 }
     }
 
     /// Maximum visible width for the message field based on terminal width.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(super) const fn max_message_width(cols: u16) -> usize {
         if cols >= 60 { 55 } else { 40 }
+    }
+
+    /// Remove visible characters from the right end of a byte range within a
+    /// string, down to at most `max_bare` visible chars. The range contains
+    /// `range_len` visible chars. If the range already fits, nothing changes.
+    /// The range must be valid UTF-8 boundaries.
+    pub(super) fn shrink_range_to_budget(
+        s: &mut String,
+        range: std::ops::Range<usize>,
+        max_bare: usize,
+        range_len: usize,
+    ) {
+        if range_len <= max_bare || range.is_empty() {
+            return;
+        }
+        let excess = range_len - max_bare;
+        let original_end = range.end;
+        let mut new_end = original_end;
+        let mut removed: usize = 0;
+        // Walk chars backward from end of range.
+        for c in s[..original_end].chars().rev() {
+            if removed >= excess {
+                break;
+            }
+            if new_end <= range.start {
+                break;
+            }
+            let char_start = new_end - c.len_utf8();
+            if char_start < range.start {
+                break;
+            }
+            new_end = char_start;
+            removed += 1;
+        }
+        if new_end < original_end {
+            s.replace_range(new_end..original_end, "");
+        }
+    }
+
+    /// Progressively truncate a raw prefix string (no ANSI escapes) so that
+    /// its visible width fits within `max_width` after accounting for
+    /// [`prefix_overhead`] from `status`.
+    ///
+    /// Sections are removed in this order:
+    /// 1. Version string (between tool name and `[phase]`)
+    /// 2. Count/total (`N/M`)
+    /// 3. Phase tag (`[phase]`)
+    /// 4. Tool name (first word)
+    /// 5. Hard truncate (keep first `eff_max` chars)
+    pub(super) fn semantic_truncate_prefix(
+        s: &str,
+        max_width: usize,
+        status: TrackStatus,
+    ) -> String {
+        let s = s.trim_end();
+        let oh = prefix_overhead(status);
+        let eff_max = max_width.saturating_sub(oh);
+
+        // Fast path.
+        let char_count = s.chars().count();
+        if char_count <= eff_max {
+            return s.to_string();
+        }
+
+        // Parse sections from the original string `s`.
+        let Some(phase_start) = s.rfind('[') else {
+            return s.chars().take(eff_max).collect();
+        };
+        let phase_end = phase_start + s[phase_start..].find(']').map(|i| i + 1).unwrap_or(0);
+
+        let tool_name = s.split_whitespace().next().unwrap_or("").to_string();
+        let tool_len = tool_name.chars().count();
+        let version_str = s[tool_name.len()..phase_start].trim().to_string();
+        let version_len = version_str.chars().count();
+        let count_str = s[phase_end..].trim().to_string();
+        let count_len = count_str.chars().count();
+        let phase_inner_s = &s[(phase_start + 1)..(phase_end - 1)];
+        let phase_inner_len = phase_inner_s.chars().count();
+
+        // Cumulative base: sections permanently removed when progressive
+        // removal doesn't fit.
+        let mut base = s.to_string();
+
+        // Helper: clone base, shrink a section within it, normalize.
+        // Returns Some(candidate) if it fits after shrink.
+        let try_keep =
+            |b: &str, content: &str, keep: usize, content_len: usize| -> Option<String> {
+                if content.is_empty() || keep >= content_len {
+                    return None;
+                }
+                let mut c = b.to_string();
+                let c_start = c.find(content).unwrap_or(0);
+                let c_end = c_start + content.len();
+                shrink_range_to_budget(&mut c, c_start..c_end, keep, content_len);
+                while c.contains("  ") {
+                    c = c.replace("  ", " ");
+                }
+                c = c.trim_end().to_string();
+                if c.chars().count() <= eff_max { Some(c) } else { None }
+            };
+
+        // Helper: permanently remove a section (keep=0) from base.
+        let remove_section = |b: &mut String, content: &str, content_len: usize| {
+            if content.is_empty() {
+                return;
+            }
+            let c_start = b.find(content).unwrap_or(0);
+            let c_end = c_start + content.len();
+            shrink_range_to_budget(b, c_start..c_end, 0, content_len);
+            while b.contains("  ") {
+                *b = b.replace("  ", " ");
+            }
+            *b = b.trim_end().to_string();
+        };
+
+        // 1. Version.
+        if version_len > 0 {
+            for keep in (0..version_len).rev() {
+                if let Some(c) = try_keep(&base, &version_str, keep, version_len) {
+                    return c;
+                }
+            }
+            remove_section(&mut base, &version_str, version_len);
+        }
+
+        // 2. Count.
+        if count_len > 0 {
+            for keep in (0..count_len).rev() {
+                if let Some(c) = try_keep(&base, &count_str, keep, count_len) {
+                    return c;
+                }
+            }
+            remove_section(&mut base, &count_str, count_len);
+        }
+
+        // 3. Phase.
+        if phase_inner_len > 0 {
+            // Try inner text shrinking.
+            for keep in (0..phase_inner_len).rev() {
+                let mut c = base.clone();
+                let ps = c.rfind('[').unwrap_or(0);
+                let pe = ps + c[ps..].find(']').map(|i| i + 1).unwrap_or(0);
+                let inner_range = (ps + 1)..(pe - 1);
+                shrink_range_to_budget(&mut c, inner_range, keep, phase_inner_len);
+                while c.contains("  ") {
+                    c = c.replace("  ", " ");
+                }
+                c = c.trim_end().to_string();
+                if c.chars().count() <= eff_max {
+                    return c;
+                }
+            }
+            // Try removing whole bracket.
+            {
+                let mut c = base.clone();
+                let ps = c.rfind('[').unwrap_or(0);
+                let pe = ps + c[ps..].find(']').map(|i| i + 1).unwrap_or(0);
+                shrink_range_to_budget(&mut c, ps..pe, 0, phase_inner_len + 2);
+                while c.contains("  ") {
+                    c = c.replace("  ", " ");
+                }
+                c = c.trim_end().to_string();
+                if c.chars().count() <= eff_max {
+                    return c;
+                }
+            }
+            // Permanently remove bracket.
+            let ps = base.rfind('[').unwrap_or(0);
+            let pe = ps + base[ps..].find(']').map(|i| i + 1).unwrap_or(0);
+            shrink_range_to_budget(&mut base, ps..pe, 0, phase_inner_len + 2);
+            while base.contains("  ") {
+                base = base.replace("  ", " ");
+            }
+            base = base.trim_end().to_string();
+        }
+
+        // 4. Tool name.
+        if tool_len > 0 {
+            for keep in (0..tool_len).rev() {
+                let mut c = base.clone();
+                let ts = c.find(&tool_name).unwrap_or(0);
+                let te = ts + tool_name.len();
+                shrink_range_to_budget(&mut c, ts..te, keep, tool_len);
+                c = c.trim_start().to_string();
+                while c.contains("  ") {
+                    c = c.replace("  ", " ");
+                }
+                c = c.trim_end().to_string();
+                if c.chars().count() <= eff_max {
+                    return c;
+                }
+            }
+            remove_section(&mut base, &tool_name, tool_len);
+        }
+
+        // 5. Hard truncate.
+        base.chars().take(eff_max).collect()
+    }
+
+    /// Progressively truncate a message string (possibly containing ANSI
+    /// escapes) so its visible width fits within `max_width`.
+    ///
+    /// The message has the form `<auto>  <custom>`, where `<auto>` may contain
+    /// ANSI color codes and `<custom>` is plain text. Truncation first removes
+    /// visible chars from the custom part (right to left), then falls back to
+    /// hard truncation of the stripped visible string.
+    pub(super) fn semantic_truncate_message(s: &str, max_width: usize) -> String {
+        // Fast path.
+        let visible = strip_ansi(s);
+        if visible.chars().count() <= max_width {
+            return s.to_string();
+        }
+
+        // Find the last "  " separator to split auto (with ANSI) from
+        // custom (plain text).
+        if let Some(sep) = s.rfind("  ") {
+            let auto = &s[..sep];
+            let custom = &s[sep + 2..]; // skip the "  "
+            let auto_visible_len = strip_ansi(auto).chars().count();
+
+            // Try progressive removal from custom (right to left).
+            let custom_chars: Vec<char> = custom.chars().collect();
+            let custom_len = custom_chars.len();
+            for keep in (0..custom_len).rev() {
+                let total_visible = auto_visible_len + 2 + keep;
+                if total_visible <= max_width {
+                    let truncated_custom: String = custom_chars[..keep].iter().collect();
+                    return format!("{}  {}", auto, truncated_custom);
+                }
+            }
+
+            // Custom fully removed but still doesn't fit — hard truncate
+            // the visible string.
+            visible.chars().take(max_width).collect()
+        } else {
+            // No separator — hard truncate.
+            visible.chars().take(max_width).collect()
+        }
     }
 
     fn child_bar_style() -> ProgressStyle {
@@ -1551,7 +1786,6 @@ mod inner {
                     }
                     apply_bar_style(&slot.bar, cols);
                 }
-                slot.bar.set_prefix(build_prefix(snap.status, &snap.prefix));
                 let rate_str: Option<String> = if snap.status == TrackStatus::Active {
                     if self.slots_timing[i].rate > 0.0 {
                         Some(format_rate(self.slots_timing[i].rate))
@@ -1842,6 +2076,7 @@ mod inner {
         ) {
             let slot = &self.slots[i];
             let is_overall = self.has_overall && i == self.slots.len() - 1;
+            let (_, cols) = self.dim_source.dimensions();
             let count_str = format_count(snap.position);
             let total_str = format_count(snap.total);
             let elapsed_str = format_elapsed(snap.elapsed);
@@ -1855,17 +2090,30 @@ mod inner {
                 eta_str,
             );
 
-            let new_prefix = build_prefix(snap.status, &snap.prefix);
+            // Truncate prefix to fit template width, accounting for ANSI
+            // escapes added by build_prefix (which indicatif counts as visible
+            // chars). Normal: \x1b[0m = 4; failed/abandoned: \x1b[0m\x1b[3Xm\x1b[0m = 13.
+            let ansi_overhead: usize = match snap.status {
+                TrackStatus::Failed | TrackStatus::Abandoned => 13,
+                _ => 4,
+            };
+            let truncated_prefix = semantic_truncate_prefix(
+                &snap.prefix,
+                max_prefix_width(cols).saturating_sub(ansi_overhead),
+                snap.status,
+            );
+            let new_prefix = build_prefix(snap.status, &truncated_prefix);
             if new_prefix != *slot.cache.prefix.borrow() {
                 slot.bar.set_prefix(new_prefix.clone());
                 *slot.cache.prefix.borrow_mut() = new_prefix;
             }
             // Build display message: auto-computed RHS + optional custom message.
-            let display_msg = if snap.message.is_empty() {
+            let display_msg_raw = if snap.message.is_empty() {
                 msg.clone()
             } else {
                 format!("{}  {}", msg, snap.message)
             };
+            let display_msg = semantic_truncate_message(&display_msg_raw, max_message_width(cols));
             if display_msg != *slot.cache.msg.borrow() {
                 slot.bar.set_message(display_msg.clone());
                 *slot.cache.msg.borrow_mut() = display_msg;
@@ -3867,6 +4115,188 @@ mod tests {
     fn max_message_width_compact() {
         assert_eq!(super::inner::max_message_width(59), 40);
         assert_eq!(super::inner::max_message_width(40), 40);
+    }
+
+    // ---- semantic_truncate_prefix tests (Phase 2) -----------------------
+
+    #[test]
+    fn shrink_range_to_budget_empty_range() {
+        let mut s = "hello".to_string();
+        // An empty range should be a no-op.
+        super::inner::shrink_range_to_budget(&mut s, 0..0, 5, 5);
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn shrink_range_to_budget_already_fits() {
+        let mut s = "hello world".to_string();
+        super::inner::shrink_range_to_budget(&mut s, 0..11, 11, 11);
+        assert_eq!(s, "hello world");
+    }
+
+    #[test]
+    fn shrink_range_to_budget_truncates() {
+        let mut s = "hello world".to_string();
+        // Range 6..11 ("world"), max_bare=3 → keep "wor", remove "ld"
+        super::inner::shrink_range_to_budget(&mut s, 6..11, 3, 5);
+        assert_eq!(s, "hello wor");
+    }
+
+    #[test]
+    fn shrink_range_to_budget_removes_all() {
+        let mut s = "hello world".to_string();
+        super::inner::shrink_range_to_budget(&mut s, 6..11, 0, 5);
+        assert_eq!(s, "hello ");
+    }
+
+    #[test]
+    fn shrink_range_to_budget_unicode_respects_char_boundaries() {
+        // Note: prefix content is always ASCII, but the function should be
+        // safe with multi-byte chars.
+        let mut s = "héllo".to_string();
+        // range 3..6 = "llo" (bytes), max_bare=1 (keep 1 of 3 visible chars)
+        super::inner::shrink_range_to_budget(&mut s, 3..6, 1, 3);
+        assert_eq!(s, "hél");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_already_fits() {
+        let result = super::inner::semantic_truncate_prefix(
+            "wget [fch] 0/1",
+            30,
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "wget [fch] 0/1", "no truncation when fits");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_remove_version() {
+        // "wget 1.2.3 [fch] 2/5" = 20 chars. max_width=30, overhead=0, eff_max=30 → fits, no truncation
+        let result = super::inner::semantic_truncate_prefix(
+            "wget 1.2.3 [fch] 2/5",
+            30,
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "wget 1.2.3 [fch] 2/5", "version change doesn't apply when fits");
+
+        // eff_max=17: need to remove 3 chars → version keep=2 ("1.")
+        let result = super::inner::semantic_truncate_prefix(
+            "wget 1.2.3 [fch] 2/5",
+            17,
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "wget 1. [fch] 2/5", "version shortened by 3 chars");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_remove_version_full() {
+        // eff_max=15: "wget 1.2.3 [fch] 2/5" = 20 chars → version completely gone
+        let result = super::inner::semantic_truncate_prefix(
+            "wget 1.2.3 [fch] 2/5",
+            15,
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "wget [fch] 2/5", "version fully removed when excess covers it");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_remove_version_and_count() {
+        // eff_max=11: remove version (7 chars) + count (4 chars) = 11 removed, 11 remain
+        let result = super::inner::semantic_truncate_prefix(
+            "wget 1.2.3 [fch] 2/5",
+            11,
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "wget [fch]", "version and count removed");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_remove_version_count_phase() {
+        // eff_max=4: only tool name remains
+        let result = super::inner::semantic_truncate_prefix(
+            "wget 1.2.3 [fch] 2/5",
+            4,
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "wget", "tool name survives after version, count, phase removed");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_hard_truncate() {
+        // eff_max=2: hard truncate tool name
+        let result = super::inner::semantic_truncate_prefix(
+            "wget 1.2.3 [fch] 2/5",
+            2,
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "wg", "hard truncate to 2 chars");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_empty() {
+        let result = super::inner::semantic_truncate_prefix("", 30, super::TrackStatus::Active);
+        assert_eq!(result, "", "empty prefix stays empty");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_failed_overhead() {
+        // Failed status has overhead of 4 visible chars.
+        // max_width=8, overhead=4, eff_max=4
+        // "wget [fch] 0/1" = 14 chars → need to remove 10
+        // Version: none. Count: " 0/1" = 4. Phase: " [fch]" = 6. Tool: "wget" = 4.
+        // Remove count (4) → 10 remain → remove phase (6) → 4 remain → "wget"
+        let result =
+            super::inner::semantic_truncate_prefix("wget [fch] 0/1", 8, super::TrackStatus::Failed);
+        assert_eq!(result, "wget", "failed overhead accounted");
+    }
+
+    #[test]
+    fn semantic_truncate_message_fits() {
+        let s = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cached (1)";
+        let result = super::inner::semantic_truncate_message(s, 100);
+        assert_eq!(result, s, "message unchanged when fits");
+    }
+
+    #[test]
+    fn semantic_truncate_message_remove_custom_partial() {
+        let s = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cached (1)";
+        // Visible: " 2/5 0:00:05 12.3 MiB/s [0:00:02]  cached (1)" = 45 chars
+        // Auto=33, sep=2, custom=9.
+        // max_width=39 → need to remove 6 total. keep=5 → 40 > 39, keep=4 → 39 ✓
+        let result = super::inner::semantic_truncate_message(s, 39);
+        assert_eq!(result, " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cach");
+    }
+
+    #[test]
+    fn semantic_truncate_message_remove_custom_all() {
+        let s = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cached (1)";
+        // Auto=33, sep=2, custom=9, total=45.
+        // max_width=35 → keep=1 → 36 > 35, keep=0 → 35 ✓
+        let result = super::inner::semantic_truncate_message(s, 35);
+        assert_eq!(result, " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  ");
+    }
+
+    #[test]
+    fn semantic_truncate_message_hard_truncate() {
+        let s = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cached (1)";
+        // Auto=33, sep=2, custom=9, total=45.
+        // max_width=30: custom all removed (9) → 35 left, still > 30.
+        // Hard truncate visible to 30: " 2/5 0:00:05 12.3 MiB/s [0:00:"
+        let result = super::inner::semantic_truncate_message(s, 30);
+        assert_eq!(result, " 2/5 0:00:05 12.3 MiB/s [0:00:");
+    }
+
+    #[test]
+    fn semantic_truncate_message_no_separator() {
+        let s = "hello world";
+        let result = super::inner::semantic_truncate_message(s, 5);
+        assert_eq!(result, "hello", "hard truncate without separator");
+    }
+
+    #[test]
+    fn semantic_truncate_message_empty() {
+        let result = super::inner::semantic_truncate_message("", 30);
+        assert_eq!(result, "", "empty message stays empty");
     }
 
     #[test]
