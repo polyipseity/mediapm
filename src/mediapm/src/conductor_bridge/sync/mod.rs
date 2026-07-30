@@ -455,51 +455,8 @@ pub(crate) async fn reconcile_desired_tools(
     for entry in &entries {
         let tool_id = &entry.tool_id;
         let tool_req = &entry.tool_requirement;
-        let is_used = used_tool_ids.contains(tool_id.as_str());
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
-
-        if !is_used {
-            let prune_bar = effective_group.add_bar(1, &format!("{tool_id} [prn]"));
-            // Tool not in active set — register with empty runtime and skip provisioning.
-            // Record minimal deployment state (no payload).
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            report.tool_records.push(ToolRegistryEntry {
-                tool_id: tool_id.clone(),
-                version: String::new(),
-                canonical_version: String::new(),
-                content_map_hash: String::new(),
-                deployed_at: now,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
-            });
-            if !generated_doc.tools.contains_key(tool_id) {
-                generated_doc.tools.insert(
-                    tool_id.clone(),
-                    mediapm_conductor::ToolSpec {
-                        name: tool_id.clone(),
-                        kind: mediapm_conductor::ToolKindSpec::Executable {
-                            command: Vec::new(),
-                            env_vars: BTreeMap::new(),
-                            success_codes: vec![0],
-                        },
-                        inputs: BTreeMap::new(),
-                        default_inputs: BTreeMap::new(),
-                        outputs: BTreeMap::new(),
-                        runtime: mediapm_conductor::ToolRuntime::default(),
-                    },
-                );
-            }
-            prune_bar.set_position(1);
-            prune_bar.set_message("pruned");
-            prune_bar.finish_success();
-            pb.advance(1);
-            continue;
-        }
 
         // --- Spec-based skip: if desired spec is already satisfied, skip. ---
         if tool_req.version_spec != ConfigVersionSpec::Latest
@@ -1267,6 +1224,34 @@ mod tests {
         assert!(used.contains("tool_a"));
         assert!(used.contains("tool_b"));
         assert_eq!(used.len(), 2);
+    }
+
+    #[test]
+    fn all_entries_are_used() {
+        // Every tool ID in desired_tools appears in the used set. This
+        // documents the invariant that the `!is_used` branch in
+        // reconcile_desired_tools can never fire — all entries come from
+        // desired_tools + transitive deps, which is exactly what
+        // compute_used_tool_ids computes.
+        let mut desired: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        desired.insert(
+            "ffmpeg".to_string(),
+            serde_json::to_value(ToolRequirement::default()).unwrap(),
+        );
+        desired.insert(
+            "yt-dlp".to_string(),
+            serde_json::to_value(ToolRequirement::default()).unwrap(),
+        );
+        desired.insert(
+            "media-tagger".to_string(),
+            serde_json::to_value(ToolRequirement::default()).unwrap(),
+        );
+
+        let used = compute_used_tool_ids(&desired);
+        assert!(used.contains("ffmpeg"), "ffmpeg must be in used set");
+        assert!(used.contains("yt-dlp"), "yt-dlp must be in used set");
+        assert!(used.contains("media-tagger"), "media-tagger must be in used set");
+        assert_eq!(used.len(), 3, "no extra IDs beyond desired_tools keys");
     }
 
     // ---------------------------------------------------------------------------
