@@ -74,7 +74,7 @@ Avoid depending on nondeterministic iteration order from `HashMap`, `HashSet`, o
 
 ### Test isolation
 
-Use temporary directories for filesystem tests — create them with `tempfile::TempDir` or `assert_fs::TempDir` and avoid depending on host machine state or pre-existing data. Tests must be self-contained and leave no filesystem artifacts after completion. Do not write test fixtures into the source tree.
+Use temporary directories for filesystem tests — create them with `tempfile::TempDir` or `assert_fs::TempDir` and avoid depending on host machine state or pre-existing data. Tests must be self-contained and leave no filesystem artifacts after completion. Do not write test fixtures into the source tree. When setting process-global environment variables that affect other tests' behavior, remove them immediately after the setup step that consumes them — do not wait until function exit. Delayed cleanup races with parallel test execution (cargo test runs integration tests in the same process concurrently).
 
 ### Credential isolation for AcoustID tests
 
@@ -114,6 +114,12 @@ string.
   tested.
 - The assertion is a preliminary debug check and an exact assertion follows
   on the same output.
+
+When asserting across resize events with dynamic height, prefer comparing
+non-empty content line counts (`lines().filter(|l| !l.is_empty()).count()`)
+over total `.lines().count()` — trailing empty lines in the virtual terminal
+buffer may differ after grow→shrink cycles even when visible content is
+functionally identical.
 
 **Capture strategy.** When the exact expected output is not known in advance:
 
@@ -238,6 +244,12 @@ let pb2 = group.add_bar(sub_total, "phase 2");
 ```
 
 Finalization calls `finish_success("done")` on each tracked handle followed by `group.join()`, which keeps bars visible until the group drops. Use `join_and_clear()` only when the terminal must be cleared before subsequent output — for example, before printing a result line.
+
+For deterministic progress group tests that assert spinner or animation
+frame behavior, use `.with_ticker_enabled(false)` on the builder to
+suppress the background ticker thread. Without suppression, the ticker
+thread advances the renderer between test-controlled ticks, introducing
+extra animation frames.
 
 ### Global toggle and auto-detection
 
