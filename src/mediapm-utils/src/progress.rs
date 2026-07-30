@@ -870,6 +870,73 @@ mod inner {
         }
     }
 
+    // ---- ANSI-safe truncation helpers -----------------------------------
+
+    /// Strip ANSI SGR escape sequences (`\x1b[...m`) from `s`.
+    /// Non-SGR escape sequences (not ending with `m`) are left untouched.
+    pub(super) fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // Try to match \x1b[...m (SGR sequence)
+                let saved = chars.clone();
+                if chars.next() == Some('[') {
+                    let mut seq = String::new();
+                    for ch in chars.by_ref() {
+                        seq.push(ch);
+                        if ch == 'm' {
+                            break;
+                        }
+                        if !ch.is_ascii_digit() && ch != ';' {
+                            // Not an SGR sequence — restore and emit the escape.
+                            out.push('\x1b');
+                            out.push('[');
+                            out.push_str(&seq);
+                            break;
+                        }
+                    }
+                    // If we broke because of 'm', the sequence was consumed — drop it.
+                    // If we pushed saved chars, continue.
+                } else {
+                    out.push('\x1b');
+                    chars = saved;
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Number of visible characters in `s` (after stripping ANSI SGR codes).
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(super) fn visible_width(s: &str) -> usize {
+        strip_ansi(s).chars().count()
+    }
+
+    /// Overhead in visible chars for the status marker in the prefix
+    /// (`[F] ` or `[A] ` = 4 chars) vs normal (0).
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(super) fn prefix_overhead(status: TrackStatus) -> usize {
+        match status {
+            TrackStatus::Failed | TrackStatus::Abandoned => 4,
+            _ => 0,
+        }
+    }
+
+    /// Maximum visible width for the prefix field based on terminal width.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(super) const fn max_prefix_width(cols: u16) -> usize {
+        if cols >= 60 { 30 } else { 25 }
+    }
+
+    /// Maximum visible width for the message field based on terminal width.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(super) const fn max_message_width(cols: u16) -> usize {
+        if cols >= 60 { 55 } else { 40 }
+    }
+
     fn child_bar_style() -> ProgressStyle {
         ProgressStyle::with_template(CHILD_BAR_TEMPLATE)
             .expect("invalid child bar template")
@@ -3705,6 +3772,101 @@ mod tests {
         for status in [super::TrackStatus::Success, super::TrackStatus::Finished] {
             assert_eq!(super::inner::bar_color_code(status, false), "32");
         }
+    }
+
+    // ---- ANSI-safe truncation helpers (Phase 1) -------------------------
+
+    #[test]
+    fn strip_ansi_empty() {
+        assert_eq!(super::inner::strip_ansi(""), "");
+    }
+
+    #[test]
+    fn strip_ansi_no_escapes() {
+        assert_eq!(super::inner::strip_ansi("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_ansi_reset() {
+        assert_eq!(super::inner::strip_ansi("\x1b[0m"), "");
+    }
+
+    #[test]
+    fn strip_ansi_multiple() {
+        assert_eq!(super::inner::strip_ansi("\x1b[31mfoo\x1b[0m"), "foo");
+        assert_eq!(super::inner::strip_ansi("\x1b[33m[F]\x1b[0m bar"), "[F] bar");
+    }
+
+    #[test]
+    fn strip_ansi_non_sgr_ignored() {
+        // Non-SGR escape sequences (not ending with 'm') are passed through.
+        assert_eq!(super::inner::strip_ansi("\x1b[2J"), "\x1b[2J");
+        assert_eq!(super::inner::strip_ansi("a\x1b[Kb"), "a\x1b[Kb");
+    }
+
+    #[test]
+    fn visible_width_empty() {
+        assert_eq!(super::inner::visible_width(""), 0);
+    }
+
+    #[test]
+    fn visible_width_no_ansi() {
+        assert_eq!(super::inner::visible_width("hello"), 5);
+    }
+
+    #[test]
+    fn visible_width_with_ansi() {
+        assert_eq!(super::inner::visible_width("\x1b[31mhello\x1b[0m"), 5);
+        assert_eq!(super::inner::visible_width("\x1b[33m[F]\x1b[0m wget"), 8);
+    }
+
+    #[test]
+    fn visible_width_ansi_only() {
+        assert_eq!(super::inner::visible_width("\x1b[0m"), 0);
+        assert_eq!(super::inner::visible_width("\x1b[31m\x1b[33m"), 0);
+    }
+
+    #[test]
+    fn prefix_overhead_failed() {
+        assert_eq!(super::inner::prefix_overhead(super::TrackStatus::Failed), 4);
+    }
+
+    #[test]
+    fn prefix_overhead_abandoned() {
+        assert_eq!(super::inner::prefix_overhead(super::TrackStatus::Abandoned), 4);
+    }
+
+    #[test]
+    fn prefix_overhead_other() {
+        for status in
+            [super::TrackStatus::Active, super::TrackStatus::Success, super::TrackStatus::Finished]
+        {
+            assert_eq!(super::inner::prefix_overhead(status), 0, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn max_prefix_width_wide() {
+        assert_eq!(super::inner::max_prefix_width(80), 30);
+        assert_eq!(super::inner::max_prefix_width(60), 30);
+    }
+
+    #[test]
+    fn max_prefix_width_compact() {
+        assert_eq!(super::inner::max_prefix_width(59), 25);
+        assert_eq!(super::inner::max_prefix_width(40), 25);
+    }
+
+    #[test]
+    fn max_message_width_wide() {
+        assert_eq!(super::inner::max_message_width(80), 55);
+        assert_eq!(super::inner::max_message_width(60), 55);
+    }
+
+    #[test]
+    fn max_message_width_compact() {
+        assert_eq!(super::inner::max_message_width(59), 40);
+        assert_eq!(super::inner::max_message_width(40), 40);
     }
 
     #[test]
