@@ -28,7 +28,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    via `deps.keys()` using DFS with a visited set. Tools NOT in the computed
    set get their content_map cleared and filesystem payloads removed after the
    provisioning loop.
-5b. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
+   5b. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
    - Resolve the tool fetch via `provider::resolve_tool_fetch()`. If resolve fails, emit a warning and continue.
    - Determine `PreResolveOutcome`: `Skip` if the tool is already provisioned at the resolved version, else `Resolved`.
@@ -203,12 +203,12 @@ stored entries for comparison).
 
 ### Test coverage
 
-| Spec item                                                                                     | Test(s)                                                                                                                     | Status    |
-| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | --------- |
-| `compute_composite_canonical_version` returns bare version when no SameStep deps              | `compute_composite_canonical_version_no_deps` (unit)                                                                        | [covered] |
-| `compute_composite_canonical_version` appends `;dep:ver` for SameStep deps                    | `compute_composite_canonical_version_with_same_step_deps` (unit)                                                            | [covered] |
-| Stored `canonical_version` in state.json is composite after sync                              | `sync_stores_composite_canonical_version` (integration)                                                                     | [covered] |
-| Re-sync skips tool when stored composite matches computed composite                           | `sync_skip_triggers_on_unchanged_composite` (integration)                                                                   | [covered] |
-| `logical_tool_requires_sync` returns `false` when composite matches                           | `sync_logical_requires_sync_composite_comparison` (integration)                                                             | [covered] |
-| `logical_tool_requires_sync` returns `true` when composite mismatches                         | `sync_logical_requires_sync_on_composite_mismatch` (integration)                                                            | [covered] |
-| Public API: `compute_composite_canonical_version` and `index_managed_tools` are `pub(crate)`  | Compilation check (used by integration tests via service.rs)                                                                | [covered] |
+| Spec item                                                                                    | Test(s)                                                          | Status    |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | --------- |
+| `compute_composite_canonical_version` returns bare version when no SameStep deps             | `compute_composite_canonical_version_no_deps` (unit)             | [covered] |
+| `compute_composite_canonical_version` appends `;dep:ver` for SameStep deps                   | `compute_composite_canonical_version_with_same_step_deps` (unit) | [covered] |
+| Stored `canonical_version` in state.json is composite after sync                             | `sync_stores_composite_canonical_version` (integration)          | [covered] |
+| Re-sync skips tool when stored composite matches computed composite                          | `sync_skip_triggers_on_unchanged_composite` (integration)        | [covered] |
+| `logical_tool_requires_sync` returns `false` when composite matches                          | `sync_logical_requires_sync_composite_comparison` (integration)  | [covered] |
+| `logical_tool_requires_sync` returns `true` when composite mismatches                        | `sync_logical_requires_sync_on_composite_mismatch` (integration) | [covered] |
+| Public API: `compute_composite_canonical_version` and `index_managed_tools` are `pub(crate)` | Compilation check (used by integration tests via service.rs)     | [covered] |
