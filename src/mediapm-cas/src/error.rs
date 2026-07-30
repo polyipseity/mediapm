@@ -1,4 +1,17 @@
-//! CAS error types.
+//! # CAS error code catalog
+//!
+//! | Code | Title | Description | Corresponding variant |
+//! |------|-------|-------------|-----------------------|
+//! | CAS-E001 | Object not found | The requested CAS object is missing from the store | `NotFound` |
+//! | CAS-E002 | Invalid argument | An argument violates CAS invariants | `InvalidArgument` |
+//! | CAS-E003 | Internal error | Unexpected internal state in the CAS layer | `Internal` |
+//! | CAS-E004 | I/O error | Filesystem operation failed | `Io` |
+//! | CAS-E005 | Corrupt object | Data integrity check failed (hash mismatch) | `CorruptObject` |
+//! | CAS-E006 | Object too large | Object exceeds the operation size limits | `TooLarge` |
+//! | CAS-E007 | Lock contention | Another process holds the CAS directory lock | `LockContention` |
+//!
+//! See `.agents/instructions/error-codes.instructions.md` for the
+//! workspace-wide error code reference.
 
 use std::path::PathBuf;
 

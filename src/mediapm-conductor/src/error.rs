@@ -1,7 +1,15 @@
-//! Conductor error taxonomy.
+//! # CND error code catalog
 //!
-//! All conductor-internal and public errors use the [`ConductorError`] enum.
-//! This keeps error handling uniform across API, CLI, and orchestration paths.
+//! | Code | Title | Description | Corresponding variant |
+//! |------|-------|-------------|-----------------------|
+//! | CND-E001 | Workflow error | Invalid config, missing tools, orchestration failure | `Workflow` |
+//! | CND-E002 | CAS error | Error forwarded from the CAS layer | `Cas` |
+//! | CND-E003 | Serialization error | JSON or Nickel encode/decode failure | `Serialization` |
+//! | CND-E004 | I/O error | Filesystem operation failed | `Io` |
+//! | CND-E005 | Internal error | Unexpected conductor state | `Internal` |
+//!
+//! See `.agents/instructions/error-codes.instructions.md` for the
+//! workspace-wide error code reference.
 
 use std::path::PathBuf;
 

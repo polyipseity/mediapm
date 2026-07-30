@@ -21,6 +21,53 @@ use mediapm_conductor::{NickelDocument, ToolKindSpec, decode_document};
 use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
+// Dependency validation integration tests
+// ---------------------------------------------------------------------------
+
+/// Sync rejects a tool with an unknown dependency key (e.g. `ffmpeg_version`
+/// instead of `ffmpeg`) and suggests the correct key via "did you mean".
+///
+/// Uses `runtime_storage_overrides.tools` to inject the bad dependency
+/// (bypasses NCL evaluation, which expects Nickel syntax).
+#[tokio::test]
+async fn sync_rejects_bad_dependency_key() {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+
+    use std::collections::BTreeMap;
+
+    let bad_deps: BTreeMap<String, mediapm::VersionSpec> =
+        [("ffmpeg_version".to_string(), mediapm::VersionSpec::Latest)].into();
+
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    runtime.tools.insert(
+        "yt-dlp".to_string(),
+        ToolRequirement { dependencies: bad_deps, ..ToolRequirement::default() },
+    );
+
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime)
+            .await
+            .expect("service creation");
+
+    // Sync should fail with MPM-E001 and a suggestion.
+    let result = service.sync_tools().await;
+    let err = match result {
+        Ok(_) => panic!("sync should fail with bad dep key, but succeeded"),
+        Err(e) => e,
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("MPM-E001"), "error should contain MPM-E001 code, got: {msg}");
+    assert!(msg.contains("ffmpeg_version"), "error should mention the bad key: {msg}");
+    assert!(
+        msg.contains("did you mean") || msg.contains("suggestion"),
+        "error should suggest alternatives: {msg}"
+    );
+    assert!(msg.contains("ffmpeg"), "suggestion should mention 'ffmpeg': {msg}");
+}
+
+// ---------------------------------------------------------------------------
 // Structural side-effect tests (no counter assertions)
 // ---------------------------------------------------------------------------
 

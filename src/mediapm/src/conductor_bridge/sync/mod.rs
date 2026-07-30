@@ -1275,7 +1275,11 @@ mod tests {
             "test_parent",
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not configured"));
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("MPM-E002"), "should contain MPM-E002 code");
+        assert!(msg.contains("not configured"), "should mention not configured");
+        assert!(msg.contains("inherit"), "should mention inherit");
     }
 
     #[test]
@@ -1295,7 +1299,11 @@ mod tests {
             "test_parent",
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("circular"));
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("MPM-E003"), "should contain MPM-E003 code");
+        assert!(msg.contains("circular"), "should mention circular");
+        assert!(msg.contains("inherit"), "should mention inherit");
     }
 
     // Phase 7 — composite_canonical_version tests
