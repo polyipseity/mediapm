@@ -190,7 +190,9 @@ pub(crate) fn resolve_dep_version_spec(
 }
 
 /// Build in-memory index from flat state Vec for O(1) tool_id group lookup.
-fn index_managed_tools(entries: &[ToolRegistryEntry]) -> HashMap<String, Vec<ToolRegistryEntry>> {
+pub(crate) fn index_managed_tools(
+    entries: &[ToolRegistryEntry],
+) -> HashMap<String, Vec<ToolRegistryEntry>> {
     let mut map: HashMap<String, Vec<ToolRegistryEntry>> = HashMap::new();
     for entry in entries {
         map.entry(entry.tool_id.clone()).or_default().push(entry.clone());
@@ -291,6 +293,45 @@ fn collect_same_step_dep_ids(
             Some(dep_id.clone())
         })
         .collect()
+}
+
+/// Compute canonical_version for persistence, including same-step dep versions.
+///
+/// The canonical version stored in [`ToolRegistryEntry`] is a composite of the
+/// bare provider-resolved version and same-step dependency versions. This
+/// ensures skip detection works correctly — when a same-step dep version
+/// changes, the composite changes and triggers re-provisioning.
+///
+/// For tools without same-step deps, returns the bare version unchanged.
+pub(crate) fn compute_composite_canonical_version(
+    bare: &str,
+    tool_id: &str,
+    tool_req: &ToolRequirement,
+    live_state: &HashMap<String, Vec<ToolRegistryEntry>>,
+) -> String {
+    let same_step_deps = collect_same_step_dep_ids(
+        tool_id,
+        tool_req,
+        crate::tools::dependency::known_dependency_type,
+    );
+    let dep_versions: Vec<(&str, &str)> = same_step_deps
+        .iter()
+        .filter_map(|dep_id| {
+            let dep_req = tool_req.dependencies.get(dep_id)?;
+            let dep_group = live_state.get(dep_id.as_str())?;
+            let matched = dep_group.iter().find(|e| {
+                !e.content_map_hash.is_empty()
+                    && spec_matches_entry(
+                        dep_req,
+                        &e.resolved_tag,
+                        &e.resolved_version,
+                        &e.resolved_vcs_hash,
+                    )
+            })?;
+            Some((dep_id.as_str(), matched.canonical_version.as_str()))
+        })
+        .collect();
+    composite_canonical_version(bare, &dep_versions)
 }
 
 /// Runs the full tool-reconciliation cycle for the current workspace.
@@ -523,30 +564,12 @@ pub(crate) async fn reconcile_desired_tools(
 
                 // Compute expected composite canonical_version for skip check.
                 // For tools with same-step dependencies, include dep versions in composite.
-                let same_step_deps = collect_same_step_dep_ids(
+                let expected_composite = compute_composite_canonical_version(
+                    &canonical_version,
                     tool_id,
                     tool_req,
-                    crate::tools::dependency::known_dependency_type,
+                    &live_state,
                 );
-                let dep_versions: Vec<(&str, &str)> = same_step_deps
-                    .iter()
-                    .filter_map(|dep_id| {
-                        let dep_req = tool_req.dependencies.get(dep_id)?;
-                        let dep_group = live_state.get(dep_id.as_str())?;
-                        let matched = dep_group.iter().find(|e| {
-                            !e.content_map_hash.is_empty()
-                                && spec_matches_entry(
-                                    dep_req,
-                                    &e.resolved_tag,
-                                    &e.resolved_version,
-                                    &e.resolved_vcs_hash,
-                                )
-                        })?;
-                        Some((dep_id.as_str(), matched.canonical_version.as_str()))
-                    })
-                    .collect();
-                let expected_composite =
-                    composite_canonical_version(&canonical_version, &dep_versions);
 
                 // Check skip: does live_state[tool_id] have any ACTIVE entry with
                 // canonical_version == expected_composite? Filter to only non-empty hashes.
@@ -569,7 +592,7 @@ pub(crate) async fn reconcile_desired_tools(
                     PreResolveOutcome::Resolved(
                         fetch,
                         human_readable_version,
-                        canonical_version,
+                        expected_composite,
                         _metadata_cached,
                         _metadata_fetch_count,
                         resolved_tag,
@@ -719,6 +742,12 @@ pub(crate) async fn reconcile_desired_tools(
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
+                let composite_for_ok_none = compute_composite_canonical_version(
+                    &resolved_canonical_version,
+                    tool_id,
+                    &entry.tool_requirement,
+                    &live_state,
+                );
                 report.tool_records.push(ToolRegistryEntry {
                     tool_id: tool_id.clone(),
                     version: format!(
@@ -726,7 +755,7 @@ pub(crate) async fn reconcile_desired_tools(
                         env!("CARGO_PKG_VERSION"),
                         crate::global::MEDIAPM_GIT_HASH
                     ),
-                    canonical_version: resolved_canonical_version.clone(),
+                    canonical_version: composite_for_ok_none,
                     content_map_hash: String::new(),
                     deployed_at: now,
                     resolved_tag: resolved_tag_value.clone(),
@@ -1487,6 +1516,51 @@ mod tests {
         // rsgain has CrossStep dep on ffmpeg → NOT in same-step list
         let ids = collect_same_step_dep_ids("rsgain", &req, known_dependency_type);
         assert!(ids.is_empty());
+    }
+
+    // Phase 0 — compute_composite_canonical_version tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn compute_composite_canonical_version_no_deps() {
+        let req = ToolRequirement::default();
+        let live_state = HashMap::new();
+        let result = compute_composite_canonical_version("v1.0", "ffmpeg", &req, &live_state);
+        assert_eq!(result, "v1.0");
+    }
+
+    #[test]
+    fn compute_composite_canonical_version_with_same_step_deps() {
+        // Use VersionSpec::Exact so spec_matches_entry returns true.
+        let deps = BTreeMap::from([(
+            "ffmpeg".to_string(),
+            VersionSpec::Exact(VersionSpecFields {
+                tag: Some("v7.1".to_string()),
+                version: None,
+                vcs_hash: None,
+            }),
+        )]);
+        let req = ToolRequirement {
+            version_spec: VersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let mut live_state: HashMap<String, Vec<ToolRegistryEntry>> = HashMap::new();
+        live_state.insert(
+            "ffmpeg".to_string(),
+            vec![ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: "v7.1".to_string(),
+                canonical_version: "ffmpeg-v7.1".to_string(),
+                content_map_hash: "blake3:abc".to_string(), // non-empty → matched
+                deployed_at: 0,
+                resolved_tag: "v7.1".to_string(),
+                resolved_version: "7.1".to_string(),
+                resolved_vcs_hash: "abc123".to_string(),
+            }],
+        );
+        let result = compute_composite_canonical_version("yt-dlp-v2", "yt-dlp", &req, &live_state);
+        assert_eq!(result, "yt-dlp-v2;ffmpeg:ffmpeg-v7.1");
     }
 
     // Phase 7 — index_managed_tools tests

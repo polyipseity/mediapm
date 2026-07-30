@@ -203,9 +203,21 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             )
             .await
             {
-                Ok((_, _, resolved_canonical_version, _, _, _)) => Ok(existing.canonical_version
-                    != resolved_canonical_version
-                    || existing.content_map_hash.is_empty()),
+                Ok((_, _, resolved_canonical_version, _, _, _)) => {
+                    // Build live_state from managed tools and compute composite
+                    // canonical_version for apples-to-apples comparison.
+                    let live_state =
+                        crate::conductor_bridge::sync::index_managed_tools(&state.managed_tools);
+                    let expected_composite =
+                        crate::conductor_bridge::sync::compute_composite_canonical_version(
+                            &resolved_canonical_version,
+                            tool_id,
+                            desired.unwrap(),
+                            &live_state,
+                        );
+                    Ok(existing.canonical_version != expected_composite
+                        || existing.content_map_hash.is_empty())
+                }
                 Err(_) => {
                     // Conservatively recommend sync on provider resolution failure.
                     Ok(true)
