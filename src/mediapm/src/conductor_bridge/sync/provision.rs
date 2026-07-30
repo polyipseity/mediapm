@@ -111,8 +111,8 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// per-OS temp directory, imports files to CAS with `./{os}/` key prefixes,
 /// and builds an OS-conditional command-selector template.
 ///
-/// `group` provides 3 phase-agnostic progress bars per tool (resolve, fetch,
-/// process). Routes [`ProviderProgressSnapshot`] callbacks to the matching
+/// `group` provides 3 phase-agnostic progress bars per tool (res, fch,
+/// pro). Routes [`ProviderProgressSnapshot`] callbacks to the matching
 /// bar by `snap.phase`. Item counters are displayed via `set_prefix`; byte
 /// counters drive bar position (`set_position`/`set_total`). The bridge does
 /// not interpret the meaning of items or bytes — it only relays the values
@@ -162,7 +162,7 @@ pub(super) async fn fetch_and_import_tool_payload(
         PreResolveOutcome::Skip { metadata_fetch_count, .. } => *metadata_fetch_count,
     };
     let bar_total = metadata_fetch_count;
-    let resolve_bar = group.add_bar(bar_total.into(), &format!("{tool_id} [resolve]"));
+    let resolve_bar = group.add_bar(bar_total.into(), &format!("{tool_id} [res]"));
     error_bars.push(resolve_bar.clone());
     let (mut fetch, human_readable_version, canonical_version) = match outcome {
         PreResolveOutcome::Resolved(
@@ -219,13 +219,13 @@ pub(super) async fn fetch_and_import_tool_payload(
         .sum();
 
     // Phase 2: Fetch — download (or generate) bytes for each source.
-    let fetch_bar = group.add_bar(total, &format!("{tool_id} [fetch]"));
+    let fetch_bar = group.add_bar(total, &format!("{tool_id} [fch]"));
     error_bars.push(fetch_bar.clone());
     let fetch_bar_cb = fetch_bar.clone();
     let fetch_tool_id = tool_id.to_string();
     let fetch_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
         fetch_bar_cb
-            .set_prefix(&format!("{fetch_tool_id} [fetch] {}/{}", snap.items.0, snap.items.1));
+            .set_prefix(&format!("{fetch_tool_id} [fch] {}/{}", snap.items.0, snap.items.1));
         fetch_bar_cb.set_position(snap.bytes.0);
         fetch_bar_cb.set_total(snap.bytes.1);
     }));
@@ -249,13 +249,12 @@ pub(super) async fn fetch_and_import_tool_payload(
     // populated with source byte sizes. The budget starts with item count
     // as the aggregate total and refines to actual payload sizes as each
     // source begins processing.
-    let process_bar = group.add_bar(total_process_items, &format!("{tool_id} [process]"));
+    let process_bar = group.add_bar(total_process_items, &format!("{tool_id} [pro]"));
     error_bars.push(process_bar.clone());
     let process_bar_cb = process_bar.clone();
     let pp_tool_id = tool_id.to_string();
     let pp_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
-        process_bar_cb
-            .set_prefix(&format!("{pp_tool_id} [process] {}/{}", snap.items.0, snap.items.1));
+        process_bar_cb.set_prefix(&format!("{pp_tool_id} [pro] {}/{}", snap.items.0, snap.items.1));
         process_bar_cb.set_position(snap.bytes.0);
         process_bar_cb.set_total(snap.bytes.1);
     }));
