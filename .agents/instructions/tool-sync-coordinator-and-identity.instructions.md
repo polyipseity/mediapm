@@ -146,3 +146,69 @@ In `list_tools()` (`documents.rs`), keys are parsed by splitting on the last `@`
 - The hash covers only the content_map JSON, not the tool binary bytes or any other metadata.
 - The content_map is a `BTreeMap<String, String>` — its JSON serialization is deterministic due to BTreeMap's sorted key order.
 - CAS hash of the tool binary itself is stored separately in `content_map` values.
+
+## Composite canonical_version
+
+### Purpose
+
+`ToolRegistryEntry.canonical_version` stores a **composite** version string that
+includes the tool's own version plus the versions of its SameStep dependencies.
+This ensures that a tool is re-provisioned when any SameStep dependency version
+changes — not just when the tool itself changes.
+
+### Format
+
+```text
+<bare_version>;dep_id_1:<dep_ver_1>;dep_id_2:<dep_ver_2>;...
+```
+
+- `bare_version` is the tool's own resolved canonical version (e.g.,
+  `MEDIAPM_GIT_HASH` for builtin launchers, a tag or VCS hash for fetched
+  tools).
+- Each `dep_id:dep_ver` pair is the dependency's tool ID and resolved
+  canonical version, sorted deterministically by `dep_id`.
+- Only **SameStep** dependencies (classified by `known_dependency_type()`)
+  are included. CrossStep and Both variants are excluded because they
+  resolve in a different sync pass.
+- For tools with no SameStep dependencies, `composite == bare`.
+
+### `compute_composite_canonical_version()` helper
+
+A `pub(crate)` function in `sync/mod.rs` that:
+
+1. Accepts the bare canonical version, tool ID, `ToolRequirement` (with
+   `dependencies`), and the live state for dep lookups.
+2. Resolves each dependency's `VersionSpec` (for `Inherit`, looks up the
+   global tool requirement).
+3. For SameStep deps only, appends `;dep_id:resolved_ver` segments.
+4. Returns the composite format string.
+
+This helper is the single source of truth used by all 3 injection points:
+
+- **Provision skip check** (`PreResolveOutcome::Skip`): compares expected
+  composite against stored composite.
+- **Resolved storage** (`PreResolveOutcome::Resolved`): stores the composite
+  in the new `ToolRegistryEntry`.
+- **No-payload path** (`Ok(None)`): stores the composite for tools that
+  resolve without fetching (e.g., skipped tools).
+- **Service comparison** (`logical_tool_requires_sync`): compares stored
+  composite against computed composite for the desired tool.
+
+### Indexing: `index_managed_tools()`
+
+A `pub(crate)` function in `sync/mod.rs` that groups `ToolRegistryEntry`s
+by `tool_id` into `HashMap<String, Vec<ToolRegistryEntry>>`. Used by both
+the skip check (find active entries) and the service comparison (look up
+stored entries for comparison).
+
+### Test coverage
+
+| Spec item                                                                                     | Test(s)                                                                                                                     | Status    |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `compute_composite_canonical_version` returns bare version when no SameStep deps              | `compute_composite_canonical_version_no_deps` (unit)                                                                        | [covered] |
+| `compute_composite_canonical_version` appends `;dep:ver` for SameStep deps                    | `compute_composite_canonical_version_with_same_step_deps` (unit)                                                            | [covered] |
+| Stored `canonical_version` in state.json is composite after sync                              | `sync_stores_composite_canonical_version` (integration)                                                                     | [covered] |
+| Re-sync skips tool when stored composite matches computed composite                           | `sync_skip_triggers_on_unchanged_composite` (integration)                                                                   | [covered] |
+| `logical_tool_requires_sync` returns `false` when composite matches                           | `sync_logical_requires_sync_composite_comparison` (integration)                                                             | [covered] |
+| `logical_tool_requires_sync` returns `true` when composite mismatches                         | `sync_logical_requires_sync_on_composite_mismatch` (integration)                                                            | [covered] |
+| Public API: `compute_composite_canonical_version` and `index_managed_tools` are `pub(crate)`  | Compilation check (used by integration tests via service.rs)                                                                | [covered] |
