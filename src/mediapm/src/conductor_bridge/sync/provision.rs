@@ -49,7 +49,6 @@ pub(super) struct FetchedToolPayload {
 /// Outcome of the pre-resolve step that determines whether a tool should be
 /// provisioned or skipped.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(super) enum PreResolveOutcome {
     /// Tool should be fetched and imported normally.
     /// Fields: (ResolvedToolFetch, human_readable_version, canonical_version, metadata_cached, metadata_fetch_count, resolved_tag)
@@ -60,17 +59,17 @@ pub(super) enum PreResolveOutcome {
         #[allow(dead_code)]
         name: String,
         /// Human-readable version string (informational only).
+        #[allow(dead_code)]
         human_readable_version: String,
         /// Canonical version that was already provisioned.
         #[allow(dead_code)]
         version: String,
         /// Whether the version/tag lookups were served from metadata cache.
-        #[allow(dead_code)]
         metadata_cached: bool,
         /// Number of individual version/tag lookups performed (e.g., ffmpeg = 2, all others = 1).
-        #[allow(dead_code)]
         metadata_fetch_count: u32,
         /// The git tag resolved from the provider (empty string when no tag).
+        #[allow(dead_code)]
         resolved_tag: String,
     },
 }

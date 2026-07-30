@@ -9,7 +9,6 @@
 
 /// Dependency provisioning type for a managed-tool dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum DependencyType {
     /// Dependency payload is inlined into the same conductor step as the
     /// primary tool (same-step companion).
@@ -17,6 +16,7 @@ pub(crate) enum DependencyType {
     /// Dependency runs as a separate conductor workflow step (cross-step).
     CrossStep,
     /// Functions as both same-step companion AND cross-step tool.
+    #[allow(dead_code)]
     Both,
 }
 
