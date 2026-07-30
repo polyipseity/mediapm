@@ -29,7 +29,8 @@ pub(super) struct MediaPmStateV3 {
 
 /// Encodes a [`MediaPmState`] as a V3 JSON [`Value`].
 pub(crate) fn to_v3_json_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
-    let deduped_tools = dedup_managed_tools(state.managed_tools.clone());
+    let mut deduped_tools = dedup_managed_tools(state.managed_tools.clone());
+    deduped_tools.sort_by(|a, b| b.deployed_at.cmp(&a.deployed_at));
     let v3 = MediaPmStateV3 {
         version: 3,
         managed_files: state.managed_files.clone(),
@@ -46,7 +47,8 @@ pub(crate) fn from_v3_json_value(value: Value) -> Result<MediaPmState, MediaPmEr
     let v3: MediaPmStateV3 = serde_json::from_value(value)
         .map_err(|e| MediaPmError::Serialization(format!("failed to decode V3 state: {e}")))?;
 
-    let deduped_tools = dedup_managed_tools(v3.managed_tools);
+    let mut deduped_tools = dedup_managed_tools(v3.managed_tools);
+    deduped_tools.sort_by(|a, b| b.deployed_at.cmp(&a.deployed_at));
 
     Ok(MediaPmState {
         version: crate::config::defaults::MEDIAPM_STATE_VERSION,
@@ -475,5 +477,152 @@ mod tests {
         ];
         let result = dedup_managed_tools(entries);
         assert_eq!(result.len(), 2);
+    }
+
+    // Phase 6 — sort by decreasing deploy_time tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn sort_managed_tools_by_deploy_time() {
+        let entries = vec![
+            ToolRegistryEntry {
+                tool_id: "yt-dlp".to_string(),
+                version: "v2".to_string(),
+                canonical_version: "yt-dlp-v2".to_string(),
+                content_map_hash: String::new(),
+                deployed_at: 2000,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+            ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: "7.1".to_string(),
+                canonical_version: "ffmpeg-v7.1".to_string(),
+                content_map_hash: String::new(),
+                deployed_at: 3000,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+            ToolRegistryEntry {
+                tool_id: "media-tagger".to_string(),
+                version: "1.0".to_string(),
+                canonical_version: "media-tagger-v1.0".to_string(),
+                content_map_hash: String::new(),
+                deployed_at: 1000,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+        ];
+        let mut sorted = entries.clone();
+        sorted.sort_by(|a, b| b.deployed_at.cmp(&a.deployed_at));
+
+        let state = MediaPmState {
+            version: 3,
+            managed_files: BTreeMap::new(),
+            managed_tools: entries,
+            workflow_states: BTreeMap::new(),
+        };
+        let value = to_v3_json_value(&state).expect("serialize");
+        let decoded = from_v3_json_value(value).expect("deserialize");
+
+        assert_eq!(decoded.managed_tools.len(), 3);
+        assert_eq!(decoded.managed_tools[0].tool_id, "ffmpeg");
+        assert_eq!(decoded.managed_tools[0].deployed_at, 3000);
+        assert_eq!(decoded.managed_tools[1].tool_id, "yt-dlp");
+        assert_eq!(decoded.managed_tools[1].deployed_at, 2000);
+        assert_eq!(decoded.managed_tools[2].tool_id, "media-tagger");
+        assert_eq!(decoded.managed_tools[2].deployed_at, 1000);
+    }
+
+    #[test]
+    fn sort_managed_tools_empty() {
+        let state = MediaPmState {
+            version: 3,
+            managed_files: BTreeMap::new(),
+            managed_tools: vec![],
+            workflow_states: BTreeMap::new(),
+        };
+        let value = to_v3_json_value(&state).expect("serialize");
+        let decoded = from_v3_json_value(value).expect("deserialize");
+        assert!(decoded.managed_tools.is_empty());
+    }
+
+    #[test]
+    fn sort_managed_tools_same_deploy_time() {
+        let entries = vec![
+            ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: "7.1".to_string(),
+                canonical_version: "ffmpeg-v7.1".to_string(),
+                content_map_hash: String::new(),
+                deployed_at: 1000,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+            ToolRegistryEntry {
+                tool_id: "yt-dlp".to_string(),
+                version: "v2".to_string(),
+                canonical_version: "yt-dlp-v2".to_string(),
+                content_map_hash: String::new(),
+                deployed_at: 1000,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+        ];
+        let state = MediaPmState {
+            version: 3,
+            managed_files: BTreeMap::new(),
+            managed_tools: entries,
+            workflow_states: BTreeMap::new(),
+        };
+        let value = to_v3_json_value(&state).expect("serialize");
+        let decoded = from_v3_json_value(value).expect("deserialize");
+        assert_eq!(decoded.managed_tools.len(), 2);
+        // Same deploy_time — order is stable (input order preserved within same timestamp)
+        assert_eq!(decoded.managed_tools[0].tool_id, "ffmpeg");
+        assert_eq!(decoded.managed_tools[1].tool_id, "yt-dlp");
+    }
+
+    #[test]
+    fn roundtrip_sort_preserved() {
+        let entries = vec![
+            ToolRegistryEntry {
+                tool_id: "media-tagger".to_string(),
+                version: "1.0".to_string(),
+                canonical_version: "media-tagger-v1.0".to_string(),
+                content_map_hash: String::new(),
+                deployed_at: 1000,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+            ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: "7.1".to_string(),
+                canonical_version: "ffmpeg-v7.1".to_string(),
+                content_map_hash: String::new(),
+                deployed_at: 3000,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+        ];
+        let state = MediaPmState {
+            version: 3,
+            managed_files: BTreeMap::new(),
+            managed_tools: entries,
+            workflow_states: BTreeMap::new(),
+        };
+        let value = to_v3_json_value(&state).expect("serialize");
+        // Round-trip: serialize → JSON → deserialize → serialize → JSON
+        let decoded = from_v3_json_value(value.clone()).expect("deserialize");
+        let value2 = to_v3_json_value(&decoded).expect("serialize");
+
+        assert_eq!(value, value2, "second round-trip must produce identical JSON");
     }
 }
