@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::config::{ManagedFileRecord, ManagedWorkflowStepState, MediaPmState, ToolRegistryEntry};
 use crate::error::MediaPmError;
 
+#[allow(dead_code)]
 /// V2 wire representation of [`MediaPmState`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct MediaPmStateV2 {
@@ -27,12 +28,18 @@ pub(super) struct MediaPmStateV2 {
     pub(super) workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
 }
 
-/// Encodes a [`MediaPmState`] as a V2 JSON [`Value`].
+#[allow(dead_code)]
+/// Encodes a [`MediaPmState`] as a V2 JSON [`Value`] (backward compat).
+///
+/// Converts the native Vec-based managed_tools into a BTreeMap keyed by
+/// tool_id for consumers expecting the V2 format.
 pub(crate) fn to_v2_json_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
+    let managed_tools: BTreeMap<String, ToolRegistryEntry> =
+        state.managed_tools.iter().map(|entry| (entry.tool_id.clone(), entry.clone())).collect();
     let v2 = MediaPmStateV2 {
         version: 2,
         managed_files: state.managed_files.clone(),
-        managed_tools: state.managed_tools.clone(),
+        managed_tools,
         workflow_states: state.workflow_states.clone(),
     };
 
@@ -40,15 +47,29 @@ pub(crate) fn to_v2_json_value(state: &MediaPmState) -> Result<Value, MediaPmErr
         .map_err(|e| MediaPmError::Serialization(format!("failed to serialize state to JSON: {e}")))
 }
 
+#[allow(dead_code)]
 /// Decodes a V2 JSON [`Value`] into [`MediaPmState`].
+///
+/// # Note
+/// This function is retained for backward compatibility but is no longer
+/// called by the version dispatch in [`super::super::ser`]. V2 state data
+/// is now bridged through [`super::v3::from_v2_into_v3`] which correctly
+/// handles the old wire format (no `tool_id` field, `Option<String>`
+/// content_map_hash).
 pub(crate) fn from_v2_json_value(value: Value) -> Result<MediaPmState, MediaPmError> {
     let v2: MediaPmStateV2 = serde_json::from_value(value)
         .map_err(|e| MediaPmError::Serialization(format!("failed to decode V2 state: {e}")))?;
 
+    let managed_tools: Vec<ToolRegistryEntry> = v2
+        .managed_tools
+        .into_iter()
+        .map(|(tool_id, entry)| ToolRegistryEntry { tool_id, ..entry })
+        .collect();
+
     Ok(MediaPmState {
         version: crate::config::defaults::MEDIAPM_STATE_VERSION,
         managed_files: v2.managed_files,
-        managed_tools: v2.managed_tools,
+        managed_tools,
         workflow_states: v2.workflow_states,
     })
 }

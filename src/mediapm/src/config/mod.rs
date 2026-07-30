@@ -488,6 +488,8 @@ pub struct MediaPmImpureTimestamp {
 /// Entry in the managed-tool registry tracking fetch/deployment metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRegistryEntry {
+    /// Tool identifier matching the key in desired_tools.
+    pub tool_id: String,
     /// Human-readable version string. Has zero semantic use in state logic —
     /// version comparison, skip-if-up-to-date, and update decisions all use
     /// `canonical_version`. This field is informational only, populated by
@@ -500,8 +502,8 @@ pub struct ToolRegistryEntry {
     #[serde(default)]
     pub canonical_version: String,
     /// blake3 hash of the content_map JSON (used for content-addressed identity).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_map_hash: Option<String>,
+    #[serde(default)]
+    pub content_map_hash: String,
     /// Unix-epoch seconds when the payload was deployed (0 = not yet deployed).
     #[serde(default)]
     pub deployed_at: u64,
@@ -536,10 +538,10 @@ pub struct ManagedFileRecord {
 
 /// Persisted mediapm machine state (`state.json`).
 ///
-/// V2 format with `managed_files` (path → record map), `managed_tools`
-/// (tool deployment metadata), and `workflow_states` (per-media workflow
-/// progress). No longer stores tool requirements, active instances, or
-/// last-materialization hash — the document config owns those.
+/// V3 format with `managed_files` (path → record map), `managed_tools`
+/// (flat tool deployment metadata list), and `workflow_states` (per-media
+/// workflow progress). No longer stores tool requirements, active instances,
+/// or last-materialization hash — the document config owns those.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaPmState {
@@ -549,9 +551,9 @@ pub struct MediaPmState {
     /// Managed files keyed by filesystem path.
     #[serde(default)]
     pub managed_files: BTreeMap<String, ManagedFileRecord>,
-    /// Managed tool deployment metadata keyed by tool id.
+    /// Managed tool deployment metadata (flat list).
     #[serde(default)]
-    pub managed_tools: BTreeMap<String, ToolRegistryEntry>,
+    pub managed_tools: Vec<ToolRegistryEntry>,
     /// Per-media-source workflow state.
     #[serde(default)]
     pub workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
@@ -562,7 +564,7 @@ impl Default for MediaPmState {
         Self {
             version: defaults::MEDIAPM_STATE_VERSION,
             managed_files: BTreeMap::new(),
-            managed_tools: BTreeMap::new(),
+            managed_tools: Vec::new(),
             workflow_states: BTreeMap::new(),
         }
     }
@@ -576,7 +578,7 @@ impl MediaPmState {
                 && !record.media_id.trim().is_empty()
                 && !record.hash.trim().is_empty()
         });
-        self.managed_tools.retain(|_, entry| {
+        self.managed_tools.retain(|entry| {
             !entry.canonical_version.trim().is_empty()
                 || !entry.resolved_tag.trim().is_empty()
                 || !entry.resolved_version.trim().is_empty()

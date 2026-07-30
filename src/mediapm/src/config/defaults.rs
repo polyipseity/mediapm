@@ -70,7 +70,7 @@ pub const DEFAULT_PROFILER_ENABLED: bool = false;
 pub const DEFAULT_VERIFY_MATERIALIZATION: bool = false;
 
 /// Current persisted schema marker for `state.json`.
-pub const MEDIAPM_STATE_VERSION: u32 = 2;
+pub const MEDIAPM_STATE_VERSION: u32 = 3;
 
 /// Serde default function for state `version` field.
 #[must_use]

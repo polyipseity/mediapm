@@ -27,20 +27,21 @@ pub fn from_json_value(value: Value) -> Result<MediaPmState, MediaPmError> {
 
     match version {
         1 => versions::v1::from_v1_json_value(value),
-        2 => versions::v2::from_v2_json_value(value),
+        2 => versions::v3::from_v2_into_v3(value),
+        3 => versions::v3::from_v3_json_value(value),
         v => Err(MediaPmError::Workflow(format!("unsupported mediapm state schema version {v}"))),
     }
 }
 
-/// Encodes one [`MediaPmState`] into a [`Value`] (V2 format).
+/// Encodes one [`MediaPmState`] into a [`Value`] (V3 format).
 ///
-/// Always produces V2 output regardless of input version.
+/// Always produces V3 output regardless of input version.
 ///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Serialization`] if serialization fails.
 pub fn to_json_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
-    versions::v2::to_v2_json_value(state)
+    versions::v3::to_v3_json_value(state)
 }
 
 /// Migrates one [`Value`] from old Nickel format into a [`MediaPmState`].

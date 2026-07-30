@@ -172,7 +172,7 @@ fn from_v1_payload(payload: MediaPmStateV1Payload) -> Result<MediaPmState, Media
     Ok(MediaPmState {
         version: crate::config::defaults::MEDIAPM_STATE_VERSION,
         managed_files,
-        managed_tools: BTreeMap::new(),
+        managed_tools: Vec::new(),
         workflow_states,
     })
 }
@@ -207,7 +207,7 @@ fn migrate_flat_v1_fields(value: Value) -> Result<MediaPmState, MediaPmError> {
     Ok(MediaPmState {
         version: crate::config::defaults::MEDIAPM_STATE_VERSION,
         managed_files,
-        managed_tools: BTreeMap::new(),
+        managed_tools: Vec::new(),
         workflow_states,
     })
 }
