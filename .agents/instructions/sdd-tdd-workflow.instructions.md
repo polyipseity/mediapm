@@ -179,14 +179,14 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Progress bar label format: shortened phases and version
 
-| Spec item                                                                     | Test(s)                                                                                          | Status    |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------- |
+| Spec item                                                                                             | Test(s)                                                                                                       | Status    |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------- |
 | Phase names shortened: `[resolve]`→`[res]`, `[fetch]`→`[fch]`, `[process]`→`[pro]`, `[prune]`→`[prn]` | `resolve_bar_label_uses_shortened_phases` (asserts `[res]` present, `[resolve]`/`[fetch]`/`[process]` absent) | [covered] |
-| Resolve bar label includes version when non-empty                            | `resolve_bar_label_includes_version`                                                             | [covered] |
-| Resolve bar label omits version when empty                                   | `resolve_bar_label_omits_version_when_empty`                                                     | [covered] |
-| Skip bar label includes version when non-empty                               | `skip_bar_label_includes_version`                                                                | [covered] |
-| Prune bar uses `[prn]` abbreviation                                          | (no dedicated test — verified by compilation + existing integration tests)                       | [covered] |
-| Fetch/process bars include version in prefix via set_prefix callback         | (no dedicated test — implementation pattern matches resolve bar; verified by compilation)         | [covered] |
+| Resolve bar label includes version when non-empty                                                     | `resolve_bar_label_includes_version`                                                                          | [covered] |
+| Resolve bar label omits version when empty                                                            | `resolve_bar_label_omits_version_when_empty`                                                                  | [covered] |
+| Skip bar label includes version when non-empty                                                        | `skip_bar_label_includes_version`                                                                             | [covered] |
+| Prune bar uses `[prn]` abbreviation                                                                   | (no dedicated test — verified by compilation + existing integration tests)                                    | [covered] |
+| Fetch/process bars include version in prefix via set_prefix callback                                  | (no dedicated test — implementation pattern matches resolve bar; verified by compilation)                     | [covered] |
 
 ### DirectoryLockGuard
 
@@ -357,11 +357,11 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 
 ### Progress bar template spacing
 
-| Spec item                                                                                       | Test(s)                                                                                                                                                                    | Status    |
-| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| Wide templates use `prefix:>30.30 msg:<25.55` (4 templates: child, overall, done, failed)      | Compilation check (8 template constants in `progress.rs`)                                                                                                                  | [covered] |
-| Compact templates stay at `prefix:>25.25 msg:<12.40` (reverted from `>30.30 <10.35`)            | 188 tests in `progress_output` pass at W=40 (no wrapping from compact template)                                                                                            | [covered] |
-| `finish_slot` uses width-aware style functions (`apply_done/failed/overall_bar_style`)          | All `progress_output` tests pass with W=40 AND W=80; `regression_spinner_dirty_independence` passes                                                                        | [covered] |
-| Wide template total line length fits within W=80 (1+1+30+1+25=58 < 80)                          | All W=80 test assertions pass (13 test modules)                                                                                                                            | [covered] |
-| Compact template total line length fits within W=40 (1+1+25+1+12=40 ≤ 40)                        | `resize_exact_width_wide_to_narrow`, `terminal_exact_h2_no_overall_two_children`, `terminal_exact_h2_no_overall_overflow` (all pass at W=40)                               | [covered] |
-| Terminal wrapping at W=40 for wide templates (ANSI escape sequence causes effective overflow)    | `terminal_exact_h2_no_overall_two_children`, `terminal_exact_h2_no_overall_overflow` (expected wrapping output)                                                            | [covered] |
+| Spec item                                                                                     | Test(s)                                                                                                                                      | Status    |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| Wide templates use `prefix:>30.30 msg:<25.55` (4 templates: child, overall, done, failed)     | Compilation check (8 template constants in `progress.rs`)                                                                                    | [covered] |
+| Compact templates stay at `prefix:>25.25 msg:<12.40` (reverted from `>30.30 <10.35`)          | 188 tests in `progress_output` pass at W=40 (no wrapping from compact template)                                                              | [covered] |
+| `finish_slot` uses width-aware style functions (`apply_done/failed/overall_bar_style`)        | All `progress_output` tests pass with W=40 AND W=80; `regression_spinner_dirty_independence` passes                                          | [covered] |
+| Wide template total line length fits within W=80 (1+1+30+1+25=58 < 80)                        | All W=80 test assertions pass (13 test modules)                                                                                              | [covered] |
+| Compact template total line length fits within W=40 (1+1+25+1+12=40 ≤ 40)                     | `resize_exact_width_wide_to_narrow`, `terminal_exact_h2_no_overall_two_children`, `terminal_exact_h2_no_overall_overflow` (all pass at W=40) | [covered] |
+| Terminal wrapping at W=40 for wide templates (ANSI escape sequence causes effective overflow) | `terminal_exact_h2_no_overall_two_children`, `terminal_exact_h2_no_overall_overflow` (expected wrapping output)                              | [covered] |
