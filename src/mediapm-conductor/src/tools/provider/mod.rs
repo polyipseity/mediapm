@@ -45,18 +45,21 @@ const SUB_ENTRY_CHUNK: u64 = 65536;
 // Public types
 // ---------------------------------------------------------------------------
 
-/// Unified version specification for managed tools and their dependencies.
+/// Config version specification — used at the serde boundary.
 ///
 /// Deserialized from:
 /// - `"latest"` → fetch the latest available version
 /// - `"inherit"` → use the dependency tool's global version spec (deps only)
 /// - `{ vcs_hash?, version?, tag? }` → exact specification with optional fields
 ///
+/// `Inherit` is resolved away before reaching internal code (see
+/// [`VersionSpec`] for the resolved variant).
+///
 /// Custom serde is used instead of `#[serde(untagged)]` because unit variants
 /// in an untagged enum serialize to JSON `null`, but we need string values
 /// `"latest"` and `"inherit"` (matching the Nickel schema and JSON output).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VersionSpec {
+pub enum ConfigVersionSpec {
     /// `"latest"` — fetch the latest available version.
     Latest,
     /// `"inherit"` — use the dependency tool's global version spec.
@@ -65,30 +68,30 @@ pub enum VersionSpec {
     Exact(VersionSpecFields),
 }
 
-impl Serialize for VersionSpec {
+impl Serialize for ConfigVersionSpec {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         match self {
-            VersionSpec::Latest => serializer.serialize_str("latest"),
-            VersionSpec::Inherit => serializer.serialize_str("inherit"),
-            VersionSpec::Exact(fields) => fields.serialize(serializer),
+            ConfigVersionSpec::Latest => serializer.serialize_str("latest"),
+            ConfigVersionSpec::Inherit => serializer.serialize_str("inherit"),
+            ConfigVersionSpec::Exact(fields) => fields.serialize(serializer),
         }
     }
 }
 
-impl<'de> serde::Deserialize<'de> for VersionSpec {
+impl<'de> serde::Deserialize<'de> for ConfigVersionSpec {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         use serde::de;
 
-        struct VersionSpecVisitor;
+        struct ConfigVersionSpecVisitor;
 
-        impl<'de> de::Visitor<'de> for VersionSpecVisitor {
-            type Value = VersionSpec;
+        impl<'de> de::Visitor<'de> for ConfigVersionSpecVisitor {
+            type Value = ConfigVersionSpec;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str(
@@ -96,23 +99,42 @@ impl<'de> serde::Deserialize<'de> for VersionSpec {
                 )
             }
 
-            fn visit_str<E: de::Error>(self, v: &str) -> Result<VersionSpec, E> {
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<ConfigVersionSpec, E> {
                 match v {
-                    "latest" => Ok(VersionSpec::Latest),
-                    "inherit" => Ok(VersionSpec::Inherit),
+                    "latest" => Ok(ConfigVersionSpec::Latest),
+                    "inherit" => Ok(ConfigVersionSpec::Inherit),
                     other => Err(de::Error::invalid_value(de::Unexpected::Str(other), &self)),
                 }
             }
 
-            fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<VersionSpec, A::Error> {
+            fn visit_map<A: de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<ConfigVersionSpec, A::Error> {
                 let fields =
                     VersionSpecFields::deserialize(de::value::MapAccessDeserializer::new(map))?;
-                Ok(VersionSpec::Exact(fields))
+                Ok(ConfigVersionSpec::Exact(fields))
             }
         }
 
-        deserializer.deserialize_any(VersionSpecVisitor)
+        deserializer.deserialize_any(ConfigVersionSpecVisitor)
     }
+}
+
+/// Resolved version spec — Inherit has been resolved at the config boundary.
+///
+/// No `Inherit` variant: that is resolved to the global tool's concrete spec
+/// before reaching internal code. Only [`Latest`](VersionSpec::Latest)
+/// (re-resolve on every sync) and [`Exact(VersionSpecFields)`](VersionSpec::Exact)
+/// (specific version constraints).
+///
+/// This type is never serialized — only [`ConfigVersionSpec`] has serde.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionSpec {
+    /// `"latest"` — fetch the latest available version on every sync.
+    Latest,
+    /// `{ vcs_hash?, version?, tag? }` — exact fields (at least one required).
+    Exact(VersionSpecFields),
 }
 
 /// Fields for exact version specification.
@@ -2837,5 +2859,118 @@ mod tests {
             prop_assert_eq!(reconstructed.clone(), abs_file_path.clone(),
                 "reconstructed path {:?} should match {:?}", reconstructed, abs_file_path);
         }
+    }
+
+    // ── ConfigVersionSpec serde round-trip ─────────────────────────────
+    //
+    // ConfigVersionSpec uses custom Serialize/Deserialize so unit variants
+    // serialize to/from JSON strings "latest" and "inherit" (matching the
+    // Nickel schema).
+
+    #[test]
+    fn config_version_spec_serde_latest() {
+        use super::ConfigVersionSpec;
+        let json = serde_json::json!("latest");
+        let spec: ConfigVersionSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(spec, ConfigVersionSpec::Latest);
+        let back = serde_json::to_value(&spec).unwrap();
+        assert_eq!(back, json);
+    }
+
+    #[test]
+    fn config_version_spec_serde_inherit() {
+        use super::ConfigVersionSpec;
+        let json = serde_json::json!("inherit");
+        let spec: ConfigVersionSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(spec, ConfigVersionSpec::Inherit);
+        let back = serde_json::to_value(&spec).unwrap();
+        assert_eq!(back, json);
+    }
+
+    #[test]
+    fn config_version_spec_serde_exact_vcs_hash() {
+        use super::{ConfigVersionSpec, VersionSpecFields};
+        let json = serde_json::json!({"vcs_hash": "abc123"});
+        let spec: ConfigVersionSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            spec,
+            ConfigVersionSpec::Exact(VersionSpecFields {
+                vcs_hash: Some("abc123".into()),
+                version: None,
+                tag: None,
+            })
+        );
+        let back = serde_json::to_value(&spec).unwrap();
+        assert_eq!(back, json);
+    }
+
+    #[test]
+    fn config_version_spec_serde_exact_version() {
+        use super::{ConfigVersionSpec, VersionSpecFields};
+        let json = serde_json::json!({"version": "1.0"});
+        let spec: ConfigVersionSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            spec,
+            ConfigVersionSpec::Exact(VersionSpecFields {
+                vcs_hash: None,
+                version: Some("1.0".into()),
+                tag: None,
+            })
+        );
+        let back = serde_json::to_value(&spec).unwrap();
+        assert_eq!(back, json);
+    }
+
+    #[test]
+    fn config_version_spec_serde_exact_tag() {
+        use super::{ConfigVersionSpec, VersionSpecFields};
+        let json = serde_json::json!({"tag": "v1.2.3"});
+        let spec: ConfigVersionSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            spec,
+            ConfigVersionSpec::Exact(VersionSpecFields {
+                vcs_hash: None,
+                version: None,
+                tag: Some("v1.2.3".into()),
+            })
+        );
+        let back = serde_json::to_value(&spec).unwrap();
+        assert_eq!(back, json);
+    }
+
+    #[test]
+    fn config_version_spec_serde_exact_multi_field() {
+        use super::{ConfigVersionSpec, VersionSpecFields};
+        let json = serde_json::json!({"vcs_hash": "abc", "version": "1.0", "tag": "v1.0"});
+        let spec: ConfigVersionSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            spec,
+            ConfigVersionSpec::Exact(VersionSpecFields {
+                vcs_hash: Some("abc".into()),
+                version: Some("1.0".into()),
+                tag: Some("v1.0".into()),
+            })
+        );
+        let back = serde_json::to_value(&spec).unwrap();
+        assert_eq!(back, json);
+    }
+
+    #[test]
+    fn config_version_spec_serde_empty_object_error() {
+        use super::ConfigVersionSpec;
+        let json = serde_json::json!({});
+        let result: Result<ConfigVersionSpec, _> = serde_json::from_value(json);
+        assert!(result.is_err(), "empty object should fail deserialization");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("at least one"), "error should mention at least one field: {err}");
+    }
+
+    #[test]
+    fn config_version_spec_serde_deny_unknown_fields() {
+        use super::ConfigVersionSpec;
+        // Unknown field in object causes VersionSpecFields to reject it.
+        let json = serde_json::json!({"vcs_hash": "abc", "unknown": "x"});
+        let result: Result<ConfigVersionSpec, _> = serde_json::from_value(json);
+        assert!(result.is_err(), "unknown fields should be rejected");
     }
 }

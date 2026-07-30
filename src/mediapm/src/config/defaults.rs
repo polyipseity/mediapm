@@ -143,6 +143,6 @@ pub fn default_retry_impure() -> bool {
 
 /// Default version spec for managed tools — "latest".
 #[must_use]
-pub fn default_tool_version_spec() -> mediapm_conductor::tools::provider::VersionSpec {
-    mediapm_conductor::tools::provider::VersionSpec::Latest
+pub fn default_tool_version_spec() -> mediapm_conductor::tools::provider::ConfigVersionSpec {
+    mediapm_conductor::tools::provider::ConfigVersionSpec::Latest
 }

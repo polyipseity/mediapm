@@ -10,7 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mediapm::{
-    MediaPmService, ToolRequirement, VersionSpec, load_mediapm_document, save_mediapm_document,
+    ConfigVersionSpec, MediaPmService, ToolRequirement, load_mediapm_document,
+    save_mediapm_document,
 };
 use mediapm_cas::Hash;
 use mediapm_conductor::{
@@ -69,21 +70,21 @@ fn tool_id_for(logical_tool_name: &str) -> String {
 }
 
 fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
-    let dependencies: BTreeMap<String, VersionSpec> = match logical_tool_name {
+    let dependencies: BTreeMap<String, ConfigVersionSpec> = match logical_tool_name {
         "yt-dlp" => BTreeMap::from([
-            ("ffmpeg".to_string(), VersionSpec::Inherit),
-            ("deno".to_string(), VersionSpec::Inherit),
+            ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
+            ("deno".to_string(), ConfigVersionSpec::Inherit),
         ]),
-        "media-tagger" => BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Inherit)]),
+        "media-tagger" => BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Inherit)]),
         "rsgain" => BTreeMap::from([
-            ("ffmpeg".to_string(), VersionSpec::Inherit),
-            ("sd".to_string(), VersionSpec::Inherit),
+            ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
+            ("sd".to_string(), ConfigVersionSpec::Inherit),
         ]),
         _ => BTreeMap::new(),
     };
 
     ToolRequirement {
-        version_spec: VersionSpec::Latest,
+        version_spec: ConfigVersionSpec::Latest,
         dependencies,
         recheck_seconds: 0,
         max_input_slots: 16,

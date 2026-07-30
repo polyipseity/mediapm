@@ -14,11 +14,12 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    AddInsertPosition, HierarchyNode, HierarchyNodeKind, HierarchyPath, MaterializationMethod,
-    MediaMetadataValue, MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec,
-    MediaStep, MediaStepTool, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
-    ToolRegistryEntry, ToolRequirement, TransformInputValue, VersionSpec, load_mediapm_document,
-    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
+    AddInsertPosition, ConfigVersionSpec, HierarchyNode, HierarchyNodeKind, HierarchyPath,
+    MaterializationMethod, MediaMetadataValue, MediaPmPaths, MediaPmService, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, PlaylistFormat, PlaylistItemRef,
+    SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, TransformInputValue,
+    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -470,7 +471,7 @@ fn configure_document_for_local_tool_chain(
         (
             "import".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -480,7 +481,7 @@ fn configure_document_for_local_tool_chain(
         (
             "ffmpeg".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -490,10 +491,10 @@ fn configure_document_for_local_tool_chain(
         (
             "rsgain".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::from([
-                    ("ffmpeg".to_string(), VersionSpec::Inherit),
-                    ("sd".to_string(), VersionSpec::Inherit),
+                    ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
+                    ("sd".to_string(), ConfigVersionSpec::Inherit),
                 ]),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -503,7 +504,7 @@ fn configure_document_for_local_tool_chain(
         (
             "sd".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -513,8 +514,8 @@ fn configure_document_for_local_tool_chain(
         (
             "media-tagger".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
-                dependencies: BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Inherit)]),
+                version_spec: ConfigVersionSpec::Latest,
+                dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Inherit)]),
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
@@ -748,7 +749,7 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
         (
             "import".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -758,7 +759,7 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
         (
             "ffmpeg".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -768,10 +769,10 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
         (
             "rsgain".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::from([
-                    ("ffmpeg".to_string(), VersionSpec::Inherit),
-                    ("sd".to_string(), VersionSpec::Inherit),
+                    ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
+                    ("sd".to_string(), ConfigVersionSpec::Inherit),
                 ]),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -781,7 +782,7 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
         (
             "sd".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -791,8 +792,8 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
         (
             "media-tagger".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
-                dependencies: BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Inherit)]),
+                version_spec: ConfigVersionSpec::Latest,
+                dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Inherit)]),
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,

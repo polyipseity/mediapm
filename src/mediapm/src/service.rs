@@ -10,7 +10,7 @@ use std::path::Path;
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash, InMemoryCas};
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
-use mediapm_conductor::tools::provider::VersionSpec;
+use mediapm_conductor::tools::provider::ConfigVersionSpec;
 use mediapm_conductor::{RuntimeStoragePaths, SimpleConductor};
 use url::Url;
 
@@ -577,7 +577,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     pub fn add_tool_requirement(
         &mut self,
         tool_id: &str,
-        version_spec: Option<VersionSpec>,
+        version_spec: Option<ConfigVersionSpec>,
     ) -> Result<(), MediaPmError> {
         if tool_id.is_empty() {
             return Err(MediaPmError::Workflow("tool id must not be empty".to_string()));
@@ -593,7 +593,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
         let requirement = ToolRequirement {
-            version_spec: version_spec.unwrap_or(VersionSpec::Latest),
+            version_spec: version_spec.unwrap_or(ConfigVersionSpec::Latest),
             ..ToolRequirement::default()
         };
 

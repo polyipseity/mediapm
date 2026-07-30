@@ -36,8 +36,8 @@ async fn sync_rejects_bad_dependency_key() {
 
     use std::collections::BTreeMap;
 
-    let bad_deps: BTreeMap<String, mediapm::VersionSpec> =
-        [("ffmpeg_version".to_string(), mediapm::VersionSpec::Latest)].into();
+    let bad_deps: BTreeMap<String, mediapm::ConfigVersionSpec> =
+        [("ffmpeg_version".to_string(), mediapm::ConfigVersionSpec::Latest)].into();
 
     let mut runtime = MediaRuntimeStorage::default();
     runtime.cache_root_override = Some(cache_root.path().to_path_buf());
@@ -80,8 +80,8 @@ async fn sync_rejects_dep_key_not_in_known_types() {
 
     use std::collections::BTreeMap;
 
-    let bad_deps: BTreeMap<String, mediapm::VersionSpec> =
-        [("sd".to_string(), mediapm::VersionSpec::Latest)].into();
+    let bad_deps: BTreeMap<String, mediapm::ConfigVersionSpec> =
+        [("sd".to_string(), mediapm::ConfigVersionSpec::Latest)].into();
 
     let mut runtime = MediaRuntimeStorage::default();
     runtime.cache_root_override = Some(cache_root.path().to_path_buf());
@@ -442,7 +442,7 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
     overrides.tools.insert(
         "media-tagger".to_string(),
         ToolRequirement {
-            version_spec: mediapm::VersionSpec::Exact(VersionSpecFields {
+            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
                 version: Some("2.0.0".to_string()),
                 vcs_hash: None,
                 tag: None,
@@ -696,7 +696,7 @@ async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm
         ToolRequirement {
             dependencies: std::collections::BTreeMap::from([(
                 "ffmpeg".to_string(),
-                mediapm::VersionSpec::Latest,
+                mediapm::ConfigVersionSpec::Latest,
             )]),
             ..Default::default()
         },

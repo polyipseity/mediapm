@@ -46,7 +46,7 @@ pub use source_types::{
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::tools::provider::VersionSpec;
+use mediapm_conductor::tools::provider::ConfigVersionSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -360,10 +360,10 @@ impl Default for MediaRuntimeStorage {
 pub struct ToolRequirement {
     /// Version specification: "latest", "inherit", or { vcs_hash?, version?, tag? }.
     #[serde(default = "defaults::default_tool_version_spec")]
-    pub version_spec: VersionSpec,
+    pub version_spec: ConfigVersionSpec,
     /// Cross-tool dependency version selectors.
     #[serde(default)]
-    pub dependencies: BTreeMap<String, VersionSpec>,
+    pub dependencies: BTreeMap<String, ConfigVersionSpec>,
     /// Recheck interval seconds (0 = use default heuristic).
     #[serde(default, deserialize_with = "custom_deserializers::deserialize_u64_from_number")]
     pub recheck_seconds: u64,
@@ -384,7 +384,7 @@ pub struct ToolRequirement {
 impl Default for ToolRequirement {
     fn default() -> Self {
         Self {
-            version_spec: VersionSpec::Latest,
+            version_spec: ConfigVersionSpec::Latest,
             dependencies: BTreeMap::new(),
             recheck_seconds: 0,
             max_input_slots: defaults::DEFAULT_FFMPEG_MAX_INPUT_SLOTS,
@@ -453,7 +453,7 @@ impl MediaPmDocument {
         }
         // Remove tool entries that are Latest with no explicit dependencies.
         self.tools.retain(|_, tool_req| {
-            tool_req.version_spec != VersionSpec::Latest || !tool_req.dependencies.is_empty()
+            tool_req.version_spec != ConfigVersionSpec::Latest || !tool_req.dependencies.is_empty()
         });
     }
 }

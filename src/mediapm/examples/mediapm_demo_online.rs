@@ -15,11 +15,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath,
+    ConfigVersionSpec, HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath,
     MaterializationMethod, MediaMetadataValue, MediaMetadataVariantBinding, MediaPmPaths,
     MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistFormat,
     PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, TransformInputValue,
-    VersionSpec, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
     save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -682,10 +682,10 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         (
             "yt-dlp".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::from([
-                    ("ffmpeg".to_string(), VersionSpec::Inherit),
-                    ("deno".to_string(), VersionSpec::Inherit),
+                    ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
+                    ("deno".to_string(), ConfigVersionSpec::Inherit),
                 ]),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -695,7 +695,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         (
             "deno".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -705,7 +705,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         (
             "ffmpeg".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -715,10 +715,10 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         (
             "rsgain".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::from([
-                    ("ffmpeg".to_string(), VersionSpec::Inherit),
-                    ("sd".to_string(), VersionSpec::Inherit),
+                    ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
+                    ("sd".to_string(), ConfigVersionSpec::Inherit),
                 ]),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -728,7 +728,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         (
             "sd".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,
@@ -738,8 +738,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         (
             "media-tagger".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
-                dependencies: BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Inherit)]),
+                version_spec: ConfigVersionSpec::Latest,
+                dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Inherit)]),
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
@@ -748,7 +748,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         (
             "import".to_string(),
             ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
                 recheck_seconds: 0,
                 max_input_slots: 16,

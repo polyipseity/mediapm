@@ -25,7 +25,7 @@ use mediapm_conductor::config::ExternalDataEntry;
 use mediapm_conductor::provision::retain_only_tool_dirs;
 use mediapm_conductor::runtime_env::write_generated_dotenv;
 use mediapm_conductor::state::OutputSaveMode;
-use mediapm_conductor::tools::provider::VersionSpec;
+use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
 
 use crate::tools::dependency::DependencyType;
@@ -131,15 +131,18 @@ pub(crate) fn compute_used_tool_ids(
     used
 }
 
-/// Resolve a dependency's effective version spec, handling "inherit".
+/// Resolve a dependency's effective version spec, converting from
+/// [`ConfigVersionSpec`] (serde type, may contain `Inherit`) to
+/// [`VersionSpec`] (clean resolved type, no `Inherit`).
 ///
-/// - `VersionSpec::Inherit` → look up the dependency tool's global
-///   `version_spec` in `global_requirements` and use that.
-/// - `VersionSpec::Exact(...)` / `VersionSpec::Latest` → use as-is.
+/// - `ConfigVersionSpec::Inherit` → look up the dependency tool's global
+///   `version_spec` in `global_requirements` and return that (resolved to
+///   `VersionSpec::Latest` or `VersionSpec::Exact`).
+/// - `ConfigVersionSpec::Exact(...)` / `ConfigVersionSpec::Latest` → convert
+///   directly to the corresponding `VersionSpec` variant.
 ///
-/// Returns error when dep tool is missing and `Inherit` is requested,
-/// or when a circular inherit is detected (the dep tool itself has
-/// `version_spec: Inherit`).
+/// This is the single boundary point where `ConfigVersionSpec::Inherit`
+/// is resolved away before reaching internal code.
 ///
 /// # Errors
 ///
@@ -147,13 +150,13 @@ pub(crate) fn compute_used_tool_ids(
 /// cannot be resolved because the tool is not configured.
 /// Returns [`MediaPmError::ConfigValidation`] with `MPM-E003` on circular inherit.
 pub(crate) fn resolve_dep_version_spec(
-    dep_spec: &VersionSpec,
+    dep_spec: &ConfigVersionSpec,
     dep_tool_id: &str,
     global_requirements: &BTreeMap<String, ToolRequirement>,
     parent_tool_id: &str,
 ) -> Result<VersionSpec, MediaPmError> {
     match dep_spec {
-        VersionSpec::Inherit => {
+        ConfigVersionSpec::Inherit => {
             let global = global_requirements.get(dep_tool_id).ok_or_else(|| {
                 MediaPmError::ConfigValidation {
                     code: "MPM-E002",
@@ -169,7 +172,7 @@ pub(crate) fn resolve_dep_version_spec(
                 }
             })?;
             // Also error if the global tool itself has "inherit" (circular).
-            if global.version_spec == VersionSpec::Inherit {
+            if global.version_spec == ConfigVersionSpec::Inherit {
                 return Err(MediaPmError::ConfigValidation {
                     code: "MPM-E003",
                     context: format!("tool \"{parent_tool_id}\" dependency \"{dep_tool_id}\""),
@@ -183,9 +186,14 @@ pub(crate) fn resolve_dep_version_spec(
                     ),
                 });
             }
-            Ok(global.version_spec.clone())
+            match &global.version_spec {
+                ConfigVersionSpec::Latest => Ok(VersionSpec::Latest),
+                ConfigVersionSpec::Exact(fields) => Ok(VersionSpec::Exact(fields.clone())),
+                ConfigVersionSpec::Inherit => unreachable!(), // caught above
+            }
         }
-        other => Ok(other.clone()),
+        ConfigVersionSpec::Latest => Ok(VersionSpec::Latest),
+        ConfigVersionSpec::Exact(fields) => Ok(VersionSpec::Exact(fields.clone())),
     }
 }
 
@@ -237,7 +245,10 @@ fn build_provisioning_entries(
         for (dep_id, dep_spec) in &req.dependencies {
             let resolved_spec = resolve_dep_version_spec(dep_spec, dep_id, &global_reqs, tool_id)?;
             let dep_req = ToolRequirement {
-                version_spec: resolved_spec,
+                version_spec: match resolved_spec {
+                    VersionSpec::Latest => ConfigVersionSpec::Latest,
+                    VersionSpec::Exact(fields) => ConfigVersionSpec::Exact(fields),
+                },
                 dependencies: BTreeMap::new(),
                 ..Default::default()
             };
@@ -319,14 +330,27 @@ pub(crate) fn compute_composite_canonical_version(
         .filter_map(|dep_id| {
             let dep_req = tool_req.dependencies.get(dep_id)?;
             let dep_group = live_state.get(dep_id.as_str())?;
+            // Find the active entry for this dep. The dep spec in
+            // tool_req.dependencies is ConfigVersionSpec (from serde). For
+            // Inherit/Latest (the common case for SameStep deps like ffmpeg
+            // → yt-dlp), we match any active entry regardless of spec values
+            // — the dep was already resolved and provisioned earlier in the
+            // same sync pass, so whatever version is active IS the version
+            // to include. For Exact, verify against the spec via
+            // spec_matches_entry.
             let matched = dep_group.iter().find(|e| {
-                !e.content_map_hash.is_empty()
-                    && spec_matches_entry(
-                        dep_req,
+                if e.content_map_hash.is_empty() {
+                    return false;
+                }
+                match dep_req {
+                    ConfigVersionSpec::Inherit | ConfigVersionSpec::Latest => true,
+                    ConfigVersionSpec::Exact(fields) => spec_matches_entry(
+                        &VersionSpec::Exact(fields.clone()),
                         &e.resolved_tag,
                         &e.resolved_version,
                         &e.resolved_vcs_hash,
-                    )
+                    ),
+                }
             })?;
             Some((dep_id.as_str(), matched.canonical_version.as_str()))
         })
@@ -477,12 +501,18 @@ pub(crate) async fn reconcile_desired_tools(
         }
 
         // --- Spec-based skip: if desired spec is already satisfied, skip. ---
-        if tool_req.version_spec != VersionSpec::Latest
-            && tool_req.version_spec != VersionSpec::Inherit
+        if tool_req.version_spec != ConfigVersionSpec::Latest
+            && tool_req.version_spec != ConfigVersionSpec::Inherit
         {
             if let Some(entry) = state.managed_tools.iter().find(|e| e.tool_id == *tool_id) {
+                // Convert ConfigVersionSpec to VersionSpec for spec matching.
+                // At this point we know it's Exact (guarded by the != Latest/Inherit check above).
+                let resolved_spec = match &tool_req.version_spec {
+                    ConfigVersionSpec::Exact(fields) => VersionSpec::Exact(fields.clone()),
+                    _ => unreachable!(), // Latest/Inherit already filtered above
+                };
                 if spec_matches_entry(
-                    &tool_req.version_spec,
+                    &resolved_spec,
                     &entry.resolved_tag,
                     &entry.resolved_version,
                     &entry.resolved_vcs_hash,
@@ -530,7 +560,7 @@ pub(crate) async fn reconcile_desired_tools(
 
                 // --- Post-resolve validation: verify resolved result matches desired spec ---
                 match &tool_req.version_spec {
-                    VersionSpec::Exact(fields) => {
+                    ConfigVersionSpec::Exact(fields) => {
                         if let Some(hash) = &fields.vcs_hash {
                             if resolved_canonical_version != *hash && resolved_tag_value != *hash {
                                 return Err(MediaPmError::Workflow(format!(
@@ -553,8 +583,8 @@ pub(crate) async fn reconcile_desired_tools(
                             }
                         }
                     }
-                    VersionSpec::Latest => {} // always OK
-                    VersionSpec::Inherit => {
+                    ConfigVersionSpec::Latest => {} // always OK
+                    ConfigVersionSpec::Inherit => {
                         return Err(MediaPmError::Workflow(format!(
                             "tool {tool_id}: 'inherit' version_spec is only valid for dependencies, not global tool requirements"
                         )));
@@ -1173,10 +1203,16 @@ mod tests {
         let mut desired: BTreeMap<String, serde_json::Value> = BTreeMap::new();
         // yt-dlp depends on ffmpeg and deno
         let yt_dlp_req = ToolRequirement {
-            version_spec: mediapm_conductor::tools::provider::VersionSpec::Latest,
+            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Latest,
             dependencies: BTreeMap::from([
-                ("ffmpeg".to_string(), mediapm_conductor::tools::provider::VersionSpec::Inherit),
-                ("deno".to_string(), mediapm_conductor::tools::provider::VersionSpec::Inherit),
+                (
+                    "ffmpeg".to_string(),
+                    mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
+                ),
+                (
+                    "deno".to_string(),
+                    mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
+                ),
             ]),
             ..Default::default()
         };
@@ -1208,18 +1244,18 @@ mod tests {
         let mut desired: BTreeMap<String, serde_json::Value> = BTreeMap::new();
         // tool_a → tool_b, tool_b → tool_a (circular)
         let a_req = ToolRequirement {
-            version_spec: mediapm_conductor::tools::provider::VersionSpec::Latest,
+            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Latest,
             dependencies: BTreeMap::from([(
                 "tool_b".to_string(),
-                mediapm_conductor::tools::provider::VersionSpec::Inherit,
+                mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
             )]),
             ..Default::default()
         };
         let b_req = ToolRequirement {
-            version_spec: mediapm_conductor::tools::provider::VersionSpec::Latest,
+            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Latest,
             dependencies: BTreeMap::from([(
                 "tool_a".to_string(),
-                mediapm_conductor::tools::provider::VersionSpec::Inherit,
+                mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
             )]),
             ..Default::default()
         };
@@ -1242,14 +1278,14 @@ mod tests {
         globals.insert(
             "ffmpeg".to_string(),
             ToolRequirement {
-                version_spec: mediapm_conductor::tools::provider::VersionSpec::Exact(
+                version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Exact(
                     VersionSpecFields { vcs_hash: Some("abc".into()), version: None, tag: None },
                 ),
                 ..Default::default()
             },
         );
         let result = resolve_dep_version_spec(
-            &mediapm_conductor::tools::provider::VersionSpec::Inherit,
+            &mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
             "ffmpeg",
             &globals,
             "test_parent",
@@ -1268,20 +1304,27 @@ mod tests {
     #[test]
     fn resolve_dep_version_spec_exact_passthrough() {
         let globals: BTreeMap<String, ToolRequirement> = BTreeMap::new();
-        let spec = mediapm_conductor::tools::provider::VersionSpec::Exact(VersionSpecFields {
+        let spec = ConfigVersionSpec::Exact(VersionSpecFields {
             vcs_hash: None,
             version: Some("1.0".into()),
             tag: None,
         });
         let result = resolve_dep_version_spec(&spec, "any", &globals, "test_parent").unwrap();
-        assert_eq!(result, spec);
+        assert_eq!(
+            result,
+            VersionSpec::Exact(VersionSpecFields {
+                vcs_hash: None,
+                version: Some("1.0".into()),
+                tag: None,
+            })
+        );
     }
 
     #[test]
     fn resolve_dep_version_spec_latest_passthrough() {
         let globals: BTreeMap<String, ToolRequirement> = BTreeMap::new();
         let result = resolve_dep_version_spec(
-            &mediapm_conductor::tools::provider::VersionSpec::Latest,
+            &mediapm_conductor::tools::provider::ConfigVersionSpec::Latest,
             "any",
             &globals,
             "test_parent",
@@ -1294,7 +1337,7 @@ mod tests {
     fn resolve_dep_version_spec_inherit_missing_tool_error() {
         let globals: BTreeMap<String, ToolRequirement> = BTreeMap::new();
         let result = resolve_dep_version_spec(
-            &mediapm_conductor::tools::provider::VersionSpec::Inherit,
+            &mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
             "missing",
             &globals,
             "test_parent",
@@ -1313,12 +1356,12 @@ mod tests {
         globals.insert(
             "foo".to_string(),
             ToolRequirement {
-                version_spec: mediapm_conductor::tools::provider::VersionSpec::Inherit,
+                version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
                 ..Default::default()
             },
         );
         let result = resolve_dep_version_spec(
-            &mediapm_conductor::tools::provider::VersionSpec::Inherit,
+            &mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
             "foo",
             &globals,
             "test_parent",
@@ -1369,7 +1412,7 @@ mod tests {
         desired.insert(
             "ffmpeg".to_string(),
             serde_json::to_value(ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 ..Default::default()
             })
             .unwrap(),
@@ -1386,7 +1429,7 @@ mod tests {
         let mut deps = BTreeMap::new();
         deps.insert(
             "ffmpeg".to_string(),
-            VersionSpec::Exact(VersionSpecFields {
+            ConfigVersionSpec::Exact(VersionSpecFields {
                 tag: Some("v7.1".to_string()),
                 version: None,
                 vcs_hash: None,
@@ -1395,7 +1438,7 @@ mod tests {
         desired.insert(
             "yt-dlp".to_string(),
             serde_json::to_value(ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: deps,
                 ..Default::default()
             })
@@ -1413,11 +1456,11 @@ mod tests {
     #[test]
     fn build_provisioning_entries_dedup_same_spec() {
         let mut desired = BTreeMap::new();
-        let deps = BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Latest)]);
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
         desired.insert(
             "yt-dlp".to_string(),
             serde_json::to_value(ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: deps.clone(),
                 ..Default::default()
             })
@@ -1426,7 +1469,7 @@ mod tests {
         desired.insert(
             "rsgain".to_string(),
             serde_json::to_value(ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: deps,
                 ..Default::default()
             })
@@ -1444,7 +1487,7 @@ mod tests {
         let mut deps_yt = BTreeMap::new();
         deps_yt.insert(
             "ffmpeg".to_string(),
-            VersionSpec::Exact(VersionSpecFields {
+            ConfigVersionSpec::Exact(VersionSpecFields {
                 tag: Some("v7.1".to_string()),
                 version: None,
                 vcs_hash: None,
@@ -1453,7 +1496,7 @@ mod tests {
         let mut deps_rsgain = BTreeMap::new();
         deps_rsgain.insert(
             "ffmpeg".to_string(),
-            VersionSpec::Exact(VersionSpecFields {
+            ConfigVersionSpec::Exact(VersionSpecFields {
                 tag: Some("v6.0".to_string()),
                 version: None,
                 vcs_hash: None,
@@ -1462,7 +1505,7 @@ mod tests {
         desired.insert(
             "yt-dlp".to_string(),
             serde_json::to_value(ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: deps_yt,
                 ..Default::default()
             })
@@ -1471,7 +1514,7 @@ mod tests {
         desired.insert(
             "rsgain".to_string(),
             serde_json::to_value(ToolRequirement {
-                version_spec: VersionSpec::Latest,
+                version_spec: ConfigVersionSpec::Latest,
                 dependencies: deps_rsgain,
                 ..Default::default()
             })
@@ -1495,9 +1538,9 @@ mod tests {
 
     #[test]
     fn collect_same_step_dep_ids_yt_dlp_ffmpeg() {
-        let deps = BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Latest)]);
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
         let req = ToolRequirement {
-            version_spec: VersionSpec::Latest,
+            version_spec: ConfigVersionSpec::Latest,
             dependencies: deps,
             ..Default::default()
         };
@@ -1507,9 +1550,9 @@ mod tests {
 
     #[test]
     fn collect_same_step_dep_ids_rsgain_ffmpeg() {
-        let deps = BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Latest)]);
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
         let req = ToolRequirement {
-            version_spec: VersionSpec::Latest,
+            version_spec: ConfigVersionSpec::Latest,
             dependencies: deps,
             ..Default::default()
         };
@@ -1534,14 +1577,14 @@ mod tests {
         // Use VersionSpec::Exact so spec_matches_entry returns true.
         let deps = BTreeMap::from([(
             "ffmpeg".to_string(),
-            VersionSpec::Exact(VersionSpecFields {
+            ConfigVersionSpec::Exact(VersionSpecFields {
                 tag: Some("v7.1".to_string()),
                 version: None,
                 vcs_hash: None,
             }),
         )]);
         let req = ToolRequirement {
-            version_spec: VersionSpec::Latest,
+            version_spec: ConfigVersionSpec::Latest,
             dependencies: deps,
             ..Default::default()
         };
@@ -1561,6 +1604,68 @@ mod tests {
         );
         let result = compute_composite_canonical_version("yt-dlp-v2", "yt-dlp", &req, &live_state);
         assert_eq!(result, "yt-dlp-v2;ffmpeg:ffmpeg-v7.1");
+    }
+
+    #[test]
+    fn compute_composite_canonical_version_with_same_step_deps_inherit() {
+        // SameStep deps using Inherit — spec_matches_entry returns false for
+        // Inherit, so the old code would fail to find the dep and return bare.
+        // The fix: for Inherit/Latest, match any active entry.
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Inherit)]);
+        let req = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let mut live_state: HashMap<String, Vec<ToolRegistryEntry>> = HashMap::new();
+        live_state.insert(
+            "ffmpeg".to_string(),
+            vec![ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: "v7.1".to_string(),
+                canonical_version: "ffmpeg-v7.1".to_string(),
+                content_map_hash: "blake3:abc".to_string(), // non-empty → matched
+                deployed_at: 0,
+                resolved_tag: "v7.1".to_string(),
+                resolved_version: "7.1".to_string(),
+                resolved_vcs_hash: "abc123".to_string(),
+            }],
+        );
+        let result = compute_composite_canonical_version("yt-dlp-v2", "yt-dlp", &req, &live_state);
+        assert_eq!(
+            result, "yt-dlp-v2;ffmpeg:ffmpeg-v7.1",
+            "Inherit dep specs must find active entry and include its version in composite"
+        );
+    }
+
+    #[test]
+    fn compute_composite_canonical_version_with_latest_dep() {
+        // Latest dep spec — same fix as Inherit: match any active entry.
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
+        let req = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let mut live_state: HashMap<String, Vec<ToolRegistryEntry>> = HashMap::new();
+        live_state.insert(
+            "ffmpeg".to_string(),
+            vec![ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: "v7.1".to_string(),
+                canonical_version: "ffmpeg-v7.1".to_string(),
+                content_map_hash: "blake3:abc".to_string(),
+                deployed_at: 0,
+                resolved_tag: "v7.1".to_string(),
+                resolved_version: "7.1".to_string(),
+                resolved_vcs_hash: "abc123".to_string(),
+            }],
+        );
+        let result = compute_composite_canonical_version("yt-dlp-v2", "yt-dlp", &req, &live_state);
+        assert_eq!(
+            result, "yt-dlp-v2;ffmpeg:ffmpeg-v7.1",
+            "Latest dep specs must find active entry and include its version in composite"
+        );
     }
 
     // Phase 7 — index_managed_tools tests

@@ -52,7 +52,7 @@ pub use global::{
     global_tool_cache_status,
 };
 pub use materializer::MaterializeReport;
-pub use mediapm_conductor::tools::provider::VersionSpec;
+pub use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 pub use paths::MediaPmPaths;
 pub use service::MediaPmService;
 pub use service_standalone::{registered_builtin_ids, resolve_effective_paths_for_root};

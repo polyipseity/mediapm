@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mediapm_conductor::tools::provider::VersionSpec;
+use mediapm_conductor::tools::provider::ConfigVersionSpec;
 use similar::get_close_matches;
 
 use crate::error::MediaPmError;
@@ -92,7 +92,7 @@ fn collect_valid_dep_keys(tool_id: &str) -> BTreeSet<String> {
 /// dependency key is not in the valid set.
 pub(crate) fn validate_dependency_keys(
     tool_id: &str,
-    dependencies: &BTreeMap<String, VersionSpec>,
+    dependencies: &BTreeMap<String, ConfigVersionSpec>,
 ) -> Result<(), MediaPmError> {
     let valid = collect_valid_dep_keys(tool_id);
     for dep_key in dependencies.keys() {
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn validate_unknown_dep_key_error() {
         let mut deps = BTreeMap::new();
-        deps.insert("nonexistent_dep".to_string(), VersionSpec::Latest);
+        deps.insert("nonexistent_dep".to_string(), ConfigVersionSpec::Latest);
         let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn validate_version_suffix_suggests_bare_id() {
         let mut deps = BTreeMap::new();
-        deps.insert("ffmpeg_version".to_string(), VersionSpec::Latest);
+        deps.insert("ffmpeg_version".to_string(), ConfigVersionSpec::Latest);
         let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -162,8 +162,8 @@ mod tests {
     #[test]
     fn validate_known_dep_key_passes() {
         let mut deps = BTreeMap::new();
-        deps.insert("ffmpeg".to_string(), VersionSpec::Latest);
-        deps.insert("deno".to_string(), VersionSpec::Latest);
+        deps.insert("ffmpeg".to_string(), ConfigVersionSpec::Latest);
+        deps.insert("deno".to_string(), ConfigVersionSpec::Latest);
         let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_ok(), "known dep keys should pass: {:?}", result.err());
     }
@@ -179,7 +179,7 @@ mod tests {
     fn validate_close_match_via_similar() {
         // Test the get_close_matches integration with a mild typo.
         let mut deps = BTreeMap::new();
-        deps.insert("ffmepg".to_string(), VersionSpec::Latest);
+        deps.insert("ffmepg".to_string(), ConfigVersionSpec::Latest);
         let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -194,7 +194,7 @@ mod tests {
         // With exact matching, `sd` must be rejected even though `sd` may be
         // configured as a desired tool elsewhere.
         let mut deps = BTreeMap::new();
-        deps.insert("sd".to_string(), VersionSpec::Latest);
+        deps.insert("sd".to_string(), ConfigVersionSpec::Latest);
         let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_err(), "sd should NOT be valid for yt-dlp");
         let msg = result.unwrap_err().to_string();
@@ -208,7 +208,7 @@ mod tests {
     fn validate_unknown_tool_rejects_all_deps() {
         // Unknown tools have no registered dependency_types, so any dep is rejected.
         let mut deps = BTreeMap::new();
-        deps.insert("ffmpeg".to_string(), VersionSpec::Latest);
+        deps.insert("ffmpeg".to_string(), ConfigVersionSpec::Latest);
         let result = validate_dependency_keys("some-unknown-tool", &deps);
         assert!(result.is_err(), "unknown tool should reject any dep");
         let msg = result.unwrap_err().to_string();
