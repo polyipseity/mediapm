@@ -1254,4 +1254,158 @@ mod tests {
         // 1 archive (2) + 1 binary (1) + 1 launcher (1) = 4
         assert_eq!(total, 4, "mixed sources should produce correct process total");
     }
+
+    // -- Progress bar label format tests (shortened phases + version) --
+
+    async fn label_setup() -> (impl CasApi, UserLevelCache, RecordingProgressTracker) {
+        let cas = new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
+        let tracker = RecordingProgressTracker::new();
+        (cas, cache, tracker)
+    }
+
+    #[tokio::test]
+    async fn resolve_bar_label_includes_version() {
+        let (cas, cache, tracker) = label_setup().await;
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(
+            fetch,
+            "v7.1".to_string(),
+            "v7.1".to_string(),
+            false,
+            1,
+            String::new(),
+        );
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
+        assert!(result.is_ok(), "resolve should succeed");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::AddBar { label, .. } if label.contains("v7.1") && label.contains("[res]")
+            )),
+            "expected AddBar label with 'v7.1' and '[res]' in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_bar_label_omits_version_when_empty() {
+        let (cas, cache, tracker) = label_setup().await;
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(
+            fetch,
+            String::new(),
+            "v1.0.0".to_string(),
+            false,
+            1,
+            String::new(),
+        );
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
+        assert!(result.is_ok(), "resolve should succeed");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::AddBar { label, .. } if label == "media-tagger [res]"
+            )),
+            "expected AddBar label exactly 'media-tagger [res]' in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_bar_label_includes_version() {
+        let (cas, cache, tracker) = label_setup().await;
+        let outcome = PreResolveOutcome::Skip {
+            name: "test-tool".to_string(),
+            human_readable_version: "v7.1".to_string(),
+            version: "v7.1".to_string(),
+            metadata_cached: false,
+            metadata_fetch_count: 1,
+            resolved_tag: String::new(),
+        };
+        let result =
+            fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
+        assert!(result.is_ok(), "Skip should return Ok");
+        assert!(result.unwrap().is_none(), "Skip should return Ok(None)");
+
+        let ops = tracker.ops();
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::AddBar { label, .. } if label.contains("v7.1") && label.contains("[res]")
+            )),
+            "expected AddBar label with 'v7.1' and '[res]' in ops\ngot: {ops:#?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_bar_label_uses_shortened_phases() {
+        let (cas, cache, tracker) = label_setup().await;
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(
+            fetch,
+            String::new(),
+            "v1.0.0".to_string(),
+            false,
+            1,
+            String::new(),
+        );
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
+        assert!(result.is_ok(), "resolve should succeed");
+
+        let ops = tracker.ops();
+        // AddBar labels must use shortened phase names.
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::AddBar { label, .. } if label.contains("[res]")
+            )),
+            "expected [res] in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            !ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::AddBar { label, .. } if label.contains("[resolve]")
+            )),
+            "unexpected [resolve] in ops\ngot: {ops:#?}",
+        );
+        // Fetch and process bars also use shortened names when present.
+        assert!(
+            !ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::AddBar { label, .. } if label.contains("[fetch]")
+            )),
+            "unexpected [fetch] in ops\ngot: {ops:#?}",
+        );
+        assert!(
+            !ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::AddBar { label, .. } if label.contains("[process]")
+            )),
+            "unexpected [process] in ops\ngot: {ops:#?}",
+        );
+    }
 }
