@@ -19,12 +19,10 @@ use mediapm_conductor::state::OutputSaveMode;
 /// given hash.  Multiple descriptions for the same hash are accumulated
 /// and joined at [`finalize`](Self::finalize) time.  The tracker is consumed
 /// to produce the final `external_data` map.
-#[allow(dead_code)]
 pub(crate) struct DataUsageTracker {
     usages: BTreeMap<Hash, Vec<String>>,
 }
 
-#[allow(dead_code)]
 impl DataUsageTracker {
     /// Creates an empty tracker.
     #[must_use]
@@ -44,6 +42,7 @@ impl DataUsageTracker {
     /// If the hash has no remaining usages after removal, it will be absent
     /// from the final [`finalize`](Self::finalize) output.  No-op on
     /// non-existent hash.
+    #[allow(dead_code)]
     pub(crate) fn remove(&mut self, hash: &Hash) {
         if let std::collections::btree_map::Entry::Occupied(mut entry) = self.usages.entry(*hash) {
             entry.get_mut().pop();

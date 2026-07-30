@@ -21,10 +21,8 @@ use mediapm_conductor::ToolRuntime;
 use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
-use mediapm_conductor::config::ExternalDataEntry;
 use mediapm_conductor::provision::retain_only_tool_dirs;
 use mediapm_conductor::runtime_env::write_generated_dotenv;
-use mediapm_conductor::state::OutputSaveMode;
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
 
@@ -59,7 +57,9 @@ pub(crate) struct ToolSyncReport {
     pub(crate) tools_updated: usize,
     /// Number of tools skipped because their canonical version was already provisioned.
     pub(crate) tools_skipped: usize,
-    /// Number of old-version tool entries pruned from machine config.
+    /// Number of managed-tool entries whose `content_map` was cleared in the
+    /// generated conductor document because a newer version superseded them.
+    /// User-added manual entries in the generated doc are never affected.
     pub(crate) pruned_tools: usize,
     /// Non-fatal warnings collected during reconciliation.
     pub(crate) warnings: Vec<String>,
@@ -693,23 +693,16 @@ pub(crate) async fn reconcile_desired_tools(
                     .collect();
                 pruned_tools += old.len();
                 for k in &old {
-                    generated_doc.tools.remove(k);
-                    tool_runtimes.remove(k);
-                }
-
-                // Populate external_data from content_map CAS hashes so the
-                // content_map ⊆ external_data invariant is satisfied.
-                for hash_str in spec.runtime.content_map.values() {
-                    if let Ok(hash) = hash_str.parse::<Hash>() {
-                        generated_doc.external_data.entry(hash).or_insert(ExternalDataEntry {
-                            description: format!("managed tool content root for {tool_id}"),
-                            save_mode: OutputSaveMode::Saved,
-                        });
+                    // Clear content_map instead of removing the entry.
+                    // User-added manual entries (whose bare tool_id is not in
+                    // used_tool_ids) are never touched.
+                    if let Some(spec) = generated_doc.tools.get_mut(k) {
+                        spec.runtime.content_map.clear();
                     }
                 }
 
                 generated_doc.tools.entry(tool_key.clone()).or_insert(spec);
-                tool_runtimes.entry(tool_id.clone()).or_insert(full_runtime);
+                tool_runtimes.insert(tool_id.clone(), full_runtime);
             }
             Ok(None) => {
                 // No payload fetched (internal launcher, no catalog entry,
@@ -797,6 +790,20 @@ pub(crate) async fn reconcile_desired_tools(
     if let Some(g) = owned_group {
         g.join();
     }
+
+    // ── external_data: independent post-processing ──────────────────────
+    // Rebuild external_data from scratch by scanning all tool specs'
+    // content_maps. Hashes not referenced by any tool are automatically
+    // excluded — no separate cleanup needed.
+    let mut data_usage = self::external_data::DataUsageTracker::new();
+    for spec in generated_doc.tools.values() {
+        for hash_str in spec.runtime.content_map.values() {
+            if let Ok(hash) = hash_str.parse::<Hash>() {
+                data_usage.record(hash, format!("managed tool content root for {}", spec.name));
+            }
+        }
+    }
+    generated_doc.external_data = data_usage.finalize();
 
     // 4. Ensure the tools runtime directory exists.
     std::fs::create_dir_all(&paths.tools_dir).map_err(|source| MediaPmError::Io {
@@ -1053,7 +1060,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_prunes_old_tool_version_from_generated_doc() {
+    async fn reconcile_prunes_old_tool_version_clears_content_map() {
         let tmp = tempfile::tempdir().unwrap();
         let cache_root = tempfile::tempdir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
@@ -1061,7 +1068,7 @@ mod tests {
 
         // Pre-populate generated doc with an old version key that has a bogus
         // content hash suffix.  This simulates a stale entry from a previous
-        // sync that should be removed when a fresh key is computed.
+        // sync whose content_map should be cleared when a fresh key is computed.
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/media-tagger".to_string(), "blake3:abc".to_string());
         let tool_spec = ToolSpec {
@@ -1116,14 +1123,19 @@ mod tests {
             report.pruned_tools
         );
 
-        // Reload generated doc and verify the old key is gone.
+        // Reload generated doc: the old key must still exist with empty content_map.
         let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
+        let old_spec = doc
+            .tools
+            .get("media-tagger@bogus_hash")
+            .expect("old version key should still exist after sync");
         assert!(
-            !doc.tools.contains_key("media-tagger@bogus_hash"),
-            "old version key should have been pruned"
+            old_spec.runtime.content_map.is_empty(),
+            "old version key should have empty content_map, got: {:?}",
+            old_spec.runtime.content_map
         );
 
-        // The new key should exist (bare media-tagger or media-tagger@<hash>).
+        // The new key should exist with non-empty content_map.
         let has_new_key =
             doc.tools.keys().any(|k| k == "media-tagger" || k.starts_with("media-tagger@"));
         assert!(
@@ -1131,6 +1143,119 @@ mod tests {
             "new version key should exist after sync, keys: {:?}",
             doc.tools.keys().collect::<Vec<_>>()
         );
+        let new_spec = doc.tools.values().find(|s| s.name == "media-tagger").unwrap();
+        assert!(
+            !new_spec.runtime.content_map.is_empty(),
+            "new version key should have non-empty content_map"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_does_not_prune_manually_added_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let cas = InMemoryCas::default();
+
+        // Pre-populate generated doc with a manual entry whose bare tool_id
+        // is NOT in used_tool_ids (e.g., "user_script").
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
+        let tool_spec = ToolSpec {
+            name: "user_script".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let mut tools = BTreeMap::new();
+        tools.insert("user_script@somehash".to_string(), tool_spec);
+        let doc = NickelDocument { tools, ..Default::default() };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        // Empty desired_tools — nothing is "used" so no managed tool should
+        // be pruned.
+        let state = MediaPmState::default();
+        let result = reconcile_desired_tools(
+            &cas,
+            &paths,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+        let report = result.unwrap();
+        assert_eq!(report.pruned_tools, 0, "manual entries should not be counted as pruned");
+
+        // Verify the manual entry's content_map is unchanged.
+        let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
+        let manual_spec =
+            doc.tools.get("user_script@somehash").expect("manual entry should still exist");
+        assert_eq!(
+            manual_spec.runtime.content_map.get("linux/user_script"),
+            Some(&"blake3:manual".to_string()),
+            "manual entry content_map should be unchanged"
+        );
+    }
+
+    #[test]
+    fn external_data_rebuilt_independently_from_tool_specs() {
+        // Create two tool specs with different content_map hashes using
+        // Hash::from for deterministic test values.
+        let hash_a = Hash::from([0u8; 32]);
+        let hash_b = Hash::from([1u8; 32]);
+        let hash_a_str = format!("blake3:{}", blake3::Hash::from([0u8; 32]).to_hex());
+        let hash_b_str = format!("blake3:{}", blake3::Hash::from([1u8; 32]).to_hex());
+
+        let mut cm1 = BTreeMap::new();
+        cm1.insert("linux/tool_a".to_string(), hash_a_str);
+        let spec_a = ToolSpec {
+            name: "tool_a".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map: cm1, ..Default::default() },
+            ..Default::default()
+        };
+        let mut cm2 = BTreeMap::new();
+        cm2.insert("macos/tool_b".to_string(), hash_b_str);
+        let spec_b = ToolSpec {
+            name: "tool_b".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map: cm2, ..Default::default() },
+            ..Default::default()
+        };
+
+        // Build external_data from both tool specs.
+        let mut data_usage = self::external_data::DataUsageTracker::new();
+        for spec in [&spec_a, &spec_b] {
+            for hash_str in spec.runtime.content_map.values() {
+                if let Ok(hash) = hash_str.parse::<Hash>() {
+                    data_usage.record(hash, format!("managed tool content root for {}", spec.name));
+                }
+            }
+        }
+        let external_data = data_usage.finalize();
+
+        // Both hashes should be present.
+        assert!(external_data.contains_key(&hash_a), "hash_a should be in external_data");
+        assert!(external_data.contains_key(&hash_b), "hash_b should be in external_data");
+        assert_eq!(external_data.len(), 2, "external_data should have exactly 2 entries");
+
+        // Remove tool_a and verify its hash is excluded.
+        let mut data_usage = self::external_data::DataUsageTracker::new();
+        for hash_str in spec_b.runtime.content_map.values() {
+            if let Ok(hash) = hash_str.parse::<Hash>() {
+                data_usage.record(hash, format!("managed tool content root for {}", spec_b.name));
+            }
+        }
+        let external_data_one = data_usage.finalize();
+
+        assert!(!external_data_one.contains_key(&hash_a), "hash_a should be absent after removal");
+        assert!(external_data_one.contains_key(&hash_b), "hash_b should remain");
+        assert_eq!(external_data_one.len(), 1, "external_data should have 1 entry");
     }
 
     // ---------------------------------------------------------------------------

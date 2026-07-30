@@ -99,7 +99,8 @@ pub struct ToolsSyncSummary {
     pub added_tools: usize,
     /// Number of tools updated.
     pub updated_tools: usize,
-    /// Number of tools pruned from machine config.
+    /// Number of managed-tool entries whose `content_map` was cleared in the
+    /// generated conductor config because a newer version superseded them.
     pub pruned_tools: usize,
     /// Number of tools removed entirely.
     pub removed_tools: usize,
