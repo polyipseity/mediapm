@@ -29,8 +29,8 @@ fn rate_stable_on_stale_ticks() {
     assert_eq!(
         after_progress,
         concat!(
-            "⠸                      test ██████████░░░░░░░░░░░  500/1.0k 0s 0/d\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                           test ██████████░░░░░░░░░░░  500/1.0k 0s 0/d\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
 
@@ -44,8 +44,8 @@ fn rate_stable_on_stale_ticks() {
     assert_eq!(
         after_stale,
         concat!(
-            "⠴                      test ██████████░░░░░░░░░░░  500/1.0k 0s 455/s 1s\n",
-            "⠼                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠴                           test ██████████░░░░░░░░░░░  500/1.0k 0s 455/s 1s\n",
+            "⠼                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
 }
@@ -81,15 +81,15 @@ fn rate_updates_on_progress() {
     assert_eq!(
         after_small,
         concat!(
-            "⠸                      test ░░░░░░░░░░░░░░░░░░░░░  10/2.0k 0s 500/s 3s\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                           test ░░░░░░░░░░░░░░░░░░░░░  10/2.0k 0s 500/s 3s\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
     assert_eq!(
         after_large,
         concat!(
-            "⠴                      test ███████████████░░░░░░  1.5k/2.0k 0s 2.9k/s 0s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠴                           test ███████████████░░░░░░  1.5k/2.0k 0s 2.9k/s 0s\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
     assert_ne!(after_small, after_large, "rate/progress must differ between 10 and 1500");
@@ -114,8 +114,8 @@ fn rate_always_shown() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠹                      idle ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠹                           idle ░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
 }
@@ -143,8 +143,8 @@ fn rate_exact_output_with_known_rate() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠸                      test ██████████░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d",
+            "⠸                           test ██████████░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d",
         ),
     );
 }
@@ -167,8 +167,8 @@ fn rate_exact_output_idle() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠹                      idle ░░░░░░░░░░░░░░░░░░░░░  0/100 2s 0/d\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠹                           idle ░░░░░░░░░░░░░░░░░░░░░  0/100 2s 0/d\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         ),
     );
 }

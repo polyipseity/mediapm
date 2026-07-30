@@ -803,19 +803,19 @@ mod inner {
     const OVERALL_BAR_TEMPLATE: &str =
         "{spinner:.green} {prefix:>30.30} {wide_bar:.magenta/dim} {msg:<25.55}";
 
-    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>30.30} {msg:<10.35}";
+    const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>25.25} {msg:<12.40}";
 
-    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>30.30} {msg:<10.35}";
+    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>25.25} {msg:<12.40}";
 
     const DONE_BAR_TEMPLATE: &str =
         "{spinner:.white/.dim} {prefix:>30.30} {wide_bar:.green/dim} {msg:<25.55}";
 
-    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.white/.dim} {prefix:>30.30} {msg:<10.35}";
+    const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.white/.dim} {prefix:>25.25} {msg:<12.40}";
 
     const FAILED_BAR_TEMPLATE: &str =
         "{spinner:.red} {prefix:>30.30} {wide_bar:.red/dim} {msg:<25.55}";
 
-    const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>30.30} {msg:<10.35}";
+    const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>25.25} {msg:<12.40}";
 
     /// Maximum number of pre-allocated slot bars (safety cap).
     const MAX_SLOTS: usize = 256;
@@ -1820,12 +1820,13 @@ mod inner {
         /// forces a final render.
         fn finish_slot(&self, i: usize, status: TrackStatus) {
             let slot = &self.slots[i];
+            let (_, cols) = self.dim_source.dimensions();
             if self.has_overall && i == self.slots.len() - 1 {
-                slot.bar.set_style(overall_bar_style());
+                apply_overall_bar_style(&slot.bar, cols);
             } else if status == TrackStatus::Failed {
-                slot.bar.set_style(failed_bar_style());
+                apply_failed_bar_style(&slot.bar, cols);
             } else {
-                slot.bar.set_style(done_bar_style());
+                apply_done_bar_style(&slot.bar, cols);
             }
             match status {
                 TrackStatus::Failed | TrackStatus::Abandoned => slot.bar.abandon(),

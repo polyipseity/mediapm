@@ -220,8 +220,8 @@ fn transition_exact_finish_error_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                 [F] child ████████████░░░░░░░░░  3/5 1s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠏                      [F] child ████████████░░░░░░░░░  3/5 1s\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -251,8 +251,8 @@ fn transition_exact_abandon_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                 [A] child ████████████░░░░░░░░░  3/5 1s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠏                      [A] child ████████████░░░░░░░░░  3/5 1s\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -282,8 +282,8 @@ fn transition_exact_success_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                     child █████████████████████  5/5 1s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠏                          child █████████████████████  5/5 1s\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -320,8 +320,8 @@ fn transition_exact_partial_progress_then_finish() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                     child █████████████████████  5/5 1s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
+            "⠏                          child █████████████████████  5/5 1s\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
         )
     );
 }
@@ -352,8 +352,8 @@ fn transition_exact_abandon_with_message_and_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                 [A] child ████████████░░░░░░░░░  3/5 1s  aborted\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
+            "⠏                      [A] child ████████████░░░░░░░░░  3/5 1s  aborted\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
         )
     );
 }

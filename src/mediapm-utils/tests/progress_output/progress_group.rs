@@ -29,7 +29,7 @@ fn progress_group_with_overall_shows_fixed_height() {
             "\n",
             "\n",
             "\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         )
     );
 }
@@ -52,8 +52,8 @@ fn progress_group_add_bar_reuses_bottom_child() {
         concat!(
             "\n",
             "\n",
-            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                          tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 
@@ -63,9 +63,9 @@ fn progress_group_add_bar_reuses_bottom_child() {
         term.contents(),
         concat!(
             "\n",
-            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠼                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                          tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼                          tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -90,7 +90,12 @@ fn progress_group_no_overall_always_reuses_bottom() {
     group.tick();
     assert_eq!(
         term.contents(),
-        concat!("\n", "\n", "\n", "⠸                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",)
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠸                          task1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",
+        )
     );
 
     let _c2 = group.add_bar(3, "task2");
@@ -99,8 +104,8 @@ fn progress_group_no_overall_always_reuses_bottom() {
         concat!(
             "\n",
             "\n",
-            "⠙                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠼                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠙                          task1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼                          task2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -121,10 +126,10 @@ fn progress_group_never_changes_bar_count() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠙                     tool0 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
-            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
-            "⠸                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
-            "⠇                     tool3 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠙                          tool0 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
+            "⠹                          tool1 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
+            "⠸                          tool2 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d\n",
+            "⠇                          tool3 ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -151,8 +156,8 @@ fn progress_group_with_overall_add_child_updates_slot() {
             "\n",
             "\n",
             "\n",
-            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                          tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 
@@ -163,9 +168,9 @@ fn progress_group_with_overall_add_child_updates_slot() {
         concat!(
             "\n",
             "\n",
-            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠼                     tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                          tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼                          tool2 ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -192,11 +197,11 @@ fn progress_group_with_overall_multiple_children_reuse_slot() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠸                     task0 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
-            "⠼                     task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
-            "⠴                     task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
-            "⠋                     task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
-            "⠦                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠸                          task0 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠼                          task1 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠴                          task2 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠋                          task3 ░░░░░░░░░░░░░░░░░░░░░  0/2 0s 0/d\n",
+            "⠦                        overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         )
     );
 }
@@ -218,7 +223,12 @@ fn progress_group_no_overall_different_capacities() {
     group.tick();
     assert_eq!(
         term.contents(),
-        concat!("\n", "\n", "\n", "⠸                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",)
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠸                          alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",
+        )
     );
 
     let _c2 = group.add_bar(3, "beta");
@@ -227,8 +237,8 @@ fn progress_group_no_overall_different_capacities() {
         concat!(
             "\n",
             "\n",
-            "⠙                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠼                      beta ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠙                          alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼                           beta ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -253,8 +263,8 @@ fn progress_group_compact_template_below_60_width() {
         concat!(
             "\n",
             "\n",
-            "⠹                     tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹                          tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -277,8 +287,8 @@ fn progress_group_child_shows_label_and_total() {
         concat!(
             "\n",
             "\n",
-            "⠹                     fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠹                          fetch ░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         )
     );
 }
@@ -334,8 +344,8 @@ fn progress_group_child_finish_keeps_bar_visible() {
             "\n",
             "\n",
             "\n",
-            "⠏                     fetch █████████████████████  0/5 0s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠏                          fetch █████████████████████  0/5 0s\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         ),
     );
 }
@@ -368,9 +378,9 @@ fn fin_all_exact_all_bars_content_persists() {
         concat!(
             "\n",
             "\n",
-            "⠏                     alpha █████████████████████  3/3 0s\n",
-            "⠏                      beta █████████████████████  5/5 0s\n",
-            "⠏                   overall █████████████████████  0/2 0s",
+            "⠏                          alpha █████████████████████  3/3 0s\n",
+            "⠏                           beta █████████████████████  5/5 0s\n",
+            "⠏                        overall █████████████████████  0/2 0s",
         )
     );
 }
@@ -398,8 +408,8 @@ fn fin_error_exact_shows_error_state() {
             "\n",
             "\n",
             "\n",
-            "⠏                  [F] wget ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",
+            "⠏                       [F] wget ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",
         )
     );
 }
@@ -425,8 +435,8 @@ fn join_clear_exact_removes_bars() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                     fetch █████████████████████  0/5 0s\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠏                          fetch █████████████████████  0/5 0s\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         )
     );
 }
@@ -465,9 +475,9 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
         concat!(
             "\n",
             "\n",
-            "⠏                     fetch █████████████████████  5/5 0s\n",
-            "⠏                     parse █████████████████████  2/2 0s\n",
-            "⠏                   overall █████████████████████  3/3 0s",
+            "⠏                          fetch █████████████████████  5/5 0s\n",
+            "⠏                          parse █████████████████████  2/2 0s\n",
+            "⠏                        overall █████████████████████  3/3 0s",
         ),
     );
 }
@@ -506,8 +516,8 @@ fn progress_group_overall_finish_and_join_clear_persists() {
     assert_eq!(
         actual,
         concat!(
-            "⠏                     fetch █████████████████████  5/5 0s\n",
-            "⠏                   overall █████████████████████  3/3 0s",
+            "⠏                          fetch █████████████████████  5/5 0s\n",
+            "⠏                        overall █████████████████████  3/3 0s",
         ),
     );
 }
@@ -535,8 +545,8 @@ fn progress_group_active_bars_survive_join_and_clear() {
     assert_eq!(
         contents,
         concat!(
-            "⠼                     alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠼                          alpha ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
         ),
     );
 }
@@ -1307,8 +1317,8 @@ fn progress_group_join_and_clear_removes_blank_bars() {
         concat!(
             "\n",
             "\n",
-            "⠏                     fetch █████████████████████  5/5 0s\n",
-            "⠏                   overall █████████████████████  5/10 0s",
+            "⠏                          fetch █████████████████████  5/5 0s\n",
+            "⠏                        overall █████████████████████  5/10 0s",
         ),
         "4 lines before finalize",
     );
@@ -1321,8 +1331,8 @@ fn progress_group_join_and_clear_removes_blank_bars() {
     assert_eq!(
         after,
         concat!(
-            "⠏                     fetch █████████████████████  5/5 0s\n",
-            "⠏                   overall █████████████████████  5/10 0s",
+            "⠏                          fetch █████████████████████  5/5 0s\n",
+            "⠏                        overall █████████████████████  5/10 0s",
         ),
         "2 bars remain after removing blanks",
     );
@@ -1358,9 +1368,9 @@ fn finalize_exact_terminal_match_after_full_lifecycle() {
         concat!(
             "\n",
             "\n",
-            "⠏                     alpha █████████████████████  5/5 0s\n",
-            "⠏                      beta █████████████████████  3/3 0s\n",
-            "⠏                   overall █████████████████████  10/10 0s",
+            "⠏                          alpha █████████████████████  5/5 0s\n",
+            "⠏                           beta █████████████████████  3/3 0s\n",
+            "⠏                        overall █████████████████████  10/10 0s",
         ),
         "before finalize",
     );
@@ -1372,9 +1382,9 @@ fn finalize_exact_terminal_match_after_full_lifecycle() {
     assert_eq!(
         after,
         concat!(
-            "⠏                     alpha █████████████████████  5/5 0s\n",
-            "⠏                      beta █████████████████████  3/3 0s\n",
-            "⠏                   overall █████████████████████  10/10 0s",
+            "⠏                          alpha █████████████████████  5/5 0s\n",
+            "⠏                           beta █████████████████████  3/3 0s\n",
+            "⠏                        overall █████████████████████  10/10 0s",
         ),
         "after finalize",
     );
@@ -1413,8 +1423,8 @@ fn finalize_preserves_content_written_before_progress() {
         concat!(
             "== PRE-EXISTING OUTPUT ==\n",
             "line before progress bars\n",
-            "⠏                      work █████████████████████  3/3 0s\n",
-            "⠏                   overall █████████████████████  5/5 0s",
+            "⠏                           work █████████████████████  3/3 0s\n",
+            "⠏                        overall █████████████████████  5/5 0s",
         ),
         "pre-existing content + bars after finalize",
     );
@@ -1453,10 +1463,10 @@ fn finalize_no_blank_lines_in_output() {
         before,
         concat!(
             // All 4 slots filled: no blank lines.
-            "⠏                     alpha █████████████████████  5/5 0s\n",
-            "⠏                      beta █████████████████████  5/5 0s\n",
-            "⠏                     gamma █████████████████████  5/5 0s\n",
-            "⠏                   overall █████████████████████  3/3 0s",
+            "⠏                          alpha █████████████████████  5/5 0s\n",
+            "⠏                           beta █████████████████████  5/5 0s\n",
+            "⠏                          gamma █████████████████████  5/5 0s\n",
+            "⠏                        overall █████████████████████  3/3 0s",
         ),
         "before finalize (all slots filled)",
     );
@@ -1468,10 +1478,10 @@ fn finalize_no_blank_lines_in_output() {
     assert_eq!(
         after,
         concat!(
-            "⠏                     alpha █████████████████████  5/5 0s\n",
-            "⠏                      beta █████████████████████  5/5 0s\n",
-            "⠏                     gamma █████████████████████  5/5 0s\n",
-            "⠏                   overall █████████████████████  3/3 0s",
+            "⠏                          alpha █████████████████████  5/5 0s\n",
+            "⠏                           beta █████████████████████  5/5 0s\n",
+            "⠏                          gamma █████████████████████  5/5 0s\n",
+            "⠏                        overall █████████████████████  3/3 0s",
         ),
         "after finalize (no blank lines regression)",
     );

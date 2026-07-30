@@ -364,7 +364,7 @@ fn terminal_exact_h2_no_overall_two_children() {
     let _c1 = group.add_bar(3, "alpha");
     let _c2 = group.add_bar(3, "beta");
     group.tick();
-    assert_eq!(term.contents(), concat!("⠹                     alpha   0/3 0s 0/d\n"),);
+    assert_eq!(term.contents(), concat!("⠹                          alpha   0/3 0\ns 0/d"),);
 }
 
 /// Exact output: H=2 with 3 children + overall shows only 1 line.
@@ -381,5 +381,5 @@ fn terminal_exact_h2_no_overall_overflow() {
     let _c2 = group.add_bar(3, "beta");
     let _c3 = group.add_bar(3, "gamma");
     group.tick();
-    assert_eq!(term.contents(), concat!("⠹                     alpha   0/3 0s 0/d\n"),);
+    assert_eq!(term.contents(), concat!("⠹                          alpha   0/3 0\ns 0/d"),);
 }

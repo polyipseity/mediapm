@@ -173,10 +173,10 @@ fn worker_exact_mixed_finish_states() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                  worker-a █████████████████████  2/2 0s\n",
-            "⠏              [F] worker-b ██████████░░░░░░░░░░░  1/2 0s\n",
-            "⠏              [A] worker-c ██████████░░░░░░░░░░░  1/2 0s\n",
-            "⠏                   overall █████████████████████  3/3 0s",
+            "⠏                       worker-a █████████████████████  2/2 0s\n",
+            "⠏                   [F] worker-b ██████████░░░░░░░░░░░  1/2 0s\n",
+            "⠏                   [A] worker-c ██████████░░░░░░░░░░░  1/2 0s\n",
+            "⠏                        overall █████████████████████  3/3 0s",
         ),
     );
 }
@@ -206,10 +206,10 @@ fn worker_exact_all_finish_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                  worker-a █████████████████████  2/2 0s\n",
-            "⠏                  worker-b █████████████████████  2/2 0s\n",
-            "⠏                  worker-c █████████████████████  2/2 0s\n",
-            "⠏                   overall █████████████████████  3/3 0s",
+            "⠏                       worker-a █████████████████████  2/2 0s\n",
+            "⠏                       worker-b █████████████████████  2/2 0s\n",
+            "⠏                       worker-c █████████████████████  2/2 0s\n",
+            "⠏                        overall █████████████████████  3/3 0s",
         ),
     );
 }
@@ -237,9 +237,9 @@ fn worker_exact_interleaved_advances() {
         term.contents(),
         concat!(
             "\n",
-            "⠸                      fast ████████████████░░░░░  8/10 1s 48/m 2s\n",
-            "⠼                      slow ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
-            "⠹                   overall █████████████████████  11/10 1s 1.1/s",
+            "⠸                           fast ████████████████░░░░░  8/10 1s 48/m 2s\n",
+            "⠼                           slow ██████░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
+            "⠹                        overall █████████████████████  11/10 1s 1.1/s",
         ),
     );
 }
@@ -267,9 +267,9 @@ fn worker_exact_no_overall_multiple_children() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠸                   child-a ████████░░░░░░░░░░░░░  2/5 0s 0/d\n",
-            "⠼                   child-b ████████████████░░░░░  4/5 0s 0/d\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠸                        child-a ████████░░░░░░░░░░░░░  2/5 0s 0/d\n",
+            "⠼                        child-b ████████████████░░░░░  4/5 0s 0/d\n",
+            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
     );
 }
