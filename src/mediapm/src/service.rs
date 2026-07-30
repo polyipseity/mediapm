@@ -186,7 +186,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         tool_id: &str,
         state: &MediaPmState,
     ) -> Result<bool, MediaPmError> {
-        if let Some(existing) = state.managed_tools.get(tool_id) {
+        if let Some(existing) = state.managed_tools.iter().find(|e| e.tool_id == tool_id) {
             let effective = self.resolve_effective_runtime_storage()?;
             let desired = effective.tools.get(tool_id);
             // If no desired requirement is declared, the tool is considered
@@ -205,7 +205,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             {
                 Ok((_, _, resolved_canonical_version, _, _, _)) => Ok(existing.canonical_version
                     != resolved_canonical_version
-                    || existing.content_map_hash.is_none()),
+                    || existing.content_map_hash.is_empty()),
                 Err(_) => {
                     // Conservatively recommend sync on provider resolution failure.
                     Ok(true)
@@ -774,8 +774,15 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
 
         // Merge deployment records from the provisioning pipeline into the
         // persisted managed-tool registry and save.
-        for (tool_id, record) in &report.tool_records {
-            state.managed_tools.insert(tool_id.clone(), record.clone());
+        for record in &report.tool_records {
+            // Replace existing entry with same tool_id, or append.
+            if let Some(existing) =
+                state.managed_tools.iter_mut().find(|e| e.tool_id == record.tool_id)
+            {
+                *existing = record.clone();
+            } else {
+                state.managed_tools.push(record.clone());
+            }
         }
         save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
 
