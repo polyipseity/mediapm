@@ -72,15 +72,11 @@ fn find_closest_dep_key(dep_key: &str, valid_keys: &BTreeSet<String>) -> Vec<Str
 
 /// Collect the set of valid dependency key strings for a given tool.
 ///
-/// Valid keys are the union of:
-/// - All tool IDs configured in the `desired_tools` map.
-/// - Known dependency types registered via per-preset `dependency_types()`.
-fn collect_valid_dep_keys(
-    tool_id: &str,
-    desired_tools: &BTreeMap<String, serde_json::Value>,
-) -> BTreeSet<String> {
+/// Valid keys are **exactly** the keys registered via the tool's
+/// `dependency_types()`. No union with configured tool IDs — only
+/// known dependency types are valid.
+fn collect_valid_dep_keys(tool_id: &str) -> BTreeSet<String> {
     let mut valid = BTreeSet::new();
-    valid.extend(desired_tools.keys().cloned());
     if let Some(known) = known_dependency_type_for_tool(tool_id) {
         valid.extend(known.into_keys().map(String::from));
     }
@@ -97,16 +93,19 @@ fn collect_valid_dep_keys(
 pub(crate) fn validate_dependency_keys(
     tool_id: &str,
     dependencies: &BTreeMap<String, VersionSpec>,
-    desired_tools: &BTreeMap<String, serde_json::Value>,
 ) -> Result<(), MediaPmError> {
-    let valid = collect_valid_dep_keys(tool_id, desired_tools);
+    let valid = collect_valid_dep_keys(tool_id);
     for dep_key in dependencies.keys() {
         if valid.contains(dep_key.as_str()) {
             continue;
         }
         let close = find_closest_dep_key(dep_key, &valid);
         let suggestion = if close.is_empty() {
-            format!("valid dependency keys for \"{tool_id}\": {}", sorted_join(&valid))
+            if valid.is_empty() {
+                format!("tool \"{tool_id}\" does not declare any dependencies")
+            } else {
+                format!("valid dependency keys for \"{tool_id}\": {}", sorted_join(&valid))
+            }
         } else {
             let close_str = close.join("\", \"");
             format!(
@@ -135,20 +134,11 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn make_desired_tools(ids: &[&str]) -> BTreeMap<String, serde_json::Value> {
-        let mut map = BTreeMap::new();
-        for id in ids {
-            map.insert(id.to_string(), serde_json::json!({}));
-        }
-        map
-    }
-
     #[test]
     fn validate_unknown_dep_key_error() {
-        let desired = make_desired_tools(&["ffmpeg"]);
         let mut deps = BTreeMap::new();
         deps.insert("nonexistent_dep".to_string(), VersionSpec::Latest);
-        let result = validate_dependency_keys("yt-dlp", &deps, &desired);
+        let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_err());
         let err = result.unwrap_err();
         let msg = err.to_string();
@@ -159,10 +149,9 @@ mod tests {
 
     #[test]
     fn validate_version_suffix_suggests_bare_id() {
-        let desired = make_desired_tools(&["ffmpeg"]);
         let mut deps = BTreeMap::new();
         deps.insert("ffmpeg_version".to_string(), VersionSpec::Latest);
-        let result = validate_dependency_keys("yt-dlp", &deps, &desired);
+        let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("ffmpeg"), "should suggest correct key");
@@ -172,33 +161,62 @@ mod tests {
 
     #[test]
     fn validate_known_dep_key_passes() {
-        let desired = make_desired_tools(&["ffmpeg", "deno"]);
         let mut deps = BTreeMap::new();
         deps.insert("ffmpeg".to_string(), VersionSpec::Latest);
         deps.insert("deno".to_string(), VersionSpec::Latest);
-        let result = validate_dependency_keys("yt-dlp", &deps, &desired);
+        let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_ok(), "known dep keys should pass: {:?}", result.err());
     }
 
     #[test]
     fn validate_empty_deps_passes() {
-        let desired = make_desired_tools(&[]);
         let deps = BTreeMap::new();
-        let result = validate_dependency_keys("yt-dlp", &deps, &desired);
+        let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_ok());
     }
 
     #[test]
     fn validate_close_match_via_similar() {
         // Test the get_close_matches integration with a mild typo.
-        let desired = make_desired_tools(&["ffmpeg"]);
         let mut deps = BTreeMap::new();
         deps.insert("ffmepg".to_string(), VersionSpec::Latest);
-        let result = validate_dependency_keys("yt-dlp", &deps, &desired);
+        let result = validate_dependency_keys("yt-dlp", &deps);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("ffmepg"), "should reference used key");
         assert!(msg.contains("did you mean"), "should suggest correct key");
         assert!(msg.contains("ffmpeg"), "suggestion should include ffmpeg");
+    }
+
+    #[test]
+    fn validate_exactly_no_more() {
+        // `sd` is NOT in yt-dlp's dependency_types (it's only in rsgain's).
+        // With exact matching, `sd` must be rejected even though `sd` may be
+        // configured as a desired tool elsewhere.
+        let mut deps = BTreeMap::new();
+        deps.insert("sd".to_string(), VersionSpec::Latest);
+        let result = validate_dependency_keys("yt-dlp", &deps);
+        assert!(result.is_err(), "sd should NOT be valid for yt-dlp");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("MPM-E001"), "should contain error code: {msg}");
+        assert!(msg.contains("sd"), "should mention the bad key: {msg}");
+        assert!(msg.contains("ffmpeg"), "suggestion should include ffmpeg: {msg}");
+        assert!(msg.contains("deno"), "suggestion should include deno: {msg}");
+    }
+
+    #[test]
+    fn validate_unknown_tool_rejects_all_deps() {
+        // Unknown tools have no registered dependency_types, so any dep is rejected.
+        let mut deps = BTreeMap::new();
+        deps.insert("ffmpeg".to_string(), VersionSpec::Latest);
+        let result = validate_dependency_keys("some-unknown-tool", &deps);
+        assert!(result.is_err(), "unknown tool should reject any dep");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("MPM-E001"), "should contain error code: {msg}");
+        assert!(msg.contains("some-unknown-tool"), "should mention tool: {msg}");
+        assert!(
+            msg.contains("does not declare any dependencies"),
+            "should say tool has no deps: {msg}"
+        );
     }
 }

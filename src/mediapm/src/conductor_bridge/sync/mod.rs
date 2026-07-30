@@ -317,11 +317,7 @@ pub(crate) async fn reconcile_desired_tools(
     // Fail-fast with MPM-E001 if any tool has an unrecognized dependency key.
     for (tool_id, tool_value) in desired_tools {
         if let Ok(req) = serde_json::from_value::<ToolRequirement>(tool_value.clone()) {
-            crate::tools::dependency::validate_dependency_keys(
-                tool_id,
-                &req.dependencies,
-                desired_tools,
-            )?;
+            crate::tools::dependency::validate_dependency_keys(tool_id, &req.dependencies)?;
         }
     }
 
