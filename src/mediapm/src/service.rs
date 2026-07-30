@@ -786,15 +786,11 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
 
         // Merge deployment records from the provisioning pipeline into the
         // persisted managed-tool registry and save.
+        // Old version records are preserved — the dedup in
+        // `dedup_managed_tools` collapses exact `(tool_id, canonical_version)`
+        // pairs on serialization.
         for record in &report.tool_records {
-            // Replace existing entry with same tool_id, or append.
-            if let Some(existing) =
-                state.managed_tools.iter_mut().find(|e| e.tool_id == record.tool_id)
-            {
-                *existing = record.clone();
-            } else {
-                state.managed_tools.push(record.clone());
-            }
+            state.managed_tools.push(record.clone());
         }
         save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
 
