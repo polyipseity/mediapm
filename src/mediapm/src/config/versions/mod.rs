@@ -68,13 +68,21 @@ pub fn encode_mediapm_document_value(doc: &MediaPmDocument) -> Result<Value, Med
 /// Returns `MediaPmError::Workflow` when the version field is missing or
 /// not representable as `u64`.
 pub fn extract_version_field(value: &Value) -> Result<u64, MediaPmError> {
-    let version_value = value
-        .get("version")
-        .ok_or_else(|| MediaPmError::Workflow("missing 'version' field in document".to_string()))?;
+    let version_value = value.get("version").ok_or_else(|| MediaPmError::ConfigValidation {
+        code: "MPM-E004",
+        context: "document version extraction".to_string(),
+        detail: "missing 'version' field in document".to_string(),
+        suggestion: "ensure the document has a top-level 'version' field".to_string(),
+    })?;
 
     super::nickel_io::normalize_version_field_to_u64(version_value).ok_or_else(|| {
-        MediaPmError::Workflow(format!(
-            "'version' field value '{version_value}' is not a non-negative integer",
-        ))
+        MediaPmError::ConfigValidation {
+            code: "MPM-E004",
+            context: "document version extraction".to_string(),
+            detail: format!(
+                "'version' field value '{version_value}' is not a non-negative integer",
+            ),
+            suggestion: "use a non-negative integer for the 'version' field".to_string(),
+        }
     })
 }

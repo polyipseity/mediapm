@@ -21,8 +21,12 @@ pub fn evaluate_nickel_source_to_json(path: &Path) -> Result<Value, MediaPmError
         MediaPmError::Workflow(format!("failed to evaluate '{}': {err:?}", path.display()))
     })?;
 
-    serde_json::to_value(&nickel_value)
-        .map_err(|err| MediaPmError::Serialization(format!("failed to render Nickel value: {err}")))
+    serde_json::to_value(&nickel_value).map_err(|err| MediaPmError::ConfigValidation {
+        code: "MPM-E004",
+        context: format!("failed to render Nickel value from '{}'", path.display()),
+        detail: err.to_string(),
+        suggestion: String::new(),
+    })
 }
 
 /// Parses one floating-point value into `u64` when it is a non-negative
@@ -72,8 +76,12 @@ pub fn normalize_version_field_to_u64(value: &serde_json::Value) -> Option<u64> 
 /// Loads and deserializes a JSON document from a Nickel source file.
 fn load_json_document<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T, MediaPmError> {
     let value = evaluate_nickel_source_to_json(path)?;
-    serde_json::from_value(value)
-        .map_err(|err| MediaPmError::Serialization(format!("failed to deserialize {label}: {err}")))
+    serde_json::from_value(value).map_err(|err| MediaPmError::ConfigValidation {
+        code: "MPM-E004",
+        context: format!("failed to deserialize {label}"),
+        detail: err.to_string(),
+        suggestion: String::new(),
+    })
 }
 
 /// Serializes a document and writes it as pretty-printed JSON.
