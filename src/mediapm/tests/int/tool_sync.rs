@@ -274,18 +274,16 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
     let mut state = MediaPmState::default();
-    state.managed_tools.insert(
-        "media-tagger".to_string(),
-        ToolRegistryEntry {
-            version: String::new(),
-            canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
-            content_map_hash: Some("blake3:abc".to_string()),
-            deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
-        },
-    );
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "media-tagger".to_string(),
+        version: String::new(),
+        canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
+        content_map_hash: "blake3:abc".to_string(),
+        deployed_at: 0,
+        resolved_tag: String::new(),
+        resolved_version: String::new(),
+        resolved_vcs_hash: String::new(),
+    });
     assert!(!service.logical_tool_requires_sync("media-tagger", &state).await?);
     Ok(())
 }
@@ -315,7 +313,8 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
 
     let entry = state
         .managed_tools
-        .get("media-tagger")
+        .iter()
+        .find(|e| e.tool_id == "media-tagger")
         .expect("media-tagger should be registered after sync");
 
     // All desired tools are used seeds, so canonical_version is populated.
@@ -381,5 +380,111 @@ async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmEr
         "configured tools must not be pruned; pruned={}",
         summary.pruned_tools,
     );
+    Ok(())
+}
+
+/// A v2 state.json on disk is automatically bridged to v3 on load.
+///
+/// This tests the full version-dispatch path: JSON parsing → version
+/// field extraction → v2→v3 bridge → `MediaPmState` with
+/// `Vec<ToolRegistryEntry>`.
+#[tokio::test]
+async fn state_v2_on_disk_bridges_to_v3_on_load() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let state_path = root.path().join("state.json");
+
+    let v2_json = serde_json::json!({
+        "version": 2,
+        "managed_files": {},
+        "managed_tools": {
+            "ffmpeg": {
+                "version": "7.1",
+                "canonical_version": "ffmpeg-v7.1",
+                "content_map_hash": "blake3:abc123",
+                "deployed_at": 1_700_000_000,
+                "resolved_tag": "v7.1",
+                "resolved_version": "7.1",
+                "resolved_vcs_hash": "abc"
+            }
+        },
+        "workflow_states": {}
+    });
+
+    std::fs::write(&state_path, serde_json::to_string_pretty(&v2_json).unwrap())
+        .expect("write v2 state.json");
+
+    let state = mediapm::load_mediapm_state_document(&state_path).expect("load v2 state.json");
+
+    assert_eq!(state.version, 3, "v2 state should bridge to version 3");
+    assert_eq!(state.managed_tools.len(), 1, "v2 bridge should produce one tool entry");
+    assert_eq!(state.managed_tools[0].tool_id, "ffmpeg");
+    assert_eq!(state.managed_tools[0].canonical_version, "ffmpeg-v7.1");
+    assert_eq!(state.managed_tools[0].content_map_hash, "blake3:abc123");
+    Ok(())
+}
+
+/// Sync with a v2 state.json on disk automatically upgrades it to v3.
+///
+/// The service reads the v2 state via the bridge, reconciles with desired
+/// tools (none), and writes the state back as v3.
+#[tokio::test]
+async fn sync_upgrades_v2_state_to_v3_format() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let state_path = root.path().join(".mediapm").join("state.json");
+    std::fs::create_dir_all(state_path.parent().unwrap()).expect("create .mediapm dir");
+
+    let v2_json = serde_json::json!({
+        "version": 2,
+        "managed_files": {},
+        "managed_tools": {
+            "ffmpeg": {
+                "version": "7.1",
+                "canonical_version": "ffmpeg-v7.1",
+                "content_map_hash": "blake3:abc123",
+                "deployed_at": 1_700_000_000,
+                "resolved_tag": "",
+                "resolved_version": "",
+                "resolved_vcs_hash": ""
+            }
+        },
+        "workflow_states": {}
+    });
+
+    std::fs::write(&state_path, serde_json::to_string_pretty(&v2_json).unwrap())
+        .expect("write v2 state.json");
+
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    service.sync_tools().await?;
+
+    // After sync, state.json should be v3 format (array instead of map).
+    let content = std::fs::read_to_string(&state_path).expect("read state.json after sync");
+    let value: serde_json::Value =
+        serde_json::from_str(&content).expect("state.json after sync should be valid JSON");
+    assert_eq!(value["version"], 3, "state.json must be version 3 after sync with v2 input");
+    assert!(
+        value["managed_tools"].is_array(),
+        "state.json managed_tools must be an array after v2→v3 upgrade"
+    );
+    assert_eq!(
+        value["managed_tools"].as_array().map(|a| a.len()),
+        Some(1),
+        "state.json should still have 1 tool entry after upgrade"
+    );
+    Ok(())
+}
+
+/// `load_mediapm_state_document` returns the default state for a non-existent
+/// path (no crash on missing file).
+#[tokio::test]
+async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let missing_path = root.path().join("does-not-exist.json");
+    let state = mediapm::load_mediapm_state_document(&missing_path)?;
+    assert_eq!(state.version, 3, "default state should be version 3");
+    assert!(state.managed_tools.is_empty(), "default state should have no managed tools");
     Ok(())
 }

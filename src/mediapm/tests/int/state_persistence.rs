@@ -24,13 +24,13 @@ use serde_json::json;
 use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
-// V2 round-trip
+// State round-trip
 // ---------------------------------------------------------------------------
 
 #[test]
-fn v2_round_trip() {
+fn state_round_trip() {
     let state = MediaPmState {
-        version: 2,
+        version: 3,
         managed_files: BTreeMap::from([(
             "/media/file.mp4".to_string(),
             ManagedFileRecord {
@@ -39,18 +39,16 @@ fn v2_round_trip() {
                 hash: "blake3:abc123".to_string(),
             },
         )]),
-        managed_tools: BTreeMap::from([(
-            "yt-dlp".to_string(),
-            ToolRegistryEntry {
-                version: String::new(),
-                canonical_version: String::new(),
-                content_map_hash: Some("blake3:def456".to_string()),
-                deployed_at: 1_700_000_000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
-            },
-        )]),
+        managed_tools: vec![ToolRegistryEntry {
+            tool_id: "yt-dlp".to_string(),
+            version: String::new(),
+            canonical_version: String::new(),
+            content_map_hash: "blake3:def456".to_string(),
+            deployed_at: 1_700_000_000,
+            resolved_tag: String::new(),
+            resolved_version: String::new(),
+            resolved_vcs_hash: String::new(),
+        }],
         workflow_states: BTreeMap::new(),
     };
 
@@ -60,7 +58,7 @@ fn v2_round_trip() {
     assert_eq!(state.managed_files, decoded.managed_files);
     assert_eq!(state.managed_tools, decoded.managed_tools);
     assert_eq!(state.workflow_states, decoded.workflow_states);
-    assert_eq!(decoded.version, 2);
+    assert_eq!(decoded.version, 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +158,7 @@ fn migrate_flat_to_v2() {
 #[test]
 fn default_state_round_trip() {
     let state = MediaPmState::default();
-    assert_eq!(state.version, 2);
+    assert_eq!(state.version, 3);
 
     let value = to_json_value(&state).expect("serialization must succeed");
     let decoded = from_json_value(value).expect("deserialization must succeed");
@@ -168,7 +166,7 @@ fn default_state_round_trip() {
     assert!(decoded.managed_files.is_empty());
     assert!(decoded.managed_tools.is_empty());
     assert!(decoded.workflow_states.is_empty());
-    assert_eq!(decoded.version, 2);
+    assert_eq!(decoded.version, 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,18 +196,16 @@ fn json_save_idempotent() {
                 hash: "blake3:x".to_string(),
             },
         )]),
-        managed_tools: BTreeMap::from([(
-            "tool-a".to_string(),
-            ToolRegistryEntry {
-                version: String::new(),
-                canonical_version: String::new(),
-                content_map_hash: Some("blake3:y".to_string()),
-                deployed_at: 1_700_000_000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
-            },
-        )]),
+        managed_tools: vec![ToolRegistryEntry {
+            tool_id: "tool-a".to_string(),
+            version: String::new(),
+            canonical_version: String::new(),
+            content_map_hash: "blake3:y".to_string(),
+            deployed_at: 1_700_000_000,
+            resolved_tag: String::new(),
+            resolved_version: String::new(),
+            resolved_vcs_hash: String::new(),
+        }],
         workflow_states: BTreeMap::new(),
     };
 
@@ -246,7 +242,7 @@ fn ncl_to_json_file_migration() {
 
     assert!(json_path.exists(), "state.json should exist");
     assert!(!ncl_path.exists(), "state.ncl should be deleted after migration");
-    assert_eq!(state.version, 2);
+    assert_eq!(state.version, 3);
     assert!(state.managed_files.is_empty());
     assert!(state.workflow_states.is_empty());
 }
@@ -257,7 +253,7 @@ fn load_missing_state_returns_default() {
     let json_path = dir.path().join("state.json");
 
     let state = load_mediapm_state_document(&json_path).expect("load should return default");
-    assert_eq!(state.version, 2);
+    assert_eq!(state.version, 3);
     assert!(state.managed_files.is_empty());
     assert!(state.managed_tools.is_empty());
 }
@@ -269,9 +265,10 @@ fn load_missing_state_returns_default() {
 #[test]
 fn tool_registry_entry_round_trip() {
     let entry = ToolRegistryEntry {
+        tool_id: String::new(),
         version: String::new(),
         canonical_version: "abc123".to_string(),
-        content_map_hash: None,
+        content_map_hash: String::new(),
         deployed_at: 0,
         resolved_tag: String::new(),
         resolved_version: String::new(),
@@ -285,11 +282,13 @@ fn tool_registry_entry_round_trip() {
 #[test]
 fn tool_registry_entry_backward_compat_deserialize_without_canonical_version() {
     let json = serde_json::json!({
+        "tool_id": "ffmpeg",
         "version": "1.0",
         "content_map_hash": "blake3:x",
         "deployed_at": 0
     });
     let entry: ToolRegistryEntry = serde_json::from_value(json).expect("deserialize old format");
+    assert_eq!(entry.tool_id, "ffmpeg");
     assert_eq!(
         entry.canonical_version, "",
         "missing canonical_version should default to empty string"
@@ -299,18 +298,16 @@ fn tool_registry_entry_backward_compat_deserialize_without_canonical_version() {
 #[test]
 fn tool_registry_entry_normalize_drops_blank_entry() {
     let mut state = MediaPmState::default();
-    state.managed_tools.insert(
-        "tool".to_string(),
-        ToolRegistryEntry {
-            version: String::new(),
-            canonical_version: "".to_string(),
-            content_map_hash: None,
-            deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
-        },
-    );
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "tool".to_string(),
+        version: String::new(),
+        canonical_version: "".to_string(),
+        content_map_hash: String::new(),
+        deployed_at: 0,
+        resolved_tag: String::new(),
+        resolved_version: String::new(),
+        resolved_vcs_hash: String::new(),
+    });
     state.normalize();
     assert!(state.managed_tools.is_empty(), "blank entry should be dropped");
 }
@@ -318,18 +315,16 @@ fn tool_registry_entry_normalize_drops_blank_entry() {
 #[test]
 fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
     let mut state = MediaPmState::default();
-    state.managed_tools.insert(
-        "tool".to_string(),
-        ToolRegistryEntry {
-            version: String::new(),
-            canonical_version: "abc123".to_string(),
-            content_map_hash: None,
-            deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
-        },
-    );
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "tool".to_string(),
+        version: String::new(),
+        canonical_version: "abc123".to_string(),
+        content_map_hash: String::new(),
+        deployed_at: 0,
+        resolved_tag: String::new(),
+        resolved_version: String::new(),
+        resolved_vcs_hash: String::new(),
+    });
     state.normalize();
     assert_eq!(state.managed_tools.len(), 1, "entry with canonical_version should survive");
 }
@@ -337,21 +332,19 @@ fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
 #[test]
 fn state_normalize_retains_tool_with_canonical_version() {
     let mut state = MediaPmState::default();
-    state.managed_tools.insert(
-        "media-tagger".to_string(),
-        ToolRegistryEntry {
-            version: String::new(),
-            canonical_version: "abc123".to_string(),
-            content_map_hash: None,
-            deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
-        },
-    );
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "media-tagger".to_string(),
+        version: String::new(),
+        canonical_version: "abc123".to_string(),
+        content_map_hash: String::new(),
+        deployed_at: 0,
+        resolved_tag: String::new(),
+        resolved_version: String::new(),
+        resolved_vcs_hash: String::new(),
+    });
     state.normalize();
     assert!(
-        state.managed_tools.contains_key("media-tagger"),
+        state.managed_tools.iter().any(|e| e.tool_id == "media-tagger"),
         "tool with canonical_version should be retained"
     );
 }
@@ -359,20 +352,21 @@ fn state_normalize_retains_tool_with_canonical_version() {
 #[test]
 fn state_normalize_drops_tool_with_all_blank() {
     let mut state = MediaPmState::default();
-    state.managed_tools.insert(
-        "blank-tool".to_string(),
-        ToolRegistryEntry {
-            version: String::new(),
-            canonical_version: "".to_string(),
-            content_map_hash: None,
-            deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
-        },
-    );
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "blank-tool".to_string(),
+        version: String::new(),
+        canonical_version: "".to_string(),
+        content_map_hash: String::new(),
+        deployed_at: 0,
+        resolved_tag: String::new(),
+        resolved_version: String::new(),
+        resolved_vcs_hash: String::new(),
+    });
     state.normalize();
-    assert!(!state.managed_tools.contains_key("blank-tool"), "blank tool should be dropped");
+    assert!(
+        !state.managed_tools.iter().any(|e| e.tool_id == "blank-tool"),
+        "blank tool should be dropped"
+    );
 }
 
 #[test]
@@ -381,9 +375,10 @@ fn canonical_version_json_round_trip() {
     let versions = vec!["", "abc123", "v1.0.0", "2025.07.15", "L2025-07-15", &long];
     for v in &versions {
         let entry = ToolRegistryEntry {
+            tool_id: String::new(),
             version: String::new(),
             canonical_version: (*v).to_string(),
-            content_map_hash: None,
+            content_map_hash: String::new(),
             deployed_at: 0,
             resolved_tag: String::new(),
             resolved_version: String::new(),
@@ -398,9 +393,10 @@ fn canonical_version_json_round_trip() {
 #[test]
 fn tool_registry_entry_serialization_includes_version() {
     let entry = ToolRegistryEntry {
+        tool_id: String::new(),
         version: "v1.0.0".to_string(),
         canonical_version: "v1.0.0".to_string(),
-        content_map_hash: None,
+        content_map_hash: String::new(),
         deployed_at: 0,
         resolved_tag: String::new(),
         resolved_version: String::new(),
@@ -422,13 +418,14 @@ fn tool_registry_entry_serialization_includes_version() {
 #[test]
 fn tool_registry_entry_deserializes_version() {
     let json = serde_json::json!({
+        "tool_id": "ffmpeg",
         "canonical_version": "abc123",
-        "content_map_hash": null,
         "deployed_at": 0,
         "version": "v1.0.0"
     });
     let entry: ToolRegistryEntry =
         serde_json::from_value(json).expect("should deserialize with 'version' field");
+    assert_eq!(entry.tool_id, "ffmpeg");
     assert_eq!(entry.canonical_version, "abc123");
     assert_eq!(entry.version, "v1.0.0", "version should be deserialized");
 }
@@ -436,13 +433,14 @@ fn tool_registry_entry_deserializes_version() {
 #[test]
 fn tool_registry_entry_deserializes_empty_version() {
     let json = serde_json::json!({
+        "tool_id": "rsgain",
         "canonical_version": "",
-        "content_map_hash": null,
         "deployed_at": 0,
         "version": "v2.0.0"
     });
     let entry: ToolRegistryEntry =
         serde_json::from_value(json).expect("should deserialize with empty canonical_version");
+    assert_eq!(entry.tool_id, "rsgain");
     assert_eq!(entry.canonical_version, "");
     assert_eq!(entry.version, "v2.0.0", "version should be deserialized");
 }
@@ -465,7 +463,7 @@ fn state_json_always_writes_to_disk() {
     let state = MediaPmState {
         version: 2,
         managed_files: BTreeMap::new(),
-        managed_tools: BTreeMap::new(),
+        managed_tools: Vec::new(),
         workflow_states: BTreeMap::new(),
     };
 

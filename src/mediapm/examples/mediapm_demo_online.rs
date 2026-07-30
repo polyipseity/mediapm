@@ -1249,18 +1249,16 @@ fn seed_old_synced_tools_state_for_update_precheck(
             },
         );
 
-        lock.managed_tools.insert(
-            stale_tool_id,
-            ToolRegistryEntry {
-                version: String::new(),
-                canonical_version: String::new(),
-                content_map_hash: Some(stale_hash.to_string()),
-                deployed_at: unix_timestamp_seconds(),
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
-            },
-        );
+        lock.managed_tools.push(ToolRegistryEntry {
+            tool_id: stale_tool_id,
+            version: String::new(),
+            canonical_version: String::new(),
+            content_map_hash: stale_hash.to_string(),
+            deployed_at: unix_timestamp_seconds(),
+            resolved_tag: String::new(),
+            resolved_version: String::new(),
+            resolved_vcs_hash: String::new(),
+        });
     }
 
     fs::write(&service.paths().conductor_generated_ncl, encode_document(machine)?)?;

@@ -98,7 +98,7 @@ async fn regression_state_only_churn_does_not_touch_conductor_file() {
     // value; we simulate by modifying state.json directly and re-saving.
     let mut state: mediapm::MediaPmState =
         serde_json::from_str(&baseline_state).expect("deserialize state.json");
-    if let Some(entry) = state.managed_tools.get_mut("media-tagger") {
+    if let Some(entry) = state.managed_tools.iter_mut().find(|e| e.tool_id == "media-tagger") {
         entry.canonical_version = "simulated-churn-v2".to_string();
     }
     let modified_json = serde_json::to_string_pretty(&state).expect("serialize modified state");
