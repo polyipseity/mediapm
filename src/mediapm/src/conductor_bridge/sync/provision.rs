@@ -118,6 +118,12 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// not interpret the meaning of items or bytes — it only relays the values
 /// to the bar.
 ///
+/// Bar labels follow the format `{tool_id}{version_suffix} [{phase_abbr}]`
+/// where `version_suffix` is ` {human_readable_version}` when non-empty
+/// (e.g., `"ffmpeg v7.1 [res]"`) or empty when the version is blank
+/// (e.g., `"media-tagger [fch]"`). Phase abbreviations: `[res]`, `[fch]`,
+/// `[pro]`.
+///
 /// After phase 1 (resolve), a HEAD-prefetch step populates
 /// [`ResolvedSource.expected_size`] for each `Fetch`-producer source so
 /// phase 2 progress bars start with an accurate byte total. Evermeet and
@@ -157,12 +163,18 @@ pub(super) async fn fetch_and_import_tool_payload(
     };
 
     // Phase 1: Resolve — get source descriptors from the mediapm provider.
+    let version_for_label = match &outcome {
+        PreResolveOutcome::Resolved(_, hr, ..) => hr.as_str(),
+        PreResolveOutcome::Skip { human_readable_version, .. } => human_readable_version.as_str(),
+    };
+    let version_suffix =
+        if version_for_label.is_empty() { String::new() } else { format!(" {version_for_label}") };
     let metadata_fetch_count = match &outcome {
         PreResolveOutcome::Resolved(_, _, _, _, count, _) => *count,
         PreResolveOutcome::Skip { metadata_fetch_count, .. } => *metadata_fetch_count,
     };
     let bar_total = metadata_fetch_count;
-    let resolve_bar = group.add_bar(bar_total.into(), &format!("{tool_id} [res]"));
+    let resolve_bar = group.add_bar(bar_total.into(), &format!("{tool_id}{version_suffix} [res]"));
     error_bars.push(resolve_bar.clone());
     let (mut fetch, human_readable_version, canonical_version) = match outcome {
         PreResolveOutcome::Resolved(
@@ -219,13 +231,16 @@ pub(super) async fn fetch_and_import_tool_payload(
         .sum();
 
     // Phase 2: Fetch — download (or generate) bytes for each source.
-    let fetch_bar = group.add_bar(total, &format!("{tool_id} [fch]"));
+    let fetch_bar = group.add_bar(total, &format!("{tool_id}{version_suffix} [fch]"));
     error_bars.push(fetch_bar.clone());
     let fetch_bar_cb = fetch_bar.clone();
     let fetch_tool_id = tool_id.to_string();
+    let fetch_version_suffix = version_suffix.clone();
     let fetch_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
-        fetch_bar_cb
-            .set_prefix(&format!("{fetch_tool_id} [fch] {}/{}", snap.items.0, snap.items.1));
+        fetch_bar_cb.set_prefix(&format!(
+            "{fetch_tool_id}{fetch_version_suffix} [fch] {}/{}",
+            snap.items.0, snap.items.1
+        ));
         fetch_bar_cb.set_position(snap.bytes.0);
         fetch_bar_cb.set_total(snap.bytes.1);
     }));
@@ -249,12 +264,17 @@ pub(super) async fn fetch_and_import_tool_payload(
     // populated with source byte sizes. The budget starts with item count
     // as the aggregate total and refines to actual payload sizes as each
     // source begins processing.
-    let process_bar = group.add_bar(total_process_items, &format!("{tool_id} [pro]"));
+    let process_bar =
+        group.add_bar(total_process_items, &format!("{tool_id}{version_suffix} [pro]"));
     error_bars.push(process_bar.clone());
     let process_bar_cb = process_bar.clone();
     let pp_tool_id = tool_id.to_string();
+    let pp_version_suffix = version_suffix.clone();
     let pp_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
-        process_bar_cb.set_prefix(&format!("{pp_tool_id} [pro] {}/{}", snap.items.0, snap.items.1));
+        process_bar_cb.set_prefix(&format!(
+            "{pp_tool_id}{pp_version_suffix} [pro] {}/{}",
+            snap.items.0, snap.items.1
+        ));
         process_bar_cb.set_position(snap.bytes.0);
         process_bar_cb.set_total(snap.bytes.1);
     }));
