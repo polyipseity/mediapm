@@ -111,11 +111,19 @@ pub(crate) fn compute_used_tool_ids(
             continue;
         }
         if let Some(value) = desired_tools.get(&tool_id) {
-            if let Ok(req) = serde_json::from_value::<ToolRequirement>(value.clone()) {
-                for dep_id in req.dependencies.keys() {
-                    if !used.contains(dep_id.as_str()) {
-                        stack.push(dep_id.clone());
+            match serde_json::from_value::<ToolRequirement>(value.clone()) {
+                Ok(req) => {
+                    for dep_id in req.dependencies.keys() {
+                        if !used.contains(dep_id.as_str()) {
+                            stack.push(dep_id.clone());
+                        }
                     }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "warning[MPM-W001]: failed to deserialize ToolRequirement for \
+                         tool \"{tool_id}\": {e}",
+                    );
                 }
             }
         }
@@ -135,26 +143,45 @@ pub(crate) fn compute_used_tool_ids(
 ///
 /// # Errors
 ///
-/// Returns [`MediaPmError::Workflow`] when inherit cannot be resolved.
+/// Returns [`MediaPmError::ConfigValidation`] with `MPM-E002` when inherit
+/// cannot be resolved because the tool is not configured.
+/// Returns [`MediaPmError::ConfigValidation`] with `MPM-E003` on circular inherit.
 pub(crate) fn resolve_dep_version_spec(
     dep_spec: &VersionSpec,
     dep_tool_id: &str,
     global_requirements: &BTreeMap<String, ToolRequirement>,
+    parent_tool_id: &str,
 ) -> Result<VersionSpec, MediaPmError> {
     match dep_spec {
         VersionSpec::Inherit => {
             let global = global_requirements.get(dep_tool_id).ok_or_else(|| {
-                MediaPmError::Workflow(format!(
-                    "tool dependency '{dep_tool_id}' has 'inherit' version spec \
-                     but the tool is not configured in the tools section"
-                ))
+                MediaPmError::ConfigValidation {
+                    code: "MPM-E002",
+                    context: format!("tool \"{parent_tool_id}\" dependency \"{dep_tool_id}\""),
+                    detail: format!(
+                        "uses \"inherit\" version spec but \"{dep_tool_id}\" \
+                         is not configured in the tools section"
+                    ),
+                    suggestion: format!(
+                        "add \"{dep_tool_id}\" to the tools section, or use \"latest\" \
+                         or an explicit version spec like {{ \"version\" = \"...\" }}"
+                    ),
+                }
             })?;
             // Also error if the global tool itself has "inherit" (circular).
             if global.version_spec == VersionSpec::Inherit {
-                return Err(MediaPmError::Workflow(format!(
-                    "tool '{dep_tool_id}' has 'inherit' version_spec but is itself \
-                     a dependency (circular inherit resolution)"
-                )));
+                return Err(MediaPmError::ConfigValidation {
+                    code: "MPM-E003",
+                    context: format!("tool \"{parent_tool_id}\" dependency \"{dep_tool_id}\""),
+                    detail: format!(
+                        "has \"inherit\" version_spec but \"{dep_tool_id}\" itself \
+                         uses \"inherit\" (circular inherit resolution)"
+                    ),
+                    suggestion: format!(
+                        "set an explicit version for \"{dep_tool_id}\" in the tools section \
+                         to break the cycle"
+                    ),
+                });
             }
             Ok(global.version_spec.clone())
         }
@@ -206,7 +233,7 @@ fn build_provisioning_entries(
 
         // Dependency entries — one per dep, with resolved version spec
         for (dep_id, dep_spec) in &req.dependencies {
-            let resolved_spec = resolve_dep_version_spec(dep_spec, dep_id, &global_reqs)?;
+            let resolved_spec = resolve_dep_version_spec(dep_spec, dep_id, &global_reqs, tool_id)?;
             let dep_req = ToolRequirement {
                 version_spec: resolved_spec,
                 dependencies: BTreeMap::new(),
@@ -285,6 +312,18 @@ pub(crate) async fn reconcile_desired_tools(
     progress_group: Option<&dyn ProgressGroupApi>,
 ) -> Result<ToolSyncReport, MediaPmError> {
     let mut report = ToolSyncReport::default();
+
+    // Validate all dependency keys before any provisioning begins.
+    // Fail-fast with MPM-E001 if any tool has an unrecognized dependency key.
+    for (tool_id, tool_value) in desired_tools {
+        if let Ok(req) = serde_json::from_value::<ToolRequirement>(tool_value.clone()) {
+            crate::tools::dependency::validate_dependency_keys(
+                tool_id,
+                &req.dependencies,
+                desired_tools,
+            )?;
+        }
+    }
 
     // 1. Load or create generated document.
     let mut generated_doc = load_conductor_generated_document(paths)?;
@@ -1188,6 +1227,7 @@ mod tests {
             &mediapm_conductor::tools::provider::VersionSpec::Inherit,
             "ffmpeg",
             &globals,
+            "test_parent",
         )
         .unwrap();
         assert_eq!(
@@ -1208,7 +1248,7 @@ mod tests {
             version: Some("1.0".into()),
             tag: None,
         });
-        let result = resolve_dep_version_spec(&spec, "any", &globals).unwrap();
+        let result = resolve_dep_version_spec(&spec, "any", &globals, "test_parent").unwrap();
         assert_eq!(result, spec);
     }
 
@@ -1219,6 +1259,7 @@ mod tests {
             &mediapm_conductor::tools::provider::VersionSpec::Latest,
             "any",
             &globals,
+            "test_parent",
         )
         .unwrap();
         assert_eq!(result, mediapm_conductor::tools::provider::VersionSpec::Latest);
@@ -1231,6 +1272,7 @@ mod tests {
             &mediapm_conductor::tools::provider::VersionSpec::Inherit,
             "missing",
             &globals,
+            "test_parent",
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not configured"));
@@ -1250,6 +1292,7 @@ mod tests {
             &mediapm_conductor::tools::provider::VersionSpec::Inherit,
             "foo",
             &globals,
+            "test_parent",
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("circular"));
