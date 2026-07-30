@@ -38,8 +38,9 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - On `Ok(None)`: create minimal spec without content map.
    - On `Err`: append warning to report, continue loop.
 6. **Dependency version resolution** — call `resolve_dep_version_spec()` for
-   each dependency's `version_spec`. `VersionSpec::Inherit` is resolved
-   against the global tool requirements; `Exact`/`Latest` pass through.
+   each dependency's `version_spec` (`ConfigVersionSpec` from serde).
+   `ConfigVersionSpec::Inherit` is resolved against the global tool
+   requirements; `Exact`/`Latest` pass through (converted to `VersionSpec`).
    Errors on missing global tool or circular inherit resolution.
 7. **Create tools dir** — `std::fs::create_dir_all(&paths.tools_dir)`.
 8. **Write env file** — `mediapm_conductor::runtime_env::write_generated_dotenv()`.
@@ -177,9 +178,9 @@ changes — not just when the tool itself changes.
 A `pub(crate)` function in `sync/mod.rs` that:
 
 1. Accepts the bare canonical version, tool ID, `ToolRequirement` (with
-   `dependencies`), and the live state for dep lookups.
-2. Resolves each dependency's `VersionSpec` (for `Inherit`, looks up the
-   global tool requirement).
+   `dependencies` as `ConfigVersionSpec`), and the live state for dep lookups.
+2. Matches each dep's `ConfigVersionSpec`: `Inherit`/`Latest` match any
+   active entry; `Exact` verifies against the spec via `spec_matches_entry`.
 3. For SameStep deps only, appends `;dep_id:resolved_ver` segments.
 4. Returns the composite format string.
 
