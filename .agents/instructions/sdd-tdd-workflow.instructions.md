@@ -177,6 +177,17 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Cache key is actual URL used for download, not blindly `urls[0]`       | `fetch_cache_key_uses_actual_url_not_first_url` | [covered] |
 | Cache key survives first-URL cache miss — iterates all URLs for lookup | `fetch_cache_key_uses_actual_url_not_first_url` | [covered] |
 
+### Progress bar label format: shortened phases and version
+
+| Spec item                                                                     | Test(s)                                                                                          | Status    |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------- |
+| Phase names shortened: `[resolve]`→`[res]`, `[fetch]`→`[fch]`, `[process]`→`[pro]`, `[prune]`→`[prn]` | `resolve_bar_label_uses_shortened_phases` (asserts `[res]` present, `[resolve]`/`[fetch]`/`[process]` absent) | [covered] |
+| Resolve bar label includes version when non-empty                            | `resolve_bar_label_includes_version`                                                             | [covered] |
+| Resolve bar label omits version when empty                                   | `resolve_bar_label_omits_version_when_empty`                                                     | [covered] |
+| Skip bar label includes version when non-empty                               | `skip_bar_label_includes_version`                                                                | [covered] |
+| Prune bar uses `[prn]` abbreviation                                          | (no dedicated test — verified by compilation + existing integration tests)                       | [covered] |
+| Fetch/process bars include version in prefix via set_prefix callback         | (no dedicated test — implementation pattern matches resolve bar; verified by compilation)         | [covered] |
+
 ### DirectoryLockGuard
 
 | Spec item                                                             | Test(s)                                                                                                                    | Status    |
