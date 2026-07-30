@@ -12,7 +12,7 @@ pub(crate) mod external_data;
 pub(crate) mod lifecycle;
 pub(crate) mod provision;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -28,6 +28,7 @@ use mediapm_conductor::state::OutputSaveMode;
 use mediapm_conductor::tools::provider::VersionSpec;
 use mediapm_conductor::tools::spec::spec_matches_entry;
 
+use crate::tools::dependency::DependencyType;
 use crate::tools::provider::RecheckPolicy;
 
 use crate::conductor_bridge::documents::{
@@ -63,8 +64,27 @@ pub(crate) struct ToolSyncReport {
     /// Non-fatal warnings collected during reconciliation.
     pub(crate) warnings: Vec<String>,
     /// Per-tool deployment records populated during provisioning.
-    /// Keyed by tool id (the desired-tools key, not the content-addressed key).
-    pub(crate) tool_records: BTreeMap<String, ToolRegistryEntry>,
+    /// Flat list ordered by iteration order of desired_tools.
+    pub(crate) tool_records: Vec<ToolRegistryEntry>,
+}
+
+/// A single entry in the provisioning pipeline.
+struct ProvisionEntry {
+    /// Bare tool_id used for provider resolution (e.g., "ffmpeg").
+    tool_id: String,
+    /// The tool requirement to apply when provisioning this entry.
+    tool_requirement: ToolRequirement,
+    /// Whether this entry came from the user config or was auto-vivified.
+    #[allow(dead_code)]
+    kind: EntryKind,
+}
+
+#[allow(dead_code)]
+enum EntryKind {
+    /// Entry from the user's `tools.<id>` config.
+    Explicit,
+    /// Auto-vivified from a dependency declaration.
+    Dep { dependent: String },
 }
 
 /// Compute the set of tool IDs that are needed, seeded from ALL desired tools
@@ -116,7 +136,6 @@ pub(crate) fn compute_used_tool_ids(
 /// # Errors
 ///
 /// Returns [`MediaPmError::Workflow`] when inherit cannot be resolved.
-#[allow(dead_code)]
 pub(crate) fn resolve_dep_version_spec(
     dep_spec: &VersionSpec,
     dep_tool_id: &str,
@@ -141,6 +160,110 @@ pub(crate) fn resolve_dep_version_spec(
         }
         other => Ok(other.clone()),
     }
+}
+
+/// Build in-memory index from flat state Vec for O(1) tool_id group lookup.
+fn index_managed_tools(entries: &[ToolRegistryEntry]) -> HashMap<String, Vec<ToolRegistryEntry>> {
+    let mut map: HashMap<String, Vec<ToolRegistryEntry>> = HashMap::new();
+    for entry in entries {
+        map.entry(entry.tool_id.clone()).or_default().push(entry.clone());
+    }
+    map
+}
+
+/// Build provisioning entries from desired tools.
+///
+/// Each explicit tool gets one entry. Each dependency of each tool gets a
+/// separate entry with the resolved version spec from the dependency
+/// declaration. Dep entries are sorted before explicit entries so they
+/// provision first (making dep canonical_versions available for composites).
+fn build_provisioning_entries(
+    desired_tools: &BTreeMap<String, serde_json::Value>,
+) -> Result<Vec<ProvisionEntry>, MediaPmError> {
+    // Build a ToolRequirement map for resolve_dep_version_spec which expects
+    // &BTreeMap<String, ToolRequirement>
+    let global_reqs: BTreeMap<String, ToolRequirement> = desired_tools
+        .iter()
+        .filter_map(|(id, val)| {
+            serde_json::from_value::<ToolRequirement>(val.clone()).ok().map(|req| (id.clone(), req))
+        })
+        .collect();
+
+    let mut explicit_entries: BTreeMap<String, ProvisionEntry> = BTreeMap::new();
+    let mut dep_entries: Vec<ProvisionEntry> = Vec::new();
+
+    for (tool_id, tool_value) in desired_tools {
+        let req: ToolRequirement = serde_json::from_value(tool_value.clone()).map_err(|e| {
+            MediaPmError::Workflow(format!("invalid tool requirement for {tool_id}: {e}"))
+        })?;
+
+        // Explicit entry
+        explicit_entries.entry(tool_id.clone()).or_insert_with(|| ProvisionEntry {
+            tool_id: tool_id.clone(),
+            tool_requirement: req.clone(),
+            kind: EntryKind::Explicit,
+        });
+
+        // Dependency entries — one per dep, with resolved version spec
+        for (dep_id, dep_spec) in &req.dependencies {
+            let resolved_spec = resolve_dep_version_spec(dep_spec, dep_id, &global_reqs)?;
+            let dep_req = ToolRequirement {
+                version_spec: resolved_spec,
+                dependencies: BTreeMap::new(),
+                ..Default::default()
+            };
+            dep_entries.push(ProvisionEntry {
+                tool_id: dep_id.clone(),
+                tool_requirement: dep_req,
+                kind: EntryKind::Dep { dependent: tool_id.clone() },
+            });
+        }
+    }
+
+    // Dep entries first (provision deps before dependents), then explicit
+    // Dedup consecutive entries with same (tool_id, version_spec)
+    let mut all_entries: Vec<ProvisionEntry> = dep_entries;
+    all_entries.extend(explicit_entries.into_values());
+    all_entries.dedup_by(|a, b| {
+        a.tool_id == b.tool_id && a.tool_requirement.version_spec == b.tool_requirement.version_spec
+    });
+
+    Ok(all_entries)
+}
+
+/// Build composite canonical_version from bare version and same-step dep
+/// version pairs. Dep identifiers are bare dep_ids (not PKeys), sorted
+/// alphabetically for determinism.
+///
+/// Format: `<bare>;<dep_id_1>:<dep_ver_1>;<dep_id_2>:<dep_ver_2>;...`
+fn composite_canonical_version(bare: &str, dep_versions: &[(&str, &str)]) -> String {
+    if dep_versions.is_empty() {
+        return bare.to_string();
+    }
+    let mut sorted: Vec<(&str, &str)> = dep_versions.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let suffix: String = sorted.iter().map(|(dep_id, ver)| format!(";{dep_id}:{ver}")).collect();
+    format!("{bare}{suffix}")
+}
+
+/// Collect same-step dep_ids for a given entry (returns bare dep_ids).
+fn collect_same_step_dep_ids(
+    tool_id: &str,
+    tool_req: &ToolRequirement,
+    known_dep_type: fn(&str, &str) -> Option<DependencyType>,
+) -> Vec<String> {
+    tool_req
+        .dependencies
+        .keys()
+        .filter_map(|dep_id| {
+            if !known_dep_type(tool_id, dep_id)
+                .is_some_and(|t| matches!(t, DependencyType::SameStep | DependencyType::Both))
+            {
+                return None;
+            }
+            Some(dep_id.clone())
+        })
+        .collect()
 }
 
 /// Runs the full tool-reconciliation cycle for the current workspace.
@@ -199,8 +322,14 @@ pub(crate) async fn reconcile_desired_tools(
         .map(ToolDownloadCache::from_cache)
         .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
 
+    // Build provisioning entries and in-memory live state index for
+    // O(1) skip checking across entries. Must happen before the progress
+    // bar setup since the bar total uses entries.len().
+    let entries = build_provisioning_entries(desired_tools)?;
+    let mut live_state = index_managed_tools(&state.managed_tools);
+
     // Progress bar for the per-tool provisioning loop.
-    let total_tools = desired_tools.len() as u64;
+    let total_tools = entries.len() as u64;
     let (owned_group, pb): (Option<ProgressGroup>, Arc<dyn ProgressBarApi>) =
         if let Some(pg) = progress_group {
             (None, pg.add_bar(total_tools, "syncing tools"))
@@ -222,7 +351,9 @@ pub(crate) async fn reconcile_desired_tools(
     let used_tool_ids = compute_used_tool_ids(desired_tools);
 
     let mut pruned_tools: usize = 0;
-    for (_i, (tool_id, tool_value)) in desired_tools.iter().enumerate() {
+    for entry in &entries {
+        let tool_id = &entry.tool_id;
+        let tool_req = &entry.tool_requirement;
         let is_used = used_tool_ids.contains(tool_id.as_str());
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
@@ -235,18 +366,16 @@ pub(crate) async fn reconcile_desired_tools(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            report.tool_records.insert(
-                tool_id.clone(),
-                ToolRegistryEntry {
-                    version: String::new(),
-                    canonical_version: String::new(),
-                    content_map_hash: None,
-                    deployed_at: now,
-                    resolved_tag: String::new(),
-                    resolved_version: String::new(),
-                    resolved_vcs_hash: String::new(),
-                },
-            );
+            report.tool_records.push(ToolRegistryEntry {
+                tool_id: tool_id.clone(),
+                version: String::new(),
+                canonical_version: String::new(),
+                content_map_hash: String::new(),
+                deployed_at: now,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            });
             if !generated_doc.tools.contains_key(tool_id) {
                 generated_doc.tools.insert(
                     tool_id.clone(),
@@ -272,27 +401,26 @@ pub(crate) async fn reconcile_desired_tools(
         }
 
         // --- Spec-based skip: if desired spec is already satisfied, skip. ---
-        let tool_req = serde_json::from_value::<ToolRequirement>(tool_value.clone()).ok();
-        if let Some(req) = &tool_req {
-            if req.version_spec != VersionSpec::Latest && req.version_spec != VersionSpec::Inherit {
-                if let Some(entry) = state.managed_tools.get(tool_id) {
-                    if spec_matches_entry(
-                        &req.version_spec,
-                        &entry.resolved_tag,
-                        &entry.resolved_version,
-                        &entry.resolved_vcs_hash,
-                    ) {
-                        // Already have the desired version — skip provisioning.
-                        for (key, spec) in &generated_doc.tools {
-                            if spec.name == *tool_id {
-                                tool_runtimes.insert(key.clone(), spec.runtime.clone());
-                                break;
-                            }
+        if tool_req.version_spec != VersionSpec::Latest
+            && tool_req.version_spec != VersionSpec::Inherit
+        {
+            if let Some(entry) = state.managed_tools.iter().find(|e| e.tool_id == *tool_id) {
+                if spec_matches_entry(
+                    &tool_req.version_spec,
+                    &entry.resolved_tag,
+                    &entry.resolved_version,
+                    &entry.resolved_vcs_hash,
+                ) {
+                    // Already have the desired version — skip provisioning.
+                    for (_, spec) in &generated_doc.tools {
+                        if spec.name == *tool_id {
+                            tool_runtimes.entry(tool_id.clone()).or_insert(spec.runtime.clone());
+                            break;
                         }
-                        report.tools_skipped += 1;
-                        pb.advance(1);
-                        continue;
                     }
+                    report.tools_skipped += 1;
+                    pb.advance(1);
+                    continue;
                 }
             }
         }
@@ -325,55 +453,79 @@ pub(crate) async fn reconcile_desired_tools(
                 resolved_tag_value = resolved_tag.clone();
 
                 // --- Post-resolve validation: verify resolved result matches desired spec ---
-                if let Some(req) = &tool_req {
-                    match &req.version_spec {
-                        VersionSpec::Exact(fields) => {
-                            if let Some(hash) = &fields.vcs_hash {
-                                if resolved_canonical_version != *hash
-                                    && resolved_tag_value != *hash
-                                {
-                                    return Err(MediaPmError::Workflow(format!(
-                                        "tool {tool_id}: requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {resolved_tag_value}"
-                                    )));
-                                }
-                            }
-                            if let Some(tag) = &fields.tag {
-                                if resolved_tag_value != *tag {
-                                    return Err(MediaPmError::Workflow(format!(
-                                        "tool {tool_id}: requested tag {tag} but resolved {resolved_tag_value}"
-                                    )));
-                                }
-                            }
-                            if let Some(ver) = &fields.version {
-                                if human_readable_version != *ver {
-                                    return Err(MediaPmError::Workflow(format!(
-                                        "tool {tool_id}: requested version {ver} but resolved {human_readable_version}"
-                                    )));
-                                }
+                match &tool_req.version_spec {
+                    VersionSpec::Exact(fields) => {
+                        if let Some(hash) = &fields.vcs_hash {
+                            if resolved_canonical_version != *hash && resolved_tag_value != *hash {
+                                return Err(MediaPmError::Workflow(format!(
+                                    "tool {tool_id}: requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {resolved_tag_value}"
+                                )));
                             }
                         }
-                        VersionSpec::Latest => {} // always OK
-                        VersionSpec::Inherit => {
-                            return Err(MediaPmError::Workflow(format!(
-                                "tool {tool_id}: 'inherit' version_spec is only valid for dependencies, not global tool requirements"
-                            )));
+                        if let Some(tag) = &fields.tag {
+                            if resolved_tag_value != *tag {
+                                return Err(MediaPmError::Workflow(format!(
+                                    "tool {tool_id}: requested tag {tag} but resolved {resolved_tag_value}"
+                                )));
+                            }
                         }
+                        if let Some(ver) = &fields.version {
+                            if human_readable_version != *ver {
+                                return Err(MediaPmError::Workflow(format!(
+                                    "tool {tool_id}: requested version {ver} but resolved {human_readable_version}"
+                                )));
+                            }
+                        }
+                    }
+                    VersionSpec::Latest => {} // always OK
+                    VersionSpec::Inherit => {
+                        return Err(MediaPmError::Workflow(format!(
+                            "tool {tool_id}: 'inherit' version_spec is only valid for dependencies, not global tool requirements"
+                        )));
                     }
                 }
                 // --- End post-resolve validation ---
 
-                // Check skip: if state has an entry with the same canonical_version
-                // AND a non-empty content_map_hash, skip provisioning entirely.
-                let should_skip = state.managed_tools.get(tool_id).is_some_and(|existing| {
-                    existing.canonical_version == canonical_version
-                        && existing.content_map_hash.is_some()
+                // Compute expected composite canonical_version for skip check.
+                // For tools with same-step dependencies, include dep versions in composite.
+                let same_step_deps = collect_same_step_dep_ids(
+                    tool_id,
+                    tool_req,
+                    crate::tools::dependency::known_dependency_type,
+                );
+                let dep_versions: Vec<(&str, &str)> = same_step_deps
+                    .iter()
+                    .filter_map(|dep_id| {
+                        let dep_req = tool_req.dependencies.get(dep_id)?;
+                        let dep_group = live_state.get(dep_id.as_str())?;
+                        let matched = dep_group.iter().find(|e| {
+                            !e.content_map_hash.is_empty()
+                                && spec_matches_entry(
+                                    dep_req,
+                                    &e.resolved_tag,
+                                    &e.resolved_version,
+                                    &e.resolved_vcs_hash,
+                                )
+                        })?;
+                        Some((dep_id.as_str(), matched.canonical_version.as_str()))
+                    })
+                    .collect();
+                let expected_composite =
+                    composite_canonical_version(&canonical_version, &dep_versions);
+
+                // Check skip: does live_state[tool_id] have any ACTIVE entry with
+                // canonical_version == expected_composite? Filter to only non-empty hashes.
+                let should_skip = live_state.get(tool_id.as_str()).is_some_and(|entries| {
+                    entries.iter().any(|e| {
+                        !e.content_map_hash.is_empty() && e.canonical_version == expected_composite
+                    })
                 });
 
                 if should_skip {
                     PreResolveOutcome::Skip {
                         name: tool_id.clone(),
                         human_readable_version: human_readable_version.clone(),
-                        version: canonical_version,
+                        version: expected_composite.clone(),
                         metadata_cached: _metadata_cached,
                         metadata_fetch_count: _metadata_fetch_count,
                         resolved_tag: resolved_tag.clone(),
@@ -408,9 +560,9 @@ pub(crate) async fn reconcile_desired_tools(
         if was_skip {
             // Skipped tools still need env var entries. Reconstruct runtime
             // from the existing spec in the generated document.
-            for (key, spec) in &generated_doc.tools {
+            for (_, spec) in &generated_doc.tools {
                 if spec.name == *tool_id {
-                    tool_runtimes.insert(key.clone(), spec.runtime.clone());
+                    tool_runtimes.entry(tool_id.clone()).or_insert(spec.runtime.clone());
                     break;
                 }
             }
@@ -423,12 +575,12 @@ pub(crate) async fn reconcile_desired_tools(
             Ok(Some(payload)) => {
                 // Compute content-addressed hash from content_map before it's
                 // moved into build_tool_spec.
-                let content_map_hash = if payload.content_map.is_empty() {
-                    None
+                let content_map_hash: String = if payload.content_map.is_empty() {
+                    String::new()
                 } else {
                     let json = serde_json::to_string(&payload.content_map)
                         .expect("content_map serializes to JSON");
-                    Some(format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex()))
+                    format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
                 };
 
                 // Determine ffmpeg slot limits (default for now; overrides
@@ -457,18 +609,20 @@ pub(crate) async fn reconcile_desired_tools(
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                report.tool_records.insert(
-                    tool_id.clone(),
-                    ToolRegistryEntry {
-                        version: payload.human_readable_version.clone(),
-                        canonical_version: payload.canonical_version.clone(),
-                        content_map_hash: content_map_hash.clone(),
-                        deployed_at: now,
-                        resolved_tag: resolved_tag_value.clone(),
-                        resolved_version: String::new(),
-                        resolved_vcs_hash: String::new(),
-                    },
-                );
+                report.tool_records.push(ToolRegistryEntry {
+                    tool_id: tool_id.clone(),
+                    version: payload.human_readable_version.clone(),
+                    canonical_version: payload.canonical_version.clone(),
+                    content_map_hash: content_map_hash.clone(),
+                    deployed_at: now,
+                    resolved_tag: resolved_tag_value.clone(),
+                    resolved_version: String::new(),
+                    resolved_vcs_hash: String::new(),
+                });
+
+                // Update live_state for subsequent entries in the same sync.
+                let entry_for_live = report.tool_records.last().unwrap().clone();
+                live_state.entry(tool_id.clone()).or_default().push(entry_for_live.clone());
 
                 // Inject inherited_env_vars from requirement config.
                 let inherited = inherited_env_vars.get(tool_id).cloned().unwrap_or_default();
@@ -477,8 +631,8 @@ pub(crate) async fn reconcile_desired_tools(
                 full_runtime.inherited_env_vars = inherited;
 
                 // Use content-addressed key: "{name}@{hash}".
-                let tool_key = if let Some(ref hash) = content_map_hash {
-                    format!("{}@{}", tool_id, hash)
+                let tool_key = if !content_map_hash.is_empty() {
+                    format!("{}@{}", tool_id, content_map_hash)
                 } else {
                     tool_id.to_string()
                 };
@@ -508,8 +662,8 @@ pub(crate) async fn reconcile_desired_tools(
                     }
                 }
 
-                generated_doc.tools.insert(tool_key.clone(), spec);
-                tool_runtimes.insert(tool_key.clone(), full_runtime);
+                generated_doc.tools.entry(tool_key.clone()).or_insert(spec);
+                tool_runtimes.entry(tool_id.clone()).or_insert(full_runtime);
             }
             Ok(None) => {
                 // No payload fetched (internal launcher, no catalog entry,
@@ -530,22 +684,24 @@ pub(crate) async fn reconcile_desired_tools(
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                report.tool_records.insert(
-                    tool_id.clone(),
-                    ToolRegistryEntry {
-                        version: format!(
-                            "{}+{}",
-                            env!("CARGO_PKG_VERSION"),
-                            crate::global::MEDIAPM_GIT_HASH
-                        ),
-                        canonical_version: resolved_canonical_version.clone(),
-                        content_map_hash: None,
-                        deployed_at: now,
-                        resolved_tag: resolved_tag_value.clone(),
-                        resolved_version: String::new(),
-                        resolved_vcs_hash: String::new(),
-                    },
-                );
+                report.tool_records.push(ToolRegistryEntry {
+                    tool_id: tool_id.clone(),
+                    version: format!(
+                        "{}+{}",
+                        env!("CARGO_PKG_VERSION"),
+                        crate::global::MEDIAPM_GIT_HASH
+                    ),
+                    canonical_version: resolved_canonical_version.clone(),
+                    content_map_hash: String::new(),
+                    deployed_at: now,
+                    resolved_tag: resolved_tag_value.clone(),
+                    resolved_version: String::new(),
+                    resolved_vcs_hash: String::new(),
+                });
+
+                // Update live_state for subsequent entries in the same sync.
+                let entry_for_live = report.tool_records.last().unwrap().clone();
+                live_state.entry(tool_id.clone()).or_default().push(entry_for_live.clone());
 
                 if !already_exists && !is_builtin_code {
                     report.tools_added += 1;
@@ -622,6 +778,7 @@ mod tests {
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
     use crate::config::ToolRequirement;
+    use crate::tools::dependency::known_dependency_type;
     use serde_json;
 
     use super::*;
@@ -787,22 +944,16 @@ mod tests {
 
         // State with matching canonical_version and content_map_hash → triggers skip.
         let mut state = MediaPmState::default();
-        state.managed_tools.insert(
-            "media-tagger".to_string(),
-            ToolRegistryEntry {
-                version: format!(
-                    "{}+{}",
-                    env!("CARGO_PKG_VERSION"),
-                    crate::global::MEDIAPM_GIT_HASH
-                ),
-                canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
-                content_map_hash: Some("blake3:abc".to_string()),
-                deployed_at: 0,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
-            },
-        );
+        state.managed_tools.push(ToolRegistryEntry {
+            tool_id: "media-tagger".to_string(),
+            version: format!("{}+{}", env!("CARGO_PKG_VERSION"), crate::global::MEDIAPM_GIT_HASH),
+            canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
+            content_map_hash: "blake3:abc".to_string(),
+            deployed_at: 0,
+            resolved_tag: String::new(),
+            resolved_version: String::new(),
+            resolved_vcs_hash: String::new(),
+        });
 
         // Desired tools with media-tagger.
         let mut desired_tools = BTreeMap::new();
@@ -875,18 +1026,16 @@ mod tests {
         // State with a different canonical_version so the skip path does not
         // fire — forcing a fresh resolve and a new tool_key computation.
         let mut state = MediaPmState::default();
-        state.managed_tools.insert(
-            "media-tagger".to_string(),
-            ToolRegistryEntry {
-                version: "old-version".to_string(),
-                canonical_version: "old-canonical".to_string(),
-                content_map_hash: None,
-                deployed_at: 0,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
-            },
-        );
+        state.managed_tools.push(ToolRegistryEntry {
+            tool_id: "media-tagger".to_string(),
+            version: "old-version".to_string(),
+            canonical_version: "old-canonical".to_string(),
+            content_map_hash: String::new(),
+            deployed_at: 0,
+            resolved_tag: String::new(),
+            resolved_version: String::new(),
+            resolved_vcs_hash: String::new(),
+        });
 
         // Desired tools with media-tagger.
         let mut desired_tools = BTreeMap::new();
@@ -1104,5 +1253,300 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("circular"));
+    }
+
+    // Phase 7 — composite_canonical_version tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn composite_canonical_version_no_deps() {
+        assert_eq!(composite_canonical_version("v1", &[]), "v1");
+    }
+
+    #[test]
+    fn composite_canonical_version_single_dep() {
+        let deps = [("ffmpeg", "ffmpeg-v7.1")];
+        assert_eq!(composite_canonical_version("yt-dlp-v2", &deps), "yt-dlp-v2;ffmpeg:ffmpeg-v7.1");
+    }
+
+    #[test]
+    fn composite_canonical_version_multi_dep_alphabetical() {
+        let deps = [("deno", "deno-v2.0"), ("ffmpeg", "ffmpeg-v7.1")];
+        assert_eq!(
+            composite_canonical_version("yt-dlp-v2", &deps),
+            "yt-dlp-v2;deno:deno-v2.0;ffmpeg:ffmpeg-v7.1"
+        );
+    }
+
+    // Phase 7 — build_provisioning_entries tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn build_provisioning_entries_empty() {
+        let entries = build_provisioning_entries(&BTreeMap::new()).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn build_provisioning_entries_single_no_deps() {
+        let mut desired = BTreeMap::new();
+        desired.insert(
+            "ffmpeg".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: VersionSpec::Latest,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let entries = build_provisioning_entries(&desired).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tool_id, "ffmpeg");
+        assert!(matches!(entries[0].kind, EntryKind::Explicit));
+    }
+
+    #[test]
+    fn build_provisioning_entries_with_deps() {
+        let mut desired = BTreeMap::new();
+        let mut deps = BTreeMap::new();
+        deps.insert(
+            "ffmpeg".to_string(),
+            VersionSpec::Exact(VersionSpecFields {
+                tag: Some("v7.1".to_string()),
+                version: None,
+                vcs_hash: None,
+            }),
+        );
+        desired.insert(
+            "yt-dlp".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: VersionSpec::Latest,
+                dependencies: deps,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let entries = build_provisioning_entries(&desired).unwrap();
+        assert_eq!(entries.len(), 2);
+        // Dep entry should come first (dep-first sort)
+        assert_eq!(entries[0].tool_id, "ffmpeg");
+        assert!(matches!(entries[0].kind, EntryKind::Dep { .. }));
+        assert_eq!(entries[1].tool_id, "yt-dlp");
+        assert!(matches!(entries[1].kind, EntryKind::Explicit));
+    }
+
+    #[test]
+    fn build_provisioning_entries_dedup_same_spec() {
+        let mut desired = BTreeMap::new();
+        let deps = BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Latest)]);
+        desired.insert(
+            "yt-dlp".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: VersionSpec::Latest,
+                dependencies: deps.clone(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        desired.insert(
+            "rsgain".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: VersionSpec::Latest,
+                dependencies: deps,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let entries = build_provisioning_entries(&desired).unwrap();
+        // Two same-spec ffmpeg dep entries dedup → total 3
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.iter().filter(|e| e.tool_id == "ffmpeg").count(), 1);
+    }
+
+    #[test]
+    fn build_provisioning_entries_different_spec_no_dedup() {
+        let mut desired = BTreeMap::new();
+        let mut deps_yt = BTreeMap::new();
+        deps_yt.insert(
+            "ffmpeg".to_string(),
+            VersionSpec::Exact(VersionSpecFields {
+                tag: Some("v7.1".to_string()),
+                version: None,
+                vcs_hash: None,
+            }),
+        );
+        let mut deps_rsgain = BTreeMap::new();
+        deps_rsgain.insert(
+            "ffmpeg".to_string(),
+            VersionSpec::Exact(VersionSpecFields {
+                tag: Some("v6.0".to_string()),
+                version: None,
+                vcs_hash: None,
+            }),
+        );
+        desired.insert(
+            "yt-dlp".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: VersionSpec::Latest,
+                dependencies: deps_yt,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        desired.insert(
+            "rsgain".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: VersionSpec::Latest,
+                dependencies: deps_rsgain,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let entries = build_provisioning_entries(&desired).unwrap();
+        // Two different ffmpeg specs → NO dedup, total = 4
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.iter().filter(|e| e.tool_id == "ffmpeg").count(), 2);
+    }
+
+    // Phase 7 — collect_same_step_dep_ids tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn collect_same_step_dep_ids_empty_deps() {
+        let req = ToolRequirement::default();
+        let ids = collect_same_step_dep_ids("ffmpeg", &req, known_dependency_type);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn collect_same_step_dep_ids_yt_dlp_ffmpeg() {
+        let deps = BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Latest)]);
+        let req = ToolRequirement {
+            version_spec: VersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let ids = collect_same_step_dep_ids("yt-dlp", &req, known_dependency_type);
+        assert_eq!(ids, vec!["ffmpeg"]);
+    }
+
+    #[test]
+    fn collect_same_step_dep_ids_rsgain_ffmpeg() {
+        let deps = BTreeMap::from([("ffmpeg".to_string(), VersionSpec::Latest)]);
+        let req = ToolRequirement {
+            version_spec: VersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        // rsgain has CrossStep dep on ffmpeg → NOT in same-step list
+        let ids = collect_same_step_dep_ids("rsgain", &req, known_dependency_type);
+        assert!(ids.is_empty());
+    }
+
+    // Phase 7 — index_managed_tools tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn index_managed_tools_empty() {
+        let map = index_managed_tools(&[]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn index_managed_tools_single_tool() {
+        let entries = vec![ToolRegistryEntry {
+            tool_id: "ffmpeg".to_string(),
+            version: String::new(),
+            canonical_version: "v7.1".to_string(),
+            content_map_hash: String::new(),
+            deployed_at: 0,
+            resolved_tag: String::new(),
+            resolved_version: String::new(),
+            resolved_vcs_hash: String::new(),
+        }];
+        let map = index_managed_tools(&entries);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["ffmpeg"].len(), 1);
+    }
+
+    #[test]
+    fn index_managed_tools_multi_instance() {
+        let entries = vec![
+            ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: String::new(),
+                canonical_version: "ffmpeg-v7.1".to_string(),
+                content_map_hash: String::new(),
+                deployed_at: 0,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+            ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: String::new(),
+                canonical_version: "ffmpeg-v6.0".to_string(),
+                content_map_hash: String::new(),
+                deployed_at: 0,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+        ];
+        let map = index_managed_tools(&entries);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["ffmpeg"].len(), 2);
+    }
+
+    // Phase 7 — Inactive tool regression tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn regression_inactive_index_managed_tools() {
+        // An entry with empty content_map_hash is still indexed (the inactive
+        // filter is applied at skip-check time, not at index time).
+        let entries = vec![ToolRegistryEntry {
+            tool_id: "ffmpeg".to_string(),
+            version: String::new(),
+            canonical_version: "ffmpeg-v7.1".to_string(),
+            content_map_hash: String::new(), // inactive
+            deployed_at: 0,
+            resolved_tag: String::new(),
+            resolved_version: String::new(),
+            resolved_vcs_hash: String::new(),
+        }];
+        let map = index_managed_tools(&entries);
+        assert_eq!(map.len(), 1, "inactive entry should still be indexed");
+        assert_eq!(map["ffmpeg"].len(), 1);
+    }
+
+    #[test]
+    fn regression_active_only_skips() {
+        // Two entries with the same canonical_version and non-empty
+        // content_map_hash → both active, skip check matches.
+        let entries = vec![
+            ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: String::new(),
+                canonical_version: "ffmpeg-v7.1".to_string(),
+                content_map_hash: "blake3:abc".to_string(),
+                deployed_at: 0,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+            ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: String::new(),
+                canonical_version: "ffmpeg-v7.1".to_string(),
+                content_map_hash: "blake3:def".to_string(),
+                deployed_at: 0,
+                resolved_tag: String::new(),
+                resolved_version: String::new(),
+                resolved_vcs_hash: String::new(),
+            },
+        ];
+        let map = index_managed_tools(&entries);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["ffmpeg"].len(), 2);
     }
 }
