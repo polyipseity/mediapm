@@ -94,12 +94,12 @@ enum EntryKind {
 /// "used". Additional tools that appear only as dependencies of configured
 /// tools are also included (transitive closure).
 ///
-/// Pruning only removes `content_map` entries for older versions of tools
-/// that are superseded by a newer content-addressed key (the old key is
-/// removed from the generated doc). A tool NOT in this set also has its
-/// filesystem payloads removed via `retain_only_tool_dirs`. Under normal
-/// operation every desired tool is in this set, so the payload-prune
-/// branch never fires for actively-configured tools.
+/// Pruning clears the `content_map` of older-version entries in the
+/// generated conductor document (the entry itself is preserved). A tool
+/// NOT in this set has its filesystem payloads removed via
+/// `retain_only_tool_dirs`. Under normal operation every desired tool is
+/// in this set, so the filesystem-prune branch never fires for
+/// actively-configured tools.
 #[must_use]
 pub(crate) fn compute_used_tool_ids(
     desired_tools: &BTreeMap<String, serde_json::Value>,
@@ -446,8 +446,9 @@ pub(crate) async fn reconcile_desired_tools(
         .or(progress_group)
         .expect("at least one progress group available");
 
-    // Compute used tool set: tools that are actually referenced by workflow
-    // steps or their transitive dependencies.
+    // Compute used tool set: desired_tools keys + transitive dependencies.
+    // Workflow steps are never consulted — the config's `tools` section is
+    // the sole seed source.
     let used_tool_ids = compute_used_tool_ids(desired_tools);
 
     let mut pruned_tools: usize = 0;
