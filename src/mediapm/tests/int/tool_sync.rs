@@ -758,3 +758,210 @@ async fn sync_logical_requires_sync_on_composite_mismatch() -> Result<(), mediap
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Resolved-field population (resolved_tag / resolved_version / resolved_vcs_hash)
+// ---------------------------------------------------------------------------
+//
+// These tests validate the Phase 3 wiring: the provider's resolved metadata
+// is persisted into `state.json` on provision, backfilled in place for
+// skipped tools, and matched by exact version specs. Media-tagger is used
+// throughout because it resolves without network.
+
+/// Sync persists provider-resolved fields into the managed-tool registry.
+///
+/// Uses media-tagger (builtin launcher, no network). Expected per the
+/// provider matrix: `resolved_tag` stays `None` (no upstream tag —
+/// why-empty invariant), `resolved_version` is the mediapm crate version,
+/// and `resolved_vcs_hash` is the mediapm git hash.
+#[tokio::test]
+async fn sync_populates_resolved_fields_in_state() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+
+    service.sync_tools().await?;
+
+    let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
+    let state: MediaPmState =
+        serde_json::from_slice(&bytes).expect("state.json should deserialize");
+    let entry = state
+        .managed_tools
+        .iter()
+        .find(|e| e.tool_id == "media-tagger")
+        .expect("media-tagger entry should exist after sync");
+
+    // WHY: media-tagger is a builtin launcher shipped inside mediapm; there
+    // is no upstream tag that identifies the artifact set.
+    assert_eq!(entry.resolved_tag, None, "media-tagger has no upstream tag");
+    assert_eq!(
+        entry.resolved_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "resolved_version should be the mediapm crate version"
+    );
+    assert_eq!(
+        entry.resolved_vcs_hash.as_deref(),
+        Some(mediapm::MEDIAPM_GIT_HASH),
+        "resolved_vcs_hash should be the mediapm git hash"
+    );
+    assert_eq!(
+        entry.canonical_version,
+        mediapm::MEDIAPM_GIT_HASH,
+        "canonical_version should equal MEDIAPM_GIT_HASH for builtin launcher"
+    );
+    Ok(())
+}
+
+/// Skipped tools get `None` resolved fields backfilled in place from fresh
+/// provider metadata, while identity fields are preserved.
+///
+/// Seeds state.json with a media-tagger entry whose resolved fields are all
+/// `None` plus a non-empty content_map_hash (so the skip check fires). After
+/// re-sync the resolved fields are filled, but `content_map_hash`,
+/// `deployed_at`, and `version` are untouched — proving no re-provision.
+#[tokio::test]
+async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+
+    // Seed state.json with a media-tagger entry that matches the skip check
+    // (non-empty content_map_hash + canonical_version == MEDIAPM_GIT_HASH)
+    // but has empty resolved fields.
+    let state_path = service.paths().mediapm_state_json.clone();
+    std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
+        .expect("create state parent dir");
+    let mut state = MediaPmState::default();
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "media-tagger".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
+        content_map_hash: "blake3:abc".to_string(),
+        deployed_at: 42,
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
+    });
+    let bytes = serde_json::to_vec(&state).expect("state serializes");
+    std::fs::write(&state_path, bytes).expect("write seeded state");
+
+    service.sync_tools().await?;
+
+    let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
+    let state: MediaPmState =
+        serde_json::from_slice(&bytes).expect("state.json should deserialize");
+    let entry = state
+        .managed_tools
+        .iter()
+        .find(|e| e.tool_id == "media-tagger")
+        .expect("media-tagger entry should exist after sync");
+
+    // Backfilled resolved fields (why-empty preserved for tag).
+    assert_eq!(entry.resolved_tag, None, "why-empty tag must stay None");
+    assert_eq!(
+        entry.resolved_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "backfilled resolved_version should be the mediapm crate version"
+    );
+    assert_eq!(
+        entry.resolved_vcs_hash.as_deref(),
+        Some(mediapm::MEDIAPM_GIT_HASH),
+        "backfilled resolved_vcs_hash should be the mediapm git hash"
+    );
+
+    // Identity fields preserved — skip path never re-provisions.
+    assert_eq!(entry.content_map_hash, "blake3:abc", "content_map_hash must be preserved");
+    assert_eq!(entry.deployed_at, 42, "deployed_at must be preserved");
+    assert_eq!(entry.version, "seeded-version", "version must be preserved");
+    assert_eq!(
+        entry.canonical_version,
+        mediapm::MEDIAPM_GIT_HASH,
+        "canonical_version must be preserved"
+    );
+    Ok(())
+}
+
+/// An exact version spec whose fields match stored resolved fields skips the
+/// tool instead of re-provisioning (regression: `spec_matches_entry` with
+/// `None` stored fields never matched, forcing re-provision).
+///
+/// Seeds a media-tagger entry with `Some` resolved fields matching an
+/// `Exact { version, vcs_hash }` spec. Sync must skip: `added_tools == 0`,
+/// and `deployed_at`/`version` stay at seeded values (no new record).
+#[tokio::test]
+async fn sync_exact_version_spec_skips_when_stored_fields_match()
+-> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    runtime.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement {
+            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                vcs_hash: Some(mediapm::MEDIAPM_GIT_HASH.to_string()),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                tag: None,
+            }),
+            ..Default::default()
+        },
+    );
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+
+    // Seed state.json with matching resolved fields.
+    let state_path = service.paths().mediapm_state_json.clone();
+    std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
+        .expect("create state parent dir");
+    let mut state = MediaPmState::default();
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "media-tagger".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
+        content_map_hash: "blake3:abc".to_string(),
+        deployed_at: 42,
+        resolved_tag: None,
+        resolved_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        resolved_vcs_hash: Some(mediapm::MEDIAPM_GIT_HASH.to_string()),
+    });
+    let bytes = serde_json::to_vec(&state).expect("state serializes");
+    std::fs::write(&state_path, bytes).expect("write seeded state");
+
+    let summary = service.sync_tools().await?;
+
+    assert_eq!(
+        summary.added_tools, 0,
+        "exact spec matching stored fields must skip, not re-provision"
+    );
+    let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
+    let state: MediaPmState =
+        serde_json::from_slice(&bytes).expect("state.json should deserialize");
+    let entry = state
+        .managed_tools
+        .iter()
+        .find(|e| e.tool_id == "media-tagger")
+        .expect("media-tagger entry should exist after sync");
+
+    // No re-provision: identity and resolved fields unchanged.
+    assert_eq!(entry.deployed_at, 42, "deployed_at must be preserved on skip");
+    assert_eq!(entry.version, "seeded-version", "version must be preserved on skip");
+    assert_eq!(
+        entry.resolved_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "stored resolved_version must be preserved on skip"
+    );
+    assert_eq!(
+        entry.resolved_vcs_hash.as_deref(),
+        Some(mediapm::MEDIAPM_GIT_HASH),
+        "stored resolved_vcs_hash must be preserved on skip"
+    );
+    Ok(())
+}

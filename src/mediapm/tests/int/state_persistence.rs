@@ -485,3 +485,116 @@ fn state_json_always_writes_to_disk() {
         "state.json mtime must advance even when content is identical (always-write policy)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Resolved-field schema: Option<String> (empty = null, never "")
+// ---------------------------------------------------------------------------
+
+/// V3 state JSON round-trips resolved fields as `Option<String>`.
+///
+/// Verifies the no-backwards-compat schema contract:
+/// - `Some(value)` serializes as the value and round-trips
+/// - `None` serializes as `null` (never `""`)
+/// - missing fields deserialize as `None`
+/// - `""` is rejected at load (empty string is invalid under the new schema)
+#[test]
+fn state_v3_roundtrip_resolved_options() {
+    // `Some` → value, `None` → `null`.
+    let state = MediaPmState {
+        version: 3,
+        managed_files: BTreeMap::new(),
+        managed_tools: vec![ToolRegistryEntry {
+            tool_id: "yt-dlp".to_string(),
+            version: "2025.07.15".to_string(),
+            canonical_version: "2025.07.15".to_string(),
+            content_map_hash: "blake3:abc".to_string(),
+            deployed_at: 1_700_000_000,
+            resolved_tag: Some("2025.07.15".to_string()),
+            resolved_version: Some("2025.07.15".to_string()),
+            resolved_vcs_hash: Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".to_string()),
+        }],
+        workflow_states: BTreeMap::new(),
+    };
+
+    let value = to_json_value(&state).expect("serialization must succeed");
+    let tools = value["managed_tools"].as_array().expect("managed_tools array");
+    let entry = &tools[0];
+    assert_eq!(entry["resolved_tag"], json!("2025.07.15"));
+    assert_eq!(entry["resolved_version"], json!("2025.07.15"));
+    assert_eq!(entry["resolved_vcs_hash"], json!("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"));
+
+    let decoded = from_json_value(value).expect("deserialization must succeed");
+    let decoded_entry = &decoded.managed_tools[0];
+    assert_eq!(decoded_entry.resolved_tag.as_deref(), Some("2025.07.15"));
+    assert_eq!(decoded_entry.resolved_version.as_deref(), Some("2025.07.15"));
+    assert_eq!(
+        decoded_entry.resolved_vcs_hash.as_deref(),
+        Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0")
+    );
+
+    // `None` → `null` (never `""`), and missing fields → `None`.
+    let state_none = MediaPmState {
+        version: 3,
+        managed_files: BTreeMap::new(),
+        managed_tools: vec![ToolRegistryEntry {
+            tool_id: "ffmpeg".to_string(),
+            version: String::new(),
+            canonical_version: "autobuild-2025-07-15-12-00".to_string(),
+            content_map_hash: "blake3:def".to_string(),
+            deployed_at: 0,
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
+        }],
+        workflow_states: BTreeMap::new(),
+    };
+    let value_none = to_json_value(&state_none).expect("serialization must succeed");
+    let entry_none = &value_none["managed_tools"][0];
+    assert_eq!(entry_none["resolved_tag"], json!(null));
+    assert_eq!(entry_none["resolved_version"], json!(null));
+    assert_eq!(entry_none["resolved_vcs_hash"], json!(null));
+
+    let decoded_none = from_json_value(value_none).expect("deserialization must succeed");
+    assert_eq!(decoded_none.managed_tools[0].resolved_tag, None);
+    assert_eq!(decoded_none.managed_tools[0].resolved_version, None);
+    assert_eq!(decoded_none.managed_tools[0].resolved_vcs_hash, None);
+
+    // Missing fields deserialize as `None`.
+    let missing_json = json!({
+        "version": 3,
+        "managed_files": {},
+        "managed_tools": [{
+            "tool_id": "ffmpeg",
+            "version": "",
+            "canonical_version": "autobuild-2025-07-15-12-00",
+            "content_map_hash": "blake3:def",
+            "deployed_at": 0
+        }],
+        "workflow_states": {}
+    });
+    let decoded_missing = from_json_value(missing_json).expect("missing fields deserialize");
+    assert_eq!(decoded_missing.managed_tools[0].resolved_tag, None);
+    assert_eq!(decoded_missing.managed_tools[0].resolved_version, None);
+    assert_eq!(decoded_missing.managed_tools[0].resolved_vcs_hash, None);
+
+    // `""` is rejected at load — invalid under the no-backwards-compat schema.
+    let empty_json = json!({
+        "version": 3,
+        "managed_files": {},
+        "managed_tools": [{
+            "tool_id": "ffmpeg",
+            "version": "",
+            "canonical_version": "autobuild-2025-07-15-12-00",
+            "content_map_hash": "blake3:def",
+            "deployed_at": 0,
+            "resolved_tag": "",
+            "resolved_version": "",
+            "resolved_vcs_hash": ""
+        }],
+        "workflow_states": {}
+    });
+    assert!(
+        from_json_value(empty_json).is_err(),
+        "V3 parser must reject empty-string resolved fields"
+    );
+}
