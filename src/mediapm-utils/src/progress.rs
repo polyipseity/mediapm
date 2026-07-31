@@ -891,10 +891,53 @@ mod inner {
     /// [`semantic_truncate_suffix`] receives the custom text directly
     /// without string re-parsing.
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[expect(dead_code)]
     pub struct SuffixComponents {
         /// Custom suffix text appended after the auto-computed RHS.
         pub custom: String,
+    }
+
+    /// Heuristic-parse a combined prefix string into [`PrefixComponents`].
+    ///
+    /// Parsing rules:
+    /// - First whitespace-bounded token = tool_name.
+    /// - Trailing `[phase]` (last bracket pair) = phase inner text.
+    /// - Trailing `digits/digits` after bracket = count.
+    /// - Remainder between tool_name and `[` = version.
+    /// - If no `[` found: tool_name = entire string, rest empty.
+    ///
+    /// This is a best-effort parser used for backward compat and will be
+    /// replaced once all callers provide components directly (Phase 4+).
+    pub fn prefix_components_from_str(s: &str) -> PrefixComponents {
+        let s = s.trim();
+        if s.is_empty() {
+            return PrefixComponents::default();
+        }
+        let tool_name = s.split_whitespace().next().unwrap_or("").to_string();
+        if let Some(bracket_start) = s.rfind('[') {
+            let bracket_end =
+                bracket_start + s[bracket_start..].find(']').map(|i| i + 1).unwrap_or(0);
+            let phase = s[(bracket_start + 1)..(bracket_end - 1)].trim().to_string();
+            let after_bracket = s[bracket_end..].trim();
+            let count =
+                if after_bracket.contains('/') { after_bracket.to_string() } else { String::new() };
+            let between = s[tool_name.len()..bracket_start].trim();
+            // between might contain the count text if it appears before bracket
+            let version = if !between.is_empty() && !between.contains('/') {
+                between.to_string()
+            } else {
+                String::new()
+            };
+            PrefixComponents { tool_name, version, phase, count }
+        } else {
+            // No brackets — entire string is tool name (single word or multi-word).
+            let count = if s.contains('/') {
+                // Last space-separated token that looks like count
+                s.split_whitespace().last().unwrap_or("").to_string()
+            } else {
+                String::new()
+            };
+            PrefixComponents { tool_name, version: String::new(), phase: String::new(), count }
+        }
     }
 
     /// Render [`PrefixComponents`] into the combined prefix display string.
@@ -1020,164 +1063,114 @@ mod inner {
         }
     }
 
-    /// Progressively truncate a raw prefix string (no ANSI escapes) so that
-    /// its visible width fits within `max_width` after accounting for
+    /// Progressively truncate a prefix (built from [`PrefixComponents`]) so
+    /// that its visible width fits within `max_width` after accounting for
     /// [`prefix_overhead`] from `status`.
     ///
     /// Sections are removed in this order:
-    /// 1. Version string (between tool name and `[phase]`)
+    /// 1. Version string
     /// 2. Count/total (`N/M`)
     /// 3. Phase tag (`[phase]`)
-    /// 4. Tool name (first word)
-    /// 5. Hard truncate (keep first `eff_max` chars)
+    /// 4. Tool name (first word, progressively shrunk)
+    /// 5. Hard truncate
+    ///
+    /// No string re-parsing — all component fields come directly from
+    /// [`PrefixComponents`] source data.
     pub(super) fn semantic_truncate_prefix(
-        s: &str,
+        parts: &PrefixComponents,
         max_width: usize,
         status: TrackStatus,
     ) -> String {
-        let s = s.trim_end();
         let oh = prefix_overhead(status);
         let eff_max = max_width.saturating_sub(oh);
 
         // Fast path.
-        let char_count = s.chars().count();
-        if char_count <= eff_max {
-            return s.to_string();
+        let rendered = render_prefix_components(parts);
+        if rendered.chars().count() <= eff_max {
+            return rendered;
         }
 
-        // Parse sections from the original string `s`.
-        let Some(phase_start) = s.rfind('[') else {
-            return s.chars().take(eff_max).collect();
-        };
-        let phase_end = phase_start + s[phase_start..].find(']').map(|i| i + 1).unwrap_or(0);
+        let tool_name = &parts.tool_name;
+        let mut version: &str = &parts.version;
+        let phase: &str = &parts.phase;
+        let mut count: &str = &parts.count;
 
-        let tool_name = s.split_whitespace().next().unwrap_or("").to_string();
+        let version_len = version.chars().count();
+        let count_len = count.chars().count();
+        let phase_len = phase.chars().count();
         let tool_len = tool_name.chars().count();
-        let version_str = s[tool_name.len()..phase_start].trim().to_string();
-        let version_len = version_str.chars().count();
-        let count_str = s[phase_end..].trim().to_string();
-        let count_len = count_str.chars().count();
-        let phase_inner_s = &s[(phase_start + 1)..(phase_end - 1)];
-        let phase_inner_len = phase_inner_s.chars().count();
 
-        // Cumulative base: sections permanently removed when progressive
-        // removal doesn't fit.
-        let mut base = s.to_string();
-
-        // Helper: clone base, shrink a section within it, normalize.
-        // Returns Some(candidate) if it fits after shrink.
-        let try_keep =
-            |b: &str, content: &str, keep: usize, content_len: usize| -> Option<String> {
-                if content.is_empty() || keep >= content_len {
-                    return None;
-                }
-                let mut c = b.to_string();
-                let c_start = c.find(content).unwrap_or(0);
-                let c_end = c_start + content.len();
-                shrink_range_to_budget(&mut c, c_start..c_end, keep, content_len);
-                while c.contains("  ") {
-                    c = c.replace("  ", " ");
-                }
-                c = c.trim_end().to_string();
-                if c.chars().count() <= eff_max { Some(c) } else { None }
-            };
-
-        // Helper: permanently remove a section (keep=0) from base.
-        let remove_section = |b: &mut String, content: &str, content_len: usize| {
-            if content.is_empty() {
-                return;
+        // Helper: build a rendered prefix from individual component strings.
+        let build = |tool: &str, ver: &str, ph: &str, cnt: &str| -> String {
+            let mut s = tool.to_string();
+            if !ver.is_empty() {
+                s.push(' ');
+                s.push_str(ver);
             }
-            let c_start = b.find(content).unwrap_or(0);
-            let c_end = c_start + content.len();
-            shrink_range_to_budget(b, c_start..c_end, 0, content_len);
-            while b.contains("  ") {
-                *b = b.replace("  ", " ");
+            if !ph.is_empty() {
+                s.push_str(" [");
+                s.push_str(ph);
+                s.push(']');
             }
-            *b = b.trim_end().to_string();
+            if !cnt.is_empty() {
+                s.push(' ');
+                s.push_str(cnt);
+            }
+            s
         };
 
-        // 1. Version.
+        // 1. Version: progressively shrink, then try full removal.
         if version_len > 0 {
             for keep in (0..version_len).rev() {
-                if let Some(c) = try_keep(&base, &version_str, keep, version_len) {
-                    return c;
+                let v: String = version.chars().take(keep).collect();
+                let candidate = build(tool_name, &v, phase, count);
+                if candidate.chars().count() <= eff_max {
+                    return candidate;
                 }
             }
-            remove_section(&mut base, &version_str, version_len);
+            version = "";
         }
 
-        // 2. Count.
+        // 2. Count: progressively shrink, then try full removal.
         if count_len > 0 {
             for keep in (0..count_len).rev() {
-                if let Some(c) = try_keep(&base, &count_str, keep, count_len) {
-                    return c;
+                let c: String = count.chars().take(keep).collect();
+                let candidate = build(tool_name, version, phase, &c);
+                if candidate.chars().count() <= eff_max {
+                    return candidate;
                 }
             }
-            remove_section(&mut base, &count_str, count_len);
+            count = "";
         }
 
-        // 3. Phase.
-        if phase_inner_len > 0 {
-            // Try inner text shrinking.
-            for keep in (0..phase_inner_len).rev() {
-                let mut c = base.clone();
-                let ps = c.rfind('[').unwrap_or(0);
-                let pe = ps + c[ps..].find(']').map(|i| i + 1).unwrap_or(0);
-                let inner_range = (ps + 1)..(pe - 1);
-                shrink_range_to_budget(&mut c, inner_range, keep, phase_inner_len);
-                while c.contains("  ") {
-                    c = c.replace("  ", " ");
-                }
-                c = c.trim_end().to_string();
-                if c.chars().count() <= eff_max {
-                    return c;
+        // 3. Phase: progressively shrink inner text, then try full removal.
+        if phase_len > 0 {
+            for keep in (0..phase_len).rev() {
+                let p: String = phase.chars().take(keep).collect();
+                let candidate = build(tool_name, version, &p, count);
+                if candidate.chars().count() <= eff_max {
+                    return candidate;
                 }
             }
-            // Try removing whole bracket.
-            {
-                let mut c = base.clone();
-                let ps = c.rfind('[').unwrap_or(0);
-                let pe = ps + c[ps..].find(']').map(|i| i + 1).unwrap_or(0);
-                shrink_range_to_budget(&mut c, ps..pe, 0, phase_inner_len + 2);
-                while c.contains("  ") {
-                    c = c.replace("  ", " ");
-                }
-                c = c.trim_end().to_string();
-                if c.chars().count() <= eff_max {
-                    return c;
-                }
+            // Full removal (including brackets).
+            let candidate = build(tool_name, version, "", count);
+            if candidate.chars().count() <= eff_max {
+                return candidate;
             }
-            // Permanently remove bracket.
-            let ps = base.rfind('[').unwrap_or(0);
-            let pe = ps + base[ps..].find(']').map(|i| i + 1).unwrap_or(0);
-            shrink_range_to_budget(&mut base, ps..pe, 0, phase_inner_len + 2);
-            while base.contains("  ") {
-                base = base.replace("  ", " ");
-            }
-            base = base.trim_end().to_string();
         }
 
-        // 4. Tool name.
+        // 4. Tool name only: progressively shrink.
         if tool_len > 0 {
             for keep in (0..tool_len).rev() {
-                let mut c = base.clone();
-                let ts = c.find(&tool_name).unwrap_or(0);
-                let te = ts + tool_name.len();
-                shrink_range_to_budget(&mut c, ts..te, keep, tool_len);
-                c = c.trim_start().to_string();
-                while c.contains("  ") {
-                    c = c.replace("  ", " ");
-                }
-                c = c.trim_end().to_string();
-                if c.chars().count() <= eff_max {
-                    return c;
+                let t: String = tool_name.chars().take(keep).collect();
+                if t.chars().count() <= eff_max {
+                    return t;
                 }
             }
-            remove_section(&mut base, &tool_name, tool_len);
         }
 
-        // 5. Hard truncate.
-        base.chars().take(eff_max).collect()
+        // 5. Hard truncate (only reachable for empty tool name).
+        String::new()
     }
 
     /// Progressively truncate a message string (possibly containing ANSI
@@ -1380,6 +1373,8 @@ mod inner {
         label: RwLock<String>,
         prefix: RwLock<String>,
         message: RwLock<String>,
+        prefix_components: RwLock<PrefixComponents>,
+        suffix_components: RwLock<SuffixComponents>,
         status: AtomicU8,
         dirty: AtomicBool,
         disabled: AtomicBool,
@@ -1404,6 +1399,11 @@ mod inner {
                 label: RwLock::new(label.to_string()),
                 prefix: RwLock::new(label.to_string()),
                 message: RwLock::new(String::new()),
+                prefix_components: RwLock::new(PrefixComponents {
+                    tool_name: label.to_string(),
+                    ..Default::default()
+                }),
+                suffix_components: RwLock::new(SuffixComponents { custom: String::new() }),
                 status: AtomicU8::new(0),
                 dirty: AtomicBool::new(true),
                 disabled: AtomicBool::new(false),
@@ -1414,12 +1414,17 @@ mod inner {
         }
 
         fn snapshot(&self) -> TrackSnapshot {
+            let pc = self.prefix_components.read().expect("shared_state prefix_components lock");
+            let sc = self.suffix_components.read().expect("shared_state suffix_components lock");
             TrackSnapshot {
                 position: self.position.load(Ordering::Relaxed),
                 total: self.total.load(Ordering::Relaxed),
                 label: self.label.read().expect("shared_state label lock").clone(),
-                prefix: self.prefix.read().expect("shared_state prefix lock").clone(),
-                message: self.message.read().expect("shared_state message lock").clone(),
+                prefix: render_prefix_components(&pc),
+                prefix_components: pc.clone(),
+                suffix: sc.custom.clone(),
+                suffix_components: sc.clone(),
+                message: sc.custom.clone(),
                 status: match self.status.load(Ordering::Relaxed) {
                     0 => TrackStatus::Active,
                     1 => TrackStatus::Success,
@@ -1466,9 +1471,15 @@ mod inner {
         pub total: u64,
         /// Display label.
         pub label: String,
-        /// Prefix (shown before the bar).
+        /// Rendered prefix (built from [`prefix_components`](Self::prefix_components)).
         pub prefix: String,
-        /// Custom message appended to the right-hand side (empty = none).
+        /// Source components for the prefix.
+        pub prefix_components: PrefixComponents,
+        /// Custom suffix text appended to the auto-computed RHS (empty = none).
+        pub suffix: String,
+        /// Source components for the suffix.
+        pub suffix_components: SuffixComponents,
+        /// Legacy: custom message (same as [`suffix`](Self::suffix)).
         pub message: String,
         /// Current status.
         pub status: TrackStatus,
@@ -1554,30 +1565,95 @@ mod inner {
 
         /// Set the prefix shown before the bar.
         ///
+        /// For backward compat, this parses the string into
+        /// [`PrefixComponents`] using a heuristic. New code should prefer
+        /// [`set_prefix_components`](Self::set_prefix_components).
+        ///
         /// # Panics
         ///
         /// Panics if the shared-state `RwLock` is poisoned.
         pub fn set_prefix(&self, prefix: impl Into<String>) {
             let prefix: String = prefix.into();
+            {
+                let mut pc = self
+                    .state
+                    .prefix_components
+                    .write()
+                    .expect("shared_state prefix_components lock");
+                *pc = prefix_components_from_str(&prefix);
+            }
             (*self.state.prefix.write().expect("shared_state prefix lock")).clone_from(&prefix);
             self.state.dirty.store(true, Ordering::Release);
         }
 
-        /// Set a custom message appended to the auto-computed right-hand side.
+        /// Set prefix components directly (source-data API).
         ///
-        /// The message is appended after a space after the auto-computed
+        /// # Panics
+        ///
+        /// Panics if the shared-state `RwLock` is poisoned.
+        pub fn set_prefix_components(&self, components: PrefixComponents) {
+            {
+                let mut pc = self
+                    .state
+                    .prefix_components
+                    .write()
+                    .expect("shared_state prefix_components lock");
+                *pc = components;
+            }
+            self.state.dirty.store(true, Ordering::Release);
+        }
+
+        /// Set a custom suffix appended to the auto-computed right-hand side.
+        ///
+        /// The suffix is appended after a space after the auto-computed
         /// `{count}/{total} {elapsed} {rate} [{eta}]` text.  When empty
         /// (default), no extra text appears.
         ///
         /// # Panics
         ///
         /// Panics if the shared-state `RwLock` is poisoned.
-        pub fn set_message(&self, message: impl Into<String>) {
+        pub fn set_suffix(&self, suffix: impl Into<String>) {
             if self.state.disabled.load(Ordering::Relaxed) {
                 return; // disabled handle
             }
-            *self.state.message.write().expect("shared_state message lock") = message.into();
+            let suffix: String = suffix.into();
+            {
+                let mut sc = self
+                    .state
+                    .suffix_components
+                    .write()
+                    .expect("shared_state suffix_components lock");
+                *sc = SuffixComponents { custom: suffix.clone() };
+            }
+            *self.state.message.write().expect("shared_state message lock") = suffix;
             self.state.dirty.store(true, Ordering::Release);
+        }
+
+        /// Set suffix components directly (source-data API).
+        ///
+        /// # Panics
+        ///
+        /// Panics if the shared-state `RwLock` is poisoned.
+        pub fn set_suffix_components(&self, components: SuffixComponents) {
+            if self.state.disabled.load(Ordering::Relaxed) {
+                return; // disabled handle
+            }
+            {
+                let mut sc = self
+                    .state
+                    .suffix_components
+                    .write()
+                    .expect("shared_state suffix_components lock");
+                *sc = components;
+            }
+            self.state.dirty.store(true, Ordering::Release);
+        }
+
+        /// Set a custom message appended to the auto-computed right-hand side.
+        ///
+        /// Deprecated: use [`set_suffix`](Self::set_suffix) instead.
+        pub fn set_message(&self, message: impl Into<String>) {
+            self.set_suffix(message);
         }
 
         /// Mark the bar as finished (keeps it visible).
@@ -2081,6 +2157,9 @@ mod inner {
                                     total: 0,
                                     label: String::new(),
                                     prefix: String::new(),
+                                    prefix_components: PrefixComponents::default(),
+                                    suffix: String::new(),
+                                    suffix_components: SuffixComponents { custom: String::new() },
                                     message: String::new(),
                                     status: TrackStatus::Active,
                                     elapsed: Duration::ZERO,
@@ -2189,21 +2268,24 @@ mod inner {
                 TrackStatus::Failed | TrackStatus::Abandoned => 13,
                 _ => 4,
             };
-            let truncated_prefix = semantic_truncate_prefix(
-                &snap.prefix,
-                max_prefix_width(cols).saturating_sub(ansi_overhead),
-                snap.status,
-            );
+            let truncated_prefix = {
+                let comps = prefix_components_from_str(&snap.prefix);
+                semantic_truncate_prefix(
+                    &comps,
+                    max_prefix_width(cols).saturating_sub(ansi_overhead),
+                    snap.status,
+                )
+            };
             let new_prefix = build_prefix(snap.status, &truncated_prefix);
             if new_prefix != *slot.cache.prefix.borrow() {
                 slot.bar.set_prefix(new_prefix.clone());
                 *slot.cache.prefix.borrow_mut() = new_prefix;
             }
-            // Build display message: auto-computed RHS + optional custom message.
-            let display_msg_raw = if snap.message.is_empty() {
+            // Build display message: auto-computed RHS + optional custom suffix.
+            let display_msg_raw = if snap.suffix.is_empty() {
                 msg.clone()
             } else {
-                format!("{}  {}", msg, snap.message)
+                format!("{}  {}", msg, snap.suffix)
             };
             let display_msg = semantic_truncate_message(&display_msg_raw, max_message_width(cols));
             if display_msg != *slot.cache.msg.borrow() {
@@ -3177,6 +3259,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
             total: self.total(),
             label: String::new(),
             prefix: String::new(),
+            prefix_components: crate::progress::inner::PrefixComponents::default(),
+            suffix: String::new(),
+            suffix_components: crate::progress::inner::SuffixComponents { custom: String::new() },
             message: String::new(),
             status: TrackStatus::Active,
             elapsed: recording::RecordingTrackedHandle::snapshot_elapsed(self),
@@ -4297,82 +4382,171 @@ mod tests {
         assert_eq!(s, "hél");
     }
 
+    // Phase 7: delete — old tests with `&str` signature (replaced by
+    // `semantic_truncate_prefix_*` tests below with `&PrefixComponents`).
+    // #[test]
+    // fn semantic_truncate_prefix_already_fits() {
+    //     let result = super::inner::semantic_truncate_prefix(
+    //         "wget [fch] 0/1",
+    //         30,
+    //         super::TrackStatus::Active,
+    //     );
+    //     assert_eq!(result, "wget [fch] 0/1", "no truncation when fits");
+    // }
+    //
+    // #[test]
+    // fn semantic_truncate_prefix_remove_version() {
+    //     let result = super::inner::semantic_truncate_prefix(
+    //         "wget 1.2.3 [fch] 2/5",
+    //         30,
+    //         super::TrackStatus::Active,
+    //     );
+    //     assert_eq!(result, "wget 1.2.3 [fch] 2/5", "version change doesn't apply when fits");
+    //
+    //     let result = super::inner::semantic_truncate_prefix(
+    //         "wget 1.2.3 [fch] 2/5",
+    //         17,
+    //         super::TrackStatus::Active,
+    //     );
+    //     assert_eq!(result, "wget 1. [fch] 2/5", "version shortened by 3 chars");
+    // }
+    //
+    // #[test]
+    // fn semantic_truncate_prefix_remove_version_full() {
+    //     let result = super::inner::semantic_truncate_prefix(
+    //         "wget 1.2.3 [fch] 2/5",
+    //         15,
+    //         super::TrackStatus::Active,
+    //     );
+    //     assert_eq!(result, "wget [fch] 2/5", "version fully removed when excess covers it");
+    // }
+    //
+    // #[test]
+    // fn semantic_truncate_prefix_remove_version_and_count() {
+    //     let result = super::inner::semantic_truncate_prefix(
+    //         "wget 1.2.3 [fch] 2/5",
+    //         11,
+    //         super::TrackStatus::Active,
+    //     );
+    //     assert_eq!(result, "wget [fch]", "version and count removed");
+    // }
+    //
+    // #[test]
+    // fn semantic_truncate_prefix_remove_version_count_phase() {
+    //     let result = super::inner::semantic_truncate_prefix(
+    //         "wget 1.2.3 [fch] 2/5",
+    //         4,
+    //         super::TrackStatus::Active,
+    //     );
+    //     assert_eq!(result, "wget", "tool name survives after version, count, phase removed");
+    // }
+    //
+    // #[test]
+    // fn semantic_truncate_prefix_hard_truncate() {
+    //     let result = super::inner::semantic_truncate_prefix(
+    //         "wget 1.2.3 [fch] 2/5",
+    //         2,
+    //         super::TrackStatus::Active,
+    //     );
+    //     assert_eq!(result, "wg", "hard truncate to 2 chars");
+    // }
+    //
+    // #[test]
+    // fn semantic_truncate_prefix_empty() {
+    //     let result = super::inner::semantic_truncate_prefix("", 30, super::TrackStatus::Active);
+    //     assert_eq!(result, "", "empty prefix stays empty");
+    // }
+    //
+    // #[test]
+    // fn semantic_truncate_prefix_failed_overhead() {
+    //     let result =
+    //         super::inner::semantic_truncate_prefix("wget [fch] 0/1", 8, super::TrackStatus::Failed);
+    //     assert_eq!(result, "wget", "failed overhead accounted");
+    // }
+
+    // ---- semantic_truncate_prefix tests (Phase 3) -----------------------
+
     #[test]
     fn semantic_truncate_prefix_already_fits() {
-        let result = super::inner::semantic_truncate_prefix(
-            "wget [fch] 0/1",
-            30,
-            super::TrackStatus::Active,
-        );
-        assert_eq!(result, "wget [fch] 0/1", "no truncation when fits");
+        let parts = super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: "1.2.3".into(),
+            phase: "fch".into(),
+            count: "2/5".into(),
+        };
+        let result = super::inner::semantic_truncate_prefix(&parts, 30, super::TrackStatus::Active);
+        assert_eq!(result, "wget 1.2.3 [fch] 2/5", "no truncation when fits");
     }
 
     #[test]
     fn semantic_truncate_prefix_remove_version() {
-        // "wget 1.2.3 [fch] 2/5" = 20 chars. max_width=30, overhead=0, eff_max=30 → fits, no truncation
-        let result = super::inner::semantic_truncate_prefix(
-            "wget 1.2.3 [fch] 2/5",
-            30,
-            super::TrackStatus::Active,
-        );
-        assert_eq!(result, "wget 1.2.3 [fch] 2/5", "version change doesn't apply when fits");
-
-        // eff_max=17: need to remove 3 chars → version keep=2 ("1.")
-        let result = super::inner::semantic_truncate_prefix(
-            "wget 1.2.3 [fch] 2/5",
-            17,
-            super::TrackStatus::Active,
-        );
+        let parts = super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: "1.2.3".into(),
+            phase: "fch".into(),
+            count: "2/5".into(),
+        };
+        // eff_max=17: version shrunk to "1."
+        let result = super::inner::semantic_truncate_prefix(&parts, 17, super::TrackStatus::Active);
         assert_eq!(result, "wget 1. [fch] 2/5", "version shortened by 3 chars");
     }
 
     #[test]
     fn semantic_truncate_prefix_remove_version_full() {
-        // eff_max=15: "wget 1.2.3 [fch] 2/5" = 20 chars → version completely gone
-        let result = super::inner::semantic_truncate_prefix(
-            "wget 1.2.3 [fch] 2/5",
-            15,
-            super::TrackStatus::Active,
-        );
+        let parts = super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: "1.2.3".into(),
+            phase: "fch".into(),
+            count: "2/5".into(),
+        };
+        // eff_max=15: version fully removed
+        let result = super::inner::semantic_truncate_prefix(&parts, 15, super::TrackStatus::Active);
         assert_eq!(result, "wget [fch] 2/5", "version fully removed when excess covers it");
     }
 
     #[test]
     fn semantic_truncate_prefix_remove_version_and_count() {
-        // eff_max=11: remove version (7 chars) + count (4 chars) = 11 removed, 11 remain
-        let result = super::inner::semantic_truncate_prefix(
-            "wget 1.2.3 [fch] 2/5",
-            11,
-            super::TrackStatus::Active,
-        );
+        let parts = super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: "1.2.3".into(),
+            phase: "fch".into(),
+            count: "2/5".into(),
+        };
+        // eff_max=11: version and count removed
+        let result = super::inner::semantic_truncate_prefix(&parts, 11, super::TrackStatus::Active);
         assert_eq!(result, "wget [fch]", "version and count removed");
     }
 
     #[test]
     fn semantic_truncate_prefix_remove_version_count_phase() {
+        let parts = super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: "1.2.3".into(),
+            phase: "fch".into(),
+            count: "2/5".into(),
+        };
         // eff_max=4: only tool name remains
-        let result = super::inner::semantic_truncate_prefix(
-            "wget 1.2.3 [fch] 2/5",
-            4,
-            super::TrackStatus::Active,
-        );
+        let result = super::inner::semantic_truncate_prefix(&parts, 4, super::TrackStatus::Active);
         assert_eq!(result, "wget", "tool name survives after version, count, phase removed");
     }
 
     #[test]
     fn semantic_truncate_prefix_hard_truncate() {
+        let parts = super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: "1.2.3".into(),
+            phase: "fch".into(),
+            count: "2/5".into(),
+        };
         // eff_max=2: hard truncate tool name
-        let result = super::inner::semantic_truncate_prefix(
-            "wget 1.2.3 [fch] 2/5",
-            2,
-            super::TrackStatus::Active,
-        );
+        let result = super::inner::semantic_truncate_prefix(&parts, 2, super::TrackStatus::Active);
         assert_eq!(result, "wg", "hard truncate to 2 chars");
     }
 
     #[test]
     fn semantic_truncate_prefix_empty() {
-        let result = super::inner::semantic_truncate_prefix("", 30, super::TrackStatus::Active);
+        let parts = super::inner::PrefixComponents::default();
+        let result = super::inner::semantic_truncate_prefix(&parts, 30, super::TrackStatus::Active);
         assert_eq!(result, "", "empty prefix stays empty");
     }
 
@@ -4380,11 +4554,13 @@ mod tests {
     fn semantic_truncate_prefix_failed_overhead() {
         // Failed status has overhead of 4 visible chars.
         // max_width=8, overhead=4, eff_max=4
-        // "wget [fch] 0/1" = 14 chars → need to remove 10
-        // Version: none. Count: " 0/1" = 4. Phase: " [fch]" = 6. Tool: "wget" = 4.
-        // Remove count (4) → 10 remain → remove phase (6) → 4 remain → "wget"
-        let result =
-            super::inner::semantic_truncate_prefix("wget [fch] 0/1", 8, super::TrackStatus::Failed);
+        let parts = super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: String::new(),
+            phase: "fch".into(),
+            count: "0/1".into(),
+        };
+        let result = super::inner::semantic_truncate_prefix(&parts, 8, super::TrackStatus::Failed);
         assert_eq!(result, "wget", "failed overhead accounted");
     }
 
