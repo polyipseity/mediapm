@@ -5572,6 +5572,151 @@ mod tests {
         std::mem::drop(bar_a);
         std::mem::drop(bar_b);
     }
+
+    // ---- structured suffix merge semantics (Phase 5) --------------------
+
+    #[test]
+    fn suffix_stored_state_is_structured() {
+        // set_suffix_components must store the full structured set (all six
+        // fields), not just `custom` — snapshot() carries them through so the
+        // sync path can merge field-by-field.
+        let h = TrackedHandle::new(100);
+        h.set_suffix_components(SuffixComponents {
+            count: "9".into(),
+            total: "9".into(),
+            elapsed: "1:23:45".into(),
+            rate: Some("10/s".into()),
+            eta: Some("[0:00:07]".into()),
+            custom: "cached".into(),
+        });
+        let snap = h.snapshot();
+        assert_eq!(snap.suffix_components.count, "9");
+        assert_eq!(snap.suffix_components.total, "9");
+        assert_eq!(snap.suffix_components.elapsed, "1:23:45");
+        assert_eq!(snap.suffix_components.rate.as_deref(), Some("10/s"));
+        assert_eq!(snap.suffix_components.eta.as_deref(), Some("[0:00:07]"));
+        assert_eq!(snap.suffix_components.custom, "cached");
+    }
+
+    #[test]
+    fn suffix_merge_user_count_total_overrides_auto() {
+        // User-set count/total components must override the auto-derived
+        // count/total from the snapshot position.
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = indicatif::MultiProgress::with_draw_target(target);
+        let ts = Arc::new(super::TestTimeSource::new());
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_time_source(Arc::clone(&ts) as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .build();
+
+        let bar = group.add_bar(100, "test");
+        bar.set_position(50);
+        bar.set_suffix_components(SuffixComponents {
+            count: "9".into(),
+            total: "9".into(),
+            ..Default::default()
+        });
+        ts.advance(Duration::from_millis(100));
+        group.tick();
+
+        let content = term.contents();
+        assert!(content.contains("9/9"), "user count/total must override auto-derived:\n{content}",);
+        assert!(
+            !content.contains("50/100"),
+            "auto count/total must not show when user overrides:\n{content}",
+        );
+    }
+
+    #[test]
+    fn suffix_merge_user_rate_eta_elapsed_override_auto() {
+        // User-set elapsed/rate/eta components must override the auto-derived
+        // ticker fields.
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = indicatif::MultiProgress::with_draw_target(target);
+        let ts = Arc::new(super::TestTimeSource::new());
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_time_source(Arc::clone(&ts) as Arc<dyn super::TimeSource>)
+            .capacity(2)
+            .build();
+
+        let bar = group.add_bar(100, "test");
+        bar.set_position(50);
+        bar.set_suffix_components(SuffixComponents {
+            elapsed: "1:23:45".into(),
+            rate: Some("10/s".into()),
+            eta: Some("[0:00:07]".into()),
+            ..Default::default()
+        });
+        ts.advance(Duration::from_millis(100));
+        group.tick();
+
+        let content = term.contents();
+        assert!(content.contains("1:23:45"), "user elapsed must override auto-derived:\n{content}",);
+        assert!(content.contains("10/s"), "user rate must override auto-derived:\n{content}",);
+        assert!(content.contains("[0:00:07]"), "user eta must override auto-derived:\n{content}",);
+    }
+
+    #[test]
+    fn suffix_truncation_order_unchanged_after_merge() {
+        // A merged component set (user overrides on top of auto fields) must
+        // still truncate in the normative order: custom progressive → eta →
+        // rate → elapsed → count/total atomic → fallback. Uses the same width
+        // ladder as the semantic_truncate_suffix suite.
+        let merged = SuffixComponents {
+            count: "9".into(),
+            total: "9".into(),
+            elapsed: "0:00:05".into(),
+            rate: Some("12.3 MiB/s".into()),
+            eta: Some("[0:00:02]".into()),
+            custom: "cached (1)".into(),
+        };
+        // Fits: all fields present.
+        let fits = super::inner::semantic_truncate_suffix(&merged, 100);
+        assert_eq!(
+            render_suffix(&fits),
+            " \x1b[33m9/9\x1b[0m 0:00:05 12.3 MiB/s [0:00:02] cached (1)",
+            "full merged suffix when fits",
+        );
+        // Custom shrunk to keep=5 (39 visible).
+        let partial = super::inner::semantic_truncate_suffix(&merged, 39);
+        assert_eq!(
+            render_suffix(&partial),
+            " \x1b[33m9/9\x1b[0m 0:00:05 12.3 MiB/s [0:00:02] cache",
+            "merged custom shrunk first",
+        );
+        // Eta removed entirely (23 <= 30).
+        let eta_off = super::inner::semantic_truncate_suffix(&merged, 30);
+        assert_eq!(
+            render_suffix(&eta_off),
+            " \x1b[33m9/9\x1b[0m 0:00:05 12.3 MiB/s",
+            "merged eta removed second",
+        );
+        // Rate removed entirely (12 <= 22).
+        let rate_off = super::inner::semantic_truncate_suffix(&merged, 22);
+        assert_eq!(
+            render_suffix(&rate_off),
+            " \x1b[33m9/9\x1b[0m 0:00:05",
+            "merged rate removed third",
+        );
+        // Count/total still the last atomic unit.
+        let count_only = super::inner::semantic_truncate_suffix(&merged, 4);
+        assert_eq!(
+            render_suffix(&count_only),
+            " \x1b[33m9/9\x1b[0m",
+            "merged count/total atomic at end",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
