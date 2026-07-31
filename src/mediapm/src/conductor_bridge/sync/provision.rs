@@ -17,7 +17,7 @@ use mediapm_conductor::tools::provider::{
     MAX_LOOKAHEAD, ResolvedSource, ResolvedToolFetch, SourceProducer, fetch_tool_sources,
     process_tool_sources,
 };
-use mediapm_utils::progress::ProviderProgressCallback;
+use mediapm_utils::progress::{PrefixComponents, ProviderProgressCallback};
 use tokio::sync::Semaphore;
 
 use crate::error::MediaPmError;
@@ -113,7 +113,7 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 ///
 /// `group` provides 3 phase-agnostic progress bars per tool (res, fch,
 /// pro). Routes [`ProviderProgressSnapshot`] callbacks to the matching
-/// bar by `snap.phase`. Item counters are displayed via `set_prefix`; byte
+/// bar by `snap.phase`. Item counters are displayed via `set_prefix_components`; byte
 /// counters drive bar position (`set_position`/`set_total`). The bridge does
 /// not interpret the meaning of items or bytes — it only relays the values
 /// to the bar.
@@ -186,7 +186,7 @@ pub(super) async fn fetch_and_import_tool_payload(
             _resolved_tag,
         ) => {
             if metadata_cached {
-                resolve_bar.set_message(&format!("cached ({metadata_fetch_count})"));
+                resolve_bar.set_suffix(&format!("cached ({metadata_fetch_count})"));
             }
             resolve_bar.set_position(bar_total.into());
             resolve_bar.finish();
@@ -202,9 +202,9 @@ pub(super) async fn fetch_and_import_tool_payload(
             // with "skipped" indicator, then return early.
             resolve_bar.set_position(bar_total.into());
             if metadata_cached {
-                resolve_bar.set_message(&format!("skipped cached ({metadata_fetch_count})"));
+                resolve_bar.set_suffix(&format!("skipped cached ({metadata_fetch_count})"));
             } else {
-                resolve_bar.set_message("skipped");
+                resolve_bar.set_suffix("skipped");
             }
             resolve_bar.finish_success();
             return Ok(None);
@@ -237,10 +237,12 @@ pub(super) async fn fetch_and_import_tool_payload(
     let fetch_tool_id = tool_id.to_string();
     let fetch_version_suffix = version_suffix.clone();
     let fetch_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
-        fetch_bar_cb.set_prefix(&format!(
-            "{fetch_tool_id}{fetch_version_suffix} [fch] {}/{}",
-            snap.items.0, snap.items.1
-        ));
+        fetch_bar_cb.set_prefix_components(PrefixComponents {
+            tool_name: fetch_tool_id.clone(),
+            version: fetch_version_suffix.trim().to_string(),
+            phase: "fch".to_string(),
+            count: format!("{}/{}", snap.items.0, snap.items.1),
+        });
         fetch_bar_cb.set_position(snap.bytes.0);
         fetch_bar_cb.set_total(snap.bytes.1);
     }));
@@ -253,7 +255,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     };
     // Set fetch bar RHS message if some sources were cache-served.
     if downloaded.cached_count > 0 {
-        fetch_bar.set_message(&format!("cached ({})", downloaded.cached_count));
+        fetch_bar.set_suffix(&format!("cached ({})", downloaded.cached_count));
     }
     fetch_bar.finish();
 
@@ -271,10 +273,12 @@ pub(super) async fn fetch_and_import_tool_payload(
     let pp_tool_id = tool_id.to_string();
     let pp_version_suffix = version_suffix.clone();
     let pp_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
-        process_bar_cb.set_prefix(&format!(
-            "{pp_tool_id}{pp_version_suffix} [pro] {}/{}",
-            snap.items.0, snap.items.1
-        ));
+        process_bar_cb.set_prefix_components(PrefixComponents {
+            tool_name: pp_tool_id.clone(),
+            version: pp_version_suffix.trim().to_string(),
+            phase: "pro".to_string(),
+            count: format!("{}/{}", snap.items.0, snap.items.1),
+        });
         process_bar_cb.set_position(snap.bytes.0);
         process_bar_cb.set_total(snap.bytes.1);
     }));
@@ -700,10 +704,9 @@ mod tests {
 
         let ops = tracker.ops();
         assert!(
-            ops.iter().any(
-                |op| matches!(op, ProgressOp::SetMessage { message } if message == "cached (1)")
-            ),
-            "expected SetMessage(\"cached (1)\") in ops\ngot: {ops:#?}",
+            ops.iter()
+                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "cached (1)")),
+            "expected SetSuffix(\"cached (1)\") in ops\ngot: {ops:#?}",
         );
     }
 
@@ -792,8 +795,8 @@ mod tests {
 
         let ops = tracker.ops();
         assert!(
-            ops.iter().any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped cached (1)")),
-            "expected SetMessage(\"skipped cached (1)\") in ops\ngot: {ops:#?}",
+            ops.iter().any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "skipped cached (1)")),
+            "expected SetSuffix(\"skipped cached (1)\") in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
@@ -840,8 +843,8 @@ mod tests {
         let ops = tracker.ops();
         assert!(
             ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped")),
-            "expected SetMessage(\"skipped\") in ops\ngot: {ops:#?}",
+                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "skipped")),
+            "expected SetSuffix(\"skipped\") in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
@@ -888,15 +891,15 @@ mod tests {
         let ops = tracker.ops();
         assert!(
             !ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "cached")),
-            "unexpected SetMessage(\"cached\") in ops\ngot: {ops:#?}",
+                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "cached")),
+            "unexpected SetSuffix(\"cached\") in ops\ngot: {ops:#?}",
         );
     }
 
     #[tokio::test]
     async fn resolve_bar_zero_metadata_fetch_count_uses_min_one() {
         // Regression: resolve bar with metadata_fetch_count=0 gets total=0
-        // (indeterminate bar — set_message works correctly after disabled flag
+        // (indeterminate bar — set_suffix works correctly after disabled flag
         // was moved out of the total==0 proxy check).
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
@@ -992,16 +995,15 @@ mod tests {
             "expected SetPosition pos=2 in ops\ngot: {ops:#?}",
         );
         assert!(
-            ops.iter().any(
-                |op| matches!(op, ProgressOp::SetMessage { message } if message == "cached (2)")
-            ),
-            "expected SetMessage(\"cached (2)\") in ops\ngot: {ops:#?}",
+            ops.iter()
+                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "cached (2)")),
+            "expected SetSuffix(\"cached (2)\") in ops\ngot: {ops:#?}",
         );
         // Also verify bare "cached" (without count) never appears.
         assert!(
             !ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "cached")),
-            "unexpected SetMessage(\"cached\") in ops\ngot: {ops:#?}",
+                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "cached")),
+            "unexpected SetSuffix(\"cached\") in ops\ngot: {ops:#?}",
         );
     }
 
@@ -1055,9 +1057,9 @@ mod tests {
         );
         assert!(
             ops.iter().any(
-                |op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped cached (2)")
+                |op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "skipped cached (2)")
             ),
-            "expected SetMessage(\"skipped cached (2)\") in ops\ngot: {ops:#?}",
+            "expected SetSuffix(\"skipped cached (2)\") in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
@@ -1068,7 +1070,7 @@ mod tests {
     #[tokio::test]
     async fn skip_bar_zero_metadata_fetch_count_uses_min_one() {
         // Regression: skip bar with metadata_fetch_count=0 uses total=0
-        // (indeterminate bar — set_message works correctly).
+        // (indeterminate bar — set_suffix works correctly).
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
         let cache = Cache::open(
@@ -1114,8 +1116,8 @@ mod tests {
         );
         assert!(
             ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetMessage { message } if message == "skipped")),
-            "expected SetMessage(\"skipped\") in ops\ngot: {ops:#?}",
+                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "skipped")),
+            "expected SetSuffix(\"skipped\") in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
