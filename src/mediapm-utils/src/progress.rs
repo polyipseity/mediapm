@@ -732,8 +732,8 @@ mod inner {
         pub rate_bytes_per_sec: f64,
         /// Estimated seconds remaining (None when unknown or inactive).
         pub eta_secs: Option<f64>,
-        /// Custom message (empty string when none).
-        pub message: String,
+        /// Custom suffix (empty string when none).
+        pub suffix: String,
         /// Whether the source had the dirty flag set this tick.
         pub dirty: bool,
     }
@@ -1297,8 +1297,6 @@ mod inner {
         position: AtomicU64,
         total: AtomicU64,
         label: RwLock<String>,
-        prefix: RwLock<String>,
-        message: RwLock<String>,
         prefix_components: RwLock<PrefixComponents>,
         suffix_components: RwLock<SuffixComponents>,
         status: AtomicU8,
@@ -1323,8 +1321,6 @@ mod inner {
                 position: AtomicU64::new(0),
                 total: AtomicU64::new(total),
                 label: RwLock::new(label.to_string()),
-                prefix: RwLock::new(label.to_string()),
-                message: RwLock::new(String::new()),
                 prefix_components: RwLock::new(PrefixComponents {
                     tool_name: label.to_string(),
                     ..Default::default()
@@ -1350,7 +1346,6 @@ mod inner {
                 prefix_components: pc.clone(),
                 suffix: sc.custom.clone(),
                 suffix_components: sc.clone(),
-                message: sc.custom.clone(),
                 status: match self.status.load(Ordering::Relaxed) {
                     0 => TrackStatus::Active,
                     1 => TrackStatus::Success,
@@ -1405,8 +1400,6 @@ mod inner {
         pub suffix: String,
         /// Source components for the suffix.
         pub suffix_components: SuffixComponents,
-        /// Legacy: custom message (same as [`suffix`](Self::suffix)).
-        pub message: String,
         /// Current status.
         pub status: TrackStatus,
         /// Elapsed time since the handle was created (frozen on finish).
@@ -1508,7 +1501,6 @@ mod inner {
                     .expect("shared_state prefix_components lock");
                 *pc = prefix_components_from_str(&prefix);
             }
-            (*self.state.prefix.write().expect("shared_state prefix lock")).clone_from(&prefix);
             self.state.dirty.store(true, Ordering::Release);
         }
 
@@ -1551,7 +1543,6 @@ mod inner {
                     .expect("shared_state suffix_components lock");
                 *sc = SuffixComponents { custom: suffix.clone() };
             }
-            *self.state.message.write().expect("shared_state message lock") = suffix;
             self.state.dirty.store(true, Ordering::Release);
         }
 
@@ -1573,13 +1564,6 @@ mod inner {
                 *sc = components;
             }
             self.state.dirty.store(true, Ordering::Release);
-        }
-
-        /// Set a custom message appended to the auto-computed right-hand side.
-        ///
-        /// Deprecated: use [`set_suffix`](Self::set_suffix) instead.
-        pub fn set_message(&self, message: impl Into<String>) {
-            self.set_suffix(message);
         }
 
         /// Mark the bar as finished (keeps it visible).
@@ -2086,7 +2070,6 @@ mod inner {
                                     prefix_components: PrefixComponents::default(),
                                     suffix: String::new(),
                                     suffix_components: SuffixComponents { custom: String::new() },
-                                    message: String::new(),
                                     status: TrackStatus::Active,
                                     elapsed: Duration::ZERO,
                                 },
@@ -2117,7 +2100,7 @@ mod inner {
                             elapsed_secs: snap.elapsed.as_secs_f64(),
                             rate_bytes_per_sec: rate,
                             eta_secs: eta,
-                            message: snap.message.clone(),
+                            suffix: snap.suffix.clone(),
                             dirty: slot
                                 .source
                                 .borrow()
@@ -2154,10 +2137,10 @@ mod inner {
             }
         }
 
-        /// Apply a snapshot's position/length/message/prefix to the
+        /// Apply a snapshot's position/length/suffix/prefix to the
         /// indicatif bar at slot `i`.  **This is the single authoritative
         /// push point for SharedState → indicatif.** All code paths that
-        /// reflect SharedState (position, total, message, prefix) on the
+        /// reflect SharedState (position, total, suffix, prefix) on the
         /// terminal bar must call through here — both the daemon ticker
         /// and [`finalize`](Self::finalize) do.
         ///
@@ -2375,7 +2358,7 @@ mod inner {
             // RAII guard: buffer OFF during final draw, re-enabled on drop.
             let _guard = BufferGuard::new(self.buffer_enabled.as_ref());
             // Finish all bound bars that have reached a terminal state:
-            // sync their final state FIRST (so position/total/elapsed/message
+            // sync their final state FIRST (so position/total/elapsed/suffix
             // is up-to-date), then call finish_slot which applies the done
             // visual style.
             for (i, slot) in self.slots.iter().enumerate() {
@@ -3228,7 +3211,6 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
             prefix_components: crate::progress::inner::PrefixComponents::default(),
             suffix: String::new(),
             suffix_components: crate::progress::inner::SuffixComponents { custom: String::new() },
-            message: String::new(),
             status: TrackStatus::Active,
             elapsed: recording::RecordingTrackedHandle::snapshot_elapsed(self),
         }
@@ -4255,13 +4237,13 @@ mod tests {
     }
 
     #[test]
-    fn max_message_width_wide() {
+    fn max_suffix_width_wide() {
         assert_eq!(super::inner::max_suffix_width(80), 55);
         assert_eq!(super::inner::max_suffix_width(60), 55);
     }
 
     #[test]
-    fn max_message_width_compact() {
+    fn max_suffix_width_compact() {
         assert_eq!(super::inner::max_suffix_width(59), 40);
         assert_eq!(super::inner::max_suffix_width(40), 40);
     }
@@ -4312,90 +4294,25 @@ mod tests {
         assert_eq!(result, "wget 1.2.3", "version without phase/count");
     }
 
-    // ---- semantic_truncate_prefix tests (Phase 2) -----------------------
+    // ---- prefix_components_from_str tests (Phase 4) -----------------------
 
-    // Phase 7: delete — old tests with `&str` signature (replaced by
-    // `semantic_truncate_prefix_*` tests below with `&PrefixComponents`).
-    // #[test]
-    // fn semantic_truncate_prefix_already_fits() {
-    //     let result = super::inner::semantic_truncate_prefix(
-    //     let result = super::inner::semantic_truncate_prefix(
-    //         "wget [fch] 0/1",
-    //         30,
-    //         super::TrackStatus::Active,
-    //     );
-    //     assert_eq!(result, "wget [fch] 0/1", "no truncation when fits");
-    // }
-    //
-    // #[test]
-    // fn semantic_truncate_prefix_remove_version() {
-    //     let result = super::inner::semantic_truncate_prefix(
-    //         "wget 1.2.3 [fch] 2/5",
-    //         30,
-    //         super::TrackStatus::Active,
-    //     );
-    //     assert_eq!(result, "wget 1.2.3 [fch] 2/5", "version change doesn't apply when fits");
-    //
-    //     let result = super::inner::semantic_truncate_prefix(
-    //         "wget 1.2.3 [fch] 2/5",
-    //         17,
-    //         super::TrackStatus::Active,
-    //     );
-    //     assert_eq!(result, "wget 1. [fch] 2/5", "version shortened by 3 chars");
-    // }
-    //
-    // #[test]
-    // fn semantic_truncate_prefix_remove_version_full() {
-    //     let result = super::inner::semantic_truncate_prefix(
-    //         "wget 1.2.3 [fch] 2/5",
-    //         15,
-    //         super::TrackStatus::Active,
-    //     );
-    //     assert_eq!(result, "wget [fch] 2/5", "version fully removed when excess covers it");
-    // }
-    //
-    // #[test]
-    // fn semantic_truncate_prefix_remove_version_and_count() {
-    //     let result = super::inner::semantic_truncate_prefix(
-    //         "wget 1.2.3 [fch] 2/5",
-    //         11,
-    //         super::TrackStatus::Active,
-    //     );
-    //     assert_eq!(result, "wget [fch]", "version and count removed");
-    // }
-    //
-    // #[test]
-    // fn semantic_truncate_prefix_remove_version_count_phase() {
-    //     let result = super::inner::semantic_truncate_prefix(
-    //         "wget 1.2.3 [fch] 2/5",
-    //         4,
-    //         super::TrackStatus::Active,
-    //     );
-    //     assert_eq!(result, "wget", "tool name survives after version, count, phase removed");
-    // }
-    //
-    // #[test]
-    // fn semantic_truncate_prefix_hard_truncate() {
-    //     let result = super::inner::semantic_truncate_prefix(
-    //         "wget 1.2.3 [fch] 2/5",
-    //         2,
-    //         super::TrackStatus::Active,
-    //     );
-    //     assert_eq!(result, "wg", "hard truncate to 2 chars");
-    // }
-    //
-    // #[test]
-    // fn semantic_truncate_prefix_empty() {
-    //     let result = super::inner::semantic_truncate_prefix("", 30, super::TrackStatus::Active);
-    //     assert_eq!(result, "", "empty prefix stays empty");
-    // }
-    //
-    // #[test]
-    // fn semantic_truncate_prefix_failed_overhead() {
-    //     let result =
-    //         super::inner::semantic_truncate_prefix("wget [fch] 0/1", 8, super::TrackStatus::Failed);
-    //     assert_eq!(result, "wget", "failed overhead accounted");
-    // }
+    #[test]
+    fn prefix_components_from_str_tool_name_only() {
+        let result = super::inner::prefix_components_from_str("wget");
+        assert_eq!(result.tool_name, "wget");
+        assert!(result.version.is_empty());
+        assert!(result.phase.is_empty());
+        assert!(result.count.is_empty());
+    }
+
+    #[test]
+    fn prefix_components_from_str_all_fields() {
+        let result = super::inner::prefix_components_from_str("yt-dlp 2024.12.20 [fch] 2/5");
+        assert_eq!(result.tool_name, "yt-dlp");
+        assert_eq!(result.version, "2024.12.20");
+        assert_eq!(result.phase, "fch");
+        assert_eq!(result.count, "2/5");
+    }
 
     // ---- semantic_truncate_prefix tests (Phase 3) -----------------------
 
@@ -5094,7 +5011,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_slot_preserves_custom_message_on_attach() {
+    fn sync_slot_preserves_custom_suffix_on_attach() {
         // Regression: when `add_bar` triggers `attach` → `sync_slot`, the
         // slot is synced with only the auto-computed RHS suffix, dropping
         // any custom suffix that was set via `set_suffix`.
@@ -5144,7 +5061,7 @@ mod tests {
         let after_attach = term.contents();
         assert!(
             after_attach.contains("cached (1)"),
-            "custom message lost after add_bar + set_position (before tick).\n\
+            "custom suffix lost after add_bar + set_position (before tick).\n\
              Terminal output:\n{after_attach}",
         );
         std::mem::drop(bar_a);

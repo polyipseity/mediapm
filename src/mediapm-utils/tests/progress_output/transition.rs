@@ -326,9 +326,9 @@ fn transition_exact_partial_progress_then_finish() {
     );
 }
 
-/// Exact output: child abandons with message, overall still present.
+/// Exact output: child abandons with suffix, overall still present.
 #[test]
-fn transition_exact_abandon_with_message_and_overall() {
+fn transition_exact_abandon_with_suffix_and_overall() {
     let term = InMemoryTerm::new(2, 80);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let mp = MultiProgress::with_draw_target(target);
@@ -344,7 +344,7 @@ fn transition_exact_abandon_with_message_and_overall() {
     child.set_position(3);
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
-    child.set_message("aborted");
+    child.set_suffix("aborted");
     child.abandon();
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();

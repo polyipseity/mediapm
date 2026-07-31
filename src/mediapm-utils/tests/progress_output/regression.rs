@@ -228,7 +228,7 @@ fn regression_finish_and_clear_with_tick_fn() {
     );
 }
 
-// ── Regression: concurrent set_position/set_message + renderer.tick() ──
+// ── Regression: concurrent set_position + renderer.tick() ──
 
 #[test]
 fn regression_concurrent_set_and_sync() {
@@ -242,7 +242,7 @@ fn regression_concurrent_set_and_sync() {
         .build_with_overall();
 
     let c1 = group.add_bar(50, "worker");
-    // Rapid set_position/set_message to exercise tick_fn callback path.
+    // Rapid set_position to exercise tick_fn callback path.
     for i in 0..20 {
         c1.set_position(i * 2);
     }
