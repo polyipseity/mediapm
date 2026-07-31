@@ -47,15 +47,12 @@ pub(super) struct FetchedToolPayload {
     pub(super) canonical_version: String,
     /// Resolved upstream git tag, or `None` when the provider has no tag.
     /// Mirrors the provider's why-empty rationale.
-    #[allow(dead_code)] // WHY: consumed when sync/mod.rs persists records (Phase 3)
     pub(super) resolved_tag: Option<String>,
     /// Resolved upstream version string, or `None` when the provider has no
     /// version.
-    #[allow(dead_code)] // WHY: consumed when sync/mod.rs persists records (Phase 3)
     pub(super) resolved_version: Option<String>,
     /// Resolved upstream VCS commit hash, or `None` when the provider has no
     /// hash.
-    #[allow(dead_code)] // WHY: consumed when sync/mod.rs persists records (Phase 3)
     pub(super) resolved_vcs_hash: Option<String>,
 }
 
@@ -68,13 +65,10 @@ pub(super) enum PreResolveOutcome {
     /// Tool is already provisioned at the given canonical version (skip).
     Skip {
         /// Tool identifier.
-        #[allow(dead_code)]
         name: String,
         /// Human-readable version string (informational only).
-        #[allow(dead_code)]
         human_readable_version: String,
         /// Canonical version that was already provisioned.
-        #[allow(dead_code)]
         version: String,
         /// Whether the version/tag lookups were served from metadata cache.
         metadata_cached: bool,
@@ -82,11 +76,8 @@ pub(super) enum PreResolveOutcome {
         metadata_fetch_count: u32,
         /// Resolved provenance fields from the provider (`None` when the
         /// provider has no value). Carried so skipped tools can be backfilled.
-        #[allow(dead_code)] // WHY: read by sync/mod.rs to backfill skipped tools (Phase 3)
         resolved_tag: Option<String>,
-        #[allow(dead_code)] // WHY: read by sync/mod.rs to backfill skipped tools (Phase 3)
         resolved_version: Option<String>,
-        #[allow(dead_code)] // WHY: read by sync/mod.rs to backfill skipped tools (Phase 3)
         resolved_vcs_hash: Option<String>,
     },
 }

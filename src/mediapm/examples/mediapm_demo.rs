@@ -858,9 +858,9 @@ fn seed_old_synced_tools_state_for_update_precheck(
             canonical_version: String::new(),
             content_map_hash: stale_hash.to_string(),
             deployed_at: unix_timestamp_seconds(),
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
         });
     }
 

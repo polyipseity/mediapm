@@ -66,6 +66,44 @@ pub(crate) struct ToolSyncReport {
     /// Per-tool deployment records populated during provisioning.
     /// Flat list ordered by iteration order of desired_tools.
     pub(crate) tool_records: Vec<ToolRegistryEntry>,
+    /// Skip-path backfill records: fresh provider-resolved metadata for tools
+    /// that were skipped because their canonical version was already
+    /// provisioned. Applied in place to the persisted registry by the service
+    /// layer (fills `None` resolved fields only).
+    pub(crate) resolved_field_backfills: Vec<ToolRegistryEntry>,
+}
+
+/// Applies skip-path resolved-field backfills to the persisted managed-tool
+/// registry in place.
+///
+/// For each backfill entry, finds the stored entry with the same
+/// `(tool_id, canonical_version)` and fills only `None` resolved_* fields
+/// from the backfill's fresh provider metadata. Existing `Some` values are
+/// never overwritten, identity fields (`version`, `canonical_version`,
+/// `content_map_hash`, `deployed_at`) are preserved, and why-empty fields
+/// stay `None` (backfills never invent values — providers return `None` for
+/// them). No-op when nothing differs, keeping re-sync state.json
+/// byte-identical.
+pub(crate) fn apply_resolved_field_backfills(
+    managed_tools: &mut [ToolRegistryEntry],
+    backfills: &[ToolRegistryEntry],
+) {
+    for backfill in backfills {
+        let Some(existing) = managed_tools.iter_mut().find(|e| {
+            e.tool_id == backfill.tool_id && e.canonical_version == backfill.canonical_version
+        }) else {
+            continue;
+        };
+        if existing.resolved_tag.is_none() {
+            existing.resolved_tag = backfill.resolved_tag.clone();
+        }
+        if existing.resolved_version.is_none() {
+            existing.resolved_version = backfill.resolved_version.clone();
+        }
+        if existing.resolved_vcs_hash.is_none() {
+            existing.resolved_vcs_hash = backfill.resolved_vcs_hash.clone();
+        }
+    }
 }
 
 /// A single entry in the provisioning pipeline.
@@ -346,9 +384,9 @@ pub(crate) fn compute_composite_canonical_version(
                     ConfigVersionSpec::Inherit | ConfigVersionSpec::Latest => true,
                     ConfigVersionSpec::Exact(fields) => spec_matches_entry(
                         &VersionSpec::Exact(fields.clone()),
-                        &e.resolved_tag,
-                        &e.resolved_version,
-                        &e.resolved_vcs_hash,
+                        e.resolved_tag.as_deref(),
+                        e.resolved_version.as_deref(),
+                        e.resolved_vcs_hash.as_deref(),
                     ),
                 }
             })?;
@@ -471,9 +509,9 @@ pub(crate) async fn reconcile_desired_tools(
                 };
                 if spec_matches_entry(
                     &resolved_spec,
-                    &entry.resolved_tag,
-                    &entry.resolved_version,
-                    &entry.resolved_vcs_hash,
+                    entry.resolved_tag.as_deref(),
+                    entry.resolved_version.as_deref(),
+                    entry.resolved_vcs_hash.as_deref(),
                 ) {
                     // Already have the desired version — skip provisioning.
                     for (_, spec) in &generated_doc.tools {
@@ -496,10 +534,16 @@ pub(crate) async fn reconcile_desired_tools(
         // arm always runs before any read (other paths `continue`).
         #[allow(unused_assignments)]
         let mut resolved_canonical_version = String::new();
-        // Bridge: ToolRegistryEntry.resolved_tag is still `String` until the
-        // Phase 3 schema change; unwrap_or_default() is removed there.
+        // Captured from provider metadata in the Ok(fetch) arm before the skip
+        // check; used in the Ok(None) payload branch below. None is the dead
+        // initial value because the assignment in the match arm always runs
+        // before any read (other paths `continue`).
         #[allow(unused_assignments)]
-        let mut resolved_tag_value = String::new();
+        let mut resolved_tag_value: Option<String> = None;
+        #[allow(unused_assignments)]
+        let mut resolved_version_value: Option<String> = None;
+        #[allow(unused_assignments)]
+        let mut resolved_vcs_hash_value: Option<String> = None;
         let pre_resolved = match provider::resolve_tool_fetch(
             tool_id,
             Some((&*cache, "tool_metadata")),
@@ -513,22 +557,30 @@ pub(crate) async fn reconcile_desired_tools(
                 let _metadata_cached = metadata.metadata_cached;
                 let _metadata_fetch_count = metadata.metadata_fetch_count;
                 resolved_canonical_version = canonical_version.clone();
-                resolved_tag_value = metadata.resolved_tag.clone().unwrap_or_default();
+                resolved_tag_value = metadata.resolved_tag.clone();
+                resolved_version_value = metadata.resolved_version.clone();
+                resolved_vcs_hash_value = metadata.resolved_vcs_hash.clone();
 
                 // --- Post-resolve validation: verify resolved result matches desired spec ---
                 match &tool_req.version_spec {
                     ConfigVersionSpec::Exact(fields) => {
                         if let Some(hash) = &fields.vcs_hash {
-                            if resolved_canonical_version != *hash && resolved_tag_value != *hash {
+                            // A `None` resolved tag never satisfies the hash
+                            // check; only the canonical version may match.
+                            if resolved_canonical_version != *hash
+                                && resolved_tag_value.as_deref() != Some(hash.as_str())
+                            {
                                 return Err(MediaPmError::Workflow(format!(
-                                    "tool {tool_id}: requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {resolved_tag_value}"
+                                    "tool {tool_id}: requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {}",
+                                    resolved_tag_value.as_deref().unwrap_or("(none)")
                                 )));
                             }
                         }
                         if let Some(tag) = &fields.tag {
-                            if resolved_tag_value != *tag {
+                            if resolved_tag_value.as_deref() != Some(tag.as_str()) {
                                 return Err(MediaPmError::Workflow(format!(
-                                    "tool {tool_id}: requested tag {tag} but resolved {resolved_tag_value}"
+                                    "tool {tool_id}: requested tag {tag} but resolved {}",
+                                    resolved_tag_value.as_deref().unwrap_or("(none)")
                                 )));
                             }
                         }
@@ -598,6 +650,28 @@ pub(crate) async fn reconcile_desired_tools(
         };
 
         let was_skip = matches!(&pre_resolved, PreResolveOutcome::Skip { .. });
+        // Capture fresh resolved metadata for the skip backfill BEFORE
+        // pre_resolved is moved into fetch_and_import_tool_payload below.
+        let skip_backfill: Option<ToolRegistryEntry> = match &pre_resolved {
+            PreResolveOutcome::Skip {
+                name,
+                version,
+                resolved_tag,
+                resolved_version,
+                resolved_vcs_hash,
+                ..
+            } => Some(ToolRegistryEntry {
+                tool_id: name.clone(),
+                version: String::new(),
+                canonical_version: version.clone(),
+                content_map_hash: String::new(),
+                deployed_at: 0,
+                resolved_tag: resolved_tag.clone(),
+                resolved_version: resolved_version.clone(),
+                resolved_vcs_hash: resolved_vcs_hash.clone(),
+            }),
+            _ => None,
+        };
         let payload_result =
             fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group, pre_resolved)
                 .await;
@@ -610,6 +684,10 @@ pub(crate) async fn reconcile_desired_tools(
                     tool_runtimes.entry(tool_id.clone()).or_insert(spec.runtime.clone());
                     break;
                 }
+            }
+            // Backfill fresh resolved metadata into the persisted registry.
+            if let Some(backfill) = skip_backfill {
+                report.resolved_field_backfills.push(backfill);
             }
             report.tools_skipped += 1;
             pb.advance(1);
@@ -660,9 +738,9 @@ pub(crate) async fn reconcile_desired_tools(
                     canonical_version: payload.canonical_version.clone(),
                     content_map_hash: content_map_hash.clone(),
                     deployed_at: now,
-                    resolved_tag: resolved_tag_value.clone(),
-                    resolved_version: String::new(),
-                    resolved_vcs_hash: String::new(),
+                    resolved_tag: payload.resolved_tag.clone(),
+                    resolved_version: payload.resolved_version.clone(),
+                    resolved_vcs_hash: payload.resolved_vcs_hash.clone(),
                 });
 
                 // Update live_state for subsequent entries in the same sync.
@@ -739,8 +817,8 @@ pub(crate) async fn reconcile_desired_tools(
                     content_map_hash: String::new(),
                     deployed_at: now,
                     resolved_tag: resolved_tag_value.clone(),
-                    resolved_version: String::new(),
-                    resolved_vcs_hash: String::new(),
+                    resolved_version: resolved_version_value.clone(),
+                    resolved_vcs_hash: resolved_vcs_hash_value.clone(),
                 });
 
                 // Update live_state for subsequent entries in the same sync.
@@ -1008,9 +1086,9 @@ mod tests {
             canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
             content_map_hash: "blake3:abc".to_string(),
             deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
         });
 
         // Desired tools with media-tagger.
@@ -1090,9 +1168,9 @@ mod tests {
             canonical_version: "old-canonical".to_string(),
             content_map_hash: String::new(),
             deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
         });
 
         // Desired tools with media-tagger.
@@ -1707,9 +1785,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:abc".to_string(), // non-empty → matched
                 deployed_at: 0,
-                resolved_tag: "v7.1".to_string(),
-                resolved_version: "7.1".to_string(),
-                resolved_vcs_hash: "abc123".to_string(),
+                resolved_tag: Some("v7.1".to_string()),
+                resolved_version: Some("7.1".to_string()),
+                resolved_vcs_hash: Some("abc123".to_string()),
             }],
         );
         let result = compute_composite_canonical_version("yt-dlp-v2", "yt-dlp", &req, &live_state);
@@ -1736,9 +1814,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:abc".to_string(), // non-empty → matched
                 deployed_at: 0,
-                resolved_tag: "v7.1".to_string(),
-                resolved_version: "7.1".to_string(),
-                resolved_vcs_hash: "abc123".to_string(),
+                resolved_tag: Some("v7.1".to_string()),
+                resolved_version: Some("7.1".to_string()),
+                resolved_vcs_hash: Some("abc123".to_string()),
             }],
         );
         let result = compute_composite_canonical_version("yt-dlp-v2", "yt-dlp", &req, &live_state);
@@ -1766,9 +1844,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:abc".to_string(),
                 deployed_at: 0,
-                resolved_tag: "v7.1".to_string(),
-                resolved_version: "7.1".to_string(),
-                resolved_vcs_hash: "abc123".to_string(),
+                resolved_tag: Some("v7.1".to_string()),
+                resolved_version: Some("7.1".to_string()),
+                resolved_vcs_hash: Some("abc123".to_string()),
             }],
         );
         let result = compute_composite_canonical_version("yt-dlp-v2", "yt-dlp", &req, &live_state);
@@ -1795,9 +1873,9 @@ mod tests {
             canonical_version: "v7.1".to_string(),
             content_map_hash: String::new(),
             deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
         }];
         let map = index_managed_tools(&entries);
         assert_eq!(map.len(), 1);
@@ -1813,9 +1891,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 0,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
             ToolRegistryEntry {
                 tool_id: "ffmpeg".to_string(),
@@ -1823,9 +1901,9 @@ mod tests {
                 canonical_version: "ffmpeg-v6.0".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 0,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
         ];
         let map = index_managed_tools(&entries);
@@ -1846,9 +1924,9 @@ mod tests {
             canonical_version: "ffmpeg-v7.1".to_string(),
             content_map_hash: String::new(), // inactive
             deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
         }];
         let map = index_managed_tools(&entries);
         assert_eq!(map.len(), 1, "inactive entry should still be indexed");
@@ -1866,9 +1944,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:abc".to_string(),
                 deployed_at: 0,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
             ToolRegistryEntry {
                 tool_id: "ffmpeg".to_string(),
@@ -1876,13 +1954,117 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:def".to_string(),
                 deployed_at: 0,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
         ];
         let map = index_managed_tools(&entries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["ffmpeg"].len(), 2);
+    }
+
+    // Phase 3 — resolved-field skip backfill merge
+    // ---------------------------------------------------------------------------
+
+    fn backfill_entry(
+        tool_id: &str,
+        canonical_version: &str,
+        resolved_tag: Option<&str>,
+        resolved_version: Option<&str>,
+        resolved_vcs_hash: Option<&str>,
+    ) -> ToolRegistryEntry {
+        ToolRegistryEntry {
+            tool_id: tool_id.to_string(),
+            version: String::new(),
+            canonical_version: canonical_version.to_string(),
+            content_map_hash: String::new(),
+            deployed_at: 0,
+            resolved_tag: resolved_tag.map(str::to_string),
+            resolved_version: resolved_version.map(str::to_string),
+            resolved_vcs_hash: resolved_vcs_hash.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn apply_resolved_field_backfills_fills_none_fields_in_place() {
+        let mut managed = vec![backfill_entry("ffmpeg", "ffmpeg-v7.1", None, None, None)];
+        let backfills =
+            vec![backfill_entry("ffmpeg", "ffmpeg-v7.1", Some("autobuild-2025-07-15"), None, None)];
+        apply_resolved_field_backfills(&mut managed, &backfills);
+        assert_eq!(managed[0].resolved_tag.as_deref(), Some("autobuild-2025-07-15"));
+        // Why-empty fields stay `None` — backfills never invent values.
+        assert_eq!(managed[0].resolved_version, None);
+        assert_eq!(managed[0].resolved_vcs_hash, None);
+    }
+
+    #[test]
+    fn apply_resolved_field_backfills_never_overwrites_some() {
+        let mut managed =
+            vec![backfill_entry("yt-dlp", "yt-dlp-v2", Some("v2"), Some("2.0"), Some("abc"))];
+        let backfills = vec![backfill_entry(
+            "yt-dlp",
+            "yt-dlp-v2",
+            Some("DIFFERENT"),
+            Some("9.9"),
+            Some("def"),
+        )];
+        apply_resolved_field_backfills(&mut managed, &backfills);
+        assert_eq!(managed[0].resolved_tag.as_deref(), Some("v2"));
+        assert_eq!(managed[0].resolved_version.as_deref(), Some("2.0"));
+        assert_eq!(managed[0].resolved_vcs_hash.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn apply_resolved_field_backfills_noop_when_unchanged() {
+        let mut managed = vec![backfill_entry("yt-dlp", "yt-dlp-v2", Some("v2"), None, None)];
+        let backfills = vec![backfill_entry("yt-dlp", "yt-dlp-v2", Some("v2"), None, None)];
+        apply_resolved_field_backfills(&mut managed, &backfills);
+        assert_eq!(managed[0].resolved_tag.as_deref(), Some("v2"));
+        assert_eq!(managed[0].resolved_version, None);
+    }
+
+    #[test]
+    fn apply_resolved_field_backfills_preserves_identity_fields() {
+        let mut managed = vec![ToolRegistryEntry {
+            tool_id: "ffmpeg".to_string(),
+            version: "7.1".to_string(),
+            canonical_version: "ffmpeg-v7.1".to_string(),
+            content_map_hash: "blake3:abc".to_string(),
+            deployed_at: 1234,
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
+        }];
+        let backfills =
+            vec![backfill_entry("ffmpeg", "ffmpeg-v7.1", Some("tag"), Some("ver"), Some("hash"))];
+        apply_resolved_field_backfills(&mut managed, &backfills);
+        assert_eq!(managed[0].version, "7.1");
+        assert_eq!(managed[0].canonical_version, "ffmpeg-v7.1");
+        assert_eq!(managed[0].content_map_hash, "blake3:abc");
+        assert_eq!(managed[0].deployed_at, 1234);
+    }
+
+    #[test]
+    fn apply_resolved_field_backfills_no_matching_entry_ignored() {
+        let mut managed = vec![backfill_entry("yt-dlp", "yt-dlp-v2", None, None, None)];
+        let backfills =
+            vec![backfill_entry("ffmpeg", "ffmpeg-v7.1", Some("tag"), Some("ver"), Some("hash"))];
+        apply_resolved_field_backfills(&mut managed, &backfills);
+        assert_eq!(managed[0].resolved_tag, None);
+        assert_eq!(managed[0].resolved_version, None);
+        assert_eq!(managed[0].resolved_vcs_hash, None);
+    }
+
+    #[test]
+    fn apply_resolved_field_backfills_entry_not_in_backfills_unchanged() {
+        let mut managed =
+            vec![backfill_entry("sd", "sd-v1.1.0", Some("v1.1.0"), Some("1.1.0"), Some("xyz"))];
+        let backfills =
+            vec![backfill_entry("yt-dlp", "yt-dlp-v2", Some("v2"), Some("2.0"), Some("abc"))];
+        apply_resolved_field_backfills(&mut managed, &backfills);
+        assert_eq!(managed[0].resolved_tag.as_deref(), Some("v1.1.0"));
+        assert_eq!(managed[0].resolved_version.as_deref(), Some("1.1.0"));
+        assert_eq!(managed[0].resolved_vcs_hash.as_deref(), Some("xyz"));
     }
 }

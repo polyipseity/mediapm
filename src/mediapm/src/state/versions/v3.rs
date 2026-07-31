@@ -76,11 +76,11 @@ struct ToolRegistryEntryV2Bridge {
     #[serde(default)]
     pub deployed_at: u64,
     #[serde(default)]
-    pub resolved_tag: String,
+    pub resolved_tag: Option<String>,
     #[serde(default)]
-    pub resolved_version: String,
+    pub resolved_version: Option<String>,
     #[serde(default)]
-    pub resolved_vcs_hash: String,
+    pub resolved_vcs_hash: Option<String>,
 }
 
 /// V2-compatible MediaPmState for reading old state files.
@@ -181,9 +181,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:def456".to_string(),
                 deployed_at: 1_700_000_000,
-                resolved_tag: "v7.1".to_string(),
-                resolved_version: "7.1".to_string(),
-                resolved_vcs_hash: "abc".to_string(),
+                resolved_tag: Some("v7.1".to_string()),
+                resolved_version: Some("7.1".to_string()),
+                resolved_vcs_hash: Some("abc".to_string()),
             }],
             workflow_states: BTreeMap::new(),
         };
@@ -211,18 +211,18 @@ mod tests {
                     "canonical_version": "ffmpeg-v7.1",
                     "content_map_hash": "blake3:abc",
                     "deployed_at": 1000,
-                    "resolved_tag": "",
-                    "resolved_version": "",
-                    "resolved_vcs_hash": ""
+                    "resolved_tag": null,
+                    "resolved_version": null,
+                    "resolved_vcs_hash": null
                 },
                 "yt-dlp": {
                     "version": "v2",
                     "canonical_version": "yt-dlp-v2",
                     "content_map_hash": "blake3:def",
                     "deployed_at": 2000,
-                    "resolved_tag": "",
-                    "resolved_version": "",
-                    "resolved_vcs_hash": ""
+                    "resolved_tag": null,
+                    "resolved_version": null,
+                    "resolved_vcs_hash": null
                 }
             },
             "workflow_states": {}
@@ -262,9 +262,9 @@ mod tests {
         assert_eq!(entry.canonical_version, "ffmpeg-v7.1");
         assert_eq!(entry.content_map_hash, "blake3:abc123");
         assert_eq!(entry.deployed_at, 1_700_000_000);
-        assert_eq!(entry.resolved_tag, "v7.1");
-        assert_eq!(entry.resolved_version, "7.1");
-        assert_eq!(entry.resolved_vcs_hash, "abc123def");
+        assert_eq!(entry.resolved_tag.as_deref(), Some("v7.1"));
+        assert_eq!(entry.resolved_version.as_deref(), Some("7.1"));
+        assert_eq!(entry.resolved_vcs_hash.as_deref(), Some("abc123def"));
     }
 
     #[test]
@@ -386,9 +386,9 @@ mod tests {
             canonical_version: "ffmpeg-v7.1".to_string(),
             content_map_hash: String::new(),
             deployed_at: 1000,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
         }];
         let result = dedup_managed_tools(entries);
         assert_eq!(result.len(), 1);
@@ -403,9 +403,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 1000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
             ToolRegistryEntry {
                 tool_id: "ffmpeg".to_string(),
@@ -413,9 +413,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 2000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
         ];
         let result = dedup_managed_tools(entries);
@@ -432,9 +432,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 1000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
             ToolRegistryEntry {
                 tool_id: "ffmpeg".to_string(),
@@ -442,9 +442,9 @@ mod tests {
                 canonical_version: "ffmpeg-v6.0".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 2000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
         ];
         let result = dedup_managed_tools(entries);
@@ -460,9 +460,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 0,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
             ToolRegistryEntry {
                 tool_id: "yt-dlp".to_string(),
@@ -470,9 +470,9 @@ mod tests {
                 canonical_version: "yt-dlp-v2".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 0,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
         ];
         let result = dedup_managed_tools(entries);
@@ -491,9 +491,9 @@ mod tests {
                 canonical_version: "yt-dlp-v2".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 2000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
             ToolRegistryEntry {
                 tool_id: "ffmpeg".to_string(),
@@ -501,9 +501,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 3000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
             ToolRegistryEntry {
                 tool_id: "media-tagger".to_string(),
@@ -511,9 +511,9 @@ mod tests {
                 canonical_version: "media-tagger-v1.0".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 1000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
         ];
         let mut sorted = entries.clone();
@@ -559,9 +559,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 1000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
             ToolRegistryEntry {
                 tool_id: "yt-dlp".to_string(),
@@ -569,9 +569,9 @@ mod tests {
                 canonical_version: "yt-dlp-v2".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 1000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
         ];
         let state = MediaPmState {
@@ -597,9 +597,9 @@ mod tests {
                 canonical_version: "media-tagger-v1.0".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 1000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
             ToolRegistryEntry {
                 tool_id: "ffmpeg".to_string(),
@@ -607,9 +607,9 @@ mod tests {
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
                 deployed_at: 3000,
-                resolved_tag: String::new(),
-                resolved_version: String::new(),
-                resolved_vcs_hash: String::new(),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
             },
         ];
         let state = MediaPmState {

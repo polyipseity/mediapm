@@ -15,7 +15,7 @@ use mediapm_conductor::{RuntimeStoragePaths, SimpleConductor};
 use url::Url;
 
 use crate::conductor_bridge::documents::{ConductorToolRow, list_tools};
-use crate::conductor_bridge::sync::reconcile_desired_tools;
+use crate::conductor_bridge::sync::{apply_resolved_field_backfills, reconcile_desired_tools};
 use crate::config::{
     MediaPmState, MediaRuntimeStorage, MediaSourceSpec, ToolRequirement, load_mediapm_document,
     load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
@@ -793,6 +793,12 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         for record in &report.tool_records {
             state.managed_tools.push(record.clone());
         }
+        // Apply skip-path resolved-field backfills in place: fill `None`
+        // resolved fields from fresh provider metadata for skipped tools.
+        // Identity fields are preserved, existing `Some` values are never
+        // overwritten, and it is a no-op when nothing differs (keeps re-sync
+        // state.json byte-identical).
+        apply_resolved_field_backfills(&mut state.managed_tools, &report.resolved_field_backfills);
         save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
 
         Ok(ToolsSyncSummary {

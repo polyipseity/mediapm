@@ -45,9 +45,9 @@ fn state_round_trip() {
             canonical_version: String::new(),
             content_map_hash: "blake3:def456".to_string(),
             deployed_at: 1_700_000_000,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
         }],
         workflow_states: BTreeMap::new(),
     };
@@ -202,9 +202,9 @@ fn json_save_idempotent() {
             canonical_version: String::new(),
             content_map_hash: "blake3:y".to_string(),
             deployed_at: 1_700_000_000,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
         }],
         workflow_states: BTreeMap::new(),
     };
@@ -270,9 +270,9 @@ fn tool_registry_entry_round_trip() {
         canonical_version: "abc123".to_string(),
         content_map_hash: String::new(),
         deployed_at: 0,
-        resolved_tag: String::new(),
-        resolved_version: String::new(),
-        resolved_vcs_hash: String::new(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
     };
     let json = serde_json::to_value(&entry).expect("serialize");
     let back: ToolRegistryEntry = serde_json::from_value(json).expect("deserialize");
@@ -304,9 +304,9 @@ fn tool_registry_entry_normalize_drops_blank_entry() {
         canonical_version: "".to_string(),
         content_map_hash: String::new(),
         deployed_at: 0,
-        resolved_tag: String::new(),
-        resolved_version: String::new(),
-        resolved_vcs_hash: String::new(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
     });
     state.normalize();
     assert!(state.managed_tools.is_empty(), "blank entry should be dropped");
@@ -321,9 +321,9 @@ fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
         canonical_version: "abc123".to_string(),
         content_map_hash: String::new(),
         deployed_at: 0,
-        resolved_tag: String::new(),
-        resolved_version: String::new(),
-        resolved_vcs_hash: String::new(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
     });
     state.normalize();
     assert_eq!(state.managed_tools.len(), 1, "entry with canonical_version should survive");
@@ -338,9 +338,9 @@ fn state_normalize_retains_tool_with_canonical_version() {
         canonical_version: "abc123".to_string(),
         content_map_hash: String::new(),
         deployed_at: 0,
-        resolved_tag: String::new(),
-        resolved_version: String::new(),
-        resolved_vcs_hash: String::new(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
     });
     state.normalize();
     assert!(
@@ -358,9 +358,9 @@ fn state_normalize_drops_tool_with_all_blank() {
         canonical_version: "".to_string(),
         content_map_hash: String::new(),
         deployed_at: 0,
-        resolved_tag: String::new(),
-        resolved_version: String::new(),
-        resolved_vcs_hash: String::new(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
     });
     state.normalize();
     assert!(
@@ -380,9 +380,9 @@ fn canonical_version_json_round_trip() {
             canonical_version: (*v).to_string(),
             content_map_hash: String::new(),
             deployed_at: 0,
-            resolved_tag: String::new(),
-            resolved_version: String::new(),
-            resolved_vcs_hash: String::new(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
         };
         let json = serde_json::to_value(&entry).unwrap();
         let back: ToolRegistryEntry = serde_json::from_value(json).unwrap();
@@ -398,9 +398,9 @@ fn tool_registry_entry_serialization_includes_version() {
         canonical_version: "v1.0.0".to_string(),
         content_map_hash: String::new(),
         deployed_at: 0,
-        resolved_tag: String::new(),
-        resolved_version: String::new(),
-        resolved_vcs_hash: String::new(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
     };
     let json = serde_json::to_value(&entry).unwrap();
     let map = json.as_object().expect("ToolRegistryEntry should serialize to a JSON object");

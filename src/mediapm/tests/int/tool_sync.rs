@@ -376,9 +376,9 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
         canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
         content_map_hash: "blake3:abc".to_string(),
         deployed_at: 0,
-        resolved_tag: String::new(),
-        resolved_version: String::new(),
-        resolved_vcs_hash: String::new(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
     });
     assert!(!service.logical_tool_requires_sync("media-tagger", &state).await?);
     Ok(())
@@ -539,9 +539,9 @@ async fn sync_upgrades_v2_state_to_v3_format() -> Result<(), mediapm::MediaPmErr
                 "canonical_version": "ffmpeg-v7.1",
                 "content_map_hash": "blake3:abc123",
                 "deployed_at": 1_700_000_000,
-                "resolved_tag": "",
-                "resolved_version": "",
-                "resolved_vcs_hash": ""
+                "resolved_tag": null,
+                "resolved_version": null,
+                "resolved_vcs_hash": null
             }
         },
         "workflow_states": {}
@@ -713,9 +713,9 @@ async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm
         canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
         content_map_hash: "blake3:abc".to_string(),
         deployed_at: 0,
-        resolved_tag: String::new(),
-        resolved_version: String::new(),
-        resolved_vcs_hash: String::new(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
     });
 
     // composite should match → no sync needed
@@ -746,9 +746,9 @@ async fn sync_logical_requires_sync_on_composite_mismatch() -> Result<(), mediap
         canonical_version: "some-wrong-version".to_string(),
         content_map_hash: "blake3:abc".to_string(),
         deployed_at: 0,
-        resolved_tag: String::new(),
-        resolved_version: String::new(),
-        resolved_vcs_hash: String::new(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
     });
 
     // composite differs → needs sync
