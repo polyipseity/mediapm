@@ -2253,14 +2253,21 @@ mod inner {
             let elapsed_str = format_elapsed(snap.elapsed);
             let color_code = bar_color_code(snap.status, is_overall);
             // Compose a fresh suffix component set each tick: auto fields from
-            // snapshot + ticker timing, custom from user-set components.
+            // snapshot + ticker timing, user-set fields from stored components.
+            // Stored non-empty fields override the auto-derived ones; stored
+            // rate/eta override when Some; empty fields auto-fill.
+            let stored = &snap.suffix_components;
             let fresh_suffix = SuffixComponents {
-                count: count_str,
-                total: total_str,
-                elapsed: elapsed_str,
-                rate: rate_str.map(str::to_owned),
-                eta: eta_str.map(str::to_owned),
-                custom: snap.suffix_components.custom.clone(),
+                count: if stored.count.is_empty() { count_str } else { stored.count.clone() },
+                total: if stored.total.is_empty() { total_str } else { stored.total.clone() },
+                elapsed: if stored.elapsed.is_empty() {
+                    elapsed_str
+                } else {
+                    stored.elapsed.clone()
+                },
+                rate: stored.rate.clone().or_else(|| rate_str.map(str::to_owned)),
+                eta: stored.eta.clone().or_else(|| eta_str.map(str::to_owned)),
+                custom: stored.custom.clone(),
             };
 
             // Truncate prefix to fit template width, accounting for ANSI
