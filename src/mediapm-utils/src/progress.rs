@@ -937,17 +937,18 @@ mod inner {
         pub custom: String,
     }
 
-    /// Heuristic-parse a combined prefix string into [`PrefixComponents`].
+    /// Parse an `add_bar` label into [`PrefixComponents`].
     ///
     /// Parsing rules:
     /// - First whitespace-bounded token = tool_name.
     /// - Trailing `[phase]` (last bracket pair) = phase inner text.
     /// - Trailing `digits/digits` after bracket = count.
     /// - Remainder between tool_name and `[` = version.
-    /// - If no `[` found: tool_name = entire string, rest empty.
+    /// - If no `[` found: tool_name = entire string (single or multi-word),
+    ///   except a trailing space-separated `count/total` token is split off.
     ///
-    /// This is a best-effort parser used for backward compat and will be
-    /// replaced once all callers provide components directly (Phase 4+).
+    /// Labels are the single identity source for a bar; structured
+    /// `set_prefix_components` calls override the parsed components later.
     pub fn prefix_components_from_str(s: &str) -> PrefixComponents {
         let s = s.trim();
         if s.is_empty() {
@@ -969,13 +970,21 @@ mod inner {
             };
             PrefixComponents { marker: String::new(), tool_name, version, phase, count, total }
         } else {
-            // No brackets — entire string is tool name (single word or multi-word).
-            let (count, total) = split_count_total(if s.contains('/') {
-                // Last space-separated token that looks like count
-                s.split_whitespace().last().unwrap_or("")
-            } else {
-                ""
-            });
+            // No brackets — the entire string is the tool name (single or
+            // multi-word), except a trailing space-separated count/total
+            // token (containing `/`) is split off into `count`/`total`.
+            let (tool_name, count, total) = match s.rfind(' ') {
+                Some(space) => {
+                    let (head, tail) = s.split_at(space + 1);
+                    let (count, total) = split_count_total(tail.trim());
+                    if total.is_empty() {
+                        (s.to_string(), String::new(), String::new())
+                    } else {
+                        (head.trim().to_string(), count, total)
+                    }
+                }
+                None => (s.to_string(), String::new(), String::new()),
+            };
             PrefixComponents {
                 marker: String::new(),
                 tool_name,
@@ -1418,10 +1427,7 @@ mod inner {
                 position: AtomicU64::new(0),
                 total: AtomicU64::new(total),
                 label: RwLock::new(label.to_string()),
-                prefix_components: RwLock::new(PrefixComponents {
-                    tool_name: label.to_string(),
-                    ..Default::default()
-                }),
+                prefix_components: RwLock::new(prefix_components_from_str(label)),
                 suffix_components: RwLock::new(SuffixComponents::default()),
                 status: AtomicU8::new(0),
                 dirty: AtomicBool::new(true),
