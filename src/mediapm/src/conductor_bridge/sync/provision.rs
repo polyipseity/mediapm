@@ -238,10 +238,12 @@ pub(super) async fn fetch_and_import_tool_payload(
     let fetch_version_suffix = version_suffix.clone();
     let fetch_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
         fetch_bar_cb.set_prefix_components(PrefixComponents {
+            marker: String::new(),
             tool_name: fetch_tool_id.clone(),
             version: fetch_version_suffix.trim().to_string(),
             phase: "fch".to_string(),
-            count: format!("{}/{}", snap.items.0, snap.items.1),
+            count: snap.items.0.to_string(),
+            total: snap.items.1.to_string(),
         });
         fetch_bar_cb.set_position(snap.bytes.0);
         fetch_bar_cb.set_total(snap.bytes.1);
@@ -274,10 +276,12 @@ pub(super) async fn fetch_and_import_tool_payload(
     let pp_version_suffix = version_suffix.clone();
     let pp_progress: Option<ProviderProgressCallback> = Some(Arc::new(move |snap| {
         process_bar_cb.set_prefix_components(PrefixComponents {
+            marker: String::new(),
             tool_name: pp_tool_id.clone(),
             version: pp_version_suffix.trim().to_string(),
             phase: "pro".to_string(),
-            count: format!("{}/{}", snap.items.0, snap.items.1),
+            count: snap.items.0.to_string(),
+            total: snap.items.1.to_string(),
         });
         process_bar_cb.set_position(snap.bytes.0);
         process_bar_cb.set_total(snap.bytes.1);

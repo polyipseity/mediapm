@@ -862,34 +862,44 @@ mod inner {
         s
     }
 
-    /// Build prefix: always starts with ANSI reset to clear any SGR state
-    /// from preceding template fields (e.g. `{spinner:.green}`).
-    /// Normal states return just the prefix; failed/abandoned add a colored
-    /// bracket before the prefix.
-    pub(super) fn build_prefix(status: TrackStatus, prefix: &str) -> String {
-        let reset = "\x1b[0m";
-        match status {
-            TrackStatus::Failed => format!("{reset}\x1b[31m[F]\x1b[0m {prefix}"),
-            TrackStatus::Abandoned => format!("{reset}\x1b[33m[A]\x1b[0m {prefix}"),
-            _ => format!("{reset}{prefix}"),
-        }
-    }
-
     // ---- Source-data component types -----------------------------------
 
     /// Source components of a progress prefix, stored separately so
     /// [`semantic_truncate_prefix`] receives individual fields directly
     /// rather than a combined string that must be re-parsed.
+    ///
+    /// Normative truncation spec (removal order, least-important first):
+    ///
+    /// 1. `version` — progressive shrink (right-to-left, keeping left prefix)
+    /// 2. `count`/`total` — removed entirely, as one atomic pair
+    /// 3. `phase` — removed entirely
+    /// 4. `marker` — removed entirely
+    /// 5. `tool_name` — progressive shrink
+    /// 6. fallback — hard truncate whatever remains to the width budget
+    ///
+    /// Storage rule: `count` and `total` are stored as separate fields but
+    /// rendered together (`{count}/{total}`) and trimmed together as one
+    /// atomic unit — a bare count or bare total is never shown.
+    ///
+    /// Marker render rule: `marker` (set to `F` for failed, `A` for
+    /// abandoned, else empty) renders as a colored `[{marker}] ` bracket —
+    /// red for [`TrackStatus::Failed`], yellow for
+    /// [`TrackStatus::Abandoned`] — when non-empty. The marker brackets are
+    /// visible characters that participate in truncation.
     #[derive(Debug, Clone, PartialEq, Eq, Default)]
     pub struct PrefixComponents {
+        /// Status marker (`F` failed, `A` abandoned), empty when no marker.
+        pub marker: String,
         /// Tool/binary name (always present).
         pub tool_name: String,
         /// Version suffix (e.g. `@7.1`), empty when absent.
         pub version: String,
         /// Phase tag (e.g. `pro`, `fch`, `dl`), empty when absent.
         pub phase: String,
-        /// Count/total string (e.g. `2/5`), empty when absent.
+        /// Count (numerator), rendered with `total` as `{count}/{total}`.
         pub count: String,
+        /// Total (denominator), rendered with `count` as `{count}/{total}`.
+        pub total: String,
     }
 
     /// Source components of a progress suffix, stored separately so
@@ -949,8 +959,7 @@ mod inner {
                 bracket_start + s[bracket_start..].find(']').map(|i| i + 1).unwrap_or(0);
             let phase = s[(bracket_start + 1)..(bracket_end - 1)].trim().to_string();
             let after_bracket = s[bracket_end..].trim();
-            let count =
-                if after_bracket.contains('/') { after_bracket.to_string() } else { String::new() };
+            let (count, total) = split_count_total(after_bracket);
             let between = s[tool_name.len()..bracket_start].trim();
             // between might contain the count text if it appears before bracket
             let version = if !between.is_empty() && !between.contains('/') {
@@ -958,25 +967,66 @@ mod inner {
             } else {
                 String::new()
             };
-            PrefixComponents { tool_name, version, phase, count }
+            PrefixComponents { marker: String::new(), tool_name, version, phase, count, total }
         } else {
             // No brackets — entire string is tool name (single word or multi-word).
-            let count = if s.contains('/') {
+            let (count, total) = split_count_total(if s.contains('/') {
                 // Last space-separated token that looks like count
-                s.split_whitespace().last().unwrap_or("").to_string()
+                s.split_whitespace().last().unwrap_or("")
             } else {
-                String::new()
-            };
-            PrefixComponents { tool_name, version: String::new(), phase: String::new(), count }
+                ""
+            });
+            PrefixComponents {
+                marker: String::new(),
+                tool_name,
+                version: String::new(),
+                phase: String::new(),
+                count,
+                total,
+            }
+        }
+    }
+
+    /// Split a `count/total` token (e.g. `2/5`) into separate fields.
+    /// Returns empty strings when the token contains no `/`.
+    fn split_count_total(token: &str) -> (String, String) {
+        match token.split_once('/') {
+            Some((count, total)) => (count.trim().to_string(), total.trim().to_string()),
+            None => (String::new(), String::new()),
         }
     }
 
     /// Render [`PrefixComponents`] into the combined prefix display string.
     ///
-    /// Format: `{tool_name}[ {version}][ [{phase}]][ {count}]`
-    /// Sections with empty strings are omitted.
-    pub fn render_prefix_components(parts: &PrefixComponents) -> String {
-        let mut s = parts.tool_name.clone();
+    /// The render always starts with an ANSI reset to clear any SGR state
+    /// from preceding template fields (e.g. `{spinner:.green}`). A non-empty
+    /// `marker` renders as a colored `[{marker}] ` bracket — red for
+    /// [`TrackStatus::Failed`], yellow for [`TrackStatus::Abandoned`],
+    /// uncolored for other statuses. Then components render as
+    /// `{tool_name}[ {version}][ [{phase}]][ {count}/{total}]`; empty
+    /// sections are omitted, and `count`/`total` render only as a pair.
+    pub fn render_prefix_components(parts: &PrefixComponents, status: TrackStatus) -> String {
+        let mut s = String::from("\x1b[0m");
+        if !parts.marker.is_empty() {
+            match status {
+                TrackStatus::Failed => {
+                    s.push_str("\x1b[31m[");
+                    s.push_str(&parts.marker);
+                    s.push_str("]\x1b[0m ");
+                }
+                TrackStatus::Abandoned => {
+                    s.push_str("\x1b[33m[");
+                    s.push_str(&parts.marker);
+                    s.push_str("]\x1b[0m ");
+                }
+                _ => {
+                    s.push('[');
+                    s.push_str(&parts.marker);
+                    s.push_str("] ");
+                }
+            }
+        }
+        s.push_str(&parts.tool_name);
         if !parts.version.is_empty() {
             s.push(' ');
             s.push_str(&parts.version);
@@ -986,9 +1036,11 @@ mod inner {
             s.push_str(&parts.phase);
             s.push(']');
         }
-        if !parts.count.is_empty() {
+        if !parts.count.is_empty() || !parts.total.is_empty() {
             s.push(' ');
             s.push_str(&parts.count);
+            s.push('/');
+            s.push_str(&parts.total);
         }
         s
     }
@@ -1038,15 +1090,6 @@ mod inner {
         strip_ansi(s).chars().count()
     }
 
-    /// Overhead in visible chars for the status marker in the prefix
-    /// (`[F] ` or `[A] ` = 4 chars) vs normal (0).
-    pub(super) fn prefix_overhead(status: TrackStatus) -> usize {
-        match status {
-            TrackStatus::Failed | TrackStatus::Abandoned => 4,
-            _ => 0,
-        }
-    }
-
     /// Maximum visible width for the prefix field based on terminal width.
     pub(super) const fn max_prefix_width(cols: u16) -> usize {
         if cols >= 60 { 30 } else { 25 }
@@ -1057,118 +1100,103 @@ mod inner {
         if cols >= 60 { 55 } else { 40 }
     }
 
-    /// Remove visible characters from the right end of a byte range within a
-    /// string, down to at most `max_bare` visible chars. The range contains
-    /// `range_len` visible chars. If the range already fits, nothing changes.
-    /// The range must be valid UTF-8 boundaries.
-    /// Progressively truncate a prefix (built from [`PrefixComponents`]) so
-    /// that its visible width fits within `max_width` after accounting for
-    /// [`prefix_overhead`] from `status`.
+    /// Progressively truncate prefix [`PrefixComponents`] so the rendered
+    /// visible width fits within `max_width`.
     ///
-    /// Sections are removed in this order:
-    /// 1. Version string
-    /// 2. Count/total (`N/M`)
-    /// 3. Phase tag (`[phase]`)
-    /// 4. Tool name (first word, progressively shrunk)
-    /// 5. Hard truncate
+    /// Normative truncation spec (removal order, least-important first):
     ///
-    /// No string re-parsing — all component fields come directly from
-    /// [`PrefixComponents`] source data.
+    /// 1. `version` — progressive shrink (right-to-left, keeping left prefix)
+    /// 2. `count`/`total` — removed entirely, as one atomic pair
+    /// 3. `phase` — removed entirely
+    /// 4. `marker` — removed entirely
+    /// 5. `tool_name` — progressive shrink
+    /// 6. fallback — hard truncate whatever remains to the width budget
+    ///
+    /// Storage rule: `count` and `total` are stored as separate fields but
+    /// rendered together (`{count}/{total}`) and trimmed together as one
+    /// atomic unit — a bare count or bare total is never shown. The `marker`
+    /// is data like any other component: its brackets are visible characters
+    /// that participate in truncation, and it is dropped before the tool name
+    /// starts shrinking.
+    ///
+    /// Fit is measured on the component render (the components themselves
+    /// carry no ANSI escapes — coloring is applied at render time).
     pub(super) fn semantic_truncate_prefix(
         parts: &PrefixComponents,
         max_width: usize,
-        status: TrackStatus,
-    ) -> String {
-        let oh = prefix_overhead(status);
-        let eff_max = max_width.saturating_sub(oh);
-
-        // Fast path.
-        let rendered = render_prefix_components(parts);
-        if rendered.chars().count() <= eff_max {
-            return rendered;
-        }
-
-        let tool_name = &parts.tool_name;
-        let mut version: &str = &parts.version;
-        let phase: &str = &parts.phase;
-        let mut count: &str = &parts.count;
-
-        let version_len = version.chars().count();
-        let count_len = count.chars().count();
-        let phase_len = phase.chars().count();
-        let tool_len = tool_name.chars().count();
-
-        // Helper: build a rendered prefix from individual component strings.
-        let build = |tool: &str, ver: &str, ph: &str, cnt: &str| -> String {
-            let mut s = tool.to_string();
-            if !ver.is_empty() {
-                s.push(' ');
-                s.push_str(ver);
+    ) -> PrefixComponents {
+        let fits = |p: &PrefixComponents| {
+            let mut w = p.tool_name.chars().count();
+            if !p.marker.is_empty() {
+                w += p.marker.chars().count() + 3; // `[`, `]`, ` `
             }
-            if !ph.is_empty() {
-                s.push_str(" [");
-                s.push_str(ph);
-                s.push(']');
+            if !p.version.is_empty() {
+                w += 1 + p.version.chars().count(); // ` `
             }
-            if !cnt.is_empty() {
-                s.push(' ');
-                s.push_str(cnt);
+            if !p.phase.is_empty() {
+                w += p.phase.chars().count() + 3; // ` [`, `]`
             }
-            s
+            if !p.count.is_empty() || !p.total.is_empty() {
+                w += p.count.chars().count() + p.total.chars().count() + 2; // ` `, `/`
+            }
+            w <= max_width
         };
+        if fits(parts) {
+            return parts.clone();
+        }
+        let mut out = parts.clone();
 
-        // 1. Version: progressively shrink, then try full removal.
-        if version_len > 0 {
+        // 1. Version: progressive shrink (right-to-left).
+        if !out.version.is_empty() {
+            let version_len = out.version.chars().count();
             for keep in (0..version_len).rev() {
-                let v: String = version.chars().take(keep).collect();
-                let candidate = build(tool_name, &v, phase, count);
-                if candidate.chars().count() <= eff_max {
-                    return candidate;
+                out.version = out.version.chars().take(keep).collect();
+                if fits(&out) {
+                    return out;
                 }
             }
-            version = "";
+            // Fully removed — continue to the next step.
         }
 
-        // 2. Count: progressively shrink, then try full removal.
-        if count_len > 0 {
-            for keep in (0..count_len).rev() {
-                let c: String = count.chars().take(keep).collect();
-                let candidate = build(tool_name, version, phase, &c);
-                if candidate.chars().count() <= eff_max {
-                    return candidate;
-                }
-            }
-            count = "";
-        }
-
-        // 3. Phase: progressively shrink inner text, then try full removal.
-        if phase_len > 0 {
-            for keep in (0..phase_len).rev() {
-                let p: String = phase.chars().take(keep).collect();
-                let candidate = build(tool_name, version, &p, count);
-                if candidate.chars().count() <= eff_max {
-                    return candidate;
-                }
-            }
-            // Full removal (including brackets).
-            let candidate = build(tool_name, version, "", count);
-            if candidate.chars().count() <= eff_max {
-                return candidate;
+        // 2. Count/total: removed entirely, as one atomic pair.
+        if !out.count.is_empty() || !out.total.is_empty() {
+            out.count = String::new();
+            out.total = String::new();
+            if fits(&out) {
+                return out;
             }
         }
 
-        // 4. Tool name only: progressively shrink.
-        if tool_len > 0 {
+        // 3. Phase: removed entirely (including brackets).
+        if !out.phase.is_empty() {
+            out.phase = String::new();
+            if fits(&out) {
+                return out;
+            }
+        }
+
+        // 4. Marker: removed entirely.
+        if !out.marker.is_empty() {
+            out.marker = String::new();
+            if fits(&out) {
+                return out;
+            }
+        }
+
+        // 5. Tool name: progressive shrink.
+        if !out.tool_name.is_empty() {
+            let tool_len = out.tool_name.chars().count();
             for keep in (0..tool_len).rev() {
-                let t: String = tool_name.chars().take(keep).collect();
-                if t.chars().count() <= eff_max {
-                    return t;
+                out.tool_name = out.tool_name.chars().take(keep).collect();
+                if fits(&out) {
+                    return out;
                 }
             }
         }
 
-        // 5. Hard truncate (only reachable for empty tool name).
-        String::new()
+        // 6. Fallback: hard truncate whatever remains (only reachable when
+        // every component is already empty).
+        out
     }
 
     /// Progressively truncate suffix [`SuffixComponents`] so the rendered
@@ -1407,21 +1435,31 @@ mod inner {
         fn snapshot(&self) -> TrackSnapshot {
             let pc = self.prefix_components.read().expect("shared_state prefix_components lock");
             let sc = self.suffix_components.read().expect("shared_state suffix_components lock");
+            let status = match self.status.load(Ordering::Relaxed) {
+                0 => TrackStatus::Active,
+                1 => TrackStatus::Success,
+                2 => TrackStatus::Failed,
+                3 => TrackStatus::Abandoned,
+                _ => TrackStatus::Finished,
+            };
+            // Fold the status marker into the prefix components so the marker
+            // is truncatable data rather than fixed overhead, then render the
+            // full display string (reset + colored marker + components).
+            let mut pc = pc.clone();
+            pc.marker = match status {
+                TrackStatus::Failed => "F".to_string(),
+                TrackStatus::Abandoned => "A".to_string(),
+                _ => String::new(),
+            };
             TrackSnapshot {
                 position: self.position.load(Ordering::Relaxed),
                 total: self.total.load(Ordering::Relaxed),
                 label: self.label.read().expect("shared_state label lock").clone(),
-                prefix: render_prefix_components(&pc),
-                prefix_components: pc.clone(),
+                prefix: render_prefix_components(&pc, status),
+                prefix_components: pc,
                 suffix: sc.custom.clone(),
                 suffix_components: sc.clone(),
-                status: match self.status.load(Ordering::Relaxed) {
-                    0 => TrackStatus::Active,
-                    1 => TrackStatus::Success,
-                    2 => TrackStatus::Failed,
-                    3 => TrackStatus::Abandoned,
-                    _ => TrackStatus::Finished,
-                },
+                status,
                 elapsed: self.elapsed(),
             }
         }
@@ -2242,8 +2280,10 @@ mod inner {
             };
 
             // Truncate prefix to fit template width, accounting for ANSI
-            // escapes added by build_prefix (which indicatif counts as visible
-            // chars). Normal: \x1b[0m = 4; failed/abandoned: \x1b[0m\x1b[3Xm\x1b[0m = 13.
+            // escapes added by render_prefix_components (which indicatif counts
+            // as visible chars). Normal: \x1b[0m = 4; failed/abandoned:
+            // \x1b[0m\x1b[3Xm\x1b[0m = 13. The marker brackets are visible data
+            // and consume the width budget via semantic_truncate_prefix.
             let ansi_overhead: usize = match snap.status {
                 TrackStatus::Failed | TrackStatus::Abandoned => 13,
                 _ => 4,
@@ -2251,9 +2291,8 @@ mod inner {
             let truncated_prefix = semantic_truncate_prefix(
                 &snap.prefix_components,
                 max_prefix_width(cols).saturating_sub(ansi_overhead),
-                snap.status,
             );
-            let new_prefix = build_prefix(snap.status, &truncated_prefix);
+            let new_prefix = render_prefix_components(&truncated_prefix, snap.status);
             if new_prefix != *slot.cache.prefix.borrow() {
                 slot.bar.set_prefix(new_prefix.clone());
                 *slot.cache.prefix.borrow_mut() = new_prefix;
@@ -3452,10 +3491,12 @@ mod tests {
     fn recording_handle_set_prefix_components_ops() {
         let h = RecordingTrackedHandle::new(100);
         h.set_prefix_components(PrefixComponents {
+            marker: String::new(),
             tool_name: "wget".into(),
             version: "1.2.3".into(),
             phase: "fch".into(),
-            count: "2/5".into(),
+            count: "2".into(),
+            total: "5".into(),
         });
 
         assert_eq!(
@@ -3464,7 +3505,7 @@ mod tests {
                 tool_name: "wget".into(),
                 version: "1.2.3".into(),
                 phase: "fch".into(),
-                count: "2/5".into(),
+                count: "2".into(),
             }]
         );
     }
@@ -3964,7 +4005,7 @@ mod tests {
         h.set_prefix("pfx");
         h.advance(7);
         let snap = h.snapshot();
-        assert_eq!(snap.prefix, "pfx");
+        assert_eq!(snap.prefix, "\x1b[0mpfx");
         assert_eq!(snap.position, 7);
         assert_eq!(snap.total, 100);
         assert!(matches!(snap.status, TrackStatus::Active));
@@ -4306,25 +4347,6 @@ mod tests {
     }
 
     #[test]
-    fn prefix_overhead_failed() {
-        assert_eq!(super::inner::prefix_overhead(super::TrackStatus::Failed), 4);
-    }
-
-    #[test]
-    fn prefix_overhead_abandoned() {
-        assert_eq!(super::inner::prefix_overhead(super::TrackStatus::Abandoned), 4);
-    }
-
-    #[test]
-    fn prefix_overhead_other() {
-        for status in
-            [super::TrackStatus::Active, super::TrackStatus::Success, super::TrackStatus::Finished]
-        {
-            assert_eq!(super::inner::prefix_overhead(status), 0, "{status:?}");
-        }
-    }
-
-    #[test]
     fn max_prefix_width_wide() {
         assert_eq!(super::inner::max_prefix_width(80), 30);
         assert_eq!(super::inner::max_prefix_width(60), 30);
@@ -4348,61 +4370,191 @@ mod tests {
         assert_eq!(super::inner::max_suffix_width(40), 40);
     }
 
-    // ---- render_prefix_components tests (Phase 1) -----------------------
+    // ---- render_prefix_components tests (Phase 2) -----------------------
 
     #[test]
     fn render_prefix_components_all_fields() {
-        let result = super::inner::render_prefix_components(&super::inner::PrefixComponents {
-            tool_name: "wget".into(),
-            version: "1.2.3".into(),
-            phase: "fch".into(),
-            count: "2/5".into(),
-        });
-        assert_eq!(result, "wget 1.2.3 [fch] 2/5", "all fields rendered");
+        let result = super::inner::render_prefix_components(
+            &super::inner::PrefixComponents {
+                marker: String::new(),
+                tool_name: "wget".into(),
+                version: "1.2.3".into(),
+                phase: "fch".into(),
+                count: "2".into(),
+                total: "5".into(),
+            },
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "\x1b[0mwget 1.2.3 [fch] 2/5", "all fields rendered");
     }
 
     #[test]
     fn render_prefix_components_empty_version() {
-        let result = super::inner::render_prefix_components(&super::inner::PrefixComponents {
-            tool_name: "wget".into(),
-            version: String::new(),
-            phase: "fch".into(),
-            count: "2/5".into(),
-        });
-        assert_eq!(result, "wget [fch] 2/5", "version omitted when empty");
+        let result = super::inner::render_prefix_components(
+            &super::inner::PrefixComponents {
+                marker: String::new(),
+                tool_name: "wget".into(),
+                version: String::new(),
+                phase: "fch".into(),
+                count: "2".into(),
+                total: "5".into(),
+            },
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "\x1b[0mwget [fch] 2/5", "version omitted when empty");
     }
 
     #[test]
     fn render_prefix_components_only_tool_name() {
-        let result = super::inner::render_prefix_components(&super::inner::PrefixComponents {
-            tool_name: "wget".into(),
-            version: String::new(),
-            phase: String::new(),
-            count: String::new(),
-        });
-        assert_eq!(result, "wget", "only tool name when rest empty");
+        let result = super::inner::render_prefix_components(
+            &super::inner::PrefixComponents {
+                marker: String::new(),
+                tool_name: "wget".into(),
+                version: String::new(),
+                phase: String::new(),
+                count: String::new(),
+                total: String::new(),
+            },
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "\x1b[0mwget", "only tool name when rest empty");
     }
 
     #[test]
     fn render_prefix_components_empty_phase_and_count() {
-        let result = super::inner::render_prefix_components(&super::inner::PrefixComponents {
-            tool_name: "wget".into(),
-            version: "1.2.3".into(),
-            phase: String::new(),
-            count: String::new(),
-        });
-        assert_eq!(result, "wget 1.2.3", "version without phase/count");
+        let result = super::inner::render_prefix_components(
+            &super::inner::PrefixComponents {
+                marker: String::new(),
+                tool_name: "wget".into(),
+                version: "1.2.3".into(),
+                phase: String::new(),
+                count: String::new(),
+                total: String::new(),
+            },
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "\x1b[0mwget 1.2.3", "version without phase/count");
     }
 
-    // ---- prefix_components_from_str tests (Phase 4) -----------------------
+    #[test]
+    fn render_prefix_components_marker_failed() {
+        let result = super::inner::render_prefix_components(
+            &super::inner::PrefixComponents {
+                marker: "F".into(),
+                tool_name: "wget".into(),
+                version: "1.2.3".into(),
+                phase: "fch".into(),
+                count: "2".into(),
+                total: "5".into(),
+            },
+            super::TrackStatus::Failed,
+        );
+        assert_eq!(
+            result, "\x1b[0m\x1b[31m[F]\x1b[0m wget 1.2.3 [fch] 2/5",
+            "failed marker rendered red"
+        );
+    }
+
+    #[test]
+    fn render_prefix_components_marker_abandoned() {
+        let result = super::inner::render_prefix_components(
+            &super::inner::PrefixComponents {
+                marker: "A".into(),
+                tool_name: "wget".into(),
+                version: "1.2.3".into(),
+                phase: "fch".into(),
+                count: "2".into(),
+                total: "5".into(),
+            },
+            super::TrackStatus::Abandoned,
+        );
+        assert_eq!(
+            result, "\x1b[0m\x1b[33m[A]\x1b[0m wget 1.2.3 [fch] 2/5",
+            "abandoned marker rendered yellow"
+        );
+    }
+
+    #[test]
+    fn render_prefix_components_normal_states_no_marker() {
+        for status in
+            [super::TrackStatus::Active, super::TrackStatus::Success, super::TrackStatus::Finished]
+        {
+            let result = super::inner::render_prefix_components(
+                &super::inner::PrefixComponents {
+                    marker: String::new(),
+                    tool_name: "child".into(),
+                    version: String::new(),
+                    phase: String::new(),
+                    count: String::new(),
+                    total: String::new(),
+                },
+                status,
+            );
+            assert_eq!(result, "\x1b[0mchild", "{status:?}: no bracket for empty marker");
+        }
+    }
+
+    #[test]
+    fn render_prefix_components_marker_uncolored_when_status_normal() {
+        // A non-empty marker with a normal status renders uncolored (no SGR
+        // color codes around the bracket).
+        let result = super::inner::render_prefix_components(
+            &super::inner::PrefixComponents {
+                marker: "F".into(),
+                tool_name: "wget".into(),
+                version: String::new(),
+                phase: String::new(),
+                count: String::new(),
+                total: String::new(),
+            },
+            super::TrackStatus::Active,
+        );
+        assert_eq!(result, "\x1b[0m[F] wget", "marker bracket uncolored for normal status");
+    }
+
+    #[test]
+    fn render_prefix_components_always_starts_with_reset() {
+        for status in [
+            super::TrackStatus::Active,
+            super::TrackStatus::Failed,
+            super::TrackStatus::Abandoned,
+            super::TrackStatus::Success,
+            super::TrackStatus::Finished,
+        ] {
+            let result = super::inner::render_prefix_components(
+                &super::inner::PrefixComponents {
+                    marker: "F".into(),
+                    tool_name: "foo".into(),
+                    version: String::new(),
+                    phase: String::new(),
+                    count: String::new(),
+                    total: String::new(),
+                },
+                status,
+            );
+            assert!(
+                result.starts_with("\x1b[0m"),
+                "{status:?}: expected \\x1b[0m prefix, got {result:?}"
+            );
+        }
+    }
+
+    /// Render truncated prefix components with Active status for assertions.
+    fn render_prefix(parts: &super::inner::PrefixComponents) -> String {
+        super::inner::render_prefix_components(parts, super::TrackStatus::Active)
+    }
+
+    // ---- prefix_components_from_str tests (Phase 2) -----------------------
 
     #[test]
     fn prefix_components_from_str_tool_name_only() {
         let result = super::inner::prefix_components_from_str("wget");
         assert_eq!(result.tool_name, "wget");
+        assert!(result.marker.is_empty());
         assert!(result.version.is_empty());
         assert!(result.phase.is_empty());
         assert!(result.count.is_empty());
+        assert!(result.total.is_empty());
     }
 
     #[test]
@@ -4411,107 +4563,198 @@ mod tests {
         assert_eq!(result.tool_name, "yt-dlp");
         assert_eq!(result.version, "2024.12.20");
         assert_eq!(result.phase, "fch");
-        assert_eq!(result.count, "2/5");
+        assert_eq!(result.count, "2");
+        assert_eq!(result.total, "5");
     }
 
-    // ---- semantic_truncate_prefix tests (Phase 3) -----------------------
+    // ---- semantic_truncate_prefix tests (Phase 2) -----------------------
 
-    #[test]
-    fn semantic_truncate_prefix_already_fits() {
-        let parts = super::inner::PrefixComponents {
+    fn prefix_parts_wget() -> super::inner::PrefixComponents {
+        super::inner::PrefixComponents {
+            marker: String::new(),
             tool_name: "wget".into(),
             version: "1.2.3".into(),
             phase: "fch".into(),
-            count: "2/5".into(),
-        };
-        let result = super::inner::semantic_truncate_prefix(&parts, 30, super::TrackStatus::Active);
-        assert_eq!(result, "wget 1.2.3 [fch] 2/5", "no truncation when fits");
+            count: "2".into(),
+            total: "5".into(),
+        }
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_already_fits() {
+        let parts = prefix_parts_wget();
+        let result = super::inner::semantic_truncate_prefix(&parts, 30);
+        assert_eq!(
+            render_prefix(&result),
+            "\x1b[0mwget 1.2.3 [fch] 2/5",
+            "no truncation when fits"
+        );
     }
 
     #[test]
     fn semantic_truncate_prefix_remove_version() {
-        let parts = super::inner::PrefixComponents {
-            tool_name: "wget".into(),
-            version: "1.2.3".into(),
-            phase: "fch".into(),
-            count: "2/5".into(),
-        };
-        // eff_max=17: version shrunk to "1."
-        let result = super::inner::semantic_truncate_prefix(&parts, 17, super::TrackStatus::Active);
-        assert_eq!(result, "wget 1. [fch] 2/5", "version shortened by 3 chars");
+        let parts = prefix_parts_wget();
+        // max=17: version shrunk to "1."
+        let result = super::inner::semantic_truncate_prefix(&parts, 17);
+        assert_eq!(
+            render_prefix(&result),
+            "\x1b[0mwget 1. [fch] 2/5",
+            "version shortened by 3 chars"
+        );
     }
 
     #[test]
     fn semantic_truncate_prefix_remove_version_full() {
-        let parts = super::inner::PrefixComponents {
-            tool_name: "wget".into(),
-            version: "1.2.3".into(),
-            phase: "fch".into(),
-            count: "2/5".into(),
-        };
-        // eff_max=15: version fully removed
-        let result = super::inner::semantic_truncate_prefix(&parts, 15, super::TrackStatus::Active);
-        assert_eq!(result, "wget [fch] 2/5", "version fully removed when excess covers it");
+        let parts = prefix_parts_wget();
+        // max=15: version fully removed
+        let result = super::inner::semantic_truncate_prefix(&parts, 15);
+        assert_eq!(
+            render_prefix(&result),
+            "\x1b[0mwget [fch] 2/5",
+            "version fully removed when excess covers it"
+        );
     }
 
     #[test]
-    fn semantic_truncate_prefix_remove_version_and_count() {
-        let parts = super::inner::PrefixComponents {
-            tool_name: "wget".into(),
-            version: "1.2.3".into(),
-            phase: "fch".into(),
-            count: "2/5".into(),
-        };
-        // eff_max=11: version and count removed
-        let result = super::inner::semantic_truncate_prefix(&parts, 11, super::TrackStatus::Active);
-        assert_eq!(result, "wget [fch]", "version and count removed");
+    fn semantic_truncate_prefix_remove_version_and_count_total() {
+        let parts = prefix_parts_wget();
+        // max=11: version and count/total removed
+        let result = super::inner::semantic_truncate_prefix(&parts, 11);
+        assert_eq!(render_prefix(&result), "\x1b[0mwget [fch]", "version and count/total removed");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_count_total_removed_atomically() {
+        let parts = prefix_parts_wget();
+        // max=12: version gone, count/total removed as one pair — a bare "2/"
+        // or "/5" must never appear.
+        let result = super::inner::semantic_truncate_prefix(&parts, 12);
+        assert_eq!(
+            render_prefix(&result),
+            "\x1b[0mwget [fch]",
+            "count/total removed as atomic pair"
+        );
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_phase_removed_atomically() {
+        let parts = prefix_parts_wget();
+        // max=8: count/total gone, phase removed entirely (never a bare "[f]")
+        let result = super::inner::semantic_truncate_prefix(&parts, 8);
+        assert_eq!(
+            render_prefix(&result),
+            "\x1b[0mwget",
+            "phase removed entirely, no partial bracket"
+        );
     }
 
     #[test]
     fn semantic_truncate_prefix_remove_version_count_phase() {
-        let parts = super::inner::PrefixComponents {
-            tool_name: "wget".into(),
-            version: "1.2.3".into(),
-            phase: "fch".into(),
-            count: "2/5".into(),
-        };
-        // eff_max=4: only tool name remains
-        let result = super::inner::semantic_truncate_prefix(&parts, 4, super::TrackStatus::Active);
-        assert_eq!(result, "wget", "tool name survives after version, count, phase removed");
+        let parts = prefix_parts_wget();
+        // max=4: only tool name remains
+        let result = super::inner::semantic_truncate_prefix(&parts, 4);
+        assert_eq!(
+            render_prefix(&result),
+            "\x1b[0mwget",
+            "tool name survives after version, count, phase removed"
+        );
     }
 
     #[test]
-    fn semantic_truncate_prefix_hard_truncate() {
-        let parts = super::inner::PrefixComponents {
-            tool_name: "wget".into(),
-            version: "1.2.3".into(),
-            phase: "fch".into(),
-            count: "2/5".into(),
-        };
-        // eff_max=2: hard truncate tool name
-        let result = super::inner::semantic_truncate_prefix(&parts, 2, super::TrackStatus::Active);
-        assert_eq!(result, "wg", "hard truncate to 2 chars");
+    fn semantic_truncate_prefix_tool_name_progressive_shrink() {
+        let parts = prefix_parts_wget();
+        // max=2: progressive shrink of tool name (no fallback string mangling)
+        let result = super::inner::semantic_truncate_prefix(&parts, 2);
+        assert_eq!(render_prefix(&result), "\x1b[0mwg", "tool name shrunk to 2 chars");
     }
 
     #[test]
     fn semantic_truncate_prefix_empty() {
         let parts = super::inner::PrefixComponents::default();
-        let result = super::inner::semantic_truncate_prefix(&parts, 30, super::TrackStatus::Active);
-        assert_eq!(result, "", "empty prefix stays empty");
+        let result = super::inner::semantic_truncate_prefix(&parts, 30);
+        assert_eq!(render_prefix(&result), "\x1b[0m", "empty prefix stays empty");
     }
 
     #[test]
-    fn semantic_truncate_prefix_failed_overhead() {
-        // Failed status has overhead of 4 visible chars.
-        // max_width=8, overhead=4, eff_max=4
+    fn semantic_truncate_prefix_marker_removed_before_tool_name() {
+        // Marker is truncatable data: dropped before the tool name shrinks.
         let parts = super::inner::PrefixComponents {
+            marker: "F".into(),
             tool_name: "wget".into(),
             version: String::new(),
             phase: "fch".into(),
-            count: "0/1".into(),
+            count: "0".into(),
+            total: "1".into(),
         };
-        let result = super::inner::semantic_truncate_prefix(&parts, 8, super::TrackStatus::Failed);
-        assert_eq!(result, "wget", "failed overhead accounted");
+        // max=7: marker (4) + tool (4) = 8 > 7 — marker removed, tool intact.
+        let result = super::inner::semantic_truncate_prefix(&parts, 7);
+        assert!(result.marker.is_empty(), "marker removed before tool name");
+        assert_eq!(render_prefix(&result), "\x1b[0mwget", "tool name intact after marker removal");
+        // max=3: marker removed first, then tool shrinks to 3 chars.
+        let result = super::inner::semantic_truncate_prefix(&parts, 3);
+        assert_eq!(render_prefix(&result), "\x1b[0mwge", "marker dropped before tool shrank");
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_marker_preserved_when_fits() {
+        // max=9: after count/total and phase removal, marker (4) + tool (4)
+        // = 8 <= 9 — marker preserved.
+        let parts = super::inner::PrefixComponents {
+            marker: "F".into(),
+            tool_name: "wget".into(),
+            version: String::new(),
+            phase: "fch".into(),
+            count: "0".into(),
+            total: "1".into(),
+        };
+        let result = super::inner::semantic_truncate_prefix(&parts, 9);
+        assert_eq!(
+            super::inner::render_prefix_components(&result, super::TrackStatus::Failed),
+            "\x1b[0m\x1b[31m[F]\x1b[0m wget",
+            "marker preserved when it fits"
+        );
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_marker_failed_effective_width() {
+        // max=4: marker (4) + tool (4) = 8 > 4 — marker removed so the tool
+        // name fits the effective width.
+        let parts = super::inner::PrefixComponents {
+            marker: "F".into(),
+            tool_name: "wget".into(),
+            version: String::new(),
+            phase: "fch".into(),
+            count: "0".into(),
+            total: "1".into(),
+        };
+        let result = super::inner::semantic_truncate_prefix(&parts, 4);
+        assert_eq!(
+            super::inner::render_prefix_components(&result, super::TrackStatus::Failed),
+            "\x1b[0mwget",
+            "marker removed to fit effective width"
+        );
+    }
+
+    #[test]
+    fn semantic_truncate_prefix_version_shrinks_first_long_version() {
+        // Regression: version must shrink (never mangle into a mid-char
+        // suffix) before any other component is touched.
+        let parts = super::inner::PrefixComponents {
+            marker: String::new(),
+            tool_name: "ffmpeg".into(),
+            version: "autobuild-2026-07-31".into(),
+            phase: "res".into(),
+            count: "2".into(),
+            total: "2".into(),
+        };
+        let result = super::inner::semantic_truncate_prefix(&parts, 30);
+        assert_eq!(
+            render_prefix(&result),
+            "\x1b[0mffmpeg autobuild-202 [res] 2/2",
+            "long version shrinks first, no mangled suffix"
+        );
+        let result = super::inner::semantic_truncate_prefix(&parts, 8);
+        assert_eq!(render_prefix(&result), "\x1b[0mffmpeg", "all optional components dropped");
     }
 
     // ---- semantic_truncate_suffix tests (Phase 1) -----------------------
@@ -4660,45 +4903,6 @@ mod tests {
         let parts = SuffixComponents { custom: "custom".into(), ..Default::default() };
         let result = super::inner::semantic_truncate_suffix(&parts, 10);
         assert_eq!(render_suffix(&result), " custom", "custom appended after empty auto");
-    }
-
-    #[test]
-    fn build_prefix_failed() {
-        let result = super::inner::build_prefix(super::TrackStatus::Failed, "wget");
-        assert_eq!(result, "\x1b[0m\x1b[31m[F]\x1b[0m wget");
-    }
-
-    #[test]
-    fn build_prefix_abandoned() {
-        let result = super::inner::build_prefix(super::TrackStatus::Abandoned, "wget");
-        assert_eq!(result, "\x1b[0m\x1b[33m[A]\x1b[0m wget");
-    }
-
-    #[test]
-    fn build_prefix_normal_states() {
-        for status in
-            [super::TrackStatus::Active, super::TrackStatus::Success, super::TrackStatus::Finished]
-        {
-            let result = super::inner::build_prefix(status, "child");
-            assert_eq!(result, "\x1b[0mchild");
-        }
-    }
-
-    #[test]
-    fn build_prefix_always_starts_with_reset() {
-        for status in [
-            super::TrackStatus::Active,
-            super::TrackStatus::Failed,
-            super::TrackStatus::Abandoned,
-            super::TrackStatus::Success,
-            super::TrackStatus::Finished,
-        ] {
-            let result = super::inner::build_prefix(status, "foo");
-            assert!(
-                result.starts_with("\x1b[0m"),
-                "{status:?}: expected \\x1b[0m prefix, got {result:?}"
-            );
-        }
     }
 
     #[test]
