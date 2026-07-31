@@ -886,6 +886,13 @@ mod inner {
     /// red for [`TrackStatus::Failed`], yellow for
     /// [`TrackStatus::Abandoned`] — when non-empty. The marker brackets are
     /// visible characters that participate in truncation.
+    ///
+    /// This struct is the prefix's structured single mechanism: initial
+    /// values come from parsing the `add_bar`/`with_overall` label at
+    /// construction, and [`TrackedHandle::set_prefix_components`] is the
+    /// only runtime mutation API. The removal order above is a normative
+    /// spec, verified verbatim by the `semantic_truncate_prefix_*` unit
+    /// suites.
     #[derive(Debug, Clone, PartialEq, Eq, Default)]
     pub struct PrefixComponents {
         /// Status marker (`F` failed, `A` abandoned), empty when no marker.
@@ -921,6 +928,15 @@ mod inner {
     ///
     /// Render rule: `eta` is rendered only when `rate` is present
     /// (eta-only-when-rate guard).
+    ///
+    /// This struct is the suffix's structured single mechanism:
+    /// [`TrackedHandle::set_suffix_components`] is the only mutation API
+    /// (the legacy `set_suffix(String)` is removed), and user-set fields
+    /// override the auto-derived ticker fields at sync time with empty
+    /// fields auto-filled. The removal order above is a normative spec,
+    /// verified verbatim by the `semantic_truncate_suffix_*` unit suites
+    /// and preserved unchanged through the user-override merge (the merge
+    /// guard tests assert truncation order still holds after merging).
     #[derive(Debug, Clone, PartialEq, Eq, Default)]
     pub struct SuffixComponents {
         /// Count (numerator), rendered with `total` as `{count}/{total}`.
@@ -1418,6 +1434,18 @@ mod inner {
             Self::with_time_source(total, label, Arc::new(RealTimeSource))
         }
 
+        /// Create shared state, parsing `label` into [`PrefixComponents`]
+        /// at construction time.
+        ///
+        /// This is the **single canonical construction path** for prefix
+        /// data: the `add_bar`/`with_overall` label is parsed once here via
+        /// [`prefix_components_from_str`], so even bars whose label was
+        /// never touched by [`set_prefix_components`] carry structured
+        /// components (tool name, version, phase, count/total) for
+        /// [`semantic_truncate_prefix`] to truncate field-by-field. The
+        /// legacy `set_prefix(String)` API that re-parsed at mutation time
+        /// has been removed — this construction-time parse plus
+        /// [`set_prefix_components`] is the only prefix mechanism.
         pub(crate) fn with_time_source(
             total: u64,
             label: &str,
@@ -1597,6 +1625,13 @@ mod inner {
 
         /// Set prefix components directly (source-data API).
         ///
+        /// This is the **single runtime prefix mutation API**. The initial
+        /// value always comes from parsing the `add_bar`/`with_overall`
+        /// label at construction (see [`SharedState::with_time_source`]);
+        /// this method overrides those parsed components with fully
+        /// structured source data. The legacy `set_prefix(String)` API has
+        /// been removed — there is no string mutation path left.
+        ///
         /// # Panics
         ///
         /// Panics if the shared-state `RwLock` is poisoned.
@@ -1614,8 +1649,15 @@ mod inner {
 
         /// Set suffix components directly (source-data API).
         ///
-        /// User-set fields override the auto-derived fields composed at sync
-        /// time; empty fields fall back to fresh ticker data.
+        /// This is the **single suffix mutation API** — the legacy
+        /// `set_suffix(String)` API has been removed, and the suffix always
+        /// flows through this structured path.
+        ///
+        /// Merge semantics (applied at [`sync_snapshot_to_bar`] time):
+        /// user-set fields override the auto-derived fields composed from
+        /// ticker data; empty user fields fall back to fresh ticker data,
+        /// so callers may set just the fields they care about (typically
+        /// `custom`) and leave the rest defaulted.
         ///
         /// # Panics
         ///
@@ -2545,6 +2587,11 @@ mod inner {
         }
 
         /// Add an overall aggregate bar pinned at the bottom.
+        ///
+        /// `label` is parsed into [`PrefixComponents`] at construction,
+        /// exactly like [`ProgressGroup::add_bar`] — the overall bar shares
+        /// the single canonical prefix path and the legacy `set_prefix(String)`
+        /// API does not exist here either.
         #[must_use]
         pub fn with_overall(mut self, label: &str, total: u64) -> Self {
             self.overall = Some((label.to_string(), total));
@@ -2717,6 +2764,14 @@ mod inner {
         }
 
         /// Add a child bar to the group.
+        ///
+        /// `label` is parsed into [`PrefixComponents`] at construction (see
+        /// [`SharedState::with_time_source`]), so the bar's prefix is
+        /// immediately structured — `[phase]` markers and `count/total`
+        /// survive truncation field-by-field. Use
+        /// [`TrackedHandle::set_prefix_components`] to replace the parsed
+        /// components with structured source data at runtime; there is no
+        /// string mutation API.
         ///
         /// Creates a tracking handle and (when a renderer is available)
         /// allocates a render slot for display.  When all slots are occupied
