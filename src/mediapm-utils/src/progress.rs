@@ -4577,6 +4577,79 @@ mod tests {
         assert_eq!(result.total, "5");
     }
 
+    #[test]
+    fn prefix_components_from_str_multiword_no_bracket() {
+        // No-bracket labels with multiple words keep the whole string as
+        // tool_name (regression: previously only the first token was kept).
+        let result = super::inner::prefix_components_from_str("syncing tools");
+        assert_eq!(result.tool_name, "syncing tools");
+        assert!(result.version.is_empty());
+        assert!(result.phase.is_empty());
+        assert!(result.count.is_empty());
+        assert!(result.total.is_empty());
+    }
+
+    #[test]
+    fn prefix_components_from_str_multiword_with_count_total() {
+        // A trailing count/total token after a multi-word tool name is split
+        // off; the rest of the string stays the tool name.
+        let result = super::inner::prefix_components_from_str("syncing tools 2/5");
+        assert_eq!(result.tool_name, "syncing tools");
+        assert!(result.version.is_empty());
+        assert!(result.phase.is_empty());
+        assert_eq!(result.count, "2");
+        assert_eq!(result.total, "5");
+    }
+
+    #[test]
+    fn prefix_components_from_str_keeps_no_bracket_trailing_nonslash_word() {
+        // A trailing word without `/` is NOT a count/total token — the whole
+        // string remains the tool name.
+        let result = super::inner::prefix_components_from_str("materializing files");
+        assert_eq!(result.tool_name, "materializing files");
+        assert!(result.version.is_empty());
+        assert!(result.phase.is_empty());
+        assert!(result.count.is_empty());
+        assert!(result.total.is_empty());
+    }
+
+    #[test]
+    fn shared_state_parses_label_into_components() {
+        // add_bar labels must be parsed into PrefixComponents at construction
+        // (regression: previously the entire label was stored as tool_name,
+        // so semantic truncation chopped `[res]` off resolve bars).
+        let h = TrackedHandle::with_label(100, "ffmpeg autobuild-2026-07-31 [res]");
+        let snap = h.snapshot();
+        assert_eq!(snap.prefix_components.tool_name, "ffmpeg");
+        assert_eq!(snap.prefix_components.version, "autobuild-2026-07-31");
+        assert_eq!(snap.prefix_components.phase, "res");
+        assert!(snap.prefix_components.count.is_empty());
+        assert!(snap.prefix_components.total.is_empty());
+
+        let h = TrackedHandle::with_label(100, "syncing tools");
+        let snap = h.snapshot();
+        assert_eq!(snap.prefix_components.tool_name, "syncing tools");
+
+        let h = TrackedHandle::with_label(100, "");
+        let snap = h.snapshot();
+        assert!(snap.prefix_components.tool_name.is_empty());
+        assert!(snap.prefix_components.version.is_empty());
+        assert!(snap.prefix_components.phase.is_empty());
+    }
+
+    #[test]
+    fn truncate_parsed_resolve_label_preserves_phase() {
+        // The user-reported symptom: a long resolve label truncated to the
+        // prefix budget must shrink the version first and keep `[res]`.
+        let parts = super::inner::prefix_components_from_str("ffmpeg autobuild-2026-07-31 [res]");
+        let result = super::inner::semantic_truncate_prefix(&parts, 26);
+        assert_eq!(result.tool_name, "ffmpeg");
+        assert_eq!(result.version, "autobuild-202");
+        assert_eq!(result.phase, "res");
+        assert!(result.count.is_empty());
+        assert!(result.total.is_empty());
+    }
+
     // ---- semantic_truncate_prefix tests (Phase 2) -----------------------
 
     fn prefix_parts_wget() -> super::inner::PrefixComponents {
