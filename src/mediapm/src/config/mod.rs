@@ -509,22 +509,31 @@ pub struct ToolRegistryEntry {
     pub deployed_at: u64,
     /// The git tag that was resolved during the last resolve phase.
     /// `None` (JSON `null`) when the provider does not resolve from tags;
-    /// empty strings never occur. Any `None` field must carry a documented
-    /// why-empty reason in the provider dispatch arm, the provider module
-    /// doc, and `provider-dispatch.instructions.md`.
-    #[serde(default)]
+    /// empty strings never occur and are rejected at load. Any `None` field
+    /// must carry a documented why-empty reason in the provider dispatch arm,
+    /// the provider module doc, and `provider-dispatch.instructions.md`.
+    #[serde(
+        default,
+        deserialize_with = "custom_deserializers::deserialize_optional_nonempty_string"
+    )]
     pub resolved_tag: Option<String>,
     /// The version string that was resolved during the last resolve phase.
     /// `None` (JSON `null`) when the provider does not produce a version
-    /// string; empty strings never occur. Why-empty documentation applies
-    /// (see `resolved_tag`).
-    #[serde(default)]
+    /// string; empty strings never occur and are rejected at load.
+    /// Why-empty documentation applies (see `resolved_tag`).
+    #[serde(
+        default,
+        deserialize_with = "custom_deserializers::deserialize_optional_nonempty_string"
+    )]
     pub resolved_version: Option<String>,
     /// The VCS hash that was resolved during the last resolve phase.
     /// `None` (JSON `null`) when the provider does not resolve from hashes;
-    /// empty strings never occur. Why-empty documentation applies (see
-    /// `resolved_tag`).
-    #[serde(default)]
+    /// empty strings never occur and are rejected at load. Why-empty
+    /// documentation applies (see `resolved_tag`).
+    #[serde(
+        default,
+        deserialize_with = "custom_deserializers::deserialize_optional_nonempty_string"
+    )]
     pub resolved_vcs_hash: Option<String>,
 }
 

@@ -52,3 +52,25 @@ where
 
     Err(serde::de::Error::custom("expected one non-negative integral number representable as u32"))
 }
+
+/// Deserializes an `Option<String>` that rejects the empty string.
+///
+/// Resolved tool fields (`resolved_tag`, `resolved_version`,
+/// `resolved_vcs_hash`) are `Option<String>` under the no-backwards-compat
+/// schema: empty is represented as `null` (`None`), never `""`. A JSON
+/// `""` value is invalid and rejected at load — stale state files are
+/// discarded and regenerated, never normalized.
+pub fn deserialize_optional_nonempty_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    match value {
+        Some(s) if s.is_empty() => {
+            Err(serde::de::Error::custom("empty string is invalid; use null instead"))
+        }
+        other => Ok(other),
+    }
+}

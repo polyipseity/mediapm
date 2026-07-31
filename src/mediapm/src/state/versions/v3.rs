@@ -75,11 +75,20 @@ struct ToolRegistryEntryV2Bridge {
     pub content_map_hash: Option<String>,
     #[serde(default)]
     pub deployed_at: u64,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::config::custom_deserializers::deserialize_optional_nonempty_string"
+    )]
     pub resolved_tag: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::config::custom_deserializers::deserialize_optional_nonempty_string"
+    )]
     pub resolved_version: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::config::custom_deserializers::deserialize_optional_nonempty_string"
+    )]
     pub resolved_vcs_hash: Option<String>,
 }
 
