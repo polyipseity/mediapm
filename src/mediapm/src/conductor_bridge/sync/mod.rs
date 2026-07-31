@@ -496,6 +496,8 @@ pub(crate) async fn reconcile_desired_tools(
         // arm always runs before any read (other paths `continue`).
         #[allow(unused_assignments)]
         let mut resolved_canonical_version = String::new();
+        // Bridge: ToolRegistryEntry.resolved_tag is still `String` until the
+        // Phase 3 schema change; unwrap_or_default() is removed there.
         #[allow(unused_assignments)]
         let mut resolved_tag_value = String::new();
         let pre_resolved = match provider::resolve_tool_fetch(
@@ -505,16 +507,13 @@ pub(crate) async fn reconcile_desired_tools(
         )
         .await
         {
-            Ok((
-                fetch,
-                human_readable_version,
-                canonical_version,
-                _metadata_cached,
-                _metadata_fetch_count,
-                resolved_tag,
-            )) => {
+            Ok((fetch, metadata)) => {
+                let human_readable_version = metadata.human_readable_version.clone();
+                let canonical_version = metadata.canonical_version.clone();
+                let _metadata_cached = metadata.metadata_cached;
+                let _metadata_fetch_count = metadata.metadata_fetch_count;
                 resolved_canonical_version = canonical_version.clone();
-                resolved_tag_value = resolved_tag.clone();
+                resolved_tag_value = metadata.resolved_tag.clone().unwrap_or_default();
 
                 // --- Post-resolve validation: verify resolved result matches desired spec ---
                 match &tool_req.version_spec {
@@ -574,17 +573,17 @@ pub(crate) async fn reconcile_desired_tools(
                         version: expected_composite.clone(),
                         metadata_cached: _metadata_cached,
                         metadata_fetch_count: _metadata_fetch_count,
-                        resolved_tag: resolved_tag.clone(),
+                        resolved_tag: metadata.resolved_tag.clone(),
+                        resolved_version: metadata.resolved_version.clone(),
+                        resolved_vcs_hash: metadata.resolved_vcs_hash.clone(),
                     }
                 } else {
-                    PreResolveOutcome::Resolved(
-                        fetch,
-                        human_readable_version,
-                        expected_composite,
-                        _metadata_cached,
-                        _metadata_fetch_count,
-                        resolved_tag,
-                    )
+                    // The composite canonical_version (including same-step dep
+                    // versions) overrides the provider's canonical_version for
+                    // provisioning identity.
+                    let mut provision_metadata = metadata;
+                    provision_metadata.canonical_version = expected_composite;
+                    PreResolveOutcome::Resolved(fetch, provision_metadata)
                 }
             }
             Err(e) => {

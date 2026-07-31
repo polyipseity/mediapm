@@ -203,7 +203,8 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             )
             .await
             {
-                Ok((_, _, resolved_canonical_version, _, _, _)) => {
+                Ok((_, metadata)) => {
+                    let resolved_canonical_version = metadata.canonical_version;
                     // Build live_state from managed tools and compute composite
                     // canonical_version for apples-to-apples comparison.
                     let live_state =
