@@ -870,6 +870,55 @@ mod inner {
         }
     }
 
+    // ---- Source-data component types -----------------------------------
+
+    /// Source components of a progress prefix, stored separately so
+    /// [`semantic_truncate_prefix`] receives individual fields directly
+    /// rather than a combined string that must be re-parsed.
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    pub struct PrefixComponents {
+        /// Tool/binary name (always present).
+        pub tool_name: String,
+        /// Version suffix (e.g. `@7.1`), empty when absent.
+        pub version: String,
+        /// Phase tag (e.g. `pro`, `fch`, `dl`), empty when absent.
+        pub phase: String,
+        /// Count/total string (e.g. `2/5`), empty when absent.
+        pub count: String,
+    }
+
+    /// Source component of a progress suffix, stored separately so
+    /// [`semantic_truncate_suffix`] receives the custom text directly
+    /// without string re-parsing.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[expect(dead_code)]
+    pub struct SuffixComponents {
+        /// Custom suffix text appended after the auto-computed RHS.
+        pub custom: String,
+    }
+
+    /// Render [`PrefixComponents`] into the combined prefix display string.
+    ///
+    /// Format: `{tool_name}[ {version}][ [{phase}]][ {count}]`
+    /// Sections with empty strings are omitted.
+    pub fn render_prefix_components(parts: &PrefixComponents) -> String {
+        let mut s = parts.tool_name.clone();
+        if !parts.version.is_empty() {
+            s.push(' ');
+            s.push_str(&parts.version);
+        }
+        if !parts.phase.is_empty() {
+            s.push_str(" [");
+            s.push_str(&parts.phase);
+            s.push(']');
+        }
+        if !parts.count.is_empty() {
+            s.push(' ');
+            s.push_str(&parts.count);
+        }
+        s
+    }
+
     // ---- ANSI-safe truncation helpers -----------------------------------
 
     /// Strip ANSI SGR escape sequences (`\x1b[...m`) from `s`.
@@ -4115,6 +4164,52 @@ mod tests {
     fn max_message_width_compact() {
         assert_eq!(super::inner::max_message_width(59), 40);
         assert_eq!(super::inner::max_message_width(40), 40);
+    }
+
+    // ---- render_prefix_components tests (Phase 1) -----------------------
+
+    #[test]
+    fn render_prefix_components_all_fields() {
+        let result = super::inner::render_prefix_components(&super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: "1.2.3".into(),
+            phase: "fch".into(),
+            count: "2/5".into(),
+        });
+        assert_eq!(result, "wget 1.2.3 [fch] 2/5", "all fields rendered");
+    }
+
+    #[test]
+    fn render_prefix_components_empty_version() {
+        let result = super::inner::render_prefix_components(&super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: String::new(),
+            phase: "fch".into(),
+            count: "2/5".into(),
+        });
+        assert_eq!(result, "wget [fch] 2/5", "version omitted when empty");
+    }
+
+    #[test]
+    fn render_prefix_components_only_tool_name() {
+        let result = super::inner::render_prefix_components(&super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: String::new(),
+            phase: String::new(),
+            count: String::new(),
+        });
+        assert_eq!(result, "wget", "only tool name when rest empty");
+    }
+
+    #[test]
+    fn render_prefix_components_empty_phase_and_count() {
+        let result = super::inner::render_prefix_components(&super::inner::PrefixComponents {
+            tool_name: "wget".into(),
+            version: "1.2.3".into(),
+            phase: String::new(),
+            count: String::new(),
+        });
+        assert_eq!(result, "wget 1.2.3", "version without phase/count");
     }
 
     // ---- semantic_truncate_prefix tests (Phase 2) -----------------------
