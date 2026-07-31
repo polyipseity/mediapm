@@ -3,7 +3,8 @@
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use mediapm_utils::progress::{
-    DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TimeSource, TrackedHandle,
+    DimensionSource, ProgressGroup, SuffixComponents, TestDimensionSource, TestTimeSource,
+    TimeSource, TrackedHandle,
 };
 use std::sync::Arc;
 
@@ -344,7 +345,8 @@ fn transition_exact_abandon_with_suffix_and_overall() {
     child.set_position(3);
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
-    child.set_suffix("aborted");
+    child
+        .set_suffix_components(SuffixComponents { custom: "aborted".into(), ..Default::default() });
     child.abandon();
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();

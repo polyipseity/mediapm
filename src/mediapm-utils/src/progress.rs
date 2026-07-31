@@ -1612,32 +1612,10 @@ mod inner {
             self.state.dirty.store(true, Ordering::Release);
         }
 
-        /// Set a custom suffix appended to the auto-computed right-hand side.
-        ///
-        /// The suffix is appended after a space after the auto-computed
-        /// `{count}/{total} {elapsed} {rate} [{eta}]` text.  When empty
-        /// (default), no extra text appears.
-        ///
-        /// # Panics
-        ///
-        /// Panics if the shared-state `RwLock` is poisoned.
-        pub fn set_suffix(&self, suffix: impl Into<String>) {
-            if self.state.disabled.load(Ordering::Relaxed) {
-                return; // disabled handle
-            }
-            let suffix: String = suffix.into();
-            {
-                let mut sc = self
-                    .state
-                    .suffix_components
-                    .write()
-                    .expect("shared_state suffix_components lock");
-                *sc = SuffixComponents { custom: suffix, ..Default::default() };
-            }
-            self.state.dirty.store(true, Ordering::Release);
-        }
-
         /// Set suffix components directly (source-data API).
+        ///
+        /// User-set fields override the auto-derived fields composed at sync
+        /// time; empty fields fall back to fresh ticker data.
         ///
         /// # Panics
         ///
@@ -1800,7 +1778,7 @@ mod inner {
         position: Cell<u64>,
         /// Last total sent to `set_length`.
         total: Cell<u64>,
-        /// Last suffix sent to `set_suffix`.
+        /// Last display suffix sent to the bar.
         suffix: RefCell<String>,
         /// Last prefix sent to `set_prefix`.
         prefix: RefCell<String>,
@@ -2927,8 +2905,6 @@ pub trait ProgressBarApi: Send + Sync {
     fn set_position(&self, pos: u64);
     /// Change the total mid-flight for dynamic workloads.
     fn set_total(&self, total: u64);
-    /// Set a custom suffix appended to the auto-computed right-hand side.
-    fn set_suffix(&self, suffix: &str);
     /// Set prefix components for source-data-based truncation.
     fn set_prefix_components(&self, components: PrefixComponents);
     /// Set suffix components for source-data-based truncation.
@@ -2960,9 +2936,6 @@ impl ProgressBarApi for TrackedHandle {
     }
     fn set_total(&self, total: u64) {
         TrackedHandle::set_total(self, total);
-    }
-    fn set_suffix(&self, suffix: &str) {
-        TrackedHandle::set_suffix(self, suffix);
     }
     fn set_prefix_components(&self, components: PrefixComponents) {
         TrackedHandle::set_prefix_components(self, components);
@@ -3033,11 +3006,6 @@ pub mod recording {
             /// Absolute position to jump to.
             pos: u64,
         },
-        /// `set_suffix(suffix)` was called.
-        SetSuffix {
-            /// Custom suffix text.
-            suffix: String,
-        },
         /// `set_prefix_components(components)` was called.
         SetPrefixComponents {
             /// Marker component.
@@ -3053,12 +3021,11 @@ pub mod recording {
             /// Total (denominator) component.
             total: String,
         },
-        /// `set_suffix_components(components)` was called. Only the custom
-        /// field is recorded — the auto fields (count/total/elapsed/rate/eta)
-        /// are derived at sync, not stored by user setters.
+        /// `set_suffix_components(components)` was called. Records the full
+        /// structured set, matching what the caller passed.
         SetSuffixComponents {
-            /// Custom suffix text.
-            custom: String,
+            /// Full suffix component set.
+            components: super::SuffixComponents,
         },
         /// `finish()` was called.
         Finish,
@@ -3187,14 +3154,6 @@ pub mod recording {
             self.ops.lock().expect("recording lock").push(ProgressOp::SetPosition { pos });
         }
 
-        /// Set the custom RHS suffix.
-        pub fn set_suffix(&self, suffix: impl Into<String>) {
-            self.ops
-                .lock()
-                .expect("recording lock")
-                .push(ProgressOp::SetSuffix { suffix: suffix.into() });
-        }
-
         /// Set prefix components.
         pub fn set_prefix_components(&self, components: super::PrefixComponents) {
             self.ops.lock().expect("recording lock").push(ProgressOp::SetPrefixComponents {
@@ -3212,7 +3171,7 @@ pub mod recording {
             self.ops
                 .lock()
                 .expect("recording lock")
-                .push(ProgressOp::SetSuffixComponents { custom: components.custom });
+                .push(ProgressOp::SetSuffixComponents { components });
         }
 
         /// Mark the handle as finished.
@@ -3324,9 +3283,6 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     }
     fn set_total(&self, total: u64) {
         recording::RecordingTrackedHandle::set_total(self, total);
-    }
-    fn set_suffix(&self, suffix: &str) {
-        recording::RecordingTrackedHandle::set_suffix(self, suffix);
     }
     fn set_prefix_components(&self, components: PrefixComponents) {
         recording::RecordingTrackedHandle::set_prefix_components(self, components);
@@ -3503,12 +3459,17 @@ mod tests {
     #[test]
     fn recording_handle_set_suffix_components_ops() {
         let h = RecordingTrackedHandle::new(100);
-        h.set_suffix_components(SuffixComponents {
+        let components = SuffixComponents {
+            count: "9".into(),
+            total: "9".into(),
+            elapsed: "1:23:45".into(),
+            rate: Some("10/s".into()),
+            eta: Some("[0:00:07]".into()),
             custom: "cached (1)".into(),
-            ..Default::default()
-        });
+        };
+        h.set_suffix_components(components.clone());
 
-        assert_eq!(h.ops(), vec![ProgressOp::SetSuffixComponents { custom: "cached (1)".into() }]);
+        assert_eq!(h.ops(), vec![ProgressOp::SetSuffixComponents { components }],);
     }
 
     #[test]
@@ -5526,7 +5487,7 @@ mod tests {
     fn sync_slot_preserves_custom_suffix_on_attach() {
         // Regression: when `add_bar` triggers `attach` → `sync_slot`, the
         // slot is synced with only the auto-computed RHS suffix, dropping
-        // any custom suffix that was set via `set_suffix`.
+        // any custom suffix that was set via `set_suffix_components`.
         //
         // Without the fix, sync_slot overwrites the suffix with only the
         // auto-computed RHS, dropping the custom part.  With the fix,
@@ -5554,7 +5515,10 @@ mod tests {
         // Phase 1: add bar A, set custom suffix and partial progress, sync.
         let bar_a = group.add_bar(100, "resolve");
         bar_a.set_position(50);
-        bar_a.set_suffix("cached (1)");
+        bar_a.set_suffix_components(SuffixComponents {
+            custom: "cached (1)".into(),
+            ..Default::default()
+        });
         ts.advance(Duration::from_millis(100));
         group.tick();
 
@@ -5633,7 +5597,7 @@ mod tests {
         group.tick();
 
         let content = term.contents();
-        assert!(content.contains("9/9"), "user count/total must override auto-derived:\n{content}",);
+        assert!(content.contains("9/9"), "user count/total must override auto-derived:\n{content}");
         assert!(
             !content.contains("50/100"),
             "auto count/total must not show when user overrides:\n{content}",
@@ -5669,9 +5633,9 @@ mod tests {
         group.tick();
 
         let content = term.contents();
-        assert!(content.contains("1:23:45"), "user elapsed must override auto-derived:\n{content}",);
-        assert!(content.contains("10/s"), "user rate must override auto-derived:\n{content}",);
-        assert!(content.contains("[0:00:07]"), "user eta must override auto-derived:\n{content}",);
+        assert!(content.contains("1:23:45"), "user elapsed must override auto-derived:\n{content}");
+        assert!(content.contains("10/s"), "user rate must override auto-derived:\n{content}");
+        assert!(content.contains("[0:00:07]"), "user eta must override auto-derived:\n{content}");
     }
 
     #[test]

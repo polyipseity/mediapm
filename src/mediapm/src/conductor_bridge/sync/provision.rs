@@ -17,7 +17,7 @@ use mediapm_conductor::tools::provider::{
     MAX_LOOKAHEAD, ResolvedSource, ResolvedToolFetch, SourceProducer, fetch_tool_sources,
     process_tool_sources,
 };
-use mediapm_utils::progress::{PrefixComponents, ProviderProgressCallback};
+use mediapm_utils::progress::{PrefixComponents, ProviderProgressCallback, SuffixComponents};
 use tokio::sync::Semaphore;
 
 use crate::error::MediaPmError;
@@ -186,7 +186,10 @@ pub(super) async fn fetch_and_import_tool_payload(
             _resolved_tag,
         ) => {
             if metadata_cached {
-                resolve_bar.set_suffix(&format!("cached ({metadata_fetch_count})"));
+                resolve_bar.set_suffix_components(SuffixComponents {
+                    custom: format!("cached ({metadata_fetch_count})"),
+                    ..Default::default()
+                });
             }
             resolve_bar.set_position(bar_total.into());
             resolve_bar.finish();
@@ -202,9 +205,15 @@ pub(super) async fn fetch_and_import_tool_payload(
             // with "skipped" indicator, then return early.
             resolve_bar.set_position(bar_total.into());
             if metadata_cached {
-                resolve_bar.set_suffix(&format!("skipped cached ({metadata_fetch_count})"));
+                resolve_bar.set_suffix_components(SuffixComponents {
+                    custom: format!("skipped cached ({metadata_fetch_count})"),
+                    ..Default::default()
+                });
             } else {
-                resolve_bar.set_suffix("skipped");
+                resolve_bar.set_suffix_components(SuffixComponents {
+                    custom: "skipped".into(),
+                    ..Default::default()
+                });
             }
             resolve_bar.finish_success();
             return Ok(None);
@@ -257,7 +266,10 @@ pub(super) async fn fetch_and_import_tool_payload(
     };
     // Set fetch bar RHS message if some sources were cache-served.
     if downloaded.cached_count > 0 {
-        fetch_bar.set_suffix(&format!("cached ({})", downloaded.cached_count));
+        fetch_bar.set_suffix_components(SuffixComponents {
+            custom: format!("cached ({})", downloaded.cached_count),
+            ..Default::default()
+        });
     }
     fetch_bar.finish();
 
@@ -708,9 +720,11 @@ mod tests {
 
         let ops = tracker.ops();
         assert!(
-            ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "cached (1)")),
-            "expected SetSuffix(\"cached (1)\") in ops\ngot: {ops:#?}",
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::SetSuffixComponents { components } if components.custom == "cached (1)"
+            )),
+            "expected SetSuffixComponents(custom=cached (1)) in ops\ngot: {ops:#?}",
         );
     }
 
@@ -799,8 +813,12 @@ mod tests {
 
         let ops = tracker.ops();
         assert!(
-            ops.iter().any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "skipped cached (1)")),
-            "expected SetSuffix(\"skipped cached (1)\") in ops\ngot: {ops:#?}",
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::SetSuffixComponents { components }
+                    if components.custom == "skipped cached (1)"
+            )),
+            "expected SetSuffixComponents(custom=skipped cached (1)) in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
@@ -846,9 +864,12 @@ mod tests {
 
         let ops = tracker.ops();
         assert!(
-            ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "skipped")),
-            "expected SetSuffix(\"skipped\") in ops\ngot: {ops:#?}",
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::SetSuffixComponents { components }
+                    if components.custom == "skipped"
+            )),
+            "expected SetSuffixComponents(custom=skipped) in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
@@ -894,17 +915,19 @@ mod tests {
 
         let ops = tracker.ops();
         assert!(
-            !ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "cached")),
-            "unexpected SetSuffix(\"cached\") in ops\ngot: {ops:#?}",
+            !ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::SetSuffixComponents { components } if components.custom == "cached"
+            )),
+            "unexpected SetSuffixComponents(custom=cached) in ops\ngot: {ops:#?}",
         );
     }
 
     #[tokio::test]
     async fn resolve_bar_zero_metadata_fetch_count_uses_min_one() {
         // Regression: resolve bar with metadata_fetch_count=0 gets total=0
-        // (indeterminate bar — set_suffix works correctly after disabled flag
-        // was moved out of the total==0 proxy check).
+        // (indeterminate bar — set_suffix_components works correctly after
+        // disabled flag was moved out of the total==0 proxy check).
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
         let cache = Cache::open(
@@ -999,15 +1022,19 @@ mod tests {
             "expected SetPosition pos=2 in ops\ngot: {ops:#?}",
         );
         assert!(
-            ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "cached (2)")),
-            "expected SetSuffix(\"cached (2)\") in ops\ngot: {ops:#?}",
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::SetSuffixComponents { components } if components.custom == "cached (2)"
+            )),
+            "expected SetSuffixComponents(custom=cached (2)) in ops\ngot: {ops:#?}",
         );
         // Also verify bare "cached" (without count) never appears.
         assert!(
-            !ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "cached")),
-            "unexpected SetSuffix(\"cached\") in ops\ngot: {ops:#?}",
+            !ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::SetSuffixComponents { components } if components.custom == "cached"
+            )),
+            "unexpected SetSuffixComponents(custom=cached) in ops\ngot: {ops:#?}",
         );
     }
 
@@ -1060,10 +1087,12 @@ mod tests {
             "expected SetPosition pos=2 in ops\ngot: {ops:#?}",
         );
         assert!(
-            ops.iter().any(
-                |op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "skipped cached (2)")
-            ),
-            "expected SetSuffix(\"skipped cached (2)\") in ops\ngot: {ops:#?}",
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::SetSuffixComponents { components }
+                    if components.custom == "skipped cached (2)"
+            )),
+            "expected SetSuffixComponents(custom=skipped cached (2)) in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
@@ -1074,7 +1103,7 @@ mod tests {
     #[tokio::test]
     async fn skip_bar_zero_metadata_fetch_count_uses_min_one() {
         // Regression: skip bar with metadata_fetch_count=0 uses total=0
-        // (indeterminate bar — set_suffix works correctly).
+        // (indeterminate bar — set_suffix_components works correctly).
         let cas = new_in_memory_cas();
         let tmp = TempDir::new().expect("temp dir");
         let cache = Cache::open(
@@ -1119,9 +1148,12 @@ mod tests {
             "expected SetPosition pos=1 in ops\ngot: {ops:#?}",
         );
         assert!(
-            ops.iter()
-                .any(|op| matches!(op, ProgressOp::SetSuffix { suffix } if suffix == "skipped")),
-            "expected SetSuffix(\"skipped\") in ops\ngot: {ops:#?}",
+            ops.iter().any(|op| matches!(
+                op,
+                ProgressOp::SetSuffixComponents { components }
+                    if components.custom == "skipped"
+            )),
+            "expected SetSuffixComponents(custom=skipped) in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
