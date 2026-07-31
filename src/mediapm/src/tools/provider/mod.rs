@@ -645,6 +645,66 @@ mod tests {
         assert!(result.is_err(), "unknown tool should return error");
     }
 
+    /// Seeded metadata cache for a single tool's resolved fields, avoiding real
+    /// API calls.
+    async fn seed_metadata_cache(tool_name: &str) -> ToolDownloadCache {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+        let (urls, values): (Vec<&str>, Vec<&[u8]>) = match tool_name {
+            "ffmpeg" => (
+                vec![
+                    "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+                    "https://evermeet.cx/ffmpeg/getrelease/zip",
+                ],
+                vec![b"autobuild-2025-07-15-12-00", b"8.1.2"],
+            ),
+            "media-tagger" => (vec![], vec![]),
+            _ => (vec![], vec![]),
+        };
+        for (url, value) in urls.into_iter().zip(values) {
+            cache.store_bytes("default", url, value).await;
+        }
+        cache
+    }
+
+    #[tokio::test]
+    async fn resolve_tool_fetch_ffmpeg_leaves_version_and_vcs_hash_none() {
+        // Regression: ffmpeg's resolved_version and resolved_vcs_hash must stay
+        // None by design (mixed BtbN + evermeet sources; no single version or
+        // upstream VCS hash identifies the artifact set). See the why-empty
+        // rationale in the ffmpeg provider module doc.
+        let cache = seed_metadata_cache("ffmpeg").await;
+        let (_, metadata) =
+            resolve_tool_fetch("ffmpeg", Some((&*cache, "default")), RecheckPolicy::default())
+                .await
+                .expect("ffmpeg resolve should succeed");
+        assert_eq!(metadata.resolved_tag.as_deref(), Some("autobuild-2025-07-15-12-00"));
+        // WHY: no single version identifies the mixed BtbN+evermeet artifact set.
+        assert_eq!(metadata.resolved_version, None);
+        // WHY: the BtbN build-repo hash is not the upstream ffmpeg source hash.
+        assert_eq!(metadata.resolved_vcs_hash, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_tool_fetch_media_tagger_leaves_tag_none() {
+        // Regression: media-tagger's resolved_tag must stay None by design
+        // (builtin launcher shipped inside mediapm; no upstream tag exists).
+        // resolved_version and resolved_vcs_hash identify the mediapm build.
+        let cache = seed_metadata_cache("media-tagger").await;
+        let (_, metadata) = resolve_tool_fetch(
+            "media-tagger",
+            Some((&*cache, "default")),
+            RecheckPolicy::default(),
+        )
+        .await
+        .expect("media-tagger resolve should succeed");
+        // WHY: media-tagger is a builtin launcher; there is no upstream tag.
+        assert_eq!(metadata.resolved_tag, None);
+        assert_eq!(metadata.resolved_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(metadata.resolved_vcs_hash.as_deref(), Some(crate::global::MEDIAPM_GIT_HASH));
+    }
+
     #[tokio::test]
     async fn resolve_tool_fetch_each_fetched_tool_has_three_os_entries() {
         let temp_dir = tempfile::TempDir::new().unwrap();
