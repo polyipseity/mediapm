@@ -352,7 +352,7 @@ fn transition_exact_abandon_with_message_and_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [A] child ████████████░░░░░░░░░  3/5 1s  aborted\n",
+            "⠏                      [A] child ████████████░░░░░░░░░  3/5 1s aborted\n",
             "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
         )
     );

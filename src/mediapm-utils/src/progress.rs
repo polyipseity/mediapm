@@ -1021,8 +1021,8 @@ mod inner {
         if cols >= 60 { 30 } else { 25 }
     }
 
-    /// Maximum visible width for the message field based on terminal width.
-    pub(super) const fn max_message_width(cols: u16) -> usize {
+    /// Maximum visible width for the suffix field based on terminal width.
+    pub(super) const fn max_suffix_width(cols: u16) -> usize {
         if cols >= 60 { 55 } else { 40 }
     }
 
@@ -1030,39 +1030,6 @@ mod inner {
     /// string, down to at most `max_bare` visible chars. The range contains
     /// `range_len` visible chars. If the range already fits, nothing changes.
     /// The range must be valid UTF-8 boundaries.
-    pub(super) fn shrink_range_to_budget(
-        s: &mut String,
-        range: std::ops::Range<usize>,
-        max_bare: usize,
-        range_len: usize,
-    ) {
-        if range_len <= max_bare || range.is_empty() {
-            return;
-        }
-        let excess = range_len - max_bare;
-        let original_end = range.end;
-        let mut new_end = original_end;
-        let mut removed: usize = 0;
-        // Walk chars backward from end of range.
-        for c in s[..original_end].chars().rev() {
-            if removed >= excess {
-                break;
-            }
-            if new_end <= range.start {
-                break;
-            }
-            let char_start = new_end - c.len_utf8();
-            if char_start < range.start {
-                break;
-            }
-            new_end = char_start;
-            removed += 1;
-        }
-        if new_end < original_end {
-            s.replace_range(new_end..original_end, "");
-        }
-    }
-
     /// Progressively truncate a prefix (built from [`PrefixComponents`]) so
     /// that its visible width fits within `max_width` after accounting for
     /// [`prefix_overhead`] from `status`.
@@ -1171,47 +1138,6 @@ mod inner {
 
         // 5. Hard truncate (only reachable for empty tool name).
         String::new()
-    }
-
-    /// Progressively truncate a message string (possibly containing ANSI
-    /// escapes) so its visible width fits within `max_width`.
-    ///
-    /// The message has the form `<auto>  <custom>`, where `<auto>` may contain
-    /// ANSI color codes and `<custom>` is plain text. Truncation first removes
-    /// visible chars from the custom part (right to left), then falls back to
-    /// hard truncation of the stripped visible string.
-    pub(super) fn semantic_truncate_message(s: &str, max_width: usize) -> String {
-        // Fast path.
-        let visible = strip_ansi(s);
-        if visible.chars().count() <= max_width {
-            return s.to_string();
-        }
-
-        // Find the last "  " separator to split auto (with ANSI) from
-        // custom (plain text).
-        if let Some(sep) = s.rfind("  ") {
-            let auto = &s[..sep];
-            let custom = &s[sep + 2..]; // skip the "  "
-            let auto_visible_len = strip_ansi(auto).chars().count();
-
-            // Try progressive removal from custom (right to left).
-            let custom_chars: Vec<char> = custom.chars().collect();
-            let custom_len = custom_chars.len();
-            for keep in (0..custom_len).rev() {
-                let total_visible = auto_visible_len + 2 + keep;
-                if total_visible <= max_width {
-                    let truncated_custom: String = custom_chars[..keep].iter().collect();
-                    return format!("{}  {}", auto, truncated_custom);
-                }
-            }
-
-            // Custom fully removed but still doesn't fit — hard truncate
-            // the visible string.
-            visible.chars().take(max_width).collect()
-        } else {
-            // No separator — hard truncate.
-            visible.chars().take(max_width).collect()
-        }
     }
 
     /// Progressively truncate a suffix string, taking the auto-computed RHS
@@ -1799,8 +1725,8 @@ mod inner {
         position: Cell<u64>,
         /// Last total sent to `set_length`.
         total: Cell<u64>,
-        /// Last message sent to `set_message`.
-        msg: RefCell<String>,
+        /// Last suffix sent to `set_suffix`.
+        suffix: RefCell<String>,
         /// Last prefix sent to `set_prefix`.
         prefix: RefCell<String>,
     }
@@ -1810,7 +1736,7 @@ mod inner {
             Self {
                 position: Cell::new(u64::MAX),
                 total: Cell::new(u64::MAX),
-                msg: RefCell::new(String::new()),
+                suffix: RefCell::new(String::new()),
                 prefix: RefCell::new(String::new()),
             }
         }
@@ -2268,29 +2194,25 @@ mod inner {
                 TrackStatus::Failed | TrackStatus::Abandoned => 13,
                 _ => 4,
             };
-            let truncated_prefix = {
-                let comps = prefix_components_from_str(&snap.prefix);
-                semantic_truncate_prefix(
-                    &comps,
-                    max_prefix_width(cols).saturating_sub(ansi_overhead),
-                    snap.status,
-                )
-            };
+            let truncated_prefix = semantic_truncate_prefix(
+                &snap.prefix_components,
+                max_prefix_width(cols).saturating_sub(ansi_overhead),
+                snap.status,
+            );
             let new_prefix = build_prefix(snap.status, &truncated_prefix);
             if new_prefix != *slot.cache.prefix.borrow() {
                 slot.bar.set_prefix(new_prefix.clone());
                 *slot.cache.prefix.borrow_mut() = new_prefix;
             }
-            // Build display message: auto-computed RHS + optional custom suffix.
-            let display_msg_raw = if snap.suffix.is_empty() {
-                msg.clone()
-            } else {
-                format!("{}  {}", msg, snap.suffix)
-            };
-            let display_msg = semantic_truncate_message(&display_msg_raw, max_message_width(cols));
-            if display_msg != *slot.cache.msg.borrow() {
-                slot.bar.set_message(display_msg.clone());
-                *slot.cache.msg.borrow_mut() = display_msg;
+            // Build display suffix: auto-computed RHS + optional custom suffix.
+            let display_suffix = semantic_truncate_suffix(
+                &msg,
+                &snap.suffix_components.custom,
+                max_suffix_width(cols),
+            );
+            if display_suffix != *slot.cache.suffix.borrow() {
+                slot.bar.set_message(display_suffix.clone());
+                *slot.cache.suffix.borrow_mut() = display_suffix;
             }
             if snap.total != slot.cache.total.get() {
                 slot.bar.set_length(snap.total);
@@ -2889,9 +2811,9 @@ mod inner {
 
 #[cfg(feature = "progress")]
 pub use inner::{
-    DebugSlotState, DebugTickSnapshot, DimensionSource, ProgressDebugSink, ProgressGroup,
-    ProgressRenderer, RealTerminalSource, RealTimeSource, TestDimensionSource, TestTimeSource,
-    TimeSource, TrackSnapshot, TrackStatus, TrackedHandle,
+    DebugSlotState, DebugTickSnapshot, DimensionSource, PrefixComponents, ProgressDebugSink,
+    ProgressGroup, ProgressRenderer, RealTerminalSource, RealTimeSource, SuffixComponents,
+    TestDimensionSource, TestTimeSource, TimeSource, TrackSnapshot, TrackStatus, TrackedHandle,
 };
 
 #[cfg(feature = "progress")]
@@ -2926,8 +2848,12 @@ pub trait ProgressBarApi: Send + Sync {
     fn set_total(&self, total: u64);
     /// Set the prefix shown before the bar.
     fn set_prefix(&self, prefix: &str);
-    /// Set a custom message appended to the auto-computed right-hand side.
-    fn set_message(&self, message: &str);
+    /// Set a custom suffix appended to the auto-computed right-hand side.
+    fn set_suffix(&self, suffix: &str);
+    /// Set prefix components for source-data-based truncation.
+    fn set_prefix_components(&self, components: PrefixComponents);
+    /// Set suffix components for source-data-based truncation.
+    fn set_suffix_components(&self, components: SuffixComponents);
 }
 
 #[cfg(feature = "progress")]
@@ -2959,8 +2885,14 @@ impl ProgressBarApi for TrackedHandle {
     fn set_prefix(&self, prefix: &str) {
         TrackedHandle::set_prefix(self, prefix);
     }
-    fn set_message(&self, message: &str) {
-        TrackedHandle::set_message(self, message);
+    fn set_suffix(&self, suffix: &str) {
+        TrackedHandle::set_suffix(self, suffix);
+    }
+    fn set_prefix_components(&self, components: PrefixComponents) {
+        TrackedHandle::set_prefix_components(self, components);
+    }
+    fn set_suffix_components(&self, components: SuffixComponents) {
+        TrackedHandle::set_suffix_components(self, components);
     }
 }
 
@@ -3030,10 +2962,26 @@ pub mod recording {
             /// Prefix text.
             prefix: String,
         },
-        /// `set_message(message)` was called.
-        SetMessage {
-            /// Custom message text.
-            message: String,
+        /// `set_suffix(suffix)` was called.
+        SetSuffix {
+            /// Custom suffix text.
+            suffix: String,
+        },
+        /// `set_prefix_components(components)` was called.
+        SetPrefixComponents {
+            /// Tool name component.
+            tool_name: String,
+            /// Version component.
+            version: String,
+            /// Phase component.
+            phase: String,
+            /// Count component.
+            count: String,
+        },
+        /// `set_suffix_components(components)` was called.
+        SetSuffixComponents {
+            /// Custom suffix text.
+            custom: String,
         },
         /// `finish()` was called.
         Finish,
@@ -3170,12 +3118,30 @@ pub mod recording {
                 .push(ProgressOp::SetPrefix { prefix: prefix.into() });
         }
 
-        /// Set the custom RHS message.
-        pub fn set_message(&self, message: impl Into<String>) {
+        /// Set the custom RHS suffix.
+        pub fn set_suffix(&self, suffix: impl Into<String>) {
             self.ops
                 .lock()
                 .expect("recording lock")
-                .push(ProgressOp::SetMessage { message: message.into() });
+                .push(ProgressOp::SetSuffix { suffix: suffix.into() });
+        }
+
+        /// Set prefix components.
+        pub fn set_prefix_components(&self, components: super::PrefixComponents) {
+            self.ops.lock().expect("recording lock").push(ProgressOp::SetPrefixComponents {
+                tool_name: components.tool_name,
+                version: components.version,
+                phase: components.phase,
+                count: components.count,
+            });
+        }
+
+        /// Set suffix components.
+        pub fn set_suffix_components(&self, components: super::SuffixComponents) {
+            self.ops
+                .lock()
+                .expect("recording lock")
+                .push(ProgressOp::SetSuffixComponents { custom: components.custom });
         }
 
         /// Mark the handle as finished.
@@ -3292,8 +3258,14 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     fn set_prefix(&self, prefix: &str) {
         recording::RecordingTrackedHandle::set_prefix(self, prefix);
     }
-    fn set_message(&self, message: &str) {
-        recording::RecordingTrackedHandle::set_message(self, message);
+    fn set_suffix(&self, suffix: &str) {
+        recording::RecordingTrackedHandle::set_suffix(self, suffix);
+    }
+    fn set_prefix_components(&self, components: PrefixComponents) {
+        recording::RecordingTrackedHandle::set_prefix_components(self, components);
+    }
+    fn set_suffix_components(&self, components: SuffixComponents) {
+        recording::RecordingTrackedHandle::set_suffix_components(self, components);
     }
 }
 
@@ -4284,14 +4256,14 @@ mod tests {
 
     #[test]
     fn max_message_width_wide() {
-        assert_eq!(super::inner::max_message_width(80), 55);
-        assert_eq!(super::inner::max_message_width(60), 55);
+        assert_eq!(super::inner::max_suffix_width(80), 55);
+        assert_eq!(super::inner::max_suffix_width(60), 55);
     }
 
     #[test]
     fn max_message_width_compact() {
-        assert_eq!(super::inner::max_message_width(59), 40);
-        assert_eq!(super::inner::max_message_width(40), 40);
+        assert_eq!(super::inner::max_suffix_width(59), 40);
+        assert_eq!(super::inner::max_suffix_width(40), 40);
     }
 
     // ---- render_prefix_components tests (Phase 1) -----------------------
@@ -4342,50 +4314,11 @@ mod tests {
 
     // ---- semantic_truncate_prefix tests (Phase 2) -----------------------
 
-    #[test]
-    fn shrink_range_to_budget_empty_range() {
-        let mut s = "hello".to_string();
-        // An empty range should be a no-op.
-        super::inner::shrink_range_to_budget(&mut s, 0..0, 5, 5);
-        assert_eq!(s, "hello");
-    }
-
-    #[test]
-    fn shrink_range_to_budget_already_fits() {
-        let mut s = "hello world".to_string();
-        super::inner::shrink_range_to_budget(&mut s, 0..11, 11, 11);
-        assert_eq!(s, "hello world");
-    }
-
-    #[test]
-    fn shrink_range_to_budget_truncates() {
-        let mut s = "hello world".to_string();
-        // Range 6..11 ("world"), max_bare=3 → keep "wor", remove "ld"
-        super::inner::shrink_range_to_budget(&mut s, 6..11, 3, 5);
-        assert_eq!(s, "hello wor");
-    }
-
-    #[test]
-    fn shrink_range_to_budget_removes_all() {
-        let mut s = "hello world".to_string();
-        super::inner::shrink_range_to_budget(&mut s, 6..11, 0, 5);
-        assert_eq!(s, "hello ");
-    }
-
-    #[test]
-    fn shrink_range_to_budget_unicode_respects_char_boundaries() {
-        // Note: prefix content is always ASCII, but the function should be
-        // safe with multi-byte chars.
-        let mut s = "héllo".to_string();
-        // range 3..6 = "llo" (bytes), max_bare=1 (keep 1 of 3 visible chars)
-        super::inner::shrink_range_to_budget(&mut s, 3..6, 1, 3);
-        assert_eq!(s, "hél");
-    }
-
     // Phase 7: delete — old tests with `&str` signature (replaced by
     // `semantic_truncate_prefix_*` tests below with `&PrefixComponents`).
     // #[test]
     // fn semantic_truncate_prefix_already_fits() {
+    //     let result = super::inner::semantic_truncate_prefix(
     //     let result = super::inner::semantic_truncate_prefix(
     //         "wget [fch] 0/1",
     //         30,
@@ -4562,55 +4495,6 @@ mod tests {
         };
         let result = super::inner::semantic_truncate_prefix(&parts, 8, super::TrackStatus::Failed);
         assert_eq!(result, "wget", "failed overhead accounted");
-    }
-
-    #[test]
-    fn semantic_truncate_message_fits() {
-        let s = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cached (1)";
-        let result = super::inner::semantic_truncate_message(s, 100);
-        assert_eq!(result, s, "message unchanged when fits");
-    }
-
-    #[test]
-    fn semantic_truncate_message_remove_custom_partial() {
-        let s = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cached (1)";
-        // Visible: " 2/5 0:00:05 12.3 MiB/s [0:00:02]  cached (1)" = 45 chars
-        // Auto=33, sep=2, custom=9.
-        // max_width=39 → need to remove 6 total. keep=5 → 40 > 39, keep=4 → 39 ✓
-        let result = super::inner::semantic_truncate_message(s, 39);
-        assert_eq!(result, " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cach");
-    }
-
-    #[test]
-    fn semantic_truncate_message_remove_custom_all() {
-        let s = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cached (1)";
-        // Auto=33, sep=2, custom=9, total=45.
-        // max_width=35 → keep=1 → 36 > 35, keep=0 → 35 ✓
-        let result = super::inner::semantic_truncate_message(s, 35);
-        assert_eq!(result, " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  ");
-    }
-
-    #[test]
-    fn semantic_truncate_message_hard_truncate() {
-        let s = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]  cached (1)";
-        // Auto=33, sep=2, custom=9, total=45.
-        // max_width=30: custom all removed (9) → 35 left, still > 30.
-        // Hard truncate visible to 30: " 2/5 0:00:05 12.3 MiB/s [0:00:"
-        let result = super::inner::semantic_truncate_message(s, 30);
-        assert_eq!(result, " 2/5 0:00:05 12.3 MiB/s [0:00:");
-    }
-
-    #[test]
-    fn semantic_truncate_message_no_separator() {
-        let s = "hello world";
-        let result = super::inner::semantic_truncate_message(s, 5);
-        assert_eq!(result, "hello", "hard truncate without separator");
-    }
-
-    #[test]
-    fn semantic_truncate_message_empty() {
-        let result = super::inner::semantic_truncate_message("", 30);
-        assert_eq!(result, "", "empty message stays empty");
     }
 
     // ---- semantic_truncate_suffix tests (Phase 2) -----------------------
@@ -5212,18 +5096,18 @@ mod tests {
     #[test]
     fn sync_slot_preserves_custom_message_on_attach() {
         // Regression: when `add_bar` triggers `attach` → `sync_slot`, the
-        // slot is synced with only the auto-computed RHS message, dropping
-        // any custom message that was set via `set_message`.
+        // slot is synced with only the auto-computed RHS suffix, dropping
+        // any custom suffix that was set via `set_suffix`.
         //
-        // Without the fix, sync_slot overwrites the message with only the
+        // Without the fix, sync_slot overwrites the suffix with only the
         // auto-computed RHS, dropping the custom part.  With the fix,
         // sync_slot delegates to sync_snapshot_to_bar which appends the
-        // custom message.
+        // custom suffix.
         //
         // Bar A is kept ACTIVE (not finished) so the tick drain-loop (which
         // unconditionally re-syncs non-active bars) does not rescue the
-        // message.  Only the dirty-tracking loop processes A — and without
-        // the fix A is not dirty after the attach, so the wrong message
+        // suffix.  Only the dirty-tracking loop processes A — and without
+        // the fix A is not dirty after the attach, so the wrong suffix
         // persists.
         use std::sync::Arc;
         use std::time::Duration;
@@ -5238,18 +5122,18 @@ mod tests {
             .capacity(2)
             .build();
 
-        // Phase 1: add bar A, set custom message and partial progress, sync.
+        // Phase 1: add bar A, set custom suffix and partial progress, sync.
         let bar_a = group.add_bar(100, "resolve");
         bar_a.set_position(50);
-        bar_a.set_message("cached (1)");
+        bar_a.set_suffix("cached (1)");
         ts.advance(Duration::from_millis(100));
         group.tick();
 
-        // Baseline: custom message is visible after first tick.
+        // Baseline: custom suffix is visible after first tick.
         let baseline = term.contents();
         assert!(
             baseline.contains("cached (1)"),
-            "baseline must show custom message after tick:\n{baseline}",
+            "baseline must show custom suffix after tick:\n{baseline}",
         );
 
         // Phase 2: add bar B — triggers attach → shift → sync_slot on A.
