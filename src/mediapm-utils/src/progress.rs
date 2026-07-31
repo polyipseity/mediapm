@@ -3059,14 +3059,18 @@ pub mod recording {
         },
         /// `set_prefix_components(components)` was called.
         SetPrefixComponents {
+            /// Marker component.
+            marker: String,
             /// Tool name component.
             tool_name: String,
             /// Version component.
             version: String,
             /// Phase component.
             phase: String,
-            /// Count component.
+            /// Count (numerator) component.
             count: String,
+            /// Total (denominator) component.
+            total: String,
         },
         /// `set_suffix_components(components)` was called.
         SetSuffixComponents {
@@ -3219,10 +3223,12 @@ pub mod recording {
         /// Set prefix components.
         pub fn set_prefix_components(&self, components: super::PrefixComponents) {
             self.ops.lock().expect("recording lock").push(ProgressOp::SetPrefixComponents {
+                marker: components.marker,
                 tool_name: components.tool_name,
                 version: components.version,
                 phase: components.phase,
                 count: components.count,
+                total: components.total,
             });
         }
 
@@ -3502,10 +3508,12 @@ mod tests {
         assert_eq!(
             h.ops(),
             vec![ProgressOp::SetPrefixComponents {
+                marker: String::new(),
                 tool_name: "wget".into(),
                 version: "1.2.3".into(),
                 phase: "fch".into(),
                 count: "2".into(),
+                total: "5".into(),
             }]
         );
     }
