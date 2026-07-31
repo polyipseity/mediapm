@@ -8,6 +8,7 @@ mod progress_group;
 mod rate;
 mod regression;
 mod resize;
+mod resolve_label;
 mod single_bar;
 mod spinner;
 mod terminal;
