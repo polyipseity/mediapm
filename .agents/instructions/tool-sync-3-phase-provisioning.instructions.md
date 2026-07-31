@@ -22,15 +22,8 @@ The caller resolves the tool fetch before calling
 `fetch_and_import_tool_payload()` and passes the outcome as
 `PreResolveOutcome`:
 
-- **`Resolved(fetch, canonical_version, metadata_cached, metadata_fetch_count)`** — normal provisioning path.
-  The pipeline enters all three phases. `metadata_cached` (bool) indicates all
-  version/tag lookups were cache hits; `metadata_fetch_count` (u32) is the
-  number of metadata lookups (e.g., ffmpeg has 2: btbn tag + evermeet version).
-- **`Skip { name, version, metadata_cached, metadata_fetch_count }`** — tool is already provisioned
-  at the given canonical version. Only the resolve bar is shown, then the
-  function returns `Ok(None)` immediately. `metadata_cached` controls
-  whether the message shows `"skipped cached (N)"` vs `"skipped"` (where
-  `N` = `metadata_fetch_count`).
+- **`Resolved(fetch, metadata)`** — normal provisioning path, where `metadata` is a `ResolvedToolMetadata` carrying `human_readable_version`, `canonical_version`, `metadata_cached` (bool: all version/tag lookups were cache hits), `metadata_fetch_count` (u32: number of metadata lookups, e.g., ffmpeg has 2: btbn tag + evermeet version), and the three `resolved_*` provenance fields (all `Option<String>` — `None` when the provider has no value).
+- **`Skip { name, version, metadata_cached, metadata_fetch_count, resolved_tag, resolved_version, resolved_vcs_hash }`** — tool is already provisioned at the given canonical version. Only the resolve bar is shown, then the function returns `Ok(None)` immediately. `metadata_cached` controls whether the message shows `"skipped cached (N)"` vs `"skipped"` (where `N` = `metadata_fetch_count`). The `resolved_*` fields (all `Option<String>`) carry fresh provider provenance so the coordinator can backfill skipped entries.
 
 This separation keeps the function single-responsibility: it renders a
 resolve bar for every tool (avoiding a bare `pb.advance(1)` with no
@@ -73,11 +66,15 @@ per-tool visual feedback).
 
 ## `FetchedToolPayload` fields
 
-| Field               | Type                       | Purpose                                                                                     |
-| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------- |
-| `content_map`       | `BTreeMap<String, String>` | Sandbox-relative path → CAS hash hex                                                        |
-| `os_exec_paths`     | `BTreeMap<String, String>` | OS label → relative executable path (no OS prefix)                                          |
-| `canonical_version` | `String`                   | Canonical version for skip-if-up-to-date logic. Populated from the resolved fetch metadata. |
+| Field                  | Type                       | Purpose                                                                                     |
+| ---------------------- | -------------------------- | ------------------------------------------------------------------------------------------- |
+| `content_map`          | `BTreeMap<String, String>` | Sandbox-relative path → CAS hash hex                                                        |
+| `os_exec_paths`        | `BTreeMap<String, String>` | OS label → relative executable path (no OS prefix)                                          |
+| `human_readable_version` | `String`                 | Human-readable version (informational only, no semantic use)                                 |
+| `canonical_version`    | `String`                   | Canonical version for skip-if-up-to-date logic. Populated from the resolved fetch metadata. |
+| `resolved_tag`         | `Option<String>`           | Provenance: resolved upstream git tag, or `None`                                             |
+| `resolved_version`     | `Option<String>`           | Provenance: resolved upstream version, or `None`                                             |
+| `resolved_vcs_hash`    | `Option<String>`           | Provenance: resolved upstream VCS commit hash, or `None`                                     |
 
 ## Error handling
 

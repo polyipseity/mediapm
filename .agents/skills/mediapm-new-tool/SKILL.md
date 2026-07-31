@@ -35,7 +35,10 @@ Create `src/mediapm/src/tools/provider/<tool_name>.rs`:
 
 ```rust
 // Module structure:
-// - resolve_tool_fetch(requirement, metadata_cache) -> ResolvedToolFetch
+// - resolve_tool_fetch(requirement, metadata_cache) -> (ResolvedToolFetch, ResolvedToolMetadata)
+//   where ResolvedToolMetadata carries human_readable_version, canonical_version,
+//   metadata_cached, metadata_fetch_count, and resolved_tag / resolved_version /
+//   resolved_vcs_hash (all Option<String>; None when the provider has no value)
 // - resolve_latest_<tool_name>_tag(metadata_cache) -> Option<String>
 // - build_<tool_name>_sources(version) -> Vec<ToolSource>
 ```

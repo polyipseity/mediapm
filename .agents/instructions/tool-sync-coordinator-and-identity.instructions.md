@@ -21,7 +21,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
    - `Some(path)` → use the provided path as the cache root
      A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
-4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool_id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar.
+4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool_id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are also candidates for `resolved_*` backfill — see "Resolved-field population and skip backfill" below.
 5. **Active-tool computation (pruning)** — before provisioning, call
    `compute_used_tool_ids(desired_tools, step_tool_ids)` to determine the set
    of tools that should be provisioned. This traverses transitive dependencies
@@ -70,13 +70,20 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
 
 ### `ToolSyncReport` fields
 
-| Field           | Type          | Purpose                                                                                                                        |
-| --------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `tools_added`   | `usize`       | Tools newly registered (not previously in generated doc)                                                                       |
-| `tools_updated` | `usize`       | Tools updated to match desired version                                                                                         |
-| `tools_removed` | `usize`       | Tools removed (no longer in desired set)                                                                                       |
-| `tools_skipped` | `usize`       | Tools skipped because their canonical version was already provisioned. Shown in the resolve bar with `set_message("skipped")`. |
-| `warnings`      | `Vec<String>` | Non-fatal warnings (provision failures)                                                                                        |
+| Field                      | Type                          | Purpose                                                                                                                       |
+| -------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `tools_added`              | `usize`                       | Tools newly registered (not previously in generated doc)                                                                      |
+| `tools_updated`            | `usize`                       | Tools updated to match desired version                                                                                        |
+| `tools_removed`            | `usize`                       | Tools removed (no longer in desired set)                                                                                      |
+| `tools_skipped`            | `usize`                       | Tools skipped because their canonical version was already provisioned. Shown in the resolve bar with `set_message("skipped")`. |
+| `pruned_tools`             | `usize`                       | Number of stale `"{name}@{old_hash}"` keys pruned from the generated doc                                                     |
+| `resolved_field_backfills` | `Vec<ToolRegistryEntry>`      | Entries whose `resolved_*` provenance fields were backfilled in place during skip (see below)                                  |
+| `warnings`                 | `Vec<String>`                 | Non-fatal warnings (provision failures)                                                                                       |
+
+### Resolved-field population and skip backfill
+
+- **Population at record construction**: every `ToolRegistryEntry` produced by the provisioning loop (both the `Ok(Some(payload))` and `Ok(None)` paths) carries the three `resolved_*` fields from provider metadata (`ResolvedToolMetadata`). `resolved_tag`, `resolved_version`, and `resolved_vcs_hash` are `Option<String>` — `None` (JSON `null`) when the provider has no value, never `""`.
+- **Skip backfill**: when a tool routes through `PreResolveOutcome::Skip` (already provisioned at the resolved canonical version), its stored entry may predate the `resolved_*` fields. The coordinator collects those entries in `report.resolved_field_backfills`, and `service.rs` applies them in place after the sync pass: match on `(tool_id, canonical_version)`, fill only `None` fields from fresh provider metadata, never overwrite `Some` values, and preserve `version`, `content_map_hash`, and `deployed_at`. Entries with no missing fields are not collected. The backfill is a no-op when provider metadata matches the stored values, keeping re-sync byte-identical.
 
 ### Invariants
 

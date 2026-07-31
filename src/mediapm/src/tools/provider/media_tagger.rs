@@ -7,6 +7,11 @@
 //!
 //! Canonical version: mediapm build-time git hash (VCS hash kind, fixed at
 //! code-writing time).
+//!
+//! Resolved provenance fields: `resolved_tag` is always `None` — WHY:
+//! media-tagger is a builtin launcher shipped inside mediapm with no upstream
+//! tagged release; its identity is the mediapm build (`resolved_version` =
+//! crate version, `resolved_vcs_hash` = mediapm git hash).
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 

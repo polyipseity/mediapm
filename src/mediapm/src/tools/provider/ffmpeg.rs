@@ -6,6 +6,13 @@
 //!
 //! Canonical version: composite of `autobuild-{tag}` from BtbN and
 //! `evermeet-{semver}` from evermeet.cx (e.g. "autobuild-2026-07-22-13-36+evermeet-8.1.2").
+//!
+//! Resolved provenance fields: `resolved_tag` is the BtbN `autobuild-*` tag;
+//! `resolved_version` and `resolved_vcs_hash` are always `None` — WHY: the
+//! artifact set mixes BtbN autobuilds and evermeet.cx zips, so no single
+//! version or VCS hash identifies it; deref'ing a BtbN build tag yields the
+//! build-script repo commit (not the upstream ffmpeg source commit), and
+//! evermeet.cx zips carry no git provenance. Resolvable != meaningful.
 
 use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
 

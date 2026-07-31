@@ -50,13 +50,14 @@ Not user-configurable. No serde derives. Defined in `src/mediapm/src/tools/depen
 
 #### Spec matching (`spec_matches_entry`)
 
-- `spec_matches_entry(spec, resolved_tag, resolved_version, resolved_vcs_hash) -> bool`
+- `spec_matches_entry(spec, resolved_tag: Option<&str>, resolved_version: Option<&str>, resolved_vcs_hash: Option<&str>) -> bool`
 - For `VersionSpec::Latest` and `VersionSpec::Inherit`, always returns `false`
   (caller must re-resolve).
-- For `VersionSpec::Exact(fields)`, all specified fields must match.
-  Unspecified fields are not checked.
-- All comparisons are exact string match, trimmed whitespace. No semver
-  normalization.
+- For `VersionSpec::Exact(fields)`, each specified field matches only when the
+  stored value is `Some` AND equals the spec value. Unspecified fields are not
+  checked; stored `None` never matches — an entry missing a resolved field is
+  always re-provisioned.
+- All comparisons are exact string match. No trim, no semver normalization.
 
 ### Active-tool computation (`compute_used_tool_ids`)
 

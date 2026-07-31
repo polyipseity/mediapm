@@ -14,24 +14,47 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 - **No `MigrateState` trait** — migration helpers are plain functions in `state/versions/v1.rs` (no trait dispatch). This avoids trait overhead for a single-migration-path design.
 - **File organization**: public API lives in `state/ser.rs` (thin delegation), V1 wire types and migration in `state/versions/v1.rs`, V2 wire types in `state/versions/v2.rs`, version dispatch utilities in `state/versions/mod.rs`.
 
-## `MediaPmState` fields (v2)
+## `MediaPmState` fields (v3)
 
 | Field             | Type                                         | Purpose                                         |
 | ----------------- | -------------------------------------------- | ----------------------------------------------- |
 | `version`         | `u32`                                        | Schema version marker (for migration dispatch)  |
 | `managed_files`   | `BTreeMap<String, ManagedFileRecord>`        | Materialized files keyed by output path         |
-| `managed_tools`   | `BTreeMap<String, ToolRegistryEntry>`        | Fetched/deployed tool registry keyed by tool id |
+| `managed_tools`   | `Vec<ToolRegistryEntry>`                     | Flat list of tool deployment metadata entries   |
 | `workflow_states` | `BTreeMap<String, ManagedWorkflowStepState>` | Per-media-source workflow step state            |
 
-## `ToolRegistryEntry` (v2)
+## `ToolRegistryEntry` (v3)
 
 | Field               | Type             | Purpose                                                        |
 | ------------------- | ---------------- | -------------------------------------------------------------- |
-| `version`           | `Option<String>` | Tool version as fetched                                        |
-| `tag`               | `Option<String>` | Tag as fetched                                                 |
-| `content_map_hash`  | `Option<String>` | blake3 hash of the content_map JSON (used for content-addressed identity) |
+| `tool_id`           | `String`         | Bare logical tool id matching the key in `desired_tools`       |
+| `version`           | `String`         | Human-readable version as fetched (informational only)         |
 | `canonical_version` | `String`         | Canonical version identifier used for skip-if-up-to-date logic |
+| `content_map_hash`  | `String`         | blake3 hash of the content_map JSON (content-addressed identity); empty for no-payload tools |
 | `deployed_at`       | `u64`            | Unix-epoch seconds when deployed (0 = not yet)                 |
+| `resolved_tag`      | `Option<String>` | Provenance: resolved upstream git tag, or `None`               |
+| `resolved_version`  | `Option<String>` | Provenance: resolved upstream version, or `None`               |
+| `resolved_vcs_hash` | `Option<String>` | Provenance: resolved upstream VCS commit hash, or `None`       |
+
+### `resolved_*` provenance fields
+
+The three `resolved_*` fields are `Option<String>`: `None` serializes as JSON
+`null`, and a missing field deserializes to `None` via `#[serde(default)]`.
+Empty is `None` — the empty string `""` is invalid for these fields and is
+rejected by the parser (no normalization, no migration). Stale state files
+containing `""` fail to load and are discarded/regenerated on the next run.
+
+The schema change is applied **in place**: the existing V3 schema keeps its
+version marker (3) — there is no version bump, no V4 wire format, and no
+migration code. Old and new files are distinguished by content, not by version
+number.
+
+**Why-empty invariant:** any field left `None` must be documented — an inline
+`// WHY:` comment on the provider dispatch arm, the per-tool provider module
+doc comment, and the per-tool row in `provider-dispatch.instructions.md`.
+Current `None` fields: ffmpeg `resolved_version`/`resolved_vcs_hash` (mixed
+sources; the BtbN build-repo hash is not the upstream ffmpeg source commit)
+and media-tagger `resolved_tag` (builtin launcher, no upstream tag).
 
 ## `ToolRegistryEntry` vs legacy `ActiveToolInstance`
 
@@ -103,15 +126,16 @@ Flat→v2 mapping:
 
 ## State-specific versioning scheme
 
-- `MEDIAPM_STATE_VERSION = 2` (independent constant from `MEDIAPM_DOCUMENT_VERSION`).
+- `MEDIAPM_STATE_VERSION = 3` (independent constant from `MEDIAPM_DOCUMENT_VERSION`).
 - `MediaPmState.version` uses `state_version` default, not `document_version`.
 - V1 = legacy Nickel formats (both wrapper and flat).
-- V2 = current JSON format (always written, never reverted).
+- V2 = intermediate JSON format, migrated to V3 on load (never written).
+- V3 = current JSON format (always written, never reverted). Schema changes to V3 are applied in place — no version bump for field-level changes.
 
 ## Version dispatch
 
-- On load (`state/ser.rs::from_json_value`): delegates to `versions::extract_state_version_field`, then `versions::v1::from_v1_json_value` or `versions::v2::from_v2_json_value`.
-- On save (`state/ser.rs::to_json_value`): delegates to `versions::v2::to_v2_json_value` (always V2).
+- On load (`state/ser.rs::from_json_value`): delegates to `versions::extract_state_version_field`, then `versions::v1::from_v1_json_value`, `versions::v3::from_v2_into_v3` (version 2), or `versions::v3::from_v3_json_value` (version 3).
+- On save (`state/ser.rs::to_json_value`): delegates to `versions::v3::to_v3_json_value` (always V3).
 - Migration from `.ncl` (`state/ser.rs::migrate_from_old_nickel`): delegates to `versions::v1::from_v1_json_value` which handles both wrapper and flat V1 shapes → writes `state.json` → deletes `state.ncl`.
 
 ## `deployed_at` ordering semantics
@@ -127,7 +151,7 @@ Flat→v2 mapping:
 ## Normalization / retain rules
 
 - `managed_files`: remove entries with empty/whitespace-only keys.
-- `managed_tools`: retain only entries where at least one of `version`, `tag`, or `canonical_version` is non-empty.
+- `managed_tools`: retain only entries with a non-empty `canonical_version` or at least one `Some` `resolved_*` field. No trim/empty-string guards are applied to the `resolved_*` `Option` fields — empty is `None`, never `""`.
 - `workflow_states`: no special normalization.
 - Normalization runs in `MediaPmState::normalize()`.
 
@@ -141,8 +165,11 @@ tool's provider always returns the same kind of identifier. No runtime
 fallback chain exists.
 
 When comparing canonical versions for skip-if-up-to-date logic, use exact
-string equality. All providers use the resolved tag verbatim — no prefix
-transformation is applied.
+string equality. GitHub-release-based tools (yt-dlp, deno, rsgain, sd) use the
+resolved commit hash as canonical version; ffmpeg uses the composite
+`"{autobuild_tag}+evermeet-{evermeet_version}"`; media-tagger uses the
+mediapm build-time git hash. The `resolved_*` provenance fields are separate
+and informational — they never participate in skip/update decisions.
 
 ## State write policy
 
@@ -160,6 +187,6 @@ pass. No byte-level change detection is applied. This is intentional:
   (`write_bytes_if_changed`).
 
 **Invariant:** `state.json` content changes are not errors. A diff showing only
-`canonical_version`, `deployed_at`, or `tag` changes with unchanged
+`canonical_version`, `deployed_at`, or `resolved_*` changes with unchanged
 `content_map_hash` indicates metadata churn without payload change — expected
 behavior.

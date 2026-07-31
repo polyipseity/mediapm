@@ -508,15 +508,22 @@ pub struct ToolRegistryEntry {
     #[serde(default)]
     pub deployed_at: u64,
     /// The git tag that was resolved during the last resolve phase.
-    /// Empty string if the provider does not resolve from tags.
+    /// Becomes `Option<String>`: `None` (JSON `null`) when the provider does
+    /// not resolve from tags; empty strings never occur. Any `None` field
+    /// must carry a documented why-empty reason in the provider dispatch arm,
+    /// the provider module doc, and `provider-dispatch.instructions.md`.
     #[serde(default)]
     pub resolved_tag: String,
     /// The version string that was resolved during the last resolve phase.
-    /// Empty string if the provider does not produce a version string.
+    /// Becomes `Option<String>`: `None` (JSON `null`) when the provider does
+    /// not produce a version string; empty strings never occur. Why-empty
+    /// documentation applies (see `resolved_tag`).
     #[serde(default)]
     pub resolved_version: String,
     /// The VCS hash that was resolved during the last resolve phase.
-    /// Empty string if the provider does not resolve from hashes.
+    /// Becomes `Option<String>`: `None` (JSON `null`) when the provider does
+    /// not resolve from hashes; empty strings never occur. Why-empty
+    /// documentation applies (see `resolved_tag`).
     #[serde(default)]
     pub resolved_vcs_hash: String,
 }
