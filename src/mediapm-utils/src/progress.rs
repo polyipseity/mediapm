@@ -3072,7 +3072,9 @@ pub mod recording {
             /// Total (denominator) component.
             total: String,
         },
-        /// `set_suffix_components(components)` was called.
+        /// `set_suffix_components(components)` was called. Only the custom
+        /// field is recorded — the auto fields (count/total/elapsed/rate/eta)
+        /// are derived at sync, not stored by user setters.
         SetSuffixComponents {
             /// Custom suffix text.
             custom: String,
