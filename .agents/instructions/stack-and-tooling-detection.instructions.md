@@ -72,6 +72,7 @@ For this repository specifically, confirm the workspace crate split and its resp
 
 - A single empty directory is weak evidence.
 - A real config file, lockfile, script, workflow step, or representative source file is strong evidence.
+- This repository has no JavaScript package-manager ecosystem. A `package.json` or JS lockfile appearing in the tree is a mistake to report and remove, not evidence of a stack.
 - Comments in docs are weaker than executable config unless the docs are clearly the source of truth.
 - Prefer on-disk facts over habits carried from similar repositories.
 

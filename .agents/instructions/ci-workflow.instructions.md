@@ -11,7 +11,7 @@ applyTo: ".github/workflows/**/*.yml, .github/workflows/**/*.yaml, prek.toml, .c
 Local git hooks (configured via `prek.toml`) enforce code quality at three stages:
 
 - **pre-commit stage** (on `git commit`): `check-case-conflict`, `check-executables-have-shebangs`, `check-illegal-windows-names`, `check-merge-conflict`, `check-shebang-scripts-are-executable`, `check-symlinks`, `destroyed-symlinks`, `detect-private-key`, `end-of-file-fixer`, `fix-byte-order-marker`, `name-tests-test`, `trailing-whitespace`, `rumdl-fmt`, and `fmt` (cargo fmt on changed `.rs` files).
-- **commit-msg stage**: runs `commitlint` (Conventional Commits enforcement via `@commitlint/config-conventional`).
+- **commit-msg stage**: runs `commitlint` (Conventional Commits enforcement via `@commitlint/config-conventional`). commitlint is self-provisioned by the pre-commit hook (`additional_dependencies`) and the CI action; no repo-level `package.json` is used.
 - **pre-push stage** (on `git push`): `cargo-check --workspace --all-targets --all-features`, `clippy --workspace --all-targets --all-features`, `test docs` (doctests via `cargo test --doc --workspace`), and `test` (nextest: `cargo-nextest run --workspace --all-targets --all-features`).
 
 Treat these hooks as the canonical lint/format/check gate. During normal development, prefer selective test/build runs and rely on commit/push hooks for full validation.

@@ -20,7 +20,8 @@ argument-hint: Optional extras (e.g., ticket=ABC-123). To skip committing, pass 
    - Present the exact command to be run. If not executed, produce a best-effort commit message from available context and stop.
 
 2. **Compose commit message**
-   - Inspect Command 1 output and repository conventions (CONTRIBUTING.md, `.agents/`, `package.json`, `commitlint`, `.husky`, `CHANGELOG.md`, etc.).
+
+   - Inspect Command 1 output and repository conventions (CONTRIBUTING.md, `.agents/`, commitlint, `.husky`, `CHANGELOG.md`, etc.).
    - Enforce repository commit policy:
      - header must be `type(scope): subject` (scope is required),
      - never use crate/tool-prefixed headers like `mediapm: ...`, `conductor: ...`, `cas: ...`, or similar `<name>:` forms.

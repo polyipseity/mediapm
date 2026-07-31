@@ -139,6 +139,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
   - prefer `default-features = false` for internal cross-crate dependencies unless one default behavior is intentionally required.
 - When changing crate features, validate representative feature matrices with targeted `cargo check` invocations so minimal builds remain healthy.
 - Prefer small, atomic commits for dependency/feature-surface changes so feature-boundary regressions are easy to audit and bisect.
+- No JavaScript package-manager manifests or lockfiles (`package.json`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `node_modules/`, etc.) belong in this repository; it is a pure Rust workspace. JS tooling (commitlint) runs only through self-provisioned CI actions and pre-commit hooks. Re-adding such files is a policy violation.
 
 ## CLI and API Parity
 
