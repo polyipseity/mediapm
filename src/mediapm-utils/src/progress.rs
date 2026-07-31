@@ -1595,28 +1595,6 @@ mod inner {
             self.state.dirty.store(true, Ordering::Release);
         }
 
-        /// Set the prefix shown before the bar.
-        ///
-        /// For backward compat, this parses the string into
-        /// [`PrefixComponents`] using a heuristic. New code should prefer
-        /// [`set_prefix_components`](Self::set_prefix_components).
-        ///
-        /// # Panics
-        ///
-        /// Panics if the shared-state `RwLock` is poisoned.
-        pub fn set_prefix(&self, prefix: impl Into<String>) {
-            let prefix: String = prefix.into();
-            {
-                let mut pc = self
-                    .state
-                    .prefix_components
-                    .write()
-                    .expect("shared_state prefix_components lock");
-                *pc = prefix_components_from_str(&prefix);
-            }
-            self.state.dirty.store(true, Ordering::Release);
-        }
-
         /// Set prefix components directly (source-data API).
         ///
         /// # Panics
@@ -2942,8 +2920,6 @@ pub trait ProgressBarApi: Send + Sync {
     fn set_position(&self, pos: u64);
     /// Change the total mid-flight for dynamic workloads.
     fn set_total(&self, total: u64);
-    /// Set the prefix shown before the bar.
-    fn set_prefix(&self, prefix: &str);
     /// Set a custom suffix appended to the auto-computed right-hand side.
     fn set_suffix(&self, suffix: &str);
     /// Set prefix components for source-data-based truncation.
@@ -2977,9 +2953,6 @@ impl ProgressBarApi for TrackedHandle {
     }
     fn set_total(&self, total: u64) {
         TrackedHandle::set_total(self, total);
-    }
-    fn set_prefix(&self, prefix: &str) {
-        TrackedHandle::set_prefix(self, prefix);
     }
     fn set_suffix(&self, suffix: &str) {
         TrackedHandle::set_suffix(self, suffix);
@@ -3052,11 +3025,6 @@ pub mod recording {
         SetPosition {
             /// Absolute position to jump to.
             pos: u64,
-        },
-        /// `set_prefix(prefix)` was called.
-        SetPrefix {
-            /// Prefix text.
-            prefix: String,
         },
         /// `set_suffix(suffix)` was called.
         SetSuffix {
@@ -3212,14 +3180,6 @@ pub mod recording {
             self.ops.lock().expect("recording lock").push(ProgressOp::SetPosition { pos });
         }
 
-        /// Set the prefix.
-        pub fn set_prefix(&self, prefix: impl Into<String>) {
-            self.ops
-                .lock()
-                .expect("recording lock")
-                .push(ProgressOp::SetPrefix { prefix: prefix.into() });
-        }
-
         /// Set the custom RHS suffix.
         pub fn set_suffix(&self, suffix: impl Into<String>) {
             self.ops
@@ -3358,9 +3318,6 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     fn set_total(&self, total: u64) {
         recording::RecordingTrackedHandle::set_total(self, total);
     }
-    fn set_prefix(&self, prefix: &str) {
-        recording::RecordingTrackedHandle::set_prefix(self, prefix);
-    }
     fn set_suffix(&self, suffix: &str) {
         recording::RecordingTrackedHandle::set_suffix(self, suffix);
     }
@@ -3423,7 +3380,7 @@ mod tests {
         assert_eq!(h.total(), 200);
         h.advance(10);
         h.set_position(20);
-        h.set_prefix("pfx");
+        h.set_prefix_components(PrefixComponents { tool_name: "pfx".into(), ..Default::default() });
         h.finish();
 
         // Disabled handles can still be created explicitly.
@@ -3436,7 +3393,10 @@ mod tests {
         dh.advance(10);
         dh.set_total(50);
         dh.set_position(5);
-        dh.set_prefix("pfx");
+        dh.set_prefix_components(PrefixComponents {
+            tool_name: "pfx".into(),
+            ..Default::default()
+        });
         dh.finish();
         dh.finish_success();
         dh.finish_error();
@@ -3451,7 +3411,7 @@ mod tests {
         h.advance(10);
         h.set_total(50);
         h.set_position(5);
-        h.set_prefix("pfx");
+        h.set_prefix_components(PrefixComponents { tool_name: "pfx".into(), ..Default::default() });
         h.finish();
         h.finish_success();
         h.finish_error();
@@ -3486,7 +3446,7 @@ mod tests {
         h.set_total(200);
         h.advance(5);
         h.set_position(10);
-        h.set_prefix("pfx");
+        h.set_prefix_components(PrefixComponents { tool_name: "pfx".into(), ..Default::default() });
         h.finish();
 
         assert_eq!(
@@ -3495,7 +3455,14 @@ mod tests {
                 ProgressOp::SetTotal { total: 200 },
                 ProgressOp::Advance { delta: 5 },
                 ProgressOp::SetPosition { pos: 10 },
-                ProgressOp::SetPrefix { prefix: "pfx".into() },
+                ProgressOp::SetPrefixComponents {
+                    marker: String::new(),
+                    tool_name: "pfx".into(),
+                    version: String::new(),
+                    phase: String::new(),
+                    count: String::new(),
+                    total: String::new(),
+                },
                 ProgressOp::Finish,
             ]
         );
@@ -4018,7 +3985,7 @@ mod tests {
     #[test]
     fn tracked_handle_snapshot_fields_match() {
         let h = TrackedHandle::new(100);
-        h.set_prefix("pfx");
+        h.set_prefix_components(PrefixComponents { tool_name: "pfx".into(), ..Default::default() });
         h.advance(7);
         let snap = h.snapshot();
         assert_eq!(snap.prefix, "\x1b[0mpfx");
@@ -5104,7 +5071,10 @@ mod tests {
 
         bar.set_position(20);
         bar.set_total(200);
-        bar.set_prefix("multi");
+        bar.set_prefix_components(PrefixComponents {
+            tool_name: "multi".into(),
+            ..Default::default()
+        });
 
         group.tick();
         let content = term.contents();
