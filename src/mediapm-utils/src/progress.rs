@@ -1221,6 +1221,49 @@ mod inner {
         }
     }
 
+    /// Progressively truncate a suffix string, taking the auto-computed RHS
+    /// and the custom suffix text as separate arguments (no combine-then-re-
+    /// split).  The separator between auto and custom is a single space.
+    ///
+    /// `auto` may contain ANSI color codes; `custom` is plain text.
+    /// Truncation first removes visible chars from `custom` (right to left),
+    /// then falls back to hard truncation of the visible string.
+    pub(super) fn semantic_truncate_suffix(auto: &str, custom: &str, max_width: usize) -> String {
+        let auto_visible_len = strip_ansi(auto).chars().count();
+        let custom_len = custom.chars().count();
+
+        if custom.is_empty() {
+            // No custom suffix — hard truncate auto if needed.
+            if auto_visible_len <= max_width {
+                return auto.to_string();
+            }
+            return strip_ansi(auto).chars().take(max_width).collect();
+        }
+
+        // Total = auto + 1 separator + custom.
+        let total_visible = auto_visible_len + 1 + custom_len;
+        if total_visible <= max_width {
+            return format!("{auto} {custom}");
+        }
+
+        // Try progressive removal from custom (right to left).
+        let custom_chars: Vec<char> = custom.chars().collect();
+        for keep in (0..custom_len).rev() {
+            let total_visible = auto_visible_len + 1 + keep;
+            if total_visible <= max_width {
+                if keep == 0 {
+                    // Custom fully removed: no separator needed.
+                    return auto.to_string();
+                }
+                let truncated: String = custom_chars[..keep].iter().collect();
+                return format!("{auto} {truncated}");
+            }
+        }
+
+        // Custom fully removed but still doesn't fit — hard truncate visible.
+        strip_ansi(auto).chars().take(max_width).collect()
+    }
+
     fn child_bar_style() -> ProgressStyle {
         ProgressStyle::with_template(CHILD_BAR_TEMPLATE)
             .expect("invalid child bar template")
@@ -4392,6 +4435,65 @@ mod tests {
     fn semantic_truncate_message_empty() {
         let result = super::inner::semantic_truncate_message("", 30);
         assert_eq!(result, "", "empty message stays empty");
+    }
+
+    // ---- semantic_truncate_suffix tests (Phase 2) -----------------------
+
+    #[test]
+    fn semantic_truncate_suffix_fits() {
+        let auto = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]";
+        let custom = "cached (1)";
+        let result = super::inner::semantic_truncate_suffix(auto, custom, 100);
+        assert_eq!(result, format!("{auto} {custom}"), "full suffix when fits");
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_remove_custom_partial() {
+        let auto = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]";
+        let custom = "cached (1)";
+        // auto_visible_len = 33, custom_len = 10, sep = 1, total = 44
+        // max_width=39: need to remove 5 custom chars (keep=5)
+        let result = super::inner::semantic_truncate_suffix(auto, custom, 39);
+        assert_eq!(result, " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02] cache");
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_remove_custom_all() {
+        let auto = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]";
+        let custom = "cached (1)";
+        // auto_visible_len = 33, custom_len = 10, sep = 1, total = 44
+        // max_width=34: keep=1 → 35 > 34, keep=0 → 33+0 = 33 ≤ 34 ✓ (custom fully removed, no separator)
+        let result = super::inner::semantic_truncate_suffix(auto, custom, 34);
+        assert_eq!(result, " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]");
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_hard_truncate() {
+        let auto = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]";
+        let custom = "cached (1)";
+        // auto_visible = 33, sep = 1, custom = 9, total = 43
+        // max_width=30: custom fully removed (9) → 33 > 30 → hard truncate
+        let result = super::inner::semantic_truncate_suffix(auto, custom, 30);
+        assert_eq!(result, " 2/5 0:00:05 12.3 MiB/s [0:00:");
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_no_custom() {
+        let auto = "hello world";
+        let result = super::inner::semantic_truncate_suffix(auto, "", 5);
+        assert_eq!(result, "hello", "hard truncate without custom");
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_empty_both() {
+        let result = super::inner::semantic_truncate_suffix("", "", 30);
+        assert_eq!(result, "", "both empty");
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_custom_only() {
+        let result = super::inner::semantic_truncate_suffix("", "custom", 10);
+        assert_eq!(result, " custom", "custom appended after empty auto");
     }
 
     #[test]
