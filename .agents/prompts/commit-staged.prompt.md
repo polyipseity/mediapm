@@ -20,7 +20,6 @@ argument-hint: Optional extras (e.g., ticket=ABC-123). To skip committing, pass 
    - Present the exact command to be run. If not executed, produce a best-effort commit message from available context and stop.
 
 2. **Compose commit message**
-
    - Inspect Command 1 output and repository conventions (CONTRIBUTING.md, `.agents/`, commitlint, `.husky`, `CHANGELOG.md`, etc.).
    - Enforce repository commit policy:
      - header must be `type(scope): subject` (scope is required),
@@ -45,14 +44,14 @@ argument-hint: Optional extras (e.g., ticket=ABC-123). To skip committing, pass 
      ```
 
    **Note on special characters and quoting:** Prefer PowerShell single-quoted here-strings (`@'...'@`) to prevent variable expansion and avoid backtick (\`) escaping. If a double-quoted here-string (`@"..."@`) is used, be careful to escape backticks and `$` or switch to the single-quoted form.
-     - **Bash/zsh (Linux/macOS):**
+   - **Bash/zsh (Linux/macOS):**
 
-       ```bash
-       (git commit --file - <<'MSG'
-       <full commit message>
-       MSG
-       ) && git rev-parse HEAD
-       ```
+     ```bash
+     (git commit --file - <<'MSG'
+     <full commit message>
+     MSG
+     ) && git rev-parse HEAD
+     ```
 
    **Note on special characters and quoting:** Use a single-quoted heredoc delimiter (`<<'MSG'`) to prevent shell expansion (backticks and `$` are preserved). If the delimiter (e.g., `MSG`) appears verbatim in the message, choose a different delimiter to avoid conflicts.
 
