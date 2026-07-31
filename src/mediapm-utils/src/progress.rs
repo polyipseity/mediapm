@@ -830,29 +830,34 @@ mod inner {
         }
     }
 
-    /// Build the `{msg}` string: colored count/total + uncolored elapsed +
-    /// uncolored rate + optional uncolored eta.
+    /// Render [`SuffixComponents`] into the `{msg}` display string.
     ///
-    /// When running:    `" {color}{count}/{total}{reset} {elapsed} {rate} [{eta}]"`
-    /// When not running: `" {color}{count}/{total}{reset} {elapsed}"`
-    pub(super) fn build_right_msg(
-        color_code: &str,
-        count_str: &str,
-        total_str: &str,
-        elapsed_str: &str,
-        rate_str: Option<&str>,
-        eta_str: Option<&str>,
-    ) -> String {
-        let mut s = format!(" \x1b[{color_code}m{count_str}/{total_str}\x1b[0m");
-        s.push(' ');
-        s.push_str(elapsed_str);
-        if let Some(rate) = rate_str {
+    /// Format: ` \x1b[{color_code}m{count}/{total}\x1b[0m` + ` {elapsed}` +
+    /// ` {rate}` (when `Some`) + ` {eta}` (when `rate` AND `eta` are both
+    /// `Some` — eta-only-when-rate guard) + ` {custom}` (when non-empty).
+    /// The count/total segment is omitted when both fields are empty.
+    ///
+    /// Normative truncation spec: see [`semantic_truncate_suffix`].
+    pub(super) fn render_suffix_components(parts: &SuffixComponents, color_code: &str) -> String {
+        let mut s = String::new();
+        if !parts.count.is_empty() || !parts.total.is_empty() {
+            s.push_str(&format!(" \x1b[{color_code}m{}/{}\x1b[0m", parts.count, parts.total));
+        }
+        if !parts.elapsed.is_empty() {
+            s.push(' ');
+            s.push_str(&parts.elapsed);
+        }
+        if let Some(rate) = &parts.rate {
             s.push(' ');
             s.push_str(rate);
-            if let Some(eta) = eta_str {
+            if let Some(eta) = &parts.eta {
                 s.push(' ');
                 s.push_str(eta);
             }
+        }
+        if !parts.custom.is_empty() {
+            s.push(' ');
+            s.push_str(&parts.custom);
         }
         s
     }
@@ -887,11 +892,37 @@ mod inner {
         pub count: String,
     }
 
-    /// Source component of a progress suffix, stored separately so
-    /// [`semantic_truncate_suffix`] receives the custom text directly
-    /// without string re-parsing.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    /// Source components of a progress suffix, stored separately so
+    /// [`semantic_truncate_suffix`] receives each field directly without
+    /// string re-parsing.
+    ///
+    /// Normative truncation spec (removal order, least-important first):
+    ///
+    /// 1. `custom` — progressive shrink (right-to-left, keeping left prefix)
+    /// 2. `eta` — removed entirely
+    /// 3. `rate` — removed entirely
+    /// 4. `elapsed` — removed entirely
+    /// 5. `count`/`total` — removed entirely, as one atomic pair
+    /// 6. fallback — hard truncate whatever remains to the width budget
+    ///
+    /// Storage rule: `count` and `total` are stored as separate fields but
+    /// rendered together (`{count}/{total}`) and trimmed together as one
+    /// atomic unit — a bare count or bare total is never shown.
+    ///
+    /// Render rule: `eta` is rendered only when `rate` is present
+    /// (eta-only-when-rate guard).
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
     pub struct SuffixComponents {
+        /// Count (numerator), rendered with `total` as `{count}/{total}`.
+        pub count: String,
+        /// Total (denominator), rendered with `count` as `{count}/{total}`.
+        pub total: String,
+        /// Elapsed time display text (e.g. `0:00:05`), empty when absent.
+        pub elapsed: String,
+        /// Rate display text (e.g. `12.3 MiB/s`), `None` when no rate yet.
+        pub rate: Option<String>,
+        /// ETA display text (already bracketed, e.g. `[0:00:02]`), `None` when unavailable.
+        pub eta: Option<String>,
         /// Custom suffix text appended after the auto-computed RHS.
         pub custom: String,
     }
@@ -1140,47 +1171,85 @@ mod inner {
         String::new()
     }
 
-    /// Progressively truncate a suffix string, taking the auto-computed RHS
-    /// and the custom suffix text as separate arguments (no combine-then-re-
-    /// split).  The separator between auto and custom is a single space.
+    /// Progressively truncate suffix [`SuffixComponents`] so the rendered
+    /// visible width fits within `max_width`.
     ///
-    /// `auto` may contain ANSI color codes; `custom` is plain text.
-    /// Truncation first removes visible chars from `custom` (right to left),
-    /// then falls back to hard truncation of the visible string.
-    pub(super) fn semantic_truncate_suffix(auto: &str, custom: &str, max_width: usize) -> String {
-        let auto_visible_len = strip_ansi(auto).chars().count();
-        let custom_len = custom.chars().count();
-
-        if custom.is_empty() {
-            // No custom suffix — hard truncate auto if needed.
-            if auto_visible_len <= max_width {
-                return auto.to_string();
-            }
-            return strip_ansi(auto).chars().take(max_width).collect();
+    /// Normative truncation spec (removal order, least-important first):
+    ///
+    /// 1. `custom` — progressive shrink (right-to-left, keeping left prefix)
+    /// 2. `eta` — removed entirely
+    /// 3. `rate` — removed entirely
+    /// 4. `elapsed` — removed entirely
+    /// 5. `count`/`total` — removed entirely, as one atomic pair
+    /// 6. fallback — hard truncate whatever remains to the width budget
+    ///
+    /// Storage rule: `count` and `total` are stored as separate fields but
+    /// rendered together (`{count}/{total}`) and trimmed together as one
+    /// atomic unit — a bare count or bare total is never shown.
+    ///
+    /// Fit is measured on the render with an empty color code (ANSI escapes
+    /// add no visible width).
+    pub(super) fn semantic_truncate_suffix(
+        parts: &SuffixComponents,
+        max_width: usize,
+    ) -> SuffixComponents {
+        let fits = |p: &SuffixComponents| {
+            strip_ansi(&render_suffix_components(p, "")).chars().count() <= max_width
+        };
+        if fits(parts) {
+            return parts.clone();
         }
+        let mut out = parts.clone();
 
-        // Total = auto + 1 separator + custom.
-        let total_visible = auto_visible_len + 1 + custom_len;
-        if total_visible <= max_width {
-            return format!("{auto} {custom}");
-        }
-
-        // Try progressive removal from custom (right to left).
-        let custom_chars: Vec<char> = custom.chars().collect();
-        for keep in (0..custom_len).rev() {
-            let total_visible = auto_visible_len + 1 + keep;
-            if total_visible <= max_width {
-                if keep == 0 {
-                    // Custom fully removed: no separator needed.
-                    return auto.to_string();
+        // 1. Custom: progressive shrink (right-to-left, keeping left prefix).
+        if !out.custom.is_empty() {
+            let custom_len = out.custom.chars().count();
+            for keep in (0..custom_len).rev() {
+                out.custom = out.custom.chars().take(keep).collect();
+                if fits(&out) {
+                    return out;
                 }
-                let truncated: String = custom_chars[..keep].iter().collect();
-                return format!("{auto} {truncated}");
+            }
+            // Custom fully removed but still doesn't fit — continue below.
+        }
+
+        // 2. Eta: removed entirely.
+        if out.eta.is_some() {
+            out.eta = None;
+            if fits(&out) {
+                return out;
             }
         }
 
-        // Custom fully removed but still doesn't fit — hard truncate visible.
-        strip_ansi(auto).chars().take(max_width).collect()
+        // 3. Rate: removed entirely.
+        if out.rate.is_some() {
+            out.rate = None;
+            if fits(&out) {
+                return out;
+            }
+        }
+
+        // 4. Elapsed: removed entirely.
+        if !out.elapsed.is_empty() {
+            out.elapsed.clear();
+            if fits(&out) {
+                return out;
+            }
+        }
+
+        // 5. Count/total: removed entirely, as one atomic pair.
+        if !out.count.is_empty() || !out.total.is_empty() {
+            out.count.clear();
+            out.total.clear();
+            if fits(&out) {
+                return out;
+            }
+        }
+
+        // 6. Fallback: hard truncate whatever remains to the width budget.
+        out.custom =
+            strip_ansi(&render_suffix_components(&out, "")).chars().take(max_width).collect();
+        out
     }
 
     fn child_bar_style() -> ProgressStyle {
@@ -1325,7 +1394,7 @@ mod inner {
                     tool_name: label.to_string(),
                     ..Default::default()
                 }),
-                suffix_components: RwLock::new(SuffixComponents { custom: String::new() }),
+                suffix_components: RwLock::new(SuffixComponents::default()),
                 status: AtomicU8::new(0),
                 dirty: AtomicBool::new(true),
                 disabled: AtomicBool::new(false),
@@ -1541,7 +1610,7 @@ mod inner {
                     .suffix_components
                     .write()
                     .expect("shared_state suffix_components lock");
-                *sc = SuffixComponents { custom: suffix.clone() };
+                *sc = SuffixComponents { custom: suffix, ..Default::default() };
             }
             self.state.dirty.store(true, Ordering::Release);
         }
@@ -2069,7 +2138,7 @@ mod inner {
                                     prefix: String::new(),
                                     prefix_components: PrefixComponents::default(),
                                     suffix: String::new(),
-                                    suffix_components: SuffixComponents { custom: String::new() },
+                                    suffix_components: SuffixComponents::default(),
                                     status: TrackStatus::Active,
                                     elapsed: Duration::ZERO,
                                 },
@@ -2161,14 +2230,16 @@ mod inner {
             let total_str = format_count(snap.total);
             let elapsed_str = format_elapsed(snap.elapsed);
             let color_code = bar_color_code(snap.status, is_overall);
-            let msg = build_right_msg(
-                color_code,
-                &count_str,
-                &total_str,
-                &elapsed_str,
-                rate_str,
-                eta_str,
-            );
+            // Compose a fresh suffix component set each tick: auto fields from
+            // snapshot + ticker timing, custom from user-set components.
+            let fresh_suffix = SuffixComponents {
+                count: count_str,
+                total: total_str,
+                elapsed: elapsed_str,
+                rate: rate_str.map(str::to_owned),
+                eta: eta_str.map(str::to_owned),
+                custom: snap.suffix_components.custom.clone(),
+            };
 
             // Truncate prefix to fit template width, accounting for ANSI
             // escapes added by build_prefix (which indicatif counts as visible
@@ -2187,12 +2258,9 @@ mod inner {
                 slot.bar.set_prefix(new_prefix.clone());
                 *slot.cache.prefix.borrow_mut() = new_prefix;
             }
-            // Build display suffix: auto-computed RHS + optional custom suffix.
-            let display_suffix = semantic_truncate_suffix(
-                &msg,
-                &snap.suffix_components.custom,
-                max_suffix_width(cols),
-            );
+            // Build display suffix: truncate the fresh component set, then render.
+            let truncated_suffix = semantic_truncate_suffix(&fresh_suffix, max_suffix_width(cols));
+            let display_suffix = render_suffix_components(&truncated_suffix, color_code);
             if display_suffix != *slot.cache.suffix.borrow() {
                 slot.bar.set_message(display_suffix.clone());
                 *slot.cache.suffix.borrow_mut() = display_suffix;
@@ -3210,7 +3278,7 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
             prefix: String::new(),
             prefix_components: crate::progress::inner::PrefixComponents::default(),
             suffix: String::new(),
-            suffix_components: crate::progress::inner::SuffixComponents { custom: String::new() },
+            suffix_components: crate::progress::inner::SuffixComponents::default(),
             status: TrackStatus::Active,
             elapsed: recording::RecordingTrackedHandle::snapshot_elapsed(self),
         }
@@ -3404,7 +3472,10 @@ mod tests {
     #[test]
     fn recording_handle_set_suffix_components_ops() {
         let h = RecordingTrackedHandle::new(100);
-        h.set_suffix_components(SuffixComponents { custom: "cached (1)".into() });
+        h.set_suffix_components(SuffixComponents {
+            custom: "cached (1)".into(),
+            ..Default::default()
+        });
 
         assert_eq!(h.ops(), vec![ProgressOp::SetSuffixComponents { custom: "cached (1)".into() }]);
     }
@@ -4443,63 +4514,152 @@ mod tests {
         assert_eq!(result, "wget", "failed overhead accounted");
     }
 
-    // ---- semantic_truncate_suffix tests (Phase 2) -----------------------
+    // ---- semantic_truncate_suffix tests (Phase 1) -----------------------
+
+    /// Canonical test parts: auto components (33 visible) + custom (10).
+    fn suffix_parts_full() -> SuffixComponents {
+        SuffixComponents {
+            count: "2".into(),
+            total: "5".into(),
+            elapsed: "0:00:05".into(),
+            rate: Some("12.3 MiB/s".into()),
+            eta: Some("[0:00:02]".into()),
+            custom: "cached (1)".into(),
+        }
+    }
+
+    /// Render truncated parts with the child-bar color code like production.
+    fn render_suffix(parts: &SuffixComponents) -> String {
+        super::inner::render_suffix_components(parts, "33")
+    }
 
     #[test]
     fn semantic_truncate_suffix_fits() {
-        let auto = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]";
-        let custom = "cached (1)";
-        let result = super::inner::semantic_truncate_suffix(auto, custom, 100);
-        assert_eq!(result, format!("{auto} {custom}"), "full suffix when fits");
+        let parts = suffix_parts_full();
+        let result = super::inner::semantic_truncate_suffix(&parts, 100);
+        assert_eq!(
+            render_suffix(&result),
+            " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02] cached (1)",
+            "full suffix when fits"
+        );
     }
 
     #[test]
     fn semantic_truncate_suffix_remove_custom_partial() {
-        let auto = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]";
-        let custom = "cached (1)";
-        // auto_visible_len = 33, custom_len = 10, sep = 1, total = 44
-        // max_width=39: need to remove 5 custom chars (keep=5)
-        let result = super::inner::semantic_truncate_suffix(auto, custom, 39);
-        assert_eq!(result, " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02] cache");
+        let parts = suffix_parts_full();
+        let result = super::inner::semantic_truncate_suffix(&parts, 39);
+        assert_eq!(
+            render_suffix(&result),
+            " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02] cache",
+            "custom shrunk to keep=5 (39 visible)"
+        );
     }
 
     #[test]
     fn semantic_truncate_suffix_remove_custom_all() {
-        let auto = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]";
-        let custom = "cached (1)";
-        // auto_visible_len = 33, custom_len = 10, sep = 1, total = 44
-        // max_width=34: keep=1 → 35 > 34, keep=0 → 33+0 = 33 ≤ 34 ✓ (custom fully removed, no separator)
-        let result = super::inner::semantic_truncate_suffix(auto, custom, 34);
-        assert_eq!(result, " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]");
+        let parts = suffix_parts_full();
+        let result = super::inner::semantic_truncate_suffix(&parts, 34);
+        assert_eq!(
+            render_suffix(&result),
+            " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]",
+            "custom fully removed (auto 33 <= 34)"
+        );
     }
 
     #[test]
-    fn semantic_truncate_suffix_hard_truncate() {
-        let auto = " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s [0:00:02]";
-        let custom = "cached (1)";
-        // auto_visible = 33, sep = 1, custom = 9, total = 43
-        // max_width=30: custom fully removed (9) → 33 > 30 → hard truncate
-        let result = super::inner::semantic_truncate_suffix(auto, custom, 30);
-        assert_eq!(result, " 2/5 0:00:05 12.3 MiB/s [0:00:");
+    fn semantic_truncate_suffix_removes_eta() {
+        let parts = suffix_parts_full();
+        let result = super::inner::semantic_truncate_suffix(&parts, 30);
+        assert_eq!(
+            render_suffix(&result),
+            " \x1b[33m2/5\x1b[0m 0:00:05 12.3 MiB/s",
+            "eta removed entirely (23 <= 30)"
+        );
     }
 
     #[test]
-    fn semantic_truncate_suffix_no_custom() {
-        let auto = "hello world";
-        let result = super::inner::semantic_truncate_suffix(auto, "", 5);
-        assert_eq!(result, "hello", "hard truncate without custom");
+    fn semantic_truncate_suffix_removes_rate() {
+        let parts = suffix_parts_full();
+        let result = super::inner::semantic_truncate_suffix(&parts, 22);
+        assert_eq!(
+            render_suffix(&result),
+            " \x1b[33m2/5\x1b[0m 0:00:05",
+            "rate removed entirely (12 <= 22)"
+        );
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_removes_elapsed() {
+        let parts = suffix_parts_full();
+        let result = super::inner::semantic_truncate_suffix(&parts, 11);
+        assert_eq!(
+            render_suffix(&result),
+            " \x1b[33m2/5\x1b[0m",
+            "elapsed removed entirely (4 <= 11)"
+        );
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_fits_count_total() {
+        let parts = suffix_parts_full();
+        let result = super::inner::semantic_truncate_suffix(&parts, 4);
+        assert_eq!(
+            render_suffix(&result),
+            " \x1b[33m2/5\x1b[0m",
+            "count/total is the last unit and fits at 4"
+        );
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_removes_count_total() {
+        let parts = suffix_parts_full();
+        let result = super::inner::semantic_truncate_suffix(&parts, 3);
+        assert_eq!(render_suffix(&result), "", "count/total removed entirely (0 <= 3)");
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_count_total_atomic_no_partial() {
+        // Width 3: the full unit ` 2/5` (4 visible) does not fit, but a partial
+        // like ` 2/` (3 visible) would. Atomicity requires dropping the whole
+        // pair — a bare count or partial unit is never shown.
+        let parts = SuffixComponents {
+            count: "2".into(),
+            total: "5".into(),
+            elapsed: "0:00:05".into(),
+            rate: None,
+            eta: None,
+            custom: String::new(),
+        };
+        let result = super::inner::semantic_truncate_suffix(&parts, 3);
+        assert_eq!(render_suffix(&result), "", "no partial count/total at width 3");
+    }
+
+    #[test]
+    fn semantic_truncate_suffix_auto_components_removed_without_custom() {
+        // Full = 12 visible; at 10 elapsed is removed, leaving ` 2/5` (4).
+        let parts = SuffixComponents {
+            count: "2".into(),
+            total: "5".into(),
+            elapsed: "0:00:05".into(),
+            rate: None,
+            eta: None,
+            custom: String::new(),
+        };
+        let result = super::inner::semantic_truncate_suffix(&parts, 10);
+        assert_eq!(render_suffix(&result), " \x1b[33m2/5\x1b[0m", "elapsed removed at 10");
     }
 
     #[test]
     fn semantic_truncate_suffix_empty_both() {
-        let result = super::inner::semantic_truncate_suffix("", "", 30);
-        assert_eq!(result, "", "both empty");
+        let result = super::inner::semantic_truncate_suffix(&SuffixComponents::default(), 30);
+        assert_eq!(render_suffix(&result), "", "both empty");
     }
 
     #[test]
     fn semantic_truncate_suffix_custom_only() {
-        let result = super::inner::semantic_truncate_suffix("", "custom", 10);
-        assert_eq!(result, " custom", "custom appended after empty auto");
+        let parts = SuffixComponents { custom: "custom".into(), ..Default::default() };
+        let result = super::inner::semantic_truncate_suffix(&parts, 10);
+        assert_eq!(render_suffix(&result), " custom", "custom appended after empty auto");
     }
 
     #[test]
@@ -4542,31 +4702,84 @@ mod tests {
     }
 
     #[test]
-    fn build_right_msg_with_rate() {
-        // rate_str present, no eta
-        let result = super::inner::build_right_msg("33", "0", "5", "0s", Some("0/d"), None);
+    fn render_suffix_components_with_rate() {
+        // rate present, no eta
+        let parts = SuffixComponents {
+            count: "0".into(),
+            total: "5".into(),
+            elapsed: "0s".into(),
+            rate: Some("0/d".into()),
+            eta: None,
+            custom: String::new(),
+        };
+        let result = super::inner::render_suffix_components(&parts, "33");
         assert_eq!(result, " \x1b[33m0/5\x1b[0m 0s 0/d");
         assert!(result.ends_with("0s 0/d"), "expected elapsed then rate at end: {result:?}");
     }
 
     #[test]
-    fn build_right_msg_with_rate_and_eta() {
-        // rate_str + eta_str
-        let result = super::inner::build_right_msg("33", "0", "5", "0s", Some("0/d"), Some("5s"));
+    fn render_suffix_components_with_rate_and_eta() {
+        // rate + eta
+        let parts = SuffixComponents {
+            count: "0".into(),
+            total: "5".into(),
+            elapsed: "0s".into(),
+            rate: Some("0/d".into()),
+            eta: Some("5s".into()),
+            custom: String::new(),
+        };
+        let result = super::inner::render_suffix_components(&parts, "33");
         assert_eq!(result, " \x1b[33m0/5\x1b[0m 0s 0/d 5s");
         assert!(result.ends_with("0s 0/d 5s"), "expected elapsed rate eta at end: {result:?}");
     }
 
     #[test]
-    fn build_right_msg_different_color_codes() {
+    fn render_suffix_components_different_color_codes() {
         for (code, status_name) in [("31", "failed"), ("33", "child"), ("35", "overall")] {
-            let result = super::inner::build_right_msg(code, "1", "2", "3s", Some("0/d"), None);
+            let parts = SuffixComponents {
+                count: "1".into(),
+                total: "2".into(),
+                elapsed: "3s".into(),
+                rate: Some("0/d".into()),
+                eta: None,
+                custom: String::new(),
+            };
+            let result = super::inner::render_suffix_components(&parts, code);
             assert!(
                 result.contains(&format!("\x1b[{code}m")),
                 "{status_name} should use code {code}: {result:?}"
             );
             assert!(result.contains("1/2"), "{status_name} count/total absent: {result:?}");
         }
+    }
+
+    #[test]
+    fn render_suffix_components_eta_suppressed_without_rate() {
+        // Historical build_right_msg guard: eta renders only when rate is present.
+        let parts = SuffixComponents {
+            count: "0".into(),
+            total: "5".into(),
+            elapsed: "0s".into(),
+            rate: None,
+            eta: Some("5s".into()),
+            custom: String::new(),
+        };
+        let result = super::inner::render_suffix_components(&parts, "33");
+        assert_eq!(result, " \x1b[33m0/5\x1b[0m 0s", "eta suppressed without rate");
+    }
+
+    #[test]
+    fn render_suffix_components_custom_appended() {
+        let parts = SuffixComponents {
+            count: "0".into(),
+            total: "5".into(),
+            elapsed: "0s".into(),
+            rate: Some("0/d".into()),
+            eta: None,
+            custom: "cached (1)".into(),
+        };
+        let result = super::inner::render_suffix_components(&parts, "33");
+        assert_eq!(result, " \x1b[33m0/5\x1b[0m 0s 0/d cached (1)", "custom appended");
     }
 
     // ---- Phase 4: BufferedTerm / dirty tracking tests ----------------------
