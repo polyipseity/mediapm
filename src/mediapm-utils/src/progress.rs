@@ -3283,7 +3283,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
-    use super::{ProgressGroup, TrackStatus, TrackedHandle};
+    use super::{PrefixComponents, ProgressGroup, SuffixComponents, TrackStatus, TrackedHandle};
     use indicatif::MultiProgress;
 
     #[test]
@@ -3378,6 +3378,35 @@ mod tests {
                 ProgressOp::Finish,
             ]
         );
+    }
+
+    #[test]
+    fn recording_handle_set_prefix_components_ops() {
+        let h = RecordingTrackedHandle::new(100);
+        h.set_prefix_components(PrefixComponents {
+            tool_name: "wget".into(),
+            version: "1.2.3".into(),
+            phase: "fch".into(),
+            count: "2/5".into(),
+        });
+
+        assert_eq!(
+            h.ops(),
+            vec![ProgressOp::SetPrefixComponents {
+                tool_name: "wget".into(),
+                version: "1.2.3".into(),
+                phase: "fch".into(),
+                count: "2/5".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn recording_handle_set_suffix_components_ops() {
+        let h = RecordingTrackedHandle::new(100);
+        h.set_suffix_components(SuffixComponents { custom: "cached (1)".into() });
+
+        assert_eq!(h.ops(), vec![ProgressOp::SetSuffixComponents { custom: "cached (1)".into() }]);
     }
 
     #[test]
