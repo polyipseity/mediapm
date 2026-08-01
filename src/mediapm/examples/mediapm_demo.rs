@@ -393,8 +393,10 @@ fn assert_materialized_output_hardlinked_to_cas(
     Ok(true)
 }
 
-async fn summarize_store_sizes(cas_root: &Path) -> ExampleResult<StoreSizeStats> {
-    let cas = FileSystemCas::open(cas_root).await?;
+async fn summarize_store_sizes(
+    cas: &FileSystemCas,
+    cas_root: &Path,
+) -> ExampleResult<StoreSizeStats> {
     let mut without_delta = 0u64;
     let mut with_delta = 0u64;
 
@@ -924,7 +926,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     };
 
     let source_hash_text = {
-        let cas = FileSystemCas::open(&paths.runtime_root.join("store")).await?;
+        let cas = ingest_service.conductor().cas().clone();
         let source_hash = import_source_fixture_into_cas(&cas, &source_bytes).await?;
         source_hash.to_string()
     };
@@ -955,11 +957,9 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         configure_document_for_local_tool_chain(&workspace_root, &source_hash_text)?;
 
     let mut service = {
-        let store_root = workspace_root.join(".mediapm").join("store");
-        let file_system_cas = FileSystemCas::open(&store_root).await?;
         let conductor = SimpleConductor::new(
             RuntimeStoragePaths::new(&workspace_root.join(".mediapm")),
-            file_system_cas,
+            (**ingest_service.conductor().cas()).clone(),
         );
         MediaPmService::new(conductor, MediaPmPaths::from_root(&workspace_root))
     };
@@ -970,10 +970,12 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     let maybe_summary = if run_sync { Some(service.sync_library(false).await?) } else { None };
     let effective_paths = service.paths().clone();
     let cas_root = service.paths().runtime_root.join("store");
-    let store_size_stats = summarize_store_sizes(&cas_root).await?;
+    let store_size_stats =
+        summarize_store_sizes(ingest_service.conductor().cas(), &cas_root).await?;
     let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
         .iter()
-        .map(|method| format!("{method:?}"))
+        .map(MaterializationMethod::as_label)
+        .map(str::to_owned)
         .collect::<Vec<_>>();
 
     let materialized_primary = effective_paths
