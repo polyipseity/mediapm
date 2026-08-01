@@ -368,6 +368,7 @@ pub type ProviderProgressCallback = Arc<dyn Fn(ProviderProgressSnapshot) + Send 
 mod inner {
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
+    use std::fmt::Write as _;
     use std::io::Write;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
@@ -841,7 +842,7 @@ mod inner {
     pub(super) fn render_suffix_components(parts: &SuffixComponents, color_code: &str) -> String {
         let mut s = String::new();
         if !parts.count.is_empty() || !parts.total.is_empty() {
-            s.push_str(&format!(" \x1b[{color_code}m{}/{}\x1b[0m", parts.count, parts.total));
+            let _ = write!(s, " \x1b[{color_code}m{}/{}\x1b[0m", parts.count, parts.total);
         }
         if !parts.elapsed.is_empty() {
             s.push(' ');
@@ -956,11 +957,11 @@ mod inner {
     /// Parse an `add_bar` label into [`PrefixComponents`].
     ///
     /// Parsing rules:
-    /// - First whitespace-bounded token = tool_name.
+    /// - First whitespace-bounded token = `tool_name`.
     /// - Trailing `[phase]` (last bracket pair) = phase inner text.
     /// - Trailing `digits/digits` after bracket = count.
-    /// - Remainder between tool_name and `[` = version.
-    /// - If no `[` found: tool_name = entire string (single or multi-word),
+    /// - Remainder between `tool_name` and `[` = `version`.
+    /// - If no `[` found: `tool_name` = entire string (single or multi-word),
     ///   except a trailing space-separated `count/total` token is split off.
     ///
     /// Labels are the single identity source for a bar; structured
@@ -972,8 +973,7 @@ mod inner {
         }
         let tool_name = s.split_whitespace().next().unwrap_or("").to_string();
         if let Some(bracket_start) = s.rfind('[') {
-            let bracket_end =
-                bracket_start + s[bracket_start..].find(']').map(|i| i + 1).unwrap_or(0);
+            let bracket_end = bracket_start + s[bracket_start..].find(']').map_or(0, |i| i + 1);
             let phase = s[(bracket_start + 1)..(bracket_end - 1)].trim().to_string();
             let after_bracket = s[bracket_end..].trim();
             let (count, total) = split_count_total(after_bracket);
@@ -2081,6 +2081,10 @@ mod inner {
         /// loop, then exactly one draw is released at the end.  This ensures
         /// the 50 ms daemon ticker is the sole draw authority and eliminates
         /// flicker from burst writes.
+        #[expect(
+            clippy::too_many_lines,
+            reason = "tick orchestrates many progress-bar state updates that are clearer inline"
+        )]
         pub fn tick(&mut self) {
             // Step 1: Enable buffering — all property-setter draws become
             // no-ops through BufferedTerm.
@@ -2191,6 +2195,10 @@ mod inner {
                         } else {
                             0.0
                         };
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "progress ETA math tolerates u64 to f64 precision loss"
+                        )]
                         let eta = if bound
                             && snap.status == TrackStatus::Active
                             && snap.total > snap.position
@@ -2250,8 +2258,8 @@ mod inner {
 
         /// Apply a snapshot's position/length/suffix/prefix to the
         /// indicatif bar at slot `i`.  **This is the single authoritative
-        /// push point for SharedState → indicatif.** All code paths that
-        /// reflect SharedState (position, total, suffix, prefix) on the
+        /// push point for `SharedState` → indicatif.** All code paths that
+        /// reflect `SharedState` (position, total, suffix, prefix) on the
         /// terminal bar must call through here — both the daemon ticker
         /// and [`finalize`](Self::finalize) do.
         ///
@@ -5161,6 +5169,12 @@ mod tests {
         // A tick without any mutation must produce identical terminal content
         // to the previous tick (dirty tracking skips the slot, bar.tick() is
         // not called, no redraw occurs).
+
+        // Helper: extract the body (everything after the spinner char).
+        fn content_body(s: &str) -> &str {
+            s.lines().find_map(|l| l.get(1..)).unwrap_or("")
+        }
+
         use super::inner::DimensionSource;
         use std::sync::Arc;
 
@@ -5185,10 +5199,6 @@ mod tests {
         let baseline = term.contents();
         assert!(!baseline.is_empty(), "baseline must have content");
 
-        // Helper: extract the body (everything after the spinner char).
-        fn content_body(s: &str) -> &str {
-            s.lines().filter_map(|l| l.get(1..)).next().unwrap_or("")
-        }
         let baseline_body = content_body(&baseline);
 
         // Tick 2: no mutations → content body (everything except spinner)
@@ -6005,7 +6015,7 @@ mod multi_item_budget_tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "index out of bounds")]
     fn snap_panics_on_bad_index() {
         let b = MultiItemBudget::new();
         let _ = b.snap(0);
@@ -6034,7 +6044,7 @@ mod multi_item_budget_tests {
 
     #[test]
     fn default_is_empty() {
-        let b: MultiItemBudget = Default::default();
+        let b = MultiItemBudget::default();
         assert_eq!(b.item_count(), 0);
         assert_eq!(b.aggregate(), (0, 0));
     }
