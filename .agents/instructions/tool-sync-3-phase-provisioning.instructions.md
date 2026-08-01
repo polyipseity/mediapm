@@ -84,6 +84,15 @@ per-tool visual feedback).
 
 ## Key invariants
 
+- **Tool id contract**: provisioning at the mediapm layer is keyed by the
+  mediapm tool id (plain logical id). The conductor layer receives the
+  **mediapm conductor tool id** — the generated-doc `tools` map key
+  (`{name}@{content_map_hash}`, e.g. `yt-dlp@blake3:abc`, or bare `{name}` when
+  the content map is empty) — as the provision-cache key. The provision cache
+  (`mediapm-conductor` code) must use the conductor tool id only, never the
+  plain mediapm tool id; payloads land at
+  `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/` and the
+  `.env.generated` paths mirror that layout.
 - Progress bar values are relayed directly from conductor's `ProviderProgressCallback` — the bridge does not interpret item or byte counts.
 - All progress bars are `group.add_bar()` — they are owned by the calling coordinator's progress group.
 - The metadata cache must NOT have `touch()` called — its TTL (1 day) is anchored to creation time, not last use.

@@ -15,8 +15,6 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/conductor_bridge/sync/m
   `ToolRequirementDependencies` wrapper and `DependencySpec` struct.
 - Dependency relationship type (`SameStep` vs `CrossStep`) is determined by
   per-preset `known_dependency_type()` lookup, not by user config.
-- Consumed by `compute_used_tool_ids` to determine which tools are active
-  (by traversing transitive `SameStep`/`Both` deps from step tool IDs).
 - Companion binding (inlining same-step deps into the requester's content map)
   uses `DependencyType::SameStep` to identify same-step relationships.
 
@@ -59,16 +57,21 @@ Not user-configurable. No serde derives. Defined in `src/mediapm/src/tools/depen
   always re-provisioned.
 - All comparisons are exact string match. No trim, no semver normalization.
 
-### Active-tool computation (`compute_used_tool_ids`)
+### Active-tool tracking (via `tool_runtimes` keys)
 
-- Input: `desired_tools` (all tool requirements from config) and `step_tool_ids`
-  (tools directly referenced by workflow steps).
-- Traverses transitive dependencies via `deps.keys()` using a stack-based DFS
-  with a `HashSet` visited set.
-- Returns the set of tool IDs that should be provisioned.
-- Tools NOT in this set get their content_map cleared, filesystem payloads
-  removed, and provisioning skipped entirely.
-- Handles circular dependencies correctly (visited-set terminates the DFS).
+- The active set for provisioning retention is the live `tool_runtimes` keys —
+  every tool inserted by the provisioning loop, keyed by its **mediapm
+  conductor tool id** (`{name}@{hash}` when the content map is non-empty, bare
+  `{name}` when empty).
+- `compute_used_tool_ids` was deleted: the provisioning loop's `tool_runtimes`
+  keys are the single source of truth for what remains provisioned. Tools NOT
+  in this set get their content_map cleared and filesystem payloads removed
+  after the provisioning loop (`retain_only_tool_dirs` with the conductor-id
+  set).
+- Env output distinguishes the two ids: env var **names** derive from the plain
+  mediapm tool id (hash-free, e.g. `MEDIAPM_YT_DLP_LINUX`), env var **values**
+  point at `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`
+  mirroring the provision-cache layout.
 
 ### Companion binding strategy (future)
 

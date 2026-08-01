@@ -22,12 +22,14 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - `Some(path)` → use the provided path as the cache root
      A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
 4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool_id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are also candidates for `resolved_*` backfill — see "Resolved-field population and skip backfill" below.
-5. **Active-tool computation (pruning)** — before provisioning, call
-   `compute_used_tool_ids(desired_tools, step_tool_ids)` to determine the set
-   of tools that should be provisioned. This traverses transitive dependencies
-   via `deps.keys()` using DFS with a visited set. Tools NOT in the computed
-   set get their content_map cleared and filesystem payloads removed after the
-   provisioning loop.
+5. **Active-tool tracking (pruning)** — the active set for filesystem pruning is
+   the set of **mediapm conductor tool ids** collected in `tool_runtimes` (every
+   tool inserted by the provisioning loop, keyed by its generated-doc key —
+   `{name}@{hash}` when the content map is non-empty, bare `{name}` when empty).
+   Tools NOT in this set get their content_map cleared and filesystem payloads
+   removed after the provisioning loop. (`compute_used_tool_ids` was deleted:
+   the provisioning loop's `tool_runtimes` keys are the single source of truth
+   for what is active.)
    5b. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
    - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
    - Resolve the tool fetch via `provider::resolve_tool_fetch()`. If resolve fails, emit a warning and continue.
@@ -44,6 +46,10 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    Errors on missing global tool or circular inherit resolution.
 7. **Create tools dir** — `std::fs::create_dir_all(&paths.tools_dir)`.
 8. **Write env file** — `mediapm_conductor::runtime_env::write_generated_dotenv()`.
+   The `tool_runtimes` map is keyed by **mediapm conductor tool id**; env var
+   names derive from the stripped plain mediapm tool id (hash-free), while env
+   var values point at `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`
+   mirroring the provision-cache layout.
 9. **Save generated document** — `save_conductor_generated_document()`.
 
 ### Dual-write strategy
@@ -87,6 +93,9 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
 
 ### Invariants
 
+- **Two tool id concepts (never confuse)**:
+  - **MediaPM tool id** — the plain logical id (`yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`). Used in `mediapm.ncl` tools keys, dependency keys, `ToolRegistryEntry.tool_id`, `step.tool`, and the **env var name stem** (`MEDIAPM_YT_DLP_LINUX[_DIR]` — hash-free).
+  - **MediaPM conductor tool id** — the generated-doc `tools` map key: `"{name}@{hash}"` when the content map is non-empty, bare `"{name}"` when empty. This is the **provision-cache key** (`<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/`) and the **`tool_runtimes` map key**; the mediapm layer must never key provisioning state by the plain mediapm tool id.
 - Provision failures produce warnings only — they never abort the loop or return `Err`. The failed tool will be retried on next sync.
 - Content-addressed hash is computed from `serde_json::to_string(&payload.content_map)` → `blake3::hash()` → hex.
 - Tool key format: `"{name}@{hash}"` when content_map non-empty, bare `"{name}"` when empty.
@@ -99,16 +108,19 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
 
 ### Provisioning pruning (generated doc + filesystem)
 
-- **Active-tool computation**: `compute_used_tool_ids(desired_tools, step_tool_ids)`
-  determines which tools should remain provisioned. It traverses transitive
-  dependency edges (`deps` on `ToolRequirementDependencies`) from step tool IDs
-  using DFS. Tools NOT reachable from any step tool ID are considered unused.
+- **Active set**: the live `tool_runtimes` keys (mediapm conductor tool ids —
+  every tool inserted by the provisioning loop, keyed by its generated-doc
+  key). The active set is NOT recomputed separately; `compute_used_tool_ids`
+  was deleted because the provisioning loop's `tool_runtimes` keys are the
+  single source of truth for what remains provisioned.
 - **Generated doc pruning**: after the provisioning loop, old `"{name}@{old_hash}"`
   keys are pruned from the generated document when the content_map_hash changes
   (new hash → new key → old key is stale). The `pruned_tools` field in
   `ToolSyncReport` tracks the count of pruned keys.
-- **Filesystem pruning**: `retain_only_tool_dirs(data_dir, retained_ids)` removes
-  filesystem tool directories for tools not in the active set.
+- **Filesystem pruning**: `retain_only_tool_dirs(data_dir, active_conductor_ids)`
+  removes filesystem tool directories not in the active set; the set is the
+  `tool_runtimes` keys (conductor tool ids), so provisioned dirs keyed by
+  `sanitize_tool_id(conductor_tool_id)` are retained.
 - **Preserves keys for remaining tools**: pruning only removes stale/unused keys;
   newly computed keys for active tools survive the prune.
 

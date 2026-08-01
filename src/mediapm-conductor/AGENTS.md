@@ -549,6 +549,15 @@ entries derived from tool runtimes' content maps. Takes `conductor_dir` (to
 derive file path), `tools_base_dir` (the root for path values), and
 `tool_runtimes` (resolved tool runtime configurations).
 
+The `tool_runtimes` keys are **mediapm conductor tool ids** (the generated-doc
+`tools` map keys, `{name}@{hash}` when the content map is non-empty, bare
+`{name}` when empty). Env var names derive from the stripped plain mediapm
+tool id (hash-free); env var values point at
+`<tools_base_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`,
+mirroring the provision-cache layout. Never key this function's path
+generation by the plain mediapm tool id — the provision cache deploys under
+the conductor tool id.
+
 ### CLI startup
 
 `ensure_conductor()` in `cli.rs` calls both `ensure_runtime_env_files()` and

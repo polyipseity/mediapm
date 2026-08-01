@@ -29,7 +29,7 @@ applyTo: "src/mediapm/src/paths.rs"
 | `schema_export_dir`       | `Some({runtime_root}/config/mediapm/)`       | MediaPM schema exports (`None` = disabled) |
 | `mediapm_tmp_dir`         | `$TMPDIR/mediapm-{hash}/`                    | MediaPM staging tmp                        |
 | `hierarchy_root_dir`      | `{root_dir}`                                 | Materialized media library root            |
-| `tools_dir`               | `{runtime_root}/tools/`                      | Tool-content unpack directory              |
+| `tools_dir`               | `{runtime_root}/tools/`                      | Tool-content unpack directory; subdirs are `<sanitize_tool_id(conductor_tool_id)>/payload/` and `.env.generated` paths mirror that layout |
 | `cache/`                  | `{runtime_root}/cache/`                      | Cache root                                 |
 | `cache/store/`            | `{runtime_root}/cache/store/`                | Shared cache store (CAS)                   |
 | `cache/yt-dlp/`           | `{runtime_root}/cache/yt-dlp/`               | yt-dlp cache                               |
