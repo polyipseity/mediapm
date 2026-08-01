@@ -17,7 +17,9 @@ use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
 use mediapm_conductor::tools::provider::VersionSpecFields;
-use mediapm_conductor::{NickelDocument, ToolKindSpec, decode_document};
+use mediapm_conductor::{
+    NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, decode_document, encode_document,
+};
 use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
@@ -206,6 +208,11 @@ async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
 /// Env var names in `.env.generated` must not contain the `@` character
 /// (no content-addressed hash leakage into env var names).
 ///
+/// Names derive from the plain mediapm tool id (`yt-dlp`, `ffmpeg`, ...)
+/// after stripping the `@hash` suffix of the mediapm conductor tool id
+/// (the generated doc `tools` map key). The `@hash` suffix lives only in
+/// the *path values* (the sanitized provision-cache directory segment).
+///
 /// This integration test runs through the full sync pipeline. Without
 /// network-provisioned payload tools there will be no content-map entries,
 /// but the assertion guards against regression where `@` could appear in
@@ -234,6 +241,14 @@ async fn sync_env_has_no_hash_in_names() -> Result<(), mediapm::MediaPmError> {
 
 /// Env var values in `.env.generated` must contain the `/payload/` path
 /// segment, matching the `ProvisionCache` layout.
+///
+/// Path values point at
+/// `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>` — the
+/// path segment is the *mediapm conductor tool id* (the generated doc
+/// `tools` map key, `{name}@{hash}`), sanitized for the filesystem, never
+/// the bare mediapm tool id. See the dedicated
+/// `sync_env_paths_use_conductor_tool_id` test for the full keyed-by-id
+/// regression coverage.
 ///
 /// Without network-provisioned payloads there will be no entries, so the
 /// assertion only applies to non-comment, non-empty lines. The unit tests
@@ -459,8 +474,10 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
 }
 
 /// Configured tools are never pruned when all desired tools are used as
-/// seeds. Regression guard: if `compute_used_tool_ids` fails to include a
-/// desired tool, pruning would incorrectly flag it as unused.
+/// seeds. Regression guard: the provision-cache retain set is the set of
+/// active mediapm conductor tool ids (the `tool_runtimes` keys), which
+/// always covers every provisioned tool — if a tool were missing from that
+/// set, pruning would incorrectly remove its provisioned directory.
 #[tokio::test]
 async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
@@ -962,6 +979,123 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
         entry.resolved_vcs_hash.as_deref(),
         Some(mediapm::MEDIAPM_GIT_HASH),
         "stored resolved_vcs_hash must be preserved on skip"
+    );
+    Ok(())
+}
+
+/// Env payload paths in `.env.generated` are keyed by the **mediapm
+/// conductor tool id** (the generated doc `tools` map key,
+/// `{name}@{content_map_hash}`), matching the `ProvisionCache` deployment
+/// layout (`tools_dir/<sanitize_tool_id(conductor_tool_id)>/payload/`).
+/// The bare mediapm tool id (`ffmpeg`) must never appear as the path
+/// segment.
+///
+/// Hermetic: seeds a matching state entry and a conductor-keyed generated
+/// doc entry, then runs sync with an exact version spec so the spec-based
+/// skip fires (no network). The skip path reconstructs the runtime from
+/// the generated doc under its conductor key, and env generation must emit
+/// paths under the sanitized conductor id.
+#[tokio::test]
+async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmError> {
+    use std::collections::BTreeMap;
+
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    runtime.tools.insert(
+        "ffmpeg".to_string(),
+        ToolRequirement {
+            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                version: Some("7.1".to_string()),
+                vcs_hash: None,
+                tag: None,
+            }),
+            ..Default::default()
+        },
+    );
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+
+    // Seed state.json with a matching ffmpeg entry (exact version "7.1").
+    let state_path = service.paths().mediapm_state_json.clone();
+    std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
+        .expect("create state parent dir");
+    let mut state = MediaPmState::default();
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "ffmpeg".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: "ffmpeg-v7.1".to_string(),
+        content_map_hash: "blake3:abc123".to_string(),
+        deployed_at: 42,
+        resolved_tag: None,
+        resolved_version: Some("7.1".to_string()),
+        resolved_vcs_hash: None,
+    });
+    std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
+        .expect("write seeded state");
+
+    // Seed the generated doc with a conductor-keyed ffmpeg entry. Content
+    // map values are non-hash placeholders (external_data invariant skips
+    // values that do not parse as `Hash`).
+    let mut doc = NickelDocument::default();
+    doc.tools.insert(
+        "ffmpeg@blake3:abc123".to_string(),
+        ToolSpec {
+            name: "ffmpeg".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/ffmpeg".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let generated_path = service.paths().conductor_generated_ncl.clone();
+    let bytes = encode_document(doc).expect("seeded doc encodes");
+    std::fs::write(&generated_path, bytes).expect("write seeded generated doc");
+
+    service.sync_tools().await?;
+
+    // The exact spec matches the seeded resolved version → skip fires.
+    let content = std::fs::read_to_string(&service.paths().env_generated_file)
+        .expect("env file should be readable");
+
+    // Binary entry: payload path keyed by the sanitized conductor id.
+    let binary_line = content
+        .lines()
+        .find(|line| line.starts_with("MEDIAPM_FFMPEG_LINUX="))
+        .unwrap_or_else(|| panic!("missing MEDIAPM_FFMPEG_LINUX in env file:\n{content}"));
+    assert!(
+        binary_line.contains("/ffmpeg@blake3_abc123/payload/linux/ffmpeg"),
+        "binary env path must use the sanitized conductor tool id: {binary_line}"
+    );
+
+    // Dir entry: payload dir path keyed by the sanitized conductor id.
+    let dir_line = content
+        .lines()
+        .find(|line| line.starts_with("MEDIAPM_FFMPEG_LINUX_DIR="))
+        .unwrap_or_else(|| panic!("missing MEDIAPM_FFMPEG_LINUX_DIR in env file:\n{content}"));
+    assert!(
+        dir_line.contains("/ffmpeg@blake3_abc123/payload/linux/"),
+        "dir env path must use the sanitized conductor tool id: {dir_line}"
+    );
+
+    // Regression: the bare mediapm tool id must never be the path segment.
+    assert!(
+        !content.contains("/ffmpeg/payload/"),
+        "env paths must not use the bare mediapm tool id:\n{content}"
+    );
+
+    // Env var names stay hash-free (plain mediapm id stem).
+    assert!(
+        content.lines().all(|line| {
+            line.starts_with('#') || line.split('=').next().is_none_or(|name| !name.contains('@'))
+        }),
+        "env var names must not contain @:\n{content}"
     );
     Ok(())
 }
