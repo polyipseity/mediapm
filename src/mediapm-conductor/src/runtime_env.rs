@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ToolRuntime;
 use crate::error::ConductorError;
+use crate::provision::helpers::sanitize_tool_id;
 
 /// User-authored runtime dotenv file name under one conductor directory root.
 pub const RUNTIME_DOTENV_FILE_NAME: &str = ".env";
@@ -252,8 +253,16 @@ fn render_dotenv_quoted_value(value: &str) -> String {
 /// env var. A dedup set prevents duplicate `_DIR` entries for the same
 /// tool+OS.
 ///
-/// Env var names derive from the plain tool id (any `@hash` suffix stripped).
-/// Path values point to `<tools_base_dir>/<plain_tool_id>/payload/<key>`.
+/// # Tool id contract
+///
+/// `tool_runtimes` keys are **mediapm conductor tool ids**: the `tools` map
+/// keys of the generated conductor document, `{name}@{content_map_hash}` when
+/// the runtime content map is non-empty, bare `{name}` when empty. Env var
+/// names derive from the plain mediapm tool id (any `@hash` suffix stripped),
+/// keeping names hash-free. Path values point to
+/// `<tools_base_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`,
+/// matching the [`crate::provision::ProvisionCache`] deployment layout
+/// (`tools_dir/<sanitized_conductor_tool_id>/payload/`).
 /// All paths are resolved to absolute before writing.
 ///
 /// # Errors
@@ -270,6 +279,10 @@ pub fn write_generated_dotenv(
     for (tool_id, runtime) in tool_runtimes {
         let plain_tool_id = strip_tool_key_hash(tool_id);
         let tool_id_upper = plain_tool_id.to_uppercase().replace(['-', '.'], "_");
+        // Filesystem dir name must match `ProvisionCache::materialize`'s
+        // `tools_dir.join(sanitize_tool_id(tool_id))` — the conductor tool id,
+        // not the plain mediapm tool id.
+        let path_segment = sanitize_tool_id(tool_id);
         let mut emitted_dirs: BTreeSet<&str> = BTreeSet::new();
 
         for key in runtime.content_map.keys() {
@@ -280,7 +293,7 @@ pub fn write_generated_dotenv(
             let dir_env_name = format!("MEDIAPM_{}_{}_DIR", tool_id_upper, os.to_uppercase());
             if emitted_dirs.insert(os) {
                 let dir_key = format!("{os}/");
-                let dir_path = tools_base_dir.join(plain_tool_id).join("payload").join(&dir_key);
+                let dir_path = tools_base_dir.join(&path_segment).join("payload").join(&dir_key);
                 let dir_value = std::path::absolute(&dir_path)
                     .map_err(|e| ConductorError::Io {
                         operation: "resolving absolute path for .env.generated dir entry".into(),
@@ -297,7 +310,7 @@ pub fn write_generated_dotenv(
             let rest = parts.next().unwrap_or("");
             if !rest.is_empty() {
                 let (env_name, _env_key) = content_key_to_env_name(&tool_id_upper, key);
-                let bin_path = tools_base_dir.join(plain_tool_id).join("payload").join(key);
+                let bin_path = tools_base_dir.join(&path_segment).join("payload").join(key);
                 let env_value = std::path::absolute(&bin_path)
                     .map_err(|e| ConductorError::Io {
                         operation: "resolving absolute path for .env.generated binary entry".into(),
@@ -611,7 +624,7 @@ mod tests {
         content_map.insert("linux/yt-dlp".to_string(), "hash".to_string());
         let mut runtimes = BTreeMap::new();
         runtimes.insert(
-            "yt-dlp".to_string(),
+            "yt-dlp@blake3:abc123".to_string(),
             ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
         );
         write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
@@ -619,10 +632,14 @@ mod tests {
             .expect("env file should be readable");
 
         let tools_dir_str = tools_dir.to_string_lossy();
-        let dir_line =
-            format!("MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/yt-dlp/payload/linux/\"");
-        let bin_line =
-            format!("MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp/payload/linux/yt-dlp\"");
+        // Path segment is the sanitized conductor tool id (`:` → `_`), and
+        // env var names derive from the stripped plain mediapm tool id.
+        let dir_line = format!(
+            "MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/yt-dlp@blake3_abc123/payload/linux/\""
+        );
+        let bin_line = format!(
+            "MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp@blake3_abc123/payload/linux/yt-dlp\""
+        );
 
         assert!(content.contains(&dir_line), "env must contain _DIR entry\ncontent:\n{content}");
         assert!(content.contains(&bin_line), "env must contain binary entry\ncontent:\n{content}");
@@ -637,7 +654,7 @@ mod tests {
         content_map.insert("linux/".to_string(), "hash".to_string());
         let mut runtimes = BTreeMap::new();
         runtimes.insert(
-            "ffmpeg".to_string(),
+            "ffmpeg@blake3:def456".to_string(),
             ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
         );
         write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
@@ -645,8 +662,9 @@ mod tests {
             .expect("env file should be readable");
 
         let tools_dir_str = tools_dir.to_string_lossy();
-        let dir_line =
-            format!("MEDIAPM_FFMPEG_LINUX_DIR=\"{tools_dir_str}/ffmpeg/payload/linux/\"");
+        let dir_line = format!(
+            "MEDIAPM_FFMPEG_LINUX_DIR=\"{tools_dir_str}/ffmpeg@blake3_def456/payload/linux/\""
+        );
         let bin_var = "MEDIAPM_FFMPEG_LINUX=";
 
         assert!(content.contains(&dir_line), "env must contain _DIR entry\ncontent:\n{content}");
@@ -666,7 +684,7 @@ mod tests {
         content_map.insert("macos/yt-dlp".to_string(), "h2".to_string());
         let mut runtimes = BTreeMap::new();
         runtimes.insert(
-            "yt-dlp".to_string(),
+            "yt-dlp@blake3:abc".to_string(),
             ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
         );
         write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
@@ -674,28 +692,29 @@ mod tests {
             .expect("env file should be readable");
 
         let tools_dir_str = tools_dir.to_string_lossy();
+        let segment = "yt-dlp@blake3_abc";
 
         assert!(
             content.contains(&format!(
-                "MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/yt-dlp/payload/linux/\""
+                "MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/{segment}/payload/linux/\""
             )),
             "missing linux _DIR entry"
         );
         assert!(
             content.contains(&format!(
-                "MEDIAPM_YT_DLP_MACOS_DIR=\"{tools_dir_str}/yt-dlp/payload/macos/\""
+                "MEDIAPM_YT_DLP_MACOS_DIR=\"{tools_dir_str}/{segment}/payload/macos/\""
             )),
             "missing macos _DIR entry"
         );
         assert!(
             content.contains(&format!(
-                "MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp/payload/linux/yt-dlp\""
+                "MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/{segment}/payload/linux/yt-dlp\""
             )),
             "missing linux binary entry"
         );
         assert!(
             content.contains(&format!(
-                "MEDIAPM_YT_DLP_MACOS=\"{tools_dir_str}/yt-dlp/payload/macos/yt-dlp\""
+                "MEDIAPM_YT_DLP_MACOS=\"{tools_dir_str}/{segment}/payload/macos/yt-dlp\""
             )),
             "missing macos binary entry"
         );
@@ -716,7 +735,7 @@ mod tests {
             content_map.insert("linux/yt-dlp".to_string(), "hash".to_string());
             let mut runtimes = BTreeMap::new();
             runtimes.insert(
-                "yt-dlp".to_string(),
+                "yt-dlp@blake3:abc123".to_string(),
                 ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
             );
             write_generated_dotenv(dir.path(), &tools_dir, &runtimes)
@@ -725,5 +744,85 @@ mod tests {
         };
         std::env::set_current_dir(&cwd).expect("restore cwd");
         assert_env_lines_have_absolute_paths(&content);
+    }
+
+    /// Every emitted env path must contain the `/{sanitize_tool_id(key)}/payload/`
+    /// segment, matching `ProvisionCache::materialize`'s deployment layout for
+    /// the conductor tool id (including bare ids and ids with reserved chars).
+    #[test]
+    fn write_generated_dotenv_path_segment_matches_provision_cache_layout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tools_dir = dir.path().join("tools");
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "h1".to_string());
+        content_map.insert("macos/yt-dlp".to_string(), "h2".to_string());
+        let mut runtimes = BTreeMap::new();
+        runtimes.insert(
+            "yt-dlp@blake3:abc".to_string(),
+            ToolRuntime { content_map: content_map.clone().into(), ..ToolRuntime::default() },
+        );
+        runtimes.insert(
+            "media-tagger".to_string(),
+            ToolRuntime { content_map: content_map.clone().into(), ..ToolRuntime::default() },
+        );
+        runtimes.insert(
+            "sd@blake3:abc?x*y".to_string(),
+            ToolRuntime { content_map: content_map.clone().into(), ..ToolRuntime::default() },
+        );
+        write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
+        let content = std::fs::read_to_string(dir.path().join(".env.generated"))
+            .expect("env file should be readable");
+
+        let tools_dir_str = tools_dir.to_string_lossy();
+        for (key, _) in &runtimes {
+            let segment = sanitize_tool_id(key);
+            let expected = format!("{tools_dir_str}/{segment}/payload/");
+            assert!(
+                content.contains(&expected),
+                "env must contain the sanitized conductor tool id segment '{segment}'\ncontent:\n{content}"
+            );
+            assert!(
+                content.contains(&format!(
+                    "MEDIAPM_{}_LINUX_DIR=\"{expected}linux/\"",
+                    strip_tool_key_hash(key).to_uppercase().replace(['-', '.'], "_")
+                )),
+                "_DIR entry must point at the provision cache layout\ncontent:\n{content}"
+            );
+        }
+        assert!(
+            !content.contains("/yt-dlp/payload/"),
+            "plain mediapm tool id must not be used in paths\ncontent:\n{content}"
+        );
+        assert_env_lines_have_absolute_paths(&content);
+    }
+
+    /// Env var names stay hash-free even when the runtime map is keyed by
+    /// conductor tool ids that carry an `@hash` suffix.
+    #[test]
+    fn write_generated_dotenv_env_names_hash_free_with_conductor_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tools_dir = dir.path().join("tools");
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "hash".to_string());
+        let mut runtimes = BTreeMap::new();
+        runtimes.insert(
+            "yt-dlp@blake3:abc123".to_string(),
+            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+        );
+        write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
+        let content = std::fs::read_to_string(dir.path().join(".env.generated"))
+            .expect("env file should be readable");
+
+        for line in content.lines() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let (name, _value) = line.split_once('=').expect("KEY=VALUE line");
+            assert!(!name.contains('@'), "env var name must not contain @: '{name}'");
+            assert!(
+                name == "MEDIAPM_YT_DLP_LINUX" || name == "MEDIAPM_YT_DLP_LINUX_DIR",
+                "unexpected env var name: {name}"
+            );
+        }
     }
 }
