@@ -15,7 +15,8 @@ use mediapm::{
 };
 use mediapm_cas::Hash;
 use mediapm_conductor::{
-    NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, decode_document, encode_document,
+    NickelDocument, OutputSaveMode, ToolKindSpec, ToolRuntime, ToolSpec, config::ExternalDataEntry,
+    decode_document, encode_document,
 };
 use serde::{Deserialize, Serialize};
 
@@ -123,12 +124,20 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
             .to_string_lossy()
             .replace('\\', "/");
 
-        let (name, _version) = tool_id.split_once('@').unwrap_or((&tool_id, "latest"));
+        // Declare the dummy payload hash so the machine doc satisfies the
+        // `content_map ⊆ external_data` invariant enforced at encode time.
+        machine.external_data.insert(
+            payload_hash,
+            ExternalDataEntry {
+                description: format!("dummy tool payload for {logical_tool_name}"),
+                save_mode: OutputSaveMode::Saved,
+            },
+        );
 
         machine.tools.insert(
-            name.to_string(),
+            tool_id.clone(),
             ToolSpec {
-                name: name.to_string(),
+                name: tool_id.clone(),
                 kind: ToolKindSpec::Executable {
                     command: vec![relative_payload_path.clone()],
                     env_vars: BTreeMap::new(),
@@ -191,7 +200,6 @@ mod tests {
         let manifest = run_add_tools_example().await.expect("run add-tools example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
-        assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");
         assert!(
             manifest.conductor_generated_ncl.exists(),
             "conductor generated config should exist"

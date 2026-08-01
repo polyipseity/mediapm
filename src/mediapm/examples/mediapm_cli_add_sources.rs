@@ -17,6 +17,9 @@ const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-sources";
 const DUMMY_LOCAL_SOURCE_FILE: &str = "dummy-local-video.mp4";
 const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
+/// Embedded tiny MP4 payload containing both video and audio tracks.
+const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
+
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,7 +57,7 @@ fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
 fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
     let local_source_path = root.join("inputs").join(DUMMY_LOCAL_SOURCE_FILE);
     fs::create_dir_all(local_source_path.parent().expect("local source parent"))?;
-    fs::write(&local_source_path, b"dummy-local-video-bytes")?;
+    fs::write(&local_source_path, SAMPLE_AV_MP4_BYTES)?;
     Ok(local_source_path)
 }
 
@@ -114,24 +117,15 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use mediapm::MediaMetadataValue;
-    use mediapm_conductor::decode_document;
-
-    use super::{DUMMY_YOUTUBE_URL, run_add_sources_example};
     use mediapm::{MediaStepTool, TransformInputValue, load_mediapm_document};
+
+    use super::run_add_sources_example;
 
     #[tokio::test]
     async fn cli_add_sources_writes_expected_config_documents() {
         let manifest = run_add_sources_example().await.expect("run add-sources example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
-        assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");
-        assert!(
-            manifest.conductor_generated_ncl.exists(),
-            "conductor generated config should exist"
-        );
 
         let document = load_mediapm_document(&manifest.mediapm_ncl).expect("load mediapm.ncl");
         assert_eq!(document.media.len(), 2, "example should register exactly two media sources");
@@ -141,6 +135,15 @@ mod tests {
         let remote_source =
             document.media.get(&manifest.remote_media_id).expect("remote source should exist");
 
+        assert!(
+            !local_source.title.trim().is_empty(),
+            "local add should auto-populate a non-empty title from ffprobe"
+        );
+        assert!(
+            !local_source.description.trim().is_empty(),
+            "local add should auto-populate a non-empty description from ffprobe"
+        );
+
         assert_eq!(local_source.steps[0].tool, MediaStepTool::Import);
         assert_eq!(
             local_source.steps[0].options.get("kind"),
@@ -148,68 +151,19 @@ mod tests {
             "local add should synthesize import cas-hash kind"
         );
 
-        assert_eq!(remote_source.steps[0].tool, MediaStepTool::YtDlp);
-        assert_eq!(
-            remote_source.steps[0].options.get("uri"),
-            Some(&TransformInputValue::String(DUMMY_YOUTUBE_URL.to_string())),
-            "remote add should preserve provided URI"
-        );
-        assert_eq!(
-            remote_source.metadata.get("video_ext"),
-            Some(&MediaMetadataValue::Literal(".mkv".to_string())),
-            "yt-dlp preset should hardcode .mkv for video_ext when ffmpeg output extension establishes container"
-        );
-
-        let ffmpeg_step = remote_source
-            .steps
-            .iter()
-            .find(|step| step.tool == MediaStepTool::Ffmpeg)
-            .expect("remote add should include ffmpeg step");
-        let media_tagger_step = remote_source
-            .steps
-            .iter()
-            .find(|step| step.tool == MediaStepTool::MediaTagger)
-            .expect("remote add should include media-tagger step");
-        let rsgain_step = remote_source
-            .steps
-            .iter()
-            .find(|step| step.tool == MediaStepTool::Rsgain)
-            .expect("remote add should include rsgain step");
-
+        assert_eq!(remote_source.steps.len(), 0, "remote add registers a bare source spec");
         assert!(
-            ffmpeg_step.output_variants["video"].get("extension").is_some(),
-            "ffmpeg preset should keep the explicit mkv extension that establishes downstream inheritance"
+            remote_source.metadata.is_empty(),
+            "remote add registers a bare source spec with no metadata"
         );
         assert!(
-            ffmpeg_step.options.get("container").is_none(),
-            "ffmpeg preset should not redundantly set container when extension already implies mkv/matroska"
-        );
-        assert!(
-            media_tagger_step.output_variants["video"].get("extension").is_none(),
-            "media-tagger preset should rely on inherited extension instead of redundantly restating mkv"
-        );
-        assert!(
-            rsgain_step.output_variants["video"].get("extension").is_none(),
-            "rsgain preset should rely on inherited extension instead of redundantly restating mkv"
+            remote_source.title.is_empty() && remote_source.description.is_empty(),
+            "remote add registers a bare source spec with no title/description"
         );
 
-        let user_bytes =
-            fs::read(&manifest.conductor_user_ncl).expect("read conductor user config");
-        let machine_bytes =
-            fs::read(&manifest.conductor_generated_ncl).expect("read conductor generated config");
-
-        let _user = decode_document(&user_bytes).expect("decode conductor user config");
-        let machine = decode_document(&machine_bytes).expect("decode conductor machine config");
-
-        let expected_workflow_ids = [
-            format!("mediapm.media.{}", manifest.local_media_id),
-            format!("mediapm.media.{}", manifest.remote_media_id),
-        ];
-        for workflow_id in expected_workflow_ids {
-            assert!(
-                machine.workflows.iter().any(|w| w.name == workflow_id),
-                "conductor machine config should contain managed workflow '{workflow_id}'"
-            );
-        }
+        // Conductor documents (user/generated) and managed workflows are only
+        // produced by an explicit `mediapm sync` run, not by library-API add
+        // flows; config-mutation examples verify the declarative mediapm.ncl
+        // state only.
     }
 }

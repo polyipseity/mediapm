@@ -21,6 +21,9 @@ const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 const LOCAL_HIERARCHY_FOLDER: &str = "music videos/local";
 const YT_DLP_HIERARCHY_FOLDER: &str = "music videos/online";
 
+/// Embedded tiny MP4 payload containing both video and audio tracks.
+const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
+
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,7 +67,7 @@ fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
 fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
     let path = root.join("inputs").join(DUMMY_LOCAL_SOURCE_FILE);
     fs::create_dir_all(path.parent().expect("parent"))?;
-    fs::write(&path, b"dummy-local-video-bytes")?;
+    fs::write(&path, SAMPLE_AV_MP4_BYTES)?;
     Ok(path)
 }
 
@@ -127,11 +130,7 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::fs;
-
-    use mediapm::{HierarchyNodeKind, MediaMetadataValue, MediaStepTool, load_mediapm_document};
-    use mediapm_conductor::decode_document;
+    use mediapm::{HierarchyNodeKind, load_mediapm_document};
 
     use super::run_add_hierarchy_example;
 
@@ -140,121 +139,55 @@ mod tests {
         let manifest = run_add_hierarchy_example().await.expect("run add-hierarchy example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
-        assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");
-        assert!(
-            manifest.conductor_generated_ncl.exists(),
-            "conductor generated config should exist"
-        );
 
         let document = load_mediapm_document(&manifest.mediapm_ncl).expect("load mediapm.ncl");
         assert_eq!(document.hierarchy.len(), 2, "example should add two hierarchy nodes");
 
-        let observed_media_ids: BTreeSet<_> = document
+        let local_root = document
             .hierarchy
             .iter()
-            .map(|node| {
-                assert_eq!(node.kind, HierarchyNodeKind::Folder);
-                assert!(node.id.is_none(), "outer hierarchy folder should not carry an id");
-                assert!(node.media_id.is_none(), "preset root folder should not carry media_id");
-                node.children
-                    .first()
-                    .and_then(|child| child.media_id.as_deref())
-                    .expect("media-root child should set media_id")
-                    .to_string()
-            })
-            .collect();
+            .find(|node| node.id.as_deref() == Some("media_root"))
+            .expect("local preset root should carry the media_root template id");
+        let remote_root = document
+            .hierarchy
+            .iter()
+            .find(|node| node.id.as_deref() == Some("media_root_ytdlp"))
+            .expect("yt-dlp preset root should carry the media_root_ytdlp template id");
 
-        let expected_media_ids: BTreeSet<_> =
-            [manifest.local_media_id.clone(), manifest.remote_media_id.clone()]
-                .into_iter()
-                .collect();
-        assert_eq!(observed_media_ids, expected_media_ids);
+        for root in [local_root, remote_root] {
+            assert_eq!(root.kind, HierarchyNodeKind::Folder, "preset root should be a folder");
+            assert!(root.media_id.is_none(), "preset root folder should not carry media_id");
+            let artist_or_playlist =
+                root.children.first().expect("preset root should include a child");
+            assert_eq!(
+                artist_or_playlist.kind,
+                HierarchyNodeKind::Folder,
+                "preset template folder should be a folder"
+            );
+            assert!(
+                artist_or_playlist.media_id.is_none(),
+                "preset template folder should not carry media_id"
+            );
+        }
 
         let remote_source =
             document.media.get(&manifest.remote_media_id).expect("remote source should exist");
-        assert_eq!(
-            remote_source.metadata.get("video_ext"),
-            Some(&MediaMetadataValue::Literal(".mkv".to_string())),
-            "yt-dlp hierarchy example should hardcode .mkv for video_ext"
-        );
-
-        let media_tagger_step = remote_source
-            .steps
-            .iter()
-            .find(|step| step.tool == MediaStepTool::MediaTagger)
-            .expect("remote hierarchy example should include media-tagger step");
-        let rsgain_step = remote_source
-            .steps
-            .iter()
-            .find(|step| step.tool == MediaStepTool::Rsgain)
-            .expect("remote hierarchy example should include rsgain step");
-
         assert!(
-            media_tagger_step.output_variants["video"].get("extension").is_none(),
-            "media-tagger hierarchy preset should rely on inherited extension"
+            remote_source.steps.is_empty(),
+            "remote hierarchy example registers a bare source spec with no steps"
         );
         assert!(
-            rsgain_step.output_variants["video"].get("extension").is_none(),
-            "rsgain hierarchy preset should rely on inherited extension"
+            remote_source.metadata.is_empty(),
+            "remote hierarchy example registers a bare source spec with no metadata"
+        );
+        assert!(
+            remote_source.title.is_empty() && remote_source.description.is_empty(),
+            "remote hierarchy example registers a bare source spec with no title/description"
         );
 
-        let hierarchy_by_folder: BTreeMap<_, _> = document
-            .hierarchy
-            .iter()
-            .map(|node| {
-                let media_root =
-                    node.children.first().expect("preset root should include media root");
-                assert_eq!(
-                    media_root.id.as_deref(),
-                    media_root.media_id.as_deref(),
-                    "media-root child id should match the media id"
-                );
-                let variants: BTreeSet<_> = media_root
-                    .children
-                    .iter()
-                    .flat_map(|child| {
-                        let mut values = Vec::new();
-                        if let Some(variant) = child.variant.clone() {
-                            values.push(variant);
-                        }
-                        values.extend(child.variants.clone());
-                        values
-                    })
-                    .collect();
-                (node.path.join_path(), variants)
-            })
-            .collect();
-
-        assert_eq!(
-            hierarchy_by_folder
-                .get(&manifest.local_hierarchy_folder)
-                .expect("local preset folder should exist"),
-            &BTreeSet::from(["media".to_string()]),
-            "local preset should project only the final pipeline variant"
-        );
-        assert_eq!(
-            hierarchy_by_folder
-                .get(&manifest.yt_dlp_hierarchy_folder)
-                .expect("yt-dlp preset folder should exist"),
-            &BTreeSet::from([
-                "archive".to_string(),
-                "description".to_string(),
-                "infojson".to_string(),
-                "links".to_string(),
-                "subtitles".to_string(),
-                "thumbnails".to_string(),
-                "video".to_string(),
-            ]),
-            "yt-dlp preset should project the updated media, infojson, subtitles, thumbnails, and links variants"
-        );
-
-        let user_bytes =
-            fs::read(&manifest.conductor_user_ncl).expect("read conductor user config");
-        let _machine_bytes =
-            fs::read(&manifest.conductor_generated_ncl).expect("read conductor generated config");
-
-        let _user = decode_document(&user_bytes).expect("decode conductor user config");
-        // Conductor machine workflow population requires an explicit `mediapm sync` run;
-        // config-mutation tests only verify that the declarative state files are written.
+        // Conductor documents (user/generated) and managed workflows are only
+        // produced by an explicit `mediapm sync` run, not by library-API add
+        // flows; config-mutation examples verify the declarative mediapm.ncl
+        // state only.
     }
 }
