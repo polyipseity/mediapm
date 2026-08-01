@@ -125,50 +125,6 @@ enum EntryKind {
     Dep { dependent: String },
 }
 
-/// Compute the set of tool IDs that are needed, seeded from ALL desired tools
-/// plus their transitive dependencies via `dependencies` field.
-///
-/// Every tool listed in the mediapm config's `tools` section is considered
-/// "used". Additional tools that appear only as dependencies of configured
-/// tools are also included (transitive closure).
-///
-/// Pruning clears the `content_map` of older-version entries in the
-/// generated conductor document (the entry itself is preserved). A tool
-/// NOT in this set has its filesystem payloads removed via
-/// `retain_only_tool_dirs`. Under normal operation every desired tool is
-/// in this set, so the filesystem-prune branch never fires for
-/// actively-configured tools.
-#[must_use]
-pub(crate) fn compute_used_tool_ids(
-    desired_tools: &BTreeMap<String, serde_json::Value>,
-) -> HashSet<String> {
-    let mut used = HashSet::new();
-    let mut stack: Vec<String> = desired_tools.keys().cloned().collect();
-    while let Some(tool_id) = stack.pop() {
-        if !used.insert(tool_id.clone()) {
-            continue;
-        }
-        if let Some(value) = desired_tools.get(&tool_id) {
-            match serde_json::from_value::<ToolRequirement>(value.clone()) {
-                Ok(req) => {
-                    for dep_id in req.dependencies.keys() {
-                        if !used.contains(dep_id.as_str()) {
-                            stack.push(dep_id.clone());
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "warning[MPM-W001]: failed to deserialize ToolRequirement for \
-                         tool \"{tool_id}\": {e}",
-                    );
-                }
-            }
-        }
-    }
-    used
-}
-
 /// Resolve a dependency's effective version spec, converting from
 /// [`ConfigVersionSpec`] (serde type, may contain `Inherit`) to
 /// [`VersionSpec`] (clean resolved type, no `Inherit`).
@@ -487,11 +443,6 @@ pub(crate) async fn reconcile_desired_tools(
         .map(|g| g as &dyn ProgressGroupApi)
         .or(progress_group)
         .expect("at least one progress group available");
-
-    // Compute used tool set: desired_tools keys + transitive dependencies.
-    // Workflow steps are never consulted — the config's `tools` section is
-    // the sole seed source.
-    let used_tool_ids = compute_used_tool_ids(desired_tools);
 
     let mut pruned_tools: usize = 0;
     for entry in &entries {
@@ -931,8 +882,14 @@ pub(crate) async fn reconcile_desired_tools(
     // 5. Save generated document.
     save_conductor_generated_document(paths, &generated_doc)?;
 
-    // 6. Prune filesystem tool directories for non-active tools.
-    retain_only_tool_dirs(paths.tools_dir.clone(), used_tool_ids.clone()).await?;
+    // 6. Prune filesystem tool directories not in the active set. The
+    //    provision cache keys directories by the sanitized conductor tool
+    //    id (`tools_dir/<sanitize_tool_id(conductor_tool_id)>/payload/`),
+    //    so the retain set must be conductor tool ids (the `tool_runtimes`
+    //    keys), never mediapm tool ids — a mediapm-id set would prune every
+    //    provisioned directory.
+    let active_conductor_ids: HashSet<String> = tool_runtimes.keys().cloned().collect();
+    retain_only_tool_dirs(paths.tools_dir.clone(), active_conductor_ids).await?;
 
     report.pruned_tools = pruned_tools;
 
@@ -1339,6 +1296,90 @@ mod tests {
         );
     }
 
+    /// The filesystem retain set uses conductor tool ids (the `tool_runtimes`
+    /// keys), matching the provision cache's
+    /// `<sanitize_tool_id(conductor_tool_id)>` directory layout. A
+    /// mediapm-id set would prune every provisioned directory.
+    #[tokio::test]
+    async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let cas = InMemoryCas::default();
+
+        // Pre-seed the tools dir with a conductor-keyed active dir and a
+        // stale dir that must be pruned. Retain-only only removes dirs that
+        // carry a `.lock` file, so the stale dir gets one.
+        std::fs::create_dir_all(paths.tools_dir.join("yt-dlp@blake3_abc"))
+            .expect("create active dir");
+        std::fs::create_dir_all(paths.tools_dir.join("stale_dir")).expect("create stale dir");
+        std::fs::write(paths.tools_dir.join("stale_dir").join(".lock"), b"")
+            .expect("create stale lock file");
+
+        // Generated doc with an active `{name}@{hash}` entry.
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "blake3:abc".to_string());
+        let tool_spec = ToolSpec {
+            name: "yt-dlp".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let mut tools = BTreeMap::new();
+        tools.insert("yt-dlp@blake3:abc".to_string(), tool_spec);
+        let doc = NickelDocument { tools, ..Default::default() };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        let mut state = MediaPmState::default();
+        state.managed_tools.push(ToolRegistryEntry {
+            tool_id: "yt-dlp".to_string(),
+            version: "seeded-version".to_string(),
+            canonical_version: "yt-dlp-2024.01.01".to_string(),
+            content_map_hash: "blake3:abc".to_string(),
+            deployed_at: 0,
+            resolved_tag: None,
+            resolved_version: Some("2024.01.01".to_string()),
+            resolved_vcs_hash: None,
+        });
+
+        let mut desired_tools = BTreeMap::new();
+        let req = ToolRequirement {
+            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Exact(
+                VersionSpecFields {
+                    version: Some("2024.01.01".to_string()),
+                    vcs_hash: None,
+                    tag: None,
+                },
+            ),
+            ..Default::default()
+        };
+        desired_tools.insert("yt-dlp".to_string(), serde_json::to_value(req).unwrap());
+
+        let result = reconcile_desired_tools(
+            &cas,
+            &paths,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
+
+        // The conductor-keyed dir survives; the stale dir is pruned.
+        assert!(
+            paths.tools_dir.join("yt-dlp@blake3_abc").exists(),
+            "active conductor-keyed dir must survive retain-only",
+        );
+        assert!(
+            !paths.tools_dir.join("stale_dir").exists(),
+            "non-active dir must be pruned by retain-only",
+        );
+    }
+
     #[tokio::test]
     async fn reconcile_prunes_old_tool_version_clears_content_map() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1536,127 +1577,6 @@ mod tests {
         assert!(!external_data_one.contains_key(&hash_a), "hash_a should be absent after removal");
         assert!(external_data_one.contains_key(&hash_b), "hash_b should remain");
         assert_eq!(external_data_one.len(), 1, "external_data should have 1 entry");
-    }
-
-    // ---------------------------------------------------------------------------
-    // Phase 6 — compute_used_tool_ids
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn compute_used_tool_ids_empty_desired() {
-        let empty: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-        let used = compute_used_tool_ids(&empty);
-        assert!(used.is_empty(), "empty desired_tools → empty used set");
-    }
-
-    #[test]
-    fn compute_used_tool_ids_single_no_deps() {
-        let mut desired: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-        desired.insert(
-            "ffmpeg".to_string(),
-            serde_json::to_value(ToolRequirement::default()).unwrap(),
-        );
-        let used = compute_used_tool_ids(&desired);
-        assert!(used.contains("ffmpeg"));
-        assert_eq!(used.len(), 1);
-    }
-
-    #[test]
-    fn compute_used_tool_ids_with_transitive_deps() {
-        let mut desired: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-        // yt-dlp depends on ffmpeg and deno
-        let yt_dlp_req = ToolRequirement {
-            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Latest,
-            dependencies: BTreeMap::from([
-                (
-                    "ffmpeg".to_string(),
-                    mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
-                ),
-                (
-                    "deno".to_string(),
-                    mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
-                ),
-            ]),
-            ..Default::default()
-        };
-        desired.insert("yt-dlp".to_string(), serde_json::to_value(yt_dlp_req).unwrap());
-        desired.insert(
-            "ffmpeg".to_string(),
-            serde_json::to_value(ToolRequirement::default()).unwrap(),
-        );
-        desired
-            .insert("deno".to_string(), serde_json::to_value(ToolRequirement::default()).unwrap());
-        desired.insert(
-            "unrelated".to_string(),
-            serde_json::to_value(ToolRequirement::default()).unwrap(),
-        );
-
-        let used = compute_used_tool_ids(&desired);
-        assert!(used.contains("yt-dlp"), "step tool must be in used set");
-        assert!(used.contains("ffmpeg"), "dep tool must be in used set");
-        assert!(used.contains("deno"), "dep tool must be in used set");
-        assert!(
-            used.contains("unrelated"),
-            "all desired tools are now seeds, so unrelated IS used"
-        );
-        assert_eq!(used.len(), 4);
-    }
-
-    #[test]
-    fn compute_used_tool_ids_circular_deps_terminates() {
-        let mut desired: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-        // tool_a → tool_b, tool_b → tool_a (circular)
-        let a_req = ToolRequirement {
-            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Latest,
-            dependencies: BTreeMap::from([(
-                "tool_b".to_string(),
-                mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
-            )]),
-            ..Default::default()
-        };
-        let b_req = ToolRequirement {
-            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Latest,
-            dependencies: BTreeMap::from([(
-                "tool_a".to_string(),
-                mediapm_conductor::tools::provider::ConfigVersionSpec::Inherit,
-            )]),
-            ..Default::default()
-        };
-        desired.insert("tool_a".to_string(), serde_json::to_value(a_req).unwrap());
-        desired.insert("tool_b".to_string(), serde_json::to_value(b_req).unwrap());
-
-        let used = compute_used_tool_ids(&desired);
-        assert!(used.contains("tool_a"));
-        assert!(used.contains("tool_b"));
-        assert_eq!(used.len(), 2);
-    }
-
-    #[test]
-    fn all_entries_are_used() {
-        // Every tool ID in desired_tools appears in the used set. This
-        // documents the invariant that the `!is_used` branch in
-        // reconcile_desired_tools can never fire — all entries come from
-        // desired_tools + transitive deps, which is exactly what
-        // compute_used_tool_ids computes.
-        let mut desired: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-        desired.insert(
-            "ffmpeg".to_string(),
-            serde_json::to_value(ToolRequirement::default()).unwrap(),
-        );
-        desired.insert(
-            "yt-dlp".to_string(),
-            serde_json::to_value(ToolRequirement::default()).unwrap(),
-        );
-        desired.insert(
-            "media-tagger".to_string(),
-            serde_json::to_value(ToolRequirement::default()).unwrap(),
-        );
-
-        let used = compute_used_tool_ids(&desired);
-        assert!(used.contains("ffmpeg"), "ffmpeg must be in used set");
-        assert!(used.contains("yt-dlp"), "yt-dlp must be in used set");
-        assert!(used.contains("media-tagger"), "media-tagger must be in used set");
-        assert_eq!(used.len(), 3, "no extra IDs beyond desired_tools keys");
     }
 
     // ---------------------------------------------------------------------------
