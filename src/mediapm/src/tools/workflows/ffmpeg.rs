@@ -115,7 +115,7 @@ const FFMPEG_STATIC_DEFAULTS: &[(&str, &str)] = &[
 // Token specs
 // ---------------------------------------------------------------------------
 
-/// Map from option input name to TokenSpec for ffmpeg.
+/// Map from option input name to `TokenSpec` for ffmpeg.
 const FFMPEG_TOKEN_SPECS: &[(&str, super::spec::TokenSpec)] = &[
     ("an", super::spec::TokenSpec::Bool("-an")),
     ("aspect", super::spec::TokenSpec::Pair("-aspect")),
@@ -361,7 +361,6 @@ fn ffmpeg_container_any_of_condition(containers: &[&str]) -> String {
 // ---------------------------------------------------------------------------
 
 /// Builds the ffmpeg executable command vector.
-#[allow(clippy::too_many_lines)]
 #[must_use]
 fn build_ffmpeg_command(
     command_path: &str,

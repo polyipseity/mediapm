@@ -5,6 +5,7 @@
 
 use proptest::prelude::*;
 use std::collections::BTreeMap;
+use std::fmt::Write;
 
 // ---------------------------------------------------------------------------
 // OS-selector shape invariants (mediapm managed tools)
@@ -24,7 +25,7 @@ fn build_os_conditional_selector(per_os_exec: &BTreeMap<String, String>) -> Stri
     }
     let mut result = format!("${{context.os == \"{first_os}\" ? {first_os}/{first_path}");
     for (os, path) in iter.by_ref() {
-        result.push_str(&format!(" : context.os == \"{os}\" ? {os}/{path}"));
+        let _ = write!(result, " : context.os == \"{os}\" ? {os}/{path}");
     }
     result.push('}');
     result

@@ -14,7 +14,14 @@ use mediapm_conductor::{
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
 
-use crate::conductor_bridge::constants::*;
+use crate::conductor_bridge::constants::{
+    INPUT_LEADING_ARGS, INPUT_SOURCE_URL, INPUT_TRAILING_ARGS, OUTPUT_CONTENT,
+    OUTPUT_SANDBOX_ARTIFACTS, OUTPUT_YT_DLP_ANNOTATION_FILE, OUTPUT_YT_DLP_ARCHIVE_FILE,
+    OUTPUT_YT_DLP_CHAPTER_ARTIFACTS, OUTPUT_YT_DLP_DESCRIPTION_FILE, OUTPUT_YT_DLP_INFOJSON_FILE,
+    OUTPUT_YT_DLP_LINK_ARTIFACTS, OUTPUT_YT_DLP_PLAYLIST_DESCRIPTION_FILE,
+    OUTPUT_YT_DLP_PLAYLIST_INFOJSON_FILE, OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
+    OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS,
+};
 use crate::config::{DecodedOutputVariantConfig, MediaSourceSpec, MediaStep};
 
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
@@ -162,7 +169,7 @@ const YT_DLP_INPUT_DEFAULTS: &[(&str, &str)] = &[
     ("embed_subs", "false"),
 ];
 
-/// Map from option input name to TokenSpec for yt-dlp.
+/// Map from option input name to `TokenSpec` for yt-dlp.
 const YT_DLP_TOKEN_SPECS: &[(&str, TokenSpec)] = &[
     ("format", TokenSpec::Pair("-f")),
     ("format_sort", TokenSpec::Pair("-S")),
@@ -546,7 +553,7 @@ mod tests {
             Some(&InputBinding::String("false".to_string()))
         );
         assert_eq!(defaults.get("sub_langs"), Some(&InputBinding::String("all".to_string())));
-        assert!(defaults.get("extractor_args").map_or(false, |v| {
+        assert!(defaults.get("extractor_args").is_some_and(|v| {
             matches!(v, InputBinding::String(s) if s.contains("skip=translated_subs"))
         }));
         assert_eq!(

@@ -33,16 +33,18 @@ use tempfile::tempdir;
 /// (bypasses NCL evaluation, which expects Nickel syntax).
 #[tokio::test]
 async fn sync_rejects_bad_dependency_key() {
+    use std::collections::BTreeMap;
+
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-
-    use std::collections::BTreeMap;
 
     let bad_deps: BTreeMap<String, mediapm::ConfigVersionSpec> =
         [("ffmpeg_version".to_string(), mediapm::ConfigVersionSpec::Latest)].into();
 
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert(
         "yt-dlp".to_string(),
         ToolRequirement { dependencies: bad_deps, ..ToolRequirement::default() },
@@ -55,9 +57,8 @@ async fn sync_rejects_bad_dependency_key() {
 
     // Sync should fail with MPM-E001 and a suggestion.
     let result = service.sync_tools().await;
-    let err = match result {
-        Ok(_) => panic!("sync should fail with bad dep key, but succeeded"),
-        Err(e) => e,
+    let Err(err) = result else {
+        panic!("sync should fail with bad dep key, but succeeded");
     };
     let msg = err.to_string();
     assert!(msg.contains("MPM-E001"), "error should contain MPM-E001 code, got: {msg}");
@@ -77,16 +78,18 @@ async fn sync_rejects_bad_dependency_key() {
 /// So yt-dlp with `dependencies.sd = "latest"` must be rejected.
 #[tokio::test]
 async fn sync_rejects_dep_key_not_in_known_types() {
+    use std::collections::BTreeMap;
+
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-
-    use std::collections::BTreeMap;
 
     let bad_deps: BTreeMap<String, mediapm::ConfigVersionSpec> =
         [("sd".to_string(), mediapm::ConfigVersionSpec::Latest)].into();
 
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     // Configure yt-dlp with `sd` as a dependency — `sd` is in rsgain's
     // dependency_types but NOT in yt-dlp's.
     runtime.tools.insert(
@@ -103,9 +106,8 @@ async fn sync_rejects_dep_key_not_in_known_types() {
             .expect("service creation");
 
     let result = service.sync_tools().await;
-    let err = match result {
-        Ok(_) => panic!("sync should fail with dep key not in known types, but succeeded"),
-        Err(e) => e,
+    let Err(err) = result else {
+        panic!("sync should fail with dep key not in known types, but succeeded");
     };
     let msg = err.to_string();
     assert!(msg.contains("MPM-E001"), "error should contain MPM-E001 code, got: {msg}");
@@ -127,8 +129,10 @@ async fn sync_rejects_dep_key_not_in_known_types() {
 async fn sync_empty_workspace_succeeds() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     let _summary = service.sync_tools().await?;
@@ -140,8 +144,10 @@ async fn sync_empty_workspace_succeeds() -> Result<(), mediapm::MediaPmError> {
 async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -156,8 +162,10 @@ async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError>
 async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -174,8 +182,10 @@ async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
 async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -192,8 +202,10 @@ async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> 
 async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -221,8 +233,10 @@ async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
 async fn sync_env_has_no_hash_in_names() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -258,8 +272,10 @@ async fn sync_env_has_no_hash_in_names() -> Result<(), mediapm::MediaPmError> {
 async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -312,8 +328,10 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
 async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
@@ -346,8 +364,10 @@ async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError
 async fn sync_is_idempotent() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -405,8 +425,10 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
 async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("tempdir for cache");
-    let mut overrides = MediaRuntimeStorage::default();
-    overrides.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut overrides = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     overrides.tools.insert(
         "media-tagger".to_string(),
         // `ToolRegistryEntry.canonical_version` uses the resolved canonical
@@ -482,8 +504,10 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
 async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
@@ -567,8 +591,10 @@ async fn sync_upgrades_v2_state_to_v3_format() -> Result<(), mediapm::MediaPmErr
     std::fs::write(&state_path, serde_json::to_string_pretty(&v2_json).unwrap())
         .expect("write v2 state.json");
 
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -583,7 +609,7 @@ async fn sync_upgrades_v2_state_to_v3_format() -> Result<(), mediapm::MediaPmErr
         "state.json managed_tools must be an array after v2→v3 upgrade"
     );
     assert_eq!(
-        value["managed_tools"].as_array().map(|a| a.len()),
+        value["managed_tools"].as_array().map(std::vec::Vec::len),
         Some(1),
         "state.json should still have 1 tool entry after upgrade"
     );
@@ -622,14 +648,16 @@ async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
 /// After sync, the stored `canonical_version` in `state.json` is populated
 /// via `compute_composite_canonical_version`.
 ///
-/// Uses media-tagger (resolves without network, CrossStep deps → composite
+/// Uses media-tagger (resolves without network, `CrossStep` deps → composite
 /// equals bare). Validates the refactored storage path is live.
 #[tokio::test]
 async fn sync_stores_composite_canonical_version() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
@@ -673,8 +701,10 @@ async fn sync_stores_composite_canonical_version() -> Result<(), mediapm::MediaP
 async fn sync_skip_triggers_on_unchanged_composite() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
@@ -697,7 +727,7 @@ async fn sync_skip_triggers_on_unchanged_composite() -> Result<(), mediapm::Medi
 }
 
 /// `logical_tool_requires_sync` returns `false` when the stored composite
-/// canonical_version matches the computed composite from the shared helper.
+/// `canonical_version` matches the computed composite from the shared helper.
 ///
 /// This validates that the refactored comparison in `service.rs` uses
 /// `compute_composite_canonical_version` for apples-to-apples comparison.
@@ -705,8 +735,10 @@ async fn sync_skip_triggers_on_unchanged_composite() -> Result<(), mediapm::Medi
 async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     // Configure media-tagger so it's a desired tool with matching deps.
     runtime.tools.insert(
         "media-tagger".to_string(),
@@ -744,13 +776,15 @@ async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm
 }
 
 /// `logical_tool_requires_sync` returns `true` when the stored composite
-/// canonical_version differs from the computed composite.
+/// `canonical_version` differs from the computed composite.
 #[tokio::test]
 async fn sync_logical_requires_sync_on_composite_mismatch() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
@@ -795,8 +829,10 @@ async fn sync_logical_requires_sync_on_composite_mismatch() -> Result<(), mediap
 async fn sync_populates_resolved_fields_in_state() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
@@ -837,15 +873,17 @@ async fn sync_populates_resolved_fields_in_state() -> Result<(), mediapm::MediaP
 /// provider metadata, while identity fields are preserved.
 ///
 /// Seeds state.json with a media-tagger entry whose resolved fields are all
-/// `None` plus a non-empty content_map_hash (so the skip check fires). After
+/// `None` plus a non-empty `content_map_hash` (so the skip check fires). After
 /// re-sync the resolved fields are filled, but `content_map_hash`,
 /// `deployed_at`, and `version` are untouched — proving no re-provision.
 #[tokio::test]
 async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
@@ -918,8 +956,10 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
 -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert(
         "media-tagger".to_string(),
         ToolRequirement {
@@ -1001,8 +1041,10 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
 
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     runtime.tools.insert(
         "ffmpeg".to_string(),
         ToolRequirement {

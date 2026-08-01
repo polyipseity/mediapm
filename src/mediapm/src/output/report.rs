@@ -191,14 +191,14 @@ mod tests {
 
     #[test]
     fn format_duration_minutes() {
-        assert_eq!(format_duration(Duration::from_secs(60)), "1m 0s");
+        assert_eq!(format_duration(Duration::from_mins(1)), "1m 0s");
         assert_eq!(format_duration(Duration::from_secs(90)), "1m 30s");
         assert_eq!(format_duration(Duration::from_secs(3599)), "59m 59s");
     }
 
     #[test]
     fn format_duration_hours() {
-        assert_eq!(format_duration(Duration::from_secs(3600)), "1h 0m 0s");
+        assert_eq!(format_duration(Duration::from_hours(1)), "1h 0m 0s");
         assert_eq!(format_duration(Duration::from_secs(3661)), "1h 1m 1s");
     }
 }

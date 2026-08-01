@@ -31,8 +31,8 @@ pub(super) struct MediaPmStateV2 {
 #[allow(dead_code)]
 /// Encodes a [`MediaPmState`] as a V2 JSON [`Value`] (backward compat).
 ///
-/// Converts the native Vec-based managed_tools into a BTreeMap keyed by
-/// tool_id for consumers expecting the V2 format.
+/// Converts the native Vec-based `managed_tools` into a `BTreeMap` keyed by
+/// `tool_id` for consumers expecting the V2 format.
 pub(crate) fn to_v2_json_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
     let managed_tools: BTreeMap<String, ToolRegistryEntry> =
         state.managed_tools.iter().map(|entry| (entry.tool_id.clone(), entry.clone())).collect();
@@ -55,7 +55,7 @@ pub(crate) fn to_v2_json_value(state: &MediaPmState) -> Result<Value, MediaPmErr
 /// called by the version dispatch in [`super::super::ser`]. V2 state data
 /// is now bridged through [`super::v3::from_v2_into_v3`] which correctly
 /// handles the old wire format (no `tool_id` field, `Option<String>`
-/// content_map_hash).
+/// `content_map_hash`).
 pub(crate) fn from_v2_json_value(value: Value) -> Result<MediaPmState, MediaPmError> {
     let v2: MediaPmStateV2 = serde_json::from_value(value)
         .map_err(|e| MediaPmError::Serialization(format!("failed to decode V2 state: {e}")))?;

@@ -66,28 +66,28 @@ pub fn resolve_effective_paths_for_root(
     runtime_storage_overrides: &MediaRuntimeStorage,
 ) -> MediaPmPaths {
     let overrides = MediaPmPathOverrides {
-        mediapm_dir: runtime_storage_overrides.mediapm_dir.as_ref().map(|d| d.into()),
-        hierarchy_root_dir: runtime_storage_overrides.hierarchy_root_dir.as_ref().map(|d| d.into()),
-        conductor_config: runtime_storage_overrides.conductor_config.as_ref().map(|d| d.into()),
+        mediapm_dir: runtime_storage_overrides.mediapm_dir.as_ref().map(Into::into),
+        hierarchy_root_dir: runtime_storage_overrides.hierarchy_root_dir.as_ref().map(Into::into),
+        conductor_config: runtime_storage_overrides.conductor_config.as_ref().map(Into::into),
         conductor_generated_config: runtime_storage_overrides
             .conductor_generated_config
             .as_ref()
-            .map(|d| d.into()),
+            .map(Into::into),
         conductor_state_config: runtime_storage_overrides
             .conductor_state_config
             .as_ref()
-            .map(|d| d.into()),
+            .map(Into::into),
         conductor_schema_dir: runtime_storage_overrides
             .conductor_schema_dir
             .as_ref()
-            .map(|d| d.into()),
-        media_state_config: runtime_storage_overrides.media_state_config.as_ref().map(|d| d.into()),
-        env_file: runtime_storage_overrides.env_file.as_ref().map(|d| d.into()),
-        env_generated_file: runtime_storage_overrides.env_generated_file.as_ref().map(|d| d.into()),
+            .map(Into::into),
+        media_state_config: runtime_storage_overrides.media_state_config.as_ref().map(Into::into),
+        env_file: runtime_storage_overrides.env_file.as_ref().map(Into::into),
+        env_generated_file: runtime_storage_overrides.env_generated_file.as_ref().map(Into::into),
         mediapm_schema_dir: runtime_storage_overrides
             .mediapm_schema_dir
             .as_ref()
-            .map(|inner| inner.as_ref().map(|d| d.into())),
+            .map(|inner| inner.as_ref().map(Into::into)),
     };
     MediaPmPaths::from_root(root_dir).with_overrides(&overrides)
 }

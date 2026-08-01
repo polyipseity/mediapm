@@ -90,7 +90,7 @@ pub(super) enum PreResolveOutcome {
 fn is_archive_source(producer: &SourceProducer) -> bool {
     match producer {
         SourceProducer::Fetch { urls } => {
-            urls.first().map_or(false, |url| infer_archive_format(url).is_some())
+            urls.first().is_some_and(|url| infer_archive_format(url).is_some())
         }
         SourceProducer::GenerateLauncher { .. } => false,
     }
@@ -106,9 +106,17 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
     let filename = url_path.trim_end_matches('/').split('/').next_back().unwrap_or(url_path);
     if filename.ends_with(".tar.xz") {
         Some("tar.xz")
-    } else if filename.ends_with(".tar.gz") || filename.ends_with(".tgz") {
+    } else if filename.ends_with(".tar.gz")
+        || std::path::Path::new(filename)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tgz"))
+    {
         Some("tar.gz")
-    } else if filename.ends_with(".zip") || filename == "zip" {
+    } else if std::path::Path::new(filename)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        || filename == "zip"
+    {
         Some("zip")
     } else {
         None
@@ -153,6 +161,10 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// cache — its TTL is creation-time-based.
 ///
 /// Returns `Ok(None)` when the tool has no provider sources.
+#[expect(
+    clippy::too_many_lines,
+    reason = "provisioning pipeline orchestrates resolve/fetch/process phases; keeping it in one function preserves the phase ordering invariant"
+)]
 pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
     tool_id: &str,
@@ -344,9 +356,8 @@ pub(super) async fn fetch_and_import_tool_payload(
 ///
 /// Uses fully concurrent HEAD requests with a semaphore to limit concurrency.
 async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
-    let client = match mediapm_conductor::http::client::shared_http_client() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Ok(client) = mediapm_conductor::http::client::shared_http_client() else {
+        return;
     };
     let head_timeout = std::time::Duration::from_secs(10);
     let semaphore = Arc::new(Semaphore::new(MAX_LOOKAHEAD));
@@ -370,14 +381,12 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
             Some(async move {
                 let _permit = semaphore.acquire().await.expect("semaphore closed");
                 let request = client.head(&url).timeout(head_timeout).send().await;
-                if let Ok(response) = request {
-                    if response.status().is_success() {
-                        if let Some(content_length) = response.content_length() {
-                            if content_length > 0 {
-                                return Some((idx, content_length));
-                            }
-                        }
-                    }
+                if let Ok(response) = request
+                    && response.status().is_success()
+                    && let Some(content_length) = response.content_length()
+                    && content_length > 0
+                {
+                    return Some((idx, content_length));
                 }
                 None
             })
@@ -385,10 +394,8 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
         .collect();
 
     let results: Vec<Option<(usize, u64)>> = futures_util::future::join_all(tasks).await;
-    for result in results {
-        if let Some((idx, content_length)) = result {
-            sources[idx].expected_size = Some(content_length);
-        }
+    for (idx, content_length) in results.into_iter().flatten() {
+        sources[idx].expected_size = Some(content_length);
     }
 }
 
@@ -548,7 +555,7 @@ mod tests {
         ];
         for (filename, bytes) in &binaries {
             Mock::given(method("GET"))
-                .and(path(&format!("/{filename}")))
+                .and(path(format!("/{filename}")))
                 .respond_with(
                     ResponseTemplate::new(200)
                         .set_body_bytes(bytes.to_vec())
@@ -819,7 +826,7 @@ mod tests {
             "expected SetSuffixComponents(custom=skipped cached (1)) in ops\ngot: {ops:#?}",
         );
         assert!(
-            ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
+            ops.contains(&ProgressOp::FinishSuccess),
             "expected FinishSuccess in ops\ngot: {ops:#?}",
         );
     }
@@ -872,7 +879,7 @@ mod tests {
             "expected SetSuffixComponents(custom=skipped) in ops\ngot: {ops:#?}",
         );
         assert!(
-            ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
+            ops.contains(&ProgressOp::FinishSuccess),
             "expected FinishSuccess in ops\ngot: {ops:#?}",
         );
     }
@@ -1076,7 +1083,7 @@ mod tests {
             "expected SetSuffixComponents(custom=skipped cached (2)) in ops\ngot: {ops:#?}",
         );
         assert!(
-            ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
+            ops.contains(&ProgressOp::FinishSuccess),
             "expected FinishSuccess in ops\ngot: {ops:#?}",
         );
     }
@@ -1139,7 +1146,7 @@ mod tests {
             "expected SetSuffixComponents(custom=skipped) in ops\ngot: {ops:#?}",
         );
         assert!(
-            ops.iter().any(|op| *op == ProgressOp::FinishSuccess),
+            ops.contains(&ProgressOp::FinishSuccess),
             "expected FinishSuccess in ops\ngot: {ops:#?}",
         );
     }

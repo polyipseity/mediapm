@@ -560,7 +560,10 @@ fn remove_stale_paths(
 }
 
 /// Recursively scans for stale paths relative to the current hierarchy.
-#[allow(clippy::only_used_in_recursion)]
+#[expect(
+    clippy::only_used_in_recursion,
+    reason = "recursive stale-path scan with a single external entry point"
+)]
 fn remove_stale_recursive(
     absolute_root: &Path,
     absolute_dir: &Path,
@@ -656,7 +659,10 @@ fn is_zip_content(data: &[u8]) -> bool {
 }
 
 impl SyncSharedState {
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "method-shaped diagnostic helper; self kept for caller symmetry"
+    )]
     fn notice(&self, message: impl Into<String>) {
         warn!("{}", message.into());
     }
@@ -699,7 +705,7 @@ mod tests {
 
         assert!(result.is_ok());
         let ops = recording.ops();
-        assert!(ops.is_empty(), "empty hierarchy should produce no progress ops, got {ops:?}",);
+        assert!(ops.is_empty(), "empty hierarchy should produce no progress ops, got {ops:?}");
     }
 
     /// Injected [`RecordingProgressTracker`] records progress ops when

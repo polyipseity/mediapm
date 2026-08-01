@@ -229,12 +229,12 @@ fn ncl_to_json_file_migration() {
     let ncl_path = dir.path().join("state.ncl");
 
     // Create a minimal state.ncl with the flat format
-    let ncl_content = r#"{
+    let ncl_content = r"{
   version = 1,
   managed_files = [],
   workflow_states = {},
 }
-"#;
+";
     std::fs::write(&ncl_path, ncl_content).expect("write state.ncl");
 
     // Load should migrate .ncl → .json and delete .ncl
@@ -301,7 +301,7 @@ fn tool_registry_entry_normalize_drops_blank_entry() {
     state.managed_tools.push(ToolRegistryEntry {
         tool_id: "tool".to_string(),
         version: String::new(),
-        canonical_version: "".to_string(),
+        canonical_version: String::new(),
         content_map_hash: String::new(),
         deployed_at: 0,
         resolved_tag: None,
@@ -355,7 +355,7 @@ fn state_normalize_drops_tool_with_all_blank() {
     state.managed_tools.push(ToolRegistryEntry {
         tool_id: "blank-tool".to_string(),
         version: String::new(),
-        canonical_version: "".to_string(),
+        canonical_version: String::new(),
         content_map_hash: String::new(),
         deployed_at: 0,
         resolved_tag: None,
@@ -386,7 +386,7 @@ fn canonical_version_json_round_trip() {
         };
         let json = serde_json::to_value(&entry).unwrap();
         let back: ToolRegistryEntry = serde_json::from_value(json).unwrap();
-        assert_eq!(back.canonical_version, *v, "canonical_version round-trip failed for {:?}", v);
+        assert_eq!(back.canonical_version, *v, "canonical_version round-trip failed for {v:?}");
     }
 }
 

@@ -1,6 +1,6 @@
 //! V3 wire format for state persistence.
 //!
-//! V3 replaces the V2 BTreeMap-based managed_tools with a flat Vec.
+//! V3 replaces the V2 BTreeMap-based `managed_tools` with a flat Vec.
 //! V2→V3 migration is one-way forward — we never write V2 format.
 
 use std::collections::BTreeMap;
@@ -30,7 +30,7 @@ pub(super) struct MediaPmStateV3 {
 /// Encodes a [`MediaPmState`] as a V3 JSON [`Value`].
 pub(crate) fn to_v3_json_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
     let mut deduped_tools = dedup_managed_tools(state.managed_tools.clone());
-    deduped_tools.sort_by(|a, b| b.deployed_at.cmp(&a.deployed_at));
+    deduped_tools.sort_by_key(|b| std::cmp::Reverse(b.deployed_at));
     let v3 = MediaPmStateV3 {
         version: 3,
         managed_files: state.managed_files.clone(),
@@ -48,7 +48,7 @@ pub(crate) fn from_v3_json_value(value: Value) -> Result<MediaPmState, MediaPmEr
         .map_err(|e| MediaPmError::Serialization(format!("failed to decode V3 state: {e}")))?;
 
     let mut deduped_tools = dedup_managed_tools(v3.managed_tools);
-    deduped_tools.sort_by(|a, b| b.deployed_at.cmp(&a.deployed_at));
+    deduped_tools.sort_by_key(|b| std::cmp::Reverse(b.deployed_at));
 
     Ok(MediaPmState {
         version: crate::config::defaults::MEDIAPM_STATE_VERSION,
@@ -65,7 +65,7 @@ pub(crate) fn from_v3_json_value(value: Value) -> Result<MediaPmState, MediaPmEr
 /// V2-compatible wire format for reading old state files (used by V3 bridge only).
 ///
 /// Old V2 state files store `content_map_hash` as `Option<String>` and do NOT
-/// contain a `tool_id` field inside the entry — the tool id is the BTreeMap key.
+/// contain a `tool_id` field inside the entry — the tool id is the `BTreeMap` key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ToolRegistryEntryV2Bridge {
     pub version: String,
@@ -92,7 +92,7 @@ struct ToolRegistryEntryV2Bridge {
     pub resolved_vcs_hash: Option<String>,
 }
 
-/// V2-compatible MediaPmState for reading old state files.
+/// V2-compatible `MediaPmState` for reading old state files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MediaPmStateV2Bridge {
     pub version: u32,
@@ -104,7 +104,7 @@ struct MediaPmStateV2Bridge {
     pub workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
 }
 
-/// Bridges a V2 JSON [`Value`] (BTreeMap-based managed_tools) into V3
+/// Bridges a V2 JSON [`Value`] (BTreeMap-based `managed_tools`) into V3
 /// [`MediaPmState`].
 ///
 /// This is needed when a V2 state file is loaded — we read it as V2 format
@@ -139,7 +139,7 @@ pub(crate) fn from_v2_into_v3(value: Value) -> Result<MediaPmState, MediaPmError
     })
 }
 
-/// Deduplicate managed_tools Vec by `(tool_id, canonical_version)`.
+/// Deduplicate `managed_tools` Vec by `(tool_id, canonical_version)`.
 /// Keeps the entry with the most recent `deployed_at` for each group.
 pub(crate) fn dedup_managed_tools(entries: Vec<ToolRegistryEntry>) -> Vec<ToolRegistryEntry> {
     let mut seen: BTreeMap<(String, String), ToolRegistryEntry> = BTreeMap::new();
@@ -526,7 +526,7 @@ mod tests {
             },
         ];
         let mut sorted = entries.clone();
-        sorted.sort_by(|a, b| b.deployed_at.cmp(&a.deployed_at));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.deployed_at));
 
         let state = MediaPmState {
             version: 3,

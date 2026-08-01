@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn validate_components_empty_component() {
-        let components = vec!["".to_string()];
+        let components = vec![String::new()];
         let err = validate_components(&components).unwrap_err();
         assert!(err.to_string().contains("must not be empty"));
     }

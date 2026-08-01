@@ -62,7 +62,10 @@ pub(super) fn extract_zip_folder_variant_bytes(
         if entry.is_dir() {
             dirs.insert(renamed);
         } else {
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "zip entry sizes are u64 from the archive; truncation is a no-op on 64-bit targets"
+            )]
             let mut bytes = Vec::with_capacity(entry.size() as usize);
             // We need to handle the entry read carefully since `by_index` returns a read-only archive.
             drop(entry);

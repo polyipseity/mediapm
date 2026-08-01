@@ -23,18 +23,13 @@ use mediapm_conductor::tools::provider::{ResolvedToolFetch, SourceProducer};
 use crate::tools::downloader::ToolDownloadCache;
 
 /// Whether to force re-resolve or use cached metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RecheckPolicy {
     /// Force re-resolve — ignore cached metadata, always fetch from source.
     ForceReResolve,
     /// Use cached metadata if available.
+    #[default]
     UseCached,
-}
-
-impl Default for RecheckPolicy {
-    fn default() -> Self {
-        Self::UseCached
-    }
 }
 
 /// Wraps a [`Cache`] reference and domain, counting every `lookup_bytes` call.
@@ -159,18 +154,18 @@ pub(crate) async fn resolve_latest_github_tag(
 
     // Try metadata cache first. If the cached entry is non-UTF-8 or malformed,
     // fall through to re-fetch.
-    if let Some(cache) = metadata_cache {
-        if let Some(bytes) = cache.lookup_bytes(&api_url).await {
-            if let Ok(s) = String::from_utf8(bytes.to_vec()) {
-                if let Some((tag, hash)) = s.split_once('\n') {
-                    if !tag.is_empty() && !hash.is_empty() {
-                        return Ok((tag.to_string(), hash.to_string(), true));
-                    }
-                }
-            }
-            // Invalid cache entry — fall through to re-fetch.
-        }
+    // Try cache first. A fully valid cached entry (UTF-8, non-empty
+    // tag+hash pair) short-circuits the HTTP fetch below.
+    if let Some(cache) = metadata_cache
+        && let Some(bytes) = cache.lookup_bytes(&api_url).await
+        && let Ok(s) = String::from_utf8(bytes.clone())
+        && let Some((tag, hash)) = s.split_once('\n')
+        && !tag.is_empty()
+        && !hash.is_empty()
+    {
+        return Ok((tag.to_string(), hash.to_string(), true));
     }
+    // Invalid cache entry — fall through to re-fetch.
 
     // Fetch from GitHub API.
     let http_client = mediapm_conductor::http::client::shared_http_client().map_err(|e| {
@@ -260,16 +255,14 @@ pub(crate) async fn resolve_latest_autobuild_tag(
     let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases?per_page=10");
 
     // Try cache first.
-    if let Some(cache) = metadata_cache {
-        if let Some(bytes) = cache.lookup_bytes(&api_url).await {
-            if let Ok(tag) = String::from_utf8(bytes.to_vec()) {
-                if tag.starts_with("autobuild-") {
-                    return Ok((tag, true));
-                }
-            }
-            // Invalid/non-UTF-8 cache entry — fall through.
-        }
+    if let Some(cache) = metadata_cache
+        && let Some(bytes) = cache.lookup_bytes(&api_url).await
+        && let Ok(tag) = String::from_utf8(bytes.clone())
+        && tag.starts_with("autobuild-")
+    {
+        return Ok((tag, true));
     }
+    // Invalid/non-UTF-8 cache entry — fall through.
 
     // Fetch releases list from GitHub API.
     let http_client = mediapm_conductor::http::client::shared_http_client().map_err(|e| {
@@ -330,6 +323,7 @@ pub(crate) async fn resolve_latest_autobuild_tag(
 ///   provenance fields, each `Option<String>` — `None` when the provider has
 ///   no value (empty strings never occur). A `None` field must carry a
 ///   documented why-empty reason.
+///
 /// The semantic kind (VCS hash, version, or tag) is fixed at code-writing time
 /// per tool.
 ///
@@ -341,6 +335,10 @@ pub(crate) async fn resolve_latest_autobuild_tag(
 /// # Errors
 ///
 /// Returns an error when the tool name is not recognised.
+#[expect(
+    clippy::too_many_lines,
+    reason = "resolve dispatch covers six per-tool providers with distinct URL rewrite and metadata handling"
+)]
 pub(crate) async fn resolve_tool_fetch(
     tool_name: &str,
     metadata_cache: Option<(&Cache, &str)>,
@@ -497,7 +495,7 @@ pub(crate) async fn resolve_tool_fetch(
             )));
         }
     };
-    metadata.metadata_fetch_count = tracker_ref.map(|t| t.lookup_count()).unwrap_or(0);
+    metadata.metadata_fetch_count = tracker_ref.map_or(0, MetadataCacheTracker::lookup_count);
     Ok((fetch, metadata))
 }
 
@@ -506,6 +504,10 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration-style test seeds six tools' metadata caches and asserts each route"
+    )]
     async fn resolve_tool_fetch_routes_all_tools() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
@@ -659,7 +661,6 @@ mod tests {
                 ],
                 vec![b"autobuild-2025-07-15-12-00", b"8.1.2"],
             ),
-            "media-tagger" => (vec![], vec![]),
             _ => (vec![], vec![]),
         };
         for (url, value) in urls.into_iter().zip(values) {
@@ -779,6 +780,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration-style test seeds metadata caches and asserts concrete URLs for all tools"
+    )]
     async fn resolve_tool_fetch_with_metadata_cache_produces_concrete_urls() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
@@ -832,13 +837,13 @@ mod tests {
                     .await
                     .unwrap();
             let canonical = metadata.canonical_version;
-            assert_eq!(fetch.tool_id, *tool_name, "tool_id should match input name",);
+            assert_eq!(fetch.tool_id, *tool_name, "tool_id should match input name");
             // Canonical version is the git hash for GitHub-sourced tools.
             assert_ne!(
                 canonical, *tag,
                 "tool {tool_name}: canonical version should NOT be the tag",
             );
-            assert!(!fetch.sources.is_empty(), "tool {tool_name}: should have at least one source",);
+            assert!(!fetch.sources.is_empty(), "tool {tool_name}: should have at least one source");
             for source in &fetch.sources {
                 if let SourceProducer::Fetch { urls } = &source.producer {
                     for url in urls {
@@ -902,7 +907,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&*cache, "default");
+        let tracker = MetadataCacheTracker::new(&cache, "default");
 
         let owner = "testowner";
         let repo = "testrepo";
@@ -925,6 +930,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration-style test resolves and asserts exact URLs for all managed tools"
+    )]
     async fn resolve_tool_fetch_exact_urls_after_resolution() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
@@ -1314,7 +1323,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&*cache, "default");
+        let tracker = MetadataCacheTracker::new(&cache, "default");
 
         // Pre-seed cache with non-UTF-8 bytes — String::from_utf8 conversion
         // fails, triggering fallthrough to the HTTP fetch. Without a real GitHub
@@ -1339,7 +1348,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&*cache, "default");
+        let tracker = MetadataCacheTracker::new(&cache, "default");
         let api_url = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10";
         cache.store_bytes("default", api_url, b"autobuild-2025-07-15-12-00").await;
 
@@ -1355,7 +1364,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&*cache, "default");
+        let tracker = MetadataCacheTracker::new(&cache, "default");
         cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         let (version, cached) = ffmpeg::resolve_evermeet_version(Some(&tracker))
@@ -1370,7 +1379,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let tracker = MetadataCacheTracker::new(&*cache, "default");
+        let tracker = MetadataCacheTracker::new(&cache, "default");
         let api_url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
         // Cache seeded with "{tag}\n{hash}" format.
         cache

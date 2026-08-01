@@ -60,14 +60,14 @@ fn find_closest_dep_key(dep_key: &str, valid_keys: &BTreeSet<String>) -> Vec<Str
     // Always check `_version` suffix stripping as an explicit heuristic.
     // This handles the `ffmpeg_version` → `ffmpeg` case that edit distance
     // would place at the boundary of a 0.6 cutoff.
-    if let Some(bare) = dep_key.strip_suffix("_version") {
-        if valid_keys.contains(bare) {
-            return vec![bare.to_string()];
-        }
+    if let Some(bare) = dep_key.strip_suffix("_version")
+        && valid_keys.contains(bare)
+    {
+        return vec![bare.to_string()];
     }
     // Fall back to edit-distance-based fuzzy matching via similar crate.
     let candidates: Vec<&str> = valid_keys.iter().map(String::as_str).collect();
-    get_close_matches(dep_key, &candidates, 3, 0.6).into_iter().map(|s| s.to_string()).collect()
+    get_close_matches(dep_key, &candidates, 3, 0.6).into_iter().map(ToString::to_string).collect()
 }
 
 /// Collect the set of valid dependency key strings for a given tool.

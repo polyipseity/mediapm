@@ -31,8 +31,10 @@ use tempfile::tempdir;
 async fn conductor_ncl_skips_write_when_unchanged() {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime)
             .await
@@ -65,16 +67,18 @@ async fn conductor_ncl_skips_write_when_unchanged() {
 /// upstream metadata churn without payload changes), the conductor generated
 /// document remains untouched.
 ///
-/// This regression test reproduces the original scenario: BtbN autobuild
-/// tags change daily (canonical_version churn) while the evermeet binary
-/// (same content_map / runtime hashes) stays identical. The generated NCL
+/// This regression test reproduces the original scenario: `BtbN` autobuild
+/// tags change daily (`canonical_version` churn) while the evermeet binary
+/// (same `content_map` / runtime hashes) stays identical. The generated NCL
 /// document should not change — state.json absorbs the metadata update.
 #[tokio::test]
 async fn regression_state_only_churn_does_not_touch_conductor_file() {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     // Use media-tagger — resolves without network; its empty canonical_version
     // gives us a stable baseline.
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());

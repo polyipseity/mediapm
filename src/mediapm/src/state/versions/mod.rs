@@ -17,7 +17,7 @@ use crate::error::MediaPmError;
 /// Returns `MediaPmError::Workflow` when the field is missing or not
 /// representable as `u64`.
 pub(super) fn extract_state_version_field(value: &Value) -> Result<u64, MediaPmError> {
-    value.get("version").and_then(|v| v.as_u64()).ok_or_else(|| {
+    value.get("version").and_then(serde_json::Value::as_u64).ok_or_else(|| {
         MediaPmError::Workflow("missing or invalid 'version' field in state JSON".to_string())
     })
 }

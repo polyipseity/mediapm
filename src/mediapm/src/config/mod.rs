@@ -293,6 +293,10 @@ impl MediaRuntimeStorage {
     ///
     /// Unknown strategy names are silently ignored.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "config sample denominator is clamped to u32 at the CAS boundary; oversized values truncate intentionally"
+    )]
     pub fn to_verify_strategies(&self) -> Vec<mediapm_cas::VerifyTriggerStrategy> {
         use mediapm_cas::VerifyTriggerStrategy;
 
@@ -358,7 +362,7 @@ impl Default for MediaRuntimeStorage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolRequirement {
-    /// Version specification: "latest", "inherit", or { vcs_hash?, version?, tag? }.
+    /// Version specification: "latest", "inherit", or { `vcs_hash`?, version?, tag? }.
     #[serde(default = "defaults::default_tool_version_spec")]
     pub version_spec: ConfigVersionSpec,
     /// Cross-tool dependency version selectors.
@@ -488,7 +492,7 @@ pub struct MediaPmImpureTimestamp {
 /// Entry in the managed-tool registry tracking fetch/deployment metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRegistryEntry {
-    /// Tool identifier matching the key in desired_tools.
+    /// Tool identifier matching the key in `desired_tools`.
     pub tool_id: String,
     /// Human-readable version string. Has zero semantic use in state logic —
     /// version comparison, skip-if-up-to-date, and update decisions all use
@@ -501,7 +505,7 @@ pub struct ToolRegistryEntry {
     /// Defaults to empty string (`""`) for backward-compat with old state files.
     #[serde(default)]
     pub canonical_version: String,
-    /// blake3 hash of the content_map JSON (used for content-addressed identity).
+    /// blake3 hash of the `content_map` JSON (used for content-addressed identity).
     #[serde(default)]
     pub content_map_hash: String,
     /// Unix-epoch seconds when the payload was deployed (0 = not yet deployed).

@@ -4,7 +4,7 @@
 //! 1. Ensure conductor documents exist (generated + state)
 //! 2. Load the generated document
 //! 3. Fetch desired tool payloads, import to CAS, build content maps
-//! 4. Build proper ToolSpec + ToolRuntime for each tool
+//! 4. Build proper `ToolSpec` + `ToolRuntime` for each tool
 //! 5. Apply lifecycle transitions (tag updates, launcher files)
 //! 6. Write generated runtime env file
 /// 7. Save the generated document
@@ -13,6 +13,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod provision;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -64,7 +65,7 @@ pub(crate) struct ToolSyncReport {
     /// Non-fatal warnings collected during reconciliation.
     pub(crate) warnings: Vec<String>,
     /// Per-tool deployment records populated during provisioning.
-    /// Flat list ordered by iteration order of desired_tools.
+    /// Flat list ordered by iteration order of `desired_tools`.
     pub(crate) tool_records: Vec<ToolRegistryEntry>,
     /// Skip-path backfill records: fresh provider-resolved metadata for tools
     /// that were skipped because their canonical version was already
@@ -95,20 +96,20 @@ pub(crate) fn apply_resolved_field_backfills(
             continue;
         };
         if existing.resolved_tag.is_none() {
-            existing.resolved_tag = backfill.resolved_tag.clone();
+            existing.resolved_tag.clone_from(&backfill.resolved_tag);
         }
         if existing.resolved_version.is_none() {
-            existing.resolved_version = backfill.resolved_version.clone();
+            existing.resolved_version.clone_from(&backfill.resolved_version);
         }
         if existing.resolved_vcs_hash.is_none() {
-            existing.resolved_vcs_hash = backfill.resolved_vcs_hash.clone();
+            existing.resolved_vcs_hash.clone_from(&backfill.resolved_vcs_hash);
         }
     }
 }
 
 /// A single entry in the provisioning pipeline.
 struct ProvisionEntry {
-    /// Bare tool_id used for provider resolution (e.g., "ffmpeg").
+    /// Bare `tool_id` used for provider resolution (e.g., "ffmpeg").
     tool_id: String,
     /// The tool requirement to apply when provisioning this entry.
     tool_requirement: ToolRequirement,
@@ -191,7 +192,7 @@ pub(crate) fn resolve_dep_version_spec(
     }
 }
 
-/// Build in-memory index from flat state Vec for O(1) tool_id group lookup.
+/// Build in-memory index from flat state Vec for O(1) `tool_id` group lookup.
 pub(crate) fn index_managed_tools(
     entries: &[ToolRegistryEntry],
 ) -> HashMap<String, Vec<ToolRegistryEntry>> {
@@ -207,7 +208,7 @@ pub(crate) fn index_managed_tools(
 /// Each explicit tool gets one entry. Each dependency of each tool gets a
 /// separate entry with the resolved version spec from the dependency
 /// declaration. Dep entries are sorted before explicit entries so they
-/// provision first (making dep canonical_versions available for composites).
+/// provision first (making dep `canonical_versions` available for composites).
 fn build_provisioning_entries(
     desired_tools: &BTreeMap<String, serde_json::Value>,
 ) -> Result<Vec<ProvisionEntry>, MediaPmError> {
@@ -265,8 +266,8 @@ fn build_provisioning_entries(
     Ok(all_entries)
 }
 
-/// Build composite canonical_version from bare version and same-step dep
-/// version pairs. Dep identifiers are bare dep_ids (not PKeys), sorted
+/// Build composite `canonical_version` from bare version and same-step dep
+/// version pairs. Dep identifiers are bare `dep_ids` (not `PKeys`), sorted
 /// alphabetically for determinism.
 ///
 /// Format: `<bare>;<dep_id_1>:<dep_ver_1>;<dep_id_2>:<dep_ver_2>;...`
@@ -276,11 +277,14 @@ fn composite_canonical_version(bare: &str, dep_versions: &[(&str, &str)]) -> Str
     }
     let mut sorted: Vec<(&str, &str)> = dep_versions.to_vec();
     sorted.sort_by(|a, b| a.0.cmp(b.0));
-    let suffix: String = sorted.iter().map(|(dep_id, ver)| format!(";{dep_id}:{ver}")).collect();
+    let suffix: String = sorted.iter().fold(String::new(), |mut acc, (dep_id, ver)| {
+        let _ = write!(acc, ";{dep_id}:{ver}");
+        acc
+    });
     format!("{bare}{suffix}")
 }
 
-/// Collect same-step dep_ids for a given entry (returns bare dep_ids).
+/// Collect same-step `dep_ids` for a given entry (returns bare `dep_ids`).
 fn collect_same_step_dep_ids(
     tool_id: &str,
     tool_req: &ToolRequirement,
@@ -300,7 +304,7 @@ fn collect_same_step_dep_ids(
         .collect()
 }
 
-/// Compute canonical_version for persistence, including same-step dep versions.
+/// Compute `canonical_version` for persistence, including same-step dep versions.
 ///
 /// The canonical version stored in [`ToolRegistryEntry`] is a composite of the
 /// bare provider-resolved version and same-step dependency versions. This
@@ -359,7 +363,14 @@ pub(crate) fn compute_composite_canonical_version(
 /// Returns an error when any critical step (document loading, builtin
 /// registration, content-map import) fails. Non-critical failures are
 /// reported as warnings in [`ToolSyncReport`].
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "reconciliation runs the provisioning phase sequence in strict order; splitting would obscure the ordering invariant"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "reconciliation entrypoint; all 8 parameters are distinct required inputs"
+)]
 pub(crate) async fn reconcile_desired_tools(
     cas: &impl CasApi,
     paths: &MediaPmPaths,
@@ -454,45 +465,44 @@ pub(crate) async fn reconcile_desired_tools(
         // --- Spec-based skip: if desired spec is already satisfied, skip. ---
         if tool_req.version_spec != ConfigVersionSpec::Latest
             && tool_req.version_spec != ConfigVersionSpec::Inherit
+            && let Some(entry) = state.managed_tools.iter().find(|e| e.tool_id == *tool_id)
         {
-            if let Some(entry) = state.managed_tools.iter().find(|e| e.tool_id == *tool_id) {
-                // Convert ConfigVersionSpec to VersionSpec for spec matching.
-                // At this point we know it's Exact (guarded by the != Latest/Inherit check above).
-                let resolved_spec = match &tool_req.version_spec {
-                    ConfigVersionSpec::Exact(fields) => VersionSpec::Exact(fields.clone()),
-                    _ => unreachable!(), // Latest/Inherit already filtered above
-                };
-                if spec_matches_entry(
-                    &resolved_spec,
-                    entry.resolved_tag.as_deref(),
-                    entry.resolved_version.as_deref(),
-                    entry.resolved_vcs_hash.as_deref(),
-                ) {
-                    // Already have the desired version — skip provisioning.
-                    // Reconstruct the runtime under its conductor tool id
-                    // (generated doc key). Prefer the active `{name}@{hash}`
-                    // entry with a non-empty content map; stale pruned keys
-                    // have cleared maps and a bare stale entry may linger.
-                    let mut chosen: Option<(&String, &ToolSpec)> = None;
-                    for (key, spec) in &generated_doc.tools {
-                        if spec.name != *tool_id {
-                            continue;
-                        }
-                        if !spec.runtime.content_map.is_empty() {
-                            chosen = Some((key, spec));
-                            break;
-                        }
-                        if chosen.is_none() {
-                            chosen = Some((key, spec));
-                        }
+            // Convert ConfigVersionSpec to VersionSpec for spec matching.
+            // At this point we know it's Exact (guarded by the != Latest/Inherit check above).
+            let resolved_spec = match &tool_req.version_spec {
+                ConfigVersionSpec::Exact(fields) => VersionSpec::Exact(fields.clone()),
+                _ => unreachable!(), // Latest/Inherit already filtered above
+            };
+            if spec_matches_entry(
+                &resolved_spec,
+                entry.resolved_tag.as_deref(),
+                entry.resolved_version.as_deref(),
+                entry.resolved_vcs_hash.as_deref(),
+            ) {
+                // Already have the desired version — skip provisioning.
+                // Reconstruct the runtime under its conductor tool id
+                // (generated doc key). Prefer the active `{name}@{hash}`
+                // entry with a non-empty content map; stale pruned keys
+                // have cleared maps and a bare stale entry may linger.
+                let mut chosen: Option<(&String, &ToolSpec)> = None;
+                for (key, spec) in &generated_doc.tools {
+                    if spec.name != *tool_id {
+                        continue;
                     }
-                    if let Some((key, spec)) = chosen {
-                        tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
+                    if !spec.runtime.content_map.is_empty() {
+                        chosen = Some((key, spec));
+                        break;
                     }
-                    report.tools_skipped += 1;
-                    pb.advance(1);
-                    continue;
+                    if chosen.is_none() {
+                        chosen = Some((key, spec));
+                    }
                 }
+                if let Some((key, spec)) = chosen {
+                    tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
+                }
+                report.tools_skipped += 1;
+                pb.advance(1);
+                continue;
             }
         }
         // --- End spec-based skip ---
@@ -523,12 +533,12 @@ pub(crate) async fn reconcile_desired_tools(
             Ok((fetch, metadata)) => {
                 let human_readable_version = metadata.human_readable_version.clone();
                 let canonical_version = metadata.canonical_version.clone();
-                let _metadata_cached = metadata.metadata_cached;
-                let _metadata_fetch_count = metadata.metadata_fetch_count;
-                resolved_canonical_version = canonical_version.clone();
-                resolved_tag_value = metadata.resolved_tag.clone();
-                resolved_version_value = metadata.resolved_version.clone();
-                resolved_vcs_hash_value = metadata.resolved_vcs_hash.clone();
+                let metadata_cached = metadata.metadata_cached;
+                let metadata_fetch_count = metadata.metadata_fetch_count;
+                resolved_canonical_version.clone_from(&canonical_version);
+                resolved_tag_value.clone_from(&metadata.resolved_tag);
+                resolved_version_value.clone_from(&metadata.resolved_version);
+                resolved_vcs_hash_value.clone_from(&metadata.resolved_vcs_hash);
 
                 // --- Post-resolve validation: verify resolved result matches desired spec ---
                 match &tool_req.version_spec {
@@ -545,20 +555,20 @@ pub(crate) async fn reconcile_desired_tools(
                                 )));
                             }
                         }
-                        if let Some(tag) = &fields.tag {
-                            if resolved_tag_value.as_deref() != Some(tag.as_str()) {
-                                return Err(MediaPmError::Workflow(format!(
-                                    "tool {tool_id}: requested tag {tag} but resolved {}",
-                                    resolved_tag_value.as_deref().unwrap_or("(none)")
-                                )));
-                            }
+                        if let Some(tag) = &fields.tag
+                            && resolved_tag_value.as_deref() != Some(tag.as_str())
+                        {
+                            return Err(MediaPmError::Workflow(format!(
+                                "tool {tool_id}: requested tag {tag} but resolved {}",
+                                resolved_tag_value.as_deref().unwrap_or("(none)")
+                            )));
                         }
-                        if let Some(ver) = &fields.version {
-                            if human_readable_version != *ver {
-                                return Err(MediaPmError::Workflow(format!(
-                                    "tool {tool_id}: requested version {ver} but resolved {human_readable_version}"
-                                )));
-                            }
+                        if let Some(ver) = &fields.version
+                            && human_readable_version != *ver
+                        {
+                            return Err(MediaPmError::Workflow(format!(
+                                "tool {tool_id}: requested version {ver} but resolved {human_readable_version}"
+                            )));
                         }
                     }
                     ConfigVersionSpec::Latest => {} // always OK
@@ -592,8 +602,8 @@ pub(crate) async fn reconcile_desired_tools(
                         name: tool_id.clone(),
                         human_readable_version: human_readable_version.clone(),
                         version: expected_composite.clone(),
-                        metadata_cached: _metadata_cached,
-                        metadata_fetch_count: _metadata_fetch_count,
+                        metadata_cached,
+                        metadata_fetch_count,
                         resolved_tag: metadata.resolved_tag.clone(),
                         resolved_version: metadata.resolved_version.clone(),
                         resolved_vcs_hash: metadata.resolved_vcs_hash.clone(),
@@ -639,7 +649,7 @@ pub(crate) async fn reconcile_desired_tools(
                 resolved_version: resolved_version.clone(),
                 resolved_vcs_hash: resolved_vcs_hash.clone(),
             }),
-            _ => None,
+            PreResolveOutcome::Resolved(..) => None,
         };
         let payload_result =
             fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group, pre_resolved)
@@ -735,14 +745,14 @@ pub(crate) async fn reconcile_desired_tools(
                 full_runtime.inherited_env_vars = inherited;
 
                 // Use content-addressed key: "{name}@{hash}".
-                let tool_key = if !content_map_hash.is_empty() {
-                    format!("{}@{}", tool_id, content_map_hash)
+                let tool_key = if content_map_hash.is_empty() {
+                    tool_id.clone()
                 } else {
-                    tool_id.to_string()
+                    format!("{tool_id}@{content_map_hash}")
                 };
 
                 // Prune old version keys from generated documents.
-                let prefix = format!("{}@", tool_id);
+                let prefix = format!("{tool_id}@");
                 let old: Vec<String> = generated_doc
                     .tools
                     .keys()
@@ -814,7 +824,9 @@ pub(crate) async fn reconcile_desired_tools(
                     report.tools_added += 1;
                 }
 
-                if !generated_doc.tools.contains_key(tool_id) {
+                if generated_doc.tools.contains_key(tool_id) {
+                    report.tools_updated += 1;
+                } else {
                     generated_doc.tools.insert(
                         tool_id.clone(),
                         mediapm_conductor::ToolSpec {
@@ -830,8 +842,6 @@ pub(crate) async fn reconcile_desired_tools(
                             runtime,
                         },
                     );
-                } else {
-                    report.tools_updated += 1;
                 }
             }
             Err(e) => {
@@ -908,7 +918,6 @@ mod tests {
 
     use crate::config::ToolRequirement;
     use crate::tools::dependency::known_dependency_type;
-    use serde_json;
 
     use super::*;
 
@@ -933,7 +942,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
         let ops = tracker.ops();
 
@@ -954,14 +963,14 @@ mod tests {
 
         // The overall bar is finished with success after the tool loop.
         let finish_successes: Vec<&ProgressOp> =
-            ops.iter().filter(|op| matches!(op, ProgressOp::FinishSuccess { .. })).collect();
+            ops.iter().filter(|op| matches!(op, ProgressOp::FinishSuccess)).collect();
         assert_eq!(
             finish_successes.len(),
             1,
             "expected exactly one FinishSuccess op, got {finish_successes:?}",
         );
         assert!(
-            matches!(&finish_successes[0], ProgressOp::FinishSuccess { .. }),
+            matches!(&finish_successes[0], ProgressOp::FinishSuccess),
             "expected FinishSuccess"
         );
     }
@@ -1101,7 +1110,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
         // Verify env file has entries reconstructed from the generated doc.
         let env_path = &paths.env_generated_file;
@@ -1131,7 +1140,7 @@ mod tests {
 
     /// The spec-based skip path reconstructs the runtime under its conductor
     /// tool id (the generated doc key), so env payload paths match the
-    /// ProvisionCache deployment layout.
+    /// `ProvisionCache` deployment layout.
     #[tokio::test]
     async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1192,8 +1201,8 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
-        assert_eq!(result.unwrap().tools_skipped, 1, "exact spec matching stored fields must skip",);
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+        assert_eq!(result.unwrap().tools_skipped, 1, "exact spec matching stored fields must skip");
 
         // Env paths must be keyed by the conductor tool id, not the plain id.
         let env_path = &paths.env_generated_file;
@@ -1281,7 +1290,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
         // The active hashed entry must win: env paths carry the conductor id.
         let env_path = &paths.env_generated_file;
@@ -1367,7 +1376,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
         // The conductor-keyed dir survives; the stale dir is pruned.
         assert!(
@@ -1529,11 +1538,11 @@ mod tests {
         // Hash::from for deterministic test values.
         let hash_a = Hash::from([0u8; 32]);
         let hash_b = Hash::from([1u8; 32]);
-        let hash_a_str = format!("blake3:{}", blake3::Hash::from([0u8; 32]).to_hex());
-        let hash_b_str = format!("blake3:{}", blake3::Hash::from([1u8; 32]).to_hex());
+        let hash_zero_hex = format!("blake3:{}", blake3::Hash::from([0u8; 32]).to_hex());
+        let hash_one_hex = format!("blake3:{}", blake3::Hash::from([1u8; 32]).to_hex());
 
         let mut cm1 = BTreeMap::new();
-        cm1.insert("linux/tool_a".to_string(), hash_a_str);
+        cm1.insert("linux/tool_a".to_string(), hash_zero_hex);
         let spec_a = ToolSpec {
             name: "tool_a".to_string(),
             kind: ToolKindSpec::default(),
@@ -1541,7 +1550,7 @@ mod tests {
             ..Default::default()
         };
         let mut cm2 = BTreeMap::new();
-        cm2.insert("macos/tool_b".to_string(), hash_b_str);
+        cm2.insert("macos/tool_b".to_string(), hash_one_hex);
         let spec_b = ToolSpec {
             name: "tool_b".to_string(),
             kind: ToolKindSpec::default(),

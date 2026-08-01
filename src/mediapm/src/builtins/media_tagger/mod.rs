@@ -20,7 +20,10 @@
 //! - empty/omitted or `auto` => allow AcoustID autodetection path,
 //! - `none` => disable AcoustID autodetection path entirely.
 
-#![allow(clippy::doc_markdown)]
+#![expect(
+    clippy::doc_markdown,
+    reason = "module docs reference upstream tool names (MBID, AcoustID, MusicBrainz) as plain terms"
+)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -78,7 +78,10 @@ pub enum PlaylistFormat {
 
 /// Returns true when the serializer can omit the playlist format field.
 #[must_use]
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "read-only predicate; reference documents the non-consuming intent"
+)]
 pub fn playlist_format_is_default(format: &PlaylistFormat) -> bool {
     matches!(format, PlaylistFormat::M3u8)
 }
@@ -1026,7 +1029,7 @@ mod tests {
 
     #[test]
     fn empty_selector_errors() {
-        let selectors = vec!["".to_string()];
+        let selectors = vec![String::new()];
         let available: BTreeSet<String> = ["1080p"].into_iter().map(String::from).collect();
         let err = expand_variant_selectors(&selectors, &available).unwrap_err();
         assert!(err.contains("contains an empty variant selector"));

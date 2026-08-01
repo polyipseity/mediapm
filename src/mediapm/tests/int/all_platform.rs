@@ -18,8 +18,10 @@ use tempfile::tempdir;
 async fn managed_tools_exist_in_generated_document() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -42,8 +44,10 @@ async fn managed_tools_exist_in_generated_document() -> Result<(), mediapm::Medi
 async fn external_tool_content_map_keys_have_os_prefix() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -75,8 +79,10 @@ async fn external_tool_content_map_keys_have_os_prefix() -> Result<(), mediapm::
 async fn external_tool_command_is_non_empty() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
@@ -105,8 +111,10 @@ async fn external_tool_command_is_non_empty() -> Result<(), mediapm::MediaPmErro
 async fn external_tool_command_uses_context_os_selector() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let cache_root = tempdir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;

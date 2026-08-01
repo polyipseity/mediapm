@@ -117,20 +117,20 @@ pub(crate) fn from_v1_json_value(value: Value) -> Result<MediaPmState, MediaPmEr
         let envelope: MediaPmStateV1Envelope = serde_json::from_value(value).map_err(|e| {
             MediaPmError::Serialization(format!("failed to decode V1 state envelope: {e}"))
         })?;
-        return from_v1_payload(envelope.state);
+        return Ok(from_v1_payload(envelope.state));
     }
 
     // Flat format: try map-style (managed_files as BTreeMap) first.
     if let Ok(payload) = serde_json::from_value::<MediaPmStateV1Payload>(value.clone()) {
-        return from_v1_payload(payload);
+        return Ok(from_v1_payload(payload));
     }
 
     // Fall back to set-style (managed_files as BTreeSet).
-    migrate_flat_v1_fields(value)
+    migrate_flat_v1_fields(&value)
 }
 
 /// Converts a [`MediaPmStateV1Payload`] into [`MediaPmState`].
-fn from_v1_payload(payload: MediaPmStateV1Payload) -> Result<MediaPmState, MediaPmError> {
+fn from_v1_payload(payload: MediaPmStateV1Payload) -> MediaPmState {
     // Map managed files (same key-value structure).
     let managed_files: BTreeMap<String, ManagedFileRecord> = payload
         .managed_files
@@ -169,19 +169,19 @@ fn from_v1_payload(payload: MediaPmStateV1Payload) -> Result<MediaPmState, Media
         .collect();
 
     // tool_registry, active_tools, last_materialized_state_hash are dropped.
-    Ok(MediaPmState {
+    MediaPmState {
         version: crate::config::defaults::MEDIAPM_STATE_VERSION,
         managed_files,
         managed_tools: Vec::new(),
         workflow_states,
-    })
+    }
 }
 
 /// Migrates a flat V1 value (post-rewrite set format) into [`MediaPmState`].
 ///
 /// The flat set format has `managed_files` as `BTreeSet<String>` and
 /// `workflow_states` directly at the top level.
-fn migrate_flat_v1_fields(value: Value) -> Result<MediaPmState, MediaPmError> {
+fn migrate_flat_v1_fields(value: &Value) -> Result<MediaPmState, MediaPmError> {
     let managed_files_set: BTreeSet<String> = serde_json::from_value(
         value.get("managed_files").cloned().unwrap_or_default(),
     )

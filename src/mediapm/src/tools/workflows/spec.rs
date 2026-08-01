@@ -136,6 +136,10 @@ pub(crate) fn strip_sandbox_prefix(path: &str) -> &str {
 /// Callers (per-tool workflow files) provide the individual component
 /// builders; this helper assembles them into the final pair.
 #[must_use]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "spec assembly takes one parameter per ToolSpec/ToolRuntime field; all are distinct required inputs"
+)]
 pub(crate) fn assemble_tool_spec(
     tool_name: &str,
     content_map: BTreeMap<String, String>,

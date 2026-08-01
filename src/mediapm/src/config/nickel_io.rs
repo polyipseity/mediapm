@@ -100,13 +100,19 @@ fn save_json_document<T: Serialize>(path: &Path, doc: &T, label: &str) -> Result
 }
 
 /// Loads and parses a `mediapm.ncl` file.
-#[allow(clippy::missing_errors_doc)]
+///
+/// # Errors
+///
+/// Returns an error when the document cannot be loaded or parsed.
 pub fn load_mediapm_document(path: &Path) -> Result<crate::config::MediaPmDocument, MediaPmError> {
     load_json_document(path, "mediapm document")
 }
 
 /// Serializes and writes a `mediapm.ncl` document.
-#[allow(clippy::missing_errors_doc)]
+///
+/// # Errors
+///
+/// Returns an error when the document cannot be serialized or written.
 pub fn save_mediapm_document(
     path: &Path,
     doc: &crate::config::MediaPmDocument,
@@ -120,7 +126,10 @@ pub fn save_mediapm_document(
 /// (derived by swapping the extension), evaluates it, migrates to JSON,
 /// writes the result, and deletes the `.ncl` file. Returns
 /// [`MediaPmState::default()`] when neither exists (first run or reset).
-#[allow(clippy::missing_errors_doc)]
+///
+/// # Errors
+///
+/// Returns an error when the state file cannot be loaded, parsed, or migrated.
 pub fn load_mediapm_state_document(
     path: &Path,
 ) -> Result<crate::config::MediaPmState, MediaPmError> {
@@ -161,7 +170,10 @@ pub fn load_mediapm_state_document(
 }
 
 /// Serializes and writes a `state.json` document as pretty-printed JSON.
-#[allow(clippy::missing_errors_doc)]
+///
+/// # Errors
+///
+/// Returns an error when the state cannot be serialized or written.
 pub fn save_mediapm_state_document(
     path: &Path,
     state: &crate::config::MediaPmState,
@@ -182,7 +194,10 @@ pub fn save_mediapm_state_document(
 /// Currently a no-op passthrough since the state document contains
 /// `ManagedWorkflowStepState` entries that are structurally incompatible with
 /// the document's `MediaSourceSpec` entries.
-#[allow(clippy::missing_errors_doc)]
+///
+/// # Errors
+///
+/// Returns an error if the merge encounters a structural incompatibility.
 pub fn merge_mediapm_document_with_state(
     doc: &crate::config::MediaPmDocument,
     _state: &crate::config::MediaPmState,

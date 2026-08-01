@@ -4,13 +4,13 @@
 //! evermeet.cx (macOS). Each platform has two URL candidates tried in
 //! order.
 //!
-//! Canonical version: composite of `autobuild-{tag}` from BtbN and
+//! Canonical version: composite of `autobuild-{tag}` from `BtbN` and
 //! `evermeet-{semver}` from evermeet.cx (e.g. "autobuild-2026-07-22-13-36+evermeet-8.1.2").
 //!
-//! Resolved provenance fields: `resolved_tag` is the BtbN `autobuild-*` tag;
+//! Resolved provenance fields: `resolved_tag` is the `BtbN` `autobuild-*` tag;
 //! `resolved_version` and `resolved_vcs_hash` are always `None` — WHY: the
-//! artifact set mixes BtbN autobuilds and evermeet.cx zips, so no single
-//! version or VCS hash identifies it; deref'ing a BtbN build tag yields the
+//! artifact set mixes `BtbN` autobuilds and evermeet.cx zips, so no single
+//! version or VCS hash identifies it; deref'ing a `BtbN` build tag yields the
 //! build-script repo commit (not the upstream ffmpeg source commit), and
 //! evermeet.cx zips carry no git provenance. Resolvable != meaningful.
 
@@ -20,7 +20,7 @@ use super::MetadataCacheTracker;
 
 /// Resolves the latest `autobuild-*` tag for BtbN/FFmpeg-Builds.
 ///
-/// BtbN's `/releases/latest` endpoint returns `"tag_name":"latest"`, which
+/// `BtbN`'s `/releases/latest` endpoint returns `"tag_name":"latest"`, which
 /// is useless. This function lists recent releases and picks the first
 /// `autobuild-*` tag.
 ///
@@ -56,14 +56,12 @@ pub(crate) async fn resolve_evermeet_version(
     let url = "https://evermeet.cx/ffmpeg/getrelease/zip";
 
     // Cache lookup.
-    if let Some(cache) = metadata_cache {
-        if let Some(bytes) = cache.lookup_bytes(url).await {
-            if let Ok(version) = String::from_utf8(bytes.to_vec()) {
-                if !version.is_empty() {
-                    return Ok((version, true));
-                }
-            }
-        }
+    if let Some(cache) = metadata_cache
+        && let Some(bytes) = cache.lookup_bytes(url).await
+        && let Ok(version) = String::from_utf8(bytes.clone())
+        && !version.is_empty()
+    {
+        return Ok((version, true));
     }
 
     // HEAD request — no body download.

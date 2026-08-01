@@ -181,6 +181,17 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     /// Returns `true` if the tool is missing from the state's managed tool
     /// registry or its canonical version does not match the provider-resolved
     /// version.
+    ///
+    /// # Panics
+    ///
+    /// Panics on an internal invariant violation: a `tool_id` declared in
+    /// `effective.tools` at the `is_none()` guard must still be present at
+    /// the later `unwrap()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when effective runtime storage resolution
+    /// fails.
     pub async fn logical_tool_requires_sync(
         &self,
         tool_id: &str,
@@ -230,6 +241,11 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     }
 
     /// Collects tool ids that require a sync based on state comparison.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when effective runtime storage resolution or
+    /// an individual tool sync check fails.
     pub async fn collect_tools_requiring_sync(
         &self,
         state: &MediaPmState,
@@ -307,7 +323,11 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ///
     /// Returns [`MediaPmError::Workflow`] if the media id already exists or
     /// the hierarchy insertion fails.
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::needless_pass_by_value,
+        reason = "public API entrypoint with CLI-parity parameter surface; underscore-prefixed args are accepted for interface symmetry"
+    )]
     pub fn add_media_source_with_position(
         &mut self,
         media_source: &MediaSourceSpec,

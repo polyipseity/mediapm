@@ -207,7 +207,10 @@ pub(crate) fn yt_dlp_hierarchy_media_children() -> Vec<HierarchyNode> {
 ///
 /// Returns [`MediaPmError::Workflow`] if the position specifies a sibling
 /// that does not exist in the hierarchy.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "preset ownership transfers into the hierarchy during insertion"
+)]
 pub(crate) fn insert_hierarchy_preset_node(
     hierarchy: &mut Vec<HierarchyNode>,
     preset: MediaHierarchyPreset,

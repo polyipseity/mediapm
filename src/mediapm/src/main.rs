@@ -690,7 +690,10 @@ impl From<AddInsertPositionArg> for AddInsertPosition {
 
 /// Arguments for `media invalidate <media-id> <step-index>`.
 #[derive(Debug, Args)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "CLI args struct mirrors the command surface; booleans map 1:1 to flags"
+)]
 struct MediaInvalidateArgs {
     /// Media source id whose step cache should be invalidated.
     media_id: String,
@@ -1029,7 +1032,10 @@ fn default_yt_dlp_steps(
 
 /// Executes builtin media-tagger command invocation via `run_internal_media_tagger`.
 #[cfg(feature = "media-tagger")]
-#[allow(clippy::cast_possible_wrap)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "u32 option values cast to i64; wrap is impossible for the bounded input domain"
+)]
 async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Result<()> {
     mediapm::builtins::media_tagger::run_internal_media_tagger(
         mediapm::builtins::media_tagger::InternalMediaTaggerOptions {
