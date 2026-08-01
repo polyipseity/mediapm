@@ -891,6 +891,21 @@ impl MediaPmService<FileSystemCas> {
         })?;
         extend_runtime_gitignore(&effective_paths.runtime_root, MEDIAPM_EXTRA_GITIGNORE)?;
 
+        // Bootstrap the mediapm document so a fresh workspace has a default
+        // `mediapm.ncl` on disk. Reconstructed workspaces keep their existing
+        // document untouched.
+        if !effective_paths.mediapm_ncl.exists() {
+            let document = ensure_and_load_mediapm_document(&effective_paths)?;
+            if let Some(parent) = effective_paths.mediapm_ncl.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| MediaPmError::Io {
+                    operation: "create mediapm document directory".to_string(),
+                    path: parent.to_path_buf(),
+                    source: e,
+                })?;
+            }
+            save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
+        }
+
         // Open the filesystem CAS.
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths);
         std::fs::create_dir_all(&conductor_cas_root).map_err(|e| MediaPmError::Io {

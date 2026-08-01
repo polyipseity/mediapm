@@ -1,18 +1,12 @@
 //! API-level end-to-end tests using programmatic `MediaPmService` flows.
-//!
-//! Reads persisted `.ncl` files as raw JSON (no Nickel evaluation) since
-//! the Nickel schema/contract files are absent in temp directories.
 
 use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
-use std::fs;
 use tempfile::tempdir;
 use url::Url;
 
-/// Reads a `MediaPmDocument` from a `.ncl` JSON file without Nickel
-/// evaluation.
+/// Loads a `MediaPmDocument` from a persisted `mediapm.ncl` file.
 fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
-    let file = fs::File::open(path).expect("mediapm.ncl should exist");
-    serde_json::from_reader(file).expect("mediapm.ncl should be valid JSON")
+    mediapm::load_mediapm_document(path).expect("mediapm.ncl should load")
 }
 
 // ---------------------------------------------------------------------------
@@ -20,10 +14,6 @@ fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
 // ---------------------------------------------------------------------------
 
 /// Adding a media source persists the entry in the document.
-///
-/// Note: tests with more than one service write-call are unreliable due
-/// to Nickel evaluation constraints in temp directories (the second call
-/// invokes `ensure_and_load_mediapm_document` which reads via Nickel).
 #[tokio::test]
 async fn add_source_persists() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
@@ -91,9 +81,6 @@ fn media_id_parsing() {
 // ---------------------------------------------------------------------------
 
 /// A single tool requirement persists in the document.
-///
-/// Note: only one `add_tool_requirement` call per test is reliable due to
-/// Nickel evaluation constraints in temp directories.
 #[tokio::test]
 async fn add_tool_without_version_persists() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");

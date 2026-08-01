@@ -2,20 +2,14 @@
 //!
 //! Tests emulate the `mediapm_demo_online` example's configuration path (add
 //! remote source, hierarchy, tools) without requiring network access.
-//!
-//! Reads persisted `.ncl` files as raw JSON (no Nickel evaluation) since
-//! the Nickel schema/contract files are absent in temp directories.
 
 use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
-use std::fs;
 use tempfile::tempdir;
 use url::Url;
 
-/// Reads a `MediaPmDocument` from a `.ncl` JSON file without Nickel
-/// evaluation.
+/// Loads a `MediaPmDocument` from a persisted `mediapm.ncl` file.
 fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
-    let file = fs::File::open(path).expect("mediapm.ncl should exist");
-    serde_json::from_reader(file).expect("mediapm.ncl should be valid JSON")
+    mediapm::load_mediapm_document(path).expect("mediapm.ncl should load")
 }
 
 /// Adding a remote source via `add_media_source` persists the entry with no

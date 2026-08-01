@@ -4,7 +4,6 @@ use std::path::Path;
 
 use nickel_lang_core::eval::cache::CacheImpl;
 use nickel_lang_core::program::ProgramBuilder;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -84,21 +83,6 @@ fn load_json_document<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T
     })
 }
 
-/// Serializes a document and writes it as pretty-printed JSON.
-fn save_json_document<T: Serialize>(path: &Path, doc: &T, label: &str) -> Result<(), MediaPmError> {
-    let value = serde_json::to_value(doc).map_err(|err| {
-        MediaPmError::Serialization(format!("failed to serialize {label}: {err}"))
-    })?;
-    let json = serde_json::to_string_pretty(&value)
-        .map_err(|err| MediaPmError::Serialization(format!("failed to format JSON: {err}")))?;
-    std::fs::write(path, json).map_err(|err| MediaPmError::Io {
-        operation: format!("write {label}"),
-        path: path.to_path_buf(),
-        source: err,
-    })?;
-    Ok(())
-}
-
 /// Loads and parses a `mediapm.ncl` file.
 ///
 /// # Errors
@@ -108,7 +92,11 @@ pub fn load_mediapm_document(path: &Path) -> Result<crate::config::MediaPmDocume
     load_json_document(path, "mediapm document")
 }
 
-/// Serializes and writes a `mediapm.ncl` document.
+/// Serializes and writes a `mediapm.ncl` document as proper Nickel source.
+///
+/// The file is written as Nickel source (not JSON) because it is loaded back
+/// via Nickel evaluation — JSON record syntax (`"key": value`) would parse as
+/// contract annotations and fail.
 ///
 /// # Errors
 ///
@@ -117,7 +105,14 @@ pub fn save_mediapm_document(
     path: &Path,
     doc: &crate::config::MediaPmDocument,
 ) -> Result<(), MediaPmError> {
-    save_json_document(path, doc, "mediapm document")
+    let bytes = mediapm_utils::nickel::render_document_as_nickel(doc, "mediapm document")
+        .map_err(MediaPmError::Serialization)?;
+    std::fs::write(path, bytes).map_err(|err| MediaPmError::Io {
+        operation: "write mediapm document".to_string(),
+        path: path.to_path_buf(),
+        source: err,
+    })?;
+    Ok(())
 }
 
 /// Loads and parses a `state.json` file.
