@@ -21,7 +21,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
    - `Some(path)` → use the provided path as the cache root
      A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
-4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool_id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are also candidates for `resolved_*` backfill — see "Resolved-field population and skip backfill" below.
+4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool*id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are also candidates for `resolved*\*` backfill — see "Resolved-field population and skip backfill" below.
 5. **Active-tool tracking (pruning)** — the active set for filesystem pruning is
    the set of **mediapm conductor tool ids** collected in `tool_runtimes` (every
    tool inserted by the provisioning loop, keyed by its generated-doc key —
@@ -76,15 +76,15 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
 
 ### `ToolSyncReport` fields
 
-| Field                      | Type                          | Purpose                                                                                                                       |
-| -------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `tools_added`              | `usize`                       | Tools newly registered (not previously in generated doc)                                                                      |
-| `tools_updated`            | `usize`                       | Tools updated to match desired version                                                                                        |
-| `tools_removed`            | `usize`                       | Tools removed (no longer in desired set)                                                                                      |
-| `tools_skipped`            | `usize`                       | Tools skipped because their canonical version was already provisioned. Shown in the resolve bar with `set_message("skipped")`. |
-| `pruned_tools`             | `usize`                       | Number of stale `"{name}@{old_hash}"` keys pruned from the generated doc                                                     |
-| `resolved_field_backfills` | `Vec<ToolRegistryEntry>`      | Entries whose `resolved_*` provenance fields were backfilled in place during skip (see below)                                  |
-| `warnings`                 | `Vec<String>`                 | Non-fatal warnings (provision failures)                                                                                       |
+| Field                      | Type                     | Purpose                                                                                                                        |
+| -------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `tools_added`              | `usize`                  | Tools newly registered (not previously in generated doc)                                                                       |
+| `tools_updated`            | `usize`                  | Tools updated to match desired version                                                                                         |
+| `tools_removed`            | `usize`                  | Tools removed (no longer in desired set)                                                                                       |
+| `tools_skipped`            | `usize`                  | Tools skipped because their canonical version was already provisioned. Shown in the resolve bar with `set_message("skipped")`. |
+| `pruned_tools`             | `usize`                  | Number of stale `"{name}@{old_hash}"` keys pruned from the generated doc                                                       |
+| `resolved_field_backfills` | `Vec<ToolRegistryEntry>` | Entries whose `resolved_*` provenance fields were backfilled in place during skip (see below)                                  |
+| `warnings`                 | `Vec<String>`            | Non-fatal warnings (provision failures)                                                                                        |
 
 ### Resolved-field population and skip backfill
 

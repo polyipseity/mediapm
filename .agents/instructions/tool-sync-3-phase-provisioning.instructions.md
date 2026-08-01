@@ -66,15 +66,15 @@ per-tool visual feedback).
 
 ## `FetchedToolPayload` fields
 
-| Field                  | Type                       | Purpose                                                                                     |
-| ---------------------- | -------------------------- | ------------------------------------------------------------------------------------------- |
-| `content_map`          | `BTreeMap<String, String>` | Sandbox-relative path → CAS hash hex                                                        |
-| `os_exec_paths`        | `BTreeMap<String, String>` | OS label → relative executable path (no OS prefix)                                          |
-| `human_readable_version` | `String`                 | Human-readable version (informational only, no semantic use)                                 |
-| `canonical_version`    | `String`                   | Canonical version for skip-if-up-to-date logic. Populated from the resolved fetch metadata. |
-| `resolved_tag`         | `Option<String>`           | Provenance: resolved upstream git tag, or `None`                                             |
-| `resolved_version`     | `Option<String>`           | Provenance: resolved upstream version, or `None`                                             |
-| `resolved_vcs_hash`    | `Option<String>`           | Provenance: resolved upstream VCS commit hash, or `None`                                     |
+| Field                    | Type                       | Purpose                                                                                     |
+| ------------------------ | -------------------------- | ------------------------------------------------------------------------------------------- |
+| `content_map`            | `BTreeMap<String, String>` | Sandbox-relative path → CAS hash hex                                                        |
+| `os_exec_paths`          | `BTreeMap<String, String>` | OS label → relative executable path (no OS prefix)                                          |
+| `human_readable_version` | `String`                   | Human-readable version (informational only, no semantic use)                                |
+| `canonical_version`      | `String`                   | Canonical version for skip-if-up-to-date logic. Populated from the resolved fetch metadata. |
+| `resolved_tag`           | `Option<String>`           | Provenance: resolved upstream git tag, or `None`                                            |
+| `resolved_version`       | `Option<String>`           | Provenance: resolved upstream version, or `None`                                            |
+| `resolved_vcs_hash`      | `Option<String>`           | Provenance: resolved upstream VCS commit hash, or `None`                                    |
 
 ## Error handling
 
