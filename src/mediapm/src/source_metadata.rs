@@ -142,7 +142,9 @@ pub(crate) fn resolve_online_source_metadata_for_add(
 
 /// Fetches metadata for a local file using `ffprobe`.
 ///
-/// Returns the raw JSON metadata from `ffprobe -v quiet -print_format json`.
+/// Returns the raw JSON metadata from `ffprobe -v error -print_format json`.
+/// Uses `-v error` (not `-v quiet`) so that a failing probe surfaces the
+/// ffprobe diagnostic on stderr instead of an empty message.
 ///
 /// # Errors
 ///
@@ -153,7 +155,7 @@ pub(crate) fn try_fetch_local_source_metadata_with_ffprobe(
     ffprobe_command: &str,
 ) -> Result<Value, MediaPmError> {
     let output = Command::new(ffprobe_command)
-        .args(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"])
+        .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
         .arg(path)
         .output()
         .map_err(|e| {
@@ -311,6 +313,29 @@ mod tests {
         let metadata = parse_local_source_metadata_from_ffprobe_json(&input);
         assert_eq!(metadata.title, "Song Title");
         assert_eq!(metadata.artist, "Song Artist");
+    }
+
+    /// Ensures a failing ffprobe probe surfaces the ffprobe diagnostic on
+    /// stderr (via `-v error`), rather than an empty error message.
+    #[test]
+    fn try_fetch_local_source_metadata_with_ffprobe_surfaces_diagnostic() {
+        // Skip when ffprobe is not installed (e.g., minimal CI images).
+        if Command::new("ffprobe").arg("-version").output().is_err() {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let garbage = tmp.path().join("garbage.bin");
+        std::fs::write(&garbage, b"definitely-not-media-bytes").expect("write garbage");
+        let err = try_fetch_local_source_metadata_with_ffprobe(&garbage, "ffprobe")
+            .expect_err("garbage bytes must fail ffprobe");
+        let MediaPmError::Workflow(message) = err else {
+            panic!("expected Workflow error, got {err:?}");
+        };
+        assert!(!message.is_empty(), "error message must carry the ffprobe diagnostic");
+        assert!(
+            message.contains("Invalid data found when processing input"),
+            "expected ffprobe diagnostic in message, got: {message}"
+        );
     }
 
     /// Ensures ffprobe metadata falls back to filename when title is absent.
