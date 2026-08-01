@@ -68,7 +68,12 @@ impl DirectoryLockGuard {
 
         // Layer 2: inter-process flock (non-blocking — fail if held).
         let lock_path = dir.join("lock");
-        let file = tokio::fs::OpenOptions::new().write(true).create(true).open(&lock_path).await?;
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&lock_path)
+            .await?;
         // Fail-fast: no blocking .lock() or .lock_owned() — must return immediately on contention.
         file.try_lock().map_err(|_| CasError::LockContention { path: lock_path })?;
 
@@ -124,8 +129,13 @@ mod tests {
         let lock_path = dir.path().join("lock");
 
         // Manually acquire the flock on the lock file.
-        let manual_file =
-            tokio::fs::OpenOptions::new().write(true).create(true).open(&lock_path).await.unwrap();
+        let manual_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&lock_path)
+            .await
+            .unwrap();
         manual_file.try_lock().unwrap();
 
         // DirectoryLockGuard must detect the held flock and fail.

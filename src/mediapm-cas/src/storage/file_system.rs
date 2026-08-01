@@ -30,16 +30,16 @@ use crate::storage::metadata_store::MetadataEntry;
 /// WAL entries into blob + metadata.
 pub struct FileSystemCas {
     store: Arc<CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>>,
-    _bg_guard: Arc<BackgroundMaintenanceGuard>,
-    _dir_lock: Arc<DirectoryLockGuard>,
+    bg_guard: Arc<BackgroundMaintenanceGuard>,
+    dir_lock: Arc<DirectoryLockGuard>,
 }
 
 impl Clone for FileSystemCas {
     fn clone(&self) -> Self {
         Self {
             store: self.store.clone(),
-            _bg_guard: self._bg_guard.clone(),
-            _dir_lock: self._dir_lock.clone(),
+            bg_guard: self.bg_guard.clone(),
+            dir_lock: self.dir_lock.clone(),
         }
     }
 }
@@ -115,7 +115,7 @@ impl FileSystemCas {
         // The lock is held for the full CAS lifetime via Arc sharing.
         let dir_lock = Arc::new(DirectoryLockGuard::lock(dir).await?);
 
-        Ok(Self { store, _bg_guard: Arc::new(guard), _dir_lock: dir_lock })
+        Ok(Self { store, bg_guard: Arc::new(guard), dir_lock })
     }
 
     /// Open or create a file-system CAS store at `dir` with the given
@@ -130,7 +130,7 @@ impl FileSystemCas {
         dir: &Path,
         verify_strategies: Vec<VerifyTriggerStrategy>,
     ) -> Result<Self, CasError> {
-        Self::open_with_strategies_and_interval(dir, verify_strategies, Duration::from_secs(300))
+        Self::open_with_strategies_and_interval(dir, verify_strategies, Duration::from_mins(5))
             .await
     }
 
@@ -153,6 +153,7 @@ impl FileSystemCas {
     /// materialization (e.g., hardlink, symlink, reflink). Returns the path
     /// even when the blob is stored as delta — check `exists` vs the
     /// concrete file.
+    #[must_use]
     pub fn object_path_for_hash(&self, hash: Hash) -> Option<PathBuf> {
         self.blob().materialized_path(&hash)
     }
@@ -188,6 +189,6 @@ impl FileSystemCas {
     #[must_use]
     #[allow(dead_code)]
     pub fn bg_guard_ref(&self) -> &Arc<BackgroundMaintenanceGuard> {
-        &self._bg_guard
+        &self.bg_guard
     }
 }

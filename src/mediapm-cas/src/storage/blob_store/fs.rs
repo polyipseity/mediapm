@@ -419,7 +419,7 @@ impl BlobStore for FileSystemBlobStore {
                 let aux_path = l2_entry.path().join(name);
                 match fs::read(&aux_path).await {
                     Ok(data) => results.push(Bytes::from(data)),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => return Err(CasError::Io(e)),
                 }
             }
