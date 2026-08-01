@@ -19,7 +19,7 @@ fn main() {
         for entry in std::fs::read_dir(http_dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
-            if path.extension().map_or(true, |ext| ext != "rs") {
+            if path.extension().is_none_or(|ext| ext != "rs") {
                 continue;
             }
             let content = std::fs::read_to_string(&path).unwrap();
@@ -52,8 +52,6 @@ fn main() {
                 }
             }
         }
-        if failed {
-            panic!("HTTP module decoupling violated — see errors above");
-        }
+        assert!(!failed, "HTTP module decoupling violated — see errors above");
     }
 }

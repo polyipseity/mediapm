@@ -53,8 +53,6 @@ fn main() {
             failed = true;
         }
 
-        if failed {
-            panic!("HTTP client configuration regression detected — see errors above");
-        }
+        assert!(!failed, "HTTP client configuration regression detected — see errors above");
     }
 }
