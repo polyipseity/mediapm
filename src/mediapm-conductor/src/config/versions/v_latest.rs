@@ -51,19 +51,15 @@ pub(crate) enum OutputPolicyLatest {
 /// Latest persisted save mode: `"false"`, `"true"`, or `"full"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub(crate) enum SaveModeLatest {
     /// Do not persist this output.
     False,
     /// Persist this output normally.
+    #[default]
     True,
     /// Force full persistence even when empty or the step fails.
     Full,
-}
-
-impl Default for SaveModeLatest {
-    fn default() -> Self {
-        Self::True
-    }
 }
 
 /// Latest persisted output capture spec.
@@ -92,14 +88,26 @@ const fn default_include_topmost_folder() -> bool {
     true
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if invokes the predicate with &T"
+)]
 const fn is_save_mode_true_latest(v: &SaveModeLatest) -> bool {
     matches!(*v, SaveModeLatest::True)
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if invokes the predicate with &T"
+)]
 const fn is_true(v: &bool) -> bool {
     *v
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if invokes the predicate with &T"
+)]
 const fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -280,13 +288,9 @@ impl Serialize for ToolSpecLatest {
 }
 
 impl<'de> Deserialize<'de> for ToolSpecLatest {
+    #[expect(clippy::too_many_lines, reason = "custom flattening deserializer is necessarily long")]
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
-
-        // Capture the entire record as a JSON value then extract fields.
-        // This intermediate step lets us flatten the tagged `kind` enum into a
-        // flat string + sibling variant fields.
-        let mut value = serde_json::Value::deserialize(deserializer)?;
 
         // The Nickel deserializer exports all numbers as f64 (including
         // integers).  serde_json::from_value for Rust integer types (such as
@@ -294,6 +298,12 @@ impl<'de> Deserialize<'de> for ToolSpecLatest {
         // tree and convert any float representing a whole number into its
         // corresponding integer representation so downstream
         // serde_json::from_value calls succeed.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss,
+            clippy::cast_sign_loss,
+            reason = "f64 bounds approximate u64/i64 limits; the range checks make each cast lossless within its arm"
+        )]
         fn normalize_numbers(val: &mut serde_json::Value) {
             const MAX_U64_AS_F64: f64 = u64::MAX as f64;
             const MAX_I64_AS_F64: f64 = i64::MAX as f64;
@@ -301,15 +311,14 @@ impl<'de> Deserialize<'de> for ToolSpecLatest {
 
             match val {
                 serde_json::Value::Number(n) => {
-                    if let Some(f) = n.as_f64() {
-                        if f.is_finite() && f.fract() == 0.0 {
-                            if f >= 0.0 && f <= MAX_U64_AS_F64 {
-                                *val =
-                                    serde_json::Value::Number(serde_json::Number::from(f as u64));
-                            } else if f >= MIN_I64_AS_F64 && f <= MAX_I64_AS_F64 {
-                                *val =
-                                    serde_json::Value::Number(serde_json::Number::from(f as i64));
-                            }
+                    if let Some(f) = n.as_f64()
+                        && f.is_finite()
+                        && f.fract() == 0.0
+                    {
+                        if (0.0..=MAX_U64_AS_F64).contains(&f) {
+                            *val = serde_json::Value::Number(serde_json::Number::from(f as u64));
+                        } else if (MIN_I64_AS_F64..=MAX_I64_AS_F64).contains(&f) {
+                            *val = serde_json::Value::Number(serde_json::Number::from(f as i64));
                         }
                     }
                 }
@@ -322,6 +331,11 @@ impl<'de> Deserialize<'de> for ToolSpecLatest {
                 _ => {}
             }
         }
+
+        // Capture the entire record as a JSON value then extract fields.
+        // This intermediate step lets us flatten the tagged `kind` enum into a
+        // flat string + sibling variant fields.
+        let mut value = serde_json::Value::deserialize(deserializer)?;
 
         normalize_numbers(&mut value);
 

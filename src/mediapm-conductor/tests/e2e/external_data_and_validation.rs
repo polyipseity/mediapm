@@ -8,7 +8,7 @@
 
 use mediapm_conductor::config::versions::decode_document;
 
-/// A valid v2 document with external_data covering its content-map hashes.
+/// A valid v2 document with `external_data` covering its content-map hashes.
 const VALID_V2_DOC: &str = r#"{
     version = 2,
     tools = {
@@ -32,7 +32,7 @@ const VALID_V2_DOC: &str = r#"{
     },
 }"#;
 
-/// A v2 document where a content-map hash is NOT declared in external_data.
+/// A v2 document where a content-map hash is NOT declared in `external_data`.
 const MISSING_EXTERNAL_DATA_DOC: &str = r#"{
     version = 2,
     tools = {
@@ -62,7 +62,7 @@ const MISSING_VERSION_DOC: &str = r#"{
 }"#;
 
 /// A document with a non-hash content-map value (inline description) and no
-/// external_data — should decode successfully since inline values are exempt.
+/// `external_data` — should decode successfully since inline values are exempt.
 const NON_HASH_CONTENT_MAP_DOC: &str = r#"{
     version = 2,
     tools = {
@@ -79,7 +79,7 @@ const NON_HASH_CONTENT_MAP_DOC: &str = r#"{
     },
 }"#;
 
-/// Verifies that a valid v2 document with complete external_data decodes
+/// Verifies that a valid v2 document with complete `external_data` decodes
 /// successfully.
 #[test]
 fn valid_document_with_external_data_decodes() {
@@ -89,7 +89,7 @@ fn valid_document_with_external_data_decodes() {
     assert_eq!(doc.external_data.len(), 1, "should have one external_data entry");
 }
 
-/// Verifies that a document missing an external_data entry for a content-map
+/// Verifies that a document missing an `external_data` entry for a content-map
 /// hash fails validation.
 #[test]
 fn missing_external_data_rejected_at_decode_time() {
@@ -114,7 +114,7 @@ fn document_without_version_field_produces_error() {
     );
 }
 
-/// Verifies that non-hash content-map values are exempt from the external_data
+/// Verifies that non-hash content-map values are exempt from the `external_data`
 /// invariant.
 #[test]
 fn non_hash_content_map_values_do_not_require_external_data() {

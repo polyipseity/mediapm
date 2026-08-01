@@ -99,7 +99,7 @@ mod tests {
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
         for (name, content) in entries {
-            writer.start_file(*name, opts.clone()).unwrap();
+            writer.start_file(*name, opts).unwrap();
             writer.write_all(content).unwrap();
         }
         let cursor = writer.finish().unwrap();

@@ -296,10 +296,8 @@ impl Cache {
         entry.last_access_unix_seconds = now;
 
         // Persist if throttle allows. MutexGuard drops before I/O.
-        if should_persist {
-            if let Err(e) = write_index_file(&domain_state.index_path, &index) {
-                tracing::warn!("cache touch persist failed for domain {domain}: {e}");
-            }
+        if should_persist && let Err(e) = write_index_file(&domain_state.index_path, &index) {
+            tracing::warn!("cache touch persist failed for domain {domain}: {e}");
         }
     }
 
@@ -473,10 +471,8 @@ impl Cache {
             }
             (domain_state.index_path.clone(), index.clone(), should_persist)
         }; // MutexGuard dropped here
-        if should_persist {
-            if let Err(e) = write_index_file(&path, &index_clone) {
-                tracing::warn!("cache index persist failed for domain {domain}: {e}");
-            }
+        if should_persist && let Err(e) = write_index_file(&path, &index_clone) {
+            tracing::warn!("cache index persist failed for domain {domain}: {e}");
         }
     }
 }
@@ -857,7 +853,7 @@ mod tests {
         assert!(retrieved.is_none(), "pruned entry must not be retrievable");
     }
 
-    /// Verifies that prune_expired_entries on a fresh empty cache does not
+    /// Verifies that `prune_expired_entries` on a fresh empty cache does not
     /// crash or error.
     #[tokio::test]
     async fn prune_on_empty_cache_does_not_crash() {
@@ -878,7 +874,7 @@ mod tests {
         assert_eq!(report.removed_payloads, 0, "no payloads in empty cache");
     }
 
-    /// Verifies that storing empty bytes is a no-op (entry_count unchanged).
+    /// Verifies that storing empty bytes is a no-op (`entry_count` unchanged).
     #[tokio::test]
     async fn store_empty_bytes_does_not_create_entry() {
         let root = tempfile::tempdir().expect("tempdir");

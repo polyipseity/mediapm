@@ -63,6 +63,10 @@ impl std::error::Error for HttpClientError {}
 static SHARED_HTTP_CLIENT: OnceLock<Result<Client, HttpClientError>> = OnceLock::new();
 
 /// Returns the process-wide shared async HTTP client (follows redirects).
+///
+/// # Errors
+///
+/// Returns an error if the process-wide `reqwest::Client` fails to build.
 pub fn shared_http_client() -> Result<&'static Client, &'static HttpClientError> {
     match SHARED_HTTP_CLIENT.get_or_init(|| build_shared_http_client(true)) {
         Ok(client) => Ok(client),
@@ -78,6 +82,10 @@ static SHARED_NO_REDIRECT_HTTP_CLIENT: OnceLock<Result<Client, HttpClientError>>
 /// redirects. Use this when the caller needs to inspect redirect responses
 /// (e.g. capture the `Location` header) rather than transparently following
 /// them to the final destination.
+///
+/// # Errors
+///
+/// Returns an error if the process-wide `reqwest::Client` fails to build.
 #[allow(dead_code)]
 pub fn shared_no_redirect_http_client() -> Result<&'static Client, &'static HttpClientError> {
     match SHARED_NO_REDIRECT_HTTP_CLIENT.get_or_init(|| build_shared_http_client(false)) {

@@ -92,6 +92,10 @@ where
     ///
     /// Delegates to the conductor actor; returns an error when delivery or
     /// execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory orchestration state mutex is poisoned.
     pub async fn run_workflow(
         &self,
         workflow_name: &str,
@@ -140,6 +144,10 @@ where
     ///
     /// Returns [`ConductorError::Io`] when the persisted state file cannot be
     /// read.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory orchestration state mutex is poisoned.
     pub fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
         Ok(self.state.lock().expect("state lock").clone())
     }
@@ -149,6 +157,10 @@ where
     /// # Errors
     ///
     /// Currently infallible.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory orchestration state mutex is poisoned.
     pub fn replace_resolved_state(
         &self,
         new_state: OrchestrationState,
@@ -357,6 +369,10 @@ where
     /// # Errors
     ///
     /// Delegates to the conductor actor.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory orchestration state mutex is poisoned.
     pub async fn run_gc(&self) -> Result<(), ConductorError> {
         let client = self.ensure_actor_client().await?;
         let (unified, _) = load_unified_config_and_state(self.storage_paths())?;

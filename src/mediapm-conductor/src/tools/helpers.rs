@@ -5,6 +5,7 @@
 //! (building [`ToolSpec`](crate::ToolSpec) / [`ToolRuntime`](crate::ToolRuntime) contracts).
 
 use std::collections::BTreeMap;
+use std::fmt::Write;
 
 /// Builds a `${context.os == "linux" ? linux/path : ...}` template expression
 /// for the per-OS executable path map.
@@ -15,6 +16,11 @@ use std::collections::BTreeMap;
 /// `${context.os == "linux" ? linux/sd-x86_64-linux : context.os == "windows" ? windows/sd.exe}`
 ///
 /// When only one OS is present, collapses to plain `"linux/path"`.
+///
+/// # Panics
+///
+/// Panics if `per_os_exec` is empty (unreachable because the function returns
+/// early for empty maps).
 #[must_use]
 pub fn build_os_conditional_selector(per_os_exec: &BTreeMap<String, String>) -> String {
     if per_os_exec.is_empty() {
@@ -27,7 +33,7 @@ pub fn build_os_conditional_selector(per_os_exec: &BTreeMap<String, String>) -> 
     }
     let mut result = format!("${{context.os == \"{first_os}\" ? {first_os}/{first_path}");
     for (os, path) in iter {
-        result.push_str(&format!(" : context.os == \"{os}\" ? {os}/{path}"));
+        let _ = write!(result, " : context.os == \"{os}\" ? {os}/{path}");
     }
     result.push('}');
     result

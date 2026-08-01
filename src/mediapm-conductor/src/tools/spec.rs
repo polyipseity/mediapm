@@ -41,10 +41,10 @@ pub fn spec_matches_entry(
             // All specified fields must match their resolved counterpart.
             // Unspecified fields are not checked. `None` never matches.
             let hash_ok =
-                fields.vcs_hash.as_ref().map_or(true, |h| resolved_vcs_hash == Some(h.as_str()));
+                fields.vcs_hash.as_ref().is_none_or(|h| resolved_vcs_hash == Some(h.as_str()));
             let ver_ok =
-                fields.version.as_ref().map_or(true, |v| resolved_version == Some(v.as_str()));
-            let tag_ok = fields.tag.as_ref().map_or(true, |t| resolved_tag == Some(t.as_str()));
+                fields.version.as_ref().is_none_or(|v| resolved_version == Some(v.as_str()));
+            let tag_ok = fields.tag.as_ref().is_none_or(|t| resolved_tag == Some(t.as_str()));
             hash_ok && ver_ok && tag_ok
         }
     }

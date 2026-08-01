@@ -130,7 +130,7 @@ mod tests {
             crate::config::InputBinding::String(s) => s,
             crate::config::InputBinding::Vec(v) => serde_json::to_string(&v).unwrap_or_default(),
         };
-        assert_eq!(resolved, r#"[]"#);
+        assert_eq!(resolved, r"[]");
     }
 
     /// Verifies `resolve_step_output_refs` replaces a known step output reference.

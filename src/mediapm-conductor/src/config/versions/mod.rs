@@ -53,7 +53,7 @@ pub(crate) const fn latest_config_version() -> u32 {
 
 /// Encodes one configuration document to Nickel source bytes.
 ///
-/// The document is first validated (content_map ⊆ external_data invariant),
+/// The document is first validated (`content_map` ⊆ `external_data` invariant),
 /// converted to a latest-schema envelope, then rendered as Nickel source.
 ///
 /// # Errors

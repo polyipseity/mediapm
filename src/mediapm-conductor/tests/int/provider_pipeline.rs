@@ -49,7 +49,9 @@ async fn resolve_echo_returns_three_launcher_sources() {
             mediapm_conductor::tools::provider::SourceProducer::GenerateLauncher { builtin_id } => {
                 assert_eq!(builtin_id, "echo@v1", "all launchers should reference echo@v1");
             }
-            _ => panic!("echo sources should all be GenerateLauncher"),
+            mediapm_conductor::tools::provider::SourceProducer::Fetch { .. } => {
+                panic!("echo sources should all be GenerateLauncher")
+            }
         }
     }
 }
@@ -211,7 +213,7 @@ async fn resolve_tool_fetch_matches_sources_len_for_all_providers() {
     for tool_id in &["echo", "fs", "archive", "import", "export", "sd"] {
         let fetch =
             resolve_tool_fetch(tool_id).await.unwrap_or_else(|e| panic!("resolve {tool_id}: {e}"));
-        assert!(!fetch.sources.is_empty(), "{tool_id}: expected at least one source, got empty",);
+        assert!(!fetch.sources.is_empty(), "{tool_id}: expected at least one source, got empty");
     }
 }
 
@@ -290,10 +292,9 @@ async fn full_pipeline_progress_monotonic() {
             let tot = snap.bytes.1;
             assert!(
                 pos >= prev_pos,
-                "{:?} position decreased at snapshot {i}: {pos} < {prev_pos}",
-                phase,
+                "{phase:?} position decreased at snapshot {i}: {pos} < {prev_pos}",
             );
-            assert!(pos <= tot, "{:?} position {pos} exceeds total {tot} at snapshot {i}", phase,);
+            assert!(pos <= tot, "{phase:?} position {pos} exceeds total {tot} at snapshot {i}");
             prev_pos = pos;
         }
     }
@@ -350,18 +351,22 @@ async fn process_mixed_archive_binary_progress() {
         }
         let pos = snap.bytes.0;
         let tot = snap.bytes.1;
-        assert!(pos >= prev_pos, "Process position decreased at snapshot {i}: {pos} < {prev_pos}",);
-        assert!(pos <= tot, "Process position {pos} exceeds total {tot} at snapshot {i}",);
+        assert!(pos >= prev_pos, "Process position decreased at snapshot {i}: {pos} < {prev_pos}");
+        assert!(pos <= tot, "Process position {pos} exceeds total {tot} at snapshot {i}");
         prev_pos = pos;
     }
 }
 
 /// Creates a deterministic pseudo-random buffer useful for archive tests
 /// where compressed size should remain close to uncompressed size.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "xorshift PRNG deliberately emits the low byte of state"
+)]
 fn pseudo_random_buffer(size: usize) -> Vec<u8> {
     let mut data = vec![0u8; size];
-    let mut state: u64 = 123456789;
-    for byte in data.iter_mut() {
+    let mut state: u64 = 123_456_789;
+    for byte in &mut data {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
@@ -378,7 +383,7 @@ fn synthetic_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(cursor);
     let options = SimpleFileOptions::default();
     for (name, content) in entries {
-        writer.start_file(*name, options.clone()).unwrap();
+        writer.start_file(*name, options).unwrap();
         writer.write_all(content).unwrap();
     }
     let cursor = writer.finish().unwrap();

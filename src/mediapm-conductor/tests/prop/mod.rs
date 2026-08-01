@@ -10,7 +10,7 @@ use proptest::prelude::*;
 // Cache-key determinism
 // ---------------------------------------------------------------------------
 
-/// Cache keys derived from tool_id + os label are deterministic:
+/// Cache keys derived from `tool_id` + os label are deterministic:
 /// the same pair always produces the same key.
 #[test]
 fn cache_key_is_deterministic() {

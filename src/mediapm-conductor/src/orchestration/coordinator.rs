@@ -279,6 +279,10 @@ where
 
     /// Returns a default runtime diagnostics snapshot.
     #[must_use]
+    #[expect(
+        clippy::unused_self,
+        reason = "instance method for symmetry with the actor-facing diagnostics API"
+    )]
     pub(crate) fn runtime_diagnostics(&self) -> RuntimeDiagnostics {
         RuntimeDiagnostics::default()
     }

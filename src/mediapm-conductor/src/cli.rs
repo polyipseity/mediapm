@@ -273,10 +273,10 @@ async fn ensure_conductor() -> Result<&'static SimpleConductor<ConfiguredCas>, C
 }
 
 async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
+    use mediapm_utils::progress::ProgressGroup;
     let conductor = ensure_conductor().await?;
 
-    use mediapm_utils::progress::ProgressGroup;
-    let (_group, pb) =
+    let (group, pb) =
         ProgressGroup::builder().dynamic_height(true).with_overall("steps", 0).build_with_overall();
     let pb2 = pb.clone();
 
@@ -290,7 +290,7 @@ async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
     };
     let summary = conductor.run_workflow(workflow_name, options).await?;
     pb.finish();
-    _group.join();
+    group.join();
     println!("Workflow '{workflow_name}' completed: {summary:?}");
     Ok(())
 }

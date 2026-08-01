@@ -172,14 +172,19 @@ pub trait ConductorApi<C: CasApi>: Send + Sync {
 }
 
 /// Options for a single workflow run.
+#[derive(Default)]
 pub struct RunWorkflowOptions {
     /// Number of retry attempts for impure steps.
     pub retry_impure: bool,
     /// Optional tool selector override (managed tool id).
     pub tool_selector: Option<String>,
     /// Optional callback invoked after each step completes.
-    /// Arguments: (completed_steps, total_steps, step_name).
+    /// Arguments: (`completed_steps`, `total_steps`, `step_name`).
     /// Must be `Send + Sync` so that `&RunWorkflowOptions` is `Send` across await points.
+    #[expect(
+        clippy::type_complexity,
+        reason = "public callback field; a type alias would add indirection"
+    )]
     pub step_progress: Option<Box<dyn Fn(usize, usize, &str) + Send + Sync>>,
 }
 
@@ -190,12 +195,6 @@ impl std::fmt::Debug for RunWorkflowOptions {
             .field("tool_selector", &self.tool_selector)
             .field("step_progress", &self.step_progress.as_ref().map(|_| "…"))
             .finish()
-    }
-}
-
-impl Default for RunWorkflowOptions {
-    fn default() -> Self {
-        Self { retry_impure: false, tool_selector: None, step_progress: None }
     }
 }
 
@@ -228,7 +227,7 @@ pub struct ManagedToolExecutableResolution {
 /// the same id the `ProvisionCache` keys on: the entry directory is
 /// `<conductor_tools_dir>/<sanitize_tool_id(tool_id)>/` with its payload at
 /// `<conductor_tools_dir>/<sanitize_tool_id(tool_id)>/payload/` (see the
-/// "Tool-Content Cache (ProvisionCache)" section in `AGENTS.md`).
+/// "Tool-Content Cache (`ProvisionCache`)" section in `AGENTS.md`).
 ///
 /// # Errors
 ///
@@ -289,7 +288,7 @@ fn find_executable_in_payload(payload_dir: &Path) -> Option<PathBuf> {
         let entry = entry.ok()?;
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
-        if entry.file_type().ok().map_or(false, |t| t.is_dir()) {
+        if entry.file_type().ok().is_some_and(|t| t.is_dir()) {
             if FOREIGN_PLATFORM_DIRS.contains(&name.as_ref()) {
                 continue;
             }
@@ -297,7 +296,7 @@ fn find_executable_in_payload(payload_dir: &Path) -> Option<PathBuf> {
             if let Some(found) = find_first_file_in_dir(&entry.path()) {
                 return Some(found);
             }
-        } else if entry.file_type().ok().map_or(false, |t| t.is_file()) {
+        } else if entry.file_type().ok().is_some_and(|t| t.is_file()) {
             return Some(entry.path());
         }
     }
@@ -309,7 +308,7 @@ fn find_first_file_in_dir(dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries {
         let entry = entry.ok()?;
-        if entry.file_type().ok().map_or(false, |t| t.is_file()) {
+        if entry.file_type().ok().is_some_and(|t| t.is_file()) {
             return Some(entry.path());
         }
     }

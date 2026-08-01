@@ -62,7 +62,7 @@ mod proptests {
     impl proptest::arbitrary::Arbitrary for ResolvedInput {
         type Parameters = ();
         type Strategy = BoxedStrategy<Self>;
-        fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
             (any::<String>(), any::<String>())
                 .prop_map(|(key, value)| ResolvedInput { key, value })
                 .boxed()

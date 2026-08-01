@@ -463,7 +463,7 @@ mod tests {
             .expect("extend_runtime_gitignore");
 
         let content =
-            fs::read_to_string(&conductor_dir.join(".gitignore")).expect("read .gitignore");
+            fs::read_to_string(conductor_dir.join(".gitignore")).expect("read .gitignore");
         assert!(
             content.contains("/cache/"),
             ".gitignore should contain /cache/\ncontent:\n{content}"
@@ -491,7 +491,7 @@ mod tests {
             .expect("extend_runtime_gitignore second");
 
         let content =
-            fs::read_to_string(&conductor_dir.join(".gitignore")).expect("read .gitignore");
+            fs::read_to_string(conductor_dir.join(".gitignore")).expect("read .gitignore");
         // /cache/ and /tools/ should appear exactly once each.
         let cache_count = content.matches("/cache/").count();
         let tools_count = content.matches("/tools/").count();
@@ -625,7 +625,7 @@ mod tests {
         let mut runtimes = BTreeMap::new();
         runtimes.insert(
             "yt-dlp@blake3:abc123".to_string(),
-            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+            ToolRuntime { content_map, ..ToolRuntime::default() },
         );
         write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
         let content = std::fs::read_to_string(dir.path().join(".env.generated"))
@@ -655,7 +655,7 @@ mod tests {
         let mut runtimes = BTreeMap::new();
         runtimes.insert(
             "ffmpeg@blake3:def456".to_string(),
-            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+            ToolRuntime { content_map, ..ToolRuntime::default() },
         );
         write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
         let content = std::fs::read_to_string(dir.path().join(".env.generated"))
@@ -685,7 +685,7 @@ mod tests {
         let mut runtimes = BTreeMap::new();
         runtimes.insert(
             "yt-dlp@blake3:abc".to_string(),
-            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+            ToolRuntime { content_map, ..ToolRuntime::default() },
         );
         write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
         let content = std::fs::read_to_string(dir.path().join(".env.generated"))
@@ -736,7 +736,7 @@ mod tests {
             let mut runtimes = BTreeMap::new();
             runtimes.insert(
                 "yt-dlp@blake3:abc123".to_string(),
-                ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+                ToolRuntime { content_map, ..ToolRuntime::default() },
             );
             write_generated_dotenv(dir.path(), &tools_dir, &runtimes)
                 .expect("write should succeed");
@@ -759,22 +759,22 @@ mod tests {
         let mut runtimes = BTreeMap::new();
         runtimes.insert(
             "yt-dlp@blake3:abc".to_string(),
-            ToolRuntime { content_map: content_map.clone().into(), ..ToolRuntime::default() },
+            ToolRuntime { content_map: content_map.clone(), ..ToolRuntime::default() },
         );
         runtimes.insert(
             "media-tagger".to_string(),
-            ToolRuntime { content_map: content_map.clone().into(), ..ToolRuntime::default() },
+            ToolRuntime { content_map: content_map.clone(), ..ToolRuntime::default() },
         );
         runtimes.insert(
             "sd@blake3:abc?x*y".to_string(),
-            ToolRuntime { content_map: content_map.clone().into(), ..ToolRuntime::default() },
+            ToolRuntime { content_map: content_map.clone(), ..ToolRuntime::default() },
         );
         write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
         let content = std::fs::read_to_string(dir.path().join(".env.generated"))
             .expect("env file should be readable");
 
         let tools_dir_str = tools_dir.to_string_lossy();
-        for (key, _) in &runtimes {
+        for key in runtimes.keys() {
             let segment = sanitize_tool_id(key);
             let expected = format!("{tools_dir_str}/{segment}/payload/");
             assert!(
@@ -807,7 +807,7 @@ mod tests {
         let mut runtimes = BTreeMap::new();
         runtimes.insert(
             "yt-dlp@blake3:abc123".to_string(),
-            ToolRuntime { content_map: content_map.into(), ..ToolRuntime::default() },
+            ToolRuntime { content_map, ..ToolRuntime::default() },
         );
         write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
         let content = std::fs::read_to_string(dir.path().join(".env.generated"))

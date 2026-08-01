@@ -255,7 +255,7 @@ impl NickelDocument {
         }
     }
 
-    /// Validates that every CAS hash referenced in any tool's content_map has
+    /// Validates that every CAS hash referenced in any tool's `content_map` has
     /// a corresponding entry in `external_data`.
     ///
     /// This enforces the `content_map ⊆ external_data` invariant that
@@ -270,13 +270,13 @@ impl NickelDocument {
 
         for (tool_name, spec) in &self.tools {
             for (path, value) in &spec.runtime.content_map {
-                if let Ok(hash) = value.parse::<Hash>() {
-                    if !self.external_data.contains_key(&hash) {
-                        missing.push(format!(
-                            "tool '{tool_name}' content_map entry '{path}' references hash \
+                if let Ok(hash) = value.parse::<Hash>()
+                    && !self.external_data.contains_key(&hash)
+                {
+                    missing.push(format!(
+                        "tool '{tool_name}' content_map entry '{path}' references hash \
                              {hash} which is not declared in external_data"
-                        ));
-                    }
+                    ));
                 }
             }
         }
@@ -409,7 +409,7 @@ mod tests {
     }
 
     /// Verifies `validate_external_data_invariant` passes when all
-    /// content-map hashes have matching external_data entries.
+    /// content-map hashes have matching `external_data` entries.
     #[test]
     fn validate_external_data_invariant_passes_when_all_hashes_covered() {
         let hash_a = Hash::from_content(b"payload-a");
@@ -447,7 +447,7 @@ mod tests {
     }
 
     /// Verifies `validate_external_data_invariant` fails when a tool's
-    /// content_map references a hash not declared in external_data.
+    /// `content_map` references a hash not declared in `external_data`.
     #[test]
     fn validate_external_data_invariant_rejects_missing_hash() {
         let hash_a = Hash::from_content(b"payload-a");
@@ -493,7 +493,7 @@ mod tests {
     }
 
     /// Verifies `validate_external_data_invariant` ignores non-hash
-    /// content_map values (inline descriptions, base64).
+    /// `content_map` values (inline descriptions, base64).
     #[test]
     fn validate_external_data_invariant_skips_non_hash_values() {
         let doc = NickelDocument {

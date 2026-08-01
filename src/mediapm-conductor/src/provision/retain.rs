@@ -20,6 +20,7 @@ use super::{LOCK_FILE_NAME, METADATA_FILE_NAME, TTL_SECONDS, VERSION};
 ///
 /// # Errors
 /// Returns [`ConductorError`] if directory listing or removal fails.
+#[expect(clippy::implicit_hasher, reason = "public API uses a concrete HashSet")]
 pub async fn retain_only_tool_dirs(
     tools_dir: PathBuf,
     active_tool_ids: HashSet<String>,

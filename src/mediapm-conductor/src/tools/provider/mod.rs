@@ -283,6 +283,7 @@ pub(crate) mod sd;
 ///
 /// Returns [`ConductorError`] when the tool is unknown.
 #[cfg(feature = "tool-presets")]
+#[expect(clippy::unused_async, reason = "public async entrypoint kept for pipeline callers")]
 pub async fn resolve_tool_fetch(
     tool_id: &str,
 ) -> Result<ResolvedToolFetch, crate::error::ConductorError> {
@@ -352,37 +353,33 @@ pub async fn fetch_tool_sources(
                             break;
                         }
                     }
-                    match cache_hit {
-                        Some((_cache_key, cached)) => {
-                            // Set total to cached size so advance works (item may have
-                            // been created with total=0 when no estimate was available).
-                            budget.set_total(idx, cached.len() as u64);
-                            budget.advance(idx, cached.len() as u64);
-                            cached_count += 1;
-                            cached
-                        }
-                        None => {
-                            let estimate =
-                                source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
-                            // Ensure the item total reflects any estimate so aggregate
-                            // includes it even before download starts.
-                            budget.set_total(idx, estimate);
+                    if let Some((_cache_key, cached)) = cache_hit {
+                        // Set total to cached size so advance works (item may have
+                        // been created with total=0 when no estimate was available).
+                        budget.set_total(idx, cached.len() as u64);
+                        budget.advance(idx, cached.len() as u64);
+                        cached_count += 1;
+                        cached
+                    } else {
+                        let estimate = source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
+                        // Ensure the item total reflects any estimate so aggregate
+                        // includes it even before download starts.
+                        budget.set_total(idx, estimate);
 
-                            let total_sources = fetch.sources.len() as u64;
-                            let (downloaded, actual_url) = fetch_bytes_from_candidates(
-                                urls,
-                                &fetch.tool_id,
-                                &source.os,
-                                &budget,
-                                idx,
-                                idx,
-                                total_sources,
-                                progress_cb.as_ref(),
-                            )
-                            .await?;
-                            cache.store_bytes(domain, &actual_url, &downloaded).await;
-                            downloaded
-                        }
+                        let total_sources = fetch.sources.len() as u64;
+                        let (downloaded, actual_url) = fetch_bytes_from_candidates(
+                            urls,
+                            &fetch.tool_id,
+                            &source.os,
+                            &budget,
+                            idx,
+                            idx,
+                            total_sources,
+                            progress_cb.as_ref(),
+                        )
+                        .await?;
+                        cache.store_bytes(domain, &actual_url, &downloaded).await;
+                        downloaded
                     }
                 };
                 entries.push(DownloadedSource {
@@ -433,6 +430,10 @@ pub async fn fetch_tool_sources(
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 #[cfg(feature = "tool-presets")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pipeline plumbing passes per-source context explicitly"
+)]
 async fn fetch_bytes_from_candidates(
     urls: &[String],
     tool_id: &str,
@@ -690,9 +691,17 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
     let filename = url_path.trim_end_matches('/').split('/').next_back().unwrap_or(url_path);
     if filename.ends_with(".tar.xz") {
         Some(ARCHIVE_TAR_XZ)
-    } else if filename.ends_with(".tar.gz") || filename.ends_with(".tgz") {
+    } else if filename.ends_with(".tar.gz")
+        || std::path::Path::new(filename)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tgz"))
+    {
         Some(ARCHIVE_TAR_GZ)
-    } else if filename.ends_with(".zip") || filename == "zip" {
+    } else if std::path::Path::new(filename)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        || filename == "zip"
+    {
         Some(ARCHIVE_ZIP)
     } else {
         // No recognized extension → binary (not an archive)
@@ -708,7 +717,7 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 fn is_archive_source(producer: &SourceProducer) -> bool {
     match producer {
         SourceProducer::Fetch { urls } => {
-            urls.first().map_or(false, |url| infer_archive_format(url).is_some())
+            urls.first().is_some_and(|url| infer_archive_format(url).is_some())
         }
         SourceProducer::GenerateLauncher { .. } => false,
     }
@@ -731,7 +740,7 @@ fn resolve_format_and_filename(
                 String::new()
             } else {
                 // Binary — derive filename from URL basename
-                url.split('/').filter(|s| !s.is_empty()).next_back().unwrap_or(tool_id).to_string()
+                url.split('/').rfind(|s| !s.is_empty()).unwrap_or(tool_id).to_string()
             };
             (fmt, fname)
         }
@@ -756,7 +765,7 @@ fn read_xz_varint(data: &[u8], pos: &mut usize) -> Option<u64> {
     loop {
         let byte = *data.get(*pos)?;
         *pos += 1;
-        result |= ((byte & 0x7F) as u64) << shift;
+        result |= u64::from(byte & 0x7F) << shift;
         if byte & 0x80 == 0 {
             return Some(result);
         }
@@ -784,12 +793,13 @@ fn parse_xz_index(bytes: &[u8]) -> Option<u64> {
     // (index_size / 4 - 1) in the lower 24 bits (liblzma does NOT complement
     // despite the spec mentioning complementing).
     let backward_size_raw = u32::from_le_bytes([footer[4], footer[5], footer[6], footer[7]]);
-    let backward_size = (backward_size_raw & 0x00FF_FFFF) as u64;
+    let backward_size = u64::from(backward_size_raw & 0x00FF_FFFF);
 
     // Index size in bytes = (backward_size + 1) * 4
     let index_size = (backward_size + 1) * 4;
 
-    let index_start = bytes.len() - 12 - index_size as usize;
+    let index_start =
+        bytes.len() - 12 - usize::try_from(index_size).expect("xz index size fits usize");
 
     if index_start >= bytes.len() {
         return None;
@@ -854,12 +864,12 @@ fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
             if bytes.len() >= 18 {
                 // 10 header + 8 minimum data/trailer
                 let isize_bytes = &bytes[bytes.len() - 4..];
-                let isize = u32::from_le_bytes([
+                let isize = u64::from(u32::from_le_bytes([
                     isize_bytes[0],
                     isize_bytes[1],
                     isize_bytes[2],
                     isize_bytes[3],
-                ]) as u64;
+                ]));
                 // ISIZE wraps at 4 GiB. Zero means the original was a
                 // multiple of 4 GiB — vanishingly unlikely for tool archives.
                 // Use ISIZE when non-zero; it's always more accurate than
@@ -873,7 +883,7 @@ fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
         Some(ARCHIVE_TAR_XZ) => {
             // Parse XZ Stream Index for exact total uncompressed size.
             // This is metadata-only — no decompression required.
-            parse_xz_index(bytes).unwrap_or_else(|| {
+            parse_xz_index(bytes).unwrap_or({
                 // Fallback: use compressed size if Index parsing fails.
                 bytes.len() as u64
             })
@@ -932,6 +942,10 @@ fn fire_progress(
 /// let the caller report how many items have been completed before this
 /// source (for the prefix counter).
 #[cfg(feature = "tool-presets")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pipeline plumbing passes per-source context explicitly"
+)]
 async fn process_single_source(
     bytes: &[u8],
     archive_format: Option<&str>,
@@ -967,7 +981,7 @@ async fn process_single_source(
         debug_assert_eq!(item_count, 2, "archive sources must use 2 budget items");
         std::fs::create_dir_all(os_dir).map_err(|source| {
             ConductorError::io(
-                &format!("creating temp directory for {os_label} tool extraction"),
+                format!("creating temp directory for {os_label} tool extraction"),
                 os_dir,
                 source,
             )
@@ -1005,7 +1019,7 @@ async fn process_single_source(
         let zip_bytes = pack_directory_to_uncompressed_zip_bytes(os_dir, 0, compress_cb)?;
         // Ensure final pos = total (callbacks may already have set it)
         budget.set_pos(compress_idx, dir_total);
-        let hash = cas.put(Bytes::from(zip_bytes)).await.map_err(|e| ConductorError::Cas(e))?;
+        let hash = cas.put(Bytes::from(zip_bytes)).await.map_err(ConductorError::Cas)?;
         let key = format!("{os_label}/");
         let mut cm = BTreeMap::new();
         cm.insert(key, hash.to_hex());
@@ -1023,8 +1037,7 @@ async fn process_single_source(
             let completed = items_completed + 1;
             fire_progress(cb, ProviderPhase::Process, (completed, total_items), budget);
         }
-        let hash =
-            cas.put(Bytes::from(bytes.to_vec())).await.map_err(|e| ConductorError::Cas(e))?;
+        let hash = cas.put(Bytes::from(bytes.to_vec())).await.map_err(ConductorError::Cas)?;
         let key = format!("{os_label}/{filename}");
         let mut cm = BTreeMap::new();
         cm.insert(key, hash.to_hex());
@@ -1060,11 +1073,11 @@ impl Read for CountingReader<'_> {
         let new = self.bytes_read.get() + n as u64;
         self.bytes_read.set(new);
         // Fire sub-entry callback at SUB_ENTRY_CHUNK boundaries.
-        if let Some(cb) = self.progress_cb {
-            if new - self.last_cb_pos.get() >= SUB_ENTRY_CHUNK {
-                self.last_cb_pos.set(new);
-                cb(new);
-            }
+        if let Some(cb) = self.progress_cb
+            && new - self.last_cb_pos.get() >= SUB_ENTRY_CHUNK
+        {
+            self.last_cb_pos.set(new);
+            cb(new);
         }
         Ok(n)
     }
@@ -1138,6 +1151,7 @@ fn extract_zip(
     local_cb: Option<&dyn Fn(u64)>,
 ) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
+    use std::io::Write;
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| ConductorError::Workflow(format!("ZIP open error: {e}")))?;
 
@@ -1164,8 +1178,7 @@ fn extract_zip(
                 .map_err(|e| ConductorError::io("create file", &out_path, e))?;
             let entry_compressed = file.compressed_size();
             let entry_decompressed = file.size();
-            use std::io::Write;
-            let mut buf = [0u8; 65536];
+            let mut buf = vec![0u8; 65536];
             let mut written: u64 = 0;
             loop {
                 let len = file
@@ -1178,11 +1191,9 @@ fn extract_zip(
                     .map_err(|e| ConductorError::io("write zip entry", &out_path, e))?;
                 written += len as u64;
                 // Estimate compressed progress proportional to decompressed bytes written
-                let est_compressed = if entry_decompressed > 0 {
-                    (written * entry_compressed) / entry_decompressed
-                } else {
-                    entry_compressed
-                };
+                let est_compressed = (written * entry_compressed)
+                    .checked_div(entry_decompressed)
+                    .unwrap_or(entry_compressed);
                 if let Some(cb) = local_cb.as_ref() {
                     cb(bytes_done + est_compressed);
                 }
@@ -1286,11 +1297,11 @@ fn pack_directory_entries(
     use std::io::Write;
 
     for entry in std::fs::read_dir(dir).map_err(|source| {
-        ConductorError::io(&format!("reading directory '{}'", dir.display()), dir, source)
+        ConductorError::io(format!("reading directory '{}'", dir.display()), dir, source)
     })? {
         let entry = entry.map_err(|source| {
             ConductorError::io(
-                &format!("reading directory entry in '{}'", dir.display()),
+                format!("reading directory entry in '{}'", dir.display()),
                 dir,
                 source,
             )
@@ -1309,7 +1320,7 @@ fn pack_directory_entries(
             let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string();
             let mut file = std::fs::File::open(&path).map_err(|source| {
                 ConductorError::io(
-                    &format!("opening file '{}' for zip", path.display()),
+                    format!("opening file '{}' for zip", path.display()),
                     &path,
                     source,
                 )
@@ -1319,11 +1330,12 @@ fn pack_directory_entries(
             })?;
             // Read and write in SUB_ENTRY_CHUNK chunks to fire sub-entry
             // progress callbacks for large files.
-            let mut sub_buf = vec![0u8; SUB_ENTRY_CHUNK as usize];
+            let mut sub_buf =
+                vec![0u8; usize::try_from(SUB_ENTRY_CHUNK).expect("SUB_ENTRY_CHUNK fits usize")];
             loop {
                 let n = file.read(&mut sub_buf).map_err(|source| {
                     ConductorError::io(
-                        &format!("reading file '{}' for zip", path.display()),
+                        format!("reading file '{}' for zip", path.display()),
                         &path,
                         source,
                     )
@@ -1394,7 +1406,7 @@ fn find_file_relative(
                 return found;
             }
         } else if path.file_name().and_then(|n| n.to_str()) == Some(target) {
-            return path.strip_prefix(root).ok().map(|p| p.to_path_buf());
+            return path.strip_prefix(root).ok().map(std::path::Path::to_path_buf);
         }
     }
     None
@@ -1421,7 +1433,7 @@ mod tests {
         let mut writer = zip::ZipWriter::new(cursor);
         let options = SimpleFileOptions::default();
         for (name, content) in entries {
-            writer.start_file(*name, options.clone()).unwrap();
+            writer.start_file(*name, options).unwrap();
             writer.write_all(content).unwrap();
         }
         let cursor = writer.finish().unwrap();
@@ -1449,10 +1461,14 @@ mod tests {
     /// Simple deterministic pseudo-random buffer for creating hard-to-compress
     /// data, ensuring compressed size stays close to uncompressed size during
     /// sub-entry progress tests.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "xorshift PRNG deliberately emits the low byte of state"
+    )]
     fn pseudo_random_buffer(size: usize) -> Vec<u8> {
         let mut data = vec![0u8; size];
-        let mut state: u64 = 123456789;
-        for byte in data.iter_mut() {
+        let mut state: u64 = 123_456_789;
+        for byte in &mut data {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
@@ -1758,8 +1774,8 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_progress_uses_size_hint_bytes_when_expected_size_none() {
-        let cache_root = tempfile::tempdir().expect("tempdir for cache");
         use crate::cache::CacheDomainConfig;
+        let cache_root = tempfile::tempdir().expect("tempdir for cache");
         let cache = crate::cache::Cache::open(
             cache_root.path(),
             &[CacheDomainConfig {
@@ -1824,8 +1840,8 @@ mod tests {
         for (i, snap) in all.iter().enumerate() {
             let pos = snap.bytes.0;
             let tot = snap.bytes.1;
-            assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}",);
-            assert!(pos <= tot, "position {pos} exceeds total {tot} at snapshot {i}",);
+            assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}");
+            assert!(pos <= tot, "position {pos} exceeds total {tot} at snapshot {i}");
             prev_pos = pos;
         }
     }
@@ -1842,8 +1858,8 @@ mod tests {
     /// cache — it would fall through to network download (and fail in tests).
     #[tokio::test]
     async fn fetch_cache_key_uses_actual_url_not_first_url() {
-        let cache_root = tempfile::tempdir().expect("tempdir for cache");
         use crate::cache::CacheDomainConfig;
+        let cache_root = tempfile::tempdir().expect("tempdir for cache");
         let cache = crate::cache::Cache::open(
             cache_root.path(),
             &[CacheDomainConfig {
@@ -1915,8 +1931,7 @@ mod tests {
         let (pos, total) = budget.snap(0);
         assert_eq!(
             pos, total,
-            "binary source should advance budget item to completed (pos={}, total={})",
-            pos, total
+            "binary source should advance budget item to completed (pos={pos}, total={total})"
         );
         assert_eq!(total, content.len() as u64);
     }
@@ -1951,16 +1966,14 @@ mod tests {
         let (pos0, total0) = budget.snap(0);
         assert_eq!(
             pos0, total0,
-            "decompress item should be fully advanced (pos={}, total={})",
-            pos0, total0
+            "decompress item should be fully advanced (pos={pos0}, total={total0})"
         );
         assert_eq!(total0, zip.len() as u64);
         // Item 1 (compress): pos should == total (decompressed size)
         let (pos1, total1) = budget.snap(1);
         assert_eq!(
             pos1, total1,
-            "compress item should be fully advanced (pos={}, total={})",
-            pos1, total1
+            "compress item should be fully advanced (pos={pos1}, total={total1})"
         );
         assert!(total1 >= content.len() as u64);
     }
@@ -2023,8 +2036,8 @@ mod tests {
         for (i, snap) in all.iter().enumerate() {
             let pos = snap.bytes.0;
             let tot = snap.bytes.1;
-            assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}",);
-            assert!(pos <= tot, "position {pos} exceeds total {tot} at snapshot {i}",);
+            assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}");
+            assert!(pos <= tot, "position {pos} exceeds total {tot} at snapshot {i}");
             prev_pos = pos;
         }
     }
@@ -2102,7 +2115,7 @@ mod tests {
                 pos >= prev_pos,
                 "Process position decreased at snapshot {i}: {pos} < {prev_pos}",
             );
-            assert!(pos <= tot, "Process position {pos} exceeds total {tot} at snapshot {i}",);
+            assert!(pos <= tot, "Process position {pos} exceeds total {tot} at snapshot {i}");
             prev_pos = pos;
         }
 
@@ -2398,7 +2411,7 @@ mod tests {
         }
     }
 
-    /// Fetch-phase progress with known expected_size values: position should
+    /// Fetch-phase progress with known `expected_size` values: position should
     /// never decrease, and position should never exceed total (the suffix-
     /// expected estimate).  Total may decrease as remaining-expected narrows
     /// (the intentional "ASAP lower-bound" design).
@@ -2537,7 +2550,8 @@ mod tests {
         // GzDecoder consumes all compressed data to fully decompress,
         // so consumed should be the compressed size (or very close).
         assert!(
-            consumed.get() as usize >= compressed.len() - 100,
+            usize::try_from(consumed.get()).expect("consumed byte count fits usize")
+                >= compressed.len() - 100,
             "CountingReader consumed {} should be close to compressed size {}",
             consumed.get(),
             compressed.len()
@@ -2671,9 +2685,9 @@ mod tests {
     fn compress_monotonic_non_decreasing() {
         // Verify position never decreases during packing.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.bin"), &[0xAAu8; 10_000]).unwrap();
-        std::fs::write(dir.path().join("b.bin"), &[0xBBu8; 20_000]).unwrap();
-        std::fs::write(dir.path().join("c.bin"), &[0xCCu8; 30_000]).unwrap();
+        std::fs::write(dir.path().join("a.bin"), [0xAAu8; 10_000]).unwrap();
+        std::fs::write(dir.path().join("b.bin"), vec![0xBBu8; 20_000]).unwrap();
+        std::fs::write(dir.path().join("c.bin"), vec![0xCCu8; 30_000]).unwrap();
 
         let positions: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
         let positions_clone = Arc::clone(&positions);
@@ -2712,7 +2726,7 @@ mod tests {
         let estimate = estimate_uncompressed_size(&tgz, Some("tar.gz"));
         // ISIZE = total tar stream size (header + padded data + end-of-archive)
         let expected_uncompressed: u64 =
-            entries.iter().map(|(_, c)| 512 + ((c.len() as u64 + 511) / 512) * 512).sum::<u64>()
+            entries.iter().map(|(_, c)| 512 + (c.len() as u64).div_ceil(512) * 512).sum::<u64>()
                 + 1024; // end-of-archive markers
         assert!(
             estimate > tgz.len() as u64,
@@ -2732,7 +2746,7 @@ mod tests {
         let estimate = estimate_uncompressed_size(&txz, Some("tar.xz"));
         // XZ Index should contain the total uncompressed tar stream size
         let expected_uncompressed: u64 =
-            entries.iter().map(|(_, c)| 512 + ((c.len() as u64 + 511) / 512) * 512).sum::<u64>()
+            entries.iter().map(|(_, c)| 512 + (c.len() as u64).div_ceil(512) * 512).sum::<u64>()
                 + 1024; // end-of-archive markers
         assert!(
             estimate > txz.len() as u64,

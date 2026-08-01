@@ -24,7 +24,7 @@ mod prop;
 /// Creates an echo@v1 `ToolSpec`.
 fn echo_tool(name: &str) -> ToolSpec {
     ToolSpec {
-        kind: ToolKindSpec::Builtin { builtin_id: format!("echo@v1") },
+        kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
         name: name.into(),
         inputs: BTreeMap::from([(
             "text".into(),

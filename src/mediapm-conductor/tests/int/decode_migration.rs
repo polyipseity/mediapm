@@ -13,10 +13,12 @@
 //! `{ x, }` to `{ x = x }`, but that is a secondary concern — even explicit
 //! `{ x = x }` fails in a `rec` record.
 
+use std::fmt::Write;
+
 use mediapm_conductor::config::versions::decode_document;
 
 /// Helper: runs `decode_document` on `input`, returns `true` if the error (if
-/// any) is *not* a MissingFieldDef on `migrate_to`.
+/// any) is *not* a `MissingFieldDef` on `migrate_to`.
 fn check_no_migrate_to_error(label: &str, input: &str) -> bool {
     let result = decode_document(input.as_bytes());
     match &result {
@@ -38,35 +40,39 @@ fn check_no_migrate_to_error(label: &str, input: &str) -> bool {
 }
 
 /// Minimal v1 document — only `version = 1`, everything else missing.
-const V1_MINIMAL: &str = r#"{ version = 1 }"#;
+const V1_MINIMAL: &str = r"{ version = 1 }";
 
 /// Realistic v1 machine-state header.
-const V1_HEADER: &str = r#"{
+const V1_HEADER: &str = r"{
     runtime = { tool_configs = {} },
     tools = {},
     workflows = {},
     external_data = {},
     version = 1,
-}"#;
+}";
 
 fn make_large_v1(extra_fields: usize) -> String {
-    let extra: String = (0..extra_fields).map(|i| format!("  _field_{i} = null,\n")).collect();
+    let mut extra = String::new();
+    for i in 0..extra_fields {
+        let _ = writeln!(extra, "  _field_{i} = null,");
+    }
     format!(
-        r#"{{
+        r"{{
     runtime = {{ tool_configs = {{}} }},
     tools = {{}},
     workflows = {{}},
     external_data = {{}},
     version = 1,
-{extra}}}"#
+{extra}}}"
     )
 }
 
 fn make_large_v1_workflows(n: usize) -> String {
-    let workflows: String = (0..n)
-        .map(|i| {
-            format!(
-                r#"    "wf.{i}" = {{
+    let mut workflows = String::new();
+    for i in 0..n {
+        let _ = write!(
+            workflows,
+            r#"    "wf.{i}" = {{
       description = m%%""dummy workflow {i}""%%,
       name = "wf.{i}",
       steps = [
@@ -80,22 +86,21 @@ fn make_large_v1_workflows(n: usize) -> String {
       ],
     }},
 "#
-            )
-        })
-        .collect();
+        );
+    }
     format!(
-        r#"{{
+        r"{{
     runtime = {{ tool_configs = {{}} }},
     tools = {{}},
     workflows = {{
 {workflows}    }},
     external_data = {{}},
     version = 1,
-}}"#
+}}"
     )
 }
 
-/// The nickel migration pipeline must not throw MissingFieldDef on `migrate_to`
+/// The nickel migration pipeline must not throw `MissingFieldDef` on `migrate_to`
 /// even for minimal input documents.
 #[test]
 fn minimal_document_does_not_trigger_migrate_to_missing_def() {

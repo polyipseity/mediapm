@@ -125,19 +125,15 @@ pub struct ToolInputSpec {
 /// - `Full`: persist even when empty or the step fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum SaveMode {
     /// Do not persist this output.
     False,
     /// Persist this output normally.
+    #[default]
     True,
     /// Force full persistence even when empty or the step fails.
     Full,
-}
-
-impl Default for SaveMode {
-    fn default() -> Self {
-        Self::True
-    }
 }
 
 /// Default for `OutputCaptureSpec.save`: persist.
@@ -145,11 +141,12 @@ const fn default_save_mode() -> SaveMode {
     SaveMode::True
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if invokes the predicate with &T"
+)]
 fn is_save_mode_true(v: &SaveMode) -> bool {
-    match v {
-        SaveMode::True => true,
-        _ => false,
-    }
+    matches!(v, SaveMode::True)
 }
 
 /// Default for `OutputCaptureSpec.allow_empty`: skip on missing.
@@ -574,7 +571,7 @@ mod tests {
         type Parameters = ();
         type Strategy = proptest::strategy::BoxedStrategy<Self>;
 
-        fn arbitrary_with(_: ()) -> Self::Strategy {
+        fn arbitrary_with((): ()) -> Self::Strategy {
             use proptest::strategy::Strategy;
             prop_oneof![any::<bool>().prop_map(OutputPolicy::Bool), Just(OutputPolicy::Full),]
                 .boxed()
@@ -585,7 +582,7 @@ mod tests {
         type Parameters = ();
         type Strategy = proptest::strategy::BoxedStrategy<Self>;
 
-        fn arbitrary_with(_: ()) -> Self::Strategy {
+        fn arbitrary_with((): ()) -> Self::Strategy {
             use proptest::strategy::Strategy;
             prop_oneof![Just(SaveMode::True), Just(SaveMode::False), Just(SaveMode::Full),].boxed()
         }
@@ -595,7 +592,7 @@ mod tests {
         type Parameters = ();
         type Strategy = proptest::strategy::BoxedStrategy<Self>;
 
-        fn arbitrary_with(_: ()) -> Self::Strategy {
+        fn arbitrary_with((): ()) -> Self::Strategy {
             use proptest::strategy::Strategy;
             (any::<String>(), any::<String>(), any::<SaveMode>(), any::<bool>(), any::<bool>())
                 .prop_map(|(name, capture, save, allow_empty, include_topmost_folder)| {
