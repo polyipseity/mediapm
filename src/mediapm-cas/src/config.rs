@@ -141,7 +141,7 @@ impl CasConfig {
     /// Delegates to the underlying backend's open implementation.
     pub async fn open(&self) -> Result<ConfiguredCas, CasError> {
         match &self.storage_locator {
-            CasStorageLocator::InMemory => Ok(ConfiguredCas::InMemory(InMemoryCas::new())),
+            CasStorageLocator::InMemory => Ok(ConfiguredCas::InMemory(Box::default())),
             CasStorageLocator::FileSystem { path } => Ok(ConfiguredCas::FileSystem(
                 FileSystemCas::open_with_strategies(path, self.integrity.verify_on_read.clone())
                     .await?,
@@ -161,7 +161,7 @@ impl CasConfig {
 #[derive(Clone)]
 pub enum ConfiguredCas {
     /// In-memory (ephemeral) backend.
-    InMemory(InMemoryCas),
+    InMemory(Box<InMemoryCas>),
     /// File-system-backed backend.
     FileSystem(FileSystemCas),
 }

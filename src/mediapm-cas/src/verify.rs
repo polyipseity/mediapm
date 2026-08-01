@@ -38,6 +38,10 @@ use crate::hash::Hash;
 /// All per-hash state is ephemeral (in-memory). On process restart, every
 /// hash is unknown to the evaluator — the first read of each hash will
 /// conservatively trigger verification for `Modified` and `Stale`.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "verify strategy flags are intentionally independent booleans"
+)]
 pub(crate) struct VerifyEvaluator {
     always_enabled: bool,
     modified_enabled: bool,
@@ -60,7 +64,7 @@ impl VerifyEvaluator {
     /// entries are harmless — flags are booleans and params are overwritten
     /// by the last occurrence.
     #[must_use]
-    pub(crate) fn new(strategies: Vec<VerifyTriggerStrategy>) -> Self {
+    pub(crate) fn new(strategies: &[VerifyTriggerStrategy]) -> Self {
         let mut always_enabled = false;
         let mut modified_enabled = false;
         let mut sample_enabled = false;
@@ -68,7 +72,7 @@ impl VerifyEvaluator {
         let mut sample_denominator: u32 = 0;
         let mut stale_timeout = Duration::ZERO;
 
-        for s in &strategies {
+        for s in strategies {
             match s {
                 VerifyTriggerStrategy::Always => always_enabled = true,
                 VerifyTriggerStrategy::Modified => modified_enabled = true,
@@ -107,7 +111,7 @@ impl VerifyEvaluator {
         // Always / Modified / Stale do not skip the increment.
         let sample_triggers = if self.sample_enabled {
             let count = self.sample_counter.fetch_add(1, Ordering::Relaxed);
-            count % u64::from(self.sample_denominator) == 0
+            count.is_multiple_of(u64::from(self.sample_denominator))
         } else {
             false
         };
@@ -163,10 +167,10 @@ impl VerifyEvaluator {
     /// Call this after a successful verification or after writing a blob to
     /// seed the tracking maps for `Modified` and `Stale` strategies.
     pub(crate) fn record_verification(&self, hash: &Hash, file_mtime: Option<SystemTime>) {
-        if self.modified_enabled {
-            if let Some(mtime) = file_mtime {
-                self.modified_map.insert(*hash, mtime);
-            }
+        if self.modified_enabled
+            && let Some(mtime) = file_mtime
+        {
+            self.modified_map.insert(*hash, mtime);
         }
         if self.stale_enabled {
             self.stale_map.insert(*hash, Instant::now());
@@ -212,14 +216,14 @@ mod tests {
 
     #[test]
     fn no_strategies_never_verifies() {
-        let eval = VerifyEvaluator::new(vec![]);
+        let eval = VerifyEvaluator::new(&[]);
         let hash = Hash::from_content(b"test");
         assert!(!eval.should_verify(&hash, None));
     }
 
     #[test]
     fn always_triggers_every_read() {
-        let eval = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Always]);
+        let eval = VerifyEvaluator::new(&[VerifyTriggerStrategy::Always]);
         let hash = Hash::from_content(b"test");
         assert!(eval.should_verify(&hash, None));
         assert!(eval.should_verify(&hash, None));
@@ -227,7 +231,7 @@ mod tests {
 
     #[test]
     fn modified_triggers_on_first_read() {
-        let eval = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Modified]);
+        let eval = VerifyEvaluator::new(&[VerifyTriggerStrategy::Modified]);
         let hash = Hash::from_content(b"test");
         let mtime = SystemTime::now();
         assert!(eval.should_verify(&hash, Some(mtime)));
@@ -235,7 +239,7 @@ mod tests {
 
     #[test]
     fn modified_skips_on_unchanged_mtime() {
-        let eval = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Modified]);
+        let eval = VerifyEvaluator::new(&[VerifyTriggerStrategy::Modified]);
         let hash = Hash::from_content(b"test");
         let mtime = SystemTime::now();
         // First read: triggers because hash unknown.
@@ -247,7 +251,7 @@ mod tests {
 
     #[test]
     fn modified_triggers_on_changed_mtime() {
-        let eval = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Modified]);
+        let eval = VerifyEvaluator::new(&[VerifyTriggerStrategy::Modified]);
         let hash = Hash::from_content(b"test");
         let old_mtime = SystemTime::UNIX_EPOCH;
         let new_mtime = SystemTime::now();
@@ -259,7 +263,7 @@ mod tests {
 
     #[test]
     fn modified_triggers_when_mtime_unavailable() {
-        let eval = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Modified]);
+        let eval = VerifyEvaluator::new(&[VerifyTriggerStrategy::Modified]);
         let hash = Hash::from_content(b"test");
         let mtime = SystemTime::now();
         assert!(eval.should_verify(&hash, Some(mtime)));
@@ -270,7 +274,7 @@ mod tests {
 
     #[test]
     fn sample_triggers_every_nth_read() {
-        let eval = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Sample { denominator: 5 }]);
+        let eval = VerifyEvaluator::new(&[VerifyTriggerStrategy::Sample { denominator: 5 }]);
         let hash = Hash::from_content(b"test");
         // Counter starts at 0: 0 % 5 == 0 → verify.
         assert!(eval.should_verify(&hash, None));
@@ -286,8 +290,8 @@ mod tests {
 
     #[test]
     fn stale_triggers_on_first_read() {
-        let eval = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Stale {
-            timeout: Duration::from_secs(3600),
+        let eval = VerifyEvaluator::new(&[VerifyTriggerStrategy::Stale {
+            timeout: Duration::from_hours(1),
         }]);
         let hash = Hash::from_content(b"test");
         assert!(eval.should_verify(&hash, None));
@@ -295,8 +299,8 @@ mod tests {
 
     #[test]
     fn stale_skips_within_timeout() {
-        let eval = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Stale {
-            timeout: Duration::from_secs(3600),
+        let eval = VerifyEvaluator::new(&[VerifyTriggerStrategy::Stale {
+            timeout: Duration::from_hours(1),
         }]);
         let hash = Hash::from_content(b"test");
         assert!(eval.should_verify(&hash, None));
@@ -306,7 +310,7 @@ mod tests {
 
     #[test]
     fn stale_triggers_after_timeout() {
-        let eval = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Stale {
+        let eval = VerifyEvaluator::new(&[VerifyTriggerStrategy::Stale {
             timeout: Duration::from_nanos(1),
         }]);
         let hash = Hash::from_content(b"test");
@@ -319,7 +323,7 @@ mod tests {
 
     #[test]
     fn combined_any_triggers() {
-        let eval = VerifyEvaluator::new(vec![
+        let eval = VerifyEvaluator::new(&[
             VerifyTriggerStrategy::Modified,
             VerifyTriggerStrategy::Sample { denominator: 100 },
         ]);
@@ -334,8 +338,8 @@ mod tests {
 
     #[test]
     fn sample_counter_is_independent_per_evaluator() {
-        let eval1 = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Sample { denominator: 2 }]);
-        let eval2 = VerifyEvaluator::new(vec![VerifyTriggerStrategy::Sample { denominator: 2 }]);
+        let eval1 = VerifyEvaluator::new(&[VerifyTriggerStrategy::Sample { denominator: 2 }]);
+        let eval2 = VerifyEvaluator::new(&[VerifyTriggerStrategy::Sample { denominator: 2 }]);
         let hash = Hash::from_content(b"test");
         // Each evaluator has its own counter starting at 0.
         assert!(eval1.should_verify(&hash, None)); // count=0 → verify

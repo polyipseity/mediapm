@@ -203,25 +203,23 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
                 PendingState::Tombstone => Ok(None),
                 PendingState::NotPresent => {
                     // Orphan recovery before giving up.
-                    match self.try_orphan_recovery(hash).await? {
-                        Some(data) => return Ok(Some(data)),
-                        None => {
-                            // Possibly delta metadata was inserted — retry resolution.
-                            if let Some(entry) = self.metadata.get(hash).await? {
-                                return resolve_full_bytes(
-                                    hash,
-                                    &entry,
-                                    &self.metadata,
-                                    &self.blob,
-                                    "delta self-reference detected",
-                                    "delta chain: base",
-                                )
-                                .await
-                                .map(Some);
-                            }
-                            Ok(None)
-                        }
+                    if let Some(data) = self.try_orphan_recovery(hash).await? {
+                        return Ok(Some(data));
                     }
+                    // Possibly delta metadata was inserted — retry resolution.
+                    if let Some(entry) = self.metadata.get(hash).await? {
+                        return resolve_full_bytes(
+                            hash,
+                            &entry,
+                            &self.metadata,
+                            &self.blob,
+                            "delta self-reference detected",
+                            "delta chain: base",
+                        )
+                        .await
+                        .map(Some);
+                    }
+                    Ok(None)
                 }
             };
         };
@@ -283,36 +281,32 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
                 PendingState::Tombstone => Err(CasError::NotFound(*hash)),
                 PendingState::NotPresent => {
                     // Orphan recovery before giving up.
-                    match self.try_orphan_recovery(hash).await? {
-                        Some(data) => {
-                            writer.write_all(&data).await?;
-                            return Ok(());
-                        }
-                        None => {
-                            // Possibly delta metadata was inserted — retry resolution.
-                            if let Some(entry) = self.metadata.get(hash).await? {
-                                match entry.encoding {
-                                    ObjectEncoding::Full => {
-                                        return self.blob.read_to_writer(hash, writer).await;
-                                    }
-                                    ObjectEncoding::Delta { .. } => {
-                                        let bytes = resolve_full_bytes(
-                                            hash,
-                                            &entry,
-                                            &self.metadata,
-                                            &self.blob,
-                                            "delta self-reference detected",
-                                            "delta chain: base",
-                                        )
-                                        .await?;
-                                        writer.write_all(&bytes).await?;
-                                        return Ok(());
-                                    }
-                                }
+                    if let Some(data) = self.try_orphan_recovery(hash).await? {
+                        writer.write_all(&data).await?;
+                        return Ok(());
+                    }
+                    // Possibly delta metadata was inserted — retry resolution.
+                    if let Some(entry) = self.metadata.get(hash).await? {
+                        match entry.encoding {
+                            ObjectEncoding::Full => {
+                                return self.blob.read_to_writer(hash, writer).await;
                             }
-                            Err(CasError::NotFound(*hash))
+                            ObjectEncoding::Delta { .. } => {
+                                let bytes = resolve_full_bytes(
+                                    hash,
+                                    &entry,
+                                    &self.metadata,
+                                    &self.blob,
+                                    "delta self-reference detected",
+                                    "delta chain: base",
+                                )
+                                .await?;
+                                writer.write_all(&bytes).await?;
+                                return Ok(());
+                            }
                         }
                     }
+                    Err(CasError::NotFound(*hash))
                 }
             };
         };

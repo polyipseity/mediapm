@@ -62,7 +62,7 @@ impl FileSystemBlobStore {
         verify_strategies: Vec<VerifyTriggerStrategy>,
     ) -> Result<Self, CasError> {
         fs::create_dir_all(&root).await.map_err(CasError::Io)?;
-        Ok(Self { root, verify_evaluator: VerifyEvaluator::new(verify_strategies) })
+        Ok(Self { root, verify_evaluator: VerifyEvaluator::new(&verify_strategies) })
     }
 
     /// Convenience: create a store with no integrity verification.

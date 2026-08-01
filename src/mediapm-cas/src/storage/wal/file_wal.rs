@@ -272,6 +272,10 @@ impl FileWal {
     ///
     /// Panics if an entry path has no valid file name (should not happen
     /// for entries returned by `read_dir`).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "wal recovery pipeline is a single sequential flow; splitting it would obscure ordering invariants"
+    )]
     pub async fn create_with_max_size(
         cas_dir: PathBuf,
         max_segment_size: u64,
@@ -333,9 +337,9 @@ impl FileWal {
                 next += 1;
             }
             // Delete all in [write_idx, next) except best.
-            for k in write_idx..next {
+            for (k, seg) in sealed.iter().enumerate().take(next).skip(write_idx) {
                 if k != best {
-                    let _ = std::fs::remove_file(&sealed[k].path);
+                    let _ = std::fs::remove_file(&seg.path);
                 }
             }
             // Shift best to write_idx position.
@@ -1139,7 +1143,7 @@ mod tests {
         let entry =
             WalEntry::Put { hash: Hash::from_content(b"x"), data: Bytes::from_static(b"x") };
         bytes.extend_from_slice(&wal_format::encode_entry(&entry, WalPosition::from_u64(first)));
-        let filename = format!("{:020x}-{:020x}.seg", first, last);
+        let filename = format!("{first:020x}-{last:020x}.seg");
         let path = jd.join(filename);
         tokio::fs::write(&path, &bytes).await.unwrap();
         path
@@ -1202,7 +1206,7 @@ mod tests {
         {
             let journal = FileWal::create_with_max_size(cas_dir.clone(), 64).await.unwrap();
             for i in 0..total_entries {
-                let data = vec![i as u8; 16];
+                let data = vec![u8::try_from(i).expect("test entry index is < 256"); 16];
                 let hash = Hash::from_content(&data);
                 journal.append(WalEntry::Put { hash, data: Bytes::from(data) }).await.unwrap();
                 hashes.push(hash);
@@ -1215,7 +1219,11 @@ mod tests {
             match journal.check_pending(hash).await {
                 PendingState::Present(data) => {
                     assert_eq!(data.len(), 16, "entry {i}: unexpected data length");
-                    assert_eq!(data[0], i as u8, "entry {i}: unexpected first byte");
+                    assert_eq!(
+                        data[0],
+                        u8::try_from(i).expect("test entry index is < 256"),
+                        "entry {i}: unexpected first byte"
+                    );
                 }
                 other => {
                     panic!("entry {i}: expected Present, got {other:?}");
