@@ -17,7 +17,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use mediapm_cas::{CasApi, Hash};
-use mediapm_conductor::ToolRuntime;
 use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
@@ -25,6 +24,7 @@ use mediapm_conductor::provision::retain_only_tool_dirs;
 use mediapm_conductor::runtime_env::write_generated_dotenv;
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
+use mediapm_conductor::{ToolRuntime, ToolSpec};
 
 use crate::tools::dependency::DependencyType;
 use crate::tools::provider::RecheckPolicy;
@@ -433,6 +433,10 @@ pub(crate) async fn reconcile_desired_tools(
 
     // 3. Provision desired tools: download payloads, import to CAS, build
     //    content maps and tool specs.
+    // Keys are mediapm conductor tool ids — the generated doc `tools` map
+    // keys (`{name}@{content_map_hash}` when the content map is non-empty,
+    // bare `{name}` otherwise) — so env payload paths and the provision
+    // cache retain set match the ProvisionCache deployment layout.
     let mut tool_runtimes: BTreeMap<String, ToolRuntime> = BTreeMap::new();
 
     // Open or create the tool download cache and tool metadata cache.
@@ -514,11 +518,25 @@ pub(crate) async fn reconcile_desired_tools(
                     entry.resolved_vcs_hash.as_deref(),
                 ) {
                     // Already have the desired version — skip provisioning.
-                    for (_, spec) in &generated_doc.tools {
-                        if spec.name == *tool_id {
-                            tool_runtimes.entry(tool_id.clone()).or_insert(spec.runtime.clone());
+                    // Reconstruct the runtime under its conductor tool id
+                    // (generated doc key). Prefer the active `{name}@{hash}`
+                    // entry with a non-empty content map; stale pruned keys
+                    // have cleared maps and a bare stale entry may linger.
+                    let mut chosen: Option<(&String, &ToolSpec)> = None;
+                    for (key, spec) in &generated_doc.tools {
+                        if spec.name != *tool_id {
+                            continue;
+                        }
+                        if !spec.runtime.content_map.is_empty() {
+                            chosen = Some((key, spec));
                             break;
                         }
+                        if chosen.is_none() {
+                            chosen = Some((key, spec));
+                        }
+                    }
+                    if let Some((key, spec)) = chosen {
+                        tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
                     }
                     report.tools_skipped += 1;
                     pb.advance(1);
@@ -677,13 +695,25 @@ pub(crate) async fn reconcile_desired_tools(
                 .await;
 
         if was_skip {
-            // Skipped tools still need env var entries. Reconstruct runtime
-            // from the existing spec in the generated document.
-            for (_, spec) in &generated_doc.tools {
-                if spec.name == *tool_id {
-                    tool_runtimes.entry(tool_id.clone()).or_insert(spec.runtime.clone());
+            // Skipped tools still need env var entries. Reconstruct the
+            // runtime under its conductor tool id (generated doc key),
+            // preferring the active `{name}@{hash}` entry with a non-empty
+            // content map (stale pruned keys have cleared maps).
+            let mut chosen: Option<(&String, &ToolSpec)> = None;
+            for (key, spec) in &generated_doc.tools {
+                if spec.name != *tool_id {
+                    continue;
+                }
+                if !spec.runtime.content_map.is_empty() {
+                    chosen = Some((key, spec));
                     break;
                 }
+                if chosen.is_none() {
+                    chosen = Some((key, spec));
+                }
+            }
+            if let Some((key, spec)) = chosen {
+                tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
             }
             // Backfill fresh resolved metadata into the persisted registry.
             if let Some(backfill) = skip_backfill {
@@ -779,7 +809,9 @@ pub(crate) async fn reconcile_desired_tools(
                 }
 
                 generated_doc.tools.entry(tool_key.clone()).or_insert(spec);
-                tool_runtimes.insert(tool_id.clone(), full_runtime);
+                // Key by the conductor tool id (the generated doc key) so
+                // env paths match the ProvisionCache deployment layout.
+                tool_runtimes.insert(tool_key.clone(), full_runtime);
             }
             Ok(None) => {
                 // No payload fetched (internal launcher, no catalog entry,
@@ -793,6 +825,8 @@ pub(crate) async fn reconcile_desired_tools(
                         .unwrap_or_default(),
                     ..ToolRuntime::default()
                 };
+                // Key by the conductor tool id — bare form here because
+                // there is no content map.
                 tool_runtimes.insert(tool_id.clone(), runtime.clone());
 
                 // Record deployment metadata (no payload — builtin or launcher).
@@ -889,7 +923,9 @@ pub(crate) async fn reconcile_desired_tools(
         source,
     })?;
 
-    // 5. Write generated runtime env file from tool runtimes.
+    // 5. Write generated runtime env file from tool runtimes (keyed by
+    //    conductor tool id — env names derive from the stripped mediapm id,
+    //    path values from the sanitized conductor id).
     write_generated_dotenv(&paths.runtime_root, &paths.tools_dir, &tool_runtimes)?;
 
     // 5. Save generated document.
@@ -1133,6 +1169,173 @@ mod tests {
         assert!(
             content.contains("/media-tagger/payload/"),
             "env file paths should contain /media-tagger/payload/\n--- content:\n{content}",
+        );
+    }
+
+    /// The spec-based skip path reconstructs the runtime under its conductor
+    /// tool id (the generated doc key), so env payload paths match the
+    /// ProvisionCache deployment layout.
+    #[tokio::test]
+    async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let cas = InMemoryCas::default();
+
+        // Pre-populate generated doc with an active `{name}@{hash}` key.
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "blake3:abc".to_string());
+        let tool_spec = ToolSpec {
+            name: "yt-dlp".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let mut tools = BTreeMap::new();
+        tools.insert("yt-dlp@blake3:abc".to_string(), tool_spec);
+        let doc = NickelDocument { tools, ..Default::default() };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        // State whose resolved version matches the exact spec → spec-based
+        // skip fires without any network access.
+        let mut state = MediaPmState::default();
+        state.managed_tools.push(ToolRegistryEntry {
+            tool_id: "yt-dlp".to_string(),
+            version: "seeded-version".to_string(),
+            canonical_version: "yt-dlp-2024.01.01".to_string(),
+            content_map_hash: "blake3:abc".to_string(),
+            deployed_at: 0,
+            resolved_tag: None,
+            resolved_version: Some("2024.01.01".to_string()),
+            resolved_vcs_hash: None,
+        });
+
+        let mut desired_tools = BTreeMap::new();
+        let req = ToolRequirement {
+            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Exact(
+                VersionSpecFields {
+                    version: Some("2024.01.01".to_string()),
+                    vcs_hash: None,
+                    tag: None,
+                },
+            ),
+            ..Default::default()
+        };
+        desired_tools.insert("yt-dlp".to_string(), serde_json::to_value(req).unwrap());
+
+        let result = reconcile_desired_tools(
+            &cas,
+            &paths,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
+        assert_eq!(result.unwrap().tools_skipped, 1, "exact spec matching stored fields must skip",);
+
+        // Env paths must be keyed by the conductor tool id, not the plain id.
+        let env_path = &paths.env_generated_file;
+        let content = std::fs::read_to_string(env_path).expect("env file readable");
+        assert!(
+            content.contains("MEDIAPM_YT_DLP_LINUX="),
+            "env file should have MEDIAPM_YT_DLP_LINUX\n--- content:\n{content}",
+        );
+        assert!(
+            content.contains("/yt-dlp@blake3_abc/payload/linux/yt-dlp"),
+            "env path must use the sanitized conductor tool id\n--- content:\n{content}",
+        );
+        assert!(
+            !content.contains("/yt-dlp/payload/"),
+            "env path must not use the plain mediapm tool id\n--- content:\n{content}",
+        );
+    }
+
+    /// When multiple generated doc entries match a tool (a stale bare entry
+    /// with a cleared content map plus the active `{name}@{hash}` entry), the
+    /// skip path must prefer the entry with a non-empty content map.
+    #[tokio::test]
+    async fn reconcile_skip_prefers_entry_with_content_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let cas = InMemoryCas::default();
+
+        // Bare stale entry (cleared content map) sorts before the `@` key;
+        // the active hashed entry carries the content map.
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "blake3:abc".to_string());
+        let stale_spec = ToolSpec {
+            name: "yt-dlp".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime::default(),
+            ..Default::default()
+        };
+        let active_spec = ToolSpec {
+            name: "yt-dlp".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let mut tools = BTreeMap::new();
+        tools.insert("yt-dlp".to_string(), stale_spec);
+        tools.insert("yt-dlp@blake3:abc".to_string(), active_spec);
+        let doc = NickelDocument { tools, ..Default::default() };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        let mut state = MediaPmState::default();
+        state.managed_tools.push(ToolRegistryEntry {
+            tool_id: "yt-dlp".to_string(),
+            version: "seeded-version".to_string(),
+            canonical_version: "yt-dlp-2024.01.01".to_string(),
+            content_map_hash: "blake3:abc".to_string(),
+            deployed_at: 0,
+            resolved_tag: None,
+            resolved_version: Some("2024.01.01".to_string()),
+            resolved_vcs_hash: None,
+        });
+
+        let mut desired_tools = BTreeMap::new();
+        let req = ToolRequirement {
+            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Exact(
+                VersionSpecFields {
+                    version: Some("2024.01.01".to_string()),
+                    vcs_hash: None,
+                    tag: None,
+                },
+            ),
+            ..Default::default()
+        };
+        desired_tools.insert("yt-dlp".to_string(), serde_json::to_value(req).unwrap());
+
+        let result = reconcile_desired_tools(
+            &cas,
+            &paths,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err(),);
+
+        // The active hashed entry must win: env paths carry the conductor id.
+        let env_path = &paths.env_generated_file;
+        let content = std::fs::read_to_string(env_path).expect("env file readable");
+        assert!(
+            content.contains("MEDIAPM_YT_DLP_LINUX="),
+            "env file should have MEDIAPM_YT_DLP_LINUX\n--- content:\n{content}",
+        );
+        assert!(
+            content.contains("/yt-dlp@blake3_abc/payload/linux/yt-dlp"),
+            "skip path must prefer the entry with a content map\n--- content:\n{content}",
         );
     }
 
