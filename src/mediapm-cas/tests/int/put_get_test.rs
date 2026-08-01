@@ -23,7 +23,7 @@ fn put_then_get_works() {
 
         assert_eq!(retrieved, data);
         eprintln!("=== Test passed ===");
-    })
+    });
 }
 
 #[test]
@@ -50,5 +50,5 @@ fn put_get_constraint_works() {
         eprintln!("=== get_constraint returned {constraint:?} ===");
         assert_eq!(constraint, BTreeSet::from([Hash::empty()]));
         eprintln!("=== Test passed ===");
-    })
+    });
 }

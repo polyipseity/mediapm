@@ -13,7 +13,7 @@ fn new_in_memory_cas_factory_works() {
         let hash = cas.put(data.clone()).await.unwrap();
         let retrieved = cas.get(hash).await.unwrap();
         assert_eq!(retrieved, data);
-    })
+    });
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn clone_shares_state() {
         // cas2 should see what cas1 put.
         let retrieved = cas2.get(hash).await.unwrap();
         assert_eq!(retrieved, data);
-    })
+    });
 }
 
 #[test]
@@ -50,5 +50,5 @@ fn multi_step_workflow() {
         assert!(cas.get(h2).await.is_err());
         assert!(cas.get(h1).await.is_ok());
         assert!(cas.get(h3).await.is_ok());
-    })
+    });
 }

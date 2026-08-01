@@ -70,7 +70,7 @@ async fn delete_nonexistent_is_ok() {
 // Orphan recovery — full blob
 // ---------------------------------------------------------------------------
 
-/// get() recovers a full blob whose metadata entry was deleted.
+/// `get()` recovers a full blob whose metadata entry was deleted.
 #[tokio::test]
 async fn get_recovers_orphan_full_blob() {
     let cas = new_in_memory_cas();
@@ -86,7 +86,7 @@ async fn get_recovers_orphan_full_blob() {
     assert_eq!(retrieved, data);
 }
 
-/// stat() recovers metadata for an orphan full blob.
+/// `stat()` recovers metadata for an orphan full blob.
 #[tokio::test]
 async fn stat_recovers_orphan_full_blob() {
     let cas = new_in_memory_cas();
@@ -100,7 +100,7 @@ async fn stat_recovers_orphan_full_blob() {
     assert_eq!(meta.len, data.len() as u64);
 }
 
-/// get_to_writer() recovers an orphan full blob.
+/// `get_to_writer()` recovers an orphan full blob.
 #[tokio::test]
 async fn get_to_writer_recovers_orphan_full_blob() {
     let cas = new_in_memory_cas();
@@ -131,7 +131,7 @@ async fn normal_get_unaffected_by_orphan_recovery() {
     assert_eq!(retrieved, data);
 }
 
-/// get() on a hash that was never put still returns NotFound after simulating
+/// `get()` on a hash that was never put still returns `NotFound` after simulating
 /// metadata loss (never-put has no blob to recover from).
 #[tokio::test]
 async fn missing_hash_not_recovered() {
@@ -144,7 +144,7 @@ async fn missing_hash_not_recovered() {
     assert!(cas.get(hash).await.is_err());
 }
 
-/// stat() on a never-put hash still returns NotFound.
+/// `stat()` on a never-put hash still returns `NotFound`.
 #[tokio::test]
 async fn missing_stat_not_recovered() {
     let cas = new_in_memory_cas();
@@ -177,7 +177,7 @@ async fn tombstone_shadows_orphan_full_blob() {
     assert!(cas.get(hash).await.is_err());
 }
 
-/// stat() is also shadowed by a WAL tombstone.
+/// `stat()` is also shadowed by a WAL tombstone.
 #[tokio::test]
 async fn tombstone_shadows_orphan_stat() {
     let cas = new_in_memory_cas();

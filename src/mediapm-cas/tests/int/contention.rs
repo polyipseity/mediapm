@@ -21,9 +21,8 @@ async fn file_system_cas_same_process_contention() {
     let cas1 = FileSystemCas::open(dir.path()).await.unwrap();
 
     // Second open must fail with LockContention.
-    let err = match FileSystemCas::open(dir.path()).await {
-        Err(e) => e,
-        Ok(_) => panic!("expected LockContention, got Ok"),
+    let Err(err) = FileSystemCas::open(dir.path()).await else {
+        panic!("expected LockContention, got Ok")
     };
     assert!(matches!(err, CasError::LockContention { .. }), "expected LockContention variant");
 
@@ -42,14 +41,18 @@ async fn file_system_cas_contention_with_flock_barrier() {
     let lock_path = dir.path().join("lock");
 
     // Manually acquire the flock on the lock file.
-    let manual_file =
-        tokio::fs::OpenOptions::new().write(true).create(true).open(&lock_path).await.unwrap();
+    let manual_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&lock_path)
+        .await
+        .unwrap();
     fs4::AsyncFileExt::try_lock(&manual_file).unwrap();
 
     // FileSystemCas::open must detect the held flock and fail.
-    let err = match FileSystemCas::open(dir.path()).await {
-        Err(e) => e,
-        Ok(_) => panic!("expected LockContention for held flock, got Ok"),
+    let Err(err) = FileSystemCas::open(dir.path()).await else {
+        panic!("expected LockContention for held flock, got Ok")
     };
     assert!(
         matches!(err, CasError::LockContention { .. }),
@@ -99,9 +102,8 @@ async fn file_system_cas_contention_with_canonical_symlink() {
     let _cas = FileSystemCas::open(dir.path()).await.unwrap();
 
     // Open through the symlink — should still detect contention.
-    let err = match FileSystemCas::open(&link).await {
-        Err(e) => e,
-        Ok(_) => panic!("expected LockContention via symlink, got Ok"),
+    let Err(err) = FileSystemCas::open(&link).await else {
+        panic!("expected LockContention via symlink, got Ok")
     };
     assert!(
         matches!(err, CasError::LockContention { .. }),

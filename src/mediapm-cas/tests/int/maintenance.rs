@@ -648,7 +648,7 @@ async fn file_system_cas_background_task_deletes_through_wal() {
 }
 
 /// Verifies that the background maintenance guard's cancelled flag is set
-/// when the FileSystemCas handle is dropped.
+/// when the `FileSystemCas` handle is dropped.
 #[tokio::test]
 async fn file_system_cas_background_maintenance_guard_cancels_on_drop() {
     let dir = tempfile::tempdir().expect("tempdir");

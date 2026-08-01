@@ -22,7 +22,7 @@ use tempfile::tempdir;
 
 /// Size of a 1 MiB payload for streaming correctness tests.
 const SIZE_1MIB: u64 = 1024 * 1024;
-/// Size of a 65 MiB payload for get_to_writer streaming tests.
+/// Size of a 65 MiB payload for `get_to_writer` streaming tests.
 #[cfg(feature = "large-tests")]
 const SIZE_65MIB: u64 = 65 * 1024 * 1024;
 
@@ -135,7 +135,7 @@ async fn filesystem_large_object_get_to_writer_works() {
 async fn filesystem_get_succeeds_above_wal_inline_limit() {
     let dir = tempdir().unwrap();
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
-    let data = vec![0xFEu8; SIZE_65MIB as usize];
+    let data = vec![0xFEu8; usize::try_from(SIZE_65MIB).expect("65 MiB fits usize")];
     let expected_hash = Hash::from_content(&data);
     let hash = cas.put(Bytes::from(data.clone())).await.unwrap();
     assert_eq!(hash, expected_hash);

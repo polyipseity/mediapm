@@ -16,7 +16,7 @@ fn put_and_get() {
 
         let retrieved = cas.get(hash).await.unwrap();
         assert_eq!(retrieved, data);
-    })
+    });
 }
 
 /// Getting a non-existent hash fails.
@@ -27,7 +27,7 @@ fn get_missing_fails() {
         let hash = mediapm_cas::Hash::from_content(b"nonexistent");
         let result = cas.get(hash).await;
         assert!(result.is_err(), "expected error for missing object");
-    })
+    });
 }
 
 /// put → stat round-trip returns len.
@@ -40,7 +40,7 @@ fn put_and_stat() {
 
         let meta = cas.stat(hash).await.unwrap();
         assert_eq!(meta.len, data.len() as u64);
-    })
+    });
 }
 
 /// delete removes an object so subsequent get fails.
@@ -53,7 +53,7 @@ fn put_then_delete() {
 
         cas.delete(hash).await.unwrap();
         assert!(cas.get(hash).await.is_err(), "get after delete should fail");
-    })
+    });
 }
 
 /// Idempotent put — storing the same content twice yields the same hash.
@@ -65,7 +65,7 @@ fn idempotent_put() {
         let h1 = cas.put(data.clone()).await.unwrap();
         let h2 = cas.put(data).await.unwrap();
         assert_eq!(h1, h2);
-    })
+    });
 }
 
 /// Multiple puts with different content produce distinct hashes.
@@ -76,7 +76,7 @@ fn distinct_content_distinct_hashes() {
         let h1 = cas.put(Bytes::from_static(b"alpha")).await.unwrap();
         let h2 = cas.put(Bytes::from_static(b"beta")).await.unwrap();
         assert_ne!(h1, h2);
-    })
+    });
 }
 
 /// put many objects then get each one back.
@@ -94,7 +94,7 @@ fn bulk_put_and_get() {
             let retrieved = cas.get(hash).await.unwrap();
             assert_eq!(retrieved, expected.clone());
         }
-    })
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -153,5 +153,5 @@ fn empty_sentinel_is_always_present() {
         .unwrap();
         let got = cas.get_constraint(empty).await.unwrap();
         assert!(got.is_empty(), "patch_constraint on empty should have no effect");
-    })
+    });
 }
