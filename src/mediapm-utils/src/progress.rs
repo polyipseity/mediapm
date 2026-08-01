@@ -5495,7 +5495,7 @@ mod tests {
         let body = &bar_line[spinner_len..];
         assert_eq!(
             body,
-            concat!("                      work ", "█████████████████████  ", "100/100 0s",),
+            concat!("                           work ", "█████████████████████  ", "100/100 0s",),
             "bar body after spinner must match exactly",
         );
     }
