@@ -423,7 +423,7 @@ The tool-content cache lives at `<conductor_tools_dir>/` (default `<conductor_di
 
 Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
-- **Cache key**: the tool id from the conductor config (the map key in `tools`), sanitized to a filesystem-safe name. One cache entry per tool id: `<conductor_tools_dir>/<sanitized_tool_id>/`.
+- **Cache key**: the **mediapm conductor tool id** — the map key in the conductor document's `tools` map — sanitized to a filesystem-safe name via `sanitize_tool_id`. One cache entry per tool id: `<conductor_tools_dir>/<sanitize_tool_id(conductor_tool_id)>/`. In the mediapm integration the conductor tool id is `{mediapm_tool_id}@{content_map_hash}` for tools with a content map (e.g. `yt-dlp@blake3:abc` → dir `yt-dlp@blake3_abc`) and the bare `{mediapm_tool_id}` when the content map is empty. The two ids are distinct: the **mediapm tool id** (`yt-dlp`) identifies the tool in `mediapm.ncl`, dependency keys, and env var name stems; the **conductor tool id** is the conductor-document key and the provision-cache key. `.env.generated` payload paths mirror this layout: `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`.
 
 - **RAII guard**: `ProvisionCache::materialize` returns a `ProvisionedTool` that holds a shared advisory lock on the entry until dropped. This prevents pruning while the entry is in use.
 

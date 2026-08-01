@@ -220,6 +220,16 @@ pub struct ManagedToolExecutableResolution {
 /// This is used by the mediapm integration layer to resolve managed tool
 /// binaries without going through the full conductor workflow execution path.
 ///
+/// # Tool id contract
+///
+/// The `tool_id` parameter is the **mediapm conductor tool id** — the map key
+/// of the tool in the conductor document's `tools` map (for example
+/// `yt-dlp@blake3:abc`), never the bare mediapm tool id (`yt-dlp`). This is
+/// the same id the `ProvisionCache` keys on: the entry directory is
+/// `<conductor_tools_dir>/<sanitize_tool_id(tool_id)>/` with its payload at
+/// `<conductor_tools_dir>/<sanitize_tool_id(tool_id)>/payload/` (see the
+/// "Tool-Content Cache (ProvisionCache)" section in `AGENTS.md`).
+///
 /// # Errors
 ///
 /// Returns [`ConductorError::Workflow`] if the tool is not managed or has no
