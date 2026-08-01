@@ -414,7 +414,7 @@ fn fin_error_exact_shows_error_state() {
     );
 }
 
-/// Exact output: join_and_clear keeps finished bars, removes blank slots.
+/// Exact output: `join_and_clear` keeps finished bars, removes blank slots.
 #[test]
 fn join_clear_exact_removes_bars() {
     // Terminal H=5, W=80.
@@ -618,7 +618,7 @@ fn slot_pool_blank_bars_remain_invisible() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     // 5 slots, no overall. child at slot[4] (bottom), blanks at lines[0..3].
     // child at bottom avoids InMemoryTerm trimming → 5 lines.
     assert_eq!(lines.len(), 5, "5 slots, no overall → 5 lines (child at bottom)");
@@ -643,7 +643,7 @@ fn slot_pool_acquire_returns_bottommost_child() {
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     // 4 slots, no overall. first at slot[3] (bottom), blanks at lines[0..2].
     assert_eq!(lines.len(), 4, "4 slots → 4 lines (first at bottom)");
     assert!(lines[0].trim().is_empty(), "line 0 is blank");
@@ -654,7 +654,7 @@ fn slot_pool_acquire_returns_bottommost_child() {
     let _c2 = group.add_bar(3, "second");
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     // 4 slots, no overall → 4 lines (first at slot[2], second at slot[3])
     assert_eq!(lines.len(), 4, "4 lines, both non-empty at bottom");
     assert!(lines[0].trim().is_empty(), "line 0 is blank");
@@ -680,7 +680,7 @@ fn slot_pool_acquire_with_overall_above_overall() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     assert_eq!(lines.len(), 5, "5 lines (capacity=5)");
     // worker at slot[3] (just above overall at slot[4]), blanks at lines[0..2].
     assert!(lines[0].trim().is_empty(), "line 0 blank");
@@ -708,7 +708,7 @@ fn progress_group_height_never_grows_with_many_bars() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     assert_eq!(lines.len(), 4, "must have exactly 4 lines even after 20 add_bar calls");
 }
 
@@ -729,7 +729,7 @@ fn progress_group_overall_always_at_bottom() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     assert_eq!(lines.len(), 5);
     // Chronological allocation: task0→slot[0], task1→slot[1], task2→slot[2], task3→slot[3].
     assert!(lines[0].contains("task0"), "line 0 has task0: {0}", lines[0]);
@@ -776,7 +776,7 @@ fn progress_group_add_bar_zero_total_renders() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     assert_eq!(lines.len(), 5);
     // Bottom-up: zero bar at slot[3] (just above overall at slot[4]).
     assert!(lines[0].trim().is_empty(), "line 0 blank");
@@ -802,7 +802,7 @@ fn consumer_lifecycle_materializer() {
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     // 5 slots, no overall → child at slot[4] (bottom), all 5 lines visible.
     assert_eq!(lines.len(), 5, "5 slots, no overall → 5 lines (child at bottom)");
     assert!(lines[0].trim().is_empty(), "line 0 blank");
@@ -861,7 +861,7 @@ fn consumer_lifecycle_conductor_sync() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     assert_eq!(lines.len(), 5);
     // t1(yt-dlp) at slot[2] (first tool, shifted up by ffmpeg), t2(ffmpeg) at slot[3] (just above overall).
     assert!(lines[0].trim().is_empty(), "line 0 blank");
@@ -889,7 +889,7 @@ fn consumer_lifecycle_conductor_cli() {
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     assert_eq!(lines.len(), 4);
     assert!(lines[0].trim().is_empty(), "line 0 blank");
     assert!(lines[1].trim().is_empty(), "line 1 blank");
@@ -901,7 +901,7 @@ fn consumer_lifecycle_conductor_cli() {
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     assert!(lines[3].contains("steps"), "bar still visible after finish: {0}", lines[3]);
 
     group.join();
@@ -928,7 +928,7 @@ fn progress_group_finish_and_clear_child_keeps_others() {
     // Overall must still be visible.
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     // finish_and_clear hides the child bar. Only the overall bar and blank
     // filler slots remain visible.  With fixed-size slots (capacity=4) the
     // child slot becomes a blank line rather than being removed.
@@ -953,7 +953,7 @@ fn progress_group_abandon_preserves_bar() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     // 5 slots, no overall → child at slot[4] (bottom), all 5 lines visible.
     assert_eq!(lines.len(), 5, "5 lines — child at bottom, 4 blanks above");
     assert!(lines[4].contains("worker"), "bar visible after abandon: {0}", lines[4]);
@@ -976,7 +976,7 @@ fn progress_group_long_prefix_truncation() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     // 5 slots, no overall → child at slot[4] (bottom), 5 lines total.
     assert_eq!(lines.len(), 5);
     // Prefix should be right-aligned to 16 chars, left-truncated to 16 chars.
@@ -1271,7 +1271,7 @@ fn slot_full_hides_overflow_bars_from_display() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    for (_i, _line) in lines.iter().enumerate() {}
+    for _line in &lines {}
     // 4 slots, no overall → all 4 used, no blank trailing → 4 lines.
     // tools a-d in display. tool-e has no display slot but is still tracked.
     assert_eq!(lines.len(), 4, "4 lines — 4 display slots, all filled");
@@ -1390,8 +1390,8 @@ fn finalize_exact_terminal_match_after_full_lifecycle() {
     );
 }
 
-/// Verify that content written before ProgressGroup creation survives
-/// the finalize lifecycle (test-mode invariant: pre_roll is a no-op).
+/// Verify that content written before `ProgressGroup` creation survives
+/// the finalize lifecycle (test-mode invariant: `pre_roll` is a no-op).
 #[test]
 fn finalize_preserves_content_written_before_progress() {
     let term = InMemoryTerm::new(10, 80);

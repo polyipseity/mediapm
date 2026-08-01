@@ -76,22 +76,22 @@ fn worker_count_surge_drain() {
 #[test]
 fn worker_count_new_batch() {
     let (mp, term) = mk();
-    let o = add_bar(&mp, 10, "overall");
-    let a = ins_bar(&mp, &o, 2, "tool1");
-    let b = ins_bar(&mp, &o, 2, "tool2");
-    a.finish_and_clear();
-    b.finish_and_clear();
-    a.tick();
-    b.tick();
-    o.tick();
-    drop(a);
-    drop(b);
-    o.inc(4);
-    let c = ins_bar(&mp, &o, 2, "tool3");
-    let d = ins_bar(&mp, &o, 1, "tool4");
-    c.tick();
-    d.tick();
-    o.tick();
+    let overall = add_bar(&mp, 10, "overall");
+    let tool1 = ins_bar(&mp, &overall, 2, "tool1");
+    let tool2 = ins_bar(&mp, &overall, 2, "tool2");
+    tool1.finish_and_clear();
+    tool2.finish_and_clear();
+    tool1.tick();
+    tool2.tick();
+    overall.tick();
+    drop(tool1);
+    drop(tool2);
+    overall.inc(4);
+    let tool3 = ins_bar(&mp, &overall, 2, "tool3");
+    let tool4 = ins_bar(&mp, &overall, 1, "tool4");
+    tool3.tick();
+    tool4.tick();
+    overall.tick();
     assert_eq!(
         term.contents(),
         concat!(

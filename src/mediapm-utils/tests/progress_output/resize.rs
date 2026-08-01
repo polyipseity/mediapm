@@ -22,12 +22,12 @@ fn resize_width_wide_to_narrow_changes_output() {
         .with_ticker_enabled(false)
         .build_with_overall();
     let contents_wide = term.contents();
-    for (_i, _line) in contents_wide.lines().enumerate() {}
+    for _line in contents_wide.lines() {}
 
     dims.set((H, 40));
     group.tick();
     let contents_narrow = term.contents();
-    for (_i, _line) in contents_narrow.lines().enumerate() {}
+    for _line in contents_narrow.lines() {}
 
     // Content should differ after resize (different bar templates).
     assert_ne!(contents_wide, contents_narrow, "output changes after width resize");
@@ -46,12 +46,12 @@ fn resize_width_narrow_to_wide_restores_content() {
         .with_ticker_enabled(false)
         .build_with_overall();
     let contents_narrow = term.contents();
-    for (_i, _line) in contents_narrow.lines().enumerate() {}
+    for _line in contents_narrow.lines() {}
 
     dims.set((H, 80));
     group.tick();
     let contents_wide = term.contents();
-    for (_i, _line) in contents_wide.lines().enumerate() {}
+    for _line in contents_wide.lines() {}
     assert_ne!(contents_narrow, contents_wide, "output changes after width resize");
 }
 
@@ -102,13 +102,13 @@ fn resize_height_grow_adds_slots() {
         group.tick();
     }
     let before = term.contents();
-    for (_i, _line) in before.lines().enumerate() {}
+    for _line in before.lines() {}
     let before_count = before.lines().count();
 
     dims.set((6, 80));
     group.tick();
     let after = term.contents();
-    for (_i, _line) in after.lines().enumerate() {}
+    for _line in after.lines() {}
     let after_count = after.lines().count();
     assert!(after_count > before_count, "more lines after height growth");
 }
@@ -180,13 +180,13 @@ fn resize_height_shrink_protects_overall() {
     let _c1 = group.add_bar(7, "fetch");
     group.tick();
     let before = term.contents();
-    for (_i, _line) in before.lines().enumerate() {}
+    for _line in before.lines() {}
     assert!(before.lines().any(|l| l.contains("overall")), "overall visible before resize");
 
     dims.set((4, 80));
     group.tick();
     let after = term.contents();
-    for (_i, _line) in after.lines().enumerate() {}
+    for _line in after.lines() {}
     assert!(after.lines().any(|l| l.contains("overall")), "overall still visible after shrink");
 }
 
@@ -208,7 +208,7 @@ fn resize_height_grow_detached_reappear() {
     dims.set((6, 80));
     group.tick();
     let after = term.contents();
-    for (_i, _line) in after.lines().enumerate() {}
+    for _line in after.lines() {}
     assert!(after.lines().any(|l| l.contains("fetch")), "child still visible after growth");
     assert!(after.lines().any(|l| l.contains("overall")), "overall visible after growth");
 }
@@ -282,8 +282,8 @@ fn resize_both_dimensions() {
     dims.set((6, 40));
     group.tick();
     let after = term.contents();
-    for (_i, _line) in before.lines().enumerate() {}
-    for (_i, _line) in after.lines().enumerate() {}
+    for _line in before.lines() {}
+    for _line in after.lines() {}
     assert_ne!(before, after, "output changes when both dimensions change");
 }
 
@@ -379,7 +379,7 @@ fn resize_height_partial_shrink_keeps_active_bars() {
     dims.set((3, 80));
     group.tick();
     let after = term.contents();
-    for (_i, _line) in after.lines().enumerate() {}
+    for _line in after.lines() {}
     assert_eq!(after.lines().count(), 3, "3 lines at H=3");
     assert!(after.contains("overall"), "overall visible");
     assert!(after.contains("fetch1"), "fetch1 visible");
@@ -445,7 +445,7 @@ fn resize_height_sequence_with_three_bars() {
 
     // H=5 → (empty), (bar 3), (bar 2), (bar 1), (overall)
     let h5 = term.contents();
-    for (_i, _line) in h5.lines().enumerate() {}
+    for _line in h5.lines() {}
     assert_eq!(h5.lines().count(), 5);
     assert!(h5.contains("bar 3"), "bar 3 visible at H=5");
     assert!(h5.contains("bar 2"), "bar 2 visible at H=5");
@@ -456,7 +456,7 @@ fn resize_height_sequence_with_three_bars() {
     dims.set((4, 80));
     group.tick();
     let h4 = term.contents();
-    for (_i, _line) in h4.lines().enumerate() {}
+    for _line in h4.lines() {}
     assert_eq!(h4.lines().count(), 4);
     assert!(h4.contains("bar 3"));
     assert!(h4.contains("bar 2"));
@@ -467,7 +467,7 @@ fn resize_height_sequence_with_three_bars() {
     dims.set((3, 80));
     group.tick();
     let h3 = term.contents();
-    for (_i, _line) in h3.lines().enumerate() {}
+    for _line in h3.lines() {}
     assert_eq!(h3.lines().count(), 3);
     assert!(!h3.contains("bar 3"), "bar 3 evicted at H=3");
     assert!(h3.contains("bar 2"));
@@ -478,7 +478,7 @@ fn resize_height_sequence_with_three_bars() {
     dims.set((2, 80));
     group.tick();
     let h2 = term.contents();
-    for (_i, _line) in h2.lines().enumerate() {}
+    for _line in h2.lines() {}
     assert_eq!(h2.lines().count(), 2);
     assert!(!h2.contains("bar 3"), "bar 3 still evicted at H=2");
     assert!(!h2.contains("bar 2"), "bar 2 evicted at H=2");
@@ -489,7 +489,7 @@ fn resize_height_sequence_with_three_bars() {
     dims.set((1, 80));
     group.tick();
     let h1 = term.contents();
-    for (_i, _line) in h1.lines().enumerate() {}
+    for _line in h1.lines() {}
     assert_eq!(h1.lines().count(), 1);
     assert!(!h1.contains("bar 3"));
     assert!(!h1.contains("bar 2"));
@@ -501,7 +501,7 @@ fn resize_height_sequence_with_three_bars() {
     dims.set((4, 80));
     group.tick();
     let h4_restored = term.contents();
-    for (_i, _line) in h4_restored.lines().enumerate() {}
+    for _line in h4_restored.lines() {}
     assert_eq!(h4_restored.lines().count(), 4);
     assert!(h4_restored.contains("bar 3"), "bar 3 reappears on growth");
     assert!(h4_restored.contains("bar 2"), "bar 2 reappears on growth");
@@ -527,7 +527,7 @@ fn resize_height_sequence_without_overall() {
 
     // H=4 → (empty), (empty), (bar 2), (bar 1)
     let h4 = term.contents();
-    for (_i, _line) in h4.lines().enumerate() {}
+    for _line in h4.lines() {}
     assert_eq!(h4.lines().count(), 4);
     assert!(h4.contains("bar 2"), "bar 2 visible at H=4");
     assert!(h4.contains("bar 1"), "bar 1 visible at H=4");
@@ -536,7 +536,7 @@ fn resize_height_sequence_without_overall() {
     dims.set((3, 80));
     group.tick();
     let h3 = term.contents();
-    for (_i, _line) in h3.lines().enumerate() {}
+    for _line in h3.lines() {}
     assert_eq!(h3.lines().count(), 3);
     assert!(h3.contains("bar 2"));
     assert!(h3.contains("bar 1"));
@@ -545,7 +545,7 @@ fn resize_height_sequence_without_overall() {
     dims.set((2, 80));
     group.tick();
     let h2 = term.contents();
-    for (_i, _line) in h2.lines().enumerate() {}
+    for _line in h2.lines() {}
     assert_eq!(h2.lines().count(), 2);
     assert!(h2.contains("bar 2"));
     assert!(h2.contains("bar 1"));
@@ -554,7 +554,7 @@ fn resize_height_sequence_without_overall() {
     dims.set((1, 80));
     group.tick();
     let h1 = term.contents();
-    for (_i, _line) in h1.lines().enumerate() {}
+    for _line in h1.lines() {}
     assert_eq!(h1.lines().count(), 1);
     assert!(!h1.contains("bar 2"), "bar 2 evicted at H=1");
     assert!(h1.contains("bar 1"), "bar 1 still visible at H=1");
@@ -563,7 +563,7 @@ fn resize_height_sequence_without_overall() {
     dims.set((3, 80));
     group.tick();
     let h3_restored = term.contents();
-    for (_i, _line) in h3_restored.lines().enumerate() {}
+    for _line in h3_restored.lines() {}
     assert_eq!(h3_restored.lines().count(), 3);
     assert!(h3_restored.contains("bar 2"), "bar 2 reappears on growth");
     assert!(h3_restored.contains("bar 1"), "bar 1 reappears on growth");

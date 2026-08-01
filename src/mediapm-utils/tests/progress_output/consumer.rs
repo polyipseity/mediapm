@@ -13,9 +13,9 @@ use super::common::*;
 // Phase 1: Exact-output regression tests
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// Exact output match for parallel workers with finish_error + active.
+/// Exact output match for parallel workers with `finish_error` + active.
 ///
-/// Uses TestTimeSource for deterministic rate and elapsed values.
+/// Uses `TestTimeSource` for deterministic rate and elapsed values.
 #[test]
 fn exact_consumer_parallel_worker_output() {
     let (mp, term, ts) = mk_with_size_and_ts(5, 80);

@@ -43,9 +43,7 @@ fn wide_terminal_single_bar() {
     pb.tick();
     assert_eq!(
         term.contents(),
-        concat!(
-            " overall [00:00:00] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0/4",
-        )
+        " overall [00:00:00] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0/4",
     );
 }
 
@@ -348,7 +346,7 @@ fn terminal_exact_h1_single_bar() {
     let (mp, term) = mk_with_size(1, 40);
     let pb = add_bar(&mp, 4, "test");
     pb.tick();
-    assert_eq!(term.contents(), concat!("    test [00:00:00] ░░░░░░░░░░░░░░░ 0/4"),);
+    assert_eq!(term.contents(), "    test [00:00:00] ░░░░░░░░░░░░░░░ 0/4",);
 }
 
 /// Exact output: H=2 with 2 children + overall shows only 1 line (overall off-screen).
@@ -364,7 +362,7 @@ fn terminal_exact_h2_no_overall_two_children() {
     let _c1 = group.add_bar(3, "alpha");
     let _c2 = group.add_bar(3, "beta");
     group.tick();
-    assert_eq!(term.contents(), concat!("⠹                          alpha   0/3 0\ns 0/d"),);
+    assert_eq!(term.contents(), "⠹                          alpha   0/3 0\ns 0/d",);
 }
 
 /// Exact output: H=2 with 3 children + overall shows only 1 line.
@@ -381,5 +379,5 @@ fn terminal_exact_h2_no_overall_overflow() {
     let _c2 = group.add_bar(3, "beta");
     let _c3 = group.add_bar(3, "gamma");
     group.tick();
-    assert_eq!(term.contents(), concat!("⠹                          alpha   0/3 0\ns 0/d"),);
+    assert_eq!(term.contents(), "⠹                          alpha   0/3 0\ns 0/d",);
 }

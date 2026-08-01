@@ -196,7 +196,7 @@ fn regression_finish_and_clear_with_tick_fn() {
     group.tick();
 
     // c2 is ProgressGroup-managed so mutating methods go through tick_fn.
-    let _ = c2.finish_and_clear();
+    c2.finish_and_clear();
     group.tick();
 
     assert_eq!(
