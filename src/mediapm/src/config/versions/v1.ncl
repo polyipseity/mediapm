@@ -104,7 +104,7 @@ in
     = {},
   },
 
-  // MediaPmState V1 envelope for `<mediapm_dir>/state.ncl`.
+  // MediaPmState V1 envelope for `<mediapm_dir>/state.json`.
   MediaPmStateV1 = {
     version | shared.VersionContract,
     media_state

@@ -294,6 +294,17 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | State write policy documented in state persistence spec                                          | `state-persistence.instructions.md` — "State write policy" section                      | [covered] |
 | `write_bytes_if_changed` as artifact gate documented in document I/O spec                        | `document-io-lifecycle.instructions.md` — `write_bytes_if_changed` bullet               | [covered] |
 
+### State.json format reality (JSON always-write, never Nickel)
+
+| Spec item                                                                                                         | Test(s)                                                                                                                                                                                                 | Status    |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `state.json` is JSON (pretty-printed always-write), not a Nickel document                                         | `state_json_always_writes_to_disk` (integration) — JSON written on every sync even when content is identical                                                                                            | [covered] |
+| `mediapm.ncl` (user intent) and `conductor.generated.ncl` (machine Nickel) are the only Nickel state documents    | `conductor_ncl_skips_write_when_unchanged` (integration) — generated NCL written only on change, unlike JSON always-write                                                                                | [covered] |
+| Legacy `state.ncl` auto-migrated on load and deleted                                                               | `state_persistence` migration test (integration, `tests/int/state_persistence.rs` — creates `state.ncl`, asserts deleted after migration)                                                                | [covered] |
+| Docs no longer reference `<mediapm_dir>/state.ncl` as a live path                                                | Root `AGENTS.md` (mediapm bullet), `state-persistence.instructions.md` ("Format reality" section), `paths-layout.instructions.md` (`mediapm_state_json` row), `config/versions/v1.ncl` comment, both demo examples (override deleted)                  | [covered] |
+| Demo examples default to `.mediapm/state.json` (no stale `.ncl` override)                                         | `mediapm_demo` / `mediapm_demo_online` `main_is_exercised` (examples) — compile + run with `media_state_config: None` default                                                                           | [covered] |
+| State-only churn does not touch conductor file (format separation)                                                | `regression_state_only_churn_does_not_touch_conductor_file` (integration)                                                                                                                               | [covered] |
+
 ### Provisioning pruning (generated doc + filesystem)
 
 | Spec item                                                                       | Test(s)                                                                                     | Status    |

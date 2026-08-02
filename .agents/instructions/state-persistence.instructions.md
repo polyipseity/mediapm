@@ -6,6 +6,12 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 
 # State persistence
 
+## Format reality
+
+- `state.json` is machine-managed and stored as **JSON with pretty-printing and always-write semantics** — it is not a Nickel document, even though legacy versions of this file were `.ncl`.
+- `mediapm.ncl` is the user-owned Nickel intent document; `conductor.generated.ncl` is the machine-managed Nickel runtime document. Only `state.json` is JSON.
+- Legacy `state.ncl` files are auto-migrated on load and then deleted (`load_mediapm_state_document` in `nickel_io.rs` is JSON-first, falls back to the legacy Nickel file, and removes it after a successful load). Never write new `.ncl` state files.
+
 ## Purpose
 
 - Model machine-managed state persisted in `state.json` under `<runtime_root>/`.
@@ -101,7 +107,7 @@ V1→v2 mapping:
 
 ## V1 flat format (post-rewrite — migration-only, never written)
 
-The post-rewrite flat format (current `state.ncl`):
+The post-rewrite flat format (current `state.json`):
 
 ```text
 {

@@ -730,8 +730,8 @@ fn configure_document_for_local_tool_chain(
             map
         },
         // Machine-managed mediapm state path relative to workspace root.
-        // Default: `.mediapm/state.ncl`.
-        media_state_config: Some(".mediapm/state.ncl".to_string()),
+        // Default: `.mediapm/state.json` (JSON always-write).
+        media_state_config: None,
         // Dotenv credential source path relative to workspace root.
         // Default: `.mediapm/.env`.
         env_file: Some(".mediapm/.env".to_string()),

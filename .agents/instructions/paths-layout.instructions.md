@@ -23,7 +23,7 @@ applyTo: "src/mediapm/src/paths.rs"
 | `conductor_state_config`  | `{runtime_root}/state.conductor.ncl`         | Conductor volatile state                                                                                                                  |
 | `conductor_tmp_dir`       | `$TMPDIR/mediapm-{hash}/`                    | Conductor sandbox tmp                                                                                                                     |
 | `conductor_schema_dir`    | `{runtime_root}/config/conductor/`           | Conductor schema exports                                                                                                                  |
-| `mediapm_state_ncl`       | `{runtime_root}/state.ncl`                   | MediaPM machine state                                                                                                                     |
+| `mediapm_state_json`       | `{runtime_root}/state.json`                   | MediaPM machine state (JSON always-write)                                                                                                |
 | `env_file`                | `{runtime_root}/.env`                        | User-authored dotenv                                                                                                                      |
 | `env_generated_file`      | `{runtime_root}/.env.generated`              | Machine-generated dotenv                                                                                                                  |
 | `schema_export_dir`       | `Some({runtime_root}/config/mediapm/)`       | MediaPM schema exports (`None` = disabled)                                                                                                |
