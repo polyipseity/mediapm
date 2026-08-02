@@ -4147,6 +4147,12 @@ mod tests {
             .with_multi_progress(mp)
             .with_dim_source(dims as Arc<dyn DimensionSource>)
             .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            // Disable the daemon ticker: it fires group.tick() on real
+            // wall-clock time, injecting extra spinner ticks beyond this
+            // test's manual ticks.  (indicatif's set_position also advances
+            // the tick counter through a wall-clock position rate limiter,
+            // so the assertion below checks a distinct-glyph set.)
+            .with_ticker_enabled(false)
             .with_overall("syncing", 3)
             .build_with_overall();
 
@@ -4180,19 +4186,29 @@ mod tests {
         // Must have captured several distinct snapshots.
         assert!(snapshots.len() >= 10, "expected >=10 captured snapshots, got {}", snapshots.len());
 
-        // Every bar's spinner char must differ between the first and last
-        // snapshot (i.e., it must be animating).
-        let first = &snapshots[0];
-        let last = &snapshots[snapshots.len() - 1];
-        assert_eq!(
-            first.len(),
-            last.len(),
-            "bar count changed between first ({}) and last ({})",
-            first.len(),
-            last.len()
-        );
-        for (i, (f, l)) in first.iter().zip(last.iter()).enumerate() {
-            assert!(f != l, "bar {i}: spinner char did not change ('{f}' == '{l}') after 30 ticks");
+        // Every bar's spinner must be animating.  We can't assert
+        // first-vs-last inequality: the glyph is indicatif's tick counter
+        // mod 9, and that counter advances via BOTH set_position (gated by
+        // a real-wall-clock position rate limiter) and the end-of-tick
+        // bar.tick(), so the exact per-iteration advance varies with real
+        // timing.  What IS guaranteed: every active bar is ticked at least
+        // once per group.tick(), so 30 ticks over a 9-glyph cycle always
+        // produce several distinct glyphs per bar.  Assert >= 2 distinct.
+        let n_bars = snapshots.iter().map(Vec::len).max().unwrap_or(0);
+        let mut distinct_per_bar: Vec<std::collections::BTreeSet<char>> =
+            vec![std::collections::BTreeSet::new(); n_bars];
+        for snap in &snapshots {
+            for (i, c) in snap.iter().enumerate().take(n_bars) {
+                distinct_per_bar[i].insert(*c);
+            }
+        }
+        for (i, set) in distinct_per_bar.iter().enumerate() {
+            assert!(
+                set.len() >= 2,
+                "bar {i}: spinner must cycle through >= 2 distinct glyphs, \
+                 saw only {set:?} across {} snapshots",
+                snapshots.len()
+            );
         }
     }
 
@@ -4218,6 +4234,12 @@ mod tests {
             .with_multi_progress(mp)
             .with_dim_source(dims as Arc<dyn DimensionSource>)
             .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            // Disable the daemon ticker: it fires group.tick() on real
+            // wall-clock time, injecting extra spinner ticks beyond this
+            // test's manual ticks.  (indicatif's set_position also advances
+            // the tick counter through a wall-clock position rate limiter,
+            // so the assertion below checks a distinct-glyph set.)
+            .with_ticker_enabled(false)
             .capacity(2)
             .dynamic_height(false)
             .with_overall("syncing", 3)
@@ -4263,18 +4285,23 @@ mod tests {
         // between the first and last snapshot — if it's the same, the
         // spinner is frozen because the indicatif bar stayed DoneVisible.
         let first = &snapshots[0];
-        let last = &snapshots[snapshots.len() - 1];
         assert!(
             first.len() >= 2,
             "expected at least 2 visible bars (child + overall), got {}",
             first.len()
         );
+        // Same window-robust glyph check as spinner_advances_per_cycle_for_all_bars:
+        // the child bar's glyph is the tick counter mod 9, advanced by both
+        // set_position (wall-clock rate-limited) and the end-of-tick bar.tick(),
+        // so assert >= 2 distinct glyphs across the window instead of
+        // first-vs-last inequality.
+        let distinct_child: std::collections::BTreeSet<char> =
+            snapshots.iter().filter_map(|s| s.first()).copied().collect();
         assert!(
-            first[0] != last[0],
-            "child bar spinner did not change ('{}' == '{}') after 30 ticks — \
-             slot status leak",
-            first[0],
-            last[0]
+            distinct_child.len() >= 2,
+            "child bar spinner must cycle through >= 2 distinct glyphs, \
+             saw only {distinct_child:?} across {} snapshots — slot status leak",
+            snapshots.len()
         );
     }
 
@@ -5082,7 +5109,14 @@ mod tests {
         let term = indicatif::InMemoryTerm::new(10, 80);
         let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
         let mp = MultiProgress::with_draw_target(target);
-        let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .capacity(4)
+            // Disable the daemon ticker: it fires group.tick() on real
+            // wall-clock time, injecting extra ticks/draws beyond the manual
+            // ticks this test controls.
+            .with_ticker_enabled(false)
+            .build();
         let _bar = group.add_bar(100, "test");
 
         group.tick();
@@ -5097,7 +5131,14 @@ mod tests {
         let term = indicatif::InMemoryTerm::new(10, 80);
         let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
         let mp = MultiProgress::with_draw_target(target);
-        let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+        let group = ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .capacity(4)
+            // Disable the daemon ticker: it fires group.tick() on real
+            // wall-clock time, injecting extra ticks/draws beyond the manual
+            // ticks this test controls.
+            .with_ticker_enabled(false)
+            .build();
         let bar = group.add_bar(100, "test");
 
         bar.set_position(20);
@@ -5128,6 +5169,10 @@ mod tests {
         let (group, overall) = ProgressGroup::builder()
             .with_multi_progress(mp)
             .with_time_source(Arc::clone(&ts) as Arc<dyn super::TimeSource>)
+            // Disable the daemon ticker: it fires group.tick() on real
+            // wall-clock time, injecting extra ticks/draws beyond the manual
+            // ticks this test controls.
+            .with_ticker_enabled(false)
             .capacity(4)
             .with_overall("overall", 10)
             .build_with_overall();
@@ -5188,6 +5233,10 @@ mod tests {
             .with_multi_progress(mp)
             .with_dim_source(dims as Arc<dyn DimensionSource>)
             .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            // Disable the daemon ticker: it fires group.tick() on real
+            // wall-clock time, injecting extra ticks/draws beyond the manual
+            // ticks this test controls.
+            .with_ticker_enabled(false)
             .capacity(4)
             .build();
         let bar = group.add_bar(100, "test");
@@ -5202,8 +5251,9 @@ mod tests {
         let baseline_body = content_body(&baseline);
 
         // Tick 2: no mutations → content body (everything except spinner)
-        // must be identical.  The spinner itself may advance due to the
-        // daemon ticker thread, so we cannot compare the full output.
+        // must be identical.  The daemon ticker is disabled above, so the
+        // spinner char is deterministic too; we still compare only the body
+        // to keep the assertion focused on dirty tracking.
         ts.advance(std::time::Duration::from_millis(50));
         group.tick();
         let second = term.contents();
@@ -5246,6 +5296,10 @@ mod tests {
             .with_multi_progress(mp)
             .with_dim_source(dims as Arc<dyn DimensionSource>)
             .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            // Disable the daemon ticker: it fires group.tick() on real
+            // wall-clock time, injecting extra ticks/draws beyond the manual
+            // ticks this test controls.
+            .with_ticker_enabled(false)
             .capacity(4)
             .build();
         let bar = group.add_bar(100, "test");
