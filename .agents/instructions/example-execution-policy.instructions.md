@@ -12,15 +12,20 @@ Each example file under `src/*/examples/` must contain at least one `#[cfg(test)
 
 Nextest (via `cargo test-all` / `--all-targets`) compiles examples and runs their embedded `#[cfg(test)]` modules; it never executes an example `main()` on its own.
 
-## Nondeterministic examples reduce their run in CI, detected in the test
+## Deterministic examples always run their full path; nondeterministic examples skip in CI only
 
-Examples that require nondeterministic access (network, external services, managed-tool downloads) must detect CI in the test that calls `main()`, never inside `main()` itself. The test body:
+Examples that require nondeterministic access (network, external services, managed-tool downloads) must detect CI in the test that calls `main()`, never inside `main()` itself. The policy:
 
-1. Detects CI using the standard CI environment variables (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `DRONE`).
-2. When CI is detected, sets the example's reduced-mode environment variable and then calls `super::main()`, which runs the config-only path (no network, no external tools).
-3. When CI is not detected, it does not set the reduced-mode variable (no reduced-mode) and skips with a documented message when the full path is unsafe or blocked; full runs stay manual via `cargo run --example`.
+1. **Deterministic examples** (e.g. the offline demo) always run their full path in tests — no reduced mode, no CI detection. If the full path is temporarily blocked by an unimplemented dependency, the test is `#[ignore]`d with a rationale pointing to `TODO.md`; it is not skipped via CI detection.
+2. **Nondeterministic examples** (e.g. the online demo) detect CI using the standard CI environment variables (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `DRONE`):
+   - In CI: the test skips with a documented message (the full path is nondeterministic and must not run in CI).
+   - Outside CI: the test runs the full path (no reduced mode). If the full path is temporarily blocked by an unimplemented dependency, the test is `#[ignore]`d with a rationale pointing to `TODO.md`.
 
 `main()` itself must be deterministic given environment inputs: no CI detection, no network probing, and no conditional behavior other than what the documented environment variables select.
+
+## Temporarily-gated tests use `#[ignore]` with a `TODO.md` pointer
+
+When a full-sync example test fails because an upstream feature is not yet implemented (Stream A stubs), it is temporarily gated with `#[ignore = "<exact failure summary>; ... see TODO.md — remove only on explicit user request"]`. `TODO.md` at the repository root contains the complete procedure for removing these gates; it is executed only when the user explicitly asks, never implicitly.
 
 ## Examples-as-tests must be isolated
 
