@@ -34,6 +34,7 @@ use std::path::Path;
 use url::Url;
 
 pub use conductor_bridge::sync::find_active_tool_spec;
+pub use config::versions::{apply_v1_contract, evaluate_mod_ncl_expression, validate_v1_document};
 pub use config::{
     DecodedOutputVariantConfig, GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind,
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, ManagedFileRecord,
@@ -160,6 +161,324 @@ pub fn load_runtime_dotenv(env_file: &Path, env_generated_file: &Path) {
     let _ = dotenvy::from_path_override(env_generated_file);
 }
 
+/// Hand-authored strict draft-07 JSON schema for the mediapm V1 document
+/// surface (S-C9).
+///
+/// Mirrors `v1.ncl`'s closed-contract shape: every fixed-shape object closes
+/// `additionalProperties` and declares its `required` list, integral fields
+/// use `"type": "integer"`, and enum fields carry closed `enum` lists.  The
+/// structure is enforced recursively by
+/// `tests/int/schema_strictness.rs::json_schema_export_is_strict`.
+#[expect(clippy::too_many_lines, reason = "hand-authored schema literal is necessarily long")]
+fn mediapm_strict_config_schema() -> serde_json::Value {
+    // Stored as a raw string literal: the equivalent `json!` invocation exceeds
+    // the macro recursion limit for this depth of nesting.
+    serde_json::from_str(
+        r##"{
+        "$schema": "https://json-schema.org/draft-07/schema#",
+        "title": "MediaPmConfig",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "media", "hierarchy", "tools", "runtime"],
+        "properties": {
+            "version": { "type": "integer", "minimum": 0 },
+            "media": {
+                "type": "object",
+                "additionalProperties": { "$ref": "#/definitions/mediaSourceSpec" }
+            },
+            "hierarchy": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/hierarchyNode" }
+            },
+            "tools": {
+                "type": "object",
+                "additionalProperties": { "$ref": "#/definitions/toolRequirement" }
+            },
+            "runtime": { "$ref": "#/definitions/runtimeStorage" }
+        },
+        "definitions": {
+            "regexTransform": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["pattern", "replacement"],
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "replacement": { "type": "string" }
+                }
+            },
+            "variantBinding": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["variant", "metadata_key"],
+                "properties": {
+                    "variant": { "type": "string" },
+                    "metadata_key": { "type": "string" },
+                    "transform": { "$ref": "#/definitions/regexTransform" }
+                }
+            },
+            "metadataValue": {
+                "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/definitions/variantBinding" },
+                    {
+                        "type": "array",
+                        "items": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "$ref": "#/definitions/variantBinding" }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "outputSaveConfig": {
+                "anyOf": [
+                    { "type": "boolean" },
+                    { "const": "full" }
+                ]
+            },
+            "genericOutputVariant": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind"],
+                "properties": {
+                    "kind": { "type": "string" },
+                    "save": { "$ref": "#/definitions/outputSaveConfig" },
+                    "capture_kind": { "type": "string", "enum": ["file", "folder"] },
+                    "zip_member": { "type": "string" },
+                    "idx": { "type": "integer" },
+                    "extension": { "type": "string" }
+                }
+            },
+            "ytDlpOutputVariant": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind"],
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["primary", "chapters", "subtitles", "thumbnails",
+                                 "description", "infojson", "comment", "archive",
+                                 "annotation", "links"]
+                    },
+                    "save": { "$ref": "#/definitions/outputSaveConfig" },
+                    "capture_kind": { "type": "string", "enum": ["file", "folder"] },
+                    "langs": { "type": "string" },
+                    "thumbnail_ids": { "type": "string" },
+                    "sub_format": { "type": "string" },
+                    "convert": { "type": "string" },
+                    "zip_member": { "type": "string" }
+                }
+            },
+            "outputVariantValue": {
+                "anyOf": [
+                    { "$ref": "#/definitions/genericOutputVariant" },
+                    { "$ref": "#/definitions/ytDlpOutputVariant" }
+                ]
+            },
+            "mediaStep": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["tool"],
+                "properties": {
+                    "tool": {
+                        "type": "string",
+                        "enum": ["yt-dlp", "import", "ffmpeg", "rsgain", "media-tagger"]
+                    },
+                    "input_variants": { "type": "array", "items": { "type": "string" } },
+                    "output_variants": {
+                        "type": "object",
+                        "additionalProperties": { "$ref": "#/definitions/outputVariantValue" }
+                    },
+                    "options": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" }
+                    }
+                }
+            },
+            "mediaSourceSpec": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                    "description": { "type": "string" },
+                    "title": { "type": "string" },
+                    "artist": { "type": "string" },
+                    "metadata": {
+                        "type": "object",
+                        "additionalProperties": { "$ref": "#/definitions/metadataValue" }
+                    },
+                    "variant_hashes": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "steps": {
+                        "type": "array",
+                        "items": { "$ref": "#/definitions/mediaStep" }
+                    }
+                }
+            },
+            "renameRule": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["pattern", "replacement"],
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "replacement": { "type": "string" }
+                }
+            },
+            "playlistItemRef": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "path": { "type": "string" }
+                }
+            },
+            "sanitizeNamesConfig": {
+                "anyOf": [
+                    { "const": "inherit" },
+                    { "type": "boolean" },
+                    { "type": "object", "additionalProperties": { "type": "string" } }
+                ]
+            },
+            "hierarchyNode": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                    "path": {
+                        "anyOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" } }
+                        ]
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["folder", "media", "media_folder", "playlist"]
+                    },
+                    "id": { "type": "string" },
+                    "media_id": { "type": "string" },
+                    "variant": { "type": "string" },
+                    "variants": { "type": "array", "items": { "type": "string" } },
+                    "rename_files": {
+                        "type": "array",
+                        "items": { "$ref": "#/definitions/renameRule" }
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["m3u8", "pls", "xspf", "wpl", "asx"]
+                    },
+                    "ids": {
+                        "type": "array",
+                        "items": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "$ref": "#/definitions/playlistItemRef" }
+                            ]
+                        }
+                    },
+                    "sanitize_names": { "$ref": "#/definitions/sanitizeNamesConfig" },
+                    "children": {
+                        "type": "array",
+                        "items": { "$ref": "#/definitions/hierarchyNode" }
+                    }
+                }
+            },
+            "exactVersionSpec": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                    "vcs_hash": { "type": "string" },
+                    "version": { "type": "string" },
+                    "tag": { "type": "string" }
+                }
+            },
+            "configVersionSpec": {
+                "anyOf": [
+                    { "const": "latest" },
+                    { "const": "inherit" },
+                    { "$ref": "#/definitions/exactVersionSpec" }
+                ]
+            },
+            "versionSpec": {
+                "anyOf": [
+                    { "const": "latest" },
+                    { "$ref": "#/definitions/exactVersionSpec" }
+                ]
+            },
+            "toolRequirement": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                    "version_spec": { "$ref": "#/definitions/configVersionSpec" },
+                    "dependencies": {
+                        "type": "object",
+                        "additionalProperties": { "$ref": "#/definitions/configVersionSpec" }
+                    },
+                    "recheck_seconds": { "type": "integer" },
+                    "max_input_slots": { "type": "integer" },
+                    "max_output_slots": { "type": "integer" }
+                }
+            },
+            "runtimeStorage": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                    "mediapm_dir": { "type": "string" },
+                    "hierarchy_root_dir": { "type": "string" },
+                    "materialization_preference_order": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["hardlink", "symlink", "reflink", "copy"]
+                        }
+                    },
+                    "verify_on_read": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["always", "modified", "sample", "stale"]
+                        }
+                    },
+                    "verify_on_read_sample_denominator": { "type": "integer" },
+                    "verify_on_read_stale_timeout_secs": { "type": "integer" },
+                    "reconstructed_cache_ttl_seconds": { "type": "integer" },
+                    "instance_ttl_seconds": { "type": "integer" },
+                    "inherited_env_vars": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [],
+                        "properties": {
+                            "windows": { "type": "array", "items": { "type": "string" } },
+                            "linux": { "type": "array", "items": { "type": "string" } },
+                            "macos": { "type": "array", "items": { "type": "string" } }
+                        }
+                    },
+                    "media_state_config": { "type": "string" },
+                    "conductor_config": { "type": "string" },
+                    "conductor_generated_config": { "type": "string" },
+                    "conductor_state_config": { "type": "string" },
+                    "conductor_schema_dir": { "type": "string" },
+                    "env_file": { "type": "string" },
+                    "env_generated_file": { "type": "string" },
+                    "mediapm_schema_dir": { "type": "string" },
+                    "profiler_enabled": { "type": "boolean" },
+                    "verify_materialization": { "type": "boolean" },
+                    "retry_impure": { "type": "boolean" },
+                    "path_sanitization": { "$ref": "#/definitions/sanitizeNamesConfig" }
+                }
+            }
+        }
+}"##,
+    )
+    .expect("static mediapm schema")
+}
+
 /// Exports mediapm and conductor JSON schemas to disk for both the
 /// mediapm-native and conductor-managed schema directories.
 ///
@@ -180,17 +499,7 @@ pub fn export_mediapm_nickel_config_schemas(
             path: export_dir.to_path_buf(),
             source: e,
         })?;
-        let mediapm_schema = serde_json::json!({
-            "$schema": "https://json-schema.org/draft-07/schema#",
-            "title": "MediaPmConfig",
-            "type": "object",
-            "properties": {
-                "version": { "type": "integer" },
-                "media": { "type": "object" },
-                "hierarchy": { "type": "array" },
-                "runtime": { "type": "object" }
-            }
-        });
+        let mediapm_schema = mediapm_strict_config_schema();
         let schema_path = export_dir.join("mediapm.schema.json");
         fs::write(
             &schema_path,

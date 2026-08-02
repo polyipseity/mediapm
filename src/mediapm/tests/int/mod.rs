@@ -3,6 +3,9 @@
 mod builtins;
 mod demo;
 mod demo_online;
+/// Nickel schema strictness tests (S-C1..S-C10) — validates the strict
+/// closed-contract surface of `v1.ncl`/`mod.ncl` and the exported JSON schema.
+mod schema_strictness;
 /// Nickel schema sync-prevention tests — validates v1.ncl stays in sync
 /// with `MediaPmDocument` / `MediaPmDocumentEnvelopeV1` Rust types.
 mod schema_sync;
