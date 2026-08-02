@@ -127,6 +127,10 @@ impl StoreSizeStats {
     }
 }
 
+/// Env var overriding the artifact root; tests set it to unique tempdirs so
+/// runs never share the canonical artifact directory (CAS flock isolation).
+const MEDIAPM_EXAMPLE_ARTIFACT_ROOT: &str = "MEDIAPM_EXAMPLE_ARTIFACT_ROOT";
+
 /// Env var overriding the user-level tool download cache root; set to a
 /// unique tempdir when tests or scripts need `sync` to never touch the real
 /// OS user cache.
@@ -150,6 +154,9 @@ struct DemoRunPaths {
 }
 
 fn artifact_root() -> PathBuf {
+    if let Some(root) = std::env::var_os(MEDIAPM_EXAMPLE_ARTIFACT_ROOT) {
+        return PathBuf::from(root);
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join("artifacts").join("demo")
 }
 
@@ -1126,6 +1133,27 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Points `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` at a unique tempdir for the
+    /// guard's lifetime so tests never share the canonical artifact
+    /// directory (CAS flock isolation under parallel test processes).
+    struct IsolatedArtifactRoot {
+        _temp: tempfile::TempDir,
+    }
+
+    impl IsolatedArtifactRoot {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("create temp artifact root");
+            unsafe { std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, temp.path()) };
+            Self { _temp: temp }
+        }
+    }
+
+    impl Drop for IsolatedArtifactRoot {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT) };
+        }
+    }
+
     /// Executes the documented example entry point via `main()`. CI detection
     /// lives in this test, never in `main()`: when CI is detected the reduced
     /// mode env override is set before calling `main()`; outside CI the test
@@ -1141,6 +1169,8 @@ mod tests {
             );
             return;
         }
+
+        let _isolated = IsolatedArtifactRoot::new();
 
         let previous = std::env::var(super::DEMO_RUN_SYNC_ENV_VAR).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
@@ -1165,6 +1195,7 @@ mod tests {
     /// workflow manifest when runtime sync is intentionally skipped.
     #[tokio::test]
     async fn generate_demo_artifacts_writes_manifest_and_import_metadata() {
+        let _isolated = IsolatedArtifactRoot::new();
         let run = super::generate_demo_artifacts(false).await.expect("demo artifact generation");
 
         assert!(run.manifest_path.exists(), "manifest should be written");
