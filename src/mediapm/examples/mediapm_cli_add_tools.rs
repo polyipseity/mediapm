@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mediapm::{
-    ConfigVersionSpec, MediaPmService, ToolRequirement, load_mediapm_document,
+    ConfigVersionSpec, MediaPmService, MediaRuntimeStorage, ToolRequirement, load_mediapm_document,
     save_mediapm_document,
 };
 use mediapm_cas::Hash;
@@ -26,6 +26,19 @@ const TOOL_NAMES: [&str; 6] = ["yt-dlp", "ffmpeg", "deno", "rsgain", "sd", "medi
 /// Env var overriding the artifact root; tests set it to unique tempdirs so
 /// runs never share the canonical artifact directory (CAS flock isolation).
 const MEDIAPM_EXAMPLE_ARTIFACT_ROOT: &str = "MEDIAPM_EXAMPLE_ARTIFACT_ROOT";
+
+/// Env var overriding the user-level tool download cache root; tests set it
+/// to a unique tempdir so `sync_tools` never touches the real OS user cache.
+const MEDIAPM_EXAMPLE_CACHE_ROOT: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
+
+/// Runtime storage derived from the `MEDIAPM_EXAMPLE_CACHE_ROOT` override
+/// (identity behavior when unset).
+fn example_runtime_storage() -> MediaRuntimeStorage {
+    MediaRuntimeStorage {
+        cache_root_override: std::env::var_os(MEDIAPM_EXAMPLE_CACHE_ROOT).map(PathBuf::from),
+        ..MediaRuntimeStorage::default()
+    }
+}
 
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
@@ -106,7 +119,9 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
-    let mut service = MediaPmService::new_fs_at(&root).await?;
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(&root, example_runtime_storage())
+            .await?;
     let _ = service.sync_tools().await?;
 
     let paths = service.paths();
@@ -202,33 +217,47 @@ mod tests {
     use mediapm::load_mediapm_document;
     use mediapm_conductor::{NickelDocument, decode_document};
 
-    use super::{MEDIAPM_EXAMPLE_ARTIFACT_ROOT, run_add_tools_example};
+    use super::{MEDIAPM_EXAMPLE_ARTIFACT_ROOT, MEDIAPM_EXAMPLE_CACHE_ROOT, run_add_tools_example};
 
-    /// Points `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` at a unique tempdir for the
-    /// guard's lifetime so tests never share the canonical artifact
-    /// directory (CAS flock isolation under parallel test processes).
-    struct IsolatedArtifactRoot {
-        _temp: tempfile::TempDir,
+    /// Points `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` and `MEDIAPM_EXAMPLE_CACHE_ROOT`
+    /// at unique tempdirs for the guard's lifetime so tests never share the
+    /// canonical artifact directory or the real OS user-level download cache
+    /// (flock isolation under parallel test processes).
+    struct IsolatedRun {
+        _artifact_root: tempfile::TempDir,
+        _cache_root: tempfile::TempDir,
     }
 
-    impl IsolatedArtifactRoot {
+    impl IsolatedRun {
         fn new() -> Self {
-            let temp = tempfile::tempdir().expect("create temp artifact root");
-            unsafe { std::env::set_var(MEDIAPM_EXAMPLE_ARTIFACT_ROOT, temp.path()) };
-            Self { _temp: temp }
+            let artifact_root = tempfile::tempdir().expect("create temp artifact root");
+            let cache_root = tempfile::tempdir().expect("create temp cache root");
+            unsafe {
+                std::env::set_var(MEDIAPM_EXAMPLE_ARTIFACT_ROOT, artifact_root.path());
+                std::env::set_var(MEDIAPM_EXAMPLE_CACHE_ROOT, cache_root.path());
+            }
+            Self { _artifact_root: artifact_root, _cache_root: cache_root }
         }
     }
 
-    impl Drop for IsolatedArtifactRoot {
+    impl Drop for IsolatedRun {
         fn drop(&mut self) {
-            unsafe { std::env::remove_var(MEDIAPM_EXAMPLE_ARTIFACT_ROOT) };
+            unsafe {
+                std::env::remove_var(MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
+                std::env::remove_var(MEDIAPM_EXAMPLE_CACHE_ROOT);
+            }
         }
     }
 
     #[tokio::test]
     async fn add_tools_writes_expected_config_documents() {
-        let _isolated = IsolatedArtifactRoot::new();
+        let isolated = IsolatedRun::new();
         let manifest = run_add_tools_example().await.expect("run add-tools example");
+
+        assert!(
+            isolated._cache_root.path().join("store").exists(),
+            "tool sync should have used the isolated user cache root"
+        );
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
         assert!(
@@ -259,7 +288,7 @@ mod tests {
     /// Ensures the documented CLI entry point runs end to end via `main()`.
     #[test]
     fn main_is_exercised() {
-        let _isolated = IsolatedArtifactRoot::new();
+        let _isolated = IsolatedRun::new();
         super::main().expect("example main should run to completion");
     }
 }

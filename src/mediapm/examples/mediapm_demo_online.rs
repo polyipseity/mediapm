@@ -232,6 +232,20 @@ impl StoreSizeStats {
     }
 }
 
+/// Env var overriding the user-level tool download cache root; set to a
+/// unique tempdir when tests or scripts need `sync` to never touch the real
+/// OS user cache.
+const MEDIAPM_EXAMPLE_CACHE_ROOT: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
+
+/// Runtime storage derived from the `MEDIAPM_EXAMPLE_CACHE_ROOT` override
+/// (identity behavior when unset).
+fn example_runtime_storage() -> MediaRuntimeStorage {
+    MediaRuntimeStorage {
+        cache_root_override: std::env::var_os(MEDIAPM_EXAMPLE_CACHE_ROOT).map(PathBuf::from),
+        ..MediaRuntimeStorage::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DemoRunPaths {
     artifact_root: PathBuf,
@@ -2258,7 +2272,11 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         let cas = mediapm_cas::InMemoryCas::new();
         let conductor =
             SimpleConductor::new(RuntimeStoragePaths::new(&workspace_root.join(".mediapm")), cas);
-        MediaPmService::new(conductor, MediaPmPaths::from_root(&workspace_root))
+        MediaPmService::new_with_runtime_storage_overrides(
+            conductor,
+            MediaPmPaths::from_root(&workspace_root),
+            example_runtime_storage(),
+        )
     };
     let (precheck_updated_tools, precheck_added_tools, precheck_pruned_tools) =
         run_tools_update_precheck(&mut service, &workspace_root).await?;
@@ -2276,7 +2294,11 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             RuntimeStoragePaths::new(&workspace_root.join(".mediapm")),
             file_system_cas,
         );
-        MediaPmService::new(conductor, MediaPmPaths::from_root(&workspace_root))
+        MediaPmService::new_with_runtime_storage_overrides(
+            conductor,
+            MediaPmPaths::from_root(&workspace_root),
+            example_runtime_storage(),
+        )
     };
 
     eprintln!(
