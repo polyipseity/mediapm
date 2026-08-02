@@ -16,10 +16,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
     ConfigVersionSpec, HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath,
-    MaterializationMethod, MediaMetadataValue, MediaMetadataVariantBinding, MediaPmPaths,
-    MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistFormat,
-    PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, TransformInputValue,
-    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    MaterializationMethod, MediaMetadataValue, MediaMetadataVariantBinding, MediaPmDocument,
+    MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
+    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement,
+    TransformInputValue, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
     save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -677,7 +677,13 @@ fn assert_materialized_output_hardlinked_to_cas(
 )]
 fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Vec<String>> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
-    let mut document = load_mediapm_document(&mediapm_ncl)?;
+    // The artifact root is reset fresh on every run; start from a default
+    // document when no seed `mediapm.ncl` exists yet.
+    let mut document = if mediapm_ncl.exists() {
+        load_mediapm_document(&mediapm_ncl)?
+    } else {
+        MediaPmDocument::default()
+    };
     document.tools = BTreeMap::from([
         (
             "yt-dlp".to_string(),
@@ -1218,21 +1224,39 @@ fn seed_old_synced_tools_state_for_update_precheck(
 ) -> ExampleResult<()> {
     service.refresh_runtime_configuration()?;
 
-    let mut machine: NickelDocument =
-        decode_document(fs::read(&service.paths().conductor_generated_ncl)?.as_slice())?;
+    // The generated conductor document does not exist on a fresh workspace
+    // (it is first produced by a sync); start from an empty document so the
+    // stale-tool seed can be applied before the first sync runs.
+    let machine_path = service.paths().conductor_generated_ncl.clone();
+    let mut machine: NickelDocument = if machine_path.exists() {
+        decode_document(fs::read(&machine_path)?.as_slice())?
+    } else {
+        NickelDocument::default()
+    };
     let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_json)?;
 
     for logical_tool_name in logical_tool_ids {
-        let stale_tool_id =
-            format!("mediapm.tools.{}+demo@old", logical_tool_name.trim().to_ascii_lowercase());
         let stale_payload = format!("stale-tool-payload::{logical_tool_name}");
         let stale_hash = Hash::from_content(stale_payload.as_bytes());
+        // Generated-doc key follows the "{name}@{content_map_hash}" convention
+        // so prune logic treats the seeded entry as an old version of the tool.
+        let stale_tool_id = format!("{logical_tool_name}@{stale_hash}");
         let stale_relative_path = format!("legacy/{logical_tool_name}/tool.bin");
 
+        machine.external_data.insert(
+            stale_hash,
+            mediapm_conductor::ExternalDataEntry {
+                description: format!("stale payload for {logical_tool_name}"),
+                save_mode: mediapm_conductor::OutputSaveMode::Saved,
+            },
+        );
+        // The seeded spec must carry the bare logical tool id as `name` so the
+        // reconcile's `already_exists` check (`spec.name == tool_id`) counts it
+        // as an update rather than an addition.
         machine.tools.insert(
             stale_tool_id.clone(),
             ToolSpec {
-                name: stale_tool_id.clone(),
+                name: logical_tool_name.clone(),
                 kind: ToolKindSpec::Executable {
                     command: vec![format!("./{stale_relative_path}")],
                     env_vars: BTreeMap::new(),
@@ -1250,9 +1274,9 @@ fn seed_old_synced_tools_state_for_update_precheck(
         );
 
         lock.managed_tools.push(ToolRegistryEntry {
-            tool_id: stale_tool_id,
-            version: String::new(),
-            canonical_version: String::new(),
+            tool_id: logical_tool_name.clone(),
+            version: "old".to_string(),
+            canonical_version: "old".to_string(),
             content_map_hash: stale_hash.to_string(),
             deployed_at: unix_timestamp_seconds(),
             resolved_tag: None,
@@ -1303,12 +1327,8 @@ fn resolve_tool_binaries(
     let mut binaries = BTreeMap::new();
 
     for tool_id in tool_ids {
-        let resolved_tool_id = resolve_managed_tool_id(machine, tool_id)?;
-
-        let spec =
-            machine.tools.values().find(|t| t.name == resolved_tool_id).ok_or_else(|| {
-                format!("machine config is missing tool spec for '{resolved_tool_id}'")
-            })?;
+        let spec = find_managed_tool_spec(machine, tool_id)?;
+        let resolved_tool_id = &spec.name;
 
         let ToolKindSpec::Executable { command, .. } = &spec.kind else {
             return Err(
@@ -1325,20 +1345,14 @@ fn resolve_tool_binaries(
             );
         }
 
-        let has_content_map = machine
-            .tools
-            .values()
-            .find(|t| t.name == resolved_tool_id)
-            .map(|t| &t.runtime.content_map)
-            .is_some_and(|map| !map.is_empty());
-        if !has_content_map {
+        if spec.runtime.content_map.is_empty() {
             return Err(format!(
                 "tool '{resolved_tool_id}' is missing content_map payload entries"
             )
             .into());
         }
 
-        binaries.insert(resolved_tool_id, first.clone());
+        binaries.insert(resolved_tool_id.clone(), first.clone());
     }
 
     Ok(binaries)
@@ -1393,10 +1407,7 @@ fn assert_yt_dlp_concurrency_policy(
     machine: &NickelDocument,
     yt_dlp_tool_id: &str,
 ) -> ExampleResult<i32> {
-    let observed = machine
-        .tools
-        .values()
-        .find(|t| t.name == yt_dlp_tool_id)
+    let observed = find_managed_tool_spec(machine, yt_dlp_tool_id)
         .map_or(-1, |t| t.runtime.max_concurrent_calls as i32);
 
     if observed != 1 {
@@ -1414,10 +1425,7 @@ fn assert_yt_dlp_retry_policy(
     machine: &NickelDocument,
     yt_dlp_tool_id: &str,
 ) -> ExampleResult<i32> {
-    let observed = machine
-        .tools
-        .values()
-        .find(|t| t.name == yt_dlp_tool_id)
+    let observed = find_managed_tool_spec(machine, yt_dlp_tool_id)
         .map_or(-1, |t| t.runtime.max_retries as i32);
 
     if observed != 1 {
@@ -2377,44 +2385,39 @@ fn logical_name_from_managed_tool_id(tool_id: &str) -> Option<&str> {
     (!logical_name.is_empty()).then_some(logical_name)
 }
 
-fn resolve_managed_tool_id(machine: &NickelDocument, logical_name: &str) -> ExampleResult<String> {
-    let matches: Vec<String> = machine
-        .tools
-        .values()
-        .map(|t| t.name.clone())
-        .filter(|candidate| {
-            logical_name_from_managed_tool_id(candidate).is_some_and(|name| name == logical_name)
-        })
-        .collect();
-
-    match matches.len() {
-        0 => Err(format!(
-            "machine config is missing immutable managed tool id for logical tool '{logical_name}'"
-        )
-        .into()),
-        1 => Ok(matches[0].clone()),
-        _ => {
-            // Prefer the tool with non-empty content_map (active).
-            let with_content = matches
-                .iter()
-                .filter(|id| {
-                    machine
-                        .tools
-                        .values()
-                        .find(|t| t.name == **id)
-                        .is_some_and(|t| !t.runtime.content_map.is_empty())
-                })
-                .collect::<Vec<_>>();
-            if with_content.len() == 1 {
-                return Ok(with_content[0].clone());
-            }
-            Err(format!(
-                "tool selector '{logical_name}' matched multiple managed tool ids ({}) and the content_map tiebreaker could not resolve; pass --tool <immutable-id>",
-                matches.join(", ")
-            )
-            .into())
+/// Find the active managed tool spec for a logical tool id.
+///
+/// The generated doc may hold several specs with the same bare name: pruned
+/// stale versions keep the name with an emptied `content_map` while the active
+/// version carries the payload map. Mirror the reconcile's skip-path preference
+/// (non-empty content map wins, any matching spec as fallback) so resolution
+/// is deterministic under name collisions.
+fn find_managed_tool_spec<'a>(
+    machine: &'a NickelDocument,
+    logical_name: &str,
+) -> ExampleResult<&'a ToolSpec> {
+    let mut fallback: Option<&'a ToolSpec> = None;
+    for spec in machine.tools.values() {
+        if spec.name != logical_name {
+            continue;
+        }
+        if !spec.runtime.content_map.is_empty() {
+            return Ok(spec);
+        }
+        if fallback.is_none() {
+            fallback = Some(spec);
         }
     }
+    fallback.ok_or_else(|| {
+        format!(
+            "machine config is missing immutable managed tool id for logical tool '{logical_name}'"
+        )
+        .into()
+    })
+}
+
+fn resolve_managed_tool_id(machine: &NickelDocument, logical_name: &str) -> ExampleResult<String> {
+    Ok(find_managed_tool_spec(machine, logical_name)?.name.clone())
 }
 
 fn ci_mode_detected() -> bool {
