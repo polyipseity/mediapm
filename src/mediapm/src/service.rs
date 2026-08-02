@@ -984,25 +984,19 @@ impl MediaPmService<FileSystemCas> {
         // 4. Check if any tools require sync.
         self.append_tool_sync_hint_warning(&mut warnings, &state).await?;
 
-        // 5 – 6. Open CAS and run the materializer.
-        let materialize_report = {
-            let conductor_cas_root = resolve_conductor_cas_root(&effective_paths);
-            let strategies = merged.to_verify_strategies();
-            let cas = FileSystemCas::open_with_strategies(&conductor_cas_root, strategies)
-                .await
-                .map_err(|e| {
-                    MediaPmError::Workflow(format!("failed to open filesystem CAS: {e}"))
-                })?;
-            materializer::sync_hierarchy(
-                &effective_paths,
-                &document,
-                &state,
-                &cas,
-                verify_materialization,
-                None,
-            )
-            .await?
-        };
+        // 5 – 6. Reuse the service's CAS and run the materializer. Opening a
+        // second `FileSystemCas` at the same store root would fail with
+        // `LockContention`, since the service constructor already holds the
+        // directory lock for its lifetime.
+        let materialize_report = materializer::sync_hierarchy(
+            &effective_paths,
+            &document,
+            &state,
+            self.conductor.cas(),
+            verify_materialization,
+            None,
+        )
+        .await?;
 
         // 7. Gather warnings from materializer.
         warnings.extend(materialize_report.notices);
