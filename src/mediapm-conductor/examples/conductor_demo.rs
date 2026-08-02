@@ -95,3 +95,12 @@ async fn run_demo() -> ExampleResult<()> {
 async fn main() -> ExampleResult<()> {
     run_demo().await
 }
+
+#[cfg(test)]
+mod tests {
+    /// Ensures the documented example entry point runs end to end via `main()`.
+    #[test]
+    fn main_is_exercised() {
+        super::main().expect("example main should run to completion");
+    }
+}
