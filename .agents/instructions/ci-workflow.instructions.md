@@ -40,7 +40,7 @@ Install or update hooks: `pre-commit install`. Run all hooks manually: `pre-comm
 ## Known nextest caveats
 
 1. **No doctest support.** Nextest does not run doctests. Always pair nextest with `cargo test --doc --workspace` — this is why `scripts/run-all-tests.sh` and pre-push hooks include a separate doctest step.
-2. **Binary/test executable detection only.** Nextest only discovers binary and test crate targets. It does not run examples or benchmarks. Use `cargo build --examples` or `cargo bench` separately.
+2. **Example `main()` is not executed.** Nextest compiles examples and runs their embedded `#[cfg(test)]` modules when invoked with `--all-targets` (as `test-all` does), but it never executes an example's `main()` on its own. Example `main()` execution is the responsibility of embedded tests per `example-execution-policy.instructions.md`.
 3. **`#[should_panic]` tests may timeout.** Nextest applies a per-test timeout (configured via `slow-timeout` in `.config/nextest.toml`). A `#[should_panic]` test that deadlocks or loops infinitely will be killed by the timeout rather than hanging indefinitely. Adjust `slow-timeout` if needed.
 4. **Leak detection is experimental.** The `leak-timeout` setting in `.config/nextest.toml` warns on unresolved child processes. Can produce false positives for tests holding OS resources (file descriptors, sockets). Disable globally or per-test if it causes CI flakiness.
 5. **No `--nocapture` by default.** Nextest captures stdout/stderr per test and displays it grouped by pass/fail. To see live output, use `cargo nextest run --show-output`. The `test-all` alias does not pass `--show-output`; use `cargo bin cargo-nextest run --show-output` for debugging.

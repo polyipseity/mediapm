@@ -21,6 +21,10 @@ across the mediapm workspace.
    - **Property tests** (`#[cfg(feature = "proptest")]`) for determinism,
      idempotency, and round-trip behavior
    - **Demo examples** (for mediapm) validate the full pipeline
+   - **Example mains** — every example under `src/*/examples/` must exercise
+     its own `main()` via an embedded test; nondeterministic examples detect
+     CI in the test and reduce the run (see
+     `example-execution-policy.instructions.md`)
 
 2a. **Enforce exact-output matching for terminal-rendering tests** — When
 writing tests that validate progress bar, spinner, or any
@@ -83,6 +87,7 @@ Use only ASCII markers in the Status column:
 | Selective tests     | `cargo test -p <crate>` for iterating             | During development |
 | Full workspace      | `cargo test --no-fail-fast`                       | Before push        |
 | Demos               | `cargo run --example mediapm_demo` (and \_online) | Before push        |
+| Example mains       | Embedded tests exercise each example `main()` (nextest `--all-targets`) | Every example change |
 | Coverage review     | Compare spec items vs test status                 | Per-release        |
 
 ## Coverage matrix
@@ -460,3 +465,9 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `ExternalDataEntry` re-exported from `mediapm-conductor` for external use (demo seeding)                                                              | Compilation check — `mediapm_demo.rs` seeds `mediapm_conductor::ExternalDataEntry` in generated-doc precheck state                                            | [covered] |
 | Demo precheck seeds generated-doc state so `{name}@{hash}` stale-tool pruning reconciles (missing-file default, external_data insert, bare-name spec) | `generate_demo_artifacts_writes_manifest_and_import_metadata` (example test) + `sync` integration suite green                                                 | [covered] |
 | Pre-roll width expectation fix: existing terminal content scrolls into scrollback (pre-existing row above, re-verified)                               | `pre_roll_with_existing_content_scrolls_it_away` — exact `concat!()` body matching + no-substring assertion (see "Pre-roll" section)                          | [covered] |
+
+### Example main-execution policy
+
+| Spec item                                                                                                     | Test(s)                                                                                                                                                                                                                          | Status    |
+| ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| Policy documented: every example `main()` exercised by an embedded test; CI detection lives in the test, never in `main()`                                                  | `example-execution-policy.instructions.md` (spec), `ci-workflow.instructions.md` nextest caveat #2, `AGENTS.md` Key References, this file's "When Adding a Feature" bullet + Validation Gates row                          | [covered] |

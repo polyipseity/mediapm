@@ -179,6 +179,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - `.agents/instructions/rust-workflow.instructions.md` — Rust editing and validation guidance
 - `.agents/instructions/mediapm-architecture.instructions.md` — crate boundaries and cross-crate invariants
 - `.agents/instructions/rust-conventions.instructions.md` — test expectations and Rustdoc/docstring depth requirements
+- `.agents/instructions/example-execution-policy.instructions.md` — example main-execution policy (every example main exercised by an embedded test; CI detection lives in tests)
 - `.agents/instructions/nickel.instructions.md` — Nickel (.ncl) schema and migration conventions
 - `.agents/instructions/toml.instructions.md` — TOML formatting and file-specific conventions
 - `src/mediapm-cas/AGENTS.md`, `src/mediapm-conductor/AGENTS.md`, `src/mediapm/AGENTS.md` — crate-level detailed behavioral contracts
