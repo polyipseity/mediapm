@@ -224,4 +224,10 @@ mod tests {
             );
         }
     }
+
+    /// Ensures the documented CLI entry point runs end to end via `main()`.
+    #[test]
+    fn main_is_exercised() {
+        super::main().expect("example main should run to completion");
+    }
 }
