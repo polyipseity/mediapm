@@ -13,6 +13,10 @@ mod decode_migration;
 /// with `NickelDocument` Rust types.
 mod schema_sync;
 
+/// Schema strictness guard — re-asserts v2.ncl strictness properties
+/// (closed envelope, non-empty strings, integer guards, closed platform keys).
+mod schema_strictness;
+
 /// Platform filtering: cfg-derived FOREIGN_PLATFORM_DIRS correctness and
 /// the explicit link_to_sandbox_filtered API.
 mod platform_filtering;

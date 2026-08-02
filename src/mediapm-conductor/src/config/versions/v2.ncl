@@ -71,16 +71,25 @@ let ToolContentMapV2 = { _ : NonEmptyStringV2 } in
 let ToolRuntimeV2 = {
   content_map | ToolContentMapV2 | optional,
   impure | Bool | optional,
-  inherited_env_vars | Array String | optional,
+  inherited_env_vars | Array NonEmptyStringV2 | optional,
   max_concurrent_calls | IntegerNumberV2 | optional,
   max_retries | IntegerNumberV2 | optional,
+}
+in
+
+# ||| Platform-specific inherited environment variable names.
+# ||| Keys are closed to the three supported platforms (S-A5).
+let PlatformInheritedEnvVarsV2 = {
+  windows | Array NonEmptyStringV2 | optional,
+  linux | Array NonEmptyStringV2 | optional,
+  macos | Array NonEmptyStringV2 | optional,
 }
 in
 
 # ||| Runtime configuration for the conductor itself (not per-tool).
 let ConductorRuntimeConfigV2 = {
   retry_impure | Bool | optional,
-  platform_inherited_env_vars | { _ : Array String } | optional,
+  platform_inherited_env_vars | PlatformInheritedEnvVarsV2 | optional,
 }
 in
 
@@ -136,8 +145,8 @@ in
 # ||| One workflow definition (ordered steps DAG).
 let WorkflowSpecV2 = {
   name | NonEmptyStringV2,
-  display_name | String | optional,
-  description | String | optional,
+  display_name | NonEmptyStringV2 | optional,
+  description | NonEmptyStringV2 | optional,
   impure | Bool | optional,
   steps | Array WorkflowStepSpecV2 | optional,
 }
@@ -146,7 +155,7 @@ in
 # ||| External data content reference: a CAS-addressed blob with
 # ||| metadata describing how to persist it.
 let ExternalContentRefV2 = {
-  hash | String | optional,
+  hash | NonEmptyStringV2 | optional,
   description | String | optional,
   save
     | std.contract.any_of [
@@ -158,13 +167,13 @@ let ExternalContentRefV2 = {
 in
 
 # ||| Top-level persisted Nickel document envelope for schema version 2.
+# ||| Closed record: unknown top-level fields are rejected (S-A1).
 let NickelDocumentV2 = {
-  version | VersionTwoV2 | optional,
+  version | VersionTwoV2,
   tools | { _ : ToolSpecV2 } | optional,
   workflows | Array WorkflowSpecV2 | optional,
   external_data | { _ : ExternalContentRefV2 } | optional,
   runtime | ConductorRuntimeConfigV2 | optional,
-  ..
 }
 in
 
@@ -174,28 +183,33 @@ in
 # ||| impure_timestamps, state_pointer).
 let migrate_v1_to_v2_fn = fun data =>
   let config_runtime_map =
-    if std.record.has_field "tool_configs" data then
-      std.record.fields data.tool_configs
+    if std.record.has_field "runtime" data
+      && std.is_record data.runtime
+      && std.record.has_field "tool_configs" data.runtime then
+      # ||| v1 nests `tool_configs` under `runtime` (not top-level).
+      let tc_root = data.runtime.tool_configs in
+      std.record.fields tc_root
       |> std.array.fold_left
         (fun acc =>
           fun key =>
-            let tc = data.tool_configs."%{key}" in
+            let tc = tc_root."%{key}" in
             acc
             & {
               "%{key}" = {
-                content_map =
-                  if std.record.has_field "content_map" tc then tc.content_map else null,
                 default_inputs =
-                  if std.record.has_field "input_defaults" tc then tc.input_defaults else null,
-                inherited_env_vars =
-                  if std.record.has_field "env_vars" tc then
-                    std.record.fields tc.env_vars
+                  if std.record.has_field "input_defaults" tc then
+                    tc.input_defaults
                   else
-                    null,
-                max_concurrent_calls =
-                  if std.record.has_field "max_concurrent_calls" tc then tc.max_concurrent_calls else null,
-                max_retries =
-                  if std.record.has_field "max_retries" tc then tc.max_retries else null,
+                    {},
+                # ||| Partial ToolRuntimeV2. Absent fields are omitted, not
+                # ||| set to `null`: explicit `null` is rejected by
+                # ||| `| optional` contracts, so omission keeps the migrated
+                # ||| document valid against the tightened envelope.
+                runtime =
+                  (if std.record.has_field "content_map" tc then { content_map = tc.content_map } else {})
+                  & (if std.record.has_field "env_vars" tc then { inherited_env_vars = std.record.fields tc.env_vars } else {})
+                  & (if std.record.has_field "max_concurrent_calls" tc then { max_concurrent_calls = tc.max_concurrent_calls } else {})
+                  & (if std.record.has_field "max_retries" tc then { max_retries = tc.max_retries } else {})
               }
             }
         )
@@ -217,32 +231,20 @@ let migrate_v1_to_v2_fn = fun data =>
                 # BuiltinToolSpecV1 — already has name + version
                 {
                   kind = "builtin",
-                  name = t.name,
-                  version = t.version,
+                  name = key,
+                  builtin_id = t.builtin_id,
                   inputs =
                     if std.record.has_field "inputs" t then
                       t.inputs
                       |> std.record.map (fun ik =>
                         fun iv =>
-                          if std.record.has_field "kind" iv then
-                            { kind = iv.kind, description = iv.description, required = iv.required }
-                          else
-                            { kind = "string", description = iv.description, required = iv.required }
+                          (if std.record.has_field "kind" iv then { kind = iv.kind } else { kind = "string" })
+                          & (if std.record.has_field "required" iv then { required = iv.required } else {})
                       )
                     else
                       {},
                   default_inputs = if config_rt == null then {} else (config_rt.default_inputs | { _ : InputBindingV2 }),
-                  runtime =
-                    if config_rt == null then
-                      null
-                    else
-                      {
-                        content_map = config_rt.content_map,
-                        impure = null,
-                        inherited_env_vars = config_rt.inherited_env_vars,
-                        max_concurrent_calls = config_rt.max_concurrent_calls,
-                        max_retries = config_rt.max_retries,
-                      },
+                  runtime = if config_rt == null then {} else config_rt.runtime,
                 }
               else
                 # ExecutableToolSpecV1 — use map key as name
@@ -252,7 +254,6 @@ let migrate_v1_to_v2_fn = fun data =>
                 {
                   kind = "executable",
                   name = key,
-                  version = "",
                   command = cmd_arr,
                   env_vars = base_env_vars,
                   success_codes = base_success_codes,
@@ -261,21 +262,15 @@ let migrate_v1_to_v2_fn = fun data =>
                       t.inputs
                       |> std.record.map (fun ik =>
                         fun iv =>
-                          if std.record.has_field "kind" iv then
-                            { kind = iv.kind, description = iv.description, required = iv.required }
-                          else
-                            { kind = "string", description = iv.description, required = iv.required }
+                          (if std.record.has_field "kind" iv then { kind = iv.kind } else { kind = "string" })
+                          & (if std.record.has_field "required" iv then { required = iv.required } else {})
                       )
                     else
                       {},
                   default_inputs = if config_rt == null then {} else (config_rt.default_inputs | { _ : InputBindingV2 }),
-                  runtime = {
-                    impure = if std.record.has_field "is_impure" t then (t.is_impure | Bool) else false,
-                    content_map = if config_rt == null then null else config_rt.content_map,
-                    inherited_env_vars = if config_rt == null then null else config_rt.inherited_env_vars,
-                    max_concurrent_calls = if config_rt == null then null else config_rt.max_concurrent_calls,
-                    max_retries = if config_rt == null then null else config_rt.max_retries,
-                  },
+                  runtime =
+                    { impure = if std.record.has_field "is_impure" t then (t.is_impure | Bool) else false }
+                    & (if config_rt == null then {} else config_rt.runtime),
                 }
             in
             acc & { "%{key}" = spec }
@@ -290,47 +285,44 @@ let migrate_v1_to_v2_fn = fun data =>
       |> std.array.map (fun key =>
         let w = data.workflows."%{key}" in
         let w_name = if std.record.has_field "name" w then w.name else key in
-        {
-          name = w_name,
-          display_name = null,
-          description = if std.record.has_field "description" w then w.description else null,
-          impure = null,
-          steps =
-            if std.record.has_field "steps" w then
-              w.steps
-              |> std.array.map (fun step =>
-                let mapped_outputs =
-                  if std.record.has_field "outputs" step then
-                    std.record.fields step.outputs
-                    |> std.array.fold_left
-                      (fun acc =>
-                        fun oname =>
-                          acc & { "%{oname}" = { name = oname, capture = oname } }
-                      )
-                      {}
-                  else
-                    {}
-                in
-                {
-                  id = step.id,
-                  tool = step.tool,
-                  inputs =
-                    if std.record.has_field "inputs" step then
-                      step.inputs
-                      |> std.record.map (fun ik =>
-                        fun iv =>
-                          if std.is_string iv then iv else ""
-                      )
+        { name = w_name }
+        & (if std.record.has_field "description" w then { description = w.description } else {})
+        & {
+            steps =
+              if std.record.has_field "steps" w then
+                w.steps
+                |> std.array.map (fun step =>
+                  let mapped_outputs =
+                    if std.record.has_field "outputs" step then
+                      std.record.fields step.outputs
+                      |> std.array.fold_left
+                        (fun acc =>
+                          fun oname =>
+                            acc & { "%{oname}" = { name = oname, capture = oname } }
+                        )
+                        {}
                     else
-                      {},
-                  outputs = mapped_outputs,
-                  max_retries = null,
-                  depends_on = if std.record.has_field "depends_on" step then step.depends_on else [],
-                }
-              )
-            else
-              [],
-        }
+                      {}
+                  in
+                  {
+                    id = step.id,
+                    tool = step.tool,
+                    inputs =
+                      if std.record.has_field "inputs" step then
+                        step.inputs
+                        |> std.record.map (fun ik =>
+                          fun iv =>
+                            if std.is_string iv then iv else ""
+                        )
+                      else
+                        {},
+                    outputs = mapped_outputs,
+                    depends_on = if std.record.has_field "depends_on" step then step.depends_on else [],
+                  }
+                )
+              else
+                [],
+          }
       )
     else
       []
@@ -338,11 +330,18 @@ let migrate_v1_to_v2_fn = fun data =>
   let runtime_v2 =
     if std.record.has_field "runtime" data then
       let rt = data.runtime in
-      {
-        retry_impure = if std.record.has_field "retry_impure" rt then (rt.retry_impure | Bool) else null,
-        platform_inherited_env_vars =
-          if std.record.has_field "inherited_env_vars" rt then rt.inherited_env_vars else null,
-      }
+      (if std.record.has_field "retry_impure" rt then { retry_impure = rt.retry_impure | Bool } else {})
+      & (if std.record.has_field "inherited_env_vars" rt && std.is_record rt.inherited_env_vars then
+          # ||| Platform keys are closed (S-A5): carry known platforms through
+          # ||| and drop unknown keys the closed v2 contract would reject.
+          {
+            platform_inherited_env_vars =
+              (if std.record.has_field "windows" rt.inherited_env_vars then { windows = rt.inherited_env_vars.windows } else {})
+              & (if std.record.has_field "linux" rt.inherited_env_vars then { linux = rt.inherited_env_vars.linux } else {})
+              & (if std.record.has_field "macos" rt.inherited_env_vars then { macos = rt.inherited_env_vars.macos } else {})
+          }
+        else
+          {})
     else
       {}
   in

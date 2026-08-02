@@ -31,4 +31,8 @@ let supported_versions_val = [1, 2] in
   supported_versions = supported_versions_val,
   migrate_to = migrate_to_fn,
   SupportedVersion = SupportedVersion_pred,
+  # ||| Unversioned alias for the latest-schema document validator.
+  validate_document = v2_migration.validate_document_v2,
+  # ||| Unversioned alias for the latest-schema envelope contract.
+  envelope_contract = v2_migration.envelope_contract_v2,
 }

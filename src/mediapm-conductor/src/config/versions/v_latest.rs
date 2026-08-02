@@ -461,10 +461,13 @@ pub(crate) struct WorkflowSpecLatest {
     /// Workflow name.
     pub(crate) name: String,
     /// Display label.
-    #[serde(default)]
+    ///
+    /// Omitted when empty: the v2 Nickel contract types these fields as
+    /// `| NonEmptyStringV2 | optional`, which rejects empty strings.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) display_name: String,
     /// Description.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) description: String,
     /// Impure flag.
     #[serde(default)]

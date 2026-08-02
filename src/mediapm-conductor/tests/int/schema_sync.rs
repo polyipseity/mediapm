@@ -59,16 +59,43 @@ fn v2_nickel_schema_structure() {
         "v2.ncl must make runtime optional (NickelDocument has #[serde(default)] on runtime)"
     );
 
-    // --- version MUST be optional ---
+    // --- version MUST be required (S-A2) ---
     assert!(
-        schema.contains("version | VersionTwoV2 | optional"),
-        "v2.ncl must make version optional (NickelDocument has no version field)"
+        schema.contains("version | VersionTwoV2,"),
+        "v2.ncl must make version required (envelope carries the version marker)"
+    );
+    assert!(
+        !schema.contains("version | VersionTwoV2 | optional"),
+        "v2.ncl must not mark version optional (version is required)"
     );
 
-    // --- MUST allow extra fields (..) ---
+    // --- envelope MUST be closed (S-A1): no `..` open-record marker ---
     assert!(
-        schema.contains(".."),
-        "v2.ncl NickelDocumentV2 must allow extra fields via .. for forward compat"
+        !schema.lines().any(|line| line.trim() == ".."),
+        "v2.ncl NickelDocumentV2 must be a closed record (no `..` for forward compat)"
+    );
+
+    // --- strictness assertions (S-A3, S-A4, S-A5, S-A6) ---
+    assert!(
+        schema.contains("hash | NonEmptyStringV2 | optional"),
+        "v2.ncl ExternalContentRefV2.hash must be a non-empty string"
+    );
+    assert!(
+        schema.contains("inherited_env_vars | Array NonEmptyStringV2 | optional"),
+        "v2.ncl ToolRuntimeV2.inherited_env_vars must be an array of non-empty strings"
+    );
+    assert!(
+        schema.contains("platform_inherited_env_vars | PlatformInheritedEnvVarsV2 | optional"),
+        "v2.ncl platform_inherited_env_vars must use the closed PlatformInheritedEnvVarsV2 contract"
+    );
+    assert!(
+        !schema.contains("platform_inherited_env_vars | { _ : Array String }"),
+        "v2.ncl must not accept arbitrary platform keys in platform_inherited_env_vars"
+    );
+    assert!(
+        schema.contains("display_name | NonEmptyStringV2 | optional")
+            && schema.contains("description | NonEmptyStringV2 | optional"),
+        "v2.ncl WorkflowSpecV2 display_name/description must be non-empty strings"
     );
 
     // --- MUST still define key contracts ---
