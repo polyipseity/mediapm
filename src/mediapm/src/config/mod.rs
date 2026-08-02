@@ -446,6 +446,13 @@ pub struct MediaPmDocument {
     /// Runtime configuration overrides.
     #[serde(default)]
     pub runtime: MediaRuntimeStorage,
+    /// Legacy `state` payload accepted for V1 documents.
+    ///
+    /// State is managed separately via `state.json`; the V2 schema drops this
+    /// field, so it is accepted on read for legacy documents and never
+    /// emitted on V2 writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<MediaPmState>,
 }
 
 impl Default for MediaPmDocument {
@@ -456,6 +463,7 @@ impl Default for MediaPmDocument {
             hierarchy: Vec::new(),
             tools: BTreeMap::new(),
             runtime: MediaRuntimeStorage::default(),
+            state: None,
         }
     }
 }

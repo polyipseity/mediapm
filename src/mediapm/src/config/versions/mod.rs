@@ -12,8 +12,11 @@ use serde_json::Value;
 use crate::error::MediaPmError;
 
 mod v1;
+mod v2;
 
 use super::MediaPmDocument;
+use v1::MediaPmDocumentEnvelopeV1;
+use v2::MediaPmDocumentEnvelopeV2;
 
 // ---------------------------------------------------------------------------
 // Migrate trait
@@ -45,7 +48,8 @@ pub fn decode_mediapm_document_value(value: Value) -> Result<MediaPmDocument, Me
     let version = extract_version_field(&value)?;
 
     match version {
-        1 => MediaPmDocument::decode(value),
+        1 => MediaPmDocumentEnvelopeV1::decode(value).map(MediaPmDocument::from),
+        2 => MediaPmDocumentEnvelopeV2::decode(value).map(MediaPmDocument::from),
         // Latest version is always rust-backed; versions beyond that are
         // unsupported.
         _ => Err(MediaPmError::Workflow(format!(
@@ -56,7 +60,8 @@ pub fn decode_mediapm_document_value(value: Value) -> Result<MediaPmDocument, Me
 
 /// Encodes one mediapm document to its latest stable wire format.
 pub fn encode_mediapm_document_value(doc: &MediaPmDocument) -> Result<Value, MediaPmError> {
-    doc.encode()
+    // Encode to the latest (V2) wire format.
+    MediaPmDocumentEnvelopeV2::from(doc).encode()
 }
 
 // ---------------------------------------------------------------------------
@@ -93,11 +98,11 @@ pub fn extract_version_field(value: &Value) -> Result<u64, MediaPmError> {
 
 /// Numeric schema versions supported by the mediapm registry (mirrors
 /// `mod.ncl`'s `SupportedVersion` / `supported_versions`).
-pub const SUPPORTED_VERSIONS: &[u32] = &[1];
+pub const SUPPORTED_VERSIONS: &[u32] = &[1, 2];
 
 /// The current (latest) supported schema version (mirrors `mod.ncl`'s
 /// `current_version`).
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
 
 /// Predicate mirroring `mod.ncl`'s `SupportedVersion`.
 #[must_use]
@@ -105,27 +110,41 @@ pub fn is_supported_version(version: u32) -> bool {
     SUPPORTED_VERSIONS.contains(&version)
 }
 
-/// Identity migration stub mirroring `mod.ncl`'s `migrate_to`.
+/// Migrates one mediapm document JSON value to the requested version,
+/// mirroring `mod.ncl`'s `migrate_to` dispatch.
 ///
-/// mediapm currently supports a single document version, so migration is the
-/// identity when the requested version matches the document's version and any
-/// other combination is an error.
+/// Each version envelope owns its edges, matching the placement policy in
+/// the Nickel schema files: V1→V2 strips the legacy `state` payload (via the
+/// unified model's `From`), and V2→V1 bumps the version marker only (V1
+/// accepts stateless documents).
 pub fn migrate_to(requested_version: u32, document: Value) -> Result<Value, MediaPmError> {
     let version = extract_version_field(&document)?;
     if u64::from(requested_version) == version && is_supported_version(requested_version) {
         return Ok(document);
     }
-    Err(MediaPmError::Workflow(format!(
-        "no migration edge between mediapm document versions {version} and {requested_version}",
-    )))
+    match (version, requested_version) {
+        (1, 2) => {
+            let model = MediaPmDocument::from(MediaPmDocumentEnvelopeV1::decode(document)?);
+            MediaPmDocumentEnvelopeV2::from(&model).encode()
+        }
+        (2, 1) => {
+            let model = MediaPmDocument::from(MediaPmDocumentEnvelopeV2::decode(document)?);
+            MediaPmDocumentEnvelopeV1::from(&model).encode()
+        }
+        _ => Err(MediaPmError::Workflow(format!(
+            "no migration edge between mediapm document versions {version} and {requested_version}",
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Nickel schema validation helpers (used by integration tests)
 // ---------------------------------------------------------------------------
 
-/// Evaluates `document | v1.<contract_name>` for one document source against
-/// the embedded `v1.ncl` module, returning the validated JSON value.
+/// Writes one versioned schema file, its sibling version modules, and a
+/// `document | v{version}.<contract_name>` wrapper into a fresh temp
+/// workspace, then evaluates the wrapper against the embedded
+/// `{version}.ncl` module, returning the validated JSON value.
 ///
 /// Contract failures surface as `MediaPmError::Workflow`.
 ///
@@ -133,7 +152,11 @@ pub fn migrate_to(requested_version: u32, document: Value) -> Result<Value, Medi
 ///
 /// Returns [`MediaPmError`] when the temp workspace cannot be written or the
 /// wrapper cannot be evaluated.
-pub fn apply_v1_contract(contract_name: &str, source: &str) -> Result<Value, MediaPmError> {
+fn apply_version_contract(
+    version: &str,
+    contract_name: &str,
+    source: &str,
+) -> Result<Value, MediaPmError> {
     const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
     const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
     const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
@@ -170,19 +193,21 @@ pub fn apply_v1_contract(contract_name: &str, source: &str) -> Result<Value, Med
         path: input_path.clone(),
         source: err,
     })?;
-    // `validate_document_v1` is a plain function (not a contract): applying
-    // it with `document | v1.validate_document_v1` hits the deprecated
-    // function-as-contract path, so it is invoked as a function.  Record
-    // contracts like `MediaPmStateV1` are applied with `|` as usual.
-    let application = if contract_name == "validate_document_v1" {
-        "v1.validate_document_v1 document".to_string()
+    // `validate_document_v{version}` is a plain function (not a contract):
+    // applying it with `document | v{version}.validate_document_v{version}`
+    // hits the deprecated function-as-contract path, so it is invoked as a
+    // function.  Record contracts like `MediaPmStateV1` are applied with `|`
+    // as usual.
+    let validator = format!("validate_document_{version}");
+    let application = if contract_name == validator {
+        format!("{version}.{validator} document")
     } else {
-        format!("document | v1.{contract_name}")
+        format!("document | {version}.{contract_name}")
     };
     std::fs::write(
         &wrapper_path,
         format!(
-            "let v1 = import \"v1.ncl\" in\n\
+            "let {version} = import \"{version}.ncl\" in\n\
              let document = import \"document_input.ncl\" in\n\
              {application}\n",
         ),
@@ -195,6 +220,26 @@ pub fn apply_v1_contract(contract_name: &str, source: &str) -> Result<Value, Med
     super::nickel_io::evaluate_nickel_source_to_json(&wrapper_path)
 }
 
+/// Applies one V1 schema contract to a document source.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the document source fails contract
+/// validation or cannot be evaluated.
+pub fn apply_v1_contract(contract_name: &str, source: &str) -> Result<Value, MediaPmError> {
+    apply_version_contract("v1", contract_name, source)
+}
+
+/// Applies one V2 schema contract to a document source.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the document source fails contract
+/// validation or cannot be evaluated.
+pub fn apply_v2_contract(contract_name: &str, source: &str) -> Result<Value, MediaPmError> {
+    apply_version_contract("v2", contract_name, source)
+}
+
 /// Validates one V1 mediapm document source against the embedded `v1.ncl`
 /// `MediaPmDocumentV1` contract.
 ///
@@ -204,6 +249,17 @@ pub fn apply_v1_contract(contract_name: &str, source: &str) -> Result<Value, Med
 /// validation or cannot be evaluated.
 pub fn validate_v1_document(source: &str) -> Result<Value, MediaPmError> {
     apply_v1_contract("validate_document_v1", source)
+}
+
+/// Validates one V2 mediapm document source against the embedded `v2.ncl`
+/// `MediaPmDocumentV2` contract.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the document source fails contract
+/// validation or cannot be evaluated.
+pub fn validate_v2_document(source: &str) -> Result<Value, MediaPmError> {
+    apply_v2_contract("validate_document_v2", source)
 }
 
 /// Evaluates one expression in the scope of the embedded `mod.ncl` registry

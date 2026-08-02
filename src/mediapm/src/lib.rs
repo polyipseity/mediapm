@@ -34,7 +34,10 @@ use std::path::Path;
 use url::Url;
 
 pub use conductor_bridge::sync::find_active_tool_spec;
-pub use config::versions::{apply_v1_contract, evaluate_mod_ncl_expression, validate_v1_document};
+pub use config::versions::{
+    apply_v1_contract, apply_v2_contract, evaluate_mod_ncl_expression, validate_v1_document,
+    validate_v2_document,
+};
 pub use config::{
     GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule,
     HierarchyNode, HierarchyNodeKind, HierarchyPath, ManagedFileRecord, MaterializationMethod,

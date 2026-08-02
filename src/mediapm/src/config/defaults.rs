@@ -9,7 +9,7 @@ use super::VerifyStrategy;
 use super::hierarchy_types::SanitizeNamesConfig;
 
 /// Current persisted schema marker for `mediapm.ncl`.
-pub const MEDIAPM_DOCUMENT_VERSION: u32 = 1;
+pub const MEDIAPM_DOCUMENT_VERSION: u32 = 2;
 
 /// Serde default function for `version` field.
 #[must_use]
