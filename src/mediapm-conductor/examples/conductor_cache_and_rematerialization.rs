@@ -44,7 +44,7 @@ fn build_document() -> NickelDocument {
                 steps: vec![
                     WorkflowStepSpec {
                         id: "shared_a".to_string(),
-                        tool: "echo@v1".to_string(),
+                        tool: "echo".to_string(),
                         inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
@@ -61,7 +61,7 @@ fn build_document() -> NickelDocument {
                     },
                     WorkflowStepSpec {
                         id: "consumer_a".to_string(),
-                        tool: "echo@v1".to_string(),
+                        tool: "echo".to_string(),
                         inputs: BTreeMap::from([(
                             "text".to_string(),
                             "consume:${step_output.shared_a.result}".to_string(),
@@ -80,7 +80,7 @@ fn build_document() -> NickelDocument {
                 steps: vec![
                     WorkflowStepSpec {
                         id: "shared_b".to_string(),
-                        tool: "echo@v1".to_string(),
+                        tool: "echo".to_string(),
                         inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
@@ -97,7 +97,7 @@ fn build_document() -> NickelDocument {
                     },
                     WorkflowStepSpec {
                         id: "consumer_b".to_string(),
-                        tool: "echo@v1".to_string(),
+                        tool: "echo".to_string(),
                         inputs: BTreeMap::from([(
                             "text".to_string(),
                             "consume:${step_output.shared_b.result}".to_string(),

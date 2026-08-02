@@ -43,7 +43,7 @@ fn build_document() -> NickelDocument {
             steps: vec![
                 WorkflowStepSpec {
                     id: "step_a".into(),
-                    tool: "echo@v1".into(),
+                    tool: "echo".into(),
                     inputs: BTreeMap::from([("text".into(), "step_a".into())]),
                     outputs: BTreeMap::from([(
                         "result".into(),
@@ -60,7 +60,7 @@ fn build_document() -> NickelDocument {
                 },
                 WorkflowStepSpec {
                     id: "step_b".into(),
-                    tool: "echo@v1".into(),
+                    tool: "echo".into(),
                     inputs: BTreeMap::from([("text".into(), "step_b".into())]),
                     outputs: BTreeMap::from([(
                         "result".into(),
@@ -77,7 +77,7 @@ fn build_document() -> NickelDocument {
                 },
                 WorkflowStepSpec {
                     id: "step_c".into(),
-                    tool: "echo@v1".into(),
+                    tool: "echo".into(),
                     inputs: BTreeMap::from([(
                         "text".into(),
                         "join:${step_output.step_a.result}+${step_output.step_b.result}".into(),

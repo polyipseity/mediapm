@@ -116,3 +116,40 @@ pub(crate) struct StepExecutionBundle {
     /// Whether this result came from a cache hit (vs. fresh execution).
     pub cache_hit: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a tools catalog whose map key carries the versioned builtin id
+    /// (`"echo@v1"`) while `spec.name` is the plain tool name.
+    fn echo_tools_map() -> BTreeMap<String, UnifiedToolSpec> {
+        BTreeMap::from([(
+            "echo@v1".to_string(),
+            UnifiedToolSpec {
+                name: "echo".to_string(),
+                is_impure: false,
+                max_concurrent_calls: 0,
+                max_retries: 0,
+                inputs: BTreeMap::new(),
+                default_inputs: BTreeMap::new(),
+                command_parts: Vec::new(),
+                success_codes: Vec::new(),
+                execution_env_vars: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                tool_content_map: BTreeMap::new(),
+                builtin_id: Some("echo@v1".to_string()),
+            },
+        )])
+    }
+
+    /// Regression: workflow steps reference a tool by its registered name
+    /// (`ToolSpec.name`), not by the tools map key. A step referencing the
+    /// versioned key `"echo@v1"` must NOT resolve.
+    #[test]
+    fn find_tool_by_name_matches_spec_name_not_map_key() {
+        let tools = echo_tools_map();
+        assert_eq!(find_tool_by_name(&tools, "echo").map(|spec| spec.name.as_str()), Some("echo"));
+        assert!(find_tool_by_name(&tools, "echo@v1").is_none());
+    }
+}

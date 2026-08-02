@@ -43,7 +43,7 @@ fn build_document() -> NickelDocument {
             impure: false,
             steps: vec![WorkflowStepSpec {
                 id: "greeting".into(),
-                tool: "echo@v1".into(),
+                tool: "echo".into(),
                 inputs: BTreeMap::from([("text".into(), "Hello from conductor demo!".into())]),
                 outputs: BTreeMap::from([(
                     "result".into(),
