@@ -17,6 +17,10 @@ const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-sources";
 const DUMMY_LOCAL_SOURCE_FILE: &str = "dummy-local-video.mp4";
 const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
+/// Env var overriding the artifact root; tests set it to unique tempdirs so
+/// runs never share the canonical artifact directory (CAS flock isolation).
+const MEDIAPM_EXAMPLE_ARTIFACT_ROOT: &str = "MEDIAPM_EXAMPLE_ARTIFACT_ROOT";
+
 /// Embedded tiny MP4 payload containing both video and audio tracks.
 const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
 
@@ -43,7 +47,12 @@ fn workspace_root() -> PathBuf {
 }
 
 fn artifact_root() -> PathBuf {
-    workspace_root().join("src/mediapm/examples/artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
+    match std::env::var_os(MEDIAPM_EXAMPLE_ARTIFACT_ROOT) {
+        Some(root) => PathBuf::from(root),
+        None => {
+            workspace_root().join("src/mediapm/examples/artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
+        }
+    }
 }
 
 fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
@@ -119,10 +128,32 @@ async fn main() -> ExampleResult<()> {
 mod tests {
     use mediapm::{MediaStepTool, TransformInputValue, load_mediapm_document};
 
-    use super::run_add_sources_example;
+    use super::{MEDIAPM_EXAMPLE_ARTIFACT_ROOT, run_add_sources_example};
+
+    /// Points `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` at a unique tempdir for the
+    /// guard's lifetime so tests never share the canonical artifact
+    /// directory (CAS flock isolation under parallel test processes).
+    struct IsolatedArtifactRoot {
+        _temp: tempfile::TempDir,
+    }
+
+    impl IsolatedArtifactRoot {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("create temp artifact root");
+            unsafe { std::env::set_var(MEDIAPM_EXAMPLE_ARTIFACT_ROOT, temp.path()) };
+            Self { _temp: temp }
+        }
+    }
+
+    impl Drop for IsolatedArtifactRoot {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var(MEDIAPM_EXAMPLE_ARTIFACT_ROOT) };
+        }
+    }
 
     #[tokio::test]
     async fn cli_add_sources_writes_expected_config_documents() {
+        let _isolated = IsolatedArtifactRoot::new();
         let manifest = run_add_sources_example().await.expect("run add-sources example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
@@ -170,6 +201,7 @@ mod tests {
     /// Ensures the documented CLI entry point runs end to end via `main()`.
     #[test]
     fn main_is_exercised() {
+        let _isolated = IsolatedArtifactRoot::new();
         super::main().expect("example main should run to completion");
     }
 }
