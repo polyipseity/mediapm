@@ -58,7 +58,7 @@ Key ecosystem (from `Cargo.toml`):
 
 ## Provider progress size tracking
 
-Provider progress size tracking uses the [`MultiItemBudget`](../.agents/instructions/progress-budget.instructions.md)
+Provider progress size tracking uses the [`MultiItemBudget`](../../.agents/instructions/progress-budget.instructions.md)
 architecture: a per-item budget model where each tool source or archive entry
 is one budget item. This replaces ad-hoc `agg_completed_bytes`/`agg_total_bytes`/
 `source_input_cost` parameters and the legacy `ByteBudget` type.
@@ -447,7 +447,9 @@ For config schema files under `src/mediapm-conductor/src/config/versions/`:
 - This repository may intentionally evolve `v1` directly when requested.
 - Do not add compatibility shims unless explicitly requested.
 - Keep Rust bridge structs synchronized with `.ncl` contracts.
+- Follow the schema strictness policy (S1–S13) in `.agents/instructions/nickel.instructions.md`: closed record contracts by default, no untyped `Dyn`/`TagOrString` values, integer guards on every integral Number, required `version` markers, per-version + unversioned registry exports. Unknown fields, untyped values, and unguarded numbers must be rejected, never silently accepted or dropped.
 - Keep unversioned/latest Nickel contract aliases (`validate_document` and `envelope_contract`) in `mod.ncl`; versioned files (`vN.ncl`) should expose only version-suffixed contracts (`validate_document_vN`, `envelope_contract_vN`).
+- Every persisted Nickel schema must have a parity test (the `schema_sync.rs` pattern) asserting the Nickel contract and the Rust serde shape agree, including strictness properties; the regression requirements R1–R6 in `.agents/instructions/sdd-tdd-workflow.instructions.md` apply.
 - Keep test fixtures aligned with current schema semantics.
 
 If schema shape changes, update together:
