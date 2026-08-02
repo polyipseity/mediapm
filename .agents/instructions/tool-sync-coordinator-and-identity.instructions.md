@@ -21,7 +21,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
    - `Some(path)` → use the provided path as the cache root
      A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
-4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool*id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are also candidates for `resolved*\*` backfill — see "Resolved-field population and skip backfill" below.
+4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool*id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_message("skipped")` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are also candidates for `resolved*\*` backfill — see "Resolved-field population and skip backfill" below. When a skipped tool's runtime is reconstructed under its conductor tool id, the coordinator uses the canonical `find_active_tool_spec()` helper (both skip paths — the version-matched skip and the fetch-level skip — plus any external consumer such as the demo examples). See "Active tool spec resolution" below.
 5. **Active-tool tracking (pruning)** — the active set for filesystem pruning is
    the set of **mediapm conductor tool ids** collected in `tool_runtimes` (every
    tool inserted by the provisioning loop, keyed by its generated-doc key —
@@ -90,6 +90,14 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
 
 - **Population at record construction**: every `ToolRegistryEntry` produced by the provisioning loop (both the `Ok(Some(payload))` and `Ok(None)` paths) carries the three `resolved_*` fields from provider metadata (`ResolvedToolMetadata`). `resolved_tag`, `resolved_version`, and `resolved_vcs_hash` are `Option<String>` — `None` (JSON `null`) when the provider has no value, never `""`.
 - **Skip backfill**: when a tool routes through `PreResolveOutcome::Skip` (already provisioned at the resolved canonical version), its stored entry may predate the `resolved_*` fields. The coordinator collects those entries in `report.resolved_field_backfills`, and `service.rs` applies them in place after the sync pass: match on `(tool_id, canonical_version)`, fill only `None` fields from fresh provider metadata, never overwrite `Some` values, and preserve `version`, `content_map_hash`, and `deployed_at`. Entries with no missing fields are not collected. The backfill is a no-op when provider metadata matches the stored values, keeping re-sync byte-identical.
+
+### Active tool spec resolution
+
+`find_active_tool_spec(doc, tool_name)` is the single authoritative way to resolve the active `ToolSpec` for a logical tool name inside a generated document. The generated doc may hold several specs with the same bare `name`: pruned stale versions keep the name with an emptied `runtime.content_map`, while the active version carries the payload map.
+
+- Resolution contract: prefer the first spec (deterministic `BTreeMap` key order) whose `runtime.content_map` is non-empty; fall back to the first name match (any content map) so a no-payload tool still resolves; return `None` when no spec matches.
+- The reconcile skip paths (version-matched skip and fetch-level skip) both use this helper to reconstruct the skipped tool's runtime under its conductor tool id; external consumers (e.g. the demo examples) delegate to the same helper so resolution never diverges from the reconcile contract.
+- Do not inline a name-match loop elsewhere; name collisions with stale pruned entries are resolved by this single preference rule.
 
 ### Invariants
 

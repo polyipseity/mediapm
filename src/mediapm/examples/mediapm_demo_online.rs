@@ -2422,26 +2422,15 @@ fn logical_name_from_managed_tool_id(tool_id: &str) -> Option<&str> {
 ///
 /// The generated doc may hold several specs with the same bare name: pruned
 /// stale versions keep the name with an emptied `content_map` while the active
-/// version carries the payload map. Mirror the reconcile's skip-path preference
-/// (non-empty content map wins, any matching spec as fallback) so resolution
-/// is deterministic under name collisions.
+/// version carries the payload map. Delegates to the reconcile's canonical
+/// [`find_active_tool_spec`](mediapm::find_active_tool_spec) so demo
+/// resolution stays identical to the skip-path preference (non-empty content
+/// map wins, any matching spec as fallback).
 fn find_managed_tool_spec<'a>(
     machine: &'a NickelDocument,
     logical_name: &str,
 ) -> ExampleResult<&'a ToolSpec> {
-    let mut fallback: Option<&'a ToolSpec> = None;
-    for spec in machine.tools.values() {
-        if spec.name != logical_name {
-            continue;
-        }
-        if !spec.runtime.content_map.is_empty() {
-            return Ok(spec);
-        }
-        if fallback.is_none() {
-            fallback = Some(spec);
-        }
-    }
-    fallback.ok_or_else(|| {
+    mediapm::find_active_tool_spec(machine, logical_name).map(|(_, spec)| spec).ok_or_else(|| {
         format!(
             "machine config is missing immutable managed tool id for logical tool '{logical_name}'"
         )

@@ -33,6 +33,7 @@ use std::path::Path;
 
 use url::Url;
 
+pub use conductor_bridge::sync::find_active_tool_spec;
 pub use config::{
     DecodedOutputVariantConfig, GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind,
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, ManagedFileRecord,

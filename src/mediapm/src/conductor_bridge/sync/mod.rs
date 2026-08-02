@@ -25,7 +25,7 @@ use mediapm_conductor::provision::retain_only_tool_dirs;
 use mediapm_conductor::runtime_env::write_generated_dotenv;
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
-use mediapm_conductor::{ToolRuntime, ToolSpec};
+use mediapm_conductor::{NickelDocument, ToolRuntime, ToolSpec};
 
 use crate::tools::dependency::DependencyType;
 use crate::tools::provider::RecheckPolicy;
@@ -356,6 +356,43 @@ pub(crate) fn compute_composite_canonical_version(
     composite_canonical_version(bare, &dep_versions)
 }
 
+/// Find the active spec for a logical tool name in a generated document.
+///
+/// The generated doc may hold several specs with the same bare name: pruned
+/// stale versions keep the name with an emptied `content_map` while the active
+/// version carries the payload map. The active tool is therefore the spec
+/// whose `runtime.content_map` is non-empty. This is the single authoritative
+/// resolution used by the reconcile skip paths and by callers that need the
+/// current managed-tool identity (e.g. the demo examples).
+///
+/// Resolution contract:
+/// - Prefer the first spec (deterministic `BTreeMap` key order) whose
+///   `runtime.content_map` is non-empty — that is the active entry.
+/// - Fall back to the first spec matching `tool_name` (any content map) so a
+///   no-payload tool (empty map) still resolves deterministically.
+/// - Return `None` when no spec matches `tool_name`.
+///
+/// Returns the generated-doc key and the matched spec.
+#[must_use]
+pub fn find_active_tool_spec<'a>(
+    doc: &'a NickelDocument,
+    tool_name: &str,
+) -> Option<(&'a String, &'a ToolSpec)> {
+    let mut fallback: Option<(&'a String, &'a ToolSpec)> = None;
+    for (key, spec) in &doc.tools {
+        if spec.name != tool_name {
+            continue;
+        }
+        if !spec.runtime.content_map.is_empty() {
+            return Some((key, spec));
+        }
+        if fallback.is_none() {
+            fallback = Some((key, spec));
+        }
+    }
+    fallback
+}
+
 /// Runs the full tool-reconciliation cycle for the current workspace.
 ///
 /// # Errors
@@ -481,23 +518,10 @@ pub(crate) async fn reconcile_desired_tools(
             ) {
                 // Already have the desired version — skip provisioning.
                 // Reconstruct the runtime under its conductor tool id
-                // (generated doc key). Prefer the active `{name}@{hash}`
-                // entry with a non-empty content map; stale pruned keys
-                // have cleared maps and a bare stale entry may linger.
-                let mut chosen: Option<(&String, &ToolSpec)> = None;
-                for (key, spec) in &generated_doc.tools {
-                    if spec.name != *tool_id {
-                        continue;
-                    }
-                    if !spec.runtime.content_map.is_empty() {
-                        chosen = Some((key, spec));
-                        break;
-                    }
-                    if chosen.is_none() {
-                        chosen = Some((key, spec));
-                    }
-                }
-                if let Some((key, spec)) = chosen {
+                // (generated doc key). The active `{name}@{hash}` entry wins;
+                // stale pruned keys have cleared maps and a bare stale entry
+                // may linger.
+                if let Some((key, spec)) = find_active_tool_spec(&generated_doc, tool_id) {
                     tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
                 }
                 report.tools_skipped += 1;
@@ -657,23 +681,10 @@ pub(crate) async fn reconcile_desired_tools(
 
         if was_skip {
             // Skipped tools still need env var entries. Reconstruct the
-            // runtime under its conductor tool id (generated doc key),
-            // preferring the active `{name}@{hash}` entry with a non-empty
-            // content map (stale pruned keys have cleared maps).
-            let mut chosen: Option<(&String, &ToolSpec)> = None;
-            for (key, spec) in &generated_doc.tools {
-                if spec.name != *tool_id {
-                    continue;
-                }
-                if !spec.runtime.content_map.is_empty() {
-                    chosen = Some((key, spec));
-                    break;
-                }
-                if chosen.is_none() {
-                    chosen = Some((key, spec));
-                }
-            }
-            if let Some((key, spec)) = chosen {
+            // runtime under its conductor tool id (generated doc key): the
+            // active `{name}@{hash}` entry with a non-empty content map wins
+            // (stale pruned keys have cleared maps).
+            if let Some((key, spec)) = find_active_tool_spec(&generated_doc, tool_id) {
                 tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
             }
             // Backfill fresh resolved metadata into the persisted registry.
@@ -1303,6 +1314,111 @@ mod tests {
             content.contains("/yt-dlp@blake3_abc/payload/linux/yt-dlp"),
             "skip path must prefer the entry with a content map\n--- content:\n{content}",
         );
+    }
+
+    /// A stale bare-name entry with a cleared content map plus an active
+    /// `{name}@{hash}` entry: the active entry (non-empty content map) wins
+    /// regardless of `BTreeMap` key order.
+    #[test]
+    fn find_active_tool_spec_prefers_non_empty_content_map() {
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "blake3:abc".to_string());
+        let mut tools = BTreeMap::new();
+        tools.insert(
+            "yt-dlp".to_string(),
+            ToolSpec {
+                name: "yt-dlp".to_string(),
+                kind: ToolKindSpec::default(),
+                runtime: ToolRuntime::default(),
+                ..Default::default()
+            },
+        );
+        tools.insert(
+            "yt-dlp@blake3:abc".to_string(),
+            ToolSpec {
+                name: "yt-dlp".to_string(),
+                kind: ToolKindSpec::default(),
+                runtime: ToolRuntime { content_map, ..Default::default() },
+                ..Default::default()
+            },
+        );
+        let doc = NickelDocument { tools, ..Default::default() };
+
+        let (key, spec) = find_active_tool_spec(&doc, "yt-dlp").expect("active spec must resolve");
+        assert_eq!(key, "yt-dlp@blake3:abc");
+        assert_eq!(spec.name, "yt-dlp");
+        assert!(!spec.runtime.content_map.is_empty());
+    }
+
+    /// No spec carries a content map: resolution falls back to the first
+    /// name match in deterministic key order (bare key sorts first).
+    #[test]
+    fn find_active_tool_spec_falls_back_to_first_name_match() {
+        let mut tools = BTreeMap::new();
+        tools.insert(
+            "yt-dlp@blake3:abc".to_string(),
+            ToolSpec {
+                name: "yt-dlp".to_string(),
+                kind: ToolKindSpec::default(),
+                runtime: ToolRuntime::default(),
+                ..Default::default()
+            },
+        );
+        tools.insert(
+            "yt-dlp@blake3:def".to_string(),
+            ToolSpec {
+                name: "yt-dlp".to_string(),
+                kind: ToolKindSpec::default(),
+                runtime: ToolRuntime::default(),
+                ..Default::default()
+            },
+        );
+        let doc = NickelDocument { tools, ..Default::default() };
+
+        let (key, spec) =
+            find_active_tool_spec(&doc, "yt-dlp").expect("fallback spec must resolve");
+        assert_eq!(key, "yt-dlp@blake3:abc");
+        assert_eq!(spec.name, "yt-dlp");
+    }
+
+    /// No spec matches the logical name at all: `None`.
+    #[test]
+    fn find_active_tool_spec_none_when_name_missing() {
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/ffmpeg".to_string(), "blake3:abc".to_string());
+        let mut tools = BTreeMap::new();
+        tools.insert(
+            "ffmpeg@blake3:abc".to_string(),
+            ToolSpec {
+                name: "ffmpeg".to_string(),
+                kind: ToolKindSpec::default(),
+                runtime: ToolRuntime { content_map, ..Default::default() },
+                ..Default::default()
+            },
+        );
+        let doc = NickelDocument { tools, ..Default::default() };
+
+        assert!(find_active_tool_spec(&doc, "yt-dlp").is_none());
+    }
+
+    /// Specs with other names never match the queried logical name.
+    #[test]
+    fn find_active_tool_spec_skips_other_names() {
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/ffmpeg".to_string(), "blake3:abc".to_string());
+        let mut tools = BTreeMap::new();
+        tools.insert(
+            "ffmpeg@blake3:abc".to_string(),
+            ToolSpec {
+                name: "ffmpeg".to_string(),
+                kind: ToolKindSpec::default(),
+                runtime: ToolRuntime { content_map, ..Default::default() },
+                ..Default::default()
+            },
+        );
+        let doc = NickelDocument { tools, ..Default::default() };
+
+        assert!(find_active_tool_spec(&doc, "yt-dlp").is_none());
     }
 
     /// The filesystem retain set uses conductor tool ids (the `tool_runtimes`
