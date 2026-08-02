@@ -42,3 +42,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    /// Ensures the documented example entry point runs end to end via `main()`.
+    #[test]
+    fn main_is_exercised() {
+        super::main().expect("example main should run to completion");
+    }
+}
