@@ -269,22 +269,26 @@ fn online_demo_timeout() -> ExampleResult<Duration> {
     Ok(Duration::from_secs(seconds))
 }
 
-fn validate_demo_online_run_sync_override() -> ExampleResult<()> {
+fn demo_online_run_sync_enabled() -> ExampleResult<bool> {
     let Some(raw_value) = std::env::var_os(DEMO_ONLINE_RUN_SYNC_ENV) else {
-        return Ok(());
+        return Ok(true);
     };
 
     let normalized = raw_value.to_string_lossy().trim().to_ascii_lowercase();
     if normalized.is_empty() {
-        return Ok(());
+        return Ok(true);
     }
 
     if matches!(normalized.as_str(), "true" | "1" | "yes" | "on") {
-        return Ok(());
+        return Ok(true);
+    }
+
+    if matches!(normalized.as_str(), "false" | "0" | "no" | "off") {
+        return Ok(false);
     }
 
     Err(format!(
-        "{DEMO_ONLINE_RUN_SYNC_ENV} only accepts enabled values (true/1/yes/on); got '{normalized}'"
+        "{DEMO_ONLINE_RUN_SYNC_ENV} only accepts enabled (true/1/yes/on) or disabled (false/0/no/off) values; got '{normalized}'"
     )
     .into())
 }
@@ -2420,6 +2424,10 @@ fn resolve_managed_tool_id(machine: &NickelDocument, logical_name: &str) -> Exam
     Ok(find_managed_tool_spec(machine, logical_name)?.name.clone())
 }
 
+/// Detects a CI environment from standard CI variables. Only the embedded
+/// `main_is_exercised` test consults this; `main()` stays deterministic given
+/// environment inputs.
+#[cfg(test)]
 fn ci_mode_detected() -> bool {
     std::env::var("CI")
         .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
@@ -2436,16 +2444,11 @@ async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
     let root = reset_artifact_root()?;
     let workspace_root = root.clone();
 
-    eprintln!(
-        "[demo_online] CI environment detected; running in configuration-only mode (no sync, no internet)"
-    );
-
     configure_document_for_online_demo(&workspace_root)?;
 
     // Write minimal manifest indicating config-only run
     let manifest = json!({
         "run_mode": "config-only",
-        "ci_detected": true,
         "artifact_root": display_path(&root),
         "workspace_root": display_path(&workspace_root),
     });
@@ -2458,8 +2461,8 @@ async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    // Check for CI mode first, before other validation
-    if ci_mode_detected() {
+    let run_sync = demo_online_run_sync_enabled()?;
+    if !run_sync {
         let paths = run_online_demo_config_only().await?;
         println!("generated artifacts root: {}", paths.artifact_root.display());
         println!("generated workspace root: {}", paths.workspace_root.display());
@@ -2468,7 +2471,6 @@ async fn main() -> ExampleResult<()> {
         return Ok(());
     }
 
-    validate_demo_online_run_sync_override()?;
     let sync_timeout = online_demo_timeout()?;
     configure_demo_conductor_executable_timeout(sync_timeout);
     let hard_timeout_guard = spawn_hard_timeout_guard(sync_timeout);
@@ -2500,9 +2502,9 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
-    /// Ensures sync-mode override parser accepts enabled values only.
+    /// Ensures sync-mode override parser accepts disabled values (reduced mode).
     #[test]
-    fn run_sync_override_validator_rejects_disabled_tokens() {
+    fn run_sync_override_accepts_disabled_tokens() {
         let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
 
         // SAFETY: test mutates one process env key in a controlled scope and
@@ -2510,7 +2512,7 @@ mod tests {
         unsafe {
             std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "false");
         }
-        let result = super::validate_demo_online_run_sync_override();
+        let result = super::demo_online_run_sync_enabled();
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
@@ -2521,10 +2523,10 @@ mod tests {
             }
         }
 
-        assert!(result.is_err(), "disabled run-sync tokens must be rejected");
+        assert!(matches!(result, Ok(false)), "disabled run-sync tokens must select reduced mode");
     }
 
-    /// Ensures demo-online override validator allows unset environment.
+    /// Ensures demo-online sync override allows unset environment (full mode).
     #[test]
     fn run_sync_override_validator_allows_unset_env() {
         let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
@@ -2534,7 +2536,7 @@ mod tests {
             std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
         }
 
-        let result = super::validate_demo_online_run_sync_override();
+        let result = super::demo_online_run_sync_enabled();
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
@@ -2543,7 +2545,65 @@ mod tests {
             }
         }
 
-        assert!(result.is_ok(), "unset run-sync override should be accepted");
+        assert!(matches!(result, Ok(true)), "unset run-sync override should select full mode");
+    }
+
+    /// Ensures sync-mode override parser still rejects unknown tokens.
+    #[test]
+    fn run_sync_override_rejects_invalid_tokens() {
+        let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
+
+        // SAFETY: test mutates one process env key in a controlled scope and
+        // restores the previous value before exit.
+        unsafe {
+            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "maybe");
+        }
+        let result = super::demo_online_run_sync_enabled();
+
+        // SAFETY: restore previous env var value for test isolation.
+        unsafe {
+            if let Some(value) = previous {
+                std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, value);
+            } else {
+                std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
+            }
+        }
+
+        assert!(result.is_err(), "unknown run-sync tokens must be rejected");
+    }
+
+    /// Executes the documented example entry point via `main()`. CI detection
+    /// lives in this test, never in `main()`: when CI is detected the reduced
+    /// mode env override is set before calling `main()`; outside CI the test
+    /// skips because the full-sync path needs network and external tools —
+    /// exercise that path manually with `cargo run --example mediapm_demo_online`.
+    #[test]
+    fn main_is_exercised() {
+        if !super::ci_mode_detected() {
+            eprintln!(
+                "[demo_online] skipping main_is_exercised outside CI; \
+                 run the example manually for the full-sync path"
+            );
+            return;
+        }
+
+        let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
+        // SAFETY: test mutates one process env key in a controlled scope and
+        // restores the previous value before exit.
+        unsafe {
+            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "false");
+        }
+
+        super::main().expect("example main should run to completion");
+
+        // SAFETY: restore previous env var value for test isolation.
+        unsafe {
+            if let Some(value) = previous {
+                std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, value);
+            } else {
+                std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
+            }
+        }
     }
 
     /// Ensures artifact root remains stable for docs/scripts that reference it.
