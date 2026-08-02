@@ -103,7 +103,7 @@ Document contract:
 
 - `conductor.ncl` is treated as user-edited input and is not machine-mutated.
 - `conductor.generated.ncl` stores machine-managed setup/config declarations.
-- `conductor.ncl` and `conductor.generated.ncl` may define grouped runtime storage fields under one `runtime` record: `runtime.conductor_dir`, `runtime.conductor_state_config`, `runtime.cas_store_dir`, and optional platform-keyed inherited host env-name map `runtime.inherited_env_vars`. The `cas_store_dir` field accepts any CAS locator string (filesystem path or URL).
+- `conductor.ncl` and `conductor.generated.ncl` may define grouped runtime storage fields under one `runtime` record: `runtime.conductor_dir`, `runtime.conductor_state_config`, `runtime.cas_store_dir`, and optional platform-keyed inherited host env-name map `runtime.inherited_env_vars`. The `cas_store_dir` field accepts any CAS locator string (filesystem path or URL). `runtime.inherited_env_vars` (v2: `runtime.platform_inherited_env_vars`) is a closed record restricted to `windows`/`linux`/`macos` keys; unknown platform keys are rejected.
 - Runtime inherited env-name defaults are host-specific (`SYSTEMROOT`, `WINDIR`, `TEMP`, `TMP` on Windows; empty list elsewhere) and merge user, machine, and invocation-option values with case-insensitive de-duplication.
 - resolved state path (default `.conductor/state.ncl`) stores volatile runtime state only and may define only `version`, `impure_timestamps`, and `state_pointer`.
 - All three files must define explicit top-level numeric `version` markers.

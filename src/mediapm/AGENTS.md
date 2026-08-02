@@ -26,7 +26,7 @@ config/                    — NCL document model, serde types, version dispatch
   custom_deserializers.rs  —   Serde helpers (f64→u64, option strings)
   source_types.rs          —   MediaSourceSpec, MediaStep, MediaStepTool
   hierarchy_types.rs       —   HierarchyNode (ordered array), flattening, playlist, SanitizeNamesConfig
-  output_types.rs          —   OutputVariantConfig, OutputCaptureKind, OutputSaveConfig
+  output_types.rs          —   OutputVariantValue (YtDlp | Generic), OutputCaptureKind, OutputSaveConfig
   nickel_io.rs             —   .ncl eval, load/save/merge documents
   versions/                —   Schema version dispatch (mod.rs + v1.rs + .ncl)
   validation/              —   Cross-field validation (mod.rs, hierarchy.rs, sources.rs)
@@ -200,7 +200,7 @@ Direct CAS→output-path writes; no staging commit. Materialized paths marked re
 
 ## CAS Integrity Verification
 
-Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sample { denominator: 100 }` (default), `Stale { timeout: 604800s }` (default). Gated by `MediaRuntimeStorage.verify_on_read_*` fields.
+Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sample { denominator: 100 }` (default), `Stale { timeout: 604800s }` (default). Gated by `MediaRuntimeStorage.verify_on_read` (typed `Vec<VerifyStrategy>`, snake_case wire names `always`/`modified`/`sample`/`stale`; unknown names rejected at the serde boundary) plus `verify_on_read_sample_denominator` and `verify_on_read_stale_timeout_secs` fields.
 
 ## Cross-Crate Invariants
 
