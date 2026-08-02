@@ -243,12 +243,12 @@ async fn prepare_hierarchy_entry(
     let relative_path = entry.path_str();
     let target_path = shared.hierarchy_root.join(&relative_path);
 
-    // Resolve the source spec.
-    let source = resolve_hierarchy_source(document, &entry.entry)?;
-    let media_id = &entry.entry.media_id;
-
     match entry.entry.kind {
         HierarchyEntryKind::Media => {
+            // Resolve the source spec (playlist entries carry no media id).
+            let source = resolve_hierarchy_source(document, &entry.entry)?;
+            let media_id = &entry.entry.media_id;
+
             // Single-file materialization.
             let variant_name =
                 entry.entry.variants.first().cloned().unwrap_or_else(|| "default".to_string());
@@ -287,6 +287,10 @@ async fn prepare_hierarchy_entry(
             }
         }
         HierarchyEntryKind::MediaFolder => {
+            // Resolve the source spec (playlist entries carry no media id).
+            let source = resolve_hierarchy_source(document, &entry.entry)?;
+            let media_id = &entry.entry.media_id;
+
             // Multi-variant materialization (directory output).
             materialize_media_folder_entry(
                 entry,
