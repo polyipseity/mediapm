@@ -22,10 +22,10 @@ use mediapm::output::{StatusIcon, print_hint, print_result, print_status_report,
 #[cfg(feature = "cli")]
 use mediapm::{
     AddInsertPosition, MediaHierarchyPreset, MediaMetadataValue, MediaPmGlobalPaths, MediaPmPaths,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
-    ensure_global_directory_layout, global_tool_cache_clear, global_tool_cache_prune_expired,
-    global_tool_cache_status, load_runtime_dotenv, media_id_from_uri,
-    resolve_effective_paths_for_root,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue,
+    TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig, ensure_global_directory_layout,
+    global_tool_cache_clear, global_tool_cache_prune_expired, global_tool_cache_status,
+    load_runtime_dotenv, media_id_from_uri, resolve_effective_paths_for_root,
 };
 #[cfg(feature = "cli")]
 use url::Url;
@@ -978,7 +978,10 @@ fn default_yt_dlp_steps(
             input_variants: vec![],
             output_variants: BTreeMap::from([(
                 "media".to_string(),
-                serde_json::json!({ "kind": "primary" }),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
+                }),
             )]),
             options: BTreeMap::from([(
                 "format".to_string(),
@@ -990,7 +993,10 @@ fn default_yt_dlp_steps(
             input_variants: vec!["media".to_string()],
             output_variants: BTreeMap::from([(
                 "media".to_string(),
-                serde_json::json!({ "kind": "primary" }),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
+                }),
             )]),
             options: BTreeMap::new(),
         },
@@ -999,7 +1005,10 @@ fn default_yt_dlp_steps(
             input_variants: vec!["media".to_string()],
             output_variants: BTreeMap::from([(
                 "media".to_string(),
-                serde_json::json!({ "kind": "primary" }),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
+                }),
             )]),
             options: {
                 let mut opts = BTreeMap::new();
@@ -1023,7 +1032,10 @@ fn default_yt_dlp_steps(
             input_variants: vec!["media".to_string()],
             output_variants: BTreeMap::from([(
                 "media".to_string(),
-                serde_json::json!({ "kind": "primary" }),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
+                }),
             )]),
             options: BTreeMap::new(),
         },

@@ -5,6 +5,7 @@
 //! directly when constructing config objects outside deserialization.
 
 use super::MaterializationMethod;
+use super::VerifyStrategy;
 use super::hierarchy_types::SanitizeNamesConfig;
 
 /// Current persisted schema marker for `mediapm.ncl`.
@@ -48,7 +49,8 @@ pub const DEFAULT_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] =
 ];
 
 /// Default verify-on-read strategy list.
-pub const DEFAULT_VERIFY_ON_READ: [&str; 2] = ["modified", "sample"];
+pub const DEFAULT_VERIFY_ON_READ: [VerifyStrategy; 2] =
+    [VerifyStrategy::Modified, VerifyStrategy::Sample];
 
 /// Default verify-on-read sampling denominator (1 out of N reads).
 pub const DEFAULT_VERIFY_ON_READ_SAMPLE_DENOMINATOR: u64 = 100;
@@ -95,8 +97,8 @@ pub fn default_materialization_preference_order() -> Vec<MaterializationMethod> 
 
 /// Serde default function returning the verify-on-read strategy list.
 #[must_use]
-pub fn default_verify_on_read() -> Vec<String> {
-    DEFAULT_VERIFY_ON_READ.iter().map(|&s| s.to_string()).collect()
+pub fn default_verify_on_read() -> Vec<VerifyStrategy> {
+    DEFAULT_VERIFY_ON_READ.to_vec()
 }
 
 /// Serde default function returning the verify-on-read sampling denominator.

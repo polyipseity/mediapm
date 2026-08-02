@@ -5,9 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
-
 use super::hierarchy_types::{deserialize_variant_selector_list, serialize_variant_selector_list};
+use super::output_types::OutputVariantValue;
 
 // ---------------------------------------------------------------------------
 // Metadata value types
@@ -114,7 +113,7 @@ pub struct MediaStep {
     pub input_variants: Vec<String>,
     /// Output variants produced by this step.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub output_variants: BTreeMap<String, Value>,
+    pub output_variants: BTreeMap<String, OutputVariantValue>,
     /// Operation-specific option map.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, TransformInputValue>,

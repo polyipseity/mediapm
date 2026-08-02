@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::config::{DecodedOutputVariantConfig, OutputCaptureKind, YtDlpOutputKind};
+use crate::config::{OutputCaptureKind, OutputVariantValue, YtDlpOutputKind};
 use crate::error::MediaPmError;
 
 /// Decodes a yt-dlp variant config from raw JSON [`serde_json::Value`].
@@ -19,8 +19,8 @@ use crate::error::MediaPmError;
 /// a yt-dlp or generic variant config.
 pub(crate) fn decode_yt_dlp_output_variant_config(
     value: serde_json::Value,
-) -> Result<DecodedOutputVariantConfig, MediaPmError> {
-    DecodedOutputVariantConfig::from_json_value(value)
+) -> Result<OutputVariantValue, MediaPmError> {
+    serde_json::from_value::<OutputVariantValue>(value)
         .map_err(|e| MediaPmError::Serialization(format!("failed to decode yt-dlp variant: {e}")))
 }
 
@@ -40,16 +40,16 @@ pub(crate) struct StepOutputBinding {
 /// This is used to wire downstream step inputs to upstream outputs.
 #[must_use]
 pub(crate) fn resolve_step_output_binding(
-    upstream_variants: &BTreeMap<String, DecodedOutputVariantConfig>,
+    upstream_variants: &BTreeMap<String, OutputVariantValue>,
     _target_input_key: &str,
 ) -> Option<StepOutputBinding> {
     // Simplified resolution: pick the first folder or primary variant output.
     for (name, config) in upstream_variants {
         let is_folder = match config {
-            DecodedOutputVariantConfig::Generic(g) => {
+            OutputVariantValue::Generic(g) => {
                 matches!(g.capture_kind, Some(OutputCaptureKind::Folder))
             }
-            DecodedOutputVariantConfig::YtDlp(y) => matches!(
+            OutputVariantValue::YtDlp(y) => matches!(
                 y.kind,
                 YtDlpOutputKind::Subtitles
                     | YtDlpOutputKind::Thumbnails

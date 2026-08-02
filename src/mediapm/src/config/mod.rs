@@ -36,7 +36,7 @@ pub use nickel_io::{
     save_mediapm_document, save_mediapm_state_document,
 };
 pub use output_types::{
-    DecodedOutputVariantConfig, GenericOutputVariantConfig, OutputCaptureKind, OutputSaveConfig,
+    GenericOutputVariantConfig, OutputCaptureKind, OutputSaveConfig, OutputVariantValue,
     YtDlpOutputKind, YtDlpOutputVariantConfig,
 };
 pub use source_types::{
@@ -198,6 +198,28 @@ pub struct PlatformInheritedEnvVars {
 }
 
 // ---------------------------------------------------------------------------
+// VerifyStrategy
+// ---------------------------------------------------------------------------
+
+/// Verify-on-read trigger strategy name (S-E3).
+///
+/// Mirrors the [`mediapm_cas::VerifyTriggerStrategy`] variant set: `always`,
+/// `modified`, `sample`, `stale`.  Unknown names fail fast at the serde
+/// boundary instead of being silently ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyStrategy {
+    /// Verify every read.
+    Always,
+    /// Verify when the on-disk artifact differs from the recorded hash.
+    Modified,
+    /// Verify a sampled fraction of reads.
+    Sample,
+    /// Verify when the recorded artifact is older than the stale timeout.
+    Stale,
+}
+
+// ---------------------------------------------------------------------------
 // MediaRuntimeStorage
 // ---------------------------------------------------------------------------
 
@@ -207,6 +229,7 @@ pub struct PlatformInheritedEnvVars {
 /// Path-override fields use `Option` (`None` = use computed default from
 /// [`MediaPmPaths`](crate::paths::MediaPmPaths)).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaRuntimeStorage {
     /// Override for `mediapm.ncl` `runtime.mediapm_dir`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -226,7 +249,7 @@ pub struct MediaRuntimeStorage {
     pub materialization_preference_order: Vec<MaterializationMethod>,
     /// Verify-on-read strategy.
     #[serde(default = "defaults::default_verify_on_read")]
-    pub verify_on_read: Vec<String>,
+    pub verify_on_read: Vec<VerifyStrategy>,
     /// Verify-on-read sampling denominator.
     #[serde(default = "defaults::default_verify_on_read_sample_denominator")]
     pub verify_on_read_sample_denominator: u64,
@@ -289,9 +312,10 @@ pub struct MediaRuntimeStorage {
 }
 
 impl MediaRuntimeStorage {
-    /// Map the string-based verify-on-read configuration to CAS enum variants.
+    /// Map the typed verify-on-read configuration to CAS enum variants.
     ///
-    /// Unknown strategy names are silently ignored.
+    /// The strategy names are closed at the serde boundary (S-E3), so this
+    /// conversion is total: every decoded name maps to exactly one CAS variant.
     #[must_use]
     #[expect(
         clippy::cast_possible_truncation,
@@ -300,25 +324,19 @@ impl MediaRuntimeStorage {
     pub fn to_verify_strategies(&self) -> Vec<mediapm_cas::VerifyTriggerStrategy> {
         use mediapm_cas::VerifyTriggerStrategy;
 
-        let mut strategies: Vec<VerifyTriggerStrategy> = Vec::new();
-
-        for name in &self.verify_on_read {
-            match name.as_str() {
-                "always" => strategies.push(VerifyTriggerStrategy::Always),
-                "modified" => strategies.push(VerifyTriggerStrategy::Modified),
-                "sample" => strategies.push(VerifyTriggerStrategy::Sample {
+        self.verify_on_read
+            .iter()
+            .map(|strategy| match strategy {
+                VerifyStrategy::Always => VerifyTriggerStrategy::Always,
+                VerifyStrategy::Modified => VerifyTriggerStrategy::Modified,
+                VerifyStrategy::Sample => VerifyTriggerStrategy::Sample {
                     denominator: self.verify_on_read_sample_denominator.max(1) as u32,
-                }),
-                "stale" => strategies.push(VerifyTriggerStrategy::Stale {
+                },
+                VerifyStrategy::Stale => VerifyTriggerStrategy::Stale {
                     timeout: std::time::Duration::from_secs(self.verify_on_read_stale_timeout_secs),
-                }),
-                _ => {
-                    // Unknown strategy names are silently ignored.
-                }
-            }
-        }
-
-        strategies
+                },
+            })
+            .collect()
     }
 }
 
@@ -491,6 +509,7 @@ pub struct MediaPmImpureTimestamp {
 
 /// Entry in the managed-tool registry tracking fetch/deployment metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolRegistryEntry {
     /// Tool identifier matching the key in `desired_tools`.
     pub tool_id: String,

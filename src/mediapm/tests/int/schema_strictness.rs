@@ -1,4 +1,5 @@
-//! Strictness tests for the mediapm Nickel schema surface (S-C1..S-C10).
+//! Strictness tests for the mediapm Nickel schema surface (S-C1..S-C10) and
+//! the Rust serde config surface (S-E1..S-E4).
 //!
 //! These tests evaluate the embedded `v1.ncl` / `mod.ncl` contracts through
 //! the same `nickel-lang-core` evaluator that the production bridge uses, so
@@ -7,7 +8,10 @@
 
 use serde_json::{Value, json};
 
-use mediapm::{apply_v1_contract, evaluate_mod_ncl_expression, validate_v1_document};
+use mediapm::{
+    MediaRuntimeStorage, MediaStep, OutputVariantValue, ToolRegistryEntry, VerifyStrategy,
+    apply_v1_contract, evaluate_mod_ncl_expression, validate_v1_document,
+};
 
 /// Realistic v1 document exercising every closed contract surface.
 const REALISTIC_V1_DOC: &str = r#"
@@ -588,4 +592,147 @@ fn json_schema_export_is_strict() {
     )
     .expect("parse conductor schema");
     assert_eq!(conductor["type"], "object");
+}
+// ---------------------------------------------------------------------------
+// S-E1..S-E4: Rust serde strictness for mediapm config types
+// ---------------------------------------------------------------------------
+
+/// S-E1: `ToolRegistryEntry` must reject unknown fields (was silently accepted
+/// before the strictness overhaul).
+#[test]
+fn strict_tool_registry_entry_rejects_unknown_field() {
+    let err = serde_json::from_value::<ToolRegistryEntry>(json!({
+        "tool_id": "ffmpeg@v1",
+        "version": "1.0",
+        "bogus_field": 1,
+    }))
+    .expect_err("unknown ToolRegistryEntry field must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+}
+
+/// S-E1: `MediaRuntimeStorage` must reject unknown fields (was silently
+/// accepted before the strictness overhaul).
+#[test]
+fn strict_media_runtime_rejects_unknown_field() {
+    let err = serde_json::from_value::<MediaRuntimeStorage>(json!({
+        "verify_on_read": ["modified"],
+        "bogus_field": 1,
+    }))
+    .expect_err("unknown MediaRuntimeStorage field must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+}
+
+/// S-E2: free-form `output_variants` values must be rejected.  Before the
+/// strictness overhaul the variant map was `BTreeMap<String, Value>` and any
+/// arbitrary object was accepted.
+#[test]
+fn strict_output_variants_rejects_free_form_value() {
+    let err = serde_json::from_value::<MediaStep>(json!({
+        "tool": "import",
+        "output_variants": {
+            "media": { "arbitrary": 1 },
+        },
+    }))
+    .expect_err("free-form output variant value must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("untagged") || msg.contains("variant"),
+        "error must describe the failed variant decode: {msg}"
+    );
+}
+
+/// S-E3: `verify_on_read` must reject unknown strategy names at the serde
+/// boundary.  Before the strictness overhaul the field was `Vec<String>` and
+/// unknown names were accepted.
+#[test]
+fn strict_verify_strategy_rejects_unknown_name() {
+    let err = serde_json::from_value::<MediaRuntimeStorage>(json!({
+        "verify_on_read": ["bogus"],
+    }))
+    .expect_err("unknown verify strategy name must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus"), "error must name the unknown strategy: {msg}");
+}
+
+/// R1 regression: before S-E3, `to_verify_strategies` silently ignored unknown
+/// strategy names (the match had an `_ => {}` arm).  Unknown names must now
+/// fail fast at decode time instead of being dropped.
+#[test]
+fn regression_verify_on_read_unknown_no_longer_ignored() {
+    let err = serde_json::from_value::<MediaRuntimeStorage>(json!({
+        "verify_on_read": ["always", "bogus"],
+    }))
+    .expect_err("unknown strategy name must fail fast instead of being ignored");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus"), "error must name the offending strategy: {msg}");
+}
+
+/// S-E2: both yt-dlp- and generic-shaped variant objects must decode through
+/// the typed untagged `OutputVariantValue` enum and round-trip losslessly for
+/// the historical minimal wire form (`{ "kind": ... }`).
+#[test]
+fn strict_output_variants_accepts_ytdlp_and_generic_shapes() {
+    // yt-dlp-shaped variant (untagged enum tries the YtDlp arm first).
+    let yt: OutputVariantValue =
+        serde_json::from_value(json!({ "kind": "primary" })).expect("yt-dlp shape must decode");
+    assert!(matches!(yt, OutputVariantValue::YtDlp(_)));
+    // Generic-shaped variant (kind string is not a yt-dlp kind).
+    let generic: OutputVariantValue =
+        serde_json::from_value(json!({ "kind": "custom" })).expect("generic shape must decode");
+    assert!(matches!(generic, OutputVariantValue::Generic(_)));
+    // Round-trip preserves the historical minimal wire form (defaults skipped).
+    assert_eq!(
+        serde_json::to_value(&yt).expect("yt-dlp variant must serialize"),
+        json!({ "kind": "primary" })
+    );
+    assert_eq!(
+        serde_json::to_value(&generic).expect("generic variant must serialize"),
+        json!({ "kind": "custom" })
+    );
+    // The typed variants must also decode inside a full MediaStep document.
+    let step: MediaStep = serde_json::from_value(json!({
+        "tool": "yt-dlp",
+        "output_variants": {
+            "media": { "kind": "primary" },
+            "raw": { "kind": "custom", "extension": "webm" },
+        },
+    }))
+    .expect("typed output_variants must decode inside MediaStep");
+    assert!(matches!(step.output_variants.get("media"), Some(OutputVariantValue::YtDlp(_))));
+    assert!(matches!(step.output_variants.get("raw"), Some(OutputVariantValue::Generic(_))));
+}
+
+/// S-E3: all four CAS strategy names must decode and round-trip to the same
+/// `snake_case` wire names.
+#[test]
+fn strict_verify_strategy_accepts_known_names() {
+    let rt: MediaRuntimeStorage = serde_json::from_value(json!({
+        "verify_on_read": ["always", "modified", "sample", "stale"],
+    }))
+    .expect("all CAS strategy names must decode");
+    assert_eq!(
+        rt.verify_on_read,
+        vec![
+            VerifyStrategy::Always,
+            VerifyStrategy::Modified,
+            VerifyStrategy::Sample,
+            VerifyStrategy::Stale,
+        ]
+    );
+    let back = serde_json::to_value(&rt).expect("runtime storage must serialize");
+    assert_eq!(back["verify_on_read"], json!(["always", "modified", "sample", "stale"]));
+}
+
+/// S-E4: typed numeric fields reject fractional values at the serde boundary
+/// (serde number-from-float validation on `u64` fields).
+#[test]
+fn strict_runtime_rejects_fractional_denominator() {
+    let err = serde_json::from_value::<MediaRuntimeStorage>(json!({
+        "verify_on_read_sample_denominator": 1.5,
+    }))
+    .expect_err("fractional denominator must be rejected for the u64 field");
+    let msg = format!("{err}");
+    assert!(msg.contains("invalid type"), "error must report the invalid type: {msg}");
 }

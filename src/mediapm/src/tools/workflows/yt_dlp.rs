@@ -22,7 +22,7 @@ use crate::conductor_bridge::constants::{
     OUTPUT_YT_DLP_PLAYLIST_INFOJSON_FILE, OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
     OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS,
 };
-use crate::config::{DecodedOutputVariantConfig, MediaSourceSpec, MediaStep};
+use crate::config::{MediaSourceSpec, MediaStep};
 
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
 use super::{
@@ -55,10 +55,8 @@ pub(crate) fn synthesize_yt_dlp_step(
     inputs.entry("format".to_string()).or_insert_with(|| "bestvideo+bestaudio/best".to_string());
 
     let mut outputs = BTreeMap::new();
-    for (name, variant_json) in &step.output_variants {
-        if let Ok(config) = DecodedOutputVariantConfig::from_json_value(variant_json.clone()) {
-            outputs.insert(name.clone(), variant_to_output_capture_spec(name, &config));
-        }
+    for (name, config) in &step.output_variants {
+        outputs.insert(name.clone(), variant_to_output_capture_spec(name, config));
     }
 
     // When no explicit variants, add sensible defaults.

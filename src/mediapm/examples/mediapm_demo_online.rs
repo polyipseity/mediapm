@@ -15,12 +15,14 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    ConfigVersionSpec, HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath,
-    MaterializationMethod, MediaMetadataValue, MediaMetadataVariantBinding, MediaPmDocument,
-    MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
-    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement,
-    TransformInputValue, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
-    save_mediapm_state_document,
+    ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
+    HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
+    MediaMetadataVariantBinding, MediaPmDocument, MediaPmPaths, MediaPmService,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
+    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry,
+    ToolRequirement, TransformInputValue, VerifyStrategy, YtDlpOutputKind,
+    YtDlpOutputVariantConfig, load_mediapm_document, load_mediapm_state_document,
+    save_mediapm_document, save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -801,56 +803,64 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             output_variants: BTreeMap::from([
                 (
                     "video".to_string(),
-                    json!({
-                        "kind": "primary",
+                    OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                        kind: YtDlpOutputKind::Primary,
+                        ..Default::default()
                     }),
                 ),
                 (
                     "subtitles".to_string(),
-                    json!({
-                        "kind": "subtitles",
+                    OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                        kind: YtDlpOutputKind::Subtitles,
+                        ..Default::default()
                     }),
                 ),
                 (
                     "subtitles_en".to_string(),
-                    json!({
-                        "kind": "subtitles",
-                        "capture_kind": "file",
+                    OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                        kind: YtDlpOutputKind::Subtitles,
+                        capture_kind: Some(OutputCaptureKind::File),
                         // Keep yt-dlp language download selection authoritative in
                         // step options (`options.sub_langs`); this variant-level
                         // `langs` value only scopes capture/materialization so the
                         // media root can project one selected subtitle.
-                        "langs": "en",
+                        langs: "en".to_string(),
+                        ..Default::default()
                     }),
                 ),
                 (
                     "thumbnails".to_string(),
-                    json!({
-                        "kind": "thumbnails",
+                    OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                        kind: YtDlpOutputKind::Thumbnails,
+                        ..Default::default()
                     }),
                 ),
                 (
                     "description".to_string(),
-                    json!({
-                        "kind": "description",
+                    OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                        kind: YtDlpOutputKind::Description,
+                        ..Default::default()
                     }),
                 ),
                 (
                     "infojson".to_string(),
-                    json!({
-                        "kind": "infojson",
+                    OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                        kind: YtDlpOutputKind::Infojson,
+                        ..Default::default()
                     }),
                 ),
                 (
                     "links".to_string(),
-                    json!({
-                        "kind": "links",
+                    OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                        kind: YtDlpOutputKind::Links,
+                        ..Default::default()
                     }),
                 ),
                 (
                     "archive".to_string(),
-                    json!({
-                        "kind": "archive",
+                    OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                        kind: YtDlpOutputKind::Archive,
+                        ..Default::default()
                     }),
                 ),
             ]),
@@ -874,14 +884,24 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             input_variants: vec!["video".to_string()],
             output_variants: BTreeMap::from([(
                 "video_untagged".to_string(),
-                json!({ "kind": "primary", "idx": 0, "extension": "mkv" }),
+                OutputVariantValue::Generic(GenericOutputVariantConfig {
+                    kind: "primary".to_string(),
+                    extension: "mkv".to_string(),
+                    ..Default::default()
+                }),
             )]),
             options: BTreeMap::new(),
         },
         MediaStep {
             tool: MediaStepTool::MediaTagger,
             input_variants: vec!["video_untagged".to_string()],
-            output_variants: BTreeMap::from([("video".to_string(), json!({ "kind": "primary" }))]),
+            output_variants: BTreeMap::from([(
+                "video".to_string(),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
+                }),
+            )]),
             options: BTreeMap::from([
                 (
                     "recording_mbid".to_string(),
@@ -895,7 +915,13 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         MediaStep {
             tool: MediaStepTool::Rsgain,
             input_variants: vec!["video".to_string()],
-            output_variants: BTreeMap::from([("video".to_string(), json!({ "kind": "primary" }))]),
+            output_variants: BTreeMap::from([(
+                "video".to_string(),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
+                }),
+            )]),
             options: BTreeMap::new(),
         },
     ];
@@ -1219,7 +1245,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         instance_ttl_seconds: 3600,
         // CAS integrity re-verification strategies on read.
         // Default: ["modified", "sample"].
-        verify_on_read: vec!["modified".to_string(), "sample".to_string()],
+        verify_on_read: vec![VerifyStrategy::Modified, VerifyStrategy::Sample],
         // Sampling denominator for the "sample" verify-on-read strategy.
         // Default: 100.
         verify_on_read_sample_denominator: 100,

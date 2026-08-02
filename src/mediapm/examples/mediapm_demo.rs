@@ -14,10 +14,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    AddInsertPosition, ConfigVersionSpec, HierarchyNode, HierarchyNodeKind, HierarchyPath,
-    MaterializationMethod, MediaMetadataValue, MediaPmPaths, MediaPmService, MediaRuntimeStorage,
-    MediaSourceSpec, MediaStep, MediaStepTool, PlaylistFormat, PlaylistItemRef,
-    SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, TransformInputValue,
+    AddInsertPosition, ConfigVersionSpec, GenericOutputVariantConfig, HierarchyNode,
+    HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue, MediaPmPaths,
+    MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
+    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry,
+    ToolRequirement, TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
     load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
     save_mediapm_state_document,
 };
@@ -28,7 +29,6 @@ use mediapm_conductor::{
 };
 use same_file::is_same_file;
 use serde::Serialize;
-use serde_json::json;
 
 /// Shared result type for this demo.
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
@@ -537,7 +537,10 @@ fn configure_document_for_local_tool_chain(
             input_variants: Vec::new(),
             output_variants: BTreeMap::from([(
                 "video_untagged".to_string(),
-                json!({ "kind": "primary" }),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
+                }),
             )]),
             options: BTreeMap::from([
                 ("kind".to_string(), TransformInputValue::String(IMPORT_KIND_CAS_HASH.to_string())),
@@ -549,7 +552,11 @@ fn configure_document_for_local_tool_chain(
             input_variants: vec!["video_untagged".to_string()],
             output_variants: BTreeMap::from([(
                 "audio".to_string(),
-                json!({ "kind": "primary", "idx": 0, "extension": "m4a" }),
+                OutputVariantValue::Generic(GenericOutputVariantConfig {
+                    kind: "primary".to_string(),
+                    extension: "m4a".to_string(),
+                    ..Default::default()
+                }),
             )]),
             options: BTreeMap::from([(
                 "vn".to_string(),
@@ -559,7 +566,13 @@ fn configure_document_for_local_tool_chain(
         MediaStep {
             tool: MediaStepTool::MediaTagger,
             input_variants: vec!["audio".to_string()],
-            output_variants: BTreeMap::from([("audio".to_string(), json!({ "kind": "primary" }))]),
+            output_variants: BTreeMap::from([(
+                "audio".to_string(),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
+                }),
+            )]),
             options: BTreeMap::from([
                 (
                     "recording_mbid".to_string(),
@@ -572,7 +585,13 @@ fn configure_document_for_local_tool_chain(
         MediaStep {
             tool: MediaStepTool::Rsgain,
             input_variants: vec!["audio".to_string()],
-            output_variants: BTreeMap::from([("audio".to_string(), json!({ "kind": "primary" }))]),
+            output_variants: BTreeMap::from([(
+                "audio".to_string(),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
+                }),
+            )]),
             options: BTreeMap::from([(
                 "input_extension".to_string(),
                 TransformInputValue::String("m4a".to_string()),

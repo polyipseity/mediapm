@@ -18,9 +18,8 @@ mod yt_dlp_inputs;
 use mediapm_conductor::{OutputCaptureSpec, OutputSaveMode, SaveMode};
 
 use crate::config::{
-    DecodedOutputVariantConfig, GenericOutputVariantConfig, MediaSourceSpec, MediaStep,
-    MediaStepTool, OutputCaptureKind, OutputSaveConfig, TransformInputValue,
-    YtDlpOutputVariantConfig,
+    GenericOutputVariantConfig, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
+    OutputSaveConfig, OutputVariantValue, TransformInputValue, YtDlpOutputVariantConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -75,10 +74,10 @@ pub(crate) fn resolve_selected_dependency_tool_id(tool_name: &str) -> String {
 #[must_use]
 pub(crate) fn variant_to_output_capture_spec(
     name: &str,
-    config: &DecodedOutputVariantConfig,
+    config: &OutputVariantValue,
 ) -> OutputCaptureSpec {
     match config {
-        DecodedOutputVariantConfig::Generic(g) => {
+        OutputVariantValue::Generic(g) => {
             let (capture, save) = generic_variant_capture_and_save(g);
             OutputCaptureSpec {
                 name: name.to_string(),
@@ -88,7 +87,7 @@ pub(crate) fn variant_to_output_capture_spec(
                 include_topmost_folder: true,
             }
         }
-        DecodedOutputVariantConfig::YtDlp(y) => {
+        OutputVariantValue::YtDlp(y) => {
             let (capture, save) = yt_dlp_variant_capture_and_save(y);
             OutputCaptureSpec {
                 name: name.to_string(),
@@ -163,12 +162,12 @@ pub(crate) fn step_option_input_bindings(step: &MediaStep) -> Vec<(String, Strin
 
 /// Returns true when the given output-variant config has folder-like capture.
 #[must_use]
-pub(crate) fn variant_is_folder_capture(config: &DecodedOutputVariantConfig) -> bool {
+pub(crate) fn variant_is_folder_capture(config: &OutputVariantValue) -> bool {
     match config {
-        DecodedOutputVariantConfig::Generic(g) => {
+        OutputVariantValue::Generic(g) => {
             matches!(g.capture_kind, Some(OutputCaptureKind::Folder))
         }
-        DecodedOutputVariantConfig::YtDlp(y) => matches!(
+        OutputVariantValue::YtDlp(y) => matches!(
             y.kind,
             crate::config::YtDlpOutputKind::Subtitles
                 | crate::config::YtDlpOutputKind::Thumbnails

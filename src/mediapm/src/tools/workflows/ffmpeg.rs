@@ -17,7 +17,7 @@ use mediapm_conductor::{
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
 
 use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
-use crate::config::{DecodedOutputVariantConfig, MediaSourceSpec, MediaStep};
+use crate::config::{MediaSourceSpec, MediaStep};
 
 use super::{
     OUTPUT_PRIMARY, qualify_step_id, resolve_step_tool_id, step_option_input_bindings,
@@ -47,10 +47,8 @@ pub(crate) fn synthesize_ffmpeg_step(
     );
 
     let mut outputs = BTreeMap::new();
-    for (name, variant_json) in &step.output_variants {
-        if let Ok(config) = DecodedOutputVariantConfig::from_json_value(variant_json.clone()) {
-            outputs.insert(name.clone(), variant_to_output_capture_spec(name, &config));
-        }
+    for (name, config) in &step.output_variants {
+        outputs.insert(name.clone(), variant_to_output_capture_spec(name, config));
     }
     if outputs.is_empty() {
         outputs.insert(

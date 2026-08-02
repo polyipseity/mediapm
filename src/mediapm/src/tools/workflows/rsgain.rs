@@ -52,12 +52,8 @@ pub(crate) fn synthesize_rsgain_step_chain(
     }
 
     let mut outputs = BTreeMap::new();
-    for (name, variant_json) in &step.output_variants {
-        if let Ok(config) =
-            crate::config::DecodedOutputVariantConfig::from_json_value(variant_json.clone())
-        {
-            outputs.insert(name.clone(), variant_to_output_capture_spec(name, &config));
-        }
+    for (name, config) in &step.output_variants {
+        outputs.insert(name.clone(), variant_to_output_capture_spec(name, config));
     }
     if outputs.is_empty() {
         outputs.insert(

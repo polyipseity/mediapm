@@ -30,6 +30,20 @@ impl Default for OutputSaveConfig {
     }
 }
 
+/// Returns true when `save` holds the default `Bool(true)` persistence policy.
+#[must_use]
+#[expect(clippy::trivially_copy_pass_by_ref)]
+fn is_default_save(save: &OutputSaveConfig) -> bool {
+    *save == OutputSaveConfig::Bool(true)
+}
+
+/// Returns true when `idx` holds the default zero index.
+#[must_use]
+#[expect(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_idx(idx: &u32) -> bool {
+    *idx == 0
+}
+
 // ---------------------------------------------------------------------------
 // Generic variant config (used by import, ffmpeg, rsgain, media-tagger)
 // ---------------------------------------------------------------------------
@@ -45,13 +59,13 @@ pub enum OutputCaptureKind {
 }
 
 /// Generic tool output variant config (non-yt-dlp tools).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GenericOutputVariantConfig {
     /// Output kind label.
     pub kind: String,
     /// Persistence policy.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_save")]
     pub save: OutputSaveConfig,
     /// Optional explicit capture kind override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,7 +74,7 @@ pub struct GenericOutputVariantConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub zip_member: String,
     /// Numeric index (used by ffmpeg output slots).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_idx")]
     pub idx: u32,
     /// File extension override.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -104,7 +118,7 @@ pub struct YtDlpOutputVariantConfig {
     /// yt-dlp output kind.
     pub kind: YtDlpOutputKind,
     /// Persistence policy.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_save")]
     pub save: OutputSaveConfig,
     /// Optional explicit capture kind override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,35 +140,37 @@ pub struct YtDlpOutputVariantConfig {
     pub zip_member: String,
 }
 
-// ---------------------------------------------------------------------------
-// Decoded (tool-dispatched) variant config
-// ---------------------------------------------------------------------------
-
-/// Decoded output variant config after tool dispatch.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DecodedOutputVariantConfig {
-    /// Generic tool variant config.
-    Generic(GenericOutputVariantConfig),
-    /// yt-dlp specific variant config.
-    YtDlp(YtDlpOutputVariantConfig),
+impl Default for YtDlpOutputVariantConfig {
+    fn default() -> Self {
+        Self {
+            kind: YtDlpOutputKind::Primary,
+            save: OutputSaveConfig::default(),
+            capture_kind: None,
+            langs: String::new(),
+            thumbnail_ids: String::new(),
+            sub_format: String::new(),
+            convert: String::new(),
+            zip_member: String::new(),
+        }
+    }
 }
 
-impl DecodedOutputVariantConfig {
-    /// Attempts to decode a [`DecodedOutputVariantConfig`] from a raw JSON
-    /// [`Value`], trying yt-dlp-specific decoding first, then generic.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` with a description if decoding fails for both
-    /// yt-dlp-specific and generic config formats.
-    pub fn from_json_value(value: Value) -> Result<Self, String> {
-        if let Ok(config) = serde_json::from_value::<YtDlpOutputVariantConfig>(value.clone()) {
-            return Ok(Self::YtDlp(config));
-        }
-        serde_json::from_value::<GenericOutputVariantConfig>(value)
-            .map(Self::Generic)
-            .map_err(|e| e.to_string())
-    }
+// ---------------------------------------------------------------------------
+// Typed output variant value
+// ---------------------------------------------------------------------------
+
+/// Typed output variant value stored on [`MediaStep`].
+///
+/// The untagged decode tries yt-dlp-specific decoding first (matching the
+/// historical tool-dispatched decode order), then falls back to the generic
+/// variant config.  Both arms reject unknown fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OutputVariantValue {
+    /// yt-dlp specific variant config.
+    YtDlp(YtDlpOutputVariantConfig),
+    /// Generic tool variant config.
+    Generic(GenericOutputVariantConfig),
 }
 
 /// Simplified output variant policy used by workflow persistence.
@@ -241,14 +257,14 @@ pub fn decode_output_variant_config(
     tool: &MediaStep,
     variant_key: &str,
     value: &Value,
-) -> Result<DecodedOutputVariantConfig, String> {
+) -> Result<OutputVariantValue, String> {
     if tool.tool.is_online_media_downloader() {
         serde_json::from_value::<YtDlpOutputVariantConfig>(value.clone())
-            .map(DecodedOutputVariantConfig::YtDlp)
+            .map(OutputVariantValue::YtDlp)
             .map_err(|err| format!("output variant '{variant_key}' for yt-dlp: {err}"))
     } else {
         serde_json::from_value::<GenericOutputVariantConfig>(value.clone())
-            .map(DecodedOutputVariantConfig::Generic)
+            .map(OutputVariantValue::Generic)
             .map_err(|err| {
                 format!("output variant '{variant_key}' for tool '{}': {err}", tool.tool.as_str())
             })
@@ -263,8 +279,8 @@ pub fn decode_output_variant_policy(
     value: &Value,
 ) -> Result<OutputVariantPolicyConfig, String> {
     match decode_output_variant_config(tool, variant_key, value)? {
-        DecodedOutputVariantConfig::Generic(config) => Ok(OutputVariantPolicyConfig::from(&config)),
-        DecodedOutputVariantConfig::YtDlp(config) => Ok(OutputVariantPolicyConfig::from(&config)),
+        OutputVariantValue::Generic(config) => Ok(OutputVariantPolicyConfig::from(&config)),
+        OutputVariantValue::YtDlp(config) => Ok(OutputVariantPolicyConfig::from(&config)),
     }
 }
 

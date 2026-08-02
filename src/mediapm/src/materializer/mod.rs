@@ -685,6 +685,7 @@ mod tests {
         HierarchyNode, HierarchyNodeKind, HierarchyPath, PlaylistFormat, SanitizeNamesConfig,
     };
     use crate::config::source_types::{MediaSourceSpec, MediaStep, MediaStepTool};
+    use crate::config::{GenericOutputVariantConfig, OutputVariantValue};
     use mediapm_utils::progress::recording::RecordingProgressTracker;
     use tempfile::tempdir;
 
@@ -733,7 +734,10 @@ mod tests {
                         input_variants: vec![],
                         output_variants: BTreeMap::from([(
                             "default".into(),
-                            serde_json::json!({"kind": "primary"}),
+                            OutputVariantValue::Generic(GenericOutputVariantConfig {
+                                kind: "primary".to_string(),
+                                ..Default::default()
+                            }),
                         )]),
                         options: BTreeMap::new(),
                     }],

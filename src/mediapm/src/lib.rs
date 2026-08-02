@@ -36,16 +36,17 @@ use url::Url;
 pub use conductor_bridge::sync::find_active_tool_spec;
 pub use config::versions::{apply_v1_contract, evaluate_mod_ncl_expression, validate_v1_document};
 pub use config::{
-    DecodedOutputVariantConfig, GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind,
-    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, ManagedFileRecord,
-    MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
-    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmState,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
-    OutputSaveConfig, PlatformInheritedEnvVars, PlaylistEntryPathMode, PlaylistFormat,
+    GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule,
+    HierarchyNode, HierarchyNodeKind, HierarchyPath, ManagedFileRecord, MaterializationMethod,
+    MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate,
+    MediaMetadataVariantBinding, MediaPmDocument, MediaPmState, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind, OutputSaveConfig,
+    OutputVariantValue, PlatformInheritedEnvVars, PlaylistEntryPathMode, PlaylistFormat,
     PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, TransformInputValue,
-    YtDlpOutputKind, YtDlpOutputVariantConfig, flatten_hierarchy_value, load_mediapm_document,
-    load_mediapm_state_document, merge_mediapm_document_with_state, nest_hierarchy_value,
-    regex_variant_selector, save_mediapm_document, save_mediapm_state_document,
+    VerifyStrategy, YtDlpOutputKind, YtDlpOutputVariantConfig, flatten_hierarchy_value,
+    load_mediapm_document, load_mediapm_state_document, merge_mediapm_document_with_state,
+    nest_hierarchy_value, regex_variant_selector, save_mediapm_document,
+    save_mediapm_state_document,
 };
 pub use error::MediaPmError;
 pub use global::{
@@ -784,8 +785,9 @@ pub(crate) fn local_source_default_steps(
             input_variants: Vec::new(),
             output_variants: BTreeMap::from([(
                 "media".to_string(),
-                serde_json::json!({
-                    "kind": "primary",
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
                 }),
             )]),
             options: BTreeMap::from([
@@ -798,8 +800,9 @@ pub(crate) fn local_source_default_steps(
             input_variants: vec!["media".to_string()],
             output_variants: BTreeMap::from([(
                 "media".to_string(),
-                serde_json::json!({
-                    "kind": "primary",
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
                 }),
             )]),
             options: BTreeMap::from([
@@ -818,8 +821,9 @@ pub(crate) fn local_source_default_steps(
             input_variants: vec!["media".to_string()],
             output_variants: BTreeMap::from([(
                 "media".to_string(),
-                serde_json::json!({
-                    "kind": "primary",
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..Default::default()
                 }),
             )]),
             options: BTreeMap::new(),
