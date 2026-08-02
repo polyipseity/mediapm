@@ -44,7 +44,7 @@ Performance claims must be backed by an evidence-first loop: profile to identify
 
 ### CI auto-detection in demos
 
-Both demos auto-detect CI mode using standard CI environment variables (`CI=true`, `GITHUB_ACTIONS`, etc.) and skip external tool execution when detected. In config-only mode, artifacts and workflow validation complete without spawning external processes or requiring network access. This lets CI validate configuration parsing and workflow structure without tool dependencies. When CI is detected, neither ffmpeg, yt-dlp, rsgain, nor media-tagger are required — only the Rust toolchain and workspace dependencies are needed.
+Both demos detect CI in their embedded `main_is_exercised` tests, never inside `main()` (see `example-execution-policy.instructions.md`). In CI, the test sets the demo's reduced-mode environment variable (`MEDIAPM_DEMO_RUN_SYNC=false` or `MEDIAPM_DEMO_ONLINE_RUN_SYNC=false`) before calling `main()`, and the configuration-only path completes without spawning external processes or requiring network access. `main()` is deterministic given environment inputs and never probes CI variables itself. Manual reduced-mode runs use the same env override; manual full runs stay `cargo run --example <demo>`. When reduced mode is active, neither ffmpeg, yt-dlp, rsgain, nor media-tagger are required — only the Rust toolchain and workspace dependencies are needed.
 
 ### Verification commands reference
 

@@ -431,6 +431,10 @@ fn sync_enabled_from_env_value(value: Option<&str>) -> bool {
     !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
 }
 
+/// Detects a CI environment from standard CI variables. Only the embedded
+/// `main_is_exercised` test consults this; `main()` stays deterministic given
+/// environment inputs.
+#[cfg(test)]
 fn ci_mode_detected() -> bool {
     std::env::var("CI")
         .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
@@ -443,10 +447,6 @@ fn ci_mode_detected() -> bool {
 }
 
 fn demo_run_sync_enabled() -> bool {
-    // CI mode always disables sync (config-only)
-    if ci_mode_detected() {
-        return false;
-    }
     sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())
 }
 
@@ -1093,12 +1093,6 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 async fn main() -> ExampleResult<()> {
     let run_sync = demo_run_sync_enabled();
 
-    if ci_mode_detected() {
-        eprintln!(
-            "[mediapm_demo] CI environment detected; running in configuration-only mode (no sync)"
-        );
-    }
-
     let paths = generate_demo_artifacts(run_sync).await?;
     println!("generated artifacts root: {}", paths.artifact_root.display());
     println!("generated workspace root: {}", paths.workspace_root.display());
@@ -1110,6 +1104,41 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Executes the documented example entry point via `main()`. CI detection
+    /// lives in this test, never in `main()`: when CI is detected the reduced
+    /// mode env override is set before calling `main()`; outside CI the test
+    /// skips because the full-sync path is gated by a known decision (see the
+    /// demo-sync-gate note) — exercise the full path manually with
+    /// `cargo run --example mediapm_demo`.
+    #[test]
+    fn main_is_exercised() {
+        if !super::ci_mode_detected() {
+            eprintln!(
+                "[mediapm_demo] skipping main_is_exercised outside CI; \
+                 run the example manually for the full-sync path"
+            );
+            return;
+        }
+
+        let previous = std::env::var(super::DEMO_RUN_SYNC_ENV_VAR).ok();
+        // SAFETY: test mutates one process env key in a controlled scope and
+        // restores the previous value before exit.
+        unsafe {
+            std::env::set_var(super::DEMO_RUN_SYNC_ENV_VAR, "false");
+        }
+
+        super::main().expect("example main should run to completion");
+
+        // SAFETY: restore previous env var value for test isolation.
+        unsafe {
+            if let Some(value) = previous {
+                std::env::set_var(super::DEMO_RUN_SYNC_ENV_VAR, value);
+            } else {
+                std::env::remove_var(super::DEMO_RUN_SYNC_ENV_VAR);
+            }
+        }
+    }
+
     /// Verifies demo artifact generation writes one complete import
     /// workflow manifest when runtime sync is intentionally skipped.
     #[tokio::test]
