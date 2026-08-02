@@ -21,3 +21,14 @@ Examples that require nondeterministic access (network, external services, manag
 3. When CI is not detected, it does not set the reduced-mode variable (no reduced-mode) and skips with a documented message when the full path is unsafe or blocked; full runs stay manual via `cargo run --example`.
 
 `main()` itself must be deterministic given environment inputs: no CI detection, no network probing, and no conditional behavior other than what the documented environment variables select.
+
+## Examples-as-tests must be isolated
+
+Examples compile into test binaries (nextest `--all-targets`), so any example `main()` that persists state runs concurrently with sibling tests in the same suite. It must therefore treat itself as a test: never share canonical on-disk locations between tests and never touch the real OS user cache.
+
+Two env-var overrides exist for this, set by tests through RAII guard structs (`tempfile::TempDir` + `unsafe { std::env::set_var/remove_var }`; sound under nextest because each test runs in its own process):
+
+- `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` — artifact root (the workspace dir the example mutates). Tests set it to a unique tempdir. Never share the canonical `examples/artifacts/<name>` dir between tests in the same suite (CAS `store/lock` flock races otherwise).
+- `MEDIAPM_EXAMPLE_CACHE_ROOT` — user-level tool download cache root. Tests set it to a unique tempdir and map it to `MediaRuntimeStorage.cache_root_override`, so `sync_tools()`/tool provisioning never touches the real OS cache (`default_mediapm_user_download_cache_root()`).
+
+`main()` must honor these env vars when set and fall back to canonical paths when unset, so manual `cargo run --example` behavior stays unchanged.

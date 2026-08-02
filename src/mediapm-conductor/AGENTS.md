@@ -20,6 +20,7 @@ Follow this together with the workspace root `AGENTS.md` and relevant `.agents/i
 - Keep conductor as a functional orchestration engine over CAS: deterministic planning/keying in pure logic, with process/filesystem effects isolated to execution boundaries.
 - Keep user intent and machine-managed runtime state separated across `conductor.ncl` and `conductor.generated.ncl`; unresolved non-mergeable conflicts fail fast and require manual resolution.
 - Runtime orchestration remains async + actor-oriented (`ractor`) with explicit message contracts and predictable supervision behavior.
+- Workflow steps reference tools by `ToolSpec.name` (e.g. `tool: "echo"`), never by the tools map key (e.g. `"echo@v1"`); `find_tool_by_name` matches `spec.name`.
 
 ## Current Stack and Entry Points
 
