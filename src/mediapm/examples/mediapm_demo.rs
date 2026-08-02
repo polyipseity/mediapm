@@ -452,21 +452,6 @@ fn sync_enabled_from_env_value(value: Option<&str>) -> bool {
     !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
 }
 
-/// Detects a CI environment from standard CI variables. Only the embedded
-/// `main_is_exercised` test consults this; `main()` stays deterministic given
-/// environment inputs.
-#[cfg(test)]
-fn ci_mode_detected() -> bool {
-    std::env::var("CI")
-        .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
-        || std::env::var("GITHUB_ACTIONS").is_ok()
-        || std::env::var("GITLAB_CI").is_ok()
-        || std::env::var("CIRCLECI").is_ok()
-        || std::env::var("TRAVIS").is_ok()
-        || std::env::var("BUILDKITE").is_ok()
-        || std::env::var("DRONE").is_ok()
-}
-
 fn demo_run_sync_enabled() -> bool {
     sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())
 }
@@ -1133,50 +1118,49 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
-    /// Points `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` at a unique tempdir for the
-    /// guard's lifetime so tests never share the canonical artifact
-    /// directory (CAS flock isolation under parallel test processes).
-    struct IsolatedArtifactRoot {
-        _temp: tempfile::TempDir,
+    /// Points `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` and `MEDIAPM_EXAMPLE_CACHE_ROOT`
+    /// at unique tempdirs for the guard's lifetime so tests never share the
+    /// canonical artifact directory or the real OS user-level download cache
+    /// (flock isolation under parallel test processes).
+    struct IsolatedRun {
+        _artifact_root: tempfile::TempDir,
+        _cache_root: tempfile::TempDir,
     }
 
-    impl IsolatedArtifactRoot {
+    impl IsolatedRun {
         fn new() -> Self {
-            let temp = tempfile::tempdir().expect("create temp artifact root");
-            unsafe { std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, temp.path()) };
-            Self { _temp: temp }
+            let artifact_root = tempfile::tempdir().expect("create temp artifact root");
+            let cache_root = tempfile::tempdir().expect("create temp cache root");
+            unsafe {
+                std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, artifact_root.path());
+                std::env::set_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT, cache_root.path());
+            }
+            Self { _artifact_root: artifact_root, _cache_root: cache_root }
         }
     }
 
-    impl Drop for IsolatedArtifactRoot {
+    impl Drop for IsolatedRun {
         fn drop(&mut self) {
-            unsafe { std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT) };
+            unsafe {
+                std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
+                std::env::remove_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT);
+            }
         }
     }
 
-    /// Executes the documented example entry point via `main()`. CI detection
-    /// lives in this test, never in `main()`: when CI is detected the reduced
-    /// mode env override is set before calling `main()`; outside CI the test
-    /// skips because the full-sync path is gated by a known decision (see the
-    /// demo-sync-gate note) — exercise the full path manually with
-    /// `cargo run --example mediapm_demo`.
+    /// Executes the documented example entry point via `main()` in full-sync
+    /// mode. The full-sync path is currently blocked by the Stream A stub
+    /// (empty `variant_hashes` / `managed_files`), so this test is expected to
+    /// fail until the provisioning pipeline lands — see `TODO.md`.
     #[test]
     fn main_is_exercised() {
-        if !super::ci_mode_detected() {
-            eprintln!(
-                "[mediapm_demo] skipping main_is_exercised outside CI; \
-                 run the example manually for the full-sync path"
-            );
-            return;
-        }
-
-        let _isolated = IsolatedArtifactRoot::new();
+        let _isolated = IsolatedRun::new();
 
         let previous = std::env::var(super::DEMO_RUN_SYNC_ENV_VAR).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::set_var(super::DEMO_RUN_SYNC_ENV_VAR, "false");
+            std::env::set_var(super::DEMO_RUN_SYNC_ENV_VAR, "true");
         }
 
         super::main().expect("example main should run to completion");
@@ -1192,11 +1176,14 @@ mod tests {
     }
 
     /// Verifies demo artifact generation writes one complete import
-    /// workflow manifest when runtime sync is intentionally skipped.
+    /// workflow manifest in full-sync mode. The full-sync path is currently
+    /// blocked by the Stream A stub (empty `variant_hashes` / `managed_files`),
+    /// so this test is expected to fail until the provisioning pipeline lands
+    /// — see `TODO.md`.
     #[tokio::test]
     async fn generate_demo_artifacts_writes_manifest_and_import_metadata() {
-        let _isolated = IsolatedArtifactRoot::new();
-        let run = super::generate_demo_artifacts(false).await.expect("demo artifact generation");
+        let _isolated = IsolatedRun::new();
+        let run = super::generate_demo_artifacts(true).await.expect("demo artifact generation");
 
         assert!(run.manifest_path.exists(), "manifest should be written");
         assert!(run.workspace_root.exists(), "workspace root should exist");
@@ -1217,8 +1204,8 @@ mod tests {
         );
         assert_eq!(
             manifest_json.get("tool_update_precheck_executed").and_then(serde_json::Value::as_bool),
-            Some(false),
-            "config-only demo run should not execute tools-update precheck"
+            Some(true),
+            "full-sync demo run should execute tools-update precheck"
         );
         let without_delta = manifest_json
             .get("store_size_without_delta_bytes")

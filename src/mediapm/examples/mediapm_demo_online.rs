@@ -2601,49 +2601,59 @@ mod tests {
         assert!(result.is_err(), "unknown run-sync tokens must be rejected");
     }
 
-    /// Points `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` at a unique tempdir for the
-    /// guard's lifetime so tests never share the canonical artifact
-    /// directory (CAS flock isolation under parallel test processes).
-    struct IsolatedArtifactRoot {
-        _temp: tempfile::TempDir,
+    /// Points `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` and `MEDIAPM_EXAMPLE_CACHE_ROOT`
+    /// at unique tempdirs for the guard's lifetime so tests never share the
+    /// canonical artifact directory or the real OS user-level download cache
+    /// (flock isolation under parallel test processes).
+    struct IsolatedRun {
+        _artifact_root: tempfile::TempDir,
+        _cache_root: tempfile::TempDir,
     }
 
-    impl IsolatedArtifactRoot {
+    impl IsolatedRun {
         fn new() -> Self {
-            let temp = tempfile::tempdir().expect("create temp artifact root");
-            unsafe { std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, temp.path()) };
-            Self { _temp: temp }
+            let artifact_root = tempfile::tempdir().expect("create temp artifact root");
+            let cache_root = tempfile::tempdir().expect("create temp cache root");
+            unsafe {
+                std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, artifact_root.path());
+                std::env::set_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT, cache_root.path());
+            }
+            Self { _artifact_root: artifact_root, _cache_root: cache_root }
         }
     }
 
-    impl Drop for IsolatedArtifactRoot {
+    impl Drop for IsolatedRun {
         fn drop(&mut self) {
-            unsafe { std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT) };
+            unsafe {
+                std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
+                std::env::remove_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT);
+            }
         }
     }
 
-    /// Executes the documented example entry point via `main()`. CI detection
-    /// lives in this test, never in `main()`: when CI is detected the reduced
-    /// mode env override is set before calling `main()`; outside CI the test
-    /// skips because the full-sync path needs network and external tools —
-    /// exercise that path manually with `cargo run --example mediapm_demo_online`.
+    /// Executes the documented example entry point via `main()` in full-sync
+    /// mode. The online path is nondeterministic (network + external tools), so
+    /// CI skips it; locally it runs full sync, which is currently blocked by
+    /// the Stream A stub (machine workflows never synthesized), so the test is
+    /// expected to fail until the provisioning pipeline lands — see `TODO.md`.
     #[test]
     fn main_is_exercised() {
-        if !super::ci_mode_detected() {
+        if super::ci_mode_detected() {
             eprintln!(
-                "[demo_online] skipping main_is_exercised outside CI; \
-                 run the example manually for the full-sync path"
+                "[demo_online] skipping main_is_exercised in CI; \
+                 the full-sync online path is nondeterministic and needs \
+                 network and external tools"
             );
             return;
         }
 
-        let _isolated = IsolatedArtifactRoot::new();
+        let _isolated = IsolatedRun::new();
 
         let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "false");
+            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "true");
         }
 
         super::main().expect("example main should run to completion");
