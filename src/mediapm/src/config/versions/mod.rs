@@ -135,6 +135,7 @@ pub fn migrate_to(requested_version: u32, document: Value) -> Result<Value, Medi
 /// wrapper cannot be evaluated.
 pub fn apply_v1_contract(contract_name: &str, source: &str) -> Result<Value, MediaPmError> {
     const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
+    const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
     const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
 
     let dir = tempfile::tempdir().map_err(|err| MediaPmError::Io {
@@ -143,6 +144,7 @@ pub fn apply_v1_contract(contract_name: &str, source: &str) -> Result<Value, Med
         source: err,
     })?;
     let v1_path = dir.path().join("v1.ncl");
+    let v2_path = dir.path().join("v2.ncl");
     let mod_path = dir.path().join("mod.ncl");
     let input_path = dir.path().join("document_input.ncl");
     let wrapper_path = dir.path().join("apply_contract.ncl");
@@ -151,8 +153,13 @@ pub fn apply_v1_contract(contract_name: &str, source: &str) -> Result<Value, Med
         path: v1_path.clone(),
         source: err,
     })?;
-    // The current `v1.ncl` imports `mod.ncl` for `shared.VersionContract`; the
-    // strict rewrite keeps both files importable, so write both unconditionally.
+    // `mod.ncl` imports both version files; keep every temp workspace
+    // self-contained so any wrapper can import any of the three modules.
+    std::fs::write(&v2_path, V2_NCL_SOURCE).map_err(|err| MediaPmError::Io {
+        operation: "write embedded v2.ncl".to_string(),
+        path: v2_path.clone(),
+        source: err,
+    })?;
     std::fs::write(&mod_path, MOD_NCL_SOURCE).map_err(|err| MediaPmError::Io {
         operation: "write embedded mod.ncl".to_string(),
         path: mod_path.clone(),
@@ -200,7 +207,7 @@ pub fn validate_v1_document(source: &str) -> Result<Value, MediaPmError> {
 }
 
 /// Evaluates one expression in the scope of the embedded `mod.ncl` registry
-/// module (importing both `mod.ncl` and `v1.ncl`).
+/// module (importing `mod.ncl`, `v1.ncl`, and `v2.ncl`).
 ///
 /// # Errors
 ///
@@ -209,6 +216,7 @@ pub fn validate_v1_document(source: &str) -> Result<Value, MediaPmError> {
 pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
     const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
     const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
+    const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
 
     let dir = tempfile::tempdir().map_err(|err| MediaPmError::Io {
         operation: "create mediapm registry validation temp dir".to_string(),
@@ -217,6 +225,7 @@ pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
     })?;
     let mod_path = dir.path().join("mod.ncl");
     let v1_path = dir.path().join("v1.ncl");
+    let v2_path = dir.path().join("v2.ncl");
     let wrapper_path = dir.path().join("evaluate_expr.ncl");
     std::fs::write(&mod_path, MOD_NCL_SOURCE).map_err(|err| MediaPmError::Io {
         operation: "write embedded mod.ncl".to_string(),
@@ -226,6 +235,11 @@ pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
     std::fs::write(&v1_path, V1_NCL_SOURCE).map_err(|err| MediaPmError::Io {
         operation: "write embedded v1.ncl".to_string(),
         path: v1_path.clone(),
+        source: err,
+    })?;
+    std::fs::write(&v2_path, V2_NCL_SOURCE).map_err(|err| MediaPmError::Io {
+        operation: "write embedded v2.ncl".to_string(),
+        path: v2_path.clone(),
         source: err,
     })?;
     std::fs::write(&wrapper_path, format!("let shared = import \"mod.ncl\" in\n{expr}\n"))

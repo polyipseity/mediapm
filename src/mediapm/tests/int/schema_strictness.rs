@@ -219,8 +219,8 @@ fn mod_ncl_exports_registry_surface() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(mod_source.contains("current_version = "), "mod.ncl must export current_version");
     assert!(
-        mod_source.contains("supported_versions = [1]"),
-        "mod.ncl must export supported_versions = [1]"
+        mod_source.contains("supported_versions = [1, 2]"),
+        "mod.ncl must export supported_versions = [1, 2]"
     );
     assert!(mod_source.contains("migrate_to = migrate_to_fn"), "mod.ncl must export migrate_to");
     assert!(
@@ -228,11 +228,11 @@ fn mod_ncl_exports_registry_surface() {
         "mod.ncl must export SupportedVersion"
     );
     assert!(
-        mod_source.contains("validate_document = v1_migration.validate_document_v1"),
+        mod_source.contains("validate_document = v2_migration.validate_document_v2"),
         "mod.ncl must re-export validate_document (unversioned alias)"
     );
     assert!(
-        mod_source.contains("envelope_contract = v1_migration.envelope_contract_v1"),
+        mod_source.contains("envelope_contract = v2_migration.envelope_contract_v2"),
         "mod.ncl must re-export envelope_contract (unversioned alias)"
     );
     assert!(

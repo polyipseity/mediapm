@@ -290,6 +290,9 @@ in
 # tail.  `version` must be a non-negative integer.
 let MediaPmDocumentV1 = {
   version | IntegerNumberV1,
+  # ||| Legacy state payload accepted on V1 documents.  State is managed
+  # ||| separately via `state.json` and dropped when migrating to V2.
+  state | MediaPmStateV1 | optional,
   media | { _ : MediaSourceSpecV1 } | default = {},
   hierarchy | Array HierarchyNodeV1 | default = [],
   tools | { _ : ToolRequirementV1 } | default = {},
@@ -313,11 +316,21 @@ let _media_step_spec_v1 = MediaStepSpecV1 in
 let _output_variant_value_v1 = OutputVariantValueV1 in
 let _sanitize_names_config_v1 = SanitizeNamesConfigV1 in
 
+# ||| Migration edge INTO V1 (placement policy: each version file owns the
+# ||| migration into that version; `mod.ncl` only dispatches).  V2 documents
+# ||| carry no `state` payload (state is managed via `state.json`), and V1
+# ||| accepts an optional `state` field, so this edge is a version marker
+# ||| bump only.
+let migrate_v2_to_v1_fn = fun data => data & { version = 1 }
+in
+
 {
   # ||| Validates one V1 mediapm document, filling in defaults.
   validate_document_v1 = fun document => document | _media_pm_document_v1,
   # ||| The V1 document envelope contract (unwrapped).
   envelope_contract_v1 = _media_pm_document_v1,
+  # ||| Migrates one V2 document to V1 (version marker bump only).
+  migrate_v2_to_v1 = migrate_v2_to_v1_fn,
   MediaPmDocumentV1 = _media_pm_document_v1,
   MediaPmStateV1 = _media_pm_state_v1,
   ConfigVersionSpecV1 = _config_version_spec_v1,
