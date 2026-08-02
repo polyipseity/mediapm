@@ -303,10 +303,27 @@ async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPm
 
 /// Sync registers all five built-in tools in the generated conductor
 /// document.
+///
+/// Uses an explicit `cache_root_override` so the sync never touches the real
+/// OS user cache, and asserts the real cache mtime is unchanged (hermetic
+/// isolation regression guard).
 #[tokio::test]
 async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let cache_root = tempdir().expect("cache tempdir");
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
+
+    // Record real cache state before the sync.
+    let real_cache_mtime =
+        mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root()
+            .and_then(|p| std::fs::metadata(p.join("tools.json")).ok())
+            .and_then(|m| m.modified().ok());
+
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
     let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
         .expect("conductor.generated.ncl should be readable");
@@ -319,6 +336,22 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
             "builtin {id} must have kind=builtin"
         );
     }
+
+    // Verify the override path was used (cache files initialized there).
+    assert!(
+        cache_root.path().join("tools.json").exists() || cache_root.path().join("store").exists(),
+        "override cache dir should have been initialized",
+    );
+
+    // Verify the real cache was not modified by the sync (mtime unchanged).
+    let real_cache_mtime_after =
+        mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root()
+            .and_then(|p| std::fs::metadata(p.join("tools.json")).ok())
+            .and_then(|m| m.modified().ok());
+    assert_eq!(
+        real_cache_mtime, real_cache_mtime_after,
+        "real cache directory must not be modified when cache_root_override is set",
+    );
     Ok(())
 }
 
