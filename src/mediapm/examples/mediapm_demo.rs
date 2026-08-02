@@ -819,8 +819,15 @@ fn seed_old_synced_tools_state_for_update_precheck(
 ) -> ExampleResult<()> {
     service.refresh_runtime_configuration()?;
 
-    let mut machine: NickelDocument =
-        decode_document(fs::read(&service.paths().conductor_generated_ncl)?.as_slice())?;
+    // The generated conductor document does not exist on a fresh workspace
+    // (it is first produced by a sync); start from an empty document so the
+    // stale-tool seed can be applied before the first sync runs.
+    let machine_path = service.paths().conductor_generated_ncl.clone();
+    let mut machine: NickelDocument = if machine_path.exists() {
+        decode_document(fs::read(&machine_path)?.as_slice())?
+    } else {
+        NickelDocument::default()
+    };
     let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_json)?;
 
     for logical_tool_name in local_demo_tool_requirements().into_keys() {
@@ -828,16 +835,27 @@ fn seed_old_synced_tools_state_for_update_precheck(
             continue;
         }
 
-        let stale_tool_id =
-            format!("mediapm.tools.{}+demo@old", logical_tool_name.trim().to_ascii_lowercase());
         let stale_payload = format!("stale-tool-payload::{logical_tool_name}");
         let stale_hash = Hash::from_content(stale_payload.as_bytes());
+        // Generated-doc key follows the "{name}@{content_map_hash}" convention
+        // so prune logic treats the seeded entry as an old version of the tool.
+        let stale_tool_id = format!("{logical_tool_name}@{stale_hash}");
         let stale_relative_path = format!("legacy/{logical_tool_name}/tool.bin");
 
+        machine.external_data.insert(
+            stale_hash,
+            mediapm_conductor::ExternalDataEntry {
+                description: format!("stale payload for {logical_tool_name}"),
+                save_mode: mediapm_conductor::OutputSaveMode::Saved,
+            },
+        );
+        // The seeded spec must carry the bare logical tool id as `name` so the
+        // reconcile's `already_exists` check (`spec.name == tool_id`) counts it
+        // as an update rather than an addition.
         machine.tools.insert(
             stale_tool_id.clone(),
             ToolSpec {
-                name: stale_tool_id.clone(),
+                name: logical_tool_name.clone(),
                 kind: ToolKindSpec::Executable {
                     command: vec![format!("./{stale_relative_path}")],
                     env_vars: BTreeMap::new(),
@@ -855,9 +873,9 @@ fn seed_old_synced_tools_state_for_update_precheck(
         );
 
         lock.managed_tools.push(ToolRegistryEntry {
-            tool_id: stale_tool_id,
-            version: String::new(),
-            canonical_version: String::new(),
+            tool_id: logical_tool_name.clone(),
+            version: "old".to_string(),
+            canonical_version: "old".to_string(),
             content_map_hash: stale_hash.to_string(),
             deployed_at: unix_timestamp_seconds(),
             resolved_tag: None,
