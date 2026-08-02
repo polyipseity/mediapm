@@ -109,3 +109,73 @@ fn v2_nickel_schema_structure() {
     );
     assert!(schema.contains("let ToolSpecV2 = "), "v2.ncl must define ToolSpecV2 contract");
 }
+
+/// Validates that the V1 legacy Nickel schema (`v1.ncl`) contains the
+/// tightened legacy-surface contracts (S-B1..S-B5), keeps the documented
+/// `state_pointer` exception (S-B6), and preserves the canonical envelope
+/// shape (top-level `tool_configs`, required `runtime`).
+#[test]
+fn v1_nickel_schema_structure() {
+    let schema = include_str!("../../src/config/versions/v1.ncl");
+
+    // --- S-B1..S-B3: runtime numeric fields are integer-guarded ---
+    for field in [
+        "verify_on_read_sample_denominator",
+        "verify_on_read_stale_timeout_secs",
+        "reconstructed_bytes_cache_ttl_secs",
+    ] {
+        assert!(
+            schema.contains(&format!("{field} | IntegerNumberV1 | optional")),
+            "v1.ncl RuntimeStorageV1.{field} must be integer-guarded"
+        );
+    }
+
+    // --- S-B4: retry_impure is bool-guarded ---
+    assert!(
+        schema.contains("retry_impure | Bool | optional"),
+        "v1.ncl RuntimeStorageV1.retry_impure must be bool-guarded"
+    );
+
+    // --- S-B5: tool-level outputs use the OutputPolicyV1 record ---
+    assert!(
+        schema.contains("outputs | { _ : OutputPolicyV1 } | optional"),
+        "v1.ncl ExecutableToolSpecV1.outputs must be OutputPolicyV1 records"
+    );
+    assert!(
+        !schema.contains("outputs | { _ : Dyn }"),
+        "v1.ncl must not leave tool-level outputs untyped"
+    );
+
+    // --- S-B6: state_pointer stays Dyn with the why-comment ---
+    assert!(
+        schema.contains("state_pointer | Dyn | optional"),
+        "v1.ncl must keep state_pointer Dyn (Option<Hash> bridging)"
+    );
+
+    // --- canonical envelope: top-level tool_configs, required runtime ---
+    assert!(
+        schema.contains("tool_configs | { _ : ToolConfigV1 } | optional"),
+        "v1.ncl NickelDocumentV1 must declare tool_configs at top level"
+    );
+    assert!(
+        schema.contains("runtime | RuntimeStorageV1,"),
+        "v1.ncl NickelDocumentV1 must keep runtime required (non-nullable schema)"
+    );
+
+    // --- RuntimeStorageV1 is closed and fully typed (no remaining Dyn) ---
+    let runtime_block = schema
+        .split("let RuntimeStorageV1 = {")
+        .nth(1)
+        .expect("RuntimeStorageV1 contract must be defined")
+        .split("}\nin")
+        .next()
+        .expect("RuntimeStorageV1 contract must be a record");
+    assert!(
+        !runtime_block.contains("Dyn"),
+        "v1.ncl RuntimeStorageV1 must have no remaining Dyn fields"
+    );
+    assert!(
+        !runtime_block.lines().any(|line| line.trim() == ".."),
+        "v1.ncl RuntimeStorageV1 must be a closed record"
+    );
+}

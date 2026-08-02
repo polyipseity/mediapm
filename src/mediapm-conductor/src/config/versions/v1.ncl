@@ -87,7 +87,10 @@ let ExecutableToolSpecV1 = {
   command | Array String | optional,
   env_vars | { _ : String } | optional,
   success_codes | Array IntegerNumberV1 | optional,
-  outputs | { _ : Dyn } | optional,
+  # Persistence policies for named outputs, mirroring step-level `outputs`.
+  # Tool-level outputs declare persistence only; capture is owned by the tool
+  # implementation or step overrides.
+  outputs | { _ : OutputPolicyV1 } | optional,
 }
 in
 
@@ -324,19 +327,19 @@ let RuntimeStorageV1 = {
   instance_ttl_seconds | IntegerNumberV1 | optional,
   # ||| Optional denominator for sampling CAS integrity verification on read.
   # ||| When set, approximately 1 in N reads triggers a full integrity check.
-  verify_on_read_sample_denominator | Dyn | optional,
+  verify_on_read_sample_denominator | IntegerNumberV1 | optional,
   # ||| Optional stale timeout in seconds for CAS integrity verification on
   # ||| read.
   # ||| When set, content written older than this triggers verification.
-  verify_on_read_stale_timeout_secs | Dyn | optional,
+  verify_on_read_stale_timeout_secs | IntegerNumberV1 | optional,
   # ||| Optional TTL in seconds for the reconstructed bytes cache.
   # ||| When set, decoded content bytes are cached for this many seconds.
-  reconstructed_bytes_cache_ttl_secs | Dyn | optional,
+  reconstructed_bytes_cache_ttl_secs | IntegerNumberV1 | optional,
   # ||| When true, impure workflow steps may auto-recover from CAS integrity
   # ||| failures (cache invalidation + retry).
   # ||| When omitted or false, only pure steps auto-recover and impure steps
   # ||| fail without retry.
-  retry_impure | Dyn | optional,
+  retry_impure | Bool | optional,
 }
 in
 
@@ -361,98 +364,146 @@ let NickelDocumentV1 = {
 }
 in
 
-# ||| v2 → v1:  Convert array-indexed tools/workflows back to maps,
-# ||| adapt tool_runtimes back to tool_configs, add empty v1-only fields.
-let migrate_v2_to_v1 = fun data =>
+# ||| v2 → v1:  Convert the v2 name-keyed tools map and array workflows back
+# ||| to the v1 map shapes, adapt per-tool runtimes back to top-level
+# ||| tool_configs, and drop v2-only fields (display_name, hash, capture,
+# ||| input kinds) that v1 does not carry. Absent optional fields are omitted
+# ||| (explicit `null` would violate `| optional` contracts).
+let migrate_v2_to_v1_fn = fun data =>
   let tools_v1 =
-    if std.is_array data.tools then
-      data.tools
+    if std.record.has_field "tools" data then
+      std.record.fields data.tools
       |> std.array.fold_left
         (fun acc =>
-          fun t =>
-            let kind_name = t.kind in
-            if kind_name == "builtin" then
-              acc
-              & {
-                "%{t.name}" = {
-                  kind = "builtin",
-                  name = t.name,
-                  version = t.version,
-                }
-              }
-            else
-              let cmds =
-                if t.process != null then
-                  [t.process.command] @ (if std.record.has_field "args" t.process then t.process.args else [])
-                else
-                  []
-              in
-              let impure_val = if t.runtime != null && std.record.has_field "impure" t.runtime then (t.runtime.impure | Bool) else false in
-              let env_val = if t.runtime != null && std.record.has_field "inherited_env_vars" t.runtime then
-                let names = t.runtime.inherited_env_vars | Array String in
-                std.array.fold_left (fun acc name => acc & { "%{name}" = name }) {} names
+          fun key =>
+            let t = data.tools."%{key}" in
+            let kind = if std.record.has_field "kind" t then t.kind else "executable" in
+            let spec =
+              if kind == "builtin" then
+                # BuiltinToolSpecV2 — v1 carries only the builtin_id identity;
+                # the v1 builtin contract has no name/version fields.
+                { kind = "builtin", builtin_id = t.builtin_id }
               else
-                {} in
-              acc
-              & {
-                "%{t.name}" = {
+                let rt = if std.record.has_field "runtime" t then t.runtime else {} in
+                let impure_val =
+                  if std.record.has_field "impure" rt then
+                    (rt.impure | Bool)
+                  else
+                    false
+                in
+                let inputs_v1 =
+                  if std.record.has_field "inputs" t then
+                    std.record.fields t.inputs
+                    |> std.array.fold_left
+                      (fun acc =>
+                        fun ik =>
+                          let iv = t.inputs."%{ik}" in
+                          let v1_kind = if std.record.has_field "kind" iv then iv.kind else "string" in
+                          # ToolInputSpecV1 has no `required` field and
+                          # ToolInputKindV1 supports only string/string_list;
+                          # content/env inputs are not representable in v1 and
+                          # are dropped to keep the migration total.
+                          if v1_kind == "string" || v1_kind == "string_list" then
+                            acc & { "%{ik}" = { kind = v1_kind } }
+                          else
+                            acc
+                      )
+                      {}
+                  else
+                    {}
+                in
+                let outputs_v1 =
+                  if std.record.has_field "outputs" t then
+                    std.record.fields t.outputs
+                    |> std.array.fold_left
+                      (fun acc =>
+                        fun oname =>
+                          let o = t.outputs."%{oname}" in
+                          acc
+                          & {
+                            "%{oname}" =
+                              if std.record.has_field "save" o then
+                                { save = (if o.save == "full" then "full" else if o.save == "true" then true else false) }
+                              else
+                                {}
+                          }
+                      )
+                      {}
+                  else
+                    {}
+                in
+                {
                   kind = "executable",
                   is_impure = impure_val,
-                  inputs = {},
-                  command = cmds,
-                  env_vars = env_val,
-                  success_codes = null,
-                  outputs = {},
+                  inputs = inputs_v1,
+                  command = if std.record.has_field "command" t then t.command else [],
+                  env_vars = if std.record.has_field "env_vars" t then t.env_vars else {},
+                  success_codes = if std.record.has_field "success_codes" t then t.success_codes else [],
+                  outputs = outputs_v1,
                 }
-              }
+            in
+            acc & { "%{key}" = spec }
         )
         {}
     else
       {}
   in
   let workflows_v1 =
-    if std.is_array data.workflows then
+    if std.record.has_field "workflows" data && std.is_array data.workflows then
       data.workflows
       |> std.array.fold_left
         (fun acc =>
           fun w =>
             let w_key = w.name in
+            let mapped_steps =
+              if std.record.has_field "steps" w && std.is_array w.steps then
+                w.steps
+                |> std.array.map (fun step =>
+                  let step_outputs =
+                    if std.record.has_field "outputs" step then
+                      std.record.fields step.outputs
+                      |> std.array.fold_left
+                        (fun acc =>
+                          fun oname =>
+                            let o = step.outputs."%{oname}" in
+                            acc
+                            & {
+                              "%{oname}" =
+                                if std.record.has_field "save" o then
+                                  { save = (if o.save == "full" then "full" else if o.save == "true" then true else false) }
+                                else
+                                  {}
+                            }
+                        )
+                        {}
+                    else
+                      {}
+                  in
+                  {
+                    id = step.id,
+                    tool = step.tool,
+                    inputs =
+                      if std.record.has_field "inputs" step then
+                        step.inputs
+                      else
+                        {},
+                    depends_on =
+                      if std.record.has_field "depends_on" step then
+                        step.depends_on
+                      else
+                        [],
+                    outputs = step_outputs,
+                  }
+                )
+              else
+                []
+            in
             acc
             & {
-              "%{w_key}" = {
-                name = w.name,
-                description = w.description,
-                steps =
-                  if std.is_array w.steps then
-                    w.steps
-                    |> std.array.map (fun step =>
-                      let old_outputs =
-                        if std.is_array step.outputs then
-                          step.outputs
-                          |> std.array.fold_left
-                            (fun oacc =>
-                              fun o =>
-                                oacc & { "%{o.name}" = {} }
-                            )
-                            {}
-                        else
-                          {}
-                      in
-                      {
-                        id = step.id,
-                        tool = step.tool,
-                        inputs =
-                          if std.record.has_field "inputs" step then
-                            step.inputs
-                          else
-                            {},
-                        depends_on = step.depends_on,
-                        outputs = old_outputs,
-                      }
-                    )
-                  else
-                    [],
-              }
+              "%{w_key}" =
+                { name = w.name }
+                & (if std.record.has_field "description" w then { description = w.description } else {})
+                & { steps = mapped_steps }
             }
         )
         {}
@@ -460,25 +511,76 @@ let migrate_v2_to_v1 = fun data =>
       {}
   in
   let tool_configs_v1 =
-    if std.record.has_field "tool_runtimes" data then
-      std.record.fields data.tool_runtimes
+    if std.record.has_field "tools" data then
+      std.record.fields data.tools
       |> std.array.fold_left
         (fun acc =>
           fun key =>
-            let rt = data.tool_runtimes."%{key}" in
+            let t = data.tools."%{key}" in
+            let rt = if std.record.has_field "runtime" t then t.runtime else {} in
+            let env_vars_part =
+              if std.record.has_field "inherited_env_vars" rt && std.is_array rt.inherited_env_vars then
+                { env_vars =
+                    std.array.fold_left
+                      (fun eacc =>
+                        fun name =>
+                          eacc & { "%{name}" = name }
+                      )
+                      {}
+                      rt.inherited_env_vars }
+              else
+                {}
+            in
             acc
             & {
-              "%{key}" = {
-                max_concurrent_calls = rt.max_concurrent_calls,
-                max_retries = rt.max_retries,
-                description = null,
-                input_defaults = {},
-                env_vars = if std.is_array rt.inherited_env_vars then
-                  std.array.fold_left (fun acc name => acc & { "%{name}" = name }) {} rt.inherited_env_vars
+              "%{key}" =
+                (if std.record.has_field "max_concurrent_calls" rt then { max_concurrent_calls = rt.max_concurrent_calls } else {})
+                & (if std.record.has_field "max_retries" rt then { max_retries = rt.max_retries } else {})
+                & (if std.record.has_field "content_map" rt then { content_map = rt.content_map } else {})
+                & env_vars_part
+                & (if std.record.has_field "default_inputs" t then { input_defaults = t.default_inputs } else {})
+            }
+        )
+        {}
+    else
+      {}
+  in
+  let runtime_v1 =
+    if std.record.has_field "runtime" data then
+      let rt = data.runtime in
+      (if std.record.has_field "retry_impure" rt then { retry_impure = rt.retry_impure | Bool } else {})
+      & (if std.record.has_field "platform_inherited_env_vars" rt then
+          { inherited_env_vars = rt.platform_inherited_env_vars }
+        else
+          {})
+    else
+      {}
+  in
+  let external_data_v1 =
+    if std.record.has_field "external_data" data then
+      std.record.fields data.external_data
+      |> std.array.fold_left
+        (fun acc =>
+          fun key =>
+            let e = data.external_data."%{key}" in
+            let save_part =
+              if std.record.has_field "save" e then
+                if std.is_string e.save && e.save == "full" then
+                  { save = "full" }
+                else if std.is_bool e.save && e.save == true then
+                  { save = true }
                 else
-                  {},
-                content_map = rt.content_map,
-              }
+                  # v1 external data rejects `false`; omission is the faithful
+                  # mapping.
+                  {}
+              else
+                {}
+            in
+            acc
+            & {
+              "%{key}" =
+                (if std.record.has_field "description" e then { description = e.description } else {})
+                & save_part
             }
         )
         {}
@@ -487,8 +589,8 @@ let migrate_v2_to_v1 = fun data =>
   in
   {
     version = 1,
-    runtime = {},
-    external_data = {},
+    runtime = runtime_v1,
+    external_data = external_data_v1,
     tools = tools_v1,
     workflows = workflows_v1,
     tool_configs = tool_configs_v1,
@@ -507,5 +609,7 @@ in
   envelope_contract_v1 = NickelDocumentV1,
 
   # ||| Migrates a v2 document to schema v1.
-  migrate_v2_to_v1,
+  # ||| Explicit `name = binding` form: record field names shadow outer
+  # ||| bindings, so the shorthand `migrate_v2_to_v1,` would not resolve.
+  migrate_v2_to_v1 = migrate_v2_to_v1_fn,
 }

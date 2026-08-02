@@ -11,7 +11,7 @@ pub(crate) mod v_latest;
 
 use crate::error::ConductorError;
 
-use super::nickel_io::evaluate_document_source;
+use super::nickel_io::{evaluate_document_source, migrate_document_source_to_version};
 
 /// Source of the v1 Nickel contract (needed for backward migration validation).
 pub(crate) const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
@@ -91,6 +91,26 @@ pub fn decode_document(bytes: &[u8]) -> Result<crate::config::NickelDocument, Co
     let doc: crate::config::NickelDocument = envelope.into();
     doc.validate_external_data_invariant()?;
     Ok(doc)
+}
+
+/// Evaluates one Nickel document source to schema v1 through the embedded
+/// migration pipeline and applies `validate_document_v1` to the result.
+///
+/// This is the version-locked validation path for the legacy v1 surface. The
+/// runtime decode pipeline never applies v1 contracts directly (v1 documents
+/// are always migrated forward to the latest schema), so this helper exists
+/// for tests that must prove the v1 contract itself: strictness rejections
+/// (S-B1..S-B5), R2 known-good round-trips, and R3 v2→v1 migration output.
+///
+/// `migrate_to 1` is the identity on v1 inputs, so this helper doubles as a
+/// direct v1 validator for already-v1 documents.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when the source fails to evaluate or when
+/// migration output violates the v1 envelope contract.
+pub fn validate_v1_document(source: &str) -> Result<serde_json::Value, ConductorError> {
+    migrate_document_source_to_version(source, 1, "configuration document")
 }
 
 /// Evaluates one Nickel source through the full migration pipeline and returns

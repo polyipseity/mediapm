@@ -183,11 +183,10 @@ in
 # ||| impure_timestamps, state_pointer).
 let migrate_v1_to_v2_fn = fun data =>
   let config_runtime_map =
-    if std.record.has_field "runtime" data
-      && std.is_record data.runtime
-      && std.record.has_field "tool_configs" data.runtime then
-      # ||| v1 nests `tool_configs` under `runtime` (not top-level).
-      let tc_root = data.runtime.tool_configs in
+    if std.record.has_field "tool_configs" data then
+      # ||| v1 declares `tool_configs` at the envelope top level (not nested
+      # ||| under `runtime`).
+      let tc_root = data.tool_configs in
       std.record.fields tc_root
       |> std.array.fold_left
         (fun acc =>

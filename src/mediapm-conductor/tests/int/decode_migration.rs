@@ -44,10 +44,11 @@ const V1_MINIMAL: &str = r"{ version = 1 }";
 
 /// Realistic v1 machine-state header.
 const V1_HEADER: &str = r"{
-    runtime = { tool_configs = {} },
+    runtime = {},
     tools = {},
     workflows = {},
     external_data = {},
+    tool_configs = {},
     version = 1,
 }";
 
@@ -58,10 +59,11 @@ fn make_large_v1(extra_fields: usize) -> String {
     }
     format!(
         r"{{
-    runtime = {{ tool_configs = {{}} }},
+    runtime = {{}},
     tools = {{}},
     workflows = {{}},
     external_data = {{}},
+    tool_configs = {{}},
     version = 1,
 {extra}}}"
     )
@@ -90,11 +92,12 @@ fn make_large_v1_workflows(n: usize) -> String {
     }
     format!(
         r"{{
-    runtime = {{ tool_configs = {{}} }},
+    runtime = {{}},
     tools = {{}},
     workflows = {{
 {workflows}    }},
     external_data = {{}},
+    tool_configs = {{}},
     version = 1,
 }}"
     )
@@ -117,13 +120,12 @@ fn various_inputs_do_not_trigger_migrate_to_missing_def() {
     assert!(check_no_migrate_to_error("v1_large_500_fields", &make_large_v1(500)));
 
     let with_ml_string = r#"{
-    runtime = {
-        tool_configs = {
-            "test" = {
-                command = m%%"
+    runtime = {},
+    tool_configs = {
+        "test" = {
+            command = m%%"
 multiline string here
 "%%,
-            },
         },
     },
     tools = {},
