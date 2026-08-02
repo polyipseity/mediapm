@@ -1274,6 +1274,12 @@ fn seed_old_synced_tools_state_for_update_precheck(
         let stale_tool_id = format!("{logical_tool_name}@{stale_hash}");
         let stale_relative_path = format!("legacy/{logical_tool_name}/tool.bin");
 
+        // The seeded stale spec's content_map references `stale_hash`, and the
+        // generated doc's `content_map ⊆ external_data` invariant requires a
+        // matching entry for the pre-sync document to decode. Reconcile
+        // rebuilds external_data from scratch (DataUsageTracker), so this
+        // entry only satisfies the pre-sync invariant — it is replaced, not
+        // retained, once sync runs.
         machine.external_data.insert(
             stale_hash,
             mediapm_conductor::ExternalDataEntry {
@@ -1304,6 +1310,14 @@ fn seed_old_synced_tools_state_for_update_precheck(
             },
         );
 
+        // version/canonical_version "old" + non-empty content_map_hash: the
+        // composite-canonical skip check requires an entry whose
+        // content_map_hash is non-empty AND whose canonical_version equals
+        // the freshly computed composite. "old" never equals it, so the seed
+        // forces a real re-provision (tools_updated), never a skip.
+        // resolved_* None: None provenance fields are backfilled from fresh
+        // metadata by `apply_resolved_field_backfills` (never overwriting
+        // Some) — seeding Some would pin stale provenance.
         lock.managed_tools.push(ToolRegistryEntry {
             tool_id: logical_tool_name.clone(),
             version: "old".to_string(),
