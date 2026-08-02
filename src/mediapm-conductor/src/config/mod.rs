@@ -109,6 +109,7 @@ pub enum ToolInputKind {
 
 /// Specification for one tool input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ToolInputSpec {
     /// Declared value kind for this input.
     #[serde(default)]
@@ -197,6 +198,7 @@ impl From<Vec<String>> for InputBinding {
 /// - `file:<path>`: capture bytes from a relative file path,
 /// - `file_regex:<pattern>`: capture bytes from a file matching a regex.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputCaptureSpec {
     /// Logical output name.
     pub name: String,
@@ -238,6 +240,7 @@ impl Default for OutputCaptureSpec {
 /// tool-call-instance identity computation.  Changes to runtime fields affect
 /// scheduling and sandbox materialization but do not invalidate cached outputs.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolRuntime {
     /// Content map: relative path → CAS hash or inline base64 payload.
     ///
@@ -268,12 +271,82 @@ pub struct ToolRuntime {
     pub max_retries: usize,
 }
 
+/// Platform-grouped inherited environment-variable names (S-D3).
+///
+/// Keys are closed to the three supported platforms (`windows`, `linux`,
+/// `macos`), mirroring the v2 Nickel `PlatformInheritedEnvVarsV2` contract.
+/// Unknown platform keys are rejected at the serde boundary and env var
+/// names must be non-empty.  Absent platform keys default to empty lists.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformInheritedEnvVars {
+    /// Variable names inherited on Windows.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_non_empty_env_names"
+    )]
+    pub windows: Vec<String>,
+    /// Variable names inherited on Linux.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_non_empty_env_names"
+    )]
+    pub linux: Vec<String>,
+    /// Variable names inherited on macOS.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_non_empty_env_names"
+    )]
+    pub macos: Vec<String>,
+}
+
+impl PlatformInheritedEnvVars {
+    /// Returns `true` when no platform has configured env var names.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty() && self.linux.is_empty() && self.macos.is_empty()
+    }
+
+    /// Returns the env var names configured for `platform` (`"windows"`,
+    /// `"linux"`, or `"macos"`), or `None` for any other platform string.
+    #[must_use]
+    pub fn env_names_for(&self, platform: &str) -> Option<&Vec<String>> {
+        match platform {
+            "windows" => Some(&self.windows),
+            "linux" => Some(&self.linux),
+            "macos" => Some(&self.macos),
+            _ => None,
+        }
+    }
+}
+
+/// Deserializes one platform's inherited env var name list, rejecting empty
+/// names (mirrors the Nickel `NonEmptyStringV2` contract, S-D3).
+fn deserialize_non_empty_env_names<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    let names = Vec::<String>::deserialize(deserializer)?;
+    if let Some(empty) = names.iter().find(|name| name.is_empty()) {
+        return Err(D::Error::custom(format!(
+            "environment variable names must be non-empty (found empty name {empty:?})"
+        )));
+    }
+    Ok(names)
+}
+
 /// Runtime configuration for the conductor itself (not per-tool).
 ///
 /// This is a serde-deserialization boundary type. Fields with meaningful
 /// defaults are resolved to their resolved values at the boundary — no
 /// `Option<T>` wraps a value that has a sensible default.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConductorRuntimeConfig {
     /// Whether impure tool calls may be retried automatically.
     ///
@@ -282,11 +355,11 @@ pub struct ConductorRuntimeConfig {
     pub retry_impure: bool,
     /// Platform-keyed inherited env var names.
     ///
-    /// Maps platform name strings (e.g. "linux", "macos", "windows") to
-    /// lists of environment variable *names* to inherit from the host process.
-    /// These are resolved at `to_unified()` time against the current platform.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub platform_inherited_env_vars: BTreeMap<String, Vec<String>>,
+    /// Keys are closed to `windows`/`linux`/`macos`; each value lists
+    /// environment variable *names* to inherit from the host process.  These
+    /// are resolved at `to_unified()` time against the current platform.
+    #[serde(default, skip_serializing_if = "PlatformInheritedEnvVars::is_empty")]
+    pub platform_inherited_env_vars: PlatformInheritedEnvVars,
 }
 
 /// Kind of tool definition.
@@ -318,6 +391,7 @@ pub enum ToolKindSpec {
 
 /// Specification for a tool.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolSpec {
     /// Tool kind (builtin, executable).
     pub kind: ToolKindSpec,
@@ -345,6 +419,7 @@ impl Default for ToolKindSpec {
 
 /// Specification for a complete workflow DAG.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowSpec {
     /// Logical workflow name (used for invocation).
     pub name: String,
@@ -364,6 +439,7 @@ pub struct WorkflowSpec {
 
 /// Specification for one workflow step (tool call reference).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowStepSpec {
     /// Unique step identifier within one workflow.
     pub id: String,

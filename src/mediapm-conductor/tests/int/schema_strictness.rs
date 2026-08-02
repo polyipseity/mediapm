@@ -7,7 +7,12 @@
 //! Naming: `strict_*` = reject previously-accepted input; `regression_*` =
 //! input that was silently accepted/dropped before now errors.
 
+use mediapm_conductor::NickelDocument;
 use mediapm_conductor::config::versions::{decode_document, validate_v1_document};
+use mediapm_conductor::config::{
+    ConductorRuntimeConfig, OutputCaptureSpec, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowSpec,
+    WorkflowStepSpec,
+};
 
 /// A v2 document with an extra top-level field unknown to the envelope.
 const UNKNOWN_TOP_LEVEL_FIELD_DOC: &str = r#"{
@@ -479,4 +484,141 @@ fn regression_v1_dyn_runtime_fields_no_longer_untyped() {
         let msg = format!("{err}");
         assert!(msg.contains("contract"), "error must mention a contract violation: {msg}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Rust serde strictness (S-D1..S-D4)
+// ---------------------------------------------------------------------------
+
+/// S-D1: `ToolSpec` rejects unknown fields via serde.
+#[test]
+fn strict_serde_tool_spec_rejects_unknown_field() {
+    let err = serde_json::from_value::<ToolSpec>(serde_json::json!({
+        "kind": { "kind": "builtin", "builtin_id": "echo@v1" },
+        "name": "echo",
+        "bogus_field": 1,
+    }))
+    .expect_err("unknown ToolSpec field must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+}
+
+/// S-D1: `WorkflowSpec` rejects unknown fields via serde.
+#[test]
+fn strict_serde_workflow_spec_rejects_unknown_field() {
+    let err = serde_json::from_value::<WorkflowSpec>(serde_json::json!({
+        "name": "wf1",
+        "bogus_field": 1,
+    }))
+    .expect_err("unknown WorkflowSpec field must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+}
+
+/// S-D1: `WorkflowStepSpec` rejects unknown fields via serde.
+#[test]
+fn strict_serde_step_spec_rejects_unknown_field() {
+    let err = serde_json::from_value::<WorkflowStepSpec>(serde_json::json!({
+        "id": "s1",
+        "tool": "echo",
+        "bogus_field": 1,
+    }))
+    .expect_err("unknown WorkflowStepSpec field must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+}
+
+/// S-D1: `ToolRuntime` rejects unknown fields via serde.
+#[test]
+fn strict_serde_runtime_rejects_unknown_field() {
+    let err = serde_json::from_value::<ToolRuntime>(serde_json::json!({
+        "impure": true,
+        "bogus_field": 1,
+    }))
+    .expect_err("unknown ToolRuntime field must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+}
+
+/// S-D1: `OutputCaptureSpec` and `ToolInputSpec` reject unknown fields.
+#[test]
+fn strict_serde_sub_specs_reject_unknown_fields() {
+    let err = serde_json::from_value::<OutputCaptureSpec>(serde_json::json!({
+        "name": "out",
+        "capture": "stdout",
+        "bogus_field": 1,
+    }))
+    .expect_err("unknown OutputCaptureSpec field must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+
+    let err = serde_json::from_value::<ToolInputSpec>(serde_json::json!({
+        "kind": "string",
+        "bogus_field": 1,
+    }))
+    .expect_err("unknown ToolInputSpec field must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+}
+
+/// S-D1: `NickelDocument` rejects unknown top-level fields via serde.
+#[test]
+fn strict_serde_document_rejects_unknown_field() {
+    let err = serde_json::from_value::<NickelDocument>(serde_json::json!({
+        "bogus_field": 1,
+    }))
+    .expect_err("unknown NickelDocument field must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+}
+
+/// S-D3: `platform_inherited_env_vars` is closed to windows/linux/macos in
+/// the Rust serde layer, not just the Nickel contract.
+#[test]
+fn strict_platform_env_rejects_unknown_key() {
+    let err = serde_json::from_value::<ConductorRuntimeConfig>(serde_json::json!({
+        "platform_inherited_env_vars": { "bsd": [] },
+    }))
+    .expect_err("unknown platform key must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("bsd"), "error must name the unknown key: {msg}");
+}
+
+/// S-D3: platform env var names must be non-empty in the Rust serde layer.
+#[test]
+fn strict_platform_env_rejects_empty_env_name() {
+    let err = serde_json::from_value::<ConductorRuntimeConfig>(serde_json::json!({
+        "platform_inherited_env_vars": { "linux": [""] },
+    }))
+    .expect_err("empty env var name must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("non-empty"), "error must explain the non-empty rule: {msg}");
+}
+
+/// R2: known-good conductor documents still round-trip after the S-D1..S-D4
+/// tightening (Nickel decode path).
+#[test]
+fn regression_valid_conductor_docs_still_round_trip() {
+    let minimal =
+        decode_document(r"{ version = 2 }".as_bytes()).expect("minimal v2 doc must still decode");
+    assert!(minimal.tools.is_empty() && minimal.workflows.is_empty());
+
+    // S-D3: a runtime record with platform-inherited env vars must still
+    // decode through the typed `PlatformInheritedEnvVars` representation.
+    let platform_doc = decode_document(
+        br#"{
+            version = 2,
+            runtime = {
+                retry_impure = true,
+                platform_inherited_env_vars = { macos = ["PATH"] },
+            },
+        }"#,
+    )
+    .expect("platform-runtime doc must still decode");
+    assert!(platform_doc.runtime.retry_impure, "retry_impure preserved");
+    assert_eq!(
+        platform_doc.runtime.platform_inherited_env_vars.macos,
+        vec!["PATH".to_string()],
+        "platform env vars preserved"
+    );
 }

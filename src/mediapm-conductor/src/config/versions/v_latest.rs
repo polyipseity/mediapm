@@ -64,6 +64,7 @@ pub(crate) enum SaveModeLatest {
 
 /// Latest persisted output capture spec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct OutputCaptureSpecLatest {
     /// Logical output name.
     pub(crate) name: String,
@@ -129,6 +130,7 @@ pub(crate) enum ToolInputKindLatest {
 
 /// Latest persisted tool input spec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolInputSpecLatest {
     /// Declared value kind.
     #[serde(default)]
@@ -174,6 +176,7 @@ impl From<super::super::InputBinding> for InputBindingLatest {
 
 /// Latest persisted tool runtime config.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolRuntimeLatest {
     /// Content map.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -194,13 +197,15 @@ pub(crate) struct ToolRuntimeLatest {
 
 /// Runtime configuration for the conductor itself (not per-tool).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ConductorRuntimeConfigLatest {
     /// Whether impure tool calls may be retried automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) retry_impure: Option<bool>,
-    /// Platform-keyed inherited env var names.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) platform_inherited_env_vars: BTreeMap<String, Vec<String>>,
+    /// Platform-keyed inherited env var names (typed; keys closed to
+    /// windows/linux/macos, S-D3).
+    #[serde(default, skip_serializing_if = "super::super::PlatformInheritedEnvVars::is_empty")]
+    pub(crate) platform_inherited_env_vars: super::super::PlatformInheritedEnvVars,
 }
 
 /// Latest persisted tool kind (tagged by `kind` field).
@@ -246,6 +251,20 @@ pub(crate) struct ToolSpecLatest {
     /// Runtime config.
     pub(crate) runtime: ToolRuntimeLatest,
 }
+
+/// Flat-record keys accepted by `ToolSpecLatest`'s custom Deserialize (S-D2).
+const TOOL_SPEC_LATEST_KNOWN_KEYS: [&str; 10] = [
+    "kind",
+    "name",
+    "builtin_id",
+    "command",
+    "env_vars",
+    "success_codes",
+    "inputs",
+    "default_inputs",
+    "outputs",
+    "runtime",
+];
 
 impl Serialize for ToolSpecLatest {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -430,12 +449,22 @@ impl<'de> Deserialize<'de> for ToolSpecLatest {
             .map_err(|e| D::Error::custom(format!("invalid runtime: {e}")))?
             .unwrap_or_default();
 
+        // S-D2: reject unknown keys on the flat record.  Derive-based
+        // `deny_unknown_fields` does not apply to custom Deserialize impls,
+        // so the check is manual over the captured map.
+        if let Some(unknown) =
+            map.keys().find(|k| !TOOL_SPEC_LATEST_KNOWN_KEYS.contains(&k.as_str()))
+        {
+            return Err(D::Error::custom(format!("unknown field '{unknown}' for ToolSpecLatest")));
+        }
+
         Ok(ToolSpecLatest { kind, name, inputs, default_inputs, outputs, runtime })
     }
 }
 
 /// Latest persisted workflow step spec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct WorkflowStepSpecLatest {
     /// Step id.
     pub(crate) id: String,
@@ -457,6 +486,7 @@ pub(crate) struct WorkflowStepSpecLatest {
 
 /// Latest persisted workflow spec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct WorkflowSpecLatest {
     /// Workflow name.
     pub(crate) name: String,
@@ -479,6 +509,7 @@ pub(crate) struct WorkflowSpecLatest {
 
 /// Latest persisted external data entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ExternalDataEntryLatest {
     /// CAS hash of the external blob (redundant with map key; kept for
     /// compatibility).
@@ -497,6 +528,7 @@ pub(crate) struct ExternalDataEntryLatest {
 /// This is the primary deserialization target after Nickel evaluation and
 /// migration.  All persisted documents produce this type on decode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct NickelEnvelopeLatest {
     /// Schema version marker.
     pub(crate) version: u32,
@@ -864,6 +896,13 @@ mod tests {
         assert_eq!(envelope.tools.len(), back.tools.len());
         assert!(back.tools.contains_key("echo@v1"));
         assert_eq!(back.tools["echo@v1"].name, "echo".to_string());
+
+        // S-D4: the tightened serde schema must be lossless — serialize the
+        // bridge envelope and re-decode it through the strict structs.
+        let json = serde_json::to_value(&back).expect("envelope serializes");
+        let redecoded: NickelEnvelopeLatest =
+            serde_json::from_value(json).expect("strict envelope must re-decode");
+        assert_eq!(redecoded, back, "strict serde round-trip must be lossless");
     }
 
     /// Verifies that a document containing both Builtin and Executable tools
@@ -942,5 +981,98 @@ mod tests {
         let ffmpeg_decoded = decoded.tools.get("ffmpeg").expect("ffmpeg in decoded");
         assert_eq!(ffmpeg_orig.kind, ffmpeg_decoded.kind, "ffmpeg kind mismatch");
         assert_eq!(ffmpeg_orig.name, ffmpeg_decoded.name, "ffmpeg name mismatch");
+    }
+
+    // ---------------------------------------------------------------------
+    // Rust serde strictness (S-D2)
+    // ---------------------------------------------------------------------
+
+    /// S-D2: `NickelEnvelopeLatest` rejects unknown fields via serde.
+    #[test]
+    fn strict_serde_envelope_rejects_unknown_field() {
+        let err = serde_json::from_value::<NickelEnvelopeLatest>(serde_json::json!({
+            "version": 2,
+            "bogus_field": 1,
+        }))
+        .expect_err("unknown envelope field must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+    }
+
+    /// S-D2: `ExternalDataEntryLatest` rejects unknown fields via serde.
+    #[test]
+    fn strict_serde_external_data_entry_rejects_unknown_field() {
+        let err = serde_json::from_value::<ExternalDataEntryLatest>(serde_json::json!({
+            "description": "x",
+            "save": true,
+            "bogus_field": 1,
+        }))
+        .expect_err("unknown external data entry field must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+    }
+
+    /// S-D2: `ToolSpecLatest` rejects unknown fields. `deny_unknown_fields`
+    /// cannot be applied to a custom `Deserialize` impl, so this behavior
+    /// must be enforced manually inside the flattening deserializer.
+    #[test]
+    fn strict_serde_tool_spec_latest_rejects_unknown_field() {
+        let err = serde_json::from_value::<ToolSpecLatest>(serde_json::json!({
+            "kind": "builtin",
+            "builtin_id": "echo@v1",
+            "name": "echo",
+            "bogus_field": 1,
+        }))
+        .expect_err("unknown ToolSpecLatest field must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+    }
+
+    /// S-D2: the remaining latest-version spec structs reject unknown fields
+    /// via serde.
+    #[test]
+    fn strict_serde_latest_specs_reject_unknown_fields() {
+        let err = serde_json::from_value::<WorkflowSpecLatest>(serde_json::json!({
+            "name": "wf",
+            "bogus_field": 1,
+        }))
+        .expect_err("unknown WorkflowSpecLatest field must be rejected");
+        assert!(format!("{err}").contains("bogus_field"));
+
+        let err = serde_json::from_value::<WorkflowStepSpecLatest>(serde_json::json!({
+            "id": "s1",
+            "tool": "echo",
+            "bogus_field": 1,
+        }))
+        .expect_err("unknown WorkflowStepSpecLatest field must be rejected");
+        assert!(format!("{err}").contains("bogus_field"));
+
+        let err = serde_json::from_value::<ToolRuntimeLatest>(serde_json::json!({
+            "impure": true,
+            "bogus_field": 1,
+        }))
+        .expect_err("unknown ToolRuntimeLatest field must be rejected");
+        assert!(format!("{err}").contains("bogus_field"));
+
+        let err = serde_json::from_value::<OutputCaptureSpecLatest>(serde_json::json!({
+            "name": "out",
+            "capture": "stdout",
+            "bogus_field": 1,
+        }))
+        .expect_err("unknown OutputCaptureSpecLatest field must be rejected");
+        assert!(format!("{err}").contains("bogus_field"));
+
+        let err = serde_json::from_value::<ToolInputSpecLatest>(serde_json::json!({
+            "kind": "string",
+            "bogus_field": 1,
+        }))
+        .expect_err("unknown ToolInputSpecLatest field must be rejected");
+        assert!(format!("{err}").contains("bogus_field"));
+
+        let err = serde_json::from_value::<ConductorRuntimeConfigLatest>(serde_json::json!({
+            "bogus_field": 1,
+        }))
+        .expect_err("unknown ConductorRuntimeConfigLatest field must be rejected");
+        assert!(format!("{err}").contains("bogus_field"));
     }
 }

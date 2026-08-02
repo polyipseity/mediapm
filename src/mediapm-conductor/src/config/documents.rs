@@ -31,6 +31,7 @@ use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
 /// live inline on each [`ToolSpec`] via its [`ToolRuntime`] — there is no
 /// separate `tool_runtimes` map.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct NickelDocument {
     /// Tool definitions in this document keyed by tool name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -216,7 +217,7 @@ impl NickelDocument {
                             "unknown"
                         };
                         if let Some(platform_names) =
-                            self.runtime.platform_inherited_env_vars.get(current_platform)
+                            self.runtime.platform_inherited_env_vars.env_names_for(current_platform)
                         {
                             for name in platform_names {
                                 if let Ok(val) = std::env::var(name) {
