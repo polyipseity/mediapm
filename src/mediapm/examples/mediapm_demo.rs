@@ -954,6 +954,10 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     };
 
     let source_hash_text = {
+        // Clone the service's CAS handle instead of reopening the same root:
+        // `FileSystemCas::open` would re-acquire the directory lock and hit
+        // `LockContention` because the service already holds it. Cloning the
+        // `Arc<FileSystemCas>` shares the same `DirectoryLockGuard`.
         let cas = ingest_service.conductor().cas().clone();
         let source_hash = import_source_fixture_into_cas(&cas, &source_bytes).await?;
         source_hash.to_string()

@@ -621,8 +621,14 @@ fn collect_store_object_hashes(cas_root: &Path) -> ExampleResult<BTreeSet<Hash>>
     Ok(hashes)
 }
 
-async fn summarize_store_sizes(cas_root: &Path) -> ExampleResult<StoreSizeStats> {
-    let cas = FileSystemCas::open(cas_root).await?;
+async fn summarize_store_sizes(
+    cas: &FileSystemCas,
+    cas_root: &Path,
+) -> ExampleResult<StoreSizeStats> {
+    // `cas` must be the shared handle from the service: `FileSystemCas::open`
+    // on the same root would re-acquire the directory lock and hit
+    // `LockContention` because the service already holds it. Cloning the
+    // `Arc<FileSystemCas>` shares the same `DirectoryLockGuard`.
     let mut without_delta = 0u64;
     let mut with_delta = 0u64;
 
@@ -2354,7 +2360,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             &lock,
             &output_tagged_video_path,
         )?;
-    let store_size_stats = summarize_store_sizes(&cas_root).await?;
+    let store_size_stats = summarize_store_sizes(sync_service.conductor().cas(), &cas_root).await?;
     let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
         .iter()
         .map(|method| format!("{method:?}"))

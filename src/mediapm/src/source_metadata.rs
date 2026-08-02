@@ -211,6 +211,10 @@ fn parse_local_format_tags(value: &Value) -> Value {
 
 /// Fetches local source metadata, using an optional cache.
 ///
+/// Delegates to [`try_fetch_local_source_metadata_with_ffprobe`], which runs
+/// `ffprobe -v error` (not `-v quiet`) so a failing probe surfaces its
+/// diagnostic on stderr instead of an empty message.
+///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Workflow`] if `ffprobe` fails.
