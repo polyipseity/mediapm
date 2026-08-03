@@ -37,6 +37,12 @@ When cargo aliases are unavailable, use explicit equivalents:
 
 Install or update hooks: `pre-commit install`. Run all hooks manually: `pre-commit run --all-files`. Run a specific hook: `pre-commit run <hook-name>` (e.g., `pre-commit run test` for nextest, `pre-commit run test-docs` for doctests). Skip hooks temporarily: `SKIP=test git commit -m "msg"` or `SKIP=test-docs git commit -m "msg"`.
 
+## Hook failure recovery
+
+- The `fmt` (rustfmt) and `rumdl-fmt` hooks auto-fix changed files and **fail the commit** when a fix was applied (exit 1, "files were modified by this hook"). Recovery: verify HEAD unmoved (`git rev-parse HEAD`), `git add` the modified files, and retry with a fresh `git commit` — never `--amend`.
+- `rumdl-fmt` enforces list indentation (MD007/MD032) and flattens nested lists indented otherwise. Restore hierarchy with 3-space bullets and 5-space sub-bullets — the style `commit-staged.prompt.md` uses, which the hook leaves untouched.
+- prek stashes unstaged working-tree changes to `~/.cache/prek/patches/*.patch` around each hook run and restores them afterward, so working tree state is preserved across commits.
+
 ## Known nextest caveats
 
 1. **No doctest support.** Nextest does not run doctests. Always pair nextest with `cargo test --doc --workspace` — this is why `scripts/run-all-tests.sh` and pre-push hooks include a separate doctest step.
