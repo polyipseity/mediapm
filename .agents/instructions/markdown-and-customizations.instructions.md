@@ -18,6 +18,7 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, README.md, .agents/**/*.md, .opencode/**/
 - Do not hard-wrap paragraphs just to satisfy line-length rules; `MD013` is disabled.
 - Inline HTML and bare anchor behavior are permitted where they clearly improve the document; `MD033` and `MD051` are disabled.
 - Under `.agents/**`, `MD036` is also disabled, so emphasis-only pseudo-headings are allowed when they genuinely improve readability.
+- Under `.agents/**`, use 3-space bullets and 5-space sub-bullets for nested list hierarchy; `rumdl-fmt` auto-flattens other indents (MD007/MD032) and fails the commit when it does.
 
 ## Writing style
 
@@ -36,7 +37,7 @@ Every `.instructions.md` and `.prompt.md` file must keep valid YAML frontmatter 
 
 ## Mirrored prompt files
 
-- `.agents/prompts/commit-staged.prompt.md` and `.opencode/commands/commit-staged.prompt.md` are mirrored copies today.
+- `.agents/prompts/commit-staged.prompt.md` and `.opencode/commands/commit-staged.prompt.md` are mirrored copies today — keep them byte-identical; the `.opencode/` copy is untracked and never hook-checked.
 - If you edit one mirrored prompt, update the other in the same change unless you are intentionally diverging the two surfaces and documenting why.
 - Keep shell examples platform-accurate: PowerShell examples should use PowerShell-native quoting, and Bash/zsh examples should use heredocs safely.
 
