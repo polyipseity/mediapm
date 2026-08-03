@@ -318,6 +318,57 @@ fn own_version_segment(canonical: &str) -> &str {
     canonical.split(';').next().unwrap_or(canonical)
 }
 
+/// Inline direct same-step dependency payload maps into a requester's content
+/// map under `deps/<dep_id>/<key>`.
+///
+/// Dependencies are **direct-only and non-transitive**: each dep's OWN payload
+/// keys are copied under the dep's bare mediapm tool id, and a dep's own
+/// inlined `deps/...` entries are never re-inlined — `deps/` never nests.
+/// Deps absent from `provisioned_own_maps` (skipped or failed provisioning)
+/// contribute nothing.
+///
+/// Returns the inlined key → hash entries; the requester's own keys are not
+/// touched. The `known_dep_type` parameter mirrors
+/// [`collect_same_step_dep_ids`] and is injectable for tests.
+fn inline_same_step_deps(
+    tool_id: &str,
+    tool_req: &ToolRequirement,
+    provisioned_own_maps: &BTreeMap<String, BTreeMap<String, String>>,
+    known_dep_type: fn(&str, &str) -> Option<DependencyTypes>,
+) -> BTreeMap<String, String> {
+    let mut inlined = BTreeMap::new();
+    for dep_id in collect_same_step_dep_ids(tool_id, tool_req, known_dep_type) {
+        let Some(own_map) = provisioned_own_maps.get(&dep_id) else {
+            continue; // dep not provisioned this pass — nothing to inline
+        };
+        for (key, hash) in own_map {
+            // Own maps are pre-inline by construction; defensively skip any
+            // residual `deps/` prefix so inlined entries never nest
+            // (non-transitive invariant).
+            if key.starts_with("deps/") {
+                continue;
+            }
+            inlined.insert(format!("deps/{dep_id}/{key}"), hash.clone());
+        }
+    }
+    inlined
+}
+
+/// Strip `deps/`-prefixed keys from a content map, recovering a tool's own
+/// (pre-inline) payload map.
+///
+/// Used to reconstruct own maps for deps that were skipped on a re-sync: the
+/// generated doc runtime carries inlined `deps/...` entries, but only the
+/// dep's own payload keys may be re-inlined into a requester.
+#[must_use]
+fn strip_inlined_deps_keys(content_map: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    content_map
+        .iter()
+        .filter(|(key, _)| !key.starts_with("deps/"))
+        .map(|(key, hash)| (key.clone(), hash.clone()))
+        .collect()
+}
+
 /// Compute `canonical_version` for persistence, including same-step dep versions.
 ///
 /// The canonical version stored in [`ToolRegistryEntry`] is a composite of the
@@ -515,6 +566,11 @@ pub(crate) async fn reconcile_desired_tools(
         .expect("at least one progress group available");
 
     let mut pruned_tools: usize = 0;
+    // Own (pre-inline) content maps for tools processed this pass, keyed by
+    // bare mediapm tool id. Requesters re-inline direct same-step deps under
+    // `deps/<dep_id>/` from these maps, so they must hold each dep's OWN
+    // payload keys only — never inlined `deps/` entries (non-transitive).
+    let mut provisioned_own_maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for entry in &entries {
         let tool_id = &entry.tool_id;
         let tool_req = &entry.tool_requirement;
@@ -545,6 +601,13 @@ pub(crate) async fn reconcile_desired_tools(
                 // may linger.
                 if let Some((key, spec)) = find_active_tool_spec(&generated_doc, tool_id) {
                     tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
+                    // Track the dep's own (pre-inline) payload map so
+                    // requesters processed later in this pass can re-inline
+                    // it under `deps/<tool_id>/`.
+                    provisioned_own_maps.insert(
+                        tool_id.clone(),
+                        strip_inlined_deps_keys(&spec.runtime.content_map),
+                    );
                 }
                 report.tools_skipped += 1;
                 pb.advance(1);
@@ -708,6 +771,11 @@ pub(crate) async fn reconcile_desired_tools(
             // (stale pruned keys have cleared maps).
             if let Some((key, spec)) = find_active_tool_spec(&generated_doc, tool_id) {
                 tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
+                // Track the dep's own (pre-inline) payload map — the doc
+                // runtime carries inlined `deps/...` entries, so strip them
+                // before storing the own map for re-inlining.
+                provisioned_own_maps
+                    .insert(tool_id.clone(), strip_inlined_deps_keys(&spec.runtime.content_map));
             }
             // Backfill fresh resolved metadata into the persisted registry.
             if let Some(backfill) = skip_backfill {
@@ -719,7 +787,23 @@ pub(crate) async fn reconcile_desired_tools(
         }
 
         match payload_result {
-            Ok(Some(payload)) => {
+            Ok(Some(mut payload)) => {
+                // Track the tool's own (pre-inline) content map BEFORE
+                // inlining so requesters later in this pass can re-inline it
+                // under `deps/<tool_id>/`.
+                provisioned_own_maps.insert(tool_id.clone(), payload.content_map.clone());
+
+                // Inline direct same-step dependency payloads under
+                // `deps/<dep_id>/<key>`. The hash below is computed AFTER
+                // this extend so the tool key and skip identity reflect the
+                // inlined deps.
+                payload.content_map.extend(inline_same_step_deps(
+                    tool_id,
+                    tool_req,
+                    &provisioned_own_maps,
+                    crate::tools::dependency::known_dependency_type,
+                ));
+
                 // Compute content-addressed hash from content_map before it's
                 // moved into build_tool_spec.
                 let content_map_hash: String = if payload.content_map.is_empty() {
@@ -810,7 +894,9 @@ pub(crate) async fn reconcile_desired_tools(
             Ok(None) => {
                 // No payload fetched (internal launcher, no catalog entry,
                 // or no host-OS action). Create a minimal spec without
-                // content map so the tool is still registered.
+                // content map so the tool is still registered. The own map
+                // is empty — nothing to inline for requesters.
+                provisioned_own_maps.insert(tool_id.clone(), BTreeMap::new());
                 let runtime = ToolRuntime {
                     impure: false,
                     inherited_env_vars: inherited_env_vars
@@ -2201,6 +2287,164 @@ mod tests {
             result, "yt-dlp-v2;ffmpeg:ffmpeg-v7.1",
             "Latest dep specs must find active entry and include its version in composite"
         );
+    }
+
+    // Phase 2 — inline_same_step_deps / strip_inlined_deps_keys tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn inline_same_step_deps_empty_deps() {
+        let req = ToolRequirement::default();
+        let maps = BTreeMap::new();
+        let result = inline_same_step_deps("yt-dlp", &req, &maps, known_dependency_type);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn inline_same_step_deps_yt_dlp_ffmpeg_deno() {
+        let deps = BTreeMap::from([
+            ("ffmpeg".to_string(), ConfigVersionSpec::Latest),
+            ("deno".to_string(), ConfigVersionSpec::Latest),
+        ]);
+        let req = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let mut maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        maps.insert(
+            "ffmpeg".to_string(),
+            BTreeMap::from([
+                ("linux/ffmpeg".to_string(), "blake3:a".to_string()),
+                ("macos/ffmpeg".to_string(), "blake3:b".to_string()),
+            ]),
+        );
+        maps.insert(
+            "deno".to_string(),
+            BTreeMap::from([("linux/deno".to_string(), "blake3:c".to_string())]),
+        );
+        let result = inline_same_step_deps("yt-dlp", &req, &maps, known_dependency_type);
+        assert_eq!(
+            result,
+            BTreeMap::from([
+                ("deps/ffmpeg/linux/ffmpeg".to_string(), "blake3:a".to_string()),
+                ("deps/ffmpeg/macos/ffmpeg".to_string(), "blake3:b".to_string()),
+                ("deps/deno/linux/deno".to_string(), "blake3:c".to_string()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn inline_same_step_deps_cross_step_excluded() {
+        // rsgain's ffmpeg dep is CrossStep → never inlined.
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
+        let req = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let mut maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        maps.insert(
+            "ffmpeg".to_string(),
+            BTreeMap::from([("linux/ffmpeg".to_string(), "blake3:a".to_string())]),
+        );
+        let result = inline_same_step_deps("rsgain", &req, &maps, known_dependency_type);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn inline_same_step_deps_dep_absent_skipped() {
+        // Dep listed but not provisioned this pass (skipped/failed) → nothing.
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
+        let req = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let maps = BTreeMap::new();
+        let result = inline_same_step_deps("yt-dlp", &req, &maps, known_dependency_type);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn inline_same_step_deps_no_recursion() {
+        // A dep's stored own map may (defensively) contain `deps/...` keys;
+        // those must never be re-inlined — deps are non-transitive, so the
+        // output never contains nested `deps/` paths like
+        // `deps/ffmpeg/deps/x/...`.
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
+        let req = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let mut maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        maps.insert(
+            "ffmpeg".to_string(),
+            BTreeMap::from([
+                ("linux/ffmpeg".to_string(), "blake3:a".to_string()),
+                ("deps/x/linux/x".to_string(), "blake3:b".to_string()),
+            ]),
+        );
+        let result = inline_same_step_deps("yt-dlp", &req, &maps, known_dependency_type);
+        assert_eq!(
+            result,
+            BTreeMap::from([("deps/ffmpeg/linux/ffmpeg".to_string(), "blake3:a".to_string())]),
+            "only the dep's own payload keys are inlined; deps/ keys are never re-inlined",
+        );
+        assert!(
+            result.keys().all(|k| !k.contains("/deps/")),
+            "no nested deps/ paths allowed: {result:?}",
+        );
+    }
+
+    #[test]
+    fn inline_same_step_deps_own_keys_untouched() {
+        // Inlining returns only `deps/`-prefixed entries; the requester's own
+        // keys live in the payload content map, never in the inlined set.
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
+        let req = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let mut maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        maps.insert(
+            "ffmpeg".to_string(),
+            BTreeMap::from([("linux/ffmpeg".to_string(), "blake3:a".to_string())]),
+        );
+        let result = inline_same_step_deps("yt-dlp", &req, &maps, known_dependency_type);
+        assert!(result.keys().all(|k| k.starts_with("deps/")));
+    }
+
+    #[test]
+    fn strip_inlined_deps_keys_removes_deps_prefix() {
+        let map = BTreeMap::from([
+            ("linux/yt-dlp".to_string(), "blake3:a".to_string()),
+            ("deps/ffmpeg/linux/ffmpeg".to_string(), "blake3:b".to_string()),
+        ]);
+        assert_eq!(
+            strip_inlined_deps_keys(&map),
+            BTreeMap::from([("linux/yt-dlp".to_string(), "blake3:a".to_string())]),
+        );
+    }
+
+    #[test]
+    fn strip_inlined_deps_keys_keeps_own_keys() {
+        let map = BTreeMap::from([
+            ("linux/yt-dlp".to_string(), "blake3:a".to_string()),
+            ("macos/yt-dlp".to_string(), "blake3:c".to_string()),
+        ]);
+        assert_eq!(strip_inlined_deps_keys(&map), map);
+    }
+
+    #[test]
+    fn strip_inlined_deps_keys_empty_when_only_deps() {
+        let map = BTreeMap::from([
+            ("deps/ffmpeg/linux/ffmpeg".to_string(), "blake3:b".to_string()),
+            ("deps/deno/linux/deno".to_string(), "blake3:c".to_string()),
+        ]);
+        assert!(strip_inlined_deps_keys(&map).is_empty());
     }
 
     // Phase 7 — index_managed_tools tests
