@@ -240,7 +240,7 @@ This helper is the single source of truth used by all 3 injection points:
   payload map; a dep's own `deps/` entries are never re-inlined.
 - Hook point: the `Ok(Some(payload))` provision arm calls
   `inline_same_step_deps(tool_id, tool_req, &provisioned_own_maps,
-  known_dependency_type)` BEFORE `content_map_hash` is computed, so the
+known_dependency_type)` BEFORE `content_map_hash` is computed, so the
   requester tool_key, prune prefix, and `external_data` (DataUsageTracker scans
   all content-map values) automatically cover inlined entries. A requester's
   tool_key changes iff any direct dep's own payload changes.
