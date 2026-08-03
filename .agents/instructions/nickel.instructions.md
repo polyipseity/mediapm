@@ -21,6 +21,7 @@ applyTo: "**/*.ncl"
 - Every persisted Nickel document must carry an explicit top-level numeric `version` field.
 - Version files export `validate_document_vN` and `envelope_contract_vN` — not plain `validate_document` at the version file level; unversioned aliases live in `mod.ncl`.
 - `mod.ncl` is the migration registry: exports `current_version`, `supported_versions` (array), `migrate_to` (function), and a `SupportedVersion` predicate contract.
+- **Strict version separation.** Each version file (`vN.ncl`) is self-contained: it defines exclusively its own `*VN` contract names and never references contracts from other versions. Never reuse a `*V1` name inside `v2.ncl` or vice versa, and never mix versions in one file. `mod.ncl` is the only place that imports multiple version files, and it acts purely as a registry/dispatcher — no contract definitions live there.
 
 ## Contract patterns
 
@@ -55,6 +56,8 @@ All Nickel schema work (existing, new, and schema-related code) in this reposito
 - Migration logic uses `std.record.has_field`, `std.record.fields`, `std.array.fold_left`, `%{key}` dynamic field access.
 - Each version file defines both `validate_document_vN` and `envelope_contract_vN`.
 - `mod.ncl` imports all version files and wires the migration graph.
+- **Migration placement policy.** Each version file owns the migration INTO that version: `v2.ncl` exports `migrate_v1_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`. `mod.ncl`'s `migrate_to` only dispatches (same version → identity; N→M → the target file's `migrate_VN_to_VM`; unsupported → loud `from_predicate false`); it never implements migration logic itself.
+- Migration edges build fresh records: strip the input document's `version` field (`std.record.remove "version"`) before merging `& { version = N }`, or a record already carrying `version` triggers `MergeIncompatibleArgs`. `version` is required in every envelope, so unconditional removal is safe.
 
 ## Common pitfalls
 

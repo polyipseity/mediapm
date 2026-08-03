@@ -22,13 +22,13 @@ test_util.rs               — Shared test Tokio runtime
 
 config/                    — NCL document model, serde types, version dispatch
   mod.rs                   —   MediaPmDocument, MediaPmState, MediaRuntimeStorage, re-exports
-  defaults.rs              —   Constants (version=1, slot limits, cache TTLs, materialization order)
+  defaults.rs              —   Constants (version=2, slot limits, cache TTLs, materialization order)
   custom_deserializers.rs  —   Serde helpers (f64→u64, option strings)
   source_types.rs          —   MediaSourceSpec, MediaStep, MediaStepTool
   hierarchy_types.rs       —   HierarchyNode (ordered array), flattening, playlist, SanitizeNamesConfig
   output_types.rs          —   OutputVariantValue (YtDlp | Generic), OutputCaptureKind, OutputSaveConfig
   nickel_io.rs             —   .ncl eval, load/save/merge documents
-  versions/                —   Schema version dispatch (mod.rs + v1.rs + .ncl)
+  versions/                —   Schema version dispatch (mod.rs + v1.rs + v2.rs + .ncl)
   validation/              —   Cross-field validation (mod.rs, hierarchy.rs, sources.rs)
 
 conductor_bridge/          — Conductor integration
@@ -84,6 +84,12 @@ Four-document system, all with explicit top-level `version`:
 | `<mediapm_dir>/conductor.ncl` | Generated | Conductor user intent + workflow defs |  |
 | `<mediapm_dir>/conductor.generated.ncl` | Machine | Tool registry, resolved hashes |  |
 | `<mediapm_dir>/state.json` | Machine | Per-media workflow state, managed files, hashes |  |
+
+Config schema versioning (see `.agents/instructions/nickel.instructions.md` for the migration placement and strict version separation policies):
+
+- v2 is the active config version (`CURRENT_VERSION = 2`). Its envelope drops `MediaPmState` entirely; state is managed separately via `state.json` and is not part of the v2 config surface.
+- v1 remains readable as legacy: its envelope keeps the optional `state` field, so stateful v1 documents still load and migrate to v2 (which strips `state`).
+- Each version file owns the migration INTO that version (`v2.ncl` exports `migrate_v1_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`); `mod.ncl` only dispatches via `migrate_to`. Version files are self-contained and never mix `*V1`/`*V2` contract names.
 
 ## CLI Overview
 
