@@ -27,7 +27,7 @@ use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
 use mediapm_conductor::{NickelDocument, ToolRuntime, ToolSpec};
 
-use crate::tools::dependency::DependencyType;
+use crate::tools::dependency::DependencyTypes;
 use crate::tools::provider::RecheckPolicy;
 
 use crate::conductor_bridge::documents::{
@@ -285,18 +285,18 @@ fn composite_canonical_version(bare: &str, dep_versions: &[(&str, &str)]) -> Str
 }
 
 /// Collect same-step `dep_ids` for a given entry (returns bare `dep_ids`).
+///
+/// A dependency carrying both roles contributes its same-step role.
 fn collect_same_step_dep_ids(
     tool_id: &str,
     tool_req: &ToolRequirement,
-    known_dep_type: fn(&str, &str) -> Option<DependencyType>,
+    known_dep_type: fn(&str, &str) -> Option<DependencyTypes>,
 ) -> Vec<String> {
     tool_req
         .dependencies
         .keys()
         .filter_map(|dep_id| {
-            if !known_dep_type(tool_id, dep_id)
-                .is_some_and(|t| matches!(t, DependencyType::SameStep | DependencyType::Both))
-            {
+            if !known_dep_type(tool_id, dep_id).is_some_and(DependencyTypes::contains_same_step) {
                 return None;
             }
             Some(dep_id.clone())
@@ -928,6 +928,7 @@ mod tests {
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
     use crate::config::ToolRequirement;
+    use crate::tools::dependency::DependencyTypes;
     use crate::tools::dependency::known_dependency_type;
 
     use super::*;
@@ -1995,6 +1996,25 @@ mod tests {
         // rsgain has CrossStep dep on ffmpeg → NOT in same-step list
         let ids = collect_same_step_dep_ids("rsgain", &req, known_dependency_type);
         assert!(ids.is_empty());
+    }
+
+    #[allow(clippy::unnecessary_wraps)] // must match the `fn(&str, &str) -> Option<DependencyTypes>` parameter
+    fn both_roles_dep_type(_tool_id: &str, _dep_id: &str) -> Option<DependencyTypes> {
+        Some(DependencyTypes::SAME_STEP.combine(DependencyTypes::CROSS_STEP))
+    }
+
+    #[test]
+    fn collect_same_step_dep_ids_combined_roles() {
+        // A dependency carrying both roles contributes its same-step role
+        // (replaces the removed `DependencyType::Both` semantics).
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
+        let req = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let ids = collect_same_step_dep_ids("tool", &req, both_roles_dep_type);
+        assert_eq!(ids, vec!["ffmpeg"]);
     }
 
     // Phase 0 — compute_composite_canonical_version tests

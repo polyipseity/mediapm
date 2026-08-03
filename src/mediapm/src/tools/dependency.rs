@@ -1,9 +1,9 @@
 //! Dependency type classification for managed-tool dependencies.
 //!
-//! `DependencyType` determines how a dependency is provisioned:
-//! - `SameStep`: payload is inlined into the same conductor step (companion).
-//! - `CrossStep`: dependency runs as a separate conductor workflow step.
-//! - `Both`: functions as both.
+//! [`DependencyTypes`] carries role flags that determine how a dependency is
+//! provisioned; a dependency may play one or both roles:
+//! - same-step: payload is inlined into the same conductor step (companion).
+//! - cross-step: dependency runs as a separate conductor workflow step.
 //!
 //! The registry function [`known_dependency_type`] provides per-tool lookup.
 //! The [`validate_dependency_keys`] function checks all dependency keys for a
@@ -17,25 +17,49 @@ use similar::get_close_matches;
 
 use crate::error::MediaPmError;
 
-/// Dependency provisioning type for a managed-tool dependency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DependencyType {
+/// Role flags for a managed-tool dependency; a dependency may play both roles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct DependencyTypes {
     /// Dependency payload is inlined into the same conductor step as the
     /// primary tool (same-step companion).
-    SameStep,
+    same_step: bool,
     /// Dependency runs as a separate conductor workflow step (cross-step).
-    CrossStep,
-    /// Functions as both same-step companion AND cross-step tool.
-    #[allow(dead_code)]
-    Both,
+    cross_step: bool,
 }
 
-/// Looks up the known `DependencyType` for a dependency of a given tool.
+impl DependencyTypes {
+    /// Same-step companion role.
+    pub(crate) const SAME_STEP: Self = Self { same_step: true, cross_step: false };
+    /// Cross-step tool role.
+    pub(crate) const CROSS_STEP: Self = Self { same_step: false, cross_step: true };
+
+    /// Whether the same-step role is set.
+    pub(crate) const fn contains_same_step(self) -> bool {
+        self.same_step
+    }
+
+    /// Whether the cross-step role is set.
+    #[allow(dead_code)] // used by unit tests only
+    pub(crate) const fn contains_cross_step(self) -> bool {
+        self.cross_step
+    }
+
+    /// Combine two flag sets (union).
+    #[allow(dead_code)] // used by unit tests only
+    pub(crate) const fn combine(self, other: Self) -> Self {
+        Self {
+            same_step: self.same_step || other.same_step,
+            cross_step: self.cross_step || other.cross_step,
+        }
+    }
+}
+
+/// Looks up the known `DependencyTypes` flags for a dependency of a given tool.
 ///
 /// Returns `None` if the tool or dependency is unknown.
 #[must_use]
 #[allow(dead_code)]
-pub(crate) fn known_dependency_type(tool_id: &str, dep_id: &str) -> Option<DependencyType> {
+pub(crate) fn known_dependency_type(tool_id: &str, dep_id: &str) -> Option<DependencyTypes> {
     known_dependency_type_for_tool(tool_id).and_then(|types| types.get(dep_id).copied())
 }
 
@@ -43,7 +67,7 @@ pub(crate) fn known_dependency_type(tool_id: &str, dep_id: &str) -> Option<Depen
 #[must_use]
 pub(crate) fn known_dependency_type_for_tool(
     tool_id: &str,
-) -> Option<BTreeMap<&'static str, DependencyType>> {
+) -> Option<BTreeMap<&'static str, DependencyTypes>> {
     match tool_id {
         "yt-dlp" => Some(super::preset::yt_dlp::dependency_types()),
         "media-tagger" => Some(super::preset::media_tagger::dependency_types()),
@@ -133,6 +157,47 @@ fn sorted_join(set: &BTreeSet<String>) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn dependency_types_default_is_none() {
+        let flags = DependencyTypes::default();
+        assert!(!flags.contains_same_step());
+        assert!(!flags.contains_cross_step());
+    }
+
+    #[test]
+    fn dependency_types_same_step_contains_same_step_only() {
+        let flags = DependencyTypes::SAME_STEP;
+        assert!(flags.contains_same_step());
+        assert!(!flags.contains_cross_step());
+    }
+
+    #[test]
+    fn dependency_types_cross_step_contains_cross_step_only() {
+        let flags = DependencyTypes::CROSS_STEP;
+        assert!(!flags.contains_same_step());
+        assert!(flags.contains_cross_step());
+    }
+
+    #[test]
+    fn dependency_types_combined_contains_both() {
+        // Both-role semantics: SAME_STEP | CROSS_STEP combination replaces the
+        // removed `DependencyType::Both` variant.
+        let flags = DependencyTypes::SAME_STEP.combine(DependencyTypes::CROSS_STEP);
+        assert!(flags.contains_same_step());
+        assert!(flags.contains_cross_step());
+    }
+
+    #[test]
+    fn known_dependency_type_returns_flags() {
+        assert_eq!(known_dependency_type("yt-dlp", "ffmpeg"), Some(DependencyTypes::SAME_STEP));
+        assert_eq!(
+            known_dependency_type("media-tagger", "ffmpeg"),
+            Some(DependencyTypes::CROSS_STEP)
+        );
+        assert_eq!(known_dependency_type("rsgain", "sd"), Some(DependencyTypes::CROSS_STEP));
+        assert_eq!(known_dependency_type("yt-dlp", "sd"), None);
+    }
 
     #[test]
     fn validate_unknown_dep_key_error() {
