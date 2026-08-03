@@ -11,7 +11,7 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/conductor_bridge/sync/m
 ### Purpose
 
 - Model tool-to-tool dependency declarations as a flat
-  `BTreeMap<String, VersionSpec>` on `ToolRequirement`, replacing the old
+  `BTreeMap<String, ConfigVersionSpec>` on `ToolRequirement`, replacing the old
   `ToolRequirementDependencies` wrapper and `DependencySpec` struct.
 - Dependency role flags (same-step vs cross-step) are determined by per-preset
   `known_dependency_type()` lookup, not by user config; a dependency may carry
@@ -22,7 +22,7 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/conductor_bridge/sync/m
 
 ### Dependency data model
 
-`ToolRequirement.dependencies` is a flat `BTreeMap<String, VersionSpec>`:
+`ToolRequirement.dependencies` is a flat `BTreeMap<String, ConfigVersionSpec>`:
 
 ```nickel
 dependencies = { ffmpeg = "inherit", deno = "latest" }
@@ -44,7 +44,7 @@ them (the removed `Both` variant's semantics = both flags set).
 
 Not user-configurable. No serde derives. Defined in `src/mediapm/src/tools/dependency.rs`.
 
-#### `VersionSpec::Inherit`
+#### `ConfigVersionSpec::Inherit`
 
 - Signals "use the dependency tool's global version spec from `tools.<id>.version_spec`".
 - Resolved at provisioning time by `resolve_dep_version_spec()`.
@@ -54,8 +54,8 @@ Not user-configurable. No serde derives. Defined in `src/mediapm/src/tools/depen
 #### Spec matching (`spec_matches_entry`)
 
 - `spec_matches_entry(spec, resolved_tag: Option<&str>, resolved_version: Option<&str>, resolved_vcs_hash: Option<&str>) -> bool`
-- For `VersionSpec::Latest` and `VersionSpec::Inherit`, always returns `false`
-  (caller must re-resolve).
+- For `VersionSpec::Latest`, always returns `false` (caller must re-resolve).
+  `Inherit` has been resolved away before this point.
 - For `VersionSpec::Exact(fields)`, each specified field matches only when the
   stored value is `Some` AND equals the spec value. Unspecified fields are not
   checked; stored `None` never matches — an entry missing a resolved field is

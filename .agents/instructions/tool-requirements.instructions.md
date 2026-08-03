@@ -9,27 +9,31 @@ applyTo: "src/mediapm/src/config/mod.rs"
 ## Purpose
 
 - Model how users declare managed tool version requirements in `mediapm.ncl` under `tools.<id>`.
-- Provide dependency declarations via a flat `BTreeMap<String, VersionSpec>`
+- Provide dependency declarations via a flat `BTreeMap<String, ConfigVersionSpec>`
   for cross-tool companion resolution.
 
 ## `ToolRequirement` fields
 
-| Field              | Type                            | Default                     | Purpose                                                                            |
-| ------------------ | ------------------------------- | --------------------------- | ---------------------------------------------------------------------------------- |
-| `version_spec`     | `VersionSpec`                   | `Latest`                    | Version specification: `"latest"`, `"inherit"`, or `{ vcs_hash?, version?, tag? }` |
-| `dependencies`     | `BTreeMap<String, VersionSpec>` | `{}`                        | Map of dependency tool id → version spec                                           |
+| Field              | Type                                    | Default                     | Purpose                                                                            |
+| ------------------ | --------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------- |
+| `version_spec`     | `ConfigVersionSpec`                     | `Latest`                    | Version specification: `"latest"`, `"inherit"`, or `{ vcs_hash?, version?, tag? }` |
+| `dependencies`     | `BTreeMap<String, ConfigVersionSpec>`   | `{}`                        | Map of dependency tool id → version spec                                           |
 | `recheck_seconds`  | `u64`                           | `0` (use default heuristic) | Recheck interval for metadata freshness                                            |
 | `max_input_slots`  | `u32`                           | from `defaults`             | Max ffmpeg input slot count                                                        |
 | `max_output_slots` | `u32`                           | from `defaults`             | Max ffmpeg output slot count                                                       |
 
 `version_spec` replaces the old `version`/`tag`/`desired_git_hash`/`desired_tag`/`desired_version`
-fields. See `VersionSpec` in the conductor provider module for the full serde format.
+fields. See `ConfigVersionSpec` in the conductor provider module for the full serde format.
 
 The `dependencies` field is now a flat map: `dependencies = { ffmpeg = "inherit", deno = "latest" }`.
 No nested `.deps` wrapper, no `dep_type` — companion binding role flags are
 determined by per-preset `known_dependency_type()` lookup, not by user config.
 
-## `VersionSpec` enum
+## `ConfigVersionSpec` enum
+
+`ConfigVersionSpec` is the config-facing serde type; `Inherit` is resolved away
+at the config boundary into the internal `VersionSpec` (`Latest`/`Exact` only,
+never serialized).
 
 | Variant                    | Meaning                                                                        |
 | -------------------------- | ------------------------------------------------------------------------------ |
@@ -54,7 +58,7 @@ provision time or provisioning errors.
 - `ToolRequirement` entries are kept during normalization if `version_spec`
   is set (any variant). Old `version`/`tag` fields no longer exist — the
   single `version_spec` field is authoritative.
-- `dependencies` entries with `VersionSpec::Inherit` are treated as
+- `dependencies` entries with `ConfigVersionSpec::Inherit` are treated as
   "use global default" — they are not removed but resolved at provision time.
 - Normalization runs in `MediaPmDocument::normalize()` and
   `MediaPmState::normalize()`.
