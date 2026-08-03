@@ -193,12 +193,18 @@ changes — not just when the tool itself changes.
 - `bare_version` is the tool's own resolved canonical version (e.g.,
   `MEDIAPM_GIT_HASH` for builtin launchers, a tag or VCS hash for fetched
   tools).
-- Each `dep_id:dep_ver` pair is the dependency's tool ID and resolved
-  canonical version, sorted deterministically by `dep_id`.
+- Each `dep_id:dep_ver` pair is the dependency's tool ID and the dependency's
+  OWN version segment (`dep_ver` is the dep's bare version, never its
+  composite), sorted deterministically by `dep_id`.
 - Only dependencies carrying the **SameStep** role (classified by
   `known_dependency_type()`) are included; a dependency carrying both roles
   contributes its SameStep role. CrossStep-only dependencies are excluded
   because they resolve in a different sync pass.
+- **Non-transitive invariant**: dependencies are DIRECT-ONLY. Composite
+  segments always reference each dep's own version segment (the part before the
+  first `;` of the dep's stored canonical version), never a dep's composite — a
+  tool that is both a dep and an explicitly-configured tool with its own
+  same-step deps contributes only its bare version.
 - For tools with no SameStep dependencies, `composite == bare`.
 
 ### `compute_composite_canonical_version()` helper
@@ -209,7 +215,8 @@ A `pub(crate)` function in `sync/mod.rs` that:
    `dependencies` as `ConfigVersionSpec`), and the live state for dep lookups.
 2. Matches each dep's `ConfigVersionSpec`: `Inherit`/`Latest` match any
    active entry; `Exact` verifies against the spec via `spec_matches_entry`.
-3. For SameStep deps only, appends `;dep_id:resolved_ver` segments.
+3. For SameStep deps only, appends `;dep_id:own_ver` segments where `own_ver`
+   is the dep's own version segment (never its composite).
 4. Returns the composite format string.
 
 This helper is the single source of truth used by all 3 injection points:
@@ -222,6 +229,27 @@ This helper is the single source of truth used by all 3 injection points:
   resolve without fetching (e.g., skipped tools).
 - **Service comparison** (`logical_tool_requires_sync`): compares stored
   composite against computed composite for the desired tool.
+
+### Inlined same-step deps (`deps/<mediapm_tool_id>/`)
+
+- Same-step dep payloads are inlined into the requester's content map under the
+  reserved `deps/` prefix: `deps/{dep_mediapm_tool_id}/{dep_own_key}` → hash.
+  Keys use the **mediapm tool id** (bare, e.g. `deps/ffmpeg/...`), never the
+  conductor id (`ffmpeg@hash`).
+- **Direct-only, non-transitive**: inlining copies the dep's OWN pre-inline
+  payload map; a dep's own `deps/` entries are never re-inlined.
+- Hook point: the `Ok(Some(payload))` provision arm calls
+  `inline_same_step_deps(tool_id, tool_req, &provisioned_own_maps,
+  known_dependency_type)` BEFORE `content_map_hash` is computed, so the
+  requester tool_key, prune prefix, and `external_data` (DataUsageTracker scans
+  all content-map values) automatically cover inlined entries. A requester's
+  tool_key changes iff any direct dep's own payload changes.
+- Skip interplay: dep unchanged → dep skipped → requester composite (own
+  version segments from live_state) matches → requester skipped too; the
+  reconstructed runtime from the generated doc already carries `deps/...`.
+  Dep changed → dep re-provisions → requester composite changes → requester
+  re-provisions and re-inlines. No recursion.
+- `write_generated_dotenv` skips `deps/`-prefixed keys (no companion env vars).
 
 ### Indexing: `index_managed_tools()`
 

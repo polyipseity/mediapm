@@ -59,6 +59,10 @@ The function is used by `known_dependency_type()` in
 `src/mediapm/src/tools/dependency.rs` to resolve a dependency's role flags
 without involving user config.
 
+Edges are **direct-only and non-transitive**: a dependency's own dependencies
+never propagate to the requirer (neither version segments nor payload
+inlining).
+
 Currently classified edges:
 
 | Requirer       | Dependency | Type         |

@@ -78,16 +78,29 @@ Not user-configurable. No serde derives. Defined in `src/mediapm/src/tools/depen
   point at `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`
   mirroring the provision-cache layout.
 
-### Companion binding strategy (future)
+### Companion binding (inlined same-step deps)
 
-- **Same-step** (`DependencyTypes::SAME_STEP` role): companion payload bytes will be
-  inlined into the requester's content_map with a prefix (e.g. `companions/`).
+- **Same-step** (`DependencyTypes::SAME_STEP` role): the requester's content map
+  gains `deps/{dep_mediapm_tool_id}/{dep_own_key}` → payload hash entries for
+  every DIRECT same-step dep, copying the dep's OWN (pre-inline) payload map.
+  Wired in `sync/mod.rs`: `inline_same_step_deps` runs at the provision merge
+  point; per-outcome own maps are tracked in `provisioned_own_maps`. `deps/` is
+  a **reserved prefix**.
+- **Direct-only, non-transitive**: inlining copies only the dep's own payload
+  keys; a dep's own `deps/` entries are never re-inlined into the requester
+  (`inline_same_step_deps` skips keys already under `deps/`).
 - **Cross-step** (`DependencyTypes::CROSS_STEP` role): payload bytes and ids remain
   separate.
 - A dependency carrying both roles is inlined for its same-step role AND kept
   separate for its cross-step role.
-- Not yet wired in the coordinator; `DependencyTypes` role flags from per-preset
-  `dependency_types()` are available for future binding implementation.
+- **No companion env vars**: `write_generated_dotenv` skips `deps/`-prefixed
+  keys; inlined companions are referenced via the predictable `deps/<tool_id>/`
+  path, never env vars.
+- **Consumption wiring deferred to Stream A**: inlining produces the payload;
+  wiring `ffmpeg_location` to `deps/ffmpeg/{os}/ffmpeg` needs OS-conditional
+  step inputs (not supported today) or a future mechanism. yt-dlp's
+  `ffmpeg_location` default remains bare `"ffmpeg"`; the predictable
+  `deps/<id>/` path is the future hook.
 
 _Note: the generated env output function previously documented here has moved to
 `mediapm-conductor::runtime_env::write_generated_dotenv`. See
