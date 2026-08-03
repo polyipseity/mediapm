@@ -1174,3 +1174,395 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Same-step dependency payload inlining (deps/<mediapm tool id>/)
+// ---------------------------------------------------------------------------
+//
+// The inlining itself (`inline_same_step_deps`) is covered by the unit tests
+// in `conductor_bridge/sync/mod.rs`. The integration tests below are hermetic
+// (no network) and cover the observable pipeline contracts around it:
+//
+// - `sync_skip_preserves_inlined_deps` — a generated-doc runtime that already
+//   carries `deps/` keys survives a spec-based skip intact; the reserved
+//   prefix is never stripped, renamed, or re-inlined on the skip path.
+// - `sync_env_has_no_deps_garbage` — inlined `deps/` keys never leak into
+//   `.env.generated` (no `_DEPS` / `_DIR` / `_COMPANIONS_` lines).
+// - `sync_composite_non_transitive` — a dep whose stored `canonical_version`
+//   is itself composite (realistic post-network-sync state) never triggers a
+//   false reprovision of the requester; composite segments reference each
+//   dep's OWN version segment only (Phase 1 wiring through `service.rs`).
+//
+// The provisioning path itself (a requester freshly provisioned with deps
+// inlined into its payload) requires network-resolved tools (yt-dlp's GitHub
+// tag + payload fetch) and is deliberately not covered here to keep the suite
+// hermetic. It is covered by the `inline_same_step_deps_*` unit tests plus
+// the `sync_logical_requires_sync_on_composite_mismatch` reprovision-decision
+// test.
+
+/// Hermetic: seeds a generated doc whose `yt-dlp` runtime already carries
+/// inlined `deps/ffmpeg/...` and `deps/deno/...` keys (as a previous network
+/// sync would have produced) plus matching state entries, then runs sync with
+/// exact version specs so all three tools spec-skip (no network).
+///
+/// Asserts the inlined structure survives the skip path: the generated doc
+/// keeps the `deps/` keys alongside the requester's own keys, the state entry
+/// keeps its non-transitive composite `canonical_version`, and no
+/// `companions/` prefix ever appears.
+#[tokio::test]
+async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError> {
+    use std::collections::BTreeMap;
+
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
+    runtime.tools.insert(
+        "yt-dlp".to_string(),
+        ToolRequirement {
+            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                version: Some("v2024.01.01".to_string()),
+                vcs_hash: None,
+                tag: None,
+            }),
+            dependencies: BTreeMap::from([
+                (
+                    "ffmpeg".to_string(),
+                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                        version: Some("v7.1".to_string()),
+                        vcs_hash: None,
+                        tag: None,
+                    }),
+                ),
+                (
+                    "deno".to_string(),
+                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                        version: Some("v1.46.0".to_string()),
+                        vcs_hash: None,
+                        tag: None,
+                    }),
+                ),
+            ]),
+            ..Default::default()
+        },
+    );
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+
+    // Seed state.json with matching entries for all three tools so the
+    // spec-based skip fires without network.
+    let state_path = service.paths().mediapm_state_json.clone();
+    std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
+        .expect("create state parent dir");
+    let mut state = MediaPmState::default();
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "yt-dlp".to_string(),
+        version: "seeded-version".to_string(),
+        // Non-transitive composite: segments reference each dep's OWN
+        // version segment (sorted by dep_id); composite-bearing dep entries
+        // never nest into the requester's composite.
+        canonical_version: "yt-dlp-v2024.01.01;deno:deno-v1.46.0;ffmpeg:ffmpeg-v7.1".to_string(),
+        content_map_hash: "blake3:abc123".to_string(),
+        deployed_at: 42,
+        resolved_tag: None,
+        resolved_version: Some("v2024.01.01".to_string()),
+        resolved_vcs_hash: None,
+    });
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "ffmpeg".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: "ffmpeg-v7.1".to_string(),
+        content_map_hash: "blake3:ffmpeg1".to_string(),
+        deployed_at: 42,
+        resolved_tag: None,
+        resolved_version: Some("v7.1".to_string()),
+        resolved_vcs_hash: None,
+    });
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "deno".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: "deno-v1.46.0".to_string(),
+        content_map_hash: "blake3:deno1".to_string(),
+        deployed_at: 42,
+        resolved_tag: None,
+        resolved_version: Some("v1.46.0".to_string()),
+        resolved_vcs_hash: None,
+    });
+    std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
+        .expect("write seeded state");
+
+    // Seed the generated doc with a yt-dlp entry whose runtime already
+    // carries inlined same-step dep keys. Content map values are non-hash
+    // placeholders (external_data invariant skips them).
+    let mut doc = NickelDocument::default();
+    doc.tools.insert(
+        "yt-dlp@blake3:abc123".to_string(),
+        ToolSpec {
+            name: "yt-dlp".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/yt-dlp".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
+                    ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
+                    ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let generated_path = service.paths().conductor_generated_ncl.clone();
+    let bytes = encode_document(doc).expect("seeded doc encodes");
+    std::fs::write(&generated_path, bytes).expect("write seeded generated doc");
+
+    service.sync_tools().await?;
+
+    // The exact specs match the seeded resolved versions → all three tools
+    // spec-skip; the inlined structure must survive intact.
+    let doc_bytes =
+        std::fs::read(&service.paths().conductor_generated_ncl).expect("generated doc readable");
+    let doc: NickelDocument = decode_document(&doc_bytes).expect("valid Nickel document");
+    let spec = doc
+        .tools
+        .values()
+        .find(|s| s.name == "yt-dlp")
+        .expect("yt-dlp entry must survive the skip path");
+    let content_map = &spec.runtime.content_map;
+    assert!(
+        content_map.contains_key("deps/ffmpeg/linux/ffmpeg"),
+        "inlined ffmpeg key must be preserved: {content_map:?}"
+    );
+    assert!(
+        content_map.contains_key("deps/deno/linux/deno"),
+        "inlined deno key must be preserved: {content_map:?}"
+    );
+    assert!(
+        content_map.contains_key("linux/yt-dlp"),
+        "requester's own key must be preserved: {content_map:?}"
+    );
+    assert!(
+        content_map.keys().all(|k| !k.contains("companions")),
+        "no companions/ prefix may appear: {content_map:?}"
+    );
+
+    // State entries are preserved unchanged on the skip path.
+    let state_bytes =
+        std::fs::read(&service.paths().mediapm_state_json).expect("state.json readable");
+    let state: MediaPmState =
+        serde_json::from_slice(&state_bytes).expect("state.json should deserialize");
+    let entry =
+        state.managed_tools.iter().find(|e| e.tool_id == "yt-dlp").expect("yt-dlp entry in state");
+    assert_eq!(
+        entry.canonical_version, "yt-dlp-v2024.01.01;deno:deno-v1.46.0;ffmpeg:ffmpeg-v7.1",
+        "stored composite must stay non-transitive and unchanged"
+    );
+    assert_eq!(
+        entry.content_map_hash, "blake3:abc123",
+        "content_map_hash must be preserved on skip"
+    );
+    Ok(())
+}
+
+/// Hermetic: same seeding as `sync_skip_preserves_inlined_deps`; asserts
+/// `.env.generated` never leaks inlined `deps/` keys.
+///
+/// Without the Phase 3 skip, `content_key_to_env_name` would split
+/// `deps/ffmpeg/linux/ffmpeg` on the first `/` and emit `MEDIAPM_YT_DLP_DEPS_*`
+/// garbage pointing at `.../payload/deps/...`. Inlined companions are
+/// referenced via the predictable `deps/<tool_id>/` path, never env vars.
+#[tokio::test]
+async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
+    use std::collections::BTreeMap;
+
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
+    runtime.tools.insert(
+        "yt-dlp".to_string(),
+        ToolRequirement {
+            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                version: Some("v2024.01.01".to_string()),
+                vcs_hash: None,
+                tag: None,
+            }),
+            dependencies: BTreeMap::from([
+                (
+                    "ffmpeg".to_string(),
+                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                        version: Some("v7.1".to_string()),
+                        vcs_hash: None,
+                        tag: None,
+                    }),
+                ),
+                (
+                    "deno".to_string(),
+                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                        version: Some("v1.46.0".to_string()),
+                        vcs_hash: None,
+                        tag: None,
+                    }),
+                ),
+            ]),
+            ..Default::default()
+        },
+    );
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+
+    // Seed state.json with matching entries for all three tools.
+    let state_path = service.paths().mediapm_state_json.clone();
+    std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
+        .expect("create state parent dir");
+    let mut state = MediaPmState::default();
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "yt-dlp".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: "yt-dlp-v2024.01.01;deno:deno-v1.46.0;ffmpeg:ffmpeg-v7.1".to_string(),
+        content_map_hash: "blake3:abc123".to_string(),
+        deployed_at: 42,
+        resolved_tag: None,
+        resolved_version: Some("v2024.01.01".to_string()),
+        resolved_vcs_hash: None,
+    });
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "ffmpeg".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: "ffmpeg-v7.1".to_string(),
+        content_map_hash: "blake3:ffmpeg1".to_string(),
+        deployed_at: 42,
+        resolved_tag: None,
+        resolved_version: Some("v7.1".to_string()),
+        resolved_vcs_hash: None,
+    });
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "deno".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: "deno-v1.46.0".to_string(),
+        content_map_hash: "blake3:deno1".to_string(),
+        deployed_at: 42,
+        resolved_tag: None,
+        resolved_version: Some("v1.46.0".to_string()),
+        resolved_vcs_hash: None,
+    });
+    std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
+        .expect("write seeded state");
+
+    // Seed the generated doc with a yt-dlp entry carrying inlined deps keys.
+    let mut doc = NickelDocument::default();
+    doc.tools.insert(
+        "yt-dlp@blake3:abc123".to_string(),
+        ToolSpec {
+            name: "yt-dlp".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/yt-dlp".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
+                    ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
+                    ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let generated_path = service.paths().conductor_generated_ncl.clone();
+    let bytes = encode_document(doc).expect("seeded doc encodes");
+    std::fs::write(&generated_path, bytes).expect("write seeded generated doc");
+
+    service.sync_tools().await?;
+
+    let content = std::fs::read_to_string(&service.paths().env_generated_file)
+        .expect("env file should be readable");
+
+    // The requester's own keys still emit (binary + dir entries).
+    assert!(
+        content.lines().any(|line| line.starts_with("MEDIAPM_YT_DLP_LINUX=")),
+        "own binary var missing:\n{content}"
+    );
+    assert!(
+        content.lines().any(|line| line.starts_with("MEDIAPM_YT_DLP_LINUX_DIR=")),
+        "own dir var missing:\n{content}"
+    );
+
+    // Inlined deps keys never leak: no `deps/` path segments, no `_DEPS_*`
+    // or `_COMPANIONS_*` var names.
+    for line in content.lines() {
+        assert!(!line.contains("deps/"), "env must not reference deps/ paths: {line}\n{content}");
+        assert!(
+            !line.contains("DEPS") && !line.contains("COMPANIONS"),
+            "env must not leak companion vars: {line}\n{content}"
+        );
+    }
+    Ok(())
+}
+
+/// `logical_tool_requires_sync` stays stable when a dep's stored
+/// `canonical_version` is itself composite (realistic state after a network
+/// sync in which the dep had its own same-step deps).
+///
+/// Guards the Phase 1 wiring through `service.rs`: composite segments
+/// reference each dep's OWN version segment (`own_version_segment`), so a
+/// composite-bearing dep entry never changes the requester's computed
+/// composite and never triggers a false reprovision. (The same-step
+/// version-segment math itself is unit-tested in
+/// `compute_composite_canonical_version_non_transitive`; no same-step tool
+/// resolves without network, so the integration check uses media-tagger's
+/// CrossStep dep to assert composite-dep tolerance.)
+#[tokio::test]
+async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let cache_root = tempdir().expect("cache tempdir");
+    let mut runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
+    runtime.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement {
+            dependencies: std::collections::BTreeMap::from([(
+                "ffmpeg".to_string(),
+                mediapm::ConfigVersionSpec::Latest,
+            )]),
+            ..Default::default()
+        },
+    );
+    let service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+
+    let mut state = MediaPmState::default();
+    // ffmpeg stored with a COMPOSITE canonical_version — as if it had been
+    // network-synced with its own same-step dep (`deno`) in a prior pass.
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "ffmpeg".to_string(),
+        version: String::new(),
+        canonical_version: "ffmpeg-v7.1;deno:deno-v1.46.0".to_string(),
+        content_map_hash: "blake3:abc".to_string(),
+        deployed_at: 0,
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
+    });
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "media-tagger".to_string(),
+        version: String::new(),
+        canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
+        content_map_hash: "blake3:abc".to_string(),
+        deployed_at: 0,
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
+    });
+
+    assert!(
+        !service.logical_tool_requires_sync("media-tagger", &state).await?,
+        "composite-bearing dep entries must not trigger reprovision of the requester"
+    );
+    Ok(())
+}
