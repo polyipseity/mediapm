@@ -42,6 +42,7 @@ When editing Rust source, validate changes with selective checks first:
     - `cargo build-pkg mediapm-conductor` builds only mediapm-conductor
     - `cargo test -p mediapm-cas locator_parser_expands_environment_variables`
   - See `.cargo/config.toml` for alias definitions
+  - libtest arguments (e.g. `--test-threads=8`) must come AFTER the `--` separator: `cargo test -p mediapm-utils --features progress -- --test-threads=8`.
   - **Troubleshooting stale build artifacts**: The test
     `passthrough_conductor_tool_run_help_is_routable` in `src/mediapm/src/main.rs` can
     fail spuriously due to stale incremental compilation artifacts affecting clap's
