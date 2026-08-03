@@ -304,6 +304,20 @@ fn collect_same_step_dep_ids(
         .collect()
 }
 
+/// Extract a tool's own version segment from a possibly-composite
+/// `canonical_version`.
+///
+/// Composite format is `<bare>;<dep_id>:<dep_ver>;...`; bare versions never
+/// contain `;`. Dependencies are **direct-only and non-transitive**: a
+/// composite segment must reference a dep's OWN version segment, never the
+/// dep's composite — nesting a composite inside another would create a
+/// transitive cascade (a dep's deps would leak into the requester's
+/// identity).
+#[must_use]
+fn own_version_segment(canonical: &str) -> &str {
+    canonical.split(';').next().unwrap_or(canonical)
+}
+
 /// Compute `canonical_version` for persistence, including same-step dep versions.
 ///
 /// The canonical version stored in [`ToolRegistryEntry`] is a composite of the
@@ -312,6 +326,10 @@ fn collect_same_step_dep_ids(
 /// changes, the composite changes and triggers re-provisioning.
 ///
 /// For tools without same-step deps, returns the bare version unchanged.
+///
+/// Dependency versions are **non-transitive**: each `dep_id:dep_ver` segment
+/// carries the dep's OWN version segment (via [`own_version_segment`]), never
+/// the dep's full composite.
 pub(crate) fn compute_composite_canonical_version(
     bare: &str,
     tool_id: &str,
@@ -350,7 +368,11 @@ pub(crate) fn compute_composite_canonical_version(
                     ),
                 }
             })?;
-            Some((dep_id.as_str(), matched.canonical_version.as_str()))
+            // Non-transitive: reference the dep's OWN version segment. A dep
+            // that is also an explicitly configured tool with its own
+            // same-step deps carries a composite canonical_version; nesting
+            // it would leak the dep's deps transitively into the requester.
+            Some((dep_id.as_str(), own_version_segment(&matched.canonical_version)))
         })
         .collect();
     composite_canonical_version(bare, &dep_versions)
@@ -2026,6 +2048,63 @@ mod tests {
         let live_state = HashMap::new();
         let result = compute_composite_canonical_version("v1.0", "ffmpeg", &req, &live_state);
         assert_eq!(result, "v1.0");
+    }
+
+    // Phase 1 — own_version_segment (non-transitive composites)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn own_version_segment_bare_passthrough() {
+        assert_eq!(own_version_segment("v1.2.3"), "v1.2.3");
+    }
+
+    #[test]
+    fn own_version_segment_strips_composite() {
+        assert_eq!(own_version_segment("v1.2.3;ffmpeg:abc;deno:def"), "v1.2.3");
+    }
+
+    #[test]
+    fn own_version_segment_empty() {
+        assert_eq!(own_version_segment(""), "");
+    }
+
+    #[test]
+    fn compute_composite_canonical_version_non_transitive() {
+        // A dep that is itself an explicitly configured tool with its own
+        // same-step deps carries a composite canonical_version in live_state.
+        // The requester composite must reference the dep's OWN version
+        // segment, never the dep's composite (no transitive nesting).
+        let deps = BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]);
+        let req = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: deps,
+            ..Default::default()
+        };
+        let mut live_state: HashMap<String, Vec<ToolRegistryEntry>> = HashMap::new();
+        live_state.insert(
+            "ffmpeg".to_string(),
+            vec![ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: "ffmpeg-v7.1".to_string(),
+                // ffmpeg itself has a same-step dep on "x" at "y" — its
+                // canonical_version is a composite.
+                canonical_version: "ffmpeg-v7.1;x:y".to_string(),
+                content_map_hash: "blake3:abc".to_string(),
+                deployed_at: 0,
+                resolved_tag: Some("v7.1".to_string()),
+                resolved_version: Some("7.1".to_string()),
+                resolved_vcs_hash: Some("abc123".to_string()),
+            }],
+        );
+        let result = compute_composite_canonical_version("yt-dlp-v2", "yt-dlp", &req, &live_state);
+        assert_eq!(
+            result, "yt-dlp-v2;ffmpeg:ffmpeg-v7.1",
+            "composite must use the dep's own version segment, never the dep's composite"
+        );
+        assert!(
+            !result.contains(";x:y"),
+            "no transitive nesting allowed — dep's deps must not leak: got {result}"
+        );
     }
 
     #[test]
