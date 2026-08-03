@@ -286,6 +286,14 @@ pub fn write_generated_dotenv(
         let mut emitted_dirs: BTreeSet<&str> = BTreeSet::new();
 
         for key in runtime.content_map.keys() {
+            // `deps/` is a reserved prefix for inlined same-step dependency
+            // payloads (see `mediapm` sync: `deps/<dep_id>/<key>`). These
+            // companion paths are content-map-relative and deliberately not
+            // exposed as env vars — skipping the whole key suppresses both
+            // the `_DIR` and binary entries.
+            if key.starts_with("deps/") {
+                continue;
+            }
             let mut parts = key.splitn(2, '/');
             let os = parts.next().unwrap_or("");
 
@@ -722,6 +730,49 @@ mod tests {
         let dir_count = content.matches("_DIR=").count();
         assert_eq!(dir_count, 2, "expected exactly 2 _DIR entries, got {dir_count}");
         assert_env_lines_have_absolute_paths(&content);
+    }
+
+    #[test]
+    fn write_generated_dotenv_skips_inlined_deps_keys() {
+        // `deps/<dep_id>/<key>` entries (inlined same-step dependency payloads)
+        // are content-map-relative companion paths and must NOT surface as
+        // env vars — no `_DEPS_DIR`/`_DEPS` garbage, and own keys still emit.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tools_dir = dir.path().join("tools");
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/yt-dlp".to_string(), "h1".to_string());
+        content_map.insert("deps/ffmpeg/linux/ffmpeg".to_string(), "h2".to_string());
+        content_map.insert("deps/deno/linux/deno".to_string(), "h3".to_string());
+        let mut runtimes = BTreeMap::new();
+        runtimes.insert(
+            "yt-dlp@blake3:abc".to_string(),
+            ToolRuntime { content_map, ..ToolRuntime::default() },
+        );
+        write_generated_dotenv(dir.path(), &tools_dir, &runtimes).expect("write should succeed");
+        let content = std::fs::read_to_string(dir.path().join(".env.generated"))
+            .expect("env file should be readable");
+
+        // Own keys still emit their _DIR + binary entries.
+        let tools_dir_str = tools_dir.to_string_lossy();
+        assert!(
+            content.contains(&format!(
+                "MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/yt-dlp@blake3_abc/payload/linux/\""
+            )),
+            "own _DIR entry must still emit\ncontent:\n{content}",
+        );
+        assert!(
+            content.contains(&format!(
+                "MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp@blake3_abc/payload/linux/yt-dlp\""
+            )),
+            "own binary entry must still emit\ncontent:\n{content}",
+        );
+        // Inlined deps keys emit nothing — no _DIR, no binary, no garbage.
+        for garbage in ["_DEPS", "_COMPANIONS", "deps/ffmpeg", "deps/deno"] {
+            assert!(
+                !content.contains(garbage),
+                "inlined deps key must not surface as env var '{garbage}'\ncontent:\n{content}",
+            );
+        }
     }
 
     #[test]
