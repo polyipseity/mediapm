@@ -14,13 +14,13 @@ applyTo: "src/mediapm/src/config/mod.rs"
 
 ## `ToolRequirement` fields
 
-| Field              | Type                                    | Default                     | Purpose                                                                            |
-| ------------------ | --------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------- |
-| `version_spec`     | `ConfigVersionSpec`                     | `Latest`                    | Version specification: `"latest"`, `"inherit"`, or `{ vcs_hash?, version?, tag? }` |
-| `dependencies`     | `BTreeMap<String, ConfigVersionSpec>`   | `{}`                        | Map of dependency tool id → version spec                                           |
-| `recheck_seconds`  | `u64`                           | `0` (use default heuristic) | Recheck interval for metadata freshness                                            |
-| `max_input_slots`  | `u32`                           | from `defaults`             | Max ffmpeg input slot count                                                        |
-| `max_output_slots` | `u32`                           | from `defaults`             | Max ffmpeg output slot count                                                       |
+| Field              | Type                                  | Default                     | Purpose                                                                            |
+| ------------------ | ------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------- |
+| `version_spec`     | `ConfigVersionSpec`                   | `Latest`                    | Version specification: `"latest"`, `"inherit"`, or `{ vcs_hash?, version?, tag? }` |
+| `dependencies`     | `BTreeMap<String, ConfigVersionSpec>` | `{}`                        | Map of dependency tool id → version spec                                           |
+| `recheck_seconds`  | `u64`                                 | `0` (use default heuristic) | Recheck interval for metadata freshness                                            |
+| `max_input_slots`  | `u32`                                 | from `defaults`             | Max ffmpeg input slot count                                                        |
+| `max_output_slots` | `u32`                                 | from `defaults`             | Max ffmpeg output slot count                                                       |
 
 `version_spec` replaces the old `version`/`tag`/`desired_git_hash`/`desired_tag`/`desired_version`
 fields. See `ConfigVersionSpec` in the conductor provider module for the full serde format.
