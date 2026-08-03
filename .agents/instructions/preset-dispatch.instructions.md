@@ -50,23 +50,24 @@ Per-tool `build_<tool>_spec()` functions wrap presets to produce final `(ToolSpe
 ## Per-preset dependency type registry
 
 Each preset module with dependencies should provide a `dependency_types()`
-function returning `BTreeMap<&'static str, DependencyType>`. This maps
-companion tool IDs to their companion relationship type (`SameStep`,
-`CrossStep`, `Both`), overriding the default `SameStep`.
+function returning `BTreeMap<&'static str, DependencyTypes>`. This maps
+companion tool IDs to their role flags (`SAME_STEP`, `CROSS_STEP`, or a
+`combine()` of both). There is no default role; every edge is classified
+explicitly.
 
 The function is used by `known_dependency_type()` in
-`src/mediapm/src/tools/dependency.rs` to resolve a dependency's relationship
+`src/mediapm/src/tools/dependency.rs` to resolve a dependency's role flags
 without involving user config.
 
 Currently classified edges:
 
-| Requirer       | Dependency    | Type        |
-| -------------- | ------------- | ----------- |
-| `yt-dlp`       | `ffmpeg`      | `SameStep`  |
-| `yt-dlp`       | `media-tagger` | `CrossStep` |
-| `media-tagger` | `ffmpeg`      | `SameStep`  |
-| `media-tagger` | `rsgain`      | `CrossStep` |
-| `rsgain`       | `ffmpeg`      | `CrossStep` |
+| Requirer       | Dependency    | Type              |
+| -------------- | ------------- | ----------------- |
+| `yt-dlp`       | `ffmpeg`      | `SAME_STEP`       |
+| `yt-dlp`       | `deno`        | `SAME_STEP`       |
+| `media-tagger` | `ffmpeg`      | `CROSS_STEP`      |
+| `rsgain`       | `ffmpeg`      | `CROSS_STEP`      |
+| `rsgain`       | `sd`          | `CROSS_STEP`      |
 
 ## Key invariants
 
@@ -74,4 +75,4 @@ Currently classified edges:
 - `apply_preset` is called only after successful provisioning — content_map and os_exec_paths are always populated for known managed tools.
 - `runtime.impure` must be `true` for tools with side effects (yt-dlp: network fetches, media-tagger: network lookups).
 - Concurrency defaults: 1 active concurrent call; retry: 1 outer retry for network-dependent tools.
-- `DependencyType` is defined in `src/mediapm/src/tools/dependency.rs` (internal, no serde derives, not user-configurable).
+- `DependencyTypes` is defined in `src/mediapm/src/tools/dependency.rs` (internal, no serde derives, not user-configurable).

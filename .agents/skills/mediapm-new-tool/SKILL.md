@@ -13,7 +13,7 @@ tool to the mediapm workspace.
 Document the contract in `src/mediapm/AGENTS.md`:
 
 - Tool identity, version sources (GitHub releases, custom URLs, etc.)
-- Companion dependencies (ffmpeg, deno) if any
+- Companion dependencies (ffmpeg, deno) if any, and their role flags via `dependency_types()` (same-step, cross-step, or both)
 - Output variants for media source integration
 - Any tool-specific configuration keys
 

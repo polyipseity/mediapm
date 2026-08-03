@@ -26,8 +26,8 @@ applyTo: "src/mediapm/src/config/mod.rs"
 fields. See `VersionSpec` in the conductor provider module for the full serde format.
 
 The `dependencies` field is now a flat map: `dependencies = { ffmpeg = "inherit", deno = "latest" }`.
-No nested `.deps` wrapper, no `dep_type` — companion binding type is determined
-by per-preset `known_dependency_type()` lookup, not by user config.
+No nested `.deps` wrapper, no `dep_type` — companion binding role flags are
+determined by per-preset `known_dependency_type()` lookup, not by user config.
 
 ## `VersionSpec` enum
 

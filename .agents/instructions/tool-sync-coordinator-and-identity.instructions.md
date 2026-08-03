@@ -195,9 +195,10 @@ changes — not just when the tool itself changes.
   tools).
 - Each `dep_id:dep_ver` pair is the dependency's tool ID and resolved
   canonical version, sorted deterministically by `dep_id`.
-- Only **SameStep** dependencies (classified by `known_dependency_type()`)
-  are included. CrossStep and Both variants are excluded because they
-  resolve in a different sync pass.
+- Only dependencies carrying the **SameStep** role (classified by
+  `known_dependency_type()`) are included; a dependency carrying both roles
+  contributes its SameStep role. CrossStep-only dependencies are excluded
+  because they resolve in a different sync pass.
 - For tools with no SameStep dependencies, `composite == bare`.
 
 ### `compute_composite_canonical_version()` helper

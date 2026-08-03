@@ -13,10 +13,12 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/conductor_bridge/sync/m
 - Model tool-to-tool dependency declarations as a flat
   `BTreeMap<String, VersionSpec>` on `ToolRequirement`, replacing the old
   `ToolRequirementDependencies` wrapper and `DependencySpec` struct.
-- Dependency relationship type (`SameStep` vs `CrossStep`) is determined by
-  per-preset `known_dependency_type()` lookup, not by user config.
+- Dependency role flags (same-step vs cross-step) are determined by per-preset
+  `known_dependency_type()` lookup, not by user config; a dependency may carry
+  both roles.
 - Companion binding (inlining same-step deps into the requester's content map)
-  uses `DependencyType::SameStep` to identify same-step relationships.
+  uses the same-step role flag (`DependencyTypes::SAME_STEP`) to identify
+  same-step relationships.
 
 ### Dependency data model
 
@@ -29,13 +31,16 @@ dependencies = { ffmpeg = "inherit", deno = "latest" }
 No `DependencySpec`, no `ToolRequirementDependencies`, no `dep_type` in user
 config. The companion relationship type is defined internally per preset.
 
-#### `DependencyType` (in `crate::tools::dependency::DependencyType`)
+#### `DependencyTypes` (in `crate::tools::dependency::DependencyTypes`)
 
-| Variant     | Meaning                                                          |
-| ----------- | ---------------------------------------------------------------- |
-| `SameStep`  | Folded into the same step as a companion (same-step dependency). |
-| `CrossStep` | Invoked as a separate workflow step (cross-step dependency).     |
-| `Both`      | Functions as both same-step AND cross-step.                      |
+Role flags on a `bool`-field struct; a dependency may carry one or both roles.
+`SAME_STEP` and `CROSS_STEP` are the single-role constants; `combine()` unions
+them (the removed `Both` variant's semantics = both flags set).
+
+| Role flag    | Meaning                                                          |
+| ------------ | ---------------------------------------------------------------- |
+| `SAME_STEP`  | Folded into the same step as a companion (same-step dependency). |
+| `CROSS_STEP` | Invoked as a separate workflow step (cross-step dependency).     |
 
 Not user-configurable. No serde derives. Defined in `src/mediapm/src/tools/dependency.rs`.
 
@@ -75,10 +80,13 @@ Not user-configurable. No serde derives. Defined in `src/mediapm/src/tools/depen
 
 ### Companion binding strategy (future)
 
-- **Same-step** (`DependencyType::SameStep`): companion payload bytes will be inlined
-  into the requester's content_map with a prefix (e.g. `companions/`).
-- **Cross-step** (`DependencyType::CrossStep`): payload bytes and ids remain separate.
-- Not yet wired in the coordinator; `DependencyType` annotations from per-preset
+- **Same-step** (`DependencyTypes::SAME_STEP` role): companion payload bytes will be
+  inlined into the requester's content_map with a prefix (e.g. `companions/`).
+- **Cross-step** (`DependencyTypes::CROSS_STEP` role): payload bytes and ids remain
+  separate.
+- A dependency carrying both roles is inlined for its same-step role AND kept
+  separate for its cross-step role.
+- Not yet wired in the coordinator; `DependencyTypes` role flags from per-preset
   `dependency_types()` are available for future binding implementation.
 
 _Note: the generated env output function previously documented here has moved to
