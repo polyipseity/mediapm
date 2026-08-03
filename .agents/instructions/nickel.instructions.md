@@ -65,6 +65,17 @@ All Nickel schema work (existing, new, and schema-related code) in this reposito
 - Use `let ... in` for all local bindings — no top-level imperative style.
 - Use `import "path"` for module references.
 - Top-level envelope contract applied as `data | NickelDocumentV2`.
+- Record shorthand self-references fail: `{ VersionContract, other = 1 }` errors "missing definition for VersionContract", and `{ x = x }` recurses infinitely. Export values via `let _x = X in { X = _x, ... }` instead.
+- `std.string.is_string` does not exist in 0.18 — use the top-level `std.is_string`, a safe predicate that returns false on non-strings.
+- `std.string.is_match` errors on non-strings ("contract broken by the caller") — guard first: `std.is_string value && std.string.is_match "^.+$" value`.
+- A plain function used as a contract (`x | f`) is deprecated and broken: the contract _label_ is passed as the argument, so the body fails. Wrap predicates in `std.contract.from_predicate (fun v => ...)` and call validators as functions, not as contracts.
+- `std.contract.from_validator` in 0.18 expects an `'Ok value` / `'Error {...}` enum return, not a bool — do not use it to wrap boolean predicates.
+- Contracts are not JSON-serializable ("non serializable term" on export of a contract field) — export wrappers/functions, or alias contracts under `let` and access only fields.
+
+## Rust-side evaluation (`src/mediapm/src/config/versions/mod.rs`)
+
+- Plain validators are called as functions (`apply_v1_contract("validate_document_v1", source)`); record contracts are applied with the pipe form (`document | v1.X`).
+- `evaluate_mod_ncl_expression` writes `mod.ncl` + the `vN.ncl` file plus a wrapper `let shared = import "mod.ncl" in\n{expr}\n` before evaluating the expression.
 
 ## File organization
 
