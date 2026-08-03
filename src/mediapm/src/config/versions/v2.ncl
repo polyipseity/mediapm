@@ -296,7 +296,7 @@ let migrate_v1_to_v2_fn = fun data =>
     else
       data
   in
-  stripped & { version = 2 }
+  std.record.remove "version" stripped & { version = 2 }
 in
 
 {

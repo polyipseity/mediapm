@@ -321,7 +321,8 @@ let _sanitize_names_config_v1 = SanitizeNamesConfigV1 in
 # ||| carry no `state` payload (state is managed via `state.json`), and V1
 # ||| accepts an optional `state` field, so this edge is a version marker
 # ||| bump only.
-let migrate_v2_to_v1_fn = fun data => data & { version = 1 }
+let migrate_v2_to_v1_fn = fun data =>
+  std.record.remove "version" data & { version = 1 }
 in
 
 {
