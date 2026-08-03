@@ -146,7 +146,11 @@ For tests with `ProgressGroup`, use `mk_with_size(h, w)` with the minimum
 height that fits the expected number of bars (children + overall + blank
 reserve). Name tests with a suffix that signals exact matching
 (e.g. `consumer_exact_parallel_worker_output`), making the assertion style
-self-documenting.
+self-documenting. Prefix slots right-pad to their template width and the
+rendered width includes ANSI escapes — a 30-col `{prefix:>30.30}` slot holding
+`\x1b[0m` plus 4 visible chars renders 26 leading spaces. When a space-count
+expectation breaks, re-derive the width from the template slot plus ANSI
+overhead before suspecting a rendering refactor.
 
 ## Behavior change expectations
 
