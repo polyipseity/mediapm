@@ -61,13 +61,13 @@ without involving user config.
 
 Currently classified edges:
 
-| Requirer       | Dependency    | Type              |
-| -------------- | ------------- | ----------------- |
-| `yt-dlp`       | `ffmpeg`      | `SAME_STEP`       |
-| `yt-dlp`       | `deno`        | `SAME_STEP`       |
-| `media-tagger` | `ffmpeg`      | `CROSS_STEP`      |
-| `rsgain`       | `ffmpeg`      | `CROSS_STEP`      |
-| `rsgain`       | `sd`          | `CROSS_STEP`      |
+| Requirer       | Dependency | Type         |
+| -------------- | ---------- | ------------ |
+| `yt-dlp`       | `ffmpeg`   | `SAME_STEP`  |
+| `yt-dlp`       | `deno`     | `SAME_STEP`  |
+| `media-tagger` | `ffmpeg`   | `CROSS_STEP` |
+| `rsgain`       | `ffmpeg`   | `CROSS_STEP` |
+| `rsgain`       | `sd`       | `CROSS_STEP` |
 
 ## Key invariants
 
