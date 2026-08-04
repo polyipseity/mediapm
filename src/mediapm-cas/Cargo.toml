@@ -24,6 +24,7 @@ clap = { workspace = true, optional = true }
 clap_complete = { workspace = true, optional = true }
 dashmap.workspace = true
 fs4 = { version = "1", features = ["tokio"] }
+mediapm-utils.workspace = true
 multihash.workspace = true
 oxidelta = { workspace = true, default-features = false }
 serde.workspace = true

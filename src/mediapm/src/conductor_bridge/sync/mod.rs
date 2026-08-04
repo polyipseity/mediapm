@@ -753,7 +753,7 @@ pub(crate) async fn reconcile_desired_tools(
                 version: String::new(),
                 canonical_version: version.clone(),
                 content_map_hash: String::new(),
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: resolved_tag.clone(),
                 resolved_version: resolved_version.clone(),
                 resolved_vcs_hash: resolved_vcs_hash.clone(),
@@ -836,10 +836,7 @@ pub(crate) async fn reconcile_desired_tools(
                 }
 
                 // Record deployment metadata for the managed-tool registry.
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+                let now = mediapm_utils::Timestamp::now();
                 report.tool_records.push(ToolRegistryEntry {
                     tool_id: tool_id.clone(),
                     version: payload.human_readable_version.clone(),
@@ -910,10 +907,7 @@ pub(crate) async fn reconcile_desired_tools(
                 tool_runtimes.insert(tool_id.clone(), runtime.clone());
 
                 // Record deployment metadata (no payload — builtin or launcher).
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+                let now = mediapm_utils::Timestamp::now();
                 let composite_for_ok_none = compute_composite_canonical_version(
                     &resolved_canonical_version,
                     tool_id,
@@ -1207,7 +1201,7 @@ mod tests {
             version: format!("{}+{}", env!("CARGO_PKG_VERSION"), crate::global::MEDIAPM_GIT_HASH),
             canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
             content_map_hash: "blake3:abc".to_string(),
-            deployed_at: 0,
+            deployed_at: mediapm_utils::Timestamp::default(),
             resolved_tag: None,
             resolved_version: None,
             resolved_vcs_hash: None,
@@ -1290,7 +1284,7 @@ mod tests {
             version: "seeded-version".to_string(),
             canonical_version: "yt-dlp-2024.01.01".to_string(),
             content_map_hash: "blake3:abc".to_string(),
-            deployed_at: 0,
+            deployed_at: mediapm_utils::Timestamp::default(),
             resolved_tag: None,
             resolved_version: Some("2024.01.01".to_string()),
             resolved_vcs_hash: None,
@@ -1379,7 +1373,7 @@ mod tests {
             version: "seeded-version".to_string(),
             canonical_version: "yt-dlp-2024.01.01".to_string(),
             content_map_hash: "blake3:abc".to_string(),
-            deployed_at: 0,
+            deployed_at: mediapm_utils::Timestamp::default(),
             resolved_tag: None,
             resolved_version: Some("2024.01.01".to_string()),
             resolved_vcs_hash: None,
@@ -1570,7 +1564,7 @@ mod tests {
             version: "seeded-version".to_string(),
             canonical_version: "yt-dlp-2024.01.01".to_string(),
             content_map_hash: "blake3:abc".to_string(),
-            deployed_at: 0,
+            deployed_at: mediapm_utils::Timestamp::default(),
             resolved_tag: None,
             resolved_version: Some("2024.01.01".to_string()),
             resolved_vcs_hash: None,
@@ -1645,7 +1639,7 @@ mod tests {
             version: "old-version".to_string(),
             canonical_version: "old-canonical".to_string(),
             content_map_hash: String::new(),
-            deployed_at: 0,
+            deployed_at: mediapm_utils::Timestamp::default(),
             resolved_tag: None,
             resolved_version: None,
             resolved_vcs_hash: None,
@@ -2176,7 +2170,7 @@ mod tests {
                 // canonical_version is a composite.
                 canonical_version: "ffmpeg-v7.1;x:y".to_string(),
                 content_map_hash: "blake3:abc".to_string(),
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: Some("v7.1".to_string()),
                 resolved_version: Some("7.1".to_string()),
                 resolved_vcs_hash: Some("abc123".to_string()),
@@ -2217,7 +2211,7 @@ mod tests {
                 version: "v7.1".to_string(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:abc".to_string(), // non-empty → matched
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: Some("v7.1".to_string()),
                 resolved_version: Some("7.1".to_string()),
                 resolved_vcs_hash: Some("abc123".to_string()),
@@ -2246,7 +2240,7 @@ mod tests {
                 version: "v7.1".to_string(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:abc".to_string(), // non-empty → matched
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: Some("v7.1".to_string()),
                 resolved_version: Some("7.1".to_string()),
                 resolved_vcs_hash: Some("abc123".to_string()),
@@ -2276,7 +2270,7 @@ mod tests {
                 version: "v7.1".to_string(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:abc".to_string(),
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: Some("v7.1".to_string()),
                 resolved_version: Some("7.1".to_string()),
                 resolved_vcs_hash: Some("abc123".to_string()),
@@ -2463,7 +2457,7 @@ mod tests {
             version: String::new(),
             canonical_version: "v7.1".to_string(),
             content_map_hash: String::new(),
-            deployed_at: 0,
+            deployed_at: mediapm_utils::Timestamp::default(),
             resolved_tag: None,
             resolved_version: None,
             resolved_vcs_hash: None,
@@ -2481,7 +2475,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -2491,7 +2485,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "ffmpeg-v6.0".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -2514,7 +2508,7 @@ mod tests {
             version: String::new(),
             canonical_version: "ffmpeg-v7.1".to_string(),
             content_map_hash: String::new(), // inactive
-            deployed_at: 0,
+            deployed_at: mediapm_utils::Timestamp::default(),
             resolved_tag: None,
             resolved_version: None,
             resolved_vcs_hash: None,
@@ -2534,7 +2528,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:abc".to_string(),
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -2544,7 +2538,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:def".to_string(),
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -2570,7 +2564,7 @@ mod tests {
             version: String::new(),
             canonical_version: canonical_version.to_string(),
             content_map_hash: String::new(),
-            deployed_at: 0,
+            deployed_at: mediapm_utils::Timestamp::default(),
             resolved_tag: resolved_tag.map(str::to_string),
             resolved_version: resolved_version.map(str::to_string),
             resolved_vcs_hash: resolved_vcs_hash.map(str::to_string),
@@ -2622,7 +2616,7 @@ mod tests {
             version: "7.1".to_string(),
             canonical_version: "ffmpeg-v7.1".to_string(),
             content_map_hash: "blake3:abc".to_string(),
-            deployed_at: 1234,
+            deployed_at: mediapm_utils::Timestamp::from_unix_secs(1234),
             resolved_tag: None,
             resolved_version: None,
             resolved_vcs_hash: None,
@@ -2633,7 +2627,7 @@ mod tests {
         assert_eq!(managed[0].version, "7.1");
         assert_eq!(managed[0].canonical_version, "ffmpeg-v7.1");
         assert_eq!(managed[0].content_map_hash, "blake3:abc");
-        assert_eq!(managed[0].deployed_at, 1234);
+        assert_eq!(managed[0].deployed_at, mediapm_utils::Timestamp::from_unix_secs(1234));
     }
 
     #[test]

@@ -122,7 +122,7 @@ pub(crate) fn from_v2_into_v3(value: Value) -> Result<MediaPmState, MediaPmError
             version: entry.version,
             canonical_version: entry.canonical_version,
             content_map_hash: entry.content_map_hash.unwrap_or_default(),
-            deployed_at: entry.deployed_at,
+            deployed_at: mediapm_utils::Timestamp::from_unix_secs(entry.deployed_at),
             resolved_tag: entry.resolved_tag,
             resolved_version: entry.resolved_version,
             resolved_vcs_hash: entry.resolved_vcs_hash,
@@ -189,7 +189,7 @@ mod tests {
                 version: "7.1".to_string(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: "blake3:def456".to_string(),
-                deployed_at: 1_700_000_000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(1_700_000_000),
                 resolved_tag: Some("v7.1".to_string()),
                 resolved_version: Some("7.1".to_string()),
                 resolved_vcs_hash: Some("abc".to_string()),
@@ -205,7 +205,10 @@ mod tests {
         assert_eq!(decoded.managed_tools[0].tool_id, "ffmpeg");
         assert_eq!(decoded.managed_tools[0].canonical_version, "ffmpeg-v7.1");
         assert_eq!(decoded.managed_tools[0].content_map_hash, "blake3:def456");
-        assert_eq!(decoded.managed_tools[0].deployed_at, 1_700_000_000);
+        assert_eq!(
+            decoded.managed_tools[0].deployed_at,
+            mediapm_utils::Timestamp::from_unix_secs(1_700_000_000)
+        );
         assert_eq!(decoded.version, 3);
     }
 
@@ -270,7 +273,7 @@ mod tests {
         assert_eq!(entry.version, "7.1");
         assert_eq!(entry.canonical_version, "ffmpeg-v7.1");
         assert_eq!(entry.content_map_hash, "blake3:abc123");
-        assert_eq!(entry.deployed_at, 1_700_000_000);
+        assert_eq!(entry.deployed_at, mediapm_utils::Timestamp::from_unix_secs(1_700_000_000));
         assert_eq!(entry.resolved_tag.as_deref(), Some("v7.1"));
         assert_eq!(entry.resolved_version.as_deref(), Some("7.1"));
         assert_eq!(entry.resolved_vcs_hash.as_deref(), Some("abc123def"));
@@ -394,7 +397,7 @@ mod tests {
             version: String::new(),
             canonical_version: "ffmpeg-v7.1".to_string(),
             content_map_hash: String::new(),
-            deployed_at: 1000,
+            deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
             resolved_tag: None,
             resolved_version: None,
             resolved_vcs_hash: None,
@@ -411,7 +414,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 1000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -421,7 +424,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 2000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(2000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -429,7 +432,7 @@ mod tests {
         ];
         let result = dedup_managed_tools(entries);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].deployed_at, 2000);
+        assert_eq!(result[0].deployed_at, mediapm_utils::Timestamp::from_unix_secs(2000));
     }
 
     #[test]
@@ -440,7 +443,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 1000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -450,7 +453,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "ffmpeg-v6.0".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 2000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(2000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -468,7 +471,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -478,7 +481,7 @@ mod tests {
                 version: String::new(),
                 canonical_version: "yt-dlp-v2".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 0,
+                deployed_at: mediapm_utils::Timestamp::default(),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -499,7 +502,7 @@ mod tests {
                 version: "v2".to_string(),
                 canonical_version: "yt-dlp-v2".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 2000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(2000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -509,7 +512,7 @@ mod tests {
                 version: "7.1".to_string(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 3000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(3000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -519,7 +522,7 @@ mod tests {
                 version: "1.0".to_string(),
                 canonical_version: "media-tagger-v1.0".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 1000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -539,11 +542,20 @@ mod tests {
 
         assert_eq!(decoded.managed_tools.len(), 3);
         assert_eq!(decoded.managed_tools[0].tool_id, "ffmpeg");
-        assert_eq!(decoded.managed_tools[0].deployed_at, 3000);
+        assert_eq!(
+            decoded.managed_tools[0].deployed_at,
+            mediapm_utils::Timestamp::from_unix_secs(3000)
+        );
         assert_eq!(decoded.managed_tools[1].tool_id, "yt-dlp");
-        assert_eq!(decoded.managed_tools[1].deployed_at, 2000);
+        assert_eq!(
+            decoded.managed_tools[1].deployed_at,
+            mediapm_utils::Timestamp::from_unix_secs(2000)
+        );
         assert_eq!(decoded.managed_tools[2].tool_id, "media-tagger");
-        assert_eq!(decoded.managed_tools[2].deployed_at, 1000);
+        assert_eq!(
+            decoded.managed_tools[2].deployed_at,
+            mediapm_utils::Timestamp::from_unix_secs(1000)
+        );
     }
 
     #[test]
@@ -567,7 +579,7 @@ mod tests {
                 version: "7.1".to_string(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 1000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -577,7 +589,7 @@ mod tests {
                 version: "v2".to_string(),
                 canonical_version: "yt-dlp-v2".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 1000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -605,7 +617,7 @@ mod tests {
                 version: "1.0".to_string(),
                 canonical_version: "media-tagger-v1.0".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 1000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,
@@ -615,7 +627,7 @@ mod tests {
                 version: "7.1".to_string(),
                 canonical_version: "ffmpeg-v7.1".to_string(),
                 content_map_hash: String::new(),
-                deployed_at: 3000,
+                deployed_at: mediapm_utils::Timestamp::from_unix_secs(3000),
                 resolved_tag: None,
                 resolved_version: None,
                 resolved_vcs_hash: None,

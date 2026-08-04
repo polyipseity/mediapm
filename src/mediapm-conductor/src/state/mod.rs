@@ -6,9 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::Hash;
+use mediapm_utils::Timestamp;
 use serde::{Deserialize, Serialize};
-
-use crate::config::ImpureTimestamp;
 
 pub mod versions;
 
@@ -86,12 +85,12 @@ pub struct ToolCallInstance {
     /// Conductor GC timestamp: refreshed to `aux.conductor_gc_epoch`
     /// whenever this instance is referenced during step execution.
     /// Used for grace-period comparisons during GC sweep.
-    #[serde(default = "default_impure_timestamp_zero")]
-    pub conductor_gc_last_referenced_at: ImpureTimestamp,
+    #[serde(default = "default_timestamp_zero")]
+    pub conductor_gc_last_referenced_at: Timestamp,
 }
 
-fn default_impure_timestamp_zero() -> ImpureTimestamp {
-    ImpureTimestamp::default()
+fn default_timestamp_zero() -> Timestamp {
+    Timestamp::default()
 }
 
 /// Auxiliary metadata attached to the orchestration state.
@@ -99,10 +98,10 @@ fn default_impure_timestamp_zero() -> ImpureTimestamp {
 pub struct AuxData {
     /// Monotonic tool call instance counter.
     pub tool_call_instance_counter: u64,
-    /// Conductor GC reference clock — updated to [`now()`] on every state
-    /// commit. Used by `run_conductor_gc()` for grace-period comparisons
+    /// Conductor GC reference clock — updated to [`Timestamp::now()`] on every
+    /// state commit. Used by `run_conductor_gc()` for grace-period comparisons
     /// and CAS blob reclamation. Distinct from CAS GC.
-    pub conductor_gc_epoch: ImpureTimestamp,
+    pub conductor_gc_epoch: Timestamp,
 }
 
 /// Full orchestration state snapshot.
@@ -135,7 +134,7 @@ impl OrchestrationState {
     /// unreachable CAS blobs. Distinct from CAS GC which is a separate
     /// mechanism.
     pub fn run_conductor_gc(&mut self, referenced_keys: &BTreeSet<String>, ttl_seconds: u64) {
-        let ttl = std::time::Duration::from_secs(ttl_seconds);
+        let ttl_nanos = ttl_seconds.saturating_mul(1_000_000_000);
         let epoch = self.aux.conductor_gc_epoch;
         let epoch_nanos = epoch.as_unix_nanos();
 
@@ -146,11 +145,11 @@ impl OrchestrationState {
             } else {
                 let last_ref = instance.conductor_gc_last_referenced_at.as_unix_nanos();
                 // Evict if last reference was more than TTL ago
-                let deadline = last_ref.saturating_add(ttl.as_nanos());
+                let deadline = last_ref.saturating_add(ttl_nanos);
                 deadline >= epoch_nanos
             }
         });
-        self.aux.conductor_gc_epoch = ImpureTimestamp::now();
+        self.aux.conductor_gc_epoch = Timestamp::now();
     }
 }
 

@@ -2,15 +2,15 @@
 
 use std::collections::BTreeSet;
 
-use crate::config::ImpureTimestamp;
 use crate::orchestration::protocol::OrchestrationState;
 use crate::state::{ResolvedInput, ToolCallInstance};
+use mediapm_utils::Timestamp;
 
 /// Derives a deterministic tool call instance key from tool + inputs + optional impure timestamp.
 pub(super) fn derive_instance_key(
     tool_id: &str,
     inputs: &[ResolvedInput],
-    impure_timestamp: Option<ImpureTimestamp>,
+    impure_timestamp: Option<Timestamp>,
 ) -> String {
     use blake3;
     let mut hasher = blake3::Hasher::new();
@@ -97,8 +97,8 @@ mod proptests {
             key: "url".to_string(),
             value: "https://example.com".to_string(),
         }];
-        let key1 = derive_instance_key("test", &inputs, Some(ImpureTimestamp::from_unix_nanos(0)));
-        let key2 = derive_instance_key("test", &inputs, Some(ImpureTimestamp::from_unix_nanos(1)));
+        let key1 = derive_instance_key("test", &inputs, Some(Timestamp::from_unix_nanos(0)));
+        let key2 = derive_instance_key("test", &inputs, Some(Timestamp::from_unix_nanos(1)));
         assert_ne!(key1, key2);
     }
 }

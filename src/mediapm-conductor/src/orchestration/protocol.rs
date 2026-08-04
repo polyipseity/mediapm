@@ -11,11 +11,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use mediapm_cas::Hash;
+use mediapm_utils::Timestamp;
 use serde::Serialize;
 
-use crate::config::{
-    ImpureTimestamp, OutputCaptureSpec, ToolInputSpec, WorkflowSpec, WorkflowStepSpec,
-};
+use crate::config::{OutputCaptureSpec, ToolInputSpec, WorkflowSpec, WorkflowStepSpec};
 pub(super) use crate::state::{OrchestrationState, ToolCallInstance};
 
 /// Finds a tool spec by its name field (not by map key).
@@ -88,7 +87,7 @@ pub(crate) struct StepExecutionRequest {
     /// Step definition to execute.
     pub step: WorkflowStepSpec,
     /// Impure timestamp captured before the level starts, when required.
-    pub impure_timestamp: Option<ImpureTimestamp>,
+    pub impure_timestamp: Option<Timestamp>,
     /// State snapshot used for cache-key and rematerialization checks.
     pub state_snapshot: Arc<OrchestrationState>,
     /// Absolute directory that directly contains the outermost conductor

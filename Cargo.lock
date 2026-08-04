@@ -2124,6 +2124,7 @@ dependencies = [
  "clap_complete",
  "dashmap",
  "fs4",
+ "mediapm-utils",
  "multihash",
  "oxidelta",
  "serde",

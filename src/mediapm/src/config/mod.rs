@@ -504,15 +504,7 @@ pub struct ManagedWorkflowStepState {
     pub steps_completed: u32,
     /// Optional last impure sync timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_impure_sync_at: Option<MediaPmImpureTimestamp>,
-}
-
-/// Impure sync timestamp tracked per media source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MediaPmImpureTimestamp {
-    /// Seconds since Unix epoch when the last impure sync occurred.
-    pub utc_epoch_seconds: u64,
+    pub last_impure_sync_at: Option<mediapm_utils::Timestamp>,
 }
 
 /// Entry in the managed-tool registry tracking fetch/deployment metadata.
@@ -535,9 +527,9 @@ pub struct ToolRegistryEntry {
     /// blake3 hash of the `content_map` JSON (used for content-addressed identity).
     #[serde(default)]
     pub content_map_hash: String,
-    /// Unix-epoch seconds when the payload was deployed (0 = not yet deployed).
+    /// Unix-nano timestamp when the payload was deployed (0 = not yet deployed).
     #[serde(default)]
-    pub deployed_at: u64,
+    pub deployed_at: mediapm_utils::Timestamp,
     /// The git tag that was resolved during the last resolve phase.
     /// `None` (JSON `null`) when the provider does not resolve from tags;
     /// empty strings never occur and are rejected at load. Any `None` field

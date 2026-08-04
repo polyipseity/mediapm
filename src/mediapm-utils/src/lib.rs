@@ -4,6 +4,7 @@
 //! - [`types`] — Common type aliases (`StringMap`, `BinaryInputMap`)
 //! - [`path`] — Path-resolution utilities (`PathMode`, path resolvers)
 //! - [`builtin`] — Builtin descriptor helpers and CLI argument parsing
+//! - [`timestamp`] — Unix-epoch nanosecond timestamp type (`Timestamp`)
 //!
 //! # Crate layout
 //!
@@ -11,7 +12,8 @@
 //! mediapm-utils
 //! ├── types      — StringMap, BinaryInputMap
 //! ├── path       — PathMode, parse_path_mode, resolve_path_for_root, etc.
-//! └── builtin    — describe(), describe_json_compact(), BuiltinCliArgs, parse_string_pairs
+//! ├── builtin    — describe(), describe_json_compact(), BuiltinCliArgs, parse_string_pairs
+//! └── timestamp  — Timestamp (Unix-epoch nanoseconds)
 //! ```
 //!
 //! # Feature flags
@@ -24,9 +26,11 @@
 pub mod builtin;
 pub mod path;
 pub mod progress;
+pub mod timestamp;
 pub mod types;
 
 #[cfg(feature = "nickel")]
 pub mod nickel;
 
+pub use timestamp::Timestamp;
 pub use types::{BinaryInputMap, StringMap};

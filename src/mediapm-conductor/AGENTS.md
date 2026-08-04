@@ -640,7 +640,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 | **Explicit version markers** | Conductor, Builtins, MediaPM | Every persisted document carries top-level `version: u32`. Sequential migrations only. |
 | **Fail-fast validation** | Conductor, Builtins | Validation before execution; undeclared config keys, missing required tool inputs, and unresolvable template expressions are errors. |
 | **CAS integrity trusted** | Conductor, Builtins | CAS `get()` returns bytes that match the requested hash; no additional integrity checks at call site. |
-| **Impure timestamp** | Conductor | Instance key includes `impure_timestamp: Option<ImpureTimestamp>` for non-deterministic steps. `None` = pure (deterministic). |
+| **Impure timestamp** | Conductor | Instance key includes `impure_timestamp: Option<Timestamp>` (mediapm-utils nanos) for non-deterministic steps. `None` = pure (deterministic). |
 
 ## C. Integration Boundaries (Conductor-Centric)
 

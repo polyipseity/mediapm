@@ -446,7 +446,7 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
         version: String::new(),
         canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
         content_map_hash: "blake3:abc".to_string(),
-        deployed_at: 0,
+        deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
         resolved_vcs_hash: None,
@@ -797,7 +797,7 @@ async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm
         version: String::new(),
         canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
         content_map_hash: "blake3:abc".to_string(),
-        deployed_at: 0,
+        deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
         resolved_vcs_hash: None,
@@ -832,7 +832,7 @@ async fn sync_logical_requires_sync_on_composite_mismatch() -> Result<(), mediap
         version: String::new(),
         canonical_version: "some-wrong-version".to_string(),
         content_map_hash: "blake3:abc".to_string(),
-        deployed_at: 0,
+        deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
         resolved_vcs_hash: None,
@@ -936,7 +936,7 @@ async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmErr
         version: "seeded-version".to_string(),
         canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
         content_map_hash: "blake3:abc".to_string(),
-        deployed_at: 42,
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: None,
         resolved_vcs_hash: None,
@@ -970,7 +970,11 @@ async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmErr
 
     // Identity fields preserved — skip path never re-provisions.
     assert_eq!(entry.content_map_hash, "blake3:abc", "content_map_hash must be preserved");
-    assert_eq!(entry.deployed_at, 42, "deployed_at must be preserved");
+    assert_eq!(
+        entry.deployed_at,
+        mediapm_utils::Timestamp::from_unix_secs(42),
+        "deployed_at must be preserved"
+    );
     assert_eq!(entry.version, "seeded-version", "version must be preserved");
     assert_eq!(
         entry.canonical_version,
@@ -1020,7 +1024,7 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
         version: "seeded-version".to_string(),
         canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
         content_map_hash: "blake3:abc".to_string(),
-        deployed_at: 42,
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         resolved_vcs_hash: Some(mediapm::MEDIAPM_GIT_HASH.to_string()),
@@ -1044,7 +1048,11 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
         .expect("media-tagger entry should exist after sync");
 
     // No re-provision: identity and resolved fields unchanged.
-    assert_eq!(entry.deployed_at, 42, "deployed_at must be preserved on skip");
+    assert_eq!(
+        entry.deployed_at,
+        mediapm_utils::Timestamp::from_unix_secs(42),
+        "deployed_at must be preserved on skip"
+    );
     assert_eq!(entry.version, "seeded-version", "version must be preserved on skip");
     assert_eq!(
         entry.resolved_version.as_deref(),
@@ -1105,7 +1113,7 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
         version: "seeded-version".to_string(),
         canonical_version: "ffmpeg-v7.1".to_string(),
         content_map_hash: "blake3:abc123".to_string(),
-        deployed_at: 42,
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("7.1".to_string()),
         resolved_vcs_hash: None,
@@ -1283,7 +1291,7 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
         // never nest into the requester's composite.
         canonical_version: "yt-dlp-v2024.01.01;deno:deno-v1.46.0;ffmpeg:ffmpeg-v7.1".to_string(),
         content_map_hash: "blake3:abc123".to_string(),
-        deployed_at: 42,
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("v2024.01.01".to_string()),
         resolved_vcs_hash: None,
@@ -1293,7 +1301,7 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
         version: "seeded-version".to_string(),
         canonical_version: "ffmpeg-v7.1".to_string(),
         content_map_hash: "blake3:ffmpeg1".to_string(),
-        deployed_at: 42,
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("v7.1".to_string()),
         resolved_vcs_hash: None,
@@ -1303,7 +1311,7 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
         version: "seeded-version".to_string(),
         canonical_version: "deno-v1.46.0".to_string(),
         content_map_hash: "blake3:deno1".to_string(),
-        deployed_at: 42,
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("v1.46.0".to_string()),
         resolved_vcs_hash: None,
@@ -1444,7 +1452,7 @@ async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
         version: "seeded-version".to_string(),
         canonical_version: "yt-dlp-v2024.01.01;deno:deno-v1.46.0;ffmpeg:ffmpeg-v7.1".to_string(),
         content_map_hash: "blake3:abc123".to_string(),
-        deployed_at: 42,
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("v2024.01.01".to_string()),
         resolved_vcs_hash: None,
@@ -1454,7 +1462,7 @@ async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
         version: "seeded-version".to_string(),
         canonical_version: "ffmpeg-v7.1".to_string(),
         content_map_hash: "blake3:ffmpeg1".to_string(),
-        deployed_at: 42,
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("v7.1".to_string()),
         resolved_vcs_hash: None,
@@ -1464,7 +1472,7 @@ async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
         version: "seeded-version".to_string(),
         canonical_version: "deno-v1.46.0".to_string(),
         content_map_hash: "blake3:deno1".to_string(),
-        deployed_at: 42,
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("v1.46.0".to_string()),
         resolved_vcs_hash: None,
@@ -1563,7 +1571,7 @@ async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
         version: String::new(),
         canonical_version: "ffmpeg-v7.1;deno:deno-v1.46.0".to_string(),
         content_map_hash: "blake3:abc".to_string(),
-        deployed_at: 0,
+        deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
         resolved_vcs_hash: None,
@@ -1573,7 +1581,7 @@ async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
         version: String::new(),
         canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
         content_map_hash: "blake3:abc".to_string(),
-        deployed_at: 0,
+        deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
         resolved_vcs_hash: None,
@@ -1896,7 +1904,7 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
         version: String::new(),
         canonical_version: old_deno_hash.to_string(),
         content_map_hash: String::new(),
-        deployed_at: 0,
+        deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
         resolved_vcs_hash: None,
@@ -1906,7 +1914,7 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
         version: String::new(),
         canonical_version: format!("{yt_dlp_hash};deno:{old_deno_hash}"),
         content_map_hash: "blake3:old".to_string(),
-        deployed_at: 0,
+        deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
         resolved_vcs_hash: None,

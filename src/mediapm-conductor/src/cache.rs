@@ -624,7 +624,7 @@ fn write_index_file(index_path: &Path, index: &CacheIndex) -> Result<(), Conduct
 /// Returns current Unix timestamp in seconds.
 #[must_use]
 fn now_unix_seconds() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+    mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
 /// Flushes all domain indexes on drop so throttle-deferred writes are not lost.

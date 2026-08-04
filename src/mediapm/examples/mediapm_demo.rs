@@ -916,7 +916,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
             version: "old".to_string(),
             canonical_version: "old".to_string(),
             content_map_hash: stale_hash.to_string(),
-            deployed_at: unix_timestamp_seconds(),
+            deployed_at: mediapm_utils::Timestamp::from_unix_secs(unix_timestamp_seconds()),
             resolved_tag: None,
             resolved_version: None,
             resolved_vcs_hash: None,

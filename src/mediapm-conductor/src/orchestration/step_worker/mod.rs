@@ -128,10 +128,10 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ImpureTimestamp;
     use crate::orchestration::protocol::{OrchestrationState, StepOutputs};
     use crate::state::{OutputRef, OutputSaveMode, ResolvedInput, ToolCallInstance};
     use mediapm_cas::Hash;
+    use mediapm_utils::Timestamp;
     use std::collections::{BTreeMap, BTreeSet};
 
     /// Verifies `resolve_step_output_refs` resolves valid references.
@@ -176,8 +176,8 @@ mod tests {
     fn derive_instance_key_varies_with_impure_timestamp() {
         let inputs = vec![ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
 
-        let ts1 = ImpureTimestamp::from_unix_nanos(1000);
-        let ts2 = ImpureTimestamp::from_unix_nanos(2000);
+        let ts1 = Timestamp::from_unix_nanos(1000);
+        let ts2 = Timestamp::from_unix_nanos(2000);
         let key1 = cache::derive_instance_key("test_tool", &inputs, Some(ts1));
         let key2 = cache::derive_instance_key("test_tool", &inputs, Some(ts2));
         assert_ne!(key1, key2);
@@ -195,7 +195,7 @@ mod tests {
             worker_index: 0,
             executed: true,
             rematerialized: false,
-            conductor_gc_last_referenced_at: ImpureTimestamp::default(),
+            conductor_gc_last_referenced_at: Timestamp::default(),
         };
 
         let mut state = OrchestrationState::new_empty();
@@ -229,7 +229,7 @@ mod tests {
             worker_index: 0,
             executed: true,
             rematerialized: false,
-            conductor_gc_last_referenced_at: ImpureTimestamp::default(),
+            conductor_gc_last_referenced_at: Timestamp::default(),
         };
 
         let mut state = OrchestrationState::new_empty();

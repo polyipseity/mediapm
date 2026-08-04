@@ -24,9 +24,7 @@ impl From<v2::AuxDataV2> for crate::state::AuxData {
     fn from(aux: v2::AuxDataV2) -> Self {
         Self {
             tool_call_instance_counter: aux.tool_call_instance_counter,
-            conductor_gc_epoch: crate::config::ImpureTimestamp::from_unix_nanos(
-                aux.conductor_gc_epoch.0.into(),
-            ),
+            conductor_gc_epoch: mediapm_utils::Timestamp::from_unix_nanos(aux.conductor_gc_epoch.0),
         }
     }
 }
@@ -35,9 +33,7 @@ impl From<crate::state::AuxData> for v2::AuxDataV2 {
     fn from(aux: crate::state::AuxData) -> Self {
         Self {
             tool_call_instance_counter: aux.tool_call_instance_counter,
-            conductor_gc_epoch: v2::ImpureTimestampV2(
-                u64::try_from(aux.conductor_gc_epoch.as_unix_nanos()).unwrap_or(u64::MAX),
-            ),
+            conductor_gc_epoch: v2::ImpureTimestampV2(aux.conductor_gc_epoch.as_unix_nanos()),
         }
     }
 }
@@ -96,8 +92,8 @@ impl From<v2::ToolCallInstanceV2> for ToolCallInstance {
             worker_index: inst.worker_index,
             executed: inst.executed,
             rematerialized: inst.rematerialized,
-            conductor_gc_last_referenced_at: crate::config::ImpureTimestamp::from_unix_nanos(
-                inst.conductor_gc_last_referenced_at.0.into(),
+            conductor_gc_last_referenced_at: mediapm_utils::Timestamp::from_unix_nanos(
+                inst.conductor_gc_last_referenced_at.0,
             ),
         }
     }
@@ -114,8 +110,7 @@ impl From<ToolCallInstance> for v2::ToolCallInstanceV2 {
             executed: inst.executed,
             rematerialized: inst.rematerialized,
             conductor_gc_last_referenced_at: v2::ImpureTimestampV2(
-                u64::try_from(inst.conductor_gc_last_referenced_at.as_unix_nanos())
-                    .unwrap_or(u64::MAX),
+                inst.conductor_gc_last_referenced_at.as_unix_nanos(),
             ),
         }
     }

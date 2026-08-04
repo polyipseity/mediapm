@@ -8,7 +8,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -167,7 +166,7 @@ impl Drop for MetadataCache {
 
 /// Returns the current Unix epoch seconds.
 fn unix_seconds_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
 /// Loads a JSON cache file directly.

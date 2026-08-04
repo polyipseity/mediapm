@@ -91,7 +91,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
             })?;
 
         let mut cached = cached.clone();
-        cached.conductor_gc_last_referenced_at = crate::config::ImpureTimestamp::now();
+        cached.conductor_gc_last_referenced_at = mediapm_utils::Timestamp::now();
         return Ok(StepExecutionBundle { instance: cached, cache_hit: true });
     }
 
@@ -122,7 +122,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         worker_index: 0,
         executed: true,
         rematerialized: false,
-        conductor_gc_last_referenced_at: crate::config::ImpureTimestamp::now(),
+        conductor_gc_last_referenced_at: mediapm_utils::Timestamp::now(),
     };
 
     Ok(StepExecutionBundle { instance, cache_hit: false })

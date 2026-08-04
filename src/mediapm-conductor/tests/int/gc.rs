@@ -8,7 +8,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mediapm_conductor::{AuxData, ImpureTimestamp, OrchestrationState, ToolCallInstance};
+use mediapm_conductor::{AuxData, OrchestrationState, ToolCallInstance};
+use mediapm_utils::Timestamp;
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -26,7 +27,7 @@ fn sample_instance(key: &str) -> ToolCallInstance {
         worker_index: 0,
         executed: true,
         rematerialized: false,
-        conductor_gc_last_referenced_at: ImpureTimestamp::from_unix_nanos(0),
+        conductor_gc_last_referenced_at: Timestamp::from_unix_nanos(0),
     }
 }
 
@@ -42,7 +43,7 @@ fn run_conductor_gc_evicts_unreferenced_past_ttl() {
             ("keep".to_string(), sample_instance("keep")),
             ("remove".to_string(), sample_instance("remove")),
         ]),
-        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: ImpureTimestamp::now() },
+        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: Timestamp::now() },
         ..OrchestrationState::new_empty()
     };
 
@@ -64,7 +65,7 @@ fn run_conductor_gc_preserves_referenced() {
             ("a".to_string(), sample_instance("a")),
             ("b".to_string(), sample_instance("b")),
         ]),
-        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: ImpureTimestamp::now() },
+        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: Timestamp::now() },
         ..OrchestrationState::new_empty()
     };
 
@@ -92,7 +93,7 @@ fn run_conductor_gc_evicts_all_when_empty_referenced() {
             ("a".to_string(), sample_instance("a")),
             ("b".to_string(), sample_instance("b")),
         ]),
-        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: ImpureTimestamp::now() },
+        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: Timestamp::now() },
         ..OrchestrationState::new_empty()
     };
 
@@ -108,7 +109,7 @@ fn run_conductor_gc_evicts_all_when_empty_referenced() {
 fn run_conductor_gc_within_ttl_preserves_unreferenced() {
     let mut state = OrchestrationState {
         tool_call_instances: BTreeMap::from([("fresh".to_string(), sample_instance("fresh"))]),
-        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: ImpureTimestamp::now() },
+        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: Timestamp::now() },
         ..OrchestrationState::new_empty()
     };
     // sample_instance has last_referenced = 0 (unix epoch).

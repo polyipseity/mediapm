@@ -13,8 +13,7 @@ use std::collections::BTreeMap;
 
 use crate::conductor_bridge;
 use crate::config::{
-    MediaPmDocument, MediaPmImpureTimestamp, MediaPmState, MediaRuntimeStorage, MediaStepTool,
-    load_mediapm_document,
+    MediaPmDocument, MediaPmState, MediaRuntimeStorage, MediaStepTool, load_mediapm_document,
 };
 use crate::error::MediaPmError;
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
@@ -230,7 +229,7 @@ pub(crate) fn should_invalidate_instance(
     instance_tool_id: &str,
     rules: &[ToolInvalidationRule],
     variant_hashes: &BTreeMap<String, String>,
-    last_impure_sync_at: Option<&MediaPmImpureTimestamp>,
+    last_impure_sync_at: Option<&mediapm_utils::Timestamp>,
     impure_ttl_secs: u64,
 ) -> bool {
     for rule in rules {
@@ -253,11 +252,8 @@ pub(crate) fn should_invalidate_instance(
 
     // Fallback: impure TTL check.
     if let Some(ts) = last_impure_sync_at {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if now.saturating_sub(ts.utc_epoch_seconds) > impure_ttl_secs {
+        let now = mediapm_utils::Timestamp::now().as_unix_secs();
+        if now.saturating_sub(ts.as_unix_secs()) > impure_ttl_secs {
             return true;
         }
     }

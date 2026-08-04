@@ -75,7 +75,7 @@ pub(crate) struct ToolCallInstanceV2 {
 }
 
 /// V2 impure timestamp (nanoseconds since Unix epoch, matching runtime
-/// [`ImpureTimestamp`](crate::config::ImpureTimestamp) wire repr).
+/// [`mediapm_utils::Timestamp`] wire repr).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ImpureTimestampV2(
     /// Nanoseconds since Unix epoch.
@@ -133,9 +133,7 @@ pub(crate) async fn migrate_v1_to_v2<C: CasApi>(
         tool_call_instances: instances,
         aux: AuxDataV2 {
             tool_call_instance_counter: envelope.aux.tool_call_instance_counter,
-            conductor_gc_epoch: ImpureTimestampV2(
-                u64::try_from(envelope.aux.conductor_gc_epoch.as_unix_nanos()).unwrap_or(u64::MAX),
-            ),
+            conductor_gc_epoch: ImpureTimestampV2(envelope.aux.conductor_gc_epoch.as_unix_nanos()),
         },
     })
 }

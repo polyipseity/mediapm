@@ -225,7 +225,7 @@ pub(crate) fn copy_directory_recursive(source_dir: &Path, target_dir: &Path) -> 
 }
 
 pub(crate) fn now_unix_seconds() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+    mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
 /// Links or copies files from `payload_dir` to `sandbox_dir`, skipping

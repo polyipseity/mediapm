@@ -9,7 +9,6 @@ use bytes::Bytes;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -319,8 +318,7 @@ impl BlobStore for FileSystemBlobStore {
         static STREAM_COUNTER: AtomicU64 = AtomicU64::new(0);
         let tmp_dir = self.root.join(".tmp");
         fs::create_dir_all(&tmp_dir).await.map_err(CasError::Io)?;
-        #[allow(clippy::cast_possible_truncation)]
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+        let ts = mediapm_utils::Timestamp::now().as_unix_nanos();
         let tmp_name = format!("stream-{ts}-{}", STREAM_COUNTER.fetch_add(1, Ordering::Relaxed));
         let tmp_path = tmp_dir.join(tmp_name);
 

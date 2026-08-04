@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 
 use crate::error::MediaPmError;
 
@@ -41,7 +40,7 @@ pub(super) fn write_bytes_if_changed(
 /// Returns current Unix timestamp in seconds.
 #[allow(dead_code)]
 pub(super) fn now_unix_seconds() -> u64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
+    mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
 #[cfg(test)]

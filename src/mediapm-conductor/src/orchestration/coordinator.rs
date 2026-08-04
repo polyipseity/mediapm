@@ -13,7 +13,9 @@ use std::time::Duration;
 use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasMaintenanceApi};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
-use crate::config::{ImpureTimestamp, WorkflowStepSpec};
+use mediapm_utils::Timestamp;
+
+use crate::config::WorkflowStepSpec;
 use crate::error::ConductorError;
 use crate::state::OrchestrationState;
 
@@ -205,7 +207,7 @@ where
                     unified: Arc::new(unified.clone()),
                     step: step.clone(),
                     impure_timestamp: if tool_spec.is_impure {
-                        Some(ImpureTimestamp::now())
+                        Some(Timestamp::now())
                     } else {
                         None
                     },

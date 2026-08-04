@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use unicode_normalization::UnicodeNormalization;
 
@@ -384,7 +383,7 @@ fn is_rejected_char(ch: char) -> bool {
 /// Returns current Unix epoch timestamp in seconds.
 #[allow(dead_code)]
 pub(super) fn now_unix_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
 #[cfg(test)]

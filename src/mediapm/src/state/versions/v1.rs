@@ -9,9 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::{
-    ManagedFileRecord, ManagedWorkflowStepState, MediaPmImpureTimestamp, MediaPmState,
-};
+use crate::config::{ManagedFileRecord, ManagedWorkflowStepState, MediaPmState};
 use crate::error::MediaPmError;
 
 // ---------------------------------------------------------------------------
@@ -159,9 +157,9 @@ fn from_v1_payload(payload: MediaPmStateV1Payload) -> MediaPmState {
                 ManagedWorkflowStepState {
                     variant_hashes: last.variant_hashes,
                     steps_completed: last.steps_completed,
-                    last_impure_sync_at: last.last_impure_sync_at.map(|ts| {
-                        MediaPmImpureTimestamp { utc_epoch_seconds: ts.utc_epoch_seconds }
-                    }),
+                    last_impure_sync_at: last
+                        .last_impure_sync_at
+                        .map(|ts| mediapm_utils::Timestamp::from_unix_secs(ts.utc_epoch_seconds)),
                 }
             };
             (key, state)

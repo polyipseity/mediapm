@@ -5,7 +5,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -469,7 +468,7 @@ pub(super) fn load_media_tagger_cache_index(index_path: &Path) -> MediaTaggerCac
 /// Returns current Unix timestamp in seconds.
 #[must_use]
 pub(super) fn now_unix_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
 /// Executes one HTTP GET with retry/backoff for transient failures.
