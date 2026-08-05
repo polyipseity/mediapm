@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use mediapm_conductor::{
     InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
-    WorkflowStepSpec,
+    WorkflowSpec, WorkflowStepSpec,
 };
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
@@ -20,64 +20,121 @@ use crate::conductor_bridge::constants::{
     INPUT_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS, OUTPUT_CONTENT,
     OUTPUT_SANDBOX_ARTIFACTS,
 };
-use crate::config::{MediaSourceSpec, MediaStep};
+use crate::config::output_types::ResolvedStepVariantFlow;
+use crate::config::{MediaStep, MediaStepTool, OutputVariantValue};
+use crate::error::MediaPmError;
 
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
+use super::yt_dlp_inputs::resolve_step_output_binding;
 use super::{
-    OUTPUT_PRIMARY, qualify_step_id, resolve_step_tool_id, step_option_input_bindings,
-    variant_to_output_capture_spec,
+    FfmpegSlotLimits, VariantProducer, media_step_id, resolve_input_variant_producer,
+    step_option_input_bindings, variant_to_output_capture_spec,
 };
 
-/// Synthesizes one rsgain workflow step (or step chain) from a media step
-/// definition.
+/// Synthesizes one rsgain workflow step per variant-flow mapping edge.
 ///
-/// For album-mode rsgain, returns two steps (scan + tag). For single-track
-/// mode, returns one step.
+/// rsgain runs in single-track mode (in-place loudness tagging), so each
+/// mapping produces exactly one step: the mapping's input variant is bound to
+/// the `input_content` input from its producer (adding an execution-order
+/// dependency when the producer is a prior step output), and option inputs are
+/// bound from the step `options` map.
+///
+/// Output captures are keyed by the generic variant's `kind` label (for
+/// example `output_content`), matching the old step-output-policy keying; the
+/// variant-keyed `super::step_output_policy_overrides` helper is not used
+/// here. Each mapping registers its `kind`-named output as a
+/// [`VariantProducer::StepOutput`] entry keyed by the variant name.
 ///
 /// # Errors
 ///
-#[must_use]
+/// Returns [`MediaPmError::Workflow`] when the mapping's input variant has no
+/// producer, the output variant is missing or decodes as a non-generic
+/// (yt-dlp-shaped) config, or a producer binding fails.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn synthesize_rsgain_step_chain(
-    _source: &MediaSourceSpec,
+    workflow: &mut WorkflowSpec,
+    media_id: &str,
     step_index: usize,
     step: &MediaStep,
-) -> Vec<WorkflowStepSpec> {
-    let mut steps = Vec::new();
+    mappings: &[ResolvedStepVariantFlow],
+    tool_id: &str,
+    producer_snapshot: &BTreeMap<String, VariantProducer>,
+    variant_producers: &mut BTreeMap<String, VariantProducer>,
+) -> Result<(), MediaPmError> {
+    let mut pending_variant_updates = Vec::new();
 
-    let step_id = qualify_step_id("unknown", &format!("rsgain_{step_index}"));
+    for (mapping_index, mapping) in mappings.iter().enumerate() {
+        let step_id = media_step_id(step_index, mapping_index, step.tool, mapping);
+        let mut depends_on = Vec::new();
+        let mut inputs = BTreeMap::new();
 
-    let mut inputs = BTreeMap::new();
-    for (k, v) in step_option_input_bindings(step) {
-        inputs.insert(k, v);
-    }
+        let producer = resolve_input_variant_producer(&mapping.input, producer_snapshot)
+            .ok_or_else(|| {
+                MediaPmError::Workflow(format!(
+                    "media '{media_id}' step #{step_index} references unknown input variant '{}'",
+                    mapping.input
+                ))
+            })?;
+        let (input_binding, dependency) = producer.to_binding()?;
+        inputs.insert(INPUT_CONTENT.to_string(), input_binding);
+        if let Some(step_dependency) = dependency {
+            depends_on.push(step_dependency);
+        }
 
-    let mut outputs = BTreeMap::new();
-    for (name, config) in &step.output_variants {
-        outputs.insert(name.clone(), variant_to_output_capture_spec(name, config));
-    }
-    if outputs.is_empty() {
+        inputs.extend(step_option_input_bindings(step));
+
+        let variant_value = step.output_variants.get(&mapping.output).ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' step #{step_index} is missing output variant '{}'",
+                mapping.output
+            ))
+        })?;
+        if !matches!(variant_value, OutputVariantValue::Generic(_)) {
+            return Err(MediaPmError::Workflow(format!(
+                "media '{media_id}' step #{step_index} output variant '{}' must decode as rsgain generic output config",
+                mapping.output
+            )));
+        }
+
+        // rsgain is a single-stream in-place tagger; only ffmpeg slots are
+        // bounded, so the default zeroed limits are used for the binding.
+        let output_binding = resolve_step_output_binding(
+            MediaStepTool::Rsgain,
+            &step.output_variants,
+            &mapping.output,
+            FfmpegSlotLimits::default(),
+        )?;
+
+        let mut outputs = BTreeMap::new();
         outputs.insert(
-            OUTPUT_PRIMARY.to_string(),
-            mediapm_conductor::OutputCaptureSpec {
-                name: OUTPUT_PRIMARY.to_string(),
-                capture: "file:loudness.*".to_string(),
-                save: SaveMode::True,
-                allow_empty: false,
-                include_topmost_folder: true,
-            },
+            output_binding.output_name.clone(),
+            variant_to_output_capture_spec(&output_binding.output_name, variant_value),
         );
+
+        workflow.steps.push(WorkflowStepSpec {
+            id: step_id.clone(),
+            tool: tool_id.to_string(),
+            inputs,
+            outputs,
+            max_retries: 0,
+            depends_on,
+        });
+
+        pending_variant_updates.push((
+            mapping.output.clone(),
+            VariantProducer::StepOutput {
+                step_id,
+                output_name: output_binding.output_name,
+                zip_member: output_binding.zip_member,
+            },
+        ));
     }
 
-    steps.push(WorkflowStepSpec {
-        id: step_id,
-        tool: resolve_step_tool_id(crate::config::MediaStepTool::Rsgain),
-        inputs,
-        outputs,
-        max_retries: 0,
-        depends_on: Vec::new(),
-    });
+    for (output_variant, producer) in pending_variant_updates {
+        variant_producers.insert(output_variant, producer);
+    }
 
-    steps
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

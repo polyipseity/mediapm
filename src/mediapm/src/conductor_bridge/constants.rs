@@ -100,10 +100,6 @@ pub(crate) const TOOL_SD: &str = "sd";
 )]
 pub(crate) const DEFAULT_FFMPEG_MAX_INPUT_SLOTS: usize = 16;
 /// Default maximum number of indexed ffmpeg output slots.
-#[expect(
-    dead_code,
-    reason = "duplicate of `config::defaults`; kept until ffmpeg slot-limit wiring lands"
-)]
 pub(crate) const DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS: usize = 4;
 
 // ── Config key names used in NCL templates ───────────────────────────────

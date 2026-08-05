@@ -7,70 +7,182 @@
 #![allow(dead_code)]
 // TODO: Stream A stubs — wired when provisioning pipeline is complete.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, SaveMode, ToolInputSpec, ToolRuntime, ToolSpec,
+    InputBinding, OutputCaptureSpec, SaveMode, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowSpec,
     WorkflowStepSpec,
 };
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
 
 use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
-use crate::config::{MediaSourceSpec, MediaStep};
+use crate::config::defaults::{DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS};
+use crate::config::output_types::ResolvedStepVariantFlow;
+use crate::config::{MediaStep, OutputSaveConfig, OutputVariantValue};
+use crate::error::MediaPmError;
 
 use super::{
-    OUTPUT_PRIMARY, qualify_step_id, resolve_step_tool_id, step_option_input_bindings,
-    variant_to_output_capture_spec,
+    VariantProducer, ffmpeg_step_id, resolve_input_variant_producer, step_option_input_bindings,
 };
 
-/// Synthesizes one or more ffmpeg workflow steps from a media step definition.
+/// Synthesizes the single aggregated ffmpeg workflow step from one media step
+/// definition.
+///
+/// Ffmpeg steps aggregate all input variants into indexed `input_content_{i}`
+/// inputs (bounded by `tools.ffmpeg.max_input_slots`) and all output-variant
+/// mappings into indexed `output_path_{i}` inputs plus `file_regex` captures
+/// named `primary` / `primary_{i}` (bounded by `tools.ffmpeg.max_output_slots`).
+/// Execution-order dependencies are collected from input producer bindings and
+/// deduplicated. Output variants register as `VariantProducer::StepOutput`
+/// entries keyed by the variant name.
 ///
 /// # Errors
 ///
-#[must_use]
+/// Returns [`MediaPmError::Workflow`] when input variants exceed
+/// `tools.ffmpeg.max_input_slots`, an input variant has no producer, an output
+/// variant is missing / non-generic / has an invalid or duplicate ffmpeg
+/// `idx` outside `tools.ffmpeg.max_output_slots`, or a producer binding fails.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 pub(crate) fn synthesize_ffmpeg_step(
-    _source: &MediaSourceSpec,
+    workflow: &mut WorkflowSpec,
+    media_id: &str,
     step_index: usize,
     step: &MediaStep,
-) -> Vec<WorkflowStepSpec> {
-    let step_id = qualify_step_id("unknown", &format!("ffmpeg_{step_index}"));
-
+    mappings: &[ResolvedStepVariantFlow],
+    tool_id: &str,
+    producer_snapshot: &BTreeMap<String, VariantProducer>,
+    variant_producers: &mut BTreeMap<String, VariantProducer>,
+    ffmpeg_slot_limits: FfmpegSlotLimits,
+) -> Result<(), MediaPmError> {
+    let step_id = ffmpeg_step_id(step_index);
+    let mut depends_on = Vec::new();
+    let mut seen_depends_on = BTreeSet::new();
     let mut inputs = BTreeMap::new();
-    inputs.insert(
-        "source_url".to_string(),
-        step_option_input_bindings(step)
-            .into_iter()
-            .find(|(k, _)| k == "source_url")
-            .map(|(_, v)| v)
-            .unwrap_or_default(),
-    );
+
+    for (input_index, input_variant) in step.input_variants.iter().enumerate() {
+        if input_index >= ffmpeg_slot_limits.max_input_slots {
+            return Err(MediaPmError::Workflow(format!(
+                "media '{media_id}' step #{step_index} declares {} ffmpeg input variants but maximum supported is {}; reduce input_variants fan-out or increase tools.ffmpeg.max_input_slots (default {DEFAULT_FFMPEG_MAX_INPUT_SLOTS})",
+                step.input_variants.len(),
+                ffmpeg_slot_limits.max_input_slots,
+            )));
+        }
+
+        let Some(producer) = resolve_input_variant_producer(input_variant, producer_snapshot)
+        else {
+            return Err(MediaPmError::Workflow(format!(
+                "media '{media_id}' step #{step_index} references unknown input variant '{input_variant}'"
+            )));
+        };
+
+        let (input_binding, dependency) = producer.to_binding()?;
+        inputs.insert(ffmpeg_input_content_name(input_index), input_binding);
+        if let Some(step_dependency) = dependency
+            && seen_depends_on.insert(step_dependency.clone())
+        {
+            depends_on.push(step_dependency);
+        }
+    }
+
+    inputs.extend(step_option_input_bindings(step));
 
     let mut outputs = BTreeMap::new();
-    for (name, config) in &step.output_variants {
-        outputs.insert(name.clone(), variant_to_output_capture_spec(name, config));
-    }
-    if outputs.is_empty() {
+    let mut pending_variant_updates = Vec::new();
+    let mut seen_output_indexes = BTreeSet::new();
+
+    for mapping in mappings {
+        let variant_value = step.output_variants.get(&mapping.output).ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' step #{step_index} is missing output variant '{}'",
+                mapping.output
+            ))
+        })?;
+
+        let config = match variant_value {
+            OutputVariantValue::Generic(config) => config,
+            OutputVariantValue::YtDlp(_) => {
+                return Err(MediaPmError::Workflow(format!(
+                    "media '{media_id}' step #{step_index} output variant '{}' must decode as ffmpeg generic output config",
+                    mapping.output
+                )));
+            }
+        };
+
+        let output_index_u32 = config.idx;
+        let output_index = usize::try_from(output_index_u32).map_err(|_| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' step #{step_index} output variant '{}' has unsupported ffmpeg idx '{output_index_u32}': expected a non-negative integer",
+                mapping.output
+            ))
+        })?;
+
+        if output_index >= ffmpeg_slot_limits.max_output_slots {
+            return Err(MediaPmError::Workflow(format!(
+                "media '{media_id}' step #{step_index} output variant '{}' uses ffmpeg idx '{}' but maximum supported idx is {}; reduce output idx usage or increase tools.ffmpeg.max_output_slots (default {DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS})",
+                mapping.output,
+                output_index_u32,
+                ffmpeg_slot_limits.max_output_slots - 1
+            )));
+        }
+
+        if !seen_output_indexes.insert(output_index) {
+            return Err(MediaPmError::Workflow(format!(
+                "media '{media_id}' step #{step_index} assigns duplicate ffmpeg idx '{output_index_u32}' across output_variants"
+            )));
+        }
+
+        let output_name = ffmpeg_output_capture_name(output_index);
+        inputs.insert(
+            ffmpeg_output_path_input_name(output_index),
+            ffmpeg_output_file_path(output_index),
+        );
+
+        let save = match config.save {
+            OutputSaveConfig::Bool(true) => SaveMode::True,
+            OutputSaveConfig::Bool(false) => SaveMode::False,
+            OutputSaveConfig::Full => SaveMode::Full,
+        };
         outputs.insert(
-            OUTPUT_PRIMARY.to_string(),
-            mediapm_conductor::OutputCaptureSpec {
-                name: OUTPUT_PRIMARY.to_string(),
-                capture: "file:output.*".to_string(),
-                save: SaveMode::True,
+            output_name.clone(),
+            OutputCaptureSpec {
+                name: output_name.clone(),
+                capture: format!("file_regex:{}", ffmpeg_output_file_regex(output_index)),
+                save,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
         );
+
+        pending_variant_updates.push((
+            mapping.output.clone(),
+            VariantProducer::StepOutput {
+                step_id: step_id.clone(),
+                output_name,
+                zip_member: if config.zip_member.is_empty() {
+                    None
+                } else {
+                    Some(config.zip_member.clone())
+                },
+            },
+        ));
     }
 
-    vec![WorkflowStepSpec {
+    workflow.steps.push(WorkflowStepSpec {
         id: step_id,
-        tool: resolve_step_tool_id(crate::config::MediaStepTool::Ffmpeg),
+        tool: tool_id.to_string(),
         inputs,
         outputs,
         max_retries: 0,
-        depends_on: Vec::new(),
-    }]
+        depends_on,
+    });
+
+    for (output_variant, producer) in pending_variant_updates {
+        variant_producers.insert(output_variant, producer);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -277,43 +389,43 @@ const FFMPEG_OPTION_INPUTS: &[&str] = &[
 
 /// Returns indexed ffmpeg input-content field name.
 #[must_use]
-fn ffmpeg_input_content_name(index: u32) -> String {
+pub(crate) fn ffmpeg_input_content_name(index: usize) -> String {
     format!("{INPUT_FFMPEG_CONTENT_PREFIX}{index}")
 }
 
 /// Returns indexed ffmpeg cover-art slot enabled input field name.
 #[must_use]
-fn ffmpeg_cover_slot_enabled_input_name(index: u32) -> String {
+fn ffmpeg_cover_slot_enabled_input_name(index: usize) -> String {
     format!("cover_art_slot_enabled_{index}")
 }
 
 /// Returns indexed ffmpeg output-path input field name.
 #[must_use]
-fn ffmpeg_output_path_input_name(index: u32) -> String {
+pub(crate) fn ffmpeg_output_path_input_name(index: usize) -> String {
     format!("{INPUT_FFMPEG_OUTPUT_PATH_PREFIX}{index}")
 }
 
 /// Returns indexed ffmpeg output capture name.
 #[must_use]
-fn ffmpeg_output_capture_name(index: u32) -> String {
+pub(crate) fn ffmpeg_output_capture_name(index: usize) -> String {
     if index == 0 { "primary".to_string() } else { format!("primary_{index}") }
 }
 
 /// Returns sandbox-relative ffmpeg input file path for one indexed slot.
 #[must_use]
-fn ffmpeg_input_file_path(index: u32) -> String {
+fn ffmpeg_input_file_path(index: usize) -> String {
     format!("inputs/input-{index}.bin")
 }
 
 /// Returns sandbox-relative ffmpeg output file path for one indexed slot.
 #[must_use]
-fn ffmpeg_output_file_path(index: u32) -> String {
+pub(crate) fn ffmpeg_output_file_path(index: usize) -> String {
     format!("output-{index}{DEFAULT_FFMPEG_OUTPUT_EXTENSION_WITH_DOT}")
 }
 
 /// Returns regex pattern for one indexed ffmpeg output capture path.
 #[must_use]
-fn ffmpeg_output_file_regex(index: u32) -> String {
+fn ffmpeg_output_file_regex(index: usize) -> String {
     format!(r"^output-{index}(?:[.][^/\\]+)?$")
 }
 
@@ -323,7 +435,7 @@ fn ffmpeg_output_file_regex(index: u32) -> String {
 
 /// Builds ffmpeg cover-art map/disposition templates for managed media-tagger apply workflows.
 #[must_use]
-fn ffmpeg_cover_art_tokens(max_input_slots: u32, max_output_slots: u32) -> Vec<String> {
+fn ffmpeg_cover_art_tokens(max_input_slots: usize, max_output_slots: usize) -> Vec<String> {
     let _ = max_output_slots;
     let mut tokens = Vec::new();
     for slot_index in 1..max_input_slots {
@@ -362,8 +474,8 @@ fn ffmpeg_container_any_of_condition(containers: &[&str]) -> String {
 #[must_use]
 fn build_ffmpeg_command(
     command_path: &str,
-    max_input_slots: u32,
-    max_output_slots: u32,
+    max_input_slots: usize,
+    max_output_slots: usize,
 ) -> Vec<String> {
     use super::spec::command_option_tokens_for_tool;
     use crate::conductor_bridge::constants::{
@@ -422,8 +534,8 @@ fn build_ffmpeg_command(
 /// Builds ffmpeg input spec map.
 #[must_use]
 fn build_ffmpeg_inputs(
-    max_input_slots: u32,
-    max_output_slots: u32,
+    max_input_slots: usize,
+    max_output_slots: usize,
 ) -> BTreeMap<String, ToolInputSpec> {
     use crate::conductor_bridge::constants::{
         INPUT_FFMETADATA_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS,
@@ -476,7 +588,7 @@ fn build_ffmpeg_inputs(
 
 /// Builds ffmpeg output capture spec map.
 #[must_use]
-fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCaptureSpec> {
+fn build_ffmpeg_outputs(max_output_slots: usize) -> BTreeMap<String, OutputCaptureSpec> {
     use crate::conductor_bridge::constants::{OUTPUT_CONTENT, OUTPUT_SANDBOX_ARTIFACTS};
 
     let mut outputs = BTreeMap::new();
@@ -560,8 +672,8 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
 /// Builds ffmpeg default input values.
 #[must_use]
 fn build_ffmpeg_default_input_defaults(
-    max_input_slots: u32,
-    max_output_slots: u32,
+    max_input_slots: usize,
+    max_output_slots: usize,
 ) -> BTreeMap<String, InputBinding> {
     use crate::conductor_bridge::constants::{
         INPUT_FFMETADATA_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS,

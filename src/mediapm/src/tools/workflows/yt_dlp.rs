@@ -3,13 +3,12 @@
 //! Produces the conductor workflow step for one `yt-dlp` media download step.
 
 #![allow(dead_code)]
-// TODO: Stream A stubs — wired when provisioning pipeline is complete.
 
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{
     InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
-    WorkflowStepSpec,
+    WorkflowSpec, WorkflowStepSpec,
 };
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
@@ -22,85 +21,119 @@ use crate::conductor_bridge::constants::{
     OUTPUT_YT_DLP_PLAYLIST_INFOJSON_FILE, OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
     OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS,
 };
-use crate::config::{MediaSourceSpec, MediaStep};
+use crate::config::output_types::ResolvedStepVariantFlow;
+use crate::config::source_types::step_option_scalar;
+use crate::config::{MediaStep, MediaStepTool, OutputVariantValue};
+use crate::error::MediaPmError;
 
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
+use super::yt_dlp_inputs::{resolve_step_output_binding, yt_dlp_variant_inputs};
 use super::{
-    OUTPUT_PRIMARY, qualify_step_id, resolve_step_tool_id, source_uri_input,
-    step_option_input_bindings, variant_to_output_capture_spec,
+    FfmpegSlotLimits, VariantProducer, media_step_id, step_option_input_bindings,
+    variant_to_output_capture_spec,
 };
 
-/// Synthesizes the yt-dlp workflow step from a media step definition.
+/// Synthesizes yt-dlp workflow steps from one media step definition.
 ///
-/// Configures standard inputs (`source_url`, format, subtitles, etc.),
-/// output captures for each declared variant, and sets the tool reference
-/// to the managed `yt-dlp-managed` conductor tool.
+/// Produces one [`WorkflowStepSpec`] per variant-flow mapping edge. Online
+/// downloaders never resolve upstream producers: the source URI arrives via
+/// the step `uri` option (empty when absent — source entries carry no URI
+/// field), and steps carry no execution-order dependencies.
+///
+/// Output captures are keyed by the logical output name resolved from the
+/// variant kind (for example `yt_dlp_subtitle_artifacts`), matching the old
+/// step-output-policy keying; the variant-keyed
+/// `super::step_output_policy_overrides` helper is not used here.
 ///
 /// # Errors
 ///
 /// Returns [`MediaPmError`] when required configuration is missing or invalid.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn synthesize_yt_dlp_step(
-    source: &MediaSourceSpec,
+    workflow: &mut WorkflowSpec,
+    _media_id: &str,
     step_index: usize,
     step: &MediaStep,
-) -> Vec<WorkflowStepSpec> {
-    let step_id = qualify_step_id("unknown", &format!("yt_dlp_{step_index}"));
+    mappings: &[ResolvedStepVariantFlow],
+    tool_id: &str,
+    _producer_snapshot: &BTreeMap<String, VariantProducer>,
+    variant_producers: &mut BTreeMap<String, VariantProducer>,
+) -> Result<(), MediaPmError> {
+    let mut pending_variant_updates = Vec::new();
 
-    let mut inputs = BTreeMap::from([source_uri_input(source)]);
-    for (k, v) in step_option_input_bindings(step) {
-        inputs.insert(k, v);
+    for (mapping_index, mapping) in mappings.iter().enumerate() {
+        let step_id = media_step_id(step_index, mapping_index, step.tool, mapping);
+
+        let variant_value = step.output_variants.get(&mapping.output).ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "missing output variant '{}' while decoding yt-dlp config",
+                mapping.output
+            ))
+        })?;
+        let config = match variant_value {
+            OutputVariantValue::YtDlp(config) => config,
+            OutputVariantValue::Generic(_) => {
+                return Err(MediaPmError::Workflow(format!(
+                    "decoded non-yt-dlp output variant config for yt-dlp key '{}'",
+                    mapping.output
+                )));
+            }
+        };
+
+        let mut inputs = BTreeMap::new();
+        // Source entries carry no URI field, so the URI arrives via the step
+        // `uri` option when present (empty fallback mirrors `source_uri_input`).
+        let source_uri =
+            step_option_scalar(step, "uri").map_or_else(String::new, ToString::to_string);
+        inputs.insert(INPUT_SOURCE_URL.to_string(), source_uri);
+        inputs.extend(step_option_input_bindings(step));
+
+        // Always inject format if not explicitly provided.
+        inputs
+            .entry("format".to_string())
+            .or_insert_with(|| "bestvideo+bestaudio/best".to_string());
+
+        inputs.extend(yt_dlp_variant_inputs(config));
+
+        // yt-dlp dispatch omits ffmpeg slot limits (only ffmpeg slots are
+        // bounded), so the default zeroed limits are used for the binding.
+        let output_binding = resolve_step_output_binding(
+            MediaStepTool::YtDlp,
+            &step.output_variants,
+            &mapping.output,
+            FfmpegSlotLimits::default(),
+        )?;
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            output_binding.output_name.clone(),
+            variant_to_output_capture_spec(&output_binding.output_name, variant_value),
+        );
+
+        workflow.steps.push(WorkflowStepSpec {
+            id: step_id.clone(),
+            tool: tool_id.to_string(),
+            inputs,
+            outputs,
+            max_retries: 1,
+            depends_on: Vec::new(),
+        });
+
+        pending_variant_updates.push((
+            mapping.output.clone(),
+            VariantProducer::StepOutput {
+                step_id,
+                output_name: output_binding.output_name,
+                zip_member: output_binding.zip_member,
+            },
+        ));
     }
 
-    // Always inject format if not explicitly provided.
-    inputs.entry("format".to_string()).or_insert_with(|| "bestvideo+bestaudio/best".to_string());
-
-    let mut outputs = BTreeMap::new();
-    for (name, config) in &step.output_variants {
-        outputs.insert(name.clone(), variant_to_output_capture_spec(name, config));
+    for (output_variant, producer) in pending_variant_updates {
+        variant_producers.insert(output_variant, producer);
     }
 
-    // When no explicit variants, add sensible defaults.
-    if outputs.is_empty() {
-        outputs.insert(
-            OUTPUT_PRIMARY.to_string(),
-            mediapm_conductor::OutputCaptureSpec {
-                name: OUTPUT_PRIMARY.to_string(),
-                capture: "file:primary.*".to_string(),
-                save: SaveMode::True,
-                allow_empty: false,
-                include_topmost_folder: true,
-            },
-        );
-        outputs.insert(
-            "subtitles".to_string(),
-            mediapm_conductor::OutputCaptureSpec {
-                name: "subtitles".to_string(),
-                capture: "file:subtitles/*".to_string(),
-                save: SaveMode::True,
-                allow_empty: false,
-                include_topmost_folder: true,
-            },
-        );
-        outputs.insert(
-            "thumbnails".to_string(),
-            mediapm_conductor::OutputCaptureSpec {
-                name: "thumbnails".to_string(),
-                capture: "file:thumbnails/*".to_string(),
-                save: SaveMode::False,
-                allow_empty: false,
-                include_topmost_folder: true,
-            },
-        );
-    }
-
-    vec![WorkflowStepSpec {
-        id: step_id,
-        tool: resolve_step_tool_id(crate::config::MediaStepTool::YtDlp),
-        inputs,
-        outputs,
-        max_retries: 1,
-        depends_on: Vec::new(),
-    }]
+    Ok(())
 }
 
 /// Sandbox directory where yt-dlp materializes downloaded output artifacts.

@@ -14,7 +14,9 @@ use mediapm_conductor::tools::provider::ConfigVersionSpec;
 use mediapm_conductor::{RuntimeStoragePaths, SimpleConductor};
 use url::Url;
 
-use crate::conductor_bridge::documents::{ConductorToolRow, list_tools};
+use crate::conductor_bridge::documents::{
+    ConductorToolRow, list_tools, load_conductor_generated_document, load_conductor_user_document,
+};
 use crate::conductor_bridge::sync::{apply_resolved_field_backfills, reconcile_desired_tools};
 use crate::config::{
     MediaPmState, MediaRuntimeStorage, MediaSourceSpec, ToolRequirement, load_mediapm_document,
@@ -31,6 +33,7 @@ pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
 use crate::tools::is_known_tool_id;
 use crate::tools::provider::RecheckPolicy;
+use crate::tools::workflows::reconcile_media_workflows;
 
 use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaStepInvalidationSummary,
@@ -820,6 +823,21 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         // state.json byte-identical).
         apply_resolved_field_backfills(&mut state.managed_tools, &report.resolved_field_backfills);
         save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
+
+        // Synthesize managed media workflows into the conductor generated
+        // doc. Tool reconciliation (reconcile_desired_tools) loads, mutates,
+        // and saves the generated doc internally, so reload both conductor
+        // docs fresh here; the mediapm document is reloaded to stay aligned
+        // with the persisted state.
+        let user_doc = load_conductor_user_document(effective_paths)?;
+        let mut generated_doc = load_conductor_generated_document(effective_paths)?;
+        let document = ensure_and_load_mediapm_document(effective_paths)?;
+        reconcile_media_workflows(
+            effective_paths,
+            &document,
+            &mut generated_doc,
+            user_doc.as_ref(),
+        )?;
 
         Ok(ToolsSyncSummary {
             added_tools: report.tools_added,

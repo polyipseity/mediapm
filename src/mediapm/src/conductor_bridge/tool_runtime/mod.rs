@@ -19,15 +19,21 @@ use crate::tools::preset;
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct FfmpegSlotLimits {
     /// Maximum number of ffmpeg input content / cover-art slots.
-    pub(crate) max_input_slots: u32,
+    pub(crate) max_input_slots: usize,
     /// Maximum number of ffmpeg indexed output-file slots.
-    pub(crate) max_output_slots: u32,
+    pub(crate) max_output_slots: usize,
 }
 
 /// Resolves ffmpeg slot limits from config default or overrides.
+///
+/// Config defaults and tool-requirement overrides carry `u32` counts
+/// (`DEFAULT_FFMPEG_MAX_INPUT_SLOTS` / `DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS` in
+/// `crate::config::defaults`), while spec builders and the workflow
+/// synthesizer consume `usize`; the conversion happens here so callers never
+/// cast.
 #[must_use]
 pub(crate) fn resolve_ffmpeg_slot_limits(max_input: u32, max_output: u32) -> FfmpegSlotLimits {
-    FfmpegSlotLimits { max_input_slots: max_input, max_output_slots: max_output }
+    FfmpegSlotLimits { max_input_slots: max_input as usize, max_output_slots: max_output as usize }
 }
 
 /// Builds a full [`ToolSpec`] and [`ToolRuntime`] for one managed tool by
