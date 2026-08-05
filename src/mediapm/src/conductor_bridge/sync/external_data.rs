@@ -67,7 +67,13 @@ impl DataUsageTracker {
                 } else {
                     descs.join("; ")
                 };
-                (hash, ExternalDataEntry { description, save_mode: OutputSaveMode::Saved })
+                (
+                    hash,
+                    ExternalDataEntry {
+                        description: Some(description),
+                        save_mode: OutputSaveMode::Saved,
+                    },
+                )
             })
             .collect()
     }
@@ -92,7 +98,7 @@ mod tests {
         let map = tracker.finalize();
         assert_eq!(map.len(), 1);
         let entry = map.get(&hash).expect("hash should exist");
-        assert_eq!(entry.description, "tool content root");
+        assert_eq!(entry.description.as_deref(), Some("tool content root"));
         assert_eq!(entry.save_mode, OutputSaveMode::Saved);
     }
 
@@ -105,7 +111,7 @@ mod tests {
         let map = tracker.finalize();
         assert_eq!(map.len(), 1);
         let entry = map.get(&hash).expect("hash should exist");
-        assert_eq!(entry.description, "first description; second description");
+        assert_eq!(entry.description.as_deref(), Some("first description; second description"));
     }
 
     #[test]
@@ -129,7 +135,7 @@ mod tests {
         let map = tracker.finalize();
         assert_eq!(map.len(), 1);
         let entry = map.get(&hash).expect("hash should still exist");
-        assert_eq!(entry.description, "first");
+        assert_eq!(entry.description.as_deref(), Some("first"));
     }
 
     #[test]

@@ -53,7 +53,12 @@ pub type ToolContentMap = BTreeMap<String, String>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalDataEntry {
     /// Human-readable description of this external data.
-    pub description: String,
+    ///
+    /// Optional: present only when the source config document carries one.
+    /// Descriptions are never merged or compared across documents; they are
+    /// preserved per hash at save time from the file being overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Save policy governing this blob.
     pub save_mode: crate::state::OutputSaveMode,
 }
@@ -390,11 +395,19 @@ pub struct WorkflowSpec {
     /// Logical workflow name (used for invocation).
     pub name: String,
     /// Human-readable display label.
-    #[serde(default)]
-    pub display_name: String,
+    ///
+    /// Optional: present only when the source config document carries one.
+    /// Display labels are never merged or compared across documents; they are
+    /// preserved per name at save time from the file being overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// Human-readable workflow description.
-    #[serde(default)]
-    pub description: String,
+    ///
+    /// Optional: present only when the source config document carries one.
+    /// Descriptions are never merged or compared across documents; they are
+    /// preserved per name at save time from the file being overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Whether this workflow contains impure (side-effecting) steps.
     #[serde(default)]
     pub impure: bool,

@@ -1309,7 +1309,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
         machine.external_data.insert(
             stale_hash,
             mediapm_conductor::ExternalDataEntry {
-                description: format!("stale payload for {logical_tool_name}"),
+                description: Some(format!("stale payload for {logical_tool_name}")),
                 save_mode: mediapm_conductor::OutputSaveMode::Saved,
             },
         );
@@ -1549,10 +1549,11 @@ fn assert_demo_workflow_shape(machine: &NickelDocument) -> ExampleResult<(String
         .into());
     }
 
-    if workflow.description != DEMO_WORKFLOW_DESCRIPTION {
+    if workflow.description.as_deref() != Some(DEMO_WORKFLOW_DESCRIPTION) {
         return Err(format!(
             "managed workflow '{workflow_id}' must mirror description='{}' but observed '{}'",
-            DEMO_WORKFLOW_DESCRIPTION, workflow.description
+            DEMO_WORKFLOW_DESCRIPTION,
+            workflow.description.as_deref().unwrap_or("<none>")
         )
         .into());
     }

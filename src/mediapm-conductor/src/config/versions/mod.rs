@@ -82,15 +82,31 @@ pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8
 /// Returns [`ConductorError`] when the bytes are not valid UTF-8, Nickel
 /// evaluation fails, or the document does not match the expected schema.
 pub fn decode_document(bytes: &[u8]) -> Result<crate::config::NickelDocument, ConductorError> {
+    let doc: crate::config::NickelDocument = decode_document_envelope(bytes)?.into();
+    doc.validate_external_data_invariant()?;
+    Ok(doc)
+}
+
+/// Decodes bytes through the embedded Nickel migration wrapper into the raw
+/// latest-schema wire envelope, WITHOUT applying boundary defaults.
+///
+/// This preserves field presence (which fields were explicitly written in the
+/// source document) for callers that must distinguish explicit from implicit
+/// values — notably multi-document merging.  Presence-preserving fields:
+/// `external_data` descriptions, workflow `display_name`/`description`, and
+/// `external_data.save` (absent = implicit `Saved`).
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when the bytes are not valid UTF-8 or Nickel
+/// evaluation/migration fails.
+pub(crate) fn decode_document_envelope(
+    bytes: &[u8],
+) -> Result<v_latest::NickelEnvelopeLatest, ConductorError> {
     let source = std::str::from_utf8(bytes).map_err(|err| {
         ConductorError::Serialization(format!("document source is not valid UTF-8: {err}"))
     })?;
-    let envelope: v_latest::NickelEnvelopeLatest =
-        evaluate_document_source(source, "configuration document")?;
-
-    let doc: crate::config::NickelDocument = envelope.into();
-    doc.validate_external_data_invariant()?;
-    Ok(doc)
+    evaluate_document_source(source, "configuration document")
 }
 
 /// Evaluates one Nickel document source to schema v1 through the embedded

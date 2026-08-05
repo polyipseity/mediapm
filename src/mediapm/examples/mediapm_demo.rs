@@ -876,7 +876,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
         machine.external_data.insert(
             stale_hash,
             mediapm_conductor::ExternalDataEntry {
-                description: format!("stale payload for {logical_tool_name}"),
+                description: Some(format!("stale payload for {logical_tool_name}")),
                 save_mode: mediapm_conductor::OutputSaveMode::Saved,
             },
         );

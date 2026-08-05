@@ -153,7 +153,7 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
         machine.external_data.insert(
             payload_hash,
             ExternalDataEntry {
-                description: format!("dummy tool payload for {logical_tool_name}"),
+                description: Some(format!("dummy tool payload for {logical_tool_name}")),
                 save_mode: OutputSaveMode::Saved,
             },
         );

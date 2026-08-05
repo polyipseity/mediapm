@@ -40,8 +40,8 @@ fn echo_tool(name: &str) -> ToolSpec {
 fn echo_workflow(name: &str, tool_id: &str, text: &str) -> WorkflowSpec {
     WorkflowSpec {
         name: name.into(),
-        display_name: String::new(),
-        description: String::new(),
+        display_name: None,
+        description: None,
         impure: false,
         steps: vec![WorkflowStepSpec {
             id: "s1".into(),

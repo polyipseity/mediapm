@@ -200,8 +200,8 @@ where
             let source_docs: Vec<SourceDocument> = config_paths
                 .into_iter()
                 .map(|path| {
-                    let document = crate::cli_document_io::load_document(&path)?;
-                    Ok(SourceDocument { path, document })
+                    let envelope = crate::cli_document_io::load_document_envelope(&path)?;
+                    Ok(SourceDocument { path, envelope })
                 })
                 .collect::<Result<Vec<_>, ConductorError>>()?;
             let merged = merge_documents(&source_docs)?;
@@ -438,8 +438,8 @@ pub(crate) fn load_unified_config_and_state(
     let source_docs: Vec<SourceDocument> = config_paths
         .into_iter()
         .map(|path| {
-            let document = crate::cli_document_io::load_document(&path)?;
-            Ok(SourceDocument { path, document })
+            let envelope = crate::cli_document_io::load_document_envelope(&path)?;
+            Ok(SourceDocument { path, envelope })
         })
         .collect::<Result<Vec<_>, ConductorError>>()?;
 

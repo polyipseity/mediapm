@@ -37,8 +37,8 @@ fn build_document() -> NickelDocument {
         )]),
         workflows: vec![WorkflowSpec {
             name: "diagnostics_demo".into(),
-            display_name: String::new(),
-            description: "Fan-out/fan-in workflow for diagnostics".into(),
+            display_name: None,
+            description: Some("Fan-out/fan-in workflow for diagnostics".into()),
             impure: false,
             steps: vec![
                 WorkflowStepSpec {

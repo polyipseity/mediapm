@@ -13,8 +13,8 @@ use mediapm_conductor::{NickelDocument, api::RunWorkflowOptions};
 fn cyclic_workflow() -> WorkflowSpec {
     WorkflowSpec {
         name: "cyclic".to_string(),
-        display_name: String::new(),
-        description: String::new(),
+        display_name: None,
+        description: None,
         impure: false,
         steps: vec![
             WorkflowStepSpec {

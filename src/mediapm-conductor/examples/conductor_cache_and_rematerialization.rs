@@ -38,8 +38,8 @@ fn build_document() -> NickelDocument {
         workflows: vec![
             WorkflowSpec {
                 name: "workflow_a".to_string(),
-                display_name: String::new(),
-                description: "save=false demo".to_string(),
+                display_name: None,
+                description: Some("save=false demo".to_string()),
                 impure: false,
                 steps: vec![
                     WorkflowStepSpec {
@@ -74,8 +74,8 @@ fn build_document() -> NickelDocument {
             },
             WorkflowSpec {
                 name: "workflow_b".to_string(),
-                display_name: String::new(),
-                description: "save=full demo".to_string(),
+                display_name: None,
+                description: Some("save=full demo".to_string()),
                 impure: false,
                 steps: vec![
                     WorkflowStepSpec {

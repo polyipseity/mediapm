@@ -492,13 +492,13 @@ pub(crate) struct WorkflowSpecLatest {
     pub(crate) name: String,
     /// Display label.
     ///
-    /// Omitted when empty: the v2 Nickel contract types these fields as
+    /// Omitted when absent: the v2 Nickel contract types these fields as
     /// `| NonEmptyStringV2 | optional`, which rejects empty strings.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub(crate) display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) display_name: Option<String>,
     /// Description.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub(crate) description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
     /// Impure flag.
     #[serde(default)]
     pub(crate) impure: bool,
@@ -516,11 +516,14 @@ pub(crate) struct ExternalDataEntryLatest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) hash: Option<mediapm_cas::Hash>,
     /// Human-readable description.
-    #[serde(default)]
-    pub(crate) description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
     /// Save policy for this blob.
-    #[serde(rename = "save")]
-    pub(crate) save_mode: OutputPolicyLatest,
+    ///
+    /// Optional: absent defaults to `Saved` at the decode boundary (explicit
+    /// beats implicit).
+    #[serde(rename = "save", default, skip_serializing_if = "Option::is_none")]
+    pub(crate) save_mode: Option<OutputPolicyLatest>,
 }
 
 /// Top-level Nickel envelope for the latest schema version.
@@ -567,15 +570,18 @@ impl From<NickelEnvelopeLatest> for NickelDocument {
                         hash,
                         super::super::ExternalDataEntry {
                             description: entry.description,
-                            save_mode: match entry.save_mode {
-                                OutputPolicyLatest::Bool(true) => {
-                                    crate::state::OutputSaveMode::Saved
-                                }
-                                OutputPolicyLatest::Bool(false) => {
-                                    crate::state::OutputSaveMode::Unsaved
-                                }
-                                OutputPolicyLatest::Full => crate::state::OutputSaveMode::Full,
-                            },
+                            save_mode: entry.save_mode.map_or(
+                                crate::state::OutputSaveMode::Saved,
+                                |save_mode| match save_mode {
+                                    OutputPolicyLatest::Bool(true) => {
+                                        crate::state::OutputSaveMode::Saved
+                                    }
+                                    OutputPolicyLatest::Bool(false) => {
+                                        crate::state::OutputSaveMode::Unsaved
+                                    }
+                                    OutputPolicyLatest::Full => crate::state::OutputSaveMode::Full,
+                                },
+                            ),
                         },
                     )
                 })
@@ -604,7 +610,7 @@ impl From<NickelDocument> for NickelEnvelopeLatest {
                         ExternalDataEntryLatest {
                             hash: Some(hash),
                             description: entry.description,
-                            save_mode: match entry.save_mode {
+                            save_mode: Some(match entry.save_mode {
                                 crate::state::OutputSaveMode::Saved => {
                                     OutputPolicyLatest::Bool(true)
                                 }
@@ -612,7 +618,7 @@ impl From<NickelDocument> for NickelEnvelopeLatest {
                                     OutputPolicyLatest::Bool(false)
                                 }
                                 crate::state::OutputSaveMode::Full => OutputPolicyLatest::Full,
-                            },
+                            }),
                         },
                     )
                 })

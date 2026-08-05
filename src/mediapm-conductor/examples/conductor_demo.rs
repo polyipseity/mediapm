@@ -38,8 +38,8 @@ fn build_document() -> NickelDocument {
         )]),
         workflows: vec![WorkflowSpec {
             name: "demo_workflow".into(),
-            display_name: "Demo Workflow".into(),
-            description: "A simple demo workflow with an echo step".into(),
+            display_name: Some("Demo Workflow".into()),
+            description: Some("A simple demo workflow with an echo step".into()),
             impure: false,
             steps: vec![WorkflowStepSpec {
                 id: "greeting".into(),
