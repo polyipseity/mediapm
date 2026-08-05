@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasMaintenanceApi};
+use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasMaintenanceApi, Hash};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use mediapm_utils::Timestamp;
@@ -249,17 +249,25 @@ where
                         } else {
                             executed_steps += 1;
                         }
-                        for output_ref in &bundle.instance.outputs {
+                        for (name, record) in &bundle.instance.outputs {
                             step_outputs
                                 .entry(step_id.clone())
                                 .or_default()
-                                .insert(output_ref.name.clone(), output_ref.hash);
+                                .insert(name.clone(), record.hash);
                         }
                         // Insert executed instance into state so subsequent levels
-                        // (and future runs) can find cache hits.
-                        state
-                            .tool_call_instances
-                            .insert(bundle.instance.instance_key.clone(), bundle.instance);
+                        // (and future runs) can find cache hits, plus the
+                        // per-output persistence modes and GC last-reference
+                        // clock on the aux record. Refreshing the clock on both
+                        // creation and cache-hit mirrors the pre-redesign
+                        // executor behavior (`conductor_gc_last_referenced_at =
+                        // now` on every bundle), keeping instances alive across
+                        // GC sweeps.
+                        let instance_key = bundle.instance.instance_key;
+                        state.tool_call_instances.insert(instance_key, bundle.instance);
+                        let aux = state.aux.instances.entry(instance_key).or_default();
+                        aux.save_modes = bundle.save_modes;
+                        aux.last_referenced_at = Timestamp::now();
                     }
                     Ok(Err(e)) => {
                         failed_steps += 1;
@@ -297,7 +305,7 @@ where
     pub(crate) async fn run_gc(
         &self,
         state: &mut OrchestrationState,
-        referenced_keys: &BTreeSet<String>,
+        referenced_keys: &BTreeSet<Hash>,
         unified: &UnifiedNickelDocument,
     ) -> Result<crate::gc::ConductorGcReport, ConductorError> {
         use crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS;

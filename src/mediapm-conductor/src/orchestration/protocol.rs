@@ -112,6 +112,10 @@ pub(crate) struct StepExecutionRequest {
 pub(crate) struct StepExecutionBundle {
     /// Final tool call instance snapshot to merge into orchestration state.
     pub instance: ToolCallInstance,
+    /// Per-output persistence modes for the fresh execution (empty on cache
+    /// hits). Stored on the state's per-instance aux record by the
+    /// coordinator.
+    pub save_modes: BTreeMap<String, crate::state::OutputSaveMode>,
     /// Whether this result came from a cache hit (vs. fresh execution).
     pub cache_hit: bool,
 }

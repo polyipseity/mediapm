@@ -1,14 +1,25 @@
 //! Captures declared step outputs from execution results and persists to CAS.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mediapm_cas::CasApi;
 
 use crate::config::OutputCaptureSpec;
 use crate::error::ConductorError;
-use crate::state::{OutputRef, OutputSaveMode, PersistenceFlags};
+use crate::state::{HashedValueRecord, OutputSaveMode, PersistenceFlags};
 
 use super::process::ExecutionResult;
+
+/// Captured step outputs: content-addressed records plus per-output save modes.
+#[derive(Debug, Clone)]
+pub(super) struct CapturedOutputs {
+    /// Output records keyed by output name. Captured outputs are always
+    /// deterministic content (results, never preconditions).
+    pub records: BTreeMap<String, HashedValueRecord>,
+    /// Per-output persistence modes keyed by output name.
+    pub save_modes: BTreeMap<String, OutputSaveMode>,
+}
 
 /// Recursively walks a directory and returns all file paths found.
 async fn walk_and_collect_file_paths(root: &Path) -> Result<Vec<PathBuf>, ConductorError> {
@@ -39,17 +50,17 @@ async fn walk_and_collect_file_paths(root: &Path) -> Result<Vec<PathBuf>, Conduc
 /// Captures declared outputs from the execution result and persists to CAS.
 pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
     cas: &C,
-    output_specs: &std::collections::BTreeMap<String, OutputCaptureSpec>,
+    output_specs: &BTreeMap<String, OutputCaptureSpec>,
     execution: &ExecutionResult,
     sandbox_dir: &Path,
     persistence: PersistenceFlags,
-) -> Result<Vec<OutputRef>, ConductorError> {
-    let mut outputs = Vec::new();
+) -> Result<CapturedOutputs, ConductorError> {
+    let mut records = BTreeMap::new();
+    let mut save_modes = BTreeMap::new();
     let save_mode = if persistence.save { OutputSaveMode::Saved } else { OutputSaveMode::Unsaved };
 
     // Implicitly capture stdout, stderr, and process_code unless explicitly declared.
-    let declared_names: std::collections::BTreeSet<&str> =
-        output_specs.keys().map(String::as_str).collect();
+    let declared_names: BTreeSet<&str> = output_specs.keys().map(String::as_str).collect();
     let implicit_specs = ["stdout", "stderr", "process_code"]
         .into_iter()
         .filter(|name| !declared_names.contains(name))
@@ -61,9 +72,9 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
             include_topmost_folder: true,
         })
         .map(|spec| (spec.name.clone(), spec))
-        .collect::<std::collections::BTreeMap<String, OutputCaptureSpec>>();
+        .collect::<BTreeMap<String, OutputCaptureSpec>>();
 
-    let combined_specs: std::collections::BTreeMap<&str, &OutputCaptureSpec> = output_specs
+    let combined_specs: BTreeMap<&str, &OutputCaptureSpec> = output_specs
         .iter()
         .map(|(name, spec)| (name.as_str(), spec))
         .chain(implicit_specs.iter().map(|(name, spec)| (name.as_str(), spec)))
@@ -130,10 +141,11 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
 
         let hash = cas.put(bytes::Bytes::from(data)).await.map_err(ConductorError::Cas)?;
 
-        outputs.push(OutputRef { name: spec.name.clone(), hash, save_mode });
+        records.insert(spec.name.clone(), HashedValueRecord { hash, deterministic: true });
+        save_modes.insert(spec.name.clone(), save_mode);
     }
 
-    Ok(outputs)
+    Ok(CapturedOutputs { records, save_modes })
 }
 
 #[cfg(test)]
@@ -165,7 +177,7 @@ mod tests {
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
             .await
             .unwrap();
-        let out = outputs.iter().find(|o| o.name == "stdout").unwrap();
+        let out = outputs.records.get("stdout").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"hello");
     }
@@ -191,7 +203,7 @@ mod tests {
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
             .await
             .unwrap();
-        let out = outputs.iter().find(|o| o.name == "stderr").unwrap();
+        let out = outputs.records.get("stderr").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"error output");
     }
@@ -216,7 +228,7 @@ mod tests {
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
             .await
             .unwrap();
-        let out = outputs.iter().find(|o| o.name == "process_code").unwrap();
+        let out = outputs.records.get("process_code").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"42");
     }
@@ -243,7 +255,7 @@ mod tests {
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
             .await
             .unwrap();
-        let out = outputs.iter().find(|o| o.name == "test_file").unwrap();
+        let out = outputs.records.get("test_file").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"file content");
     }
@@ -270,7 +282,7 @@ mod tests {
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
             .await
             .unwrap();
-        let out = outputs.iter().find(|o| o.name == "log").unwrap();
+        let out = outputs.records.get("log").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"regex match");
     }
@@ -299,7 +311,7 @@ mod tests {
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
             .await
             .unwrap();
-        let out = outputs.iter().find(|o| o.name == "folder_out").unwrap();
+        let out = outputs.records.get("folder_out").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         let file_list: Vec<String> = serde_json::from_slice(&data).unwrap();
         assert!(file_list.contains(&"subdir/a.txt".to_string()));
@@ -317,10 +329,10 @@ mod tests {
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
             .await
             .unwrap();
-        assert_eq!(outputs.len(), 3);
-        let stdout_out = outputs.iter().find(|o| o.name == "stdout").unwrap();
-        let stderr_out = outputs.iter().find(|o| o.name == "stderr").unwrap();
-        let code_out = outputs.iter().find(|o| o.name == "process_code").unwrap();
+        assert_eq!(outputs.records.len(), 3);
+        let stdout_out = outputs.records.get("stdout").unwrap();
+        let stderr_out = outputs.records.get("stderr").unwrap();
+        let code_out = outputs.records.get("process_code").unwrap();
         assert_eq!(cas.get(stdout_out.hash).await.unwrap().as_ref(), b"hello");
         assert_eq!(cas.get(stderr_out.hash).await.unwrap().as_ref(), b"error");
         assert_eq!(cas.get(code_out.hash).await.unwrap().as_ref(), b"1");

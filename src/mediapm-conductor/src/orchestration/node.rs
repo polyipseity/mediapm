@@ -10,7 +10,7 @@ use std::sync::Arc;
 use ractor::rpc::CallResult;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 
-use mediapm_cas::{CasApi, CasMaintenanceApi};
+use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use crate::error::ConductorError;
@@ -47,7 +47,7 @@ pub(crate) enum ConductorMessage {
     /// Runs garbage collection on the orchestration state.
     RunGc {
         /// Set of referenced instance keys to retain.
-        referenced_keys: std::collections::BTreeSet<String>,
+        referenced_keys: std::collections::BTreeSet<Hash>,
         /// Current orchestration state (cloned, actor owns its copy).
         state: OrchestrationState,
         /// Unified configuration whose hashes protect blobs from reclamation.
@@ -208,7 +208,7 @@ impl ConductorActorClient {
     /// the RPC times out.
     pub(crate) async fn run_gc(
         &self,
-        referenced_keys: std::collections::BTreeSet<String>,
+        referenced_keys: std::collections::BTreeSet<Hash>,
         state: OrchestrationState,
         unified: UnifiedNickelDocument,
     ) -> Result<OrchestrationState, ConductorError> {

@@ -274,11 +274,18 @@ pub async fn resolve_content<C: mediapm_cas::CasApi + Send + Sync>(
 /// Each part is resolved as a template.  If the raw part matches the splat
 /// pattern `${*inputs.<name>}`, the named input is JSON-decoded as
 /// `Vec<String>` and its elements are inserted in place.
+///
+/// Returns the resolved parts plus a parallel determinism classification
+/// (one flag per output element): a part is nondeterministic exactly when it
+/// contains an OS conditional (`context.os ...`) or an environment reference
+/// (`${env.<VAR>}`). Splat elements inherit the splat's determinism (inputs
+/// are deterministic).
 pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
     command_parts: &[String],
     ctx: &TemplateContext<'_, C>,
-) -> Result<Vec<String>, ConductorError> {
+) -> Result<(Vec<String>, Vec<bool>), ConductorError> {
     let mut resolved = Vec::with_capacity(command_parts.len());
+    let mut determinism = Vec::with_capacity(command_parts.len());
 
     for part in command_parts {
         let trimmed = part.trim();
@@ -308,14 +315,41 @@ pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
                      JSON array of strings: {e}",
                 ))
             })?;
-            resolved.extend(parts);
+            resolved.extend(parts.clone());
+            determinism.extend(std::iter::repeat_n(true, parts.len()));
         } else {
             let value = resolve_template(part, ctx).await?;
             resolved.push(value);
+            determinism.push(is_deterministic_command_part(part));
         }
     }
 
-    Ok(resolved)
+    Ok((resolved, determinism))
+}
+
+/// Classifies a command-part template as deterministic.
+///
+/// Everything is deterministic by default; these constructs flip a part
+/// nondeterministic:
+/// - an OS conditional (`context.os <op> "value" ? ... : ...`),
+/// - an environment reference (`${env.<VAR>}`), and
+/// - a sandbox path selector (`:file(...)` / `:folder(...)`), whose resolved
+///   value embeds the per-instance sandbox directory path.
+///
+/// Nondeterministic parts still execute (and their resolved values are
+/// recorded on the instance) but never participate in instance keys, so a
+/// different host OS, environment, or sandbox layout cannot produce a false
+/// cache hit.
+///
+/// The scan is conservative (a match anywhere flips the whole part): the
+/// cost of a false nondeterministic is one extra execution, while a false
+/// deterministic would risk stale reuse.
+#[must_use]
+pub(crate) fn is_deterministic_command_part(template: &str) -> bool {
+    !(template.contains("${env.")
+        || template.contains("context.os")
+        || template.contains(":file(")
+        || template.contains(":folder("))
 }
 
 // ---------------------------------------------------------------------------
@@ -1774,5 +1808,37 @@ mod tests {
         let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
         let result = resolve_template("${step_output.step-1.result}", &ctx).await.unwrap();
         assert_eq!(result, Hash::from_content(b"hello").to_string());
+    }
+
+    // -----------------------------------------------------------------------
+    // Determinism classification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_deterministic_command_part_os_conditional_nondeterministic() {
+        assert!(!is_deterministic_command_part(r#"${context.os == "macos" ? "a" : "b"}"#));
+    }
+
+    #[test]
+    fn is_deterministic_command_part_env_reference_nondeterministic() {
+        assert!(!is_deterministic_command_part("${env.MY_VAR}"));
+        assert!(!is_deterministic_command_part("--flag ${env.MY_VAR} --other"));
+    }
+
+    #[test]
+    fn is_deterministic_command_part_file_selector_nondeterministic() {
+        assert!(!is_deterministic_command_part("${inputs.payload:file(payload.txt)}"));
+    }
+
+    #[test]
+    fn is_deterministic_command_part_folder_selector_nondeterministic() {
+        assert!(!is_deterministic_command_part("${inputs.folder:folder(dir)}"));
+    }
+
+    #[test]
+    fn is_deterministic_command_part_default_deterministic() {
+        assert!(is_deterministic_command_part("--plain"));
+        assert!(is_deterministic_command_part("${inputs.url}"));
+        assert!(is_deterministic_command_part(""));
     }
 }

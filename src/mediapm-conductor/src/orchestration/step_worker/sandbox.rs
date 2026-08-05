@@ -11,9 +11,9 @@ use crate::error::ConductorError;
 /// Creates a temporary sandbox directory for step execution.
 pub(super) async fn create_sandbox(
     base_tmp_dir: &Path,
-    instance_key: &str,
+    instance_key: &Hash,
 ) -> Result<PathBuf, ConductorError> {
-    let sandbox_root = base_tmp_dir.join("sandbox").join(sanitize_for_path(instance_key));
+    let sandbox_root = base_tmp_dir.join("sandbox").join(sanitize_for_path(&instance_key.to_hex()));
     tokio::fs::create_dir_all(&sandbox_root)
         .await
         .map_err(|source| ConductorError::io("create sandbox directory", &sandbox_root, source))?;

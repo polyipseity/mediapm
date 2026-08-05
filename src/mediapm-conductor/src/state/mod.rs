@@ -54,43 +54,53 @@ pub struct ResolvedInput {
     pub value: String,
 }
 
-/// Reference to one persisted tool-step output.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OutputRef {
-    /// Logical output name.
-    pub name: String,
-    /// CAS hash of the output content.
+/// A content-addressed value with its determinism classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HashedValueRecord {
+    /// CAS content hash of the recorded value.
     pub hash: Hash,
-    /// Persistence mode for this output.
-    pub save_mode: OutputSaveMode,
+    /// Whether the value is deterministic (participates in instance keys).
+    pub deterministic: bool,
 }
 
-/// A completed tool-call instance with its resolved inputs and outputs.
+/// A completed tool-call instance: the runtime artifact of one tool call.
+///
+/// Records the effective command argv, execution environment, materialized
+/// inputs, and captured outputs. Values are content-addressed (never stored
+/// literally); only deterministic records participate in the instance key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallInstance {
-    /// Unique tool call instance key derived from tool id + resolved inputs + timestamp.
-    pub instance_key: String,
-    /// Tool identifier (`name@version`).
-    pub tool_id: String,
-    /// Resolved input values.
-    pub inputs: Vec<ResolvedInput>,
-    /// Produced output references.
-    pub outputs: Vec<OutputRef>,
-    /// Worker index that executed this tool call instance.
-    pub worker_index: usize,
-    /// Whether this tool call instance was executed (vs. cache-hit reuse).
-    pub executed: bool,
-    /// Whether this tool call instance was rematerialized from cache.
-    pub rematerialized: bool,
-    /// Conductor GC timestamp: refreshed to `aux.conductor_gc_epoch`
-    /// whenever this instance is referenced during step execution.
-    /// Used for grace-period comparisons during GC sweep.
-    #[serde(default = "default_timestamp_zero")]
-    pub conductor_gc_last_referenced_at: Timestamp,
+    /// Content-addressed instance key (see `state::versions::derive_instance_key_v2`).
+    pub instance_key: Hash,
+    /// Tool call identifier: the unified tools-catalog map key (e.g.
+    /// `"ffmpeg@v1"`).
+    pub tool_call_id: String,
+    /// Whether the tool is impure (impure instances embed `executed_at` in
+    /// the key, so every run creates a fresh entry).
+    pub impure: bool,
+    /// Execution timestamp recorded at run time. Never part of pure keys.
+    pub executed_at: Timestamp,
+    /// Effective command argv recorded at execution time, in order. Values
+    /// are content-addressed; deterministic records participate in the key.
+    pub command_args: Vec<HashedValueRecord>,
+    /// Execution environment variables (minimal set: non-empty config values
+    /// only). Values are hashed, never stored literally.
+    pub env_vars: BTreeMap<String, HashedValueRecord>,
+    /// Materialized tool-content inputs keyed by sandbox-relative path.
+    pub materialized_inputs: BTreeMap<String, HashedValueRecord>,
+    /// Captured output records keyed by output name.
+    pub outputs: BTreeMap<String, HashedValueRecord>,
 }
 
-fn default_timestamp_zero() -> Timestamp {
-    Timestamp::default()
+/// Per-instance auxiliary metadata (save modes + GC lifecycle), kept off the
+/// instance record so cache probes and key derivation stay lean.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct InstanceAux {
+    /// Per-output persistence modes keyed by output name.
+    pub save_modes: BTreeMap<String, OutputSaveMode>,
+    /// Conductor GC last-reference clock: refreshed whenever the instance is
+    /// referenced during step execution or retained by GC.
+    pub last_referenced_at: Timestamp,
 }
 
 /// Auxiliary metadata attached to the orchestration state.
@@ -102,6 +112,8 @@ pub struct AuxData {
     /// state commit. Used by `run_conductor_gc()` for grace-period comparisons
     /// and CAS blob reclamation. Distinct from CAS GC.
     pub conductor_gc_epoch: Timestamp,
+    /// Per-instance aux metadata keyed by instance key.
+    pub instances: BTreeMap<Hash, InstanceAux>,
 }
 
 /// Full orchestration state snapshot.
@@ -110,7 +122,7 @@ pub struct OrchestrationState {
     /// Schema version marker.
     pub version: u32,
     /// Declared tool call instance store (`instance_key` → instance).
-    pub tool_call_instances: BTreeMap<String, ToolCallInstance>,
+    pub tool_call_instances: BTreeMap<Hash, ToolCallInstance>,
     /// Auxiliary metadata.
     pub aux: AuxData,
 }
@@ -126,30 +138,43 @@ impl OrchestrationState {
         }
     }
 
-    /// Runs conductor GC on instances: refreshes `conductor_gc_last_referenced_at`
-    /// for referenced instances, evicts unreferenced instances past the TTL
-    /// grace period, then updates `conductor_gc_epoch`.
+    /// Runs conductor GC on instances: refreshes
+    /// `aux.instances[key].last_referenced_at` for referenced instances,
+    /// evicts unreferenced instances past the TTL grace period, then updates
+    /// `conductor_gc_epoch`.
     ///
     /// This is CONDUCTOR GC — prunes stale tool call instances and reclaims
     /// unreachable CAS blobs. Distinct from CAS GC which is a separate
     /// mechanism.
-    pub fn run_conductor_gc(&mut self, referenced_keys: &BTreeSet<String>, ttl_seconds: u64) {
+    pub fn run_conductor_gc(&mut self, referenced_keys: &BTreeSet<Hash>, ttl_seconds: u64) {
         let ttl_nanos = ttl_seconds.saturating_mul(1_000_000_000);
         let epoch = self.aux.conductor_gc_epoch;
         let epoch_nanos = epoch.as_unix_nanos();
+        let aux = &mut self.aux;
 
-        self.tool_call_instances.retain(|key, instance| {
+        self.tool_call_instances.retain(|key, _instance| {
             if referenced_keys.contains(key) {
-                instance.conductor_gc_last_referenced_at = epoch;
+                // Referenced instances survive and get their last-reference
+                // clock refreshed to the current GC epoch.
+                if let Some(entry) = aux.instances.get_mut(key) {
+                    entry.last_referenced_at = epoch;
+                }
                 true
             } else {
-                let last_ref = instance.conductor_gc_last_referenced_at.as_unix_nanos();
-                // Evict if last reference was more than TTL ago
+                let last_ref = aux
+                    .instances
+                    .get(key)
+                    .map_or(0, |entry| entry.last_referenced_at.as_unix_nanos());
+                // Evict if last reference was more than TTL ago.
                 let deadline = last_ref.saturating_add(ttl_nanos);
                 deadline >= epoch_nanos
             }
         });
-        self.aux.conductor_gc_epoch = Timestamp::now();
+        // Drop aux entries for evicted instances so the map never grows stale
+        // keys.
+        let live: BTreeSet<Hash> = self.tool_call_instances.keys().copied().collect();
+        aux.instances.retain(|key, _| live.contains(key));
+        aux.conductor_gc_epoch = Timestamp::now();
     }
 }
 

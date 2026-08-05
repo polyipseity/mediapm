@@ -8,27 +8,50 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mediapm_conductor::{AuxData, OrchestrationState, ToolCallInstance};
+use mediapm_cas::Hash;
+use mediapm_conductor::{AuxData, InstanceAux, OrchestrationState, ToolCallInstance};
 use mediapm_utils::Timestamp;
 
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 
-/// Creates a minimal `ToolCallInstance` with the given key and an initial
-/// `conductor_gc_last_referenced_at` that is far enough in the past to be
-/// evicted by a zero-TTL sweep.
-fn sample_instance(key: &str) -> ToolCallInstance {
+/// Creates a minimal `ToolCallInstance` with the given content-addressed key.
+fn sample_instance(key: Hash) -> ToolCallInstance {
     ToolCallInstance {
-        instance_key: key.to_string(),
-        tool_id: "echo@v1".to_string(),
-        inputs: Vec::new(),
-        outputs: Vec::new(),
-        worker_index: 0,
-        executed: true,
-        rematerialized: false,
-        conductor_gc_last_referenced_at: Timestamp::from_unix_nanos(0),
+        instance_key: key,
+        tool_call_id: "echo@v1".to_string(),
+        impure: false,
+        executed_at: Timestamp::default(),
+        command_args: Vec::new(),
+        env_vars: BTreeMap::new(),
+        materialized_inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
     }
+}
+
+/// Seeds an instance with aux `last_referenced_at` far enough in the past to
+/// be evicted by a zero-TTL sweep.
+fn seed_state_with(keys: &[Hash]) -> OrchestrationState {
+    let mut state = OrchestrationState::new_empty();
+    state.aux = AuxData {
+        tool_call_instance_counter: 0,
+        conductor_gc_epoch: Timestamp::now(),
+        instances: keys
+            .iter()
+            .map(|key| {
+                (
+                    *key,
+                    InstanceAux {
+                        save_modes: BTreeMap::new(),
+                        last_referenced_at: Timestamp::from_unix_nanos(0),
+                    },
+                )
+            })
+            .collect(),
+    };
+    state.tool_call_instances = keys.iter().map(|key| (*key, sample_instance(*key))).collect();
+    state
 }
 
 // ---------------------------------------------------------------------------
@@ -38,21 +61,16 @@ fn sample_instance(key: &str) -> ToolCallInstance {
 /// Instances not in `referenced_keys` with last-referenced past TTL are evicted.
 #[test]
 fn run_conductor_gc_evicts_unreferenced_past_ttl() {
-    let mut state = OrchestrationState {
-        tool_call_instances: BTreeMap::from([
-            ("keep".to_string(), sample_instance("keep")),
-            ("remove".to_string(), sample_instance("remove")),
-        ]),
-        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: Timestamp::now() },
-        ..OrchestrationState::new_empty()
-    };
+    let keep = Hash::from_content(b"keep");
+    let remove = Hash::from_content(b"remove");
+    let mut state = seed_state_with(&[keep, remove]);
 
-    let referenced: BTreeSet<String> = ["keep".to_string()].into();
+    let referenced: BTreeSet<Hash> = [keep].into();
     state.run_conductor_gc(&referenced, 0); // TTL = 0 → anything unreferenced is evicted
 
-    assert!(state.tool_call_instances.contains_key("keep"), "referenced instance should survive");
+    assert!(state.tool_call_instances.contains_key(&keep), "referenced instance should survive");
     assert!(
-        !state.tool_call_instances.contains_key("remove"),
+        !state.tool_call_instances.contains_key(&remove),
         "unreferenced instance past TTL should be evicted"
     );
 }
@@ -60,20 +78,15 @@ fn run_conductor_gc_evicts_unreferenced_past_ttl() {
 /// Instances in `referenced_keys` survive GC.
 #[test]
 fn run_conductor_gc_preserves_referenced() {
-    let mut state = OrchestrationState {
-        tool_call_instances: BTreeMap::from([
-            ("a".to_string(), sample_instance("a")),
-            ("b".to_string(), sample_instance("b")),
-        ]),
-        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: Timestamp::now() },
-        ..OrchestrationState::new_empty()
-    };
+    let a = Hash::from_content(b"a");
+    let b = Hash::from_content(b"b");
+    let mut state = seed_state_with(&[a, b]);
 
-    let referenced: BTreeSet<String> = ["a".to_string(), "b".to_string()].into();
+    let referenced: BTreeSet<Hash> = [a, b].into();
     state.run_conductor_gc(&referenced, 0);
 
-    assert!(state.tool_call_instances.contains_key("a"));
-    assert!(state.tool_call_instances.contains_key("b"));
+    assert!(state.tool_call_instances.contains_key(&a));
+    assert!(state.tool_call_instances.contains_key(&b));
     assert_eq!(state.tool_call_instances.len(), 2);
 }
 
@@ -88,14 +101,9 @@ fn run_conductor_gc_empty_state_is_noop() {
 /// Empty referenced set evicts all instances past TTL.
 #[test]
 fn run_conductor_gc_evicts_all_when_empty_referenced() {
-    let mut state = OrchestrationState {
-        tool_call_instances: BTreeMap::from([
-            ("a".to_string(), sample_instance("a")),
-            ("b".to_string(), sample_instance("b")),
-        ]),
-        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: Timestamp::now() },
-        ..OrchestrationState::new_empty()
-    };
+    let a = Hash::from_content(b"a");
+    let b = Hash::from_content(b"b");
+    let mut state = seed_state_with(&[a, b]);
 
     state.run_conductor_gc(&BTreeSet::new(), 0);
     assert!(
@@ -107,13 +115,10 @@ fn run_conductor_gc_evicts_all_when_empty_referenced() {
 /// GC with non-zero TTL keeps instances within the grace period.
 #[test]
 fn run_conductor_gc_within_ttl_preserves_unreferenced() {
-    let mut state = OrchestrationState {
-        tool_call_instances: BTreeMap::from([("fresh".to_string(), sample_instance("fresh"))]),
-        aux: AuxData { tool_call_instance_counter: 0, conductor_gc_epoch: Timestamp::now() },
-        ..OrchestrationState::new_empty()
-    };
-    // sample_instance has last_referenced = 0 (unix epoch).
+    let fresh = Hash::from_content(b"fresh");
+    let mut state = seed_state_with(&[fresh]);
+    // Seeded aux has last_referenced = 0 (unix epoch).
     // TTL = 10^18 seconds is far larger than any real test duration.
     state.run_conductor_gc(&BTreeSet::new(), 1_000_000_000_000_000);
-    assert!(state.tool_call_instances.contains_key("fresh"), "instance within TTL should survive");
+    assert!(state.tool_call_instances.contains_key(&fresh), "instance within TTL should survive");
 }

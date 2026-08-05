@@ -129,7 +129,8 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
 mod tests {
     use super::*;
     use crate::orchestration::protocol::{OrchestrationState, StepOutputs};
-    use crate::state::{OutputRef, OutputSaveMode, ResolvedInput, ToolCallInstance};
+    use crate::state::versions::derive_instance_key_v2;
+    use crate::state::{HashedValueRecord, ResolvedInput, ToolCallInstance};
     use mediapm_cas::Hash;
     use mediapm_utils::Timestamp;
     use std::collections::{BTreeMap, BTreeSet};
@@ -161,45 +162,47 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Verifies `derive_instance_key` produces deterministic keys.
+    /// Verifies `derive_instance_key_v2` produces deterministic keys.
     #[test]
     fn derive_instance_key_is_deterministic() {
-        let inputs = vec![ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
+        let inputs = [ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
+        let args: Vec<Hash> =
+            inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect();
 
-        let key1 = cache::derive_instance_key("test_tool", &inputs, None);
-        let key2 = cache::derive_instance_key("test_tool", &inputs, None);
+        let key1 = derive_instance_key_v2("test_tool", false, 0, &args, &[], &[]);
+        let key2 = derive_instance_key_v2("test_tool", false, 0, &args, &[], &[]);
         assert_eq!(key1, key2);
     }
 
-    /// Verifies `derive_instance_key` varies with impure timestamp.
+    /// Verifies `derive_instance_key_v2` varies with impure timestamp.
     #[test]
     fn derive_instance_key_varies_with_impure_timestamp() {
-        let inputs = vec![ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
+        let inputs = [ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
+        let args: Vec<Hash> =
+            inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect();
 
-        let ts1 = Timestamp::from_unix_nanos(1000);
-        let ts2 = Timestamp::from_unix_nanos(2000);
-        let key1 = cache::derive_instance_key("test_tool", &inputs, Some(ts1));
-        let key2 = cache::derive_instance_key("test_tool", &inputs, Some(ts2));
+        let key1 = derive_instance_key_v2("test_tool", true, 1000, &args, &[], &[]);
+        let key2 = derive_instance_key_v2("test_tool", true, 2000, &args, &[], &[]);
         assert_ne!(key1, key2);
     }
 
     /// Verifies `probe_cache` finds cached instances.
     #[test]
     fn probe_cache_finds_existing_instance() {
-        let instance_key = "test-key".to_string();
+        let instance_key = Hash::from_content(b"test-key");
         let instance = ToolCallInstance {
-            instance_key: instance_key.clone(),
-            tool_id: "echo@v1".to_string(),
-            inputs: Vec::new(),
-            outputs: Vec::new(),
-            worker_index: 0,
-            executed: true,
-            rematerialized: false,
-            conductor_gc_last_referenced_at: Timestamp::default(),
+            instance_key,
+            tool_call_id: "echo@v1".to_string(),
+            impure: false,
+            executed_at: Timestamp::default(),
+            command_args: Vec::new(),
+            env_vars: BTreeMap::new(),
+            materialized_inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
         };
 
         let mut state = OrchestrationState::new_empty();
-        state.tool_call_instances.insert(instance_key.clone(), instance);
+        state.tool_call_instances.insert(instance_key, instance);
 
         let (hit, _) = cache::probe_cache(&instance_key, &state, &BTreeSet::new());
         assert!(hit);
@@ -209,31 +212,33 @@ mod tests {
     #[test]
     fn probe_cache_misses_on_unknown_key() {
         let state = OrchestrationState::new_empty();
-        let (hit, _) = cache::probe_cache("unknown-key", &state, &BTreeSet::new());
+        let (hit, _) =
+            cache::probe_cache(&Hash::from_content(b"unknown-key"), &state, &BTreeSet::new());
         assert!(!hit);
     }
 
     /// Verifies `probe_cache` checks required outputs.
     #[test]
     fn probe_cache_checks_required_outputs() {
-        let instance_key = "test-key".to_string();
+        let instance_key = Hash::from_content(b"test-key");
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "result".to_string(),
+            HashedValueRecord { hash: Hash::from_content(b"data"), deterministic: true },
+        );
         let instance = ToolCallInstance {
-            instance_key: instance_key.clone(),
-            tool_id: "echo@v1".to_string(),
-            inputs: Vec::new(),
-            outputs: vec![OutputRef {
-                name: "result".to_string(),
-                hash: Hash::from_content(b"data"),
-                save_mode: OutputSaveMode::Saved,
-            }],
-            worker_index: 0,
-            executed: true,
-            rematerialized: false,
-            conductor_gc_last_referenced_at: Timestamp::default(),
+            instance_key,
+            tool_call_id: "echo@v1".to_string(),
+            impure: false,
+            executed_at: Timestamp::default(),
+            command_args: Vec::new(),
+            env_vars: BTreeMap::new(),
+            materialized_inputs: BTreeMap::new(),
+            outputs,
         };
 
         let mut state = OrchestrationState::new_empty();
-        state.tool_call_instances.insert(instance_key.clone(), instance);
+        state.tool_call_instances.insert(instance_key, instance);
 
         // Required output exists.
         let required: BTreeSet<String> = ["result".to_string()].into();

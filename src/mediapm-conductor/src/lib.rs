@@ -47,7 +47,8 @@ pub use simple_conductor::SimpleConductor;
 pub use state::OrchestrationState;
 pub use state::versions::{decode_state_json, encode_state_json};
 pub use state::{
-    AuxData, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput, ToolCallInstance,
+    AuxData, HashedValueRecord, InstanceAux, OutputSaveMode, PersistenceFlags, ResolvedInput,
+    ToolCallInstance,
 };
 pub use tools::registered_builtin_ids;
 #[cfg(feature = "tool-presets")]

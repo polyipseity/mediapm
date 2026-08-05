@@ -330,6 +330,9 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
         Some(StateCommand::InvalidateToolCall { key }) => {
             let conductor = ensure_conductor().await?;
             let mut state = conductor.get_state()?;
+            let key: Hash = key
+                .parse()
+                .map_err(|e| ConductorError::Workflow(format!("invalid instance key: {e}")))?;
             if state.tool_call_instances.remove(&key).is_some() {
                 conductor.replace_resolved_state(state)?;
                 println!("Invalidated tool call instance '{key}'");

@@ -46,7 +46,7 @@ pub(crate) async fn run_conductor_gc<C>(
     cas: &C,
     state: &mut OrchestrationState,
     unified: &UnifiedNickelDocument,
-    referenced_keys: &BTreeSet<String>,
+    referenced_keys: &BTreeSet<Hash>,
     ttl_seconds: u64,
 ) -> Result<ConductorGcReport, ConductorError>
 where
@@ -64,8 +64,8 @@ where
 
     // Hashes referenced by surviving tool-call instance outputs.
     for instance in state.tool_call_instances.values() {
-        for output in &instance.outputs {
-            root_set.insert(output.hash);
+        for record in instance.outputs.values() {
+            root_set.insert(record.hash);
         }
     }
 
