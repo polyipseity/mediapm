@@ -124,13 +124,14 @@ pub(crate) struct StepExecutionBundle {
 mod tests {
     use super::*;
 
-    /// Builds a tools catalog whose map key carries the versioned builtin id
-    /// (`"echo@v1"`) while `spec.name` is the plain tool name.
-    fn echo_tools_map() -> BTreeMap<String, UnifiedToolSpec> {
+    /// Builds a tools catalog holding one MANAGED tool spec: the map key and
+    /// `spec.name` both carry the prefixed conductor tool id
+    /// (`mediapm.tools.{name}@{hash}`, T7), never a bare logical id.
+    fn managed_tools_map() -> BTreeMap<String, UnifiedToolSpec> {
         BTreeMap::from([(
-            "echo@v1".to_string(),
+            "mediapm.tools.yt-dlp@somehash".to_string(),
             UnifiedToolSpec {
-                name: "echo".to_string(),
+                name: "mediapm.tools.yt-dlp@somehash".to_string(),
                 is_impure: false,
                 max_concurrent_calls: 0,
                 max_retries: 0,
@@ -141,18 +142,25 @@ mod tests {
                 execution_env_vars: BTreeMap::new(),
                 outputs: BTreeMap::new(),
                 tool_content_map: BTreeMap::new(),
-                builtin_id: Some("echo@v1".to_string()),
+                builtin_id: None,
             },
         )])
     }
 
-    /// Regression: workflow steps reference a tool by its registered name
-    /// (`ToolSpec.name`), not by the tools map key. A step referencing the
-    /// versioned key `"echo@v1"` must NOT resolve.
+    /// `find_tool_by_name` recognizes ONLY PREFIXED MANAGED NAMES (fact 28(5),
+    /// Q-D): managed specs carry the prefixed conductor tool id as their name,
+    /// so a `mediapm.tools.*`-prefixed query matches the managed spec while a
+    /// BARE logical id and the versioned-key form both return `None`. Bare
+    /// `step.tool` references resolve via map-key lookup, never this lookup.
     #[test]
-    fn find_tool_by_name_matches_spec_name_not_map_key() {
-        let tools = echo_tools_map();
-        assert_eq!(find_tool_by_name(&tools, "echo").map(|spec| spec.name.as_str()), Some("echo"));
+    fn find_tool_by_name_recognizes_only_prefixed_managed_names() {
+        let tools = managed_tools_map();
+        assert!(find_tool_by_name(&tools, "echo").is_none());
         assert!(find_tool_by_name(&tools, "echo@v1").is_none());
+        assert_eq!(
+            find_tool_by_name(&tools, "mediapm.tools.yt-dlp@somehash")
+                .map(|spec| spec.name.as_str()),
+            Some("mediapm.tools.yt-dlp@somehash")
+        );
     }
 }

@@ -911,6 +911,30 @@ mod tests {
         assert_eq!(redecoded, back, "strict serde round-trip must be lossless");
     }
 
+    /// Verifies the shared generated-file banner: every encoded document
+    /// starts with the identical banner, and `encode → decode → encode` is
+    /// byte-stable (the `#`-comment banner is ignored by the Nickel
+    /// evaluator, so re-encoding reproduces the exact same bytes).
+    #[test]
+    fn encode_document_banner_round_trip_byte_stable() {
+        let doc = NickelDocument {
+            tools: BTreeMap::new(),
+            workflows: vec![],
+            runtime: crate::config::ConductorRuntimeConfig::default(),
+            external_data: BTreeMap::new(),
+        };
+
+        let first = super::super::encode_document(doc.clone()).expect("encode");
+        assert!(
+            first.starts_with(mediapm_utils::generated::GENERATED_FILE_BANNER.as_bytes()),
+            "encoded document must start with the shared generated-file banner",
+        );
+
+        let decoded = super::super::decode_document(&first).expect("decode");
+        let second = super::super::encode_document(decoded).expect("re-encode");
+        assert_eq!(first, second, "encode → decode → encode must be byte-stable");
+    }
+
     /// Verifies that a document containing both Builtin and Executable tools
     /// survives a full `encode_document` → `decode_document` round-trip
     /// through the Nickel rendering and evaluation pipeline.

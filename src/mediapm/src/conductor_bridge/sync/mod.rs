@@ -32,7 +32,8 @@ use crate::tools::provider::RecheckPolicy;
 
 use crate::conductor_bridge::documents::{
     apply_builtin_runtime_defaults, load_conductor_generated_document,
-    register_missing_builtin_tools, save_conductor_generated_document,
+    load_conductor_user_document, register_missing_builtin_tools,
+    save_conductor_generated_document,
 };
 use crate::conductor_bridge::sync::lifecycle::is_builtin_source_ingest_requirement;
 use crate::conductor_bridge::sync::provision::{PreResolveOutcome, fetch_and_import_tool_payload};
@@ -58,9 +59,11 @@ pub(crate) struct ToolSyncReport {
     pub(crate) tools_updated: usize,
     /// Number of tools skipped because their canonical version was already provisioned.
     pub(crate) tools_skipped: usize,
-    /// Number of managed-tool entries whose `content_map` was cleared in the
-    /// generated conductor document because a newer version superseded them.
-    /// User-added manual entries in the generated doc are never affected.
+    /// Number of tool entries removed from the generated conductor document
+    /// during the wholesale rewrite (condition 3 of the two-file model):
+    /// stale managed versions whose `content_map` was cleared, plus manual
+    /// entries mediapm did not produce (they belong in the user-owned
+    /// `mediapm.conductor.ncl`).
     pub(crate) pruned_tools: usize,
     /// Non-fatal warnings collected during reconciliation.
     pub(crate) warnings: Vec<String>,
@@ -503,6 +506,12 @@ pub(crate) async fn reconcile_desired_tools(
 
     // 1. Load or create generated document.
     let mut generated_doc = load_conductor_generated_document(paths)?;
+
+    // 1a. Load the user-owned conductor document, if present, rejecting
+    //     reserved-namespace collisions (two-file model, condition 2). The
+    //     user doc is never a reconcile save target — manual tools belong
+    //     there and are merged by the conductor at load time.
+    load_conductor_user_document(paths)?;
 
     // 2. Register missing builtin tool definitions and config stubs.
     register_missing_builtin_tools(&mut generated_doc);
@@ -975,6 +984,27 @@ pub(crate) async fn reconcile_desired_tools(
     if let Some(g) = owned_group {
         g.join();
     }
+
+    // ── Generated-doc purity (condition 3) ───────────────────────────────
+    // The generated document is a pure machine artifact: drop any tool
+    // entries mediapm did not produce this sync (hand-added manual entries).
+    // Retain everything the provisioning pipeline manages — explicit tools
+    // AND their companion dependencies (each gets its own entry from
+    // `entries`) plus conductor builtins — so stale versions of managed
+    // tools keep their emptied `content_map` (see the per-entry pruning
+    // above) and companion tools written this sync (or skipped from an
+    // earlier sync) survive. Anything else belongs in the user-owned
+    // `mediapm.conductor.ncl`, never here.
+    let provisioned_names: HashSet<&str> =
+        entries.iter().map(|entry| entry.tool_id.as_str()).collect();
+    let builtin_names: HashSet<&str> =
+        mediapm_conductor::tools::ALL_BUILTINS.iter().map(|builtin| builtin.name).collect();
+    let tools_before_rewrite = generated_doc.tools.len();
+    generated_doc.tools.retain(|key, _| {
+        let bare = key.split('@').next().unwrap_or(key.as_str());
+        provisioned_names.contains(bare) || builtin_names.contains(bare)
+    });
+    pruned_tools += tools_before_rewrite - generated_doc.tools.len();
 
     // ── external_data: independent post-processing ──────────────────────
     // Rebuild external_data from scratch by scanning all tool specs'
@@ -1700,14 +1730,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_does_not_prune_manually_added_tools() {
+    async fn reconcile_drops_manual_entries_from_generated_doc() {
         let tmp = tempfile::tempdir().unwrap();
         let cache_root = tempfile::tempdir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 
         // Pre-populate generated doc with a manual entry whose bare tool_id
-        // is NOT in used_tool_ids (e.g., "user_script").
+        // is NOT in the desired set (e.g., "user_script"). Under condition 3
+        // (generated-doc purity) the generated document is rewritten
+        // wholesale on every sync, so such entries are dropped — manual
+        // tools belong in the user-owned `mediapm.conductor.ncl` instead.
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
         let tool_spec = ToolSpec {
@@ -1721,8 +1754,8 @@ mod tests {
         let doc = NickelDocument { tools, ..Default::default() };
         save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
 
-        // Empty desired_tools — nothing is "used" so no managed tool should
-        // be pruned.
+        // Empty desired_tools — nothing is "used" so every non-managed entry
+        // (the manual one) must be dropped on rewrite.
         let state = MediaPmState::default();
         let result = reconcile_desired_tools(
             &cas,
@@ -1738,16 +1771,17 @@ mod tests {
 
         assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
         let report = result.unwrap();
-        assert_eq!(report.pruned_tools, 0, "manual entries should not be counted as pruned");
+        assert!(
+            report.pruned_tools >= 1,
+            "manual entry dropped on rewrite must be counted as pruned, got {}",
+            report.pruned_tools
+        );
 
-        // Verify the manual entry's content_map is unchanged.
+        // Verify the manual entry is gone after the wholesale rewrite.
         let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
-        let manual_spec =
-            doc.tools.get("user_script@somehash").expect("manual entry should still exist");
-        assert_eq!(
-            manual_spec.runtime.content_map.get("linux/user_script"),
-            Some(&"blake3:manual".to_string()),
-            "manual entry content_map should be unchanged"
+        assert!(
+            !doc.tools.contains_key("user_script@somehash"),
+            "manual entry must be dropped on generated-doc rewrite",
         );
     }
 

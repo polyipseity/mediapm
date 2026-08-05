@@ -67,8 +67,16 @@ pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8
     // fail on the next decode.
     document.validate_external_data_invariant()?;
     let envelope: v_latest::NickelEnvelopeLatest = document.into();
-    mediapm_utils::nickel::render_document_as_nickel(&envelope, "configuration document")
-        .map_err(ConductorError::Serialization)
+    let bytes =
+        mediapm_utils::nickel::render_document_as_nickel(&envelope, "configuration document")
+            .map_err(ConductorError::Serialization)?;
+    // Stamp every machine-written document with the shared generated-file
+    // banner. All save paths (CLI export, standalone machine-doc save,
+    // mediapm reconcile/synthesis) route through this function, so the
+    // banner text is identical everywhere. `#` comment lines are ignored by
+    // the Nickel evaluator, so decode is unaffected and `encode → decode →
+    // encode` is byte-stable (see `encode_document_banner_round_trip_byte_stable`).
+    Ok(mediapm_utils::generated::prepend_banner(&bytes))
 }
 
 /// Decodes bytes through the embedded Nickel migration wrapper into a runtime

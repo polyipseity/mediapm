@@ -30,6 +30,7 @@ Display format: `error[MPM-E001]: <description>` or `warning[MPM-W001]: <descrip
 | MPM-E006 | Workflow error | General workflow orchestration failure | Check the conductor document and tool configuration |
 | MPM-E007 | I/O error | Filesystem operation failed | Check filesystem permissions, disk space, and paths |
 | MPM-E008 | Conductor document error | Conductor document loading or validation failed | Check the conductor-generated NCL document |
+| MPM-E009 | Managed namespace conflict | The user conductor document declares a tool key or workflow name inside a namespace reserved for mediapm-managed entries | Remove or rename the conflicting entry; mediapm owns the managed namespace |
 | MPM-W001 | Silenced serde error | A `ToolRequirement` deserialization failed and was logged instead of blocking the operation | Inspect logs for the deserialization details; the affected tool entry may be incomplete |
 
 ## CAS — mediapm-cas
