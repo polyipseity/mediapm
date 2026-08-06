@@ -16,16 +16,12 @@ Nextest (via `cargo test-all` / `--all-targets`) compiles examples and runs thei
 
 Examples that require nondeterministic access (network, external services, managed-tool downloads) must detect CI in the test that calls `main()`, never inside `main()` itself. The policy:
 
-1. **Deterministic examples** (e.g. the offline demo) always run their full path in tests — no reduced mode, no CI detection. If the full path is temporarily blocked by an unimplemented dependency, the test is `#[ignore]`d with a rationale pointing to `TODO.md`; it is not skipped via CI detection.
+1. **Deterministic examples** (e.g. the offline demo) always run their full path in tests — no reduced mode, no CI detection.
 2. **Nondeterministic examples** (e.g. the online demo) detect CI using the standard CI environment variables (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `DRONE`):
    - In CI: the test skips with a documented message (the full path is nondeterministic and must not run in CI).
-   - Outside CI: the test runs the full path (no reduced mode). If the full path is temporarily blocked by an unimplemented dependency, the test is `#[ignore]`d with a rationale pointing to `TODO.md`.
+   - Outside CI: the test runs the full path (no reduced mode).
 
 `main()` itself must be deterministic given environment inputs: no CI detection, no network probing, and no conditional behavior other than what the documented environment variables select.
-
-## Temporarily-gated tests use `#[ignore]` with a `TODO.md` pointer
-
-When a full-sync example test fails because an upstream feature is not yet implemented (Stream A stubs), it is temporarily gated with `#[ignore = "<exact failure summary>; ... see TODO.md — remove only on explicit user request"]`. `TODO.md` at the repository root contains the complete procedure for removing these gates; it is executed only when the user explicitly asks, never implicitly.
 
 ## Examples-as-tests must be isolated
 
