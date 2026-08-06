@@ -254,6 +254,20 @@ pub(super) async fn resolve_variant_metadata_key(
 
 #[allow(dead_code)]
 fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option<String> {
+    if let Some(value) = extract_metadata_key_from_json_direct(json, key) {
+        return Some(value);
+    }
+
+    match key {
+        "artist" => extract_metadata_key_from_json_direct(json, "uploader")
+            .or_else(|| extract_metadata_key_from_json_direct(json, "channel"))
+            .or_else(|| extract_metadata_key_from_json_direct(json, "track_artist")),
+        "title" => extract_metadata_key_from_json_direct(json, "track"),
+        _ => None,
+    }
+}
+
+fn extract_metadata_key_from_json_direct(json: &serde_json::Value, key: &str) -> Option<String> {
     if let Some(format) = json.get("format").and_then(serde_json::Value::as_object) {
         if let Some(value) = lookup_json_string_key(format, key) {
             return Some(value);

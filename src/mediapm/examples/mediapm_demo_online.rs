@@ -965,7 +965,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 (
                     "artist".to_string(),
                     MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                        variant: "video".to_string(),
+                        variant: "infojson".to_string(),
                         metadata_key: DEMO_METADATA_ARTIST_KEY.to_string(),
                         transform: None,
                     }),
