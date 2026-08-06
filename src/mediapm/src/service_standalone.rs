@@ -169,7 +169,7 @@ pub(crate) fn mark_media_step_for_regeneration(
 ///
 /// Returns [`MediaPmError::Io`] if the file exists but cannot be read, or
 /// [`MediaPmError::Serialization`] if it cannot be parsed.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::unnecessary_wraps)]
 pub(crate) fn load_or_default_conductor_state_document(
     paths: &MediaPmPaths,
 ) -> Result<mediapm_conductor::NickelDocument, MediaPmError> {
@@ -185,7 +185,7 @@ pub(crate) fn load_or_default_conductor_state_document(
 /// # Errors
 ///
 /// Infallible — returns `Ok(())`.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::unnecessary_wraps)]
 pub(crate) fn save_conductor_state_document(
     paths: &MediaPmPaths,
     document: &mediapm_conductor::NickelDocument,

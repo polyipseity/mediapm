@@ -162,6 +162,7 @@ fn resolve_media_variant_output_binding_with_ffmpeg_limits(
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn register_import_variant_producers(
     step_index: usize,
     tool: MediaStepTool,
@@ -255,6 +256,7 @@ fn register_per_mapping_variant_producers(
     Ok(())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn register_media_tagger_variant_producers(
     step_index: usize,
     tool: MediaStepTool,

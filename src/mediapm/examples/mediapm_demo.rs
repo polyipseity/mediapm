@@ -1097,10 +1097,10 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 
     let maybe_summary =
         if run_sync { Some(ingest_service.sync_library(false).await?) } else { None };
-    if let Some(summary) = &maybe_summary {
-        if summary.warnings.iter().any(|w| w.contains("failed step")) {
-            return Err(format!("sync_library workflow warnings: {:?}", summary.warnings).into());
-        }
+    if let Some(summary) = &maybe_summary
+        && summary.warnings.iter().any(|w| w.contains("failed step"))
+    {
+        return Err(format!("sync_library workflow warnings: {:?}", summary.warnings).into());
     }
     let service = ingest_service;
     let effective_paths = service

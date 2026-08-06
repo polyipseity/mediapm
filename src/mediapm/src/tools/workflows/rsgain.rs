@@ -4,6 +4,8 @@
 //! Also provides spec-generation functions for building the managed rsgain tool
 //! definition from its command, inputs, outputs, and default configuration.
 
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{

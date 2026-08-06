@@ -4,6 +4,8 @@
 //! directly in Serde deserialization attributes: step ordering, variant
 //! continuity, tool-specific constraints, and metadata consistency.
 
+#![allow(dead_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::MediaPmError;

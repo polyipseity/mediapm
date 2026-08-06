@@ -70,22 +70,21 @@ pub(super) async fn resolve_variant_hash(
     source: &MediaSourceSpec,
     lookup: &MaterializationLookupContext,
 ) -> Result<Option<Hash>, MediaPmError> {
-    if let Some(state) = lookup.conductor_state.as_ref() {
-        if let Some((workflow_hash, _notice)) =
+    if let Some(state) = lookup.conductor_state.as_ref()
+        && let Some((workflow_hash, _notice)) =
             resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant_name)
                 .await?
-        {
-            let binding = resolve_media_variant_output_binding_with_limits(
-                source,
-                variant_name,
-                lookup.ffmpeg_slot_limits.max_input_slots,
-                lookup.ffmpeg_slot_limits.max_output_slots,
-            )?;
-            if binding.is_none_or(|binding| binding.zip_member.is_none()) {
-                return Ok(Some(workflow_hash));
-            }
-            return Ok(None);
+    {
+        let binding = resolve_media_variant_output_binding_with_limits(
+            source,
+            variant_name,
+            lookup.ffmpeg_slot_limits.max_input_slots,
+            lookup.ffmpeg_slot_limits.max_output_slots,
+        )?;
+        if binding.is_none_or(|binding| binding.zip_member.is_none()) {
+            return Ok(Some(workflow_hash));
         }
+        return Ok(None);
     }
 
     resolve_local_variant_hash(media_id, variant_name, source)
@@ -385,8 +384,7 @@ fn merge_step_inputs_with_tool_defaults(
 ) -> Result<BTreeMap<String, String>, MediaPmError> {
     let (_, tool_spec) = find_active_tool_spec(generated_doc, step_tool).ok_or_else(|| {
         MediaPmError::Workflow(format!(
-            "workflow step references unknown tool '{}' in generated config",
-            step_tool
+            "workflow step references unknown tool '{step_tool}' in generated config",
         ))
     })?;
     Ok(merge_step_input_bindings(step_inputs, tool_spec))

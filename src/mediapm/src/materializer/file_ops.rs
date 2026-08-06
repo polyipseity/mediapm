@@ -353,10 +353,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let cas = Arc::new(FileSystemCas::open(&dir.path().join("cas")).await.unwrap());
         let mut hashes = Vec::new();
-        for seed in 0..3 {
-            hashes.push(
-                cas.put(Bytes::from(vec![seed as u8; 16_384])).await.expect("put wal-backed blob"),
-            );
+        for seed in 0u8..3 {
+            hashes
+                .push(cas.put(Bytes::from(vec![seed; 16_384])).await.expect("put wal-backed blob"));
         }
 
         let mut join_set = tokio::task::JoinSet::new();

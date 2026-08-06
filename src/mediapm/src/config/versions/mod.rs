@@ -4,6 +4,8 @@
 //! `mediapm.ncl` documents.  The `Migrate` trait defines the decode/encode
 //! contract that each supported schema version must implement.
 
+#![allow(dead_code)]
+
 use serde_json::Value;
 
 use crate::error::MediaPmError;

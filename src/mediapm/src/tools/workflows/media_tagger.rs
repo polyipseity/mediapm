@@ -2,6 +2,8 @@
 //!
 //! Produces the conductor workflow steps for one `media-tagger` metadata step.
 
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

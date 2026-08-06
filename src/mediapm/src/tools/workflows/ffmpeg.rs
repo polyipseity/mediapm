@@ -4,6 +4,8 @@
 //! and provides builders for the full [`ToolSpec`] / [`ToolRuntime`] used during
 //! managed-tool registration.
 
+#![allow(dead_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_conductor::{

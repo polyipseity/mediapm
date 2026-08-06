@@ -1,6 +1,8 @@
 //! Template syntax constants and sandbox-path normalization for
 //! managed-tool command templates.
 
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 
 use mediapm_conductor::ToolSpec;

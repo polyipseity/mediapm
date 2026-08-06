@@ -4,6 +4,8 @@
 //! media sources reference available variants, hierarchy entries reference
 //! declared media ids, playlist items resolve to known hierarchy nodes, etc.
 
+#![allow(dead_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::MediaPmError;

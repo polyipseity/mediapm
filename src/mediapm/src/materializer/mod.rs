@@ -152,6 +152,11 @@ fn hierarchy_worker_count() -> usize {
 ///
 /// Hierarchy entries are processed concurrently using a bounded worker pool
 /// sized to the number of available CPU cores (capped at 1024).
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "sync_hierarchy orchestrates the full materialization pipeline in one place"
+)]
 pub async fn sync_hierarchy(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
@@ -435,6 +440,10 @@ async fn materialize_file_entry(
 }
 
 /// Materialises a media-folder (multi-variant or ZIP-folder) entry.
+#[expect(
+    clippy::too_many_lines,
+    reason = "media-folder materialization handles folder variants and rename rules inline"
+)]
 async fn materialize_media_folder_entry(
     entry: &FlattenedHierarchyEntry,
     source: &MediaSourceSpec,
