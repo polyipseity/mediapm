@@ -642,11 +642,6 @@ async fn summarize_store_sizes(
     Ok(StoreSizeStats { without_delta_bytes: without_delta, with_delta_bytes: with_delta })
 }
 
-fn cas_object_path_for_hash(cas_root: &Path, hash: Hash) -> PathBuf {
-    let hex = hash.to_hex();
-    cas_root.join("v1").join("blake3").join(&hex[..2]).join(&hex[2..4]).join(&hex[4..])
-}
-
 fn managed_relative_path(hierarchy_root: &Path, output_path: &Path) -> ExampleResult<String> {
     let relative = output_path.strip_prefix(hierarchy_root).map_err(|error| {
         std::io::Error::other(format!(
@@ -660,47 +655,73 @@ fn managed_relative_path(hierarchy_root: &Path, output_path: &Path) -> ExampleRe
 }
 
 fn output_is_hardlinked_to_cas_object(
-    cas_root: &Path,
-    hash: Hash,
+    source_path: &Path,
     output_path: &Path,
 ) -> ExampleResult<bool> {
-    let source_path = cas_object_path_for_hash(cas_root, hash);
     if !source_path.is_file() || !output_path.is_file() {
         return Ok(false);
     }
 
-    Ok(is_same_file(&source_path, output_path)?
-        && fs::read(&source_path)? == fs::read(output_path)?)
+    Ok(is_same_file(source_path, output_path)? && fs::read(source_path)? == fs::read(output_path)?)
 }
 
-fn assert_materialized_output_hardlinked_to_cas(
-    cas_root: &Path,
+async fn assert_materialized_output_hardlinked_to_cas(
+    cas: &FileSystemCas,
     hierarchy_root: &Path,
     lock: &mediapm::MediaPmState,
     output_path: &Path,
-) -> ExampleResult<bool> {
+) -> ExampleResult<()> {
     let relative_path = managed_relative_path(hierarchy_root, output_path)?;
-    if !lock.managed_files.contains_key(relative_path.as_str()) {
-        return Err(std::io::Error::other(format!(
+    let record = lock.managed_files.get(relative_path.as_str()).ok_or_else(|| {
+        std::io::Error::other(format!(
             "managed output '{relative_path}' missing from lockfile tracking"
+        ))
+    })?;
+    let hash = record.hash.parse::<Hash>().map_err(|error| {
+        std::io::Error::other(format!(
+            "managed output '{relative_path}' has invalid CAS hash '{}': {error}",
+            record.hash
+        ))
+    })?;
+
+    let bytes = fs::read(output_path)?;
+    let content_hash = Hash::from_content(&bytes);
+    if content_hash != hash {
+        return Err(std::io::Error::other(format!(
+            "managed output '{relative_path}' content hash '{content_hash}' does not match lockfile hash '{hash}'"
         ))
         .into());
     }
-    let bytes = fs::read(output_path).map_err(|e| {
-        std::io::Error::other(format!("failed to read output '{}': {e}", output_path.display()))
-    })?;
-    let hash = Hash::from_content(bytes.as_slice());
 
-    if !output_is_hardlinked_to_cas_object(cas_root, hash, output_path)? {
+    if !output_path.is_file() {
+        return Err(std::io::Error::other(format!(
+            "materialized output '{}' is missing on disk",
+            output_path.display()
+        ))
+        .into());
+    }
+
+    cas.ensure_blob_materialized(hash).await.map_err(|source| {
+        std::io::Error::other(format!(
+            "ensure CAS blob materialized for managed output '{relative_path}' ({hash}): {source}"
+        ))
+    })?;
+    let source_path = cas.object_path_for_hash(hash).ok_or_else(|| {
+        std::io::Error::other(format!(
+            "CAS store has no filesystem path for managed output '{relative_path}' ({hash})"
+        ))
+    })?;
+
+    if !output_is_hardlinked_to_cas_object(&source_path, output_path)? {
         return Err(std::io::Error::other(format!(
             "materialized output '{}' is not hardlinked to CAS object '{}'",
             output_path.display(),
-            hash,
+            source_path.display()
         ))
         .into());
     }
 
-    Ok(true)
+    Ok(())
 }
 
 #[expect(
@@ -916,8 +937,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             input_variants: vec!["video".to_string()],
             output_variants: BTreeMap::from([(
                 "video".to_string(),
-                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
-                    kind: YtDlpOutputKind::Primary,
+                OutputVariantValue::Generic(GenericOutputVariantConfig {
+                    kind: "output_content".to_string(),
+                    extension: "mkv".to_string(),
                     ..Default::default()
                 }),
             )]),
@@ -1262,6 +1284,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
     save_mediapm_document(&mediapm_ncl, &document)?;
     Ok(vec![
         "yt-dlp".to_string(),
+        "deno".to_string(),
         "ffmpeg".to_string(),
         "rsgain".to_string(),
         "sd".to_string(),
@@ -1292,6 +1315,10 @@ fn seed_old_synced_tools_state_for_update_precheck(
     let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_json)?;
 
     for logical_tool_name in logical_tool_ids {
+        if logical_tool_name.eq_ignore_ascii_case("import") {
+            continue;
+        }
+
         let stale_payload = format!("stale-tool-payload::{logical_tool_name}");
         let stale_hash = Hash::from_content(stale_payload.as_bytes());
         // Generated-doc key follows the "{name}@{content_map_hash}" convention
@@ -1378,11 +1405,12 @@ async fn run_tools_update_precheck(
     }
 
     let summary = service.sync_tools_with_tag_update_checks(false, false).await?;
-    if summary.updated_tools != logical_tool_ids.len() {
+    let expected_updated_tools =
+        logical_tool_ids.len() + usize::from(tools_only_document.tools.contains_key("import"));
+    if summary.updated_tools != expected_updated_tools {
         return Err(format!(
             "tools-update precheck expected {} updated tools but observed {}",
-            logical_tool_ids.len(),
-            summary.updated_tools
+            expected_updated_tools, summary.updated_tools
         )
         .into());
     }
@@ -1537,13 +1565,13 @@ fn assert_demo_workflow_shape(machine: &NickelDocument) -> ExampleResult<(String
     let workflow = machine
         .workflows
         .iter()
-        .find(|w| w.name == DEMO_MEDIA_ID)
+        .find(|w| w.name == workflow_id)
         .ok_or_else(|| format!("machine config is missing managed workflow '{workflow_id}'"))?;
 
-    if workflow.name != DEMO_MEDIA_ID {
+    if workflow.name != workflow_id {
         return Err(format!(
-            "managed workflow '{workflow_id}' must set name='{}' but observed '{}'",
-            DEMO_MEDIA_ID, workflow.name
+            "managed workflow '{workflow_id}' must set name='{workflow_id}' but observed '{}'",
+            workflow.name
         )
         .into());
     }
@@ -2315,6 +2343,7 @@ fn resolve_demo_output_paths(
 async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> {
     let root = reset_artifact_root()?;
     let workspace_root = root.clone();
+    let runtime_storage = example_runtime_storage();
 
     // Phase 1: tools update precheck with an in-memory conductor facade.
     //
@@ -2328,7 +2357,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         MediaPmService::new_with_runtime_storage_overrides(
             conductor,
             MediaPmPaths::from_root(&workspace_root),
-            example_runtime_storage(),
+            runtime_storage.clone(),
         )
     };
     let (precheck_updated_tools, precheck_added_tools, precheck_pruned_tools) =
@@ -2338,21 +2367,10 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     // Phase 2: full library sync with a filesystem-backed CAS so that tool
     // payload bytes (stored on disk by the precheck) are visible to workflow
     // execution.
-    let mut sync_service = {
-        let store_root = workspace_root.join(".mediapm").join("store");
-        let file_system_cas = FileSystemCas::open(&store_root).await.map_err(|error| {
-            format!("opening filesystem CAS store at '{}': {error}", store_root.display())
-        })?;
-        let conductor = SimpleConductor::new(
-            RuntimeStoragePaths::new(&workspace_root.join(".mediapm")),
-            file_system_cas,
-        );
-        MediaPmService::new_with_runtime_storage_overrides(
-            conductor,
-            MediaPmPaths::from_root(&workspace_root),
-            example_runtime_storage(),
-        )
-    };
+    let mut sync_service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(&workspace_root, runtime_storage)
+            .await
+            .map_err(|error| format!("opening filesystem sync service: {error}"))?;
 
     eprintln!(
         "[demo_online] starting sync (timeout={}s) in '{}'",
@@ -2387,19 +2405,18 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
     let cas_root = sync_service.paths().runtime_root.join("store");
     let lock = load_mediapm_state_document(&sync_service.paths().mediapm_state_json)?;
-    let materialized_demo_video_hardlinked_to_cas = assert_materialized_output_hardlinked_to_cas(
-        &cas_root,
+    let cas = sync_service.conductor().cas();
+    assert_materialized_output_hardlinked_to_cas(cas, &hierarchy_root, &lock, &output_video_path)
+        .await?;
+    assert_materialized_output_hardlinked_to_cas(
+        cas,
         &hierarchy_root,
         &lock,
-        &output_video_path,
-    )?;
-    let materialized_demo_tagged_video_hardlinked_to_cas =
-        assert_materialized_output_hardlinked_to_cas(
-            &cas_root,
-            &hierarchy_root,
-            &lock,
-            &output_tagged_video_path,
-        )?;
+        &output_tagged_video_path,
+    )
+    .await?;
+    let materialized_demo_video_hardlinked_to_cas = true;
+    let materialized_demo_tagged_video_hardlinked_to_cas = true;
     let store_size_stats = summarize_store_sizes(sync_service.conductor().cas(), &cas_root).await?;
     let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
         .iter()
@@ -2642,36 +2659,48 @@ mod tests {
     struct IsolatedRun {
         _artifact_root: tempfile::TempDir,
         _cache_root: tempfile::TempDir,
+        previous_artifact_root: Option<std::ffi::OsString>,
+        previous_cache_root: Option<std::ffi::OsString>,
     }
 
     impl IsolatedRun {
         fn new() -> Self {
             let artifact_root = tempfile::tempdir().expect("create temp artifact root");
             let cache_root = tempfile::tempdir().expect("create temp cache root");
+            let previous_artifact_root = std::env::var_os(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
+            let previous_cache_root = std::env::var_os(super::MEDIAPM_EXAMPLE_CACHE_ROOT);
             unsafe {
                 std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, artifact_root.path());
                 std::env::set_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT, cache_root.path());
             }
-            Self { _artifact_root: artifact_root, _cache_root: cache_root }
+            Self {
+                _artifact_root: artifact_root,
+                _cache_root: cache_root,
+                previous_artifact_root,
+                previous_cache_root,
+            }
         }
     }
 
     impl Drop for IsolatedRun {
         fn drop(&mut self) {
             unsafe {
-                std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
-                std::env::remove_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT);
+                match &self.previous_artifact_root {
+                    Some(value) => std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, value),
+                    None => std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT),
+                }
+                match &self.previous_cache_root {
+                    Some(value) => std::env::set_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT, value),
+                    None => std::env::remove_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT),
+                }
             }
         }
     }
 
     /// Executes the documented example entry point via `main()` in full-sync
     /// mode. The online path is nondeterministic (network + external tools), so
-    /// CI skips it; locally it runs full sync, which is currently blocked by
-    /// the Stream A stub (machine workflows never synthesized), so the test is
-    /// expected to fail until the provisioning pipeline lands — see `TODO.md`.
+    /// CI skips it via `ci_mode_detected()`.
     #[test]
-    #[ignore = "full-sync online demo blocked by Stream A stubs: machine workflows never synthesized (\"machine config is missing managed workflow 'mediapm.media.youtube.dQw4w9WgXcQ'\"); see TODO.md — remove only on explicit user request"]
     fn main_is_exercised() {
         if super::ci_mode_detected() {
             eprintln!(
@@ -2706,8 +2735,23 @@ mod tests {
     /// Ensures artifact root remains stable for docs/scripts that reference it.
     #[test]
     fn artifact_root_is_stable() {
+        let previous_artifact_root = std::env::var_os(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
+        // SAFETY: test clears one process env key in a controlled scope and
+        // restores the previous value before exit.
+        unsafe {
+            std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
+        }
+
         let text = super::display_path(&super::artifact_root());
         assert!(text.ends_with("src/mediapm/examples/artifacts/demo-online"));
+
+        // SAFETY: restore previous env var value for test isolation.
+        unsafe {
+            match &previous_artifact_root {
+                Some(value) => std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, value),
+                None => std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT),
+            }
+        }
     }
 
     /// Ensures demo runtime config surfaces the explicit default
