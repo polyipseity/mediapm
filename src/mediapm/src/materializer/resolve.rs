@@ -470,7 +470,7 @@ async fn resolve_workflow_step_output_hashes_for_backfill(
             })
             .collect::<Vec<_>>();
 
-        candidates.sort_by(|left, right| right.executed_at.cmp(&left.executed_at));
+        candidates.sort_by_key(|instance| std::cmp::Reverse(instance.executed_at));
 
         let mut selected_instance = None;
         for instance in candidates {
