@@ -17,13 +17,43 @@ use serde::Serialize;
 use crate::config::{OutputCaptureSpec, ToolInputSpec, WorkflowSpec, WorkflowStepSpec};
 pub(super) use crate::state::{ConductorState, ToolCallInstance};
 
+/// Finds a tool catalog entry by its `name` field (not by map key).
+///
+/// When multiple document keys share the same `name` (for example a pruned
+/// stale `{name}@{hash}` entry and the active provisioned tool), prefers the
+/// spec whose `tool_content_map` is non-empty, or a builtin registration.
+#[must_use]
+pub(crate) fn find_tool_entry_by_name<'a>(
+    tools: &'a BTreeMap<String, UnifiedToolSpec>,
+    name: &str,
+) -> Option<(&'a String, &'a UnifiedToolSpec)> {
+    let mut fallback_content: Option<(&'a String, &'a UnifiedToolSpec)> = None;
+    let mut fallback_any: Option<(&'a String, &'a UnifiedToolSpec)> = None;
+    for (key, spec) in tools {
+        if spec.name != name {
+            continue;
+        }
+        if spec.builtin_id.is_some() {
+            return Some((key, spec));
+        }
+        if !spec.tool_content_map.is_empty() {
+            fallback_content = Some((key, spec));
+        } else if fallback_any.is_none() {
+            fallback_any = Some((key, spec));
+        }
+    }
+    fallback_content.or(fallback_any)
+}
+
 /// Finds a tool spec by its name field (not by map key).
+///
+/// Delegates to [`find_tool_entry_by_name`].
 #[must_use]
 pub(crate) fn find_tool_by_name<'a>(
     tools: &'a BTreeMap<String, UnifiedToolSpec>,
     name: &str,
 ) -> Option<&'a UnifiedToolSpec> {
-    tools.values().find(|spec| spec.name == name)
+    find_tool_entry_by_name(tools, name).map(|(_, spec)| spec)
 }
 
 /// Collected output hash slots keyed by producing step id and declared output name.
@@ -162,5 +192,44 @@ mod tests {
                 .map(|spec| spec.name.as_str()),
             Some("mediapm.tools.yt-dlp@somehash")
         );
+    }
+
+    #[test]
+    fn find_tool_by_name_prefers_active_content_map_over_pruned_stale() {
+        let base = || UnifiedToolSpec {
+            name: "ffmpeg".to_string(),
+            is_impure: false,
+            max_concurrent_calls: 0,
+            max_retries: 0,
+            inputs: BTreeMap::new(),
+            default_inputs: BTreeMap::new(),
+            command_parts: Vec::new(),
+            success_codes: vec![0],
+            execution_env_vars: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            tool_content_map: BTreeMap::new(),
+            builtin_id: None,
+        };
+        let stale = {
+            let mut spec = base();
+            spec.command_parts = vec!["./legacy/ffmpeg/tool.bin".to_string()];
+            spec
+        };
+        let active = {
+            let mut spec = base();
+            spec.command_parts = vec!["./bin/ffmpeg".to_string()];
+            spec.tool_content_map =
+                BTreeMap::from([("bin/ffmpeg".to_string(), "blake3:abc".to_string())]);
+            spec
+        };
+        let tools = BTreeMap::from([
+            ("ffmpeg@stale".to_string(), stale),
+            ("ffmpeg@fresh".to_string(), active),
+        ]);
+        let (key, resolved) =
+            find_tool_entry_by_name(&tools, "ffmpeg").expect("active ffmpeg spec");
+        assert_eq!(key, "ffmpeg@fresh");
+        assert!(!resolved.tool_content_map.is_empty());
+        assert_eq!(resolved.command_parts[0], "./bin/ffmpeg");
     }
 }

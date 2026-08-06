@@ -188,7 +188,28 @@ pub enum SourceProducer {
     /// Fetch bytes from URL candidates (tried in order).
     Fetch { urls: Vec<String> },
     /// Generate launcher script bytes that dispatch a builtin tool.
-    GenerateLauncher { builtin_id: String },
+    GenerateLauncher {
+        builtin_id: String,
+        /// argv tokens inserted before `builtin_id` (for example `builtin` on mediapm CLI).
+        argv_prefix: Vec<String>,
+    },
+}
+
+impl SourceProducer {
+    /// Builds one launcher producer for conductor-style builtin dispatch.
+    #[must_use]
+    pub fn launcher(builtin_id: impl Into<String>) -> Self {
+        Self::GenerateLauncher { builtin_id: builtin_id.into(), argv_prefix: Vec::new() }
+    }
+
+    /// Builds one launcher producer for mediapm `builtin <subcommand>` dispatch.
+    #[must_use]
+    pub fn mediapm_builtin(subcommand: impl Into<String>) -> Self {
+        Self::GenerateLauncher {
+            builtin_id: subcommand.into(),
+            argv_prefix: vec!["builtin".to_string()],
+        }
+    }
 }
 
 /// One resolved source after phase 1.
@@ -392,8 +413,8 @@ pub async fn fetch_tool_sources(
                     bytes,
                 });
             }
-            SourceProducer::GenerateLauncher { builtin_id } => {
-                let bytes = generate_launcher_script(source.os.as_str(), builtin_id);
+            SourceProducer::GenerateLauncher { builtin_id, argv_prefix } => {
+                let bytes = generate_launcher_script(source.os.as_str(), builtin_id, argv_prefix);
                 let launcher_size = bytes.len() as u64;
                 // Launcher script sizes aren't in the initial total
                 // (expected_size/size_hint_bytes is None for launcher sources).
@@ -401,7 +422,10 @@ pub async fn fetch_tool_sources(
                 budget.advance(idx, launcher_size);
                 entries.push(DownloadedSource {
                     os: source.os.clone(),
-                    producer: SourceProducer::GenerateLauncher { builtin_id: builtin_id.clone() },
+                    producer: SourceProducer::GenerateLauncher {
+                        builtin_id: builtin_id.clone(),
+                        argv_prefix: argv_prefix.clone(),
+                    },
                     bytes,
                     expected_size: None,
                 });
@@ -491,17 +515,19 @@ async fn fetch_bytes_from_candidates(
     )))
 }
 
-/// Generates a launcher script that dispatches `$MEDIAPM_EXECUTABLE {builtin_id} {args...}`.
+/// Generates a launcher script that dispatches `$MEDIAPM_EXECUTABLE <argv...> {args...}`.
 #[cfg(feature = "tool-presets")]
-fn generate_launcher_script(os: &str, builtin_id: &str) -> Vec<u8> {
+fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) -> Vec<u8> {
+    let mut dispatch_argv = argv_prefix.to_vec();
+    dispatch_argv.push(builtin_id.to_string());
+    let dispatch = dispatch_argv.join(" ");
     match os {
         "windows" => {
-            format!("@echo off\r\n\"%MEDIAPM_EXECUTABLE%\" {builtin_id} %*\r\n").into_bytes()
+            format!("@echo off\r\n\"%MEDIAPM_EXECUTABLE%\" {dispatch} %*\r\n").into_bytes()
         }
         _ => {
             // Linux / macOS — POSIX shell with `exec`.
-            format!("#!/bin/sh\nexec \"${{MEDIAPM_EXECUTABLE}}\" {builtin_id} \"$@\"\n")
-                .into_bytes()
+            format!("#!/bin/sh\nexec \"${{MEDIAPM_EXECUTABLE}}\" {dispatch} \"$@\"\n").into_bytes()
         }
     }
 }
@@ -1657,7 +1683,7 @@ mod tests {
     async fn process_binary_format_produces_file_entry() {
         let cas = InMemoryCas::default();
         let os_dir = tempfile::tempdir().unwrap();
-        let launcher_bytes = generate_launcher_script("linux", "echo@v1");
+        let launcher_bytes = generate_launcher_script("linux", "echo@v1", &[]);
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
         let result = process_single_source(
@@ -2133,7 +2159,7 @@ mod tests {
 
     #[test]
     fn generate_windows_launcher() {
-        let script = generate_launcher_script("windows", "echo@v1");
+        let script = generate_launcher_script("windows", "echo@v1", &[]);
         let text = String::from_utf8_lossy(&script);
         assert!(text.contains("MEDIAPM_EXECUTABLE"));
         assert!(text.contains("echo@v1"));
@@ -2142,7 +2168,7 @@ mod tests {
 
     #[test]
     fn generate_unix_launcher() {
-        let script = generate_launcher_script("linux", "echo@v1");
+        let script = generate_launcher_script("linux", "echo@v1", &[]);
         let text = String::from_utf8_lossy(&script);
         assert!(text.contains("exec"));
         assert!(text.contains("MEDIAPM_EXECUTABLE"));
@@ -2151,8 +2177,15 @@ mod tests {
     }
 
     #[test]
+    fn generate_unix_launcher_with_mediapm_builtin_prefix() {
+        let script = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+        let text = String::from_utf8_lossy(&script);
+        assert!(text.contains("builtin media-tagger"));
+    }
+
+    #[test]
     fn generate_macos_launcher() {
-        let script = generate_launcher_script("macos", "echo@v1");
+        let script = generate_launcher_script("macos", "echo@v1", &[]);
         let text = String::from_utf8_lossy(&script);
         assert!(text.contains("exec"));
         assert!(text.contains("MEDIAPM_EXECUTABLE"));
@@ -2424,19 +2457,19 @@ mod tests {
             sources: vec![
                 ResolvedSource {
                     os: "linux".to_string(),
-                    producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
+                    producer: SourceProducer::launcher("test"),
                     expected_size: Some(100),
                     size_hint_bytes: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
-                    producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
+                    producer: SourceProducer::launcher("test"),
                     expected_size: Some(200),
                     size_hint_bytes: None,
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
-                    producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
+                    producer: SourceProducer::launcher("test"),
                     expected_size: Some(150),
                     size_hint_bytes: None,
                 },

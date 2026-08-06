@@ -46,7 +46,10 @@ async fn resolve_echo_returns_three_launcher_sources() {
     for source in &fetch.sources {
         let producer = &source.producer;
         match producer {
-            mediapm_conductor::tools::provider::SourceProducer::GenerateLauncher { builtin_id } => {
+            mediapm_conductor::tools::provider::SourceProducer::GenerateLauncher {
+                builtin_id,
+                argv_prefix: _,
+            } => {
                 assert_eq!(builtin_id, "echo@v1", "all launchers should reference echo@v1");
             }
             mediapm_conductor::tools::provider::SourceProducer::Fetch { .. } => {

@@ -25,7 +25,7 @@ pub(super) struct ExecutionResult {
 /// Runs an executable process with the given inputs and env vars.
 pub(super) async fn run_executable_process(
     command_parts: &[String],
-    _success_codes: &[i32],
+    success_codes: &[i32],
     sandbox_dir: &Path,
     execution_env_vars: &BTreeMap<String, String>,
 ) -> Result<ExecutionResult, ConductorError> {
@@ -58,11 +58,21 @@ pub(super) async fn run_executable_process(
         .spawn()
         .map_err(|source| ConductorError::io("spawn executable process", command, source))?;
 
-    timeout(timeout_duration, collect_child_output(child)).await.map_err(|_| {
+    let result = timeout(timeout_duration, collect_child_output(child)).await.map_err(|_| {
         ConductorError::Workflow(format!(
             "executable process '{command}' timed out after {timeout_duration:?}",
         ))
-    })?
+    })??;
+
+    let exit_code = result.exit_code;
+    if !success_codes.is_empty() && !success_codes.contains(&exit_code) {
+        let stderr_str = String::from_utf8_lossy(&result.stderr);
+        return Err(ConductorError::Workflow(format!(
+            "executable process '{command}' exited with code {exit_code}: {stderr_str}",
+        )));
+    }
+
+    Ok(result)
 }
 
 /// Collects stdout, stderr, and exit code from a spawned child process.

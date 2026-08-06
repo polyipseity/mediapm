@@ -290,12 +290,14 @@ pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
     for part in command_parts {
         let trimmed = part.trim();
 
-        // Detect splat reference: `${*inputs.<name>}` (possibly with
-        // whitespace around the braces).
+        // Detect splat reference: `${*inputs.<name>}` only — not exists ternaries
+        // such as `${*inputs.<name> ? -i | ''}` which must route through the
+        // full template engine.
         if let Some(splat_inner) = trimmed
             .strip_prefix("${")
             .and_then(|s| s.strip_suffix('}'))
             .map(str::trim)
+            .filter(|inner| !inner.contains('?'))
             .and_then(|s| s.strip_prefix("*inputs."))
         {
             let name = splat_inner.trim().to_string();
@@ -309,18 +311,21 @@ pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
                     "template: input '${{*inputs.{name}}}' in command parts not found",
                 ))
             })?;
-            let parts: Vec<String> = serde_json::from_str(raw).map_err(|e| {
-                ConductorError::Workflow(format!(
-                    "template: input '${{*inputs.{name}}}' is not a valid \
-                     JSON array of strings: {e}",
-                ))
-            })?;
+            let parts: Vec<String> = if raw.trim().is_empty() {
+                Vec::new()
+            } else if let Ok(parsed) = serde_json::from_str::<Vec<String>>(raw) {
+                parsed
+            } else {
+                vec![raw.clone()]
+            };
             resolved.extend(parts.clone());
             determinism.extend(std::iter::repeat_n(true, parts.len()));
         } else {
             let value = resolve_template(part, ctx).await?;
-            resolved.push(value);
-            determinism.push(is_deterministic_command_part(part));
+            if !value.is_empty() && value != "''" {
+                resolved.push(value);
+                determinism.push(is_deterministic_command_part(part));
+            }
         }
     }
 
@@ -839,17 +844,17 @@ async fn resolve_base_ref<C: mediapm_cas::CasApi + Send + Sync>(
     ctx: &TemplateContext<'_, C>,
 ) -> Result<ResolvedValue, ConductorError> {
     match base {
-        BaseRef::StepOutput { step_id, output } => resolve_step_output(step_id, output, ctx),
+        BaseRef::StepOutput { step_id, output } => resolve_step_output(step_id, output, ctx).await,
         BaseRef::ExternalData(hash) => resolve_external_data(*hash, ctx).await,
         BaseRef::Env(var_name) => resolve_env(var_name, ctx),
         BaseRef::UnpackToken(token) => resolve_unpack_token(token, ctx),
-        BaseRef::Input(name) => resolve_input(name, ctx),
+        BaseRef::Input(name) => resolve_input(name, ctx).await,
         BaseRef::UnpackInput(name) => resolve_unpack_input(name, ctx),
     }
 }
 
 /// Resolves `${step_output.<step_id>.<output>}`.
-fn resolve_step_output<C: mediapm_cas::CasApi + Send + Sync>(
+async fn resolve_step_output<C: mediapm_cas::CasApi + Send + Sync>(
     step_id: &str,
     output: &str,
     ctx: &TemplateContext<'_, C>,
@@ -861,6 +866,16 @@ fn resolve_step_output<C: mediapm_cas::CasApi + Send + Sync>(
                  (step id '{step_id}' or output '{output}' missing)",
             ))
         })?;
+
+    if let Some(cas) = ctx.cas {
+        let data = cas.get(*hash).await.map_err(|e| {
+            ConductorError::Workflow(format!(
+                "template: step output '${{step_output.{step_id}.{output}}}' hash '{hash}' \
+                 not found in CAS: {e}",
+            ))
+        })?;
+        return Ok(ResolvedValue::Bytes(data.to_vec()));
+    }
 
     Ok(ResolvedValue::String(hash.to_string()))
 }
@@ -913,13 +928,28 @@ fn resolve_unpack_token<C: mediapm_cas::CasApi + Send + Sync>(
 }
 
 /// Resolves `${inputs.<name>}` from the resolved step inputs.
-fn resolve_input<C: mediapm_cas::CasApi + Send + Sync>(
+///
+/// When a CAS handle is available and the bound value parses as a content
+/// hash, fetches the referenced bytes so downstream `:file(...)` selectors
+/// materialize payload content rather than the hash literal.
+async fn resolve_input<C: mediapm_cas::CasApi + Send + Sync>(
     name: &str,
     ctx: &TemplateContext<'_, C>,
 ) -> Result<ResolvedValue, ConductorError> {
     let value = ctx.inputs.get(name).ok_or_else(|| {
         ConductorError::Workflow(format!("template: input '${{inputs.{name}}}' not found"))
     })?;
+
+    if let Some(cas) = ctx.cas {
+        if let Ok(hash) = value.trim().parse::<Hash>() {
+            let data = cas.get(hash).await.map_err(|e| {
+                ConductorError::Workflow(format!(
+                    "template: input '${{inputs.{name}}}' hash '{hash}' not found in CAS: {e}",
+                ))
+            })?;
+            return Ok(ResolvedValue::Bytes(data.to_vec()));
+        }
+    }
 
     Ok(ResolvedValue::String(value.clone()))
 }
@@ -952,23 +982,84 @@ fn resolve_unpack_input<C: mediapm_cas::CasApi + Send + Sync>(
 // Conditional evaluation
 // ---------------------------------------------------------------------------
 
+/// Normalizes exists-ternary branch literals; `''` means empty in tool templates.
+fn normalize_conditional_branch_literal(branch: &str) -> Option<&str> {
+    let trimmed = branch.trim();
+    if trimmed.is_empty() || trimmed == "''" || trimmed == "\"\"" { None } else { Some(trimmed) }
+}
+
+/// Resolves one exists-ternary or comparison-conditional branch expression.
+///
+/// Flag literals (`-c`, `copy`) pass through unchanged. Bare input/step-output
+/// references (including `:file(...)` selectors) are wrapped so the template
+/// engine materializes sandbox paths instead of emitting selector syntax to argv.
+async fn resolve_conditional_branch<C: mediapm_cas::CasApi + Send + Sync>(
+    branch: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<String, ConductorError> {
+    let trimmed = normalize_conditional_branch_literal(branch).unwrap_or("");
+
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    if trimmed.starts_with("inputs.")
+        || trimmed.starts_with("*inputs.")
+        || trimmed.starts_with("step_output.")
+        || trimmed.starts_with("external_data.")
+        || trimmed.starts_with("env.")
+    {
+        return Box::pin(resolve_template(&format!("${{{trimmed}}}"), ctx)).await;
+    }
+
+    Box::pin(resolve_template(trimmed, ctx)).await
+}
+///
+/// Managed-tool command templates gate optional flags with
+/// `${*inputs.<name> ? <flag> | ''}` and `${*inputs.<name> == "value" ? ... | ''}`.
+/// Those expressions are not full `${...}` templates, so they must be interpreted
+/// against resolved step inputs rather than treated as literal text.
+fn input_ref_expr_truthy(ref_expr: &str, inputs: &BTreeMap<String, String>) -> Option<bool> {
+    let rest = ref_expr
+        .trim()
+        .strip_prefix("*inputs.")
+        .or_else(|| ref_expr.trim().strip_prefix("inputs."))?
+        .trim();
+
+    if let Some((lhs, op_str, quoted_rhs)) = parse_condition_expression(rest) {
+        if op_str != "==" {
+            return None;
+        }
+        let expected = unquote_string(quoted_rhs)?;
+        let actual = inputs.get(lhs).map(|value| value.as_str()).unwrap_or("");
+        return Some(actual == expected);
+    }
+
+    let actual = inputs.get(rest).map(|value| value.as_str()).unwrap_or("");
+    Some(!actual.is_empty())
+}
+
 /// Evaluates an exists ternary and returns the resolved branch value.
 ///
 /// Format: `ref_expr ? true_branch | false_branch`.
-/// The `ref_expr` is resolved as a template; if the result is non-empty,
-/// `true_branch` is used, otherwise `false_branch`.
+/// When `ref_expr` is an `inputs.<name>` or `*inputs.<name>` reference (optionally
+/// compared to a quoted literal), the corresponding step input value decides the
+/// branch. Otherwise `ref_expr` is resolved as a template and non-empty results
+/// select `true_branch`.
 async fn evaluate_exists_ternary<C: mediapm_cas::CasApi + Send + Sync>(
     cond: &ParsedExistsTernary,
     ctx: &TemplateContext<'_, C>,
 ) -> Result<String, ConductorError> {
-    // Resolve the reference expression.
-    // Box::pin breaks the async recursion cycle.
-    let resolved_ref = Box::pin(resolve_template(&cond.ref_expr, ctx)).await?;
-
-    let branch = if resolved_ref.is_empty() { &cond.false_expr } else { &cond.true_expr };
+    let branch = if let Some(is_truthy) = input_ref_expr_truthy(&cond.ref_expr, ctx.inputs) {
+        if is_truthy { &cond.true_expr } else { &cond.false_expr }
+    } else {
+        // Box::pin breaks the async recursion cycle.
+        let resolved_ref = Box::pin(resolve_template(&cond.ref_expr, ctx)).await?;
+        if resolved_ref.is_empty() { &cond.false_expr } else { &cond.true_expr }
+    };
 
     // The branch may itself contain `${...}` references — resolve recursively.
-    Box::pin(resolve_template(branch, ctx)).await
+    resolve_conditional_branch(branch, ctx).await
 }
 
 /// Evaluates a parsed comparison conditional and returns the resolved branch value.
@@ -989,7 +1080,7 @@ async fn evaluate_comparison_conditional<C: mediapm_cas::CasApi + Send + Sync>(
     // Box::pin breaks the async recursion cycle:
     // evaluate_comparison_conditional -> resolve_template -> resolve_parsed_reference
     // -> evaluate_comparison_conditional -> ...
-    Box::pin(resolve_template(branch, ctx)).await
+    resolve_conditional_branch(branch, ctx).await
 }
 
 /// Resolves a conditional operand to a string for comparison.
@@ -1220,15 +1311,27 @@ mod tests {
         host_os: &'a str,
     ) -> TemplateContext<'a, InMemoryCas> {
         static EMPTY_INPUTS: LazyLock<BTreeMap<String, String>> = LazyLock::new(BTreeMap::new);
-        TemplateContext {
+        full_ctx_with_inputs(
             cas,
             step_outputs,
             env_vars,
             tokens,
             sandbox_dir,
+            &EMPTY_INPUTS,
             host_os,
-            inputs: &EMPTY_INPUTS,
-        }
+        )
+    }
+
+    fn full_ctx_with_inputs<'a>(
+        cas: Option<&'a InMemoryCas>,
+        step_outputs: &'a BTreeMap<String, BTreeMap<String, Hash>>,
+        env_vars: &'a BTreeMap<String, String>,
+        tokens: &'a BTreeMap<String, Vec<u8>>,
+        sandbox_dir: Option<&'a Path>,
+        inputs: &'a BTreeMap<String, String>,
+        host_os: &'a str,
+    ) -> TemplateContext<'a, InMemoryCas> {
+        TemplateContext { cas, step_outputs, env_vars, tokens, sandbox_dir, host_os, inputs }
     }
 
     // -----------------------------------------------------------------------
@@ -1699,6 +1802,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_selector_materializes_hash_valued_input() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let data = b"cross-step payload bytes";
+        let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let inputs = BTreeMap::from([("input_content_0".to_string(), hash.to_string())]);
+        let ctx = TemplateContext {
+            cas: Some(&cas),
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: Some(tmp.path()),
+            host_os: "macos",
+            inputs: &inputs,
+        };
+
+        let result = resolve_template("${inputs.input_content_0:file(inputs/input-0.bin)}", &ctx)
+            .await
+            .unwrap();
+        let expected_path = tmp.path().join("inputs/input-0.bin").to_string_lossy().to_string();
+        assert_eq!(result, expected_path);
+
+        let on_disk = tokio::fs::read(tmp.path().join("inputs/input-0.bin")).await.unwrap();
+        assert_eq!(on_disk, data);
+    }
+
+    #[tokio::test]
     async fn file_selector_no_sandbox_error() {
         let env_vars = BTreeMap::from([("X".to_string(), "val".to_string())]);
         let step_outputs = BTreeMap::new();
@@ -1808,6 +1942,109 @@ mod tests {
         let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
         let result = resolve_template("${step_output.step-1.result}", &ctx).await.unwrap();
         assert_eq!(result, Hash::from_content(b"hello").to_string());
+    }
+
+    // -----------------------------------------------------------------------
+    // Exists ternary input references
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn input_ref_expr_truthy_empty_input_is_false() {
+        let inputs = BTreeMap::from([("codec_audio".to_string(), String::new())]);
+        assert_eq!(input_ref_expr_truthy("*inputs.codec_audio", &inputs), Some(false));
+        assert_eq!(input_ref_expr_truthy("inputs.codec_audio", &inputs), Some(false));
+    }
+
+    #[test]
+    fn input_ref_expr_truthy_missing_input_is_false() {
+        let inputs = BTreeMap::new();
+        assert_eq!(input_ref_expr_truthy("*inputs.codec_audio", &inputs), Some(false));
+    }
+
+    #[test]
+    fn input_ref_expr_truthy_non_empty_input_is_true() {
+        let inputs = BTreeMap::from([("codec_audio".to_string(), "aac".to_string())]);
+        assert_eq!(input_ref_expr_truthy("*inputs.codec_audio", &inputs), Some(true));
+    }
+
+    #[test]
+    fn input_ref_expr_truthy_string_equality() {
+        let inputs = BTreeMap::from([("codec_copy".to_string(), "true".to_string())]);
+        assert_eq!(input_ref_expr_truthy("*inputs.codec_copy == \"true\"", &inputs), Some(true));
+        assert_eq!(input_ref_expr_truthy("inputs.codec_copy == \"false\"", &inputs), Some(false));
+    }
+
+    #[test]
+    fn normalize_conditional_branch_literal_treats_quote_pair_as_empty() {
+        assert_eq!(normalize_conditional_branch_literal("''"), None);
+        assert_eq!(normalize_conditional_branch_literal("\"\""), None);
+        assert_eq!(normalize_conditional_branch_literal("-vn"), Some("-vn"));
+    }
+
+    #[tokio::test]
+    async fn resolve_command_parts_skips_quote_pair_false_branch() {
+        let inputs = BTreeMap::from([("codec_audio".to_string(), String::new())]);
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx =
+            full_ctx_with_inputs(None, &step_outputs, &env_vars, &tokens, None, &inputs, "macos");
+        let parts = vec!["${*inputs.codec_audio ? --codec-audio | ''}".to_string()];
+        let (resolved, _) = resolve_command_parts(&parts, &ctx).await.unwrap();
+        assert!(
+            !resolved.iter().any(|part| part.contains("codec-audio")),
+            "unexpected argv parts: {resolved:?}"
+        );
+        assert!(
+            resolved.iter().all(|part| !part.is_empty()),
+            "false exists-ternary branches must not emit empty argv: {resolved:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_command_parts_emits_bool_pair_when_input_matches() {
+        let inputs = BTreeMap::from([("codec_copy".to_string(), "true".to_string())]);
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx =
+            full_ctx_with_inputs(None, &step_outputs, &env_vars, &tokens, None, &inputs, "macos");
+        let parts = vec![
+            "${*inputs.codec_copy == \"true\" ? -c | ''}".to_string(),
+            "${*inputs.codec_copy == \"true\" ? copy | ''}".to_string(),
+        ];
+        let (resolved, _) = resolve_command_parts(&parts, &ctx).await.unwrap();
+        assert_eq!(resolved, vec!["-c".to_string(), "copy".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn resolve_command_parts_materializes_exists_branch_file_selector() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let data = b"video-bytes";
+        let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let inputs = BTreeMap::from([("input_content_0".to_string(), hash.to_string())]);
+        let ctx = full_ctx_with_inputs(
+            Some(&cas),
+            &step_outputs,
+            &env_vars,
+            &tokens,
+            Some(tmp.path()),
+            &inputs,
+            "macos",
+        );
+        let parts = vec![
+            "${*inputs.input_content_0 ? inputs.input_content_0:file(inputs/input-0.bin) | ''}"
+                .to_string(),
+        ];
+        let (resolved, _) = resolve_command_parts(&parts, &ctx).await.unwrap();
+        let expected_path = tmp.path().join("inputs/input-0.bin");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0], expected_path.to_string_lossy().to_string());
     }
 
     // -----------------------------------------------------------------------

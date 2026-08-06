@@ -49,7 +49,7 @@ pub(crate) enum OutputPolicyLatest {
 }
 
 /// Latest persisted save mode: `"false"`, `"true"`, or `"full"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub(crate) enum SaveModeLatest {
@@ -60,6 +60,48 @@ pub(crate) enum SaveModeLatest {
     True,
     /// Force full persistence even when empty or the step fails.
     Full,
+}
+
+impl<'de> Deserialize<'de> for SaveModeLatest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use std::fmt;
+
+        use serde::de::{self, Unexpected, Visitor};
+
+        struct SaveModeVisitor;
+
+        impl<'de> Visitor<'de> for SaveModeVisitor {
+            type Value = SaveModeLatest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("save mode false, true, or full")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(if value { SaveModeLatest::True } else { SaveModeLatest::False })
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "false" => Ok(SaveModeLatest::False),
+                    "true" => Ok(SaveModeLatest::True),
+                    "full" => Ok(SaveModeLatest::Full),
+                    other => Err(de::Error::invalid_value(Unexpected::Str(other), &self)),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(SaveModeVisitor)
+    }
 }
 
 /// Latest persisted output capture spec.
@@ -933,6 +975,48 @@ mod tests {
         let decoded = super::super::decode_document(&first).expect("decode");
         let second = super::super::encode_document(decoded).expect("re-encode");
         assert_eq!(first, second, "encode → decode → encode must be byte-stable");
+    }
+
+    #[test]
+    fn save_mode_latest_deserializes_from_json_string_full() {
+        let mode: SaveModeLatest =
+            serde_json::from_value(serde_json::json!("full")).expect("deserialize full string");
+        assert_eq!(mode, SaveModeLatest::Full);
+    }
+
+    #[test]
+    fn workflow_output_save_full_nickel_roundtrips() {
+        let doc = NickelDocument {
+            tools: BTreeMap::new(),
+            workflows: vec![WorkflowSpec {
+                name: "test.workflow".to_string(),
+                description: None,
+                display_name: None,
+                impure: false,
+                steps: vec![WorkflowStepSpec {
+                    id: "step-0".to_string(),
+                    tool: "import".to_string(),
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeMap::from([(
+                        "content".to_string(),
+                        OutputCaptureSpec {
+                            name: "content".to_string(),
+                            capture: "file:metadata/output.ffmeta".to_string(),
+                            save: SaveMode::Full,
+                            allow_empty: false,
+                            include_topmost_folder: true,
+                        },
+                    )]),
+                    max_retries: 0,
+                    depends_on: vec![],
+                }],
+            }],
+            runtime: crate::config::ConductorRuntimeConfig::default(),
+            external_data: BTreeMap::new(),
+        };
+
+        let bytes = super::super::encode_document(doc).expect("encode");
+        super::super::decode_document(&bytes).expect("decode nickel roundtrip");
     }
 
     /// Verifies that a document containing both Builtin and Executable tools

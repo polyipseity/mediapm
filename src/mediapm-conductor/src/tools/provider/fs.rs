@@ -10,19 +10,19 @@ pub fn sources() -> ResolvedToolFetch {
         sources: vec![
             ResolvedSource {
                 os: "windows".to_string(),
-                producer: SourceProducer::GenerateLauncher { builtin_id: "fs@v1".to_string() },
+                producer: SourceProducer::launcher("fs@v1"),
                 expected_size: None,
                 size_hint_bytes: None,
             },
             ResolvedSource {
                 os: "linux".to_string(),
-                producer: SourceProducer::GenerateLauncher { builtin_id: "fs@v1".to_string() },
+                producer: SourceProducer::launcher("fs@v1"),
                 expected_size: None,
                 size_hint_bytes: None,
             },
             ResolvedSource {
                 os: "macos".to_string(),
-                producer: SourceProducer::GenerateLauncher { builtin_id: "fs@v1".to_string() },
+                producer: SourceProducer::launcher("fs@v1"),
                 expected_size: None,
                 size_hint_bytes: None,
             },

@@ -80,6 +80,12 @@ pub(super) async fn materialize_content_map<C: CasApi + Send + Sync>(
         }
         // Non-hash values are skipped (inline descriptions).
     }
+
+    #[cfg(unix)]
+    {
+        crate::provision::helpers::ensure_payload_tree_user_execute_bits(sandbox_dir)?;
+    }
+
     Ok(())
 }
 
