@@ -136,7 +136,7 @@ pub(crate) fn synthesize_ffmpeg_step(
         let output_name = ffmpeg_output_capture_name(output_index);
         inputs.insert(
             ffmpeg_output_path_input_name(output_index),
-            ffmpeg_output_file_path(output_index),
+            ffmpeg_output_path_for_variant(output_index, &config.extension),
         );
 
         let save = match config.save {
@@ -423,6 +423,17 @@ pub(crate) fn ffmpeg_output_file_path(index: usize) -> String {
     format!("output-{index}{DEFAULT_FFMPEG_OUTPUT_EXTENSION_WITH_DOT}")
 }
 
+/// Returns sandbox-relative ffmpeg output path honoring an optional extension override.
+#[must_use]
+fn ffmpeg_output_path_for_variant(index: usize, extension: &str) -> String {
+    let trimmed = extension.trim();
+    if trimmed.is_empty() {
+        return ffmpeg_output_file_path(index);
+    }
+    let suffix = trimmed.strip_prefix('.').unwrap_or(trimmed);
+    format!("output-{index}.{suffix}")
+}
+
 /// Returns regex pattern for one indexed ffmpeg output capture path.
 #[must_use]
 fn ffmpeg_output_file_regex(index: usize) -> String {
@@ -685,7 +696,11 @@ fn build_ffmpeg_default_input_defaults(
     ]);
 
     for option_input in FFMPEG_OPTION_INPUTS {
-        defaults.entry((*option_input).to_string()).or_default();
+        if *option_input == "option_args" {
+            defaults.insert(option_input.to_string(), InputBinding::Vec(vec![]));
+        } else {
+            defaults.entry(option_input.to_string()).or_default();
+        }
     }
 
     for (key, value) in FFMPEG_STATIC_DEFAULTS {
@@ -748,6 +763,12 @@ pub(crate) fn build_ffmpeg_spec(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ffmpeg_output_path_for_variant_honors_extension_override() {
+        assert_eq!(ffmpeg_output_path_for_variant(0, "m4a"), "output-0.m4a");
+        assert_eq!(ffmpeg_output_path_for_variant(1, ".mkv"), "output-1.mkv");
+    }
 
     #[test]
     fn build_ffmpeg_command_includes_template_tokens() {

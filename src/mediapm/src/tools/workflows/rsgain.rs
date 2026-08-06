@@ -106,9 +106,17 @@ pub(crate) fn synthesize_rsgain_step_chain(
         )?;
 
         let mut outputs = BTreeMap::new();
+        let capture_spec =
+            variant_to_output_capture_spec(&output_binding.output_name, variant_value);
         outputs.insert(
             output_binding.output_name.clone(),
-            variant_to_output_capture_spec(&output_binding.output_name, variant_value),
+            OutputCaptureSpec {
+                name: output_binding.output_name.clone(),
+                capture: format!("file_regex:{}", rsgain_output_file_regex()),
+                save: capture_spec.save,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
         );
 
         workflow.steps.push(WorkflowStepSpec {
@@ -162,16 +170,16 @@ const RSGAIN_INPUT_DEFAULTS: &[(&str, &str)] = &[
     ("album_aes77", "false"),
     ("dual_mono", "false"),
     ("lowercase", "false"),
-    ("opus_mode", "2"),
+    ("opus_mode", ""),
     ("skip_existing", "false"),
     ("preserve_mtime", "false"),
     ("skip_tags", "false"),
     ("dry_run", "false"),
     ("quiet", "false"),
     ("output", ""),
-    ("multithread", "1"),
+    ("multithread", ""),
     ("loudness", "-18"),
-    ("jobs", "1"),
+    ("jobs", ""),
     ("preset", ""),
 ];
 
@@ -192,8 +200,8 @@ const RSGAIN_TOKEN_SPECS: &[(&str, TokenSpec)] = &[
     ("lowercase", TokenSpec::Bool("--lowercase")),
     ("id3v2_version", TokenSpec::Pair("--id3v2-version")),
     ("opus_mode", TokenSpec::Pair("--opus-mode")),
-    ("jobs", TokenSpec::Pair("--multithread")),
-    ("multithread", TokenSpec::Pair("--multithread")),
+    ("jobs", TokenSpec::None),
+    ("multithread", TokenSpec::None),
     ("preset", TokenSpec::Pair("--preset")),
     ("dry_run", TokenSpec::Bool("--dry-run")),
     ("output", TokenSpec::Pair("--output")),
@@ -259,7 +267,7 @@ fn rsgain_input_file_path(extension: &str) -> String {
 
 #[must_use]
 fn rsgain_output_file_regex() -> String {
-    format!("^inputs/input[.](?:{})$", SUPPORTED_RSGAIN_INPUT_EXTENSIONS.join("|"))
+    format!("^input[.](?:{})$", SUPPORTED_RSGAIN_INPUT_EXTENSIONS.join("|"))
 }
 
 // ---------------------------------------------------------------------------

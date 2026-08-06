@@ -403,7 +403,41 @@ fn seed_local_variant_sources(
     Ok(())
 }
 
-/// Synthesizes one import step inline (the import builtin has no per-tool
+/// Builds import-step output capture: the import builtin emits stdout bytes,
+/// not sandbox file paths, regardless of variant policy kind labels.
+fn import_step_output_capture(
+    output_variants: &BTreeMap<String, OutputVariantValue>,
+    output_variant: &str,
+) -> Result<BTreeMap<String, OutputCaptureSpec>, MediaPmError> {
+    let value = output_variants.get(output_variant).ok_or_else(|| {
+        MediaPmError::Workflow(format!(
+            "missing output variant '{output_variant}' while resolving import output policy"
+        ))
+    })?;
+    let save = match value {
+        OutputVariantValue::Generic(g) => match g.save {
+            OutputSaveConfig::Bool(true) => SaveMode::True,
+            OutputSaveConfig::Bool(false) => SaveMode::False,
+            OutputSaveConfig::Full => SaveMode::Full,
+        },
+        OutputVariantValue::YtDlp(y) => match y.save {
+            OutputSaveConfig::Bool(true) => SaveMode::True,
+            OutputSaveConfig::Bool(false) => SaveMode::False,
+            OutputSaveConfig::Full => SaveMode::Full,
+        },
+    };
+    Ok(BTreeMap::from([(
+        output_variant.to_string(),
+        OutputCaptureSpec {
+            name: output_variant.to_string(),
+            capture: "stdout".to_string(),
+            save,
+            allow_empty: false,
+            include_topmost_folder: true,
+        },
+    )]))
+}
+
 /// submodule). The CAS hash is bound to the import builtin's `hash` input
 /// per its `kind=cas_hash` contract.
 #[allow(clippy::too_many_arguments)]
@@ -438,7 +472,7 @@ fn synthesize_import_step(
         inputs.insert(INPUT_IMPORT_HASH.to_string(), hash.clone());
         inputs.insert(INPUT_IMPORT_KIND.to_string(), kind.clone());
 
-        let outputs = step_output_policy_overrides(&step.output_variants, &mapping.output)?;
+        let outputs = import_step_output_capture(&step.output_variants, &mapping.output)?;
 
         workflow.steps.push(WorkflowStepSpec {
             id: step_id.clone(),
@@ -894,6 +928,11 @@ mod tests {
         assert!(download.depends_on.is_empty());
         assert_eq!(ffmpeg_step.depends_on, vec![download.id.clone()]);
         assert_eq!(rsgain_step.depends_on, vec![ffmpeg_step.id.clone()]);
+        assert_eq!(
+            ffmpeg_step.inputs.get("output_path_0").map(String::as_str),
+            Some("output-0.mkv"),
+            "ffmpeg step must bind sandbox output path for slot 0"
+        );
     }
 
     #[test]
@@ -970,6 +1009,10 @@ mod tests {
         assert_eq!(step.inputs.get("kind").map(String::as_str), Some("cas_hash"));
         assert!(step.depends_on.is_empty());
         assert_eq!(step.outputs.get("source").map(|output| output.save), Some(SaveMode::True));
+        assert_eq!(
+            step.outputs.get("source").map(|output| output.capture.as_str()),
+            Some("stdout")
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -1444,5 +1487,131 @@ mod tests {
         let step = &plan.workflows[&managed_workflow_name("primary-a")].steps[0];
 
         assert!(!step.inputs.contains_key("skip_download"));
+    }
+
+    #[test]
+    fn import_and_media_tagger_generated_doc_roundtrips() {
+        let document = media_document(
+            "tag-demo",
+            media_source(
+                "",
+                vec![("default", ZERO_HASH)],
+                vec![
+                    media_step(
+                        MediaStepTool::Import,
+                        vec![],
+                        vec![("default", yt_dlp_output_variant("primary"))],
+                        vec![("kind", "cas_hash"), ("hash", ZERO_HASH)],
+                    ),
+                    media_step(
+                        MediaStepTool::MediaTagger,
+                        vec!["default"],
+                        vec![("tagged", yt_dlp_output_variant("primary"))],
+                        vec![],
+                    ),
+                ],
+            ),
+        );
+        let generated_doc = tools_document(&["import", "media-tagger", "ffmpeg"]);
+        let plan = build_plan(&document, &generated_doc).expect("plan");
+        let mut doc = generated_doc;
+        doc.workflows.extend(plan.workflows.into_values());
+        for (hash, entry) in plan.external_data {
+            doc.external_data.insert(hash, entry);
+        }
+        let bytes = mediapm_conductor::encode_document(doc).expect("encode");
+        mediapm_conductor::decode_document(&bytes).expect("decode roundtrip");
+    }
+
+    #[test]
+    fn local_demo_tool_chain_without_media_tagger_roundtrips() {
+        let document = media_document(
+            "demo.local",
+            media_source(
+                "",
+                vec![],
+                vec![
+                    media_step(
+                        MediaStepTool::Import,
+                        vec![],
+                        vec![("video_untagged", yt_dlp_output_variant("primary"))],
+                        vec![("kind", "cas_hash"), ("hash", ZERO_HASH)],
+                    ),
+                    media_step(
+                        MediaStepTool::Ffmpeg,
+                        vec!["video_untagged"],
+                        vec![(
+                            "audio",
+                            json!({ "kind": "primary", "extension": "m4a", "save": true }),
+                        )],
+                        vec![("vn", "true")],
+                    ),
+                    media_step(
+                        MediaStepTool::Rsgain,
+                        vec!["audio"],
+                        vec![("audio", generic_output_variant("output_content"))],
+                        vec![("input_extension", "m4a")],
+                    ),
+                ],
+            ),
+        );
+        let generated_doc = tools_document(&["import", "ffmpeg", "rsgain"]);
+        let plan = build_plan(&document, &generated_doc).expect("plan");
+        let mut doc = generated_doc;
+        doc.workflows.extend(plan.workflows.into_values());
+        for (hash, entry) in plan.external_data {
+            doc.external_data.insert(hash, entry);
+        }
+        let bytes = mediapm_conductor::encode_document(doc).expect("encode");
+        mediapm_conductor::decode_document(&bytes).expect("decode roundtrip");
+    }
+
+    #[test]
+    fn local_demo_tool_chain_generated_doc_roundtrips() {
+        let document = media_document(
+            "demo.local",
+            media_source(
+                "",
+                vec![],
+                vec![
+                    media_step(
+                        MediaStepTool::Import,
+                        vec![],
+                        vec![("video_untagged", yt_dlp_output_variant("primary"))],
+                        vec![("kind", "cas_hash"), ("hash", ZERO_HASH)],
+                    ),
+                    media_step(
+                        MediaStepTool::Ffmpeg,
+                        vec!["video_untagged"],
+                        vec![(
+                            "audio",
+                            json!({ "kind": "primary", "extension": "m4a", "save": true }),
+                        )],
+                        vec![("vn", "true")],
+                    ),
+                    media_step(
+                        MediaStepTool::Rsgain,
+                        vec!["audio"],
+                        vec![("audio", generic_output_variant("output_content"))],
+                        vec![("input_extension", "m4a")],
+                    ),
+                    media_step(
+                        MediaStepTool::MediaTagger,
+                        vec!["audio"],
+                        vec![("audio", yt_dlp_output_variant("primary"))],
+                        vec![],
+                    ),
+                ],
+            ),
+        );
+        let generated_doc = tools_document(&["import", "ffmpeg", "rsgain", "media-tagger", "sd"]);
+        let plan = build_plan(&document, &generated_doc).expect("plan");
+        let mut doc = generated_doc;
+        doc.workflows.extend(plan.workflows.into_values());
+        for (hash, entry) in plan.external_data {
+            doc.external_data.insert(hash, entry);
+        }
+        let bytes = mediapm_conductor::encode_document(doc).expect("encode");
+        mediapm_conductor::decode_document(&bytes).expect("decode roundtrip");
     }
 }

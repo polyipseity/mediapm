@@ -19,8 +19,9 @@ use crate::conductor_bridge::documents::{
 };
 use crate::conductor_bridge::sync::{apply_resolved_field_backfills, reconcile_desired_tools};
 use crate::config::{
-    MediaPmState, MediaRuntimeStorage, MediaSourceSpec, ToolRequirement, load_mediapm_document,
-    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
+    MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStepTool, ToolRequirement,
+    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    save_mediapm_state_document,
 };
 use crate::error::MediaPmError;
 use crate::hierarchy::{
@@ -37,7 +38,7 @@ use crate::tools::workflows::{MANAGED_WORKFLOW_PREFIX, reconcile_media_workflows
 
 use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaStepInvalidationSummary,
-    SyncSummary, ToolsSyncSummary, conductor_run_workflow_options,
+    SyncSummary, ToolsSyncSummary, conductor_run_workflow_options, ensure_mediapm_executable_env,
     export_mediapm_nickel_config_schemas, load_runtime_dotenv, local_source_default_steps,
     media_id_from_local_path, media_id_from_uri, merge_runtime_storage, normalize_source_uri,
     validate_source_uri,
@@ -201,7 +202,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         tool_id: &str,
         state: &MediaPmState,
     ) -> Result<bool, MediaPmError> {
-        if let Some(existing) = state.managed_tools.iter().find(|e| e.tool_id == tool_id) {
+        if let Some(existing) = state.managed_tools.iter().rfind(|e| e.tool_id == tool_id) {
             let effective = self.resolve_effective_runtime_storage()?;
             let desired = effective.tools.get(tool_id);
             // If no desired requirement is declared, the tool is considered
@@ -232,7 +233,8 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
                             &live_state,
                         );
                     Ok(existing.canonical_version != expected_composite
-                        || existing.content_map_hash.is_empty())
+                        || (existing.content_map_hash.is_empty()
+                            && !MediaStepTool::is_builtin_source_ingest_name(tool_id)))
                 }
                 Err(_) => {
                     // Conservatively recommend sync on provider resolution failure.
@@ -1023,6 +1025,7 @@ impl MediaPmService<FileSystemCas> {
             .ensure_persisted_state_loaded()
             .await
             .map_err(|e| MediaPmError::Workflow(format!("failed to load conductor state: {e}")))?;
+        ensure_mediapm_executable_env()?;
         for workflow_name in workflow_names {
             let before = self.conductor.get_state()?;
             let summary = self

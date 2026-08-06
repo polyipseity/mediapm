@@ -11,6 +11,8 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{ConductorState, NickelDocument};
 use regex::Regex;
 
+use crate::config::MediaPmDocument;
+use crate::config::hierarchy_types::FlattenedHierarchyEntry;
 use crate::config::source_types::{
     MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate, MediaSourceSpec,
 };
@@ -136,7 +138,6 @@ pub(super) async fn resolve_metadata_value(
 
 /// Interpolates `${media.id}` and `${media.metadata.<key>}` placeholders in a
 /// hierarchy path template string.
-#[allow(dead_code)]
 pub(super) async fn interpolate_path_template(
     template: &str,
     media_id: &str,
@@ -162,6 +163,58 @@ pub(super) async fn interpolate_path_template(
     }
 
     Ok(result)
+}
+
+/// Resolves hierarchy path templates for one flattened entry.
+pub(super) async fn resolve_materialized_path_components(
+    entry: &FlattenedHierarchyEntry,
+    document: &MediaPmDocument,
+    lookup_context: &MaterializationLookupContext,
+) -> Result<Vec<String>, MediaPmError> {
+    if entry.path_components.iter().all(|component| !component.contains("${")) {
+        return Ok(entry.path_components.clone());
+    }
+
+    let media_id = entry.entry.media_id.trim();
+    if media_id.is_empty() {
+        return Err(MediaPmError::Workflow(format!(
+            "hierarchy path '{}' contains template placeholders but entry has no media_id",
+            entry.path_str()
+        )));
+    }
+
+    let source = document.media.get(media_id).ok_or_else(|| {
+        MediaPmError::Workflow(format!(
+            "hierarchy references unknown media id '{media_id}' while resolving path templates"
+        ))
+    })?;
+
+    let mut resolved_components = Vec::with_capacity(entry.path_components.len());
+    for component in &entry.path_components {
+        let resolved = if component.contains("${") {
+            interpolate_path_template(component, media_id, source, lookup_context).await?
+        } else {
+            component.clone()
+        };
+        resolved_components.push(resolved);
+    }
+
+    Ok(resolved_components)
+}
+
+/// Resolves hierarchy path templates across flattened hierarchy entries.
+pub(super) async fn resolve_flattened_entry_paths(
+    flattened: &mut [FlattenedHierarchyEntry],
+    document: &MediaPmDocument,
+    lookup_context: &MaterializationLookupContext,
+) -> Result<(), MediaPmError> {
+    for entry in flattened {
+        if entry.path_components.iter().any(|component| component.contains("${")) {
+            entry.path_components =
+                resolve_materialized_path_components(entry, document, lookup_context).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Resolves one metadata key from a variant's produced content bytes.

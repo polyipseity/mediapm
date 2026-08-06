@@ -721,6 +721,74 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
     }
 }
 
+/// Returns true when the executable basename is the mediapm CLI.
+#[must_use]
+fn is_mediapm_cli_executable(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "mediapm" || name.starts_with("mediapm-"))
+}
+
+/// Resolves the mediapm CLI executable used by managed-tool launcher scripts.
+///
+/// Honors a pre-set `MEDIAPM_EXECUTABLE`, then the current process when it is
+/// already the mediapm binary, then common `target/debug/mediapm` siblings used
+/// by example and integration tests.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when the current executable path cannot
+/// be read.
+pub(crate) fn resolve_mediapm_executable_path() -> Result<std::path::PathBuf, MediaPmError> {
+    if let Ok(configured) = std::env::var("MEDIAPM_EXECUTABLE") {
+        let trimmed = configured.trim();
+        if !trimmed.is_empty() {
+            return Ok(std::path::PathBuf::from(trimmed));
+        }
+    }
+
+    let current = std::env::current_exe().map_err(|error| {
+        MediaPmError::Workflow(format!("failed to resolve current executable path: {error}"))
+    })?;
+    if is_mediapm_cli_executable(&current) {
+        return Ok(current);
+    }
+
+    if let Some(parent) = current.parent() {
+        let sibling = parent.join("mediapm");
+        if sibling.is_file() {
+            return Ok(sibling);
+        }
+        if let Some(debug_dir) = parent.parent() {
+            let debug_binary = debug_dir.join("mediapm");
+            if debug_binary.is_file() {
+                return Ok(debug_binary);
+            }
+        }
+    }
+
+    Ok(current)
+}
+
+/// Ensures launcher-based managed tools can resolve the mediapm executable.
+///
+/// Conductor launcher scripts dispatch through `MEDIAPM_EXECUTABLE`; mediapm
+/// sets the host value before spawning conductor workflow steps.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when the mediapm executable path cannot
+/// be resolved.
+pub(crate) fn ensure_mediapm_executable_env() -> Result<(), MediaPmError> {
+    let executable = resolve_mediapm_executable_path()?;
+    // SAFETY: mediapm orchestration runs workflow steps sequentially on one
+    // thread; the variable is read when conductor spawns child processes.
+    unsafe {
+        std::env::set_var("MEDIAPM_EXECUTABLE", executable);
+    }
+    Ok(())
+}
+
 /// Builds conductor runtime options from resolved mediapm paths.
 #[must_use]
 pub(crate) fn conductor_run_workflow_options(

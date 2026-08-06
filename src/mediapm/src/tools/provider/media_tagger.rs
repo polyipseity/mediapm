@@ -23,19 +23,19 @@ pub(crate) fn sources() -> ResolvedToolFetch {
         sources: vec![
             ResolvedSource {
                 os: "windows".to_string(),
-                producer: SourceProducer::GenerateLauncher { builtin_id: "media-tagger".into() },
+                producer: SourceProducer::mediapm_builtin("media-tagger"),
                 expected_size: None,
                 size_hint_bytes: None,
             },
             ResolvedSource {
                 os: "macos".to_string(),
-                producer: SourceProducer::GenerateLauncher { builtin_id: "media-tagger".into() },
+                producer: SourceProducer::mediapm_builtin("media-tagger"),
                 expected_size: None,
                 size_hint_bytes: None,
             },
             ResolvedSource {
                 os: "linux".to_string(),
-                producer: SourceProducer::GenerateLauncher { builtin_id: "media-tagger".into() },
+                producer: SourceProducer::mediapm_builtin("media-tagger"),
                 expected_size: None,
                 size_hint_bytes: None,
             },

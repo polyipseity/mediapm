@@ -164,7 +164,7 @@ pub async fn sync_hierarchy(
 ) -> Result<MaterializeReport, MediaPmError> {
     let hierarchy_root = &paths.hierarchy_root_dir;
 
-    let flattened = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
+    let mut flattened = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
     if flattened.is_empty() {
         info!("hierarchy is empty, nothing to materialize");
         return Ok(MaterializeReport::default());
@@ -177,6 +177,7 @@ pub async fn sync_hierarchy(
         generated_doc.clone(),
         ffmpeg_slot_limits,
     );
+    metadata::resolve_flattened_entry_paths(&mut flattened, document, &lookup_context).await?;
     let shared = Arc::new(SyncSharedState {
         hierarchy_root: hierarchy_root.clone(),
         cas: cas.clone(),

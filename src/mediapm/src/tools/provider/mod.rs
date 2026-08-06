@@ -9,6 +9,7 @@
 
 pub(crate) mod deno;
 pub(crate) mod ffmpeg;
+pub(crate) mod import;
 pub(crate) mod media_tagger;
 pub(crate) mod rsgain;
 pub(crate) mod sd;
@@ -464,6 +465,23 @@ pub(crate) async fn resolve_tool_fetch(
                 },
             )
         }
+        n if n.eq_ignore_ascii_case("import") => {
+            let canonical = crate::global::MEDIAPM_GIT_HASH.to_string();
+            let hr = format!("{}+{}", env!("CARGO_PKG_VERSION"), canonical);
+            (
+                import::sources(),
+                ResolvedToolMetadata {
+                    human_readable_version: hr,
+                    canonical_version: canonical.clone(),
+                    metadata_cached: false,
+                    metadata_fetch_count: 0,
+                    // WHY: import is a conductor builtin launcher; no upstream release to resolve.
+                    resolved_tag: None,
+                    resolved_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                    resolved_vcs_hash: Some(canonical),
+                },
+            )
+        }
         n if n.eq_ignore_ascii_case("sd") => {
             let (tag, commit_hash, mc) = sd::resolve_tag(tracker_ref).await?;
             let mut fetch = sd::sources();
@@ -550,7 +568,7 @@ mod tests {
             .await;
         cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
-        for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "sd"] {
+        for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "import", "sd"] {
             let result =
                 resolve_tool_fetch(name, Some((&*cache, "default")), RecheckPolicy::default())
                     .await;
@@ -607,13 +625,8 @@ mod tests {
                         Some("d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3")
                     );
                 }
-                "media-tagger" => {
-                    assert!(
-                        !canonical.is_empty(),
-                        "media-tagger canonical_version should not be empty"
-                    );
-                    // WHY: media-tagger is a builtin launcher shipped inside
-                    // mediapm; there is no upstream tag to resolve.
+                "media-tagger" | "import" => {
+                    assert!(!canonical.is_empty(), "{name} canonical_version should not be empty");
                     assert_eq!(metadata.resolved_tag, None);
                     assert_eq!(
                         metadata.resolved_version.as_deref(),
@@ -626,7 +639,7 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            if *name == "media-tagger" {
+            if *name == "media-tagger" || *name == "import" {
                 // media-tagger is a builtin launcher with 3 GenerateLauncher sources.
                 assert_eq!(fetch.sources.len(), 3, "tool {name}: should have 3 sources");
                 for source in &fetch.sources {

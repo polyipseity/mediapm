@@ -1202,7 +1202,7 @@ mod tests {
 
     #[test]
     fn is_archive_source_launcher_returns_false() {
-        let producer = SourceProducer::GenerateLauncher { builtin_id: "test".to_string() };
+        let producer = SourceProducer::launcher("test");
         assert!(!is_archive_source(&producer));
     }
 
@@ -1268,7 +1268,7 @@ mod tests {
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
-                    producer: SourceProducer::GenerateLauncher { builtin_id: "test".to_string() },
+                    producer: SourceProducer::launcher("test"),
                     expected_size: None,
                     size_hint_bytes: None,
                 },

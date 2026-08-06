@@ -769,9 +769,11 @@ pub(crate) async fn reconcile_desired_tools(
             }),
             PreResolveOutcome::Resolved(..) => None,
         };
-        let payload_result =
-            fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group, pre_resolved)
-                .await;
+        let payload_result = if is_builtin_code {
+            Ok(None)
+        } else {
+            fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group, pre_resolved).await
+        };
 
         if was_skip {
             // Skipped tools still need env var entries. Reconstruct the
@@ -946,7 +948,11 @@ pub(crate) async fn reconcile_desired_tools(
                     report.tools_added += 1;
                 }
 
-                if generated_doc.tools.contains_key(tool_id) {
+                if is_builtin_code {
+                    if already_exists {
+                        report.tools_updated += 1;
+                    }
+                } else if generated_doc.tools.contains_key(tool_id) {
                     report.tools_updated += 1;
                 } else {
                     generated_doc.tools.insert(
