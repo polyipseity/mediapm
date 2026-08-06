@@ -29,6 +29,7 @@ use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
 use crate::tools::workflows::resolve_ffmpeg_slot_limits;
 use mediapm_conductor::{ConductorState, NickelDocument};
+pub(crate) use resolve::backfill_source_variant_hashes_from_workflow_outputs;
 
 use self::metadata::{MaterializationLookupContext, StepOutputHashes};
 use self::playlist::{

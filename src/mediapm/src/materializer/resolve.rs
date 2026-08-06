@@ -14,7 +14,8 @@ use crate::config::hierarchy_types::HierarchyEntry;
 use crate::config::source_types::MediaSourceSpec;
 use crate::error::MediaPmError;
 use crate::tools::workflows::{
-    managed_workflow_name, resolve_media_variant_output_binding_with_limits,
+    managed_workflow_name, resolve_ffmpeg_slot_limits,
+    resolve_media_variant_output_binding_with_limits,
 };
 
 use super::zip::{
@@ -88,6 +89,62 @@ pub(super) async fn resolve_variant_hash(
     }
 
     resolve_local_variant_hash(media_id, variant_name, source)
+}
+
+/// Copies workflow output hashes into each media source's `variant_hashes` map
+/// so hierarchy materialization can resolve variants when conductor instance
+/// matching is unavailable.
+pub(crate) async fn backfill_source_variant_hashes_from_workflow_outputs(
+    document: &mut MediaPmDocument,
+    generated_doc: &NickelDocument,
+    conductor_state: &ConductorState,
+    cas: &FileSystemCas,
+) -> Result<(), MediaPmError> {
+    let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(document);
+
+    for (media_id, source) in &mut document.media {
+        let workflow_name = managed_workflow_name(media_id);
+        let Some(workflow) =
+            generated_doc.workflows.iter().find(|workflow| workflow.name == workflow_name)
+        else {
+            continue;
+        };
+
+        let Some(step_outputs) = resolve_workflow_step_output_hashes_for_backfill(
+            cas,
+            generated_doc,
+            conductor_state,
+            workflow,
+        )
+        .await?
+        else {
+            continue;
+        };
+
+        for step in &source.steps {
+            for variant_name in step.output_variants.keys() {
+                let Some(binding) = resolve_media_variant_output_binding_with_limits(
+                    source,
+                    variant_name,
+                    ffmpeg_slot_limits.max_input_slots,
+                    ffmpeg_slot_limits.max_output_slots,
+                )?
+                else {
+                    continue;
+                };
+
+                if let Some(hash) = step_outputs
+                    .get(&binding.step_id)
+                    .and_then(|outputs| outputs.get(&binding.output_name))
+                    .copied()
+                {
+                    source.variant_hashes.insert(variant_name.clone(), hash.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Resolves variant bytes with optional fallback notice and source hash.
@@ -370,6 +427,83 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             }
         }
         step_outputs.insert(step.id.clone(), output_hashes);
+    }
+
+    if step_outputs.is_empty() { Ok(None) } else { Ok(Some(step_outputs)) }
+}
+
+/// Resolves workflow step outputs for variant-hash backfill, falling back to
+/// relaxed instance selection when strict input-key matching finds no instances.
+async fn resolve_workflow_step_output_hashes_for_backfill(
+    cas: &FileSystemCas,
+    generated_doc: &NickelDocument,
+    state: &ConductorState,
+    workflow: &mediapm_conductor::WorkflowSpec,
+) -> Result<Option<StepOutputHashes>, MediaPmError> {
+    if let Some(step_outputs) =
+        resolve_workflow_step_output_hashes(cas, generated_doc, state, workflow).await?
+    {
+        return Ok(Some(step_outputs));
+    }
+
+    let mut step_outputs = StepOutputHashes::new();
+
+    for step in &workflow.steps {
+        let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
+            .map(|(key, _)| key.clone())
+            .ok_or_else(|| {
+                MediaPmError::Workflow(format!(
+                    "workflow step '{}' references unknown tool '{}' in generated config",
+                    step.id, step.tool
+                ))
+            })?;
+
+        let required_output_names: BTreeSet<String> = step.outputs.keys().cloned().collect();
+        let mut candidates = state
+            .tool_call_instances
+            .values()
+            .filter(|instance| instance.tool_call_id == conductor_tool_key)
+            .filter(|instance| {
+                required_output_names
+                    .iter()
+                    .all(|output_name| instance.outputs.contains_key(output_name))
+            })
+            .collect::<Vec<_>>();
+
+        candidates.sort_by(|left, right| right.executed_at.cmp(&left.executed_at));
+
+        let mut selected_instance = None;
+        for instance in candidates {
+            let mut all_materialized = true;
+            for output_name in &required_output_names {
+                let Some(output) = instance.outputs.get(output_name) else {
+                    all_materialized = false;
+                    break;
+                };
+                if cas.get(output.hash).await.is_err() {
+                    all_materialized = false;
+                    break;
+                }
+            }
+            if all_materialized {
+                selected_instance = Some(instance);
+                break;
+            }
+        }
+
+        if let Some(instance) = selected_instance {
+            let mut output_hashes = instance
+                .outputs
+                .iter()
+                .map(|(name, output)| (name.clone(), output.hash))
+                .collect::<BTreeMap<_, _>>();
+            if let Some(stdout) = instance.outputs.get("stdout") {
+                for output_name in step.outputs.keys() {
+                    output_hashes.entry(output_name.clone()).or_insert(stdout.hash);
+                }
+            }
+            step_outputs.insert(step.id.clone(), output_hashes);
+        }
     }
 
     if step_outputs.is_empty() { Ok(None) } else { Ok(Some(step_outputs)) }

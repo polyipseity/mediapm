@@ -1055,13 +1055,21 @@ impl MediaPmService<FileSystemCas> {
         }
 
         // 4. Load mediapm document and state.
-        let document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
+        let mut document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
         let generated_doc = load_conductor_generated_document(&effective_paths)?;
         let conductor_state = self.conductor.get_state()?;
 
         // 5. Check if any tools require sync.
         self.append_tool_sync_hint_warning(&mut warnings, &state).await?;
+
+        materializer::backfill_source_variant_hashes_from_workflow_outputs(
+            &mut document,
+            &generated_doc,
+            &conductor_state,
+            self.conductor.cas(),
+        )
+        .await?;
 
         // 6 – 7. Reuse the service's CAS and run the materializer. Opening a
         // second `FileSystemCas` at the same store root would fail with
