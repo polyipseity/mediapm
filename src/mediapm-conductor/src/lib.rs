@@ -16,6 +16,7 @@ pub mod defaults;
 pub mod error;
 pub mod gc;
 pub mod http;
+pub mod instance_key;
 pub mod orchestration;
 pub mod provision;
 pub mod runtime_env;
@@ -43,6 +44,14 @@ pub use config::{
     default_runtime_inherited_env_vars,
 };
 pub use error::ConductorError;
+pub use instance_key::{
+    deterministic_input_hashes_from_resolved_inputs,
+    deterministic_input_hashes_from_resolved_value_bytes, deterministic_materialized_input_hashes,
+    input_binding_to_string, instance_key_hash_from_resolved_value_bytes,
+    instance_key_resolved_value_bytes_for_hash_reference,
+    instance_key_resolved_value_bytes_for_literal_binding, instance_matches_stored_key,
+    is_deterministic_binding_source, merge_step_input_bindings,
+};
 pub use simple_conductor::SimpleConductor;
 pub use state::ConductorState;
 pub use state::versions::{decode_state_json, encode_state_json};

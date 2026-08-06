@@ -11,7 +11,9 @@ use mediapm_utils::Timestamp;
 
 use crate::config::OutputCaptureSpec;
 use crate::error::ConductorError;
-use crate::orchestration::protocol::{StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec};
+use crate::orchestration::protocol::{
+    StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec, find_tool_entry_by_name,
+};
 use crate::state::versions::derive_instance_key_v2;
 use crate::state::{HashedValueRecord, PersistenceFlags, ResolvedInput, ToolCallInstance};
 
@@ -20,7 +22,8 @@ use super::capture::capture_outputs;
 use super::inputs::resolve_step_inputs;
 use super::process::{ExecutionResult, run_builtin, run_executable_process};
 use super::sandbox::{create_sandbox, materialize_content_map};
-use super::template::{TemplateContext, is_deterministic_command_part, resolve_command_parts};
+use super::template::{TemplateContext, resolve_command_parts};
+use crate::instance_key::deterministic_input_hashes_from_resolved_inputs;
 
 /// Dispatches execution: runs a builtin or resolves and runs an executable
 /// process. Returns the execution result plus the resolved command-argument
@@ -83,43 +86,21 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     // id such as `"echo@v1"`), not the bare `spec.name` used by step
     // references. The instance key must be stable across runs of the same
     // declared tool even if the step references it by name.
-    let (tool_call_id, tool_spec) = request
-        .unified
-        .tools
-        .iter()
-        .find(|(_, spec)| spec.name == request.step.tool)
-        .map(|(key, spec)| (key.clone(), spec))
-        .ok_or_else(|| {
-            ConductorError::Workflow(format!(
-                "step '{}' references unknown tool '{}'",
-                request.step.id, request.step.tool,
-            ))
-        })?;
+    let (tool_call_id, tool_spec) =
+        find_tool_entry_by_name(&request.unified.tools, &request.step.tool)
+            .map(|(key, spec)| (key.clone(), spec))
+            .ok_or_else(|| {
+                ConductorError::Workflow(format!(
+                    "step '{}' references unknown tool '{}'",
+                    request.step.id, request.step.tool,
+                ))
+            })?;
 
-    // Deterministic resolved-input hashes sorted by input key. A resolved
-    // input participates in the key only when its raw binding source (step
-    // input or tool default) is deterministic; env-derived and OS-conditional
-    // bindings are excluded so a different host cannot produce a false hit.
-    let mut deterministic_input_hashes = Vec::new();
-    for ri in &resolved_inputs {
-        let raw_source = request
-            .step
-            .inputs
-            .get(&ri.key)
-            .cloned()
-            .or_else(|| {
-                tool_spec.default_inputs.get(&ri.key).map(|binding| match binding {
-                    crate::config::InputBinding::String(s) => s.clone(),
-                    crate::config::InputBinding::Vec(v) => {
-                        serde_json::to_string(v).unwrap_or_default()
-                    }
-                })
-            })
-            .unwrap_or_default();
-        if is_deterministic_command_part(&raw_source) {
-            deterministic_input_hashes.push(Hash::from_content(ri.value.as_bytes()));
-        }
-    }
+    let deterministic_input_hashes = deterministic_input_hashes_from_resolved_inputs(
+        &resolved_inputs,
+        &request.step.inputs,
+        &tool_spec.default_inputs,
+    );
 
     // Materialized content-map inputs keyed by sandbox-relative path, sorted
     // by path. Only hash-valued entries participate in the key (inline bytes
