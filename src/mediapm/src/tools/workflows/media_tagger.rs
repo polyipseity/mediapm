@@ -2,9 +2,6 @@
 //!
 //! Produces the conductor workflow steps for one `media-tagger` metadata step.
 
-#![allow(dead_code)]
-// TODO: Stream A stubs — wired when provisioning pipeline is complete.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

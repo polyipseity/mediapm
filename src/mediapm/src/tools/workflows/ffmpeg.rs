@@ -4,9 +4,6 @@
 //! and provides builders for the full [`ToolSpec`] / [`ToolRuntime`] used during
 //! managed-tool registration.
 
-#![allow(dead_code)]
-// TODO: Stream A stubs — wired when provisioning pipeline is complete.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_conductor::{

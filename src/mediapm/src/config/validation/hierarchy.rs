@@ -4,9 +4,6 @@
 //! target resolution, path ordering, and duplicate detection beyond the
 //! flattening constraints enforced in [`hierarchy_types`].
 
-#![allow(dead_code)]
-// TODO: Stream A stubs — wired when provisioning pipeline is complete.
-
 use std::collections::BTreeSet;
 
 use crate::error::MediaPmError;

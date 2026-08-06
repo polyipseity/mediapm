@@ -1,9 +1,6 @@
 //! Template syntax constants and sandbox-path normalization for
 //! managed-tool command templates.
 
-#![allow(dead_code)]
-// TODO: Stream A stubs — wired when provisioning pipeline is complete.
-
 use std::collections::BTreeMap;
 
 use mediapm_conductor::ToolSpec;

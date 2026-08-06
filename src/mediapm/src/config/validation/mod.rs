@@ -4,9 +4,6 @@
 //! media sources reference available variants, hierarchy entries reference
 //! declared media ids, playlist items resolve to known hierarchy nodes, etc.
 
-#![allow(dead_code)]
-// TODO: Stream A stubs — wired when provisioning pipeline is complete.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::MediaPmError;
