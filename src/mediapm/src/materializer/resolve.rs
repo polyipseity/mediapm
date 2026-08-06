@@ -4,7 +4,9 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
-use mediapm_conductor::{ConductorState, NickelDocument, ToolCallInstance};
+use mediapm_conductor::{
+    ConductorState, NickelDocument, ToolCallInstance, merge_step_input_bindings,
+};
 
 use crate::conductor_bridge::sync::find_active_tool_spec;
 use crate::config::MediaPmDocument;
@@ -290,10 +292,13 @@ pub(super) async fn resolve_workflow_step_output_hashes(
     let required_step_zip_members = collect_required_step_zip_members(workflow);
 
     for step in &workflow.steps {
+        let merged_step_inputs =
+            merge_step_inputs_with_tool_defaults(generated_doc, &step.tool, &step.inputs)?;
         let expected_inputs =
-            resolve_expected_input_hashes(cas, generated_doc, &step.inputs, &step_outputs).await?;
+            resolve_expected_input_hashes(cas, generated_doc, &merged_step_inputs, &step_outputs)
+                .await?;
         let Some(expected_inputs) = expected_inputs else {
-            return Ok(None);
+            continue;
         };
 
         let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
@@ -309,12 +314,21 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             required_step_output_names.get(&step.id).cloned().unwrap_or_default();
         let required_zip_members = required_step_zip_members.get(&step.id);
 
+        let instance_key_resolved_values =
+            build_instance_key_resolved_value_bytes(cas, &merged_step_inputs, &expected_inputs)
+                .await?;
+
         let mut matching_instances = state
             .tool_call_instances
             .iter()
             .filter_map(|(instance_key, instance)| {
                 (instance.tool_call_id == conductor_tool_key
-                    && instance_matches_expected_inputs(instance, &expected_inputs)
+                    && instance_matches_expected_inputs(
+                        instance,
+                        &expected_inputs,
+                        &merged_step_inputs,
+                        &instance_key_resolved_values,
+                    )
                     && instance_matches_expected_output_names(instance, &step.outputs)
                     && instance_matches_required_output_names(instance, &required_output_names))
                 .then_some((instance_key, instance))
@@ -343,7 +357,7 @@ pub(super) async fn resolve_workflow_step_output_hashes(
         let Some(instance) =
             selected_instance.or_else(|| matching_instances.first().map(|(_, instance)| *instance))
         else {
-            return Ok(None);
+            continue;
         };
 
         let mut output_hashes = instance
@@ -359,7 +373,63 @@ pub(super) async fn resolve_workflow_step_output_hashes(
         step_outputs.insert(step.id.clone(), output_hashes);
     }
 
-    Ok(Some(step_outputs))
+    if step_outputs.is_empty() { Ok(None) } else { Ok(Some(step_outputs)) }
+}
+
+/// Unions step-declared inputs with the active tool spec contract, matching
+/// conductor `resolve_step_inputs` key collection.
+fn merge_step_inputs_with_tool_defaults(
+    generated_doc: &NickelDocument,
+    step_tool: &str,
+    step_inputs: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, MediaPmError> {
+    let (_, tool_spec) = find_active_tool_spec(generated_doc, step_tool).ok_or_else(|| {
+        MediaPmError::Workflow(format!(
+            "workflow step references unknown tool '{}' in generated config",
+            step_tool
+        ))
+    })?;
+    Ok(merge_step_input_bindings(step_inputs, tool_spec))
+}
+
+async fn build_instance_key_resolved_value_bytes(
+    cas: &FileSystemCas,
+    merged_bindings: &BTreeMap<String, String>,
+    expected_inputs: &ExpectedStepInputs,
+) -> Result<BTreeMap<String, Vec<u8>>, MediaPmError> {
+    use mediapm_conductor::{
+        instance_key_resolved_value_bytes_for_hash_reference,
+        instance_key_resolved_value_bytes_for_literal_binding,
+    };
+
+    let mut values = BTreeMap::new();
+    for (key, raw_binding) in merged_bindings {
+        let Some(resolved_hash) = expected_inputs.resolved_hashes.get(key) else {
+            continue;
+        };
+        let value_bytes = if let Some(reference) = parse_step_output_reference(raw_binding) {
+            if let Some(zip_member) = reference.zip_member {
+                let zip_bytes = cas.get(*resolved_hash).await.map_err(|source| {
+                    MediaPmError::Workflow(format!(
+                        "reading ZIP output '{resolved_hash}' for instance-key member '{zip_member}' failed: {source}"
+                    ))
+                })?;
+                extract_zip_member_bytes(zip_bytes.as_ref(), zip_member).map_err(|error| {
+                    MediaPmError::Workflow(format!(
+                        "extracting ZIP member '{zip_member}' for instance-key material failed: {error}"
+                    ))
+                })?
+            } else {
+                instance_key_resolved_value_bytes_for_hash_reference(*resolved_hash)
+            }
+        } else if parse_external_data_reference(raw_binding)?.is_some() {
+            instance_key_resolved_value_bytes_for_hash_reference(*resolved_hash)
+        } else {
+            instance_key_resolved_value_bytes_for_literal_binding(raw_binding)
+        };
+        values.insert(key.clone(), value_bytes);
+    }
+    Ok(values)
 }
 
 fn collect_required_step_output_names(
@@ -556,40 +626,19 @@ async fn resolve_input_binding_hash(
 pub(super) fn instance_matches_expected_inputs(
     instance: &ToolCallInstance,
     expected_inputs: &ExpectedStepInputs,
+    merged_step_inputs: &BTreeMap<String, String>,
+    instance_key_resolved_values: &BTreeMap<String, Vec<u8>>,
 ) -> bool {
     if !expected_inputs.unresolved_hash_input_names.is_empty() {
         return false;
     }
 
-    if expected_inputs.resolved_hashes.is_empty() {
-        return true;
-    }
-
-    if instance.command_args.is_empty() {
-        let input_hashes: Vec<Hash> = expected_inputs.resolved_hashes.values().copied().collect();
-        let materialized_hashes: Vec<Hash> =
-            instance.materialized_inputs.values().map(|record| record.hash).collect();
-        let executed_at_nanos =
-            instance.impure.then(|| instance.executed_at.as_unix_nanos()).unwrap_or(0);
-        let derived = mediapm_conductor::derive_tool_call_instance_key(
-            &instance.tool_call_id,
-            instance.impure,
-            executed_at_nanos,
-            &input_hashes,
-            &[],
-            &materialized_hashes,
-        );
-        return derived == instance.instance_key;
-    }
-
-    let deterministic_arg_hashes: BTreeSet<Hash> = instance
-        .command_args
-        .iter()
-        .filter(|record| record.deterministic)
-        .map(|record| record.hash)
-        .collect();
-
-    expected_inputs.resolved_hashes.values().all(|hash| deterministic_arg_hashes.contains(hash))
+    let input_hashes = mediapm_conductor::deterministic_input_hashes_from_resolved_value_bytes(
+        merged_step_inputs,
+        instance_key_resolved_values,
+    );
+    let materialized_hashes = mediapm_conductor::deterministic_materialized_input_hashes(instance);
+    mediapm_conductor::instance_matches_stored_key(instance, &input_hashes, &materialized_hashes)
 }
 
 fn instance_matches_expected_output_names(
@@ -600,4 +649,136 @@ fn instance_matches_expected_output_names(
         instance.outputs.contains_key(output_name)
             || (output_name != "stdout" && instance.outputs.contains_key("stdout"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    use mediapm_cas::FileSystemCas;
+    use mediapm_conductor::{decode_document, decode_state_json};
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn fixture_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+    }
+
+    fn load_generated_doc() -> NickelDocument {
+        let bytes = std::fs::read(fixture_path("demo_conductor_generated.ncl"))
+            .expect("read demo generated conductor doc");
+        decode_document(&bytes).expect("decode demo generated conductor doc")
+    }
+
+    fn load_conductor_state() -> ConductorState {
+        let bytes = std::fs::read(fixture_path("demo_conductor_state.json"))
+            .expect("read demo conductor state");
+        decode_state_json(&bytes).expect("decode demo conductor state")
+    }
+
+    #[tokio::test]
+    async fn demo_workflow_step_outputs_include_ffmpeg_and_apply() {
+        let generated = load_generated_doc();
+        let state = load_conductor_state();
+        let workflow = generated
+            .workflows
+            .iter()
+            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
+            .expect("demo workflow");
+        let cas_root = tempdir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        for instance in state.tool_call_instances.values() {
+            for output in instance.outputs.values() {
+                if cas.get(output.hash).await.is_err() {
+                    let _ = cas.put(bytes::Bytes::from_static(b"fixture-bytes")).await;
+                }
+            }
+        }
+
+        let step_outputs = resolve_workflow_step_output_hashes(&cas, &generated, &state, workflow)
+            .await
+            .expect("resolve workflow step outputs")
+            .expect("expected step outputs");
+
+        assert!(
+            step_outputs.contains_key("step-1-ffmpeg"),
+            "expected ffmpeg step outputs, got: {:?}",
+            step_outputs.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            step_outputs.contains_key("step-3-0-media-tagger-audio-to-audio-apply"),
+            "expected media-tagger apply step outputs, got: {:?}",
+            step_outputs.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn demo_ffmpeg_instance_matches_step_inputs() {
+        let generated = load_generated_doc();
+        let state = load_conductor_state();
+        let workflow = generated
+            .workflows
+            .iter()
+            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
+            .expect("demo workflow");
+        let ffmpeg_step =
+            workflow.steps.iter().find(|step| step.id == "step-1-ffmpeg").expect("ffmpeg step");
+        let cas_root = tempdir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let import_step = workflow
+            .steps
+            .iter()
+            .find(|step| step.id == "step-0-0-import-video_untagged-to-video_untagged")
+            .expect("import step");
+        let import_instance = state
+            .tool_call_instances
+            .values()
+            .find(|instance| instance.tool_call_id == "import@v1")
+            .expect("import instance");
+        let import_stdout = import_instance.outputs.get("stdout").expect("import stdout");
+        let _ = cas.put(bytes::Bytes::from_static(b"import-bytes")).await;
+
+        let mut step_outputs = BTreeMap::new();
+        step_outputs.insert(
+            import_step.id.clone(),
+            BTreeMap::from([(String::from("video_untagged"), import_stdout.hash)]),
+        );
+
+        let merged_ffmpeg_inputs = merge_step_inputs_with_tool_defaults(
+            &generated,
+            &ffmpeg_step.tool,
+            &ffmpeg_step.inputs,
+        )
+        .expect("merge ffmpeg inputs");
+        let expected_inputs =
+            resolve_expected_input_hashes(&cas, &generated, &merged_ffmpeg_inputs, &step_outputs)
+                .await
+                .expect("resolve ffmpeg expected inputs")
+                .expect("ffmpeg expected inputs");
+
+        let conductor_tool_key = find_active_tool_spec(&generated, &ffmpeg_step.tool)
+            .map(|(key, _)| key.clone())
+            .expect("active ffmpeg tool");
+        let instance_key_resolved_values =
+            build_instance_key_resolved_value_bytes(&cas, &merged_ffmpeg_inputs, &expected_inputs)
+                .await
+                .expect("build ffmpeg instance-key resolved values");
+        let ffmpeg_instance = state
+            .tool_call_instances
+            .values()
+            .find(|instance| {
+                instance.tool_call_id == conductor_tool_key
+                    && instance_matches_expected_inputs(
+                        instance,
+                        &expected_inputs,
+                        &merged_ffmpeg_inputs,
+                        &instance_key_resolved_values,
+                    )
+            })
+            .expect("ffmpeg instance matching step inputs");
+        assert!(ffmpeg_instance.outputs.contains_key("primary"));
+    }
 }
