@@ -200,16 +200,29 @@ pub(super) async fn materialize_file_from_cas_with_order(
     // filesystem-based methods (hardlink, symlink, reflink) can work.
     // For WAL-only small blobs, this reads the bytes from the WAL and
     // writes them to the blob store + metadata.
-    // If the blob doesn't exist in CAS (e.g. testing with a dummy hash),
-    // silently fall through — the individual methods will fail with their
-    // own errors.
-    let _ = cas.ensure_blob_materialized(hash).await;
+    cas.ensure_blob_materialized(hash).await.map_err(|source| {
+        MediaPmError::Workflow(format!(
+            "ensuring CAS blob materialization for '{hash}' failed: {source}"
+        ))
+    })?;
 
-    let source_path = cas.object_path_for_hash(hash).filter(|p| p.is_file());
     let mut failures = Vec::new();
 
     for (method_index, method) in methods.iter().enumerate() {
         remove_existing_destination_path(destination_path).await?;
+
+        if !matches!(method, MaterializationMethod::Copy) {
+            cas.ensure_blob_materialized(hash).await.map_err(|source| {
+                MediaPmError::Workflow(format!(
+                    "ensuring CAS blob materialization for '{hash}' before '{}' failed: {source}",
+                    materialization_method_label(*method),
+                ))
+            })?;
+        }
+
+        // Re-resolve after `ensure_blob_materialized` and before each attempt:
+        // background CAS maintenance may rewrite blobs between calls.
+        let source_path = cas.object_path_for_hash(hash).filter(|p| p.is_file());
 
         match attempt_materialization_method(
             *method,
@@ -244,6 +257,8 @@ pub(super) async fn materialize_file_from_cas_with_order(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use bytes::Bytes;
     use mediapm_cas::CasApi;
@@ -272,6 +287,131 @@ mod tests {
         assert!(dest.exists());
         let actual = tokio::fs::read_to_string(&dest).await.unwrap();
         assert_eq!(actual, "hello materializer");
+        assert!(notices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hardlink_works_for_wal_only_small_blob_after_ensure() {
+        let dir = TempDir::new().unwrap();
+        let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();
+        let hash = cas.put(Bytes::from_static(b"wal-only-small")).await.unwrap();
+        assert!(
+            !cas.object_path_for_hash(hash).is_some_and(|p| p.is_file()),
+            "small puts should remain WAL-only before materialization ensure"
+        );
+
+        let dest = dir.path().join("wal-only.bin");
+        let mut notices = Vec::new();
+        materialize_file_from_cas_with_order(
+            &cas,
+            hash,
+            &dest,
+            "wal-only.bin",
+            &[MaterializationMethod::Hardlink],
+            &mut notices,
+        )
+        .await
+        .unwrap();
+
+        let source = cas.object_path_for_hash(hash).expect("cas object path");
+        assert!(same_file::is_same_file(&source, &dest).expect("same_file check"));
+        assert!(notices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hardlink_materialization_succeeds_with_spaces_in_destination_path() {
+        let dir = TempDir::new().unwrap();
+        let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();
+        let content = b"hardlink-with-spaces";
+        let hash = cas.put(Bytes::from_static(content)).await.unwrap();
+
+        let dest = dir
+            .path()
+            .join("music videos")
+            .join("Artist - Title [demo.local.id]")
+            .join("Artist - Title [demo.local.id].m4a");
+        tokio::fs::create_dir_all(dest.parent().expect("parent")).await.unwrap();
+        let mut notices = Vec::new();
+        materialize_file_from_cas_with_order(
+            &cas,
+            hash,
+            &dest,
+            "music videos/Artist - Title [demo.local.id]/Artist - Title [demo.local.id].m4a",
+            &[MaterializationMethod::Hardlink],
+            &mut notices,
+        )
+        .await
+        .unwrap();
+
+        let source = cas.object_path_for_hash(hash).expect("cas object path");
+        assert!(same_file::is_same_file(&source, &dest).expect("same_file check"));
+        assert!(notices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_hardlink_materialization_from_shared_cas() {
+        let dir = TempDir::new().unwrap();
+        let cas = Arc::new(FileSystemCas::open(&dir.path().join("cas")).await.unwrap());
+        let mut hashes = Vec::new();
+        for seed in 0..3 {
+            hashes.push(
+                cas.put(Bytes::from(vec![seed as u8; 16_384])).await.expect("put wal-backed blob"),
+            );
+        }
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for (index, hash) in hashes.into_iter().enumerate() {
+            let cas = cas.clone();
+            let dest = dir.path().join(format!("parallel-{index}.bin"));
+            let relative_path = format!("parallel-{index}.bin");
+            join_set.spawn(async move {
+                let mut notices = Vec::new();
+                materialize_file_from_cas_with_order(
+                    &cas,
+                    hash,
+                    &dest,
+                    &relative_path,
+                    &[MaterializationMethod::Hardlink],
+                    &mut notices,
+                )
+                .await
+                .expect("parallel hardlink materialization");
+                (hash, dest)
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            let (hash, dest) = result.expect("join");
+            let source = cas.object_path_for_hash(hash).expect("cas object path");
+            assert!(same_file::is_same_file(&source, &dest).expect("same_file check"));
+        }
+    }
+
+    #[tokio::test]
+    async fn hardlink_across_mediapm_store_and_media_dirs() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join(".mediapm").join("store");
+        let media =
+            dir.path().join("media").join("music videos").join("Artist - Title [demo.local.id]");
+        tokio::fs::create_dir_all(&media).await.unwrap();
+        let cas = FileSystemCas::open(&store).await.unwrap();
+        let hash = cas.put(Bytes::from(vec![1u8; 20_000])).await.expect("put wal-backed blob");
+        let dest = media.join("Artist - Title [demo.local.id].m4a");
+
+        let mut notices = Vec::new();
+        materialize_file_from_cas_with_order(
+            &cas,
+            hash,
+            &dest,
+            "music videos/Artist - Title [demo.local.id]/Artist - Title [demo.local.id].m4a",
+            &[MaterializationMethod::Hardlink],
+            &mut notices,
+        )
+        .await
+        .expect("hardlink across mediapm layout");
+
+        let source = cas.object_path_for_hash(hash).expect("cas object path");
+        assert!(same_file::is_same_file(&source, &dest).expect("same_file check"));
         assert!(notices.is_empty());
     }
 
