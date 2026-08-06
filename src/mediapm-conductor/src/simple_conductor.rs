@@ -174,6 +174,10 @@ where
     /// Call [`ensure_persisted_state_loaded`] before this when the conductor
     /// may need to read or migrate a v1 state file from disk.
     ///
+    /// # Errors
+    ///
+    /// Currently infallible; returns the in-memory orchestration state clone.
+    ///
     /// # Panics
     ///
     /// Panics if the in-memory orchestration state mutex is poisoned.

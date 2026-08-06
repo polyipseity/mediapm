@@ -940,15 +940,15 @@ async fn resolve_input<C: mediapm_cas::CasApi + Send + Sync>(
         ConductorError::Workflow(format!("template: input '${{inputs.{name}}}' not found"))
     })?;
 
-    if let Some(cas) = ctx.cas {
-        if let Ok(hash) = value.trim().parse::<Hash>() {
-            let data = cas.get(hash).await.map_err(|e| {
-                ConductorError::Workflow(format!(
-                    "template: input '${{inputs.{name}}}' hash '{hash}' not found in CAS: {e}",
-                ))
-            })?;
-            return Ok(ResolvedValue::Bytes(data.to_vec()));
-        }
+    if let Some(cas) = ctx.cas
+        && let Ok(hash) = value.trim().parse::<Hash>()
+    {
+        let data = cas.get(hash).await.map_err(|e| {
+            ConductorError::Workflow(format!(
+                "template: input '${{inputs.{name}}}' hash '{hash}' not found in CAS: {e}",
+            ))
+        })?;
+        return Ok(ResolvedValue::Bytes(data.to_vec()));
     }
 
     Ok(ResolvedValue::String(value.clone()))
@@ -1031,11 +1031,11 @@ fn input_ref_expr_truthy(ref_expr: &str, inputs: &BTreeMap<String, String>) -> O
             return None;
         }
         let expected = unquote_string(quoted_rhs)?;
-        let actual = inputs.get(lhs).map(|value| value.as_str()).unwrap_or("");
+        let actual = inputs.get(lhs).map_or("", |value| value.as_str());
         return Some(actual == expected);
     }
 
-    let actual = inputs.get(rest).map(|value| value.as_str()).unwrap_or("");
+    let actual = inputs.get(rest).map_or("", |value| value.as_str());
     Some(!actual.is_empty())
 }
 

@@ -73,7 +73,7 @@ impl<'de> Deserialize<'de> for SaveModeLatest {
 
         struct SaveModeVisitor;
 
-        impl<'de> Visitor<'de> for SaveModeVisitor {
+        impl Visitor<'_> for SaveModeVisitor {
             type Value = SaveModeLatest;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

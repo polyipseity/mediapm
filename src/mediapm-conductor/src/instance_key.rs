@@ -128,8 +128,7 @@ pub fn instance_matches_stored_key(
     deterministic_input_hashes: &[Hash],
     deterministic_materialized_input_hashes: &[Hash],
 ) -> bool {
-    let executed_at_nanos =
-        instance.impure.then(|| instance.executed_at.as_unix_nanos()).unwrap_or(0);
+    let executed_at_nanos = if instance.impure { instance.executed_at.as_unix_nanos() } else { 0 };
     let derived = crate::state::derive_tool_call_instance_key(
         &instance.tool_call_id,
         instance.impure,
