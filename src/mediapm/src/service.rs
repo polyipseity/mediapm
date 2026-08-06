@@ -1053,7 +1053,9 @@ impl MediaPmService<FileSystemCas> {
 
         // 4. Load mediapm document and state.
         let document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
-        let state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
+        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
+        let generated_doc = load_conductor_generated_document(&effective_paths)?;
+        let conductor_state = self.conductor.get_state()?;
 
         // 5. Check if any tools require sync.
         self.append_tool_sync_hint_warning(&mut warnings, &state).await?;
@@ -1065,12 +1067,16 @@ impl MediaPmService<FileSystemCas> {
         let materialize_report = materializer::sync_hierarchy(
             &effective_paths,
             &document,
-            &state,
+            &mut state,
             self.conductor.cas(),
             verify_materialization,
+            &conductor_state,
+            &generated_doc,
             None,
         )
         .await?;
+
+        save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
 
         // 8. Gather warnings from materializer.
         warnings.extend(materialize_report.notices);

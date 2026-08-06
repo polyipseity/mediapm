@@ -10,7 +10,7 @@ mod playlist;
 mod resolve;
 mod zip;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,20 +23,61 @@ use crate::config::hierarchy_types::{
     expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
 };
 use crate::config::source_types::MediaSourceSpec;
-use crate::config::{MediaPmDocument, MediaPmState};
+use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
 use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
+use crate::tools::workflows::resolve_ffmpeg_slot_limits;
+use mediapm_conductor::{ConductorState, NickelDocument};
 
-use self::metadata::MaterializationLookupContext;
+use self::metadata::{MaterializationLookupContext, StepOutputHashes};
 use self::playlist::{
     PlaylistEntryPathMode, RenderedPlaylistEntry, generate_playlist_bytes,
     resolve_playlist_target_relative_path,
 };
 use self::resolve::{
-    collect_media_source_available_variants, resolve_hierarchy_source, resolve_variant_bytes,
-    resolve_variant_hash,
+    collect_media_source_available_variants, resolve_hierarchy_source, resolve_variant_hash,
+    resolve_variant_source_bytes,
 };
+
+// ---------------------------------------------------------------------------
+// Internal resolve types (shared with resolve.rs)
+// ---------------------------------------------------------------------------
+
+/// Per-workflow required step output names (`step_id -> output_name[]`).
+pub(super) type RequiredStepOutputNames = BTreeMap<String, BTreeSet<String>>;
+
+/// Per-workflow required ZIP member selectors (`step_id -> output_name -> zip_member[]`).
+pub(super) type RequiredStepZipMembers = BTreeMap<String, BTreeMap<String, BTreeSet<String>>>;
+
+/// Per-step expected inputs used to match runtime workflow instances.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct ExpectedStepInputs {
+    /// Deterministically resolved input hashes.
+    pub(super) resolved_hashes: BTreeMap<String, Hash>,
+    /// Input names whose hashes cannot be reconstructed from persisted CAS.
+    pub(super) unresolved_hash_input_names: BTreeSet<String>,
+}
+
+/// One input-binding hash resolution result.
+pub(super) enum InputBindingHashResolution {
+    /// Fully reconstructed deterministic input hash.
+    Resolved(Hash),
+    /// Referenced prior step output is unavailable in the current traversal order.
+    MissingPriorStepOutput,
+    /// Referenced step output exists but cannot be reconstructed from CAS bytes.
+    MissingMaterializedStepOutput,
+}
+
+/// Resolved variant payload for materialization.
+pub(super) struct VariantSourceBytes {
+    /// Materialized file bytes.
+    pub(super) bytes: Vec<u8>,
+    /// Optional non-fatal fallback notice.
+    pub(super) notice: Option<String>,
+    /// Source CAS hash when bytes map directly to one stored object.
+    pub(super) source_hash: Option<Hash>,
+}
 use self::zip::{compile_hierarchy_folder_rename_rules, extract_zip_folder_variant_bytes};
 
 // ---------------------------------------------------------------------------
@@ -66,12 +107,10 @@ pub struct MaterializeReport {
 struct PreparedHierarchyEntryResult {
     /// Whether the entry was actually materialized (not skipped).
     materialized: bool,
-    /// Final relative path of the materialized output.
-    #[allow(dead_code)]
-    relative_path: String,
-    /// Whether the output is a directory (folder variant).
-    #[allow(dead_code)]
-    is_directory: bool,
+    /// Managed file records keyed by hierarchy-relative path.
+    managed_files: BTreeMap<String, ManagedFileRecord>,
+    /// Per-media variant hash updates (`media_id -> variant -> hash`).
+    media_variant_updates: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Shared state passed to each hierarchy entry worker.
@@ -116,21 +155,28 @@ fn hierarchy_worker_count() -> usize {
 pub async fn sync_hierarchy(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
-    _state: &MediaPmState,
+    state: &mut MediaPmState,
     cas: &FileSystemCas,
     verify_materialization: bool,
+    conductor_state: &ConductorState,
+    generated_doc: &NickelDocument,
     progress_group: Option<&dyn ProgressGroupApi>,
 ) -> Result<MaterializeReport, MediaPmError> {
     let hierarchy_root = &paths.hierarchy_root_dir;
 
-    // Flatten hierarchy and resolve all entries.
     let flattened = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
     if flattened.is_empty() {
         info!("hierarchy is empty, nothing to materialize");
         return Ok(MaterializeReport::default());
     }
 
-    let lookup_context = MaterializationLookupContext::new(cas.clone());
+    let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(document);
+    let lookup_context = MaterializationLookupContext::new(
+        cas.clone(),
+        Some(conductor_state.clone()),
+        generated_doc.clone(),
+        ffmpeg_slot_limits,
+    );
     let shared = Arc::new(SyncSharedState {
         hierarchy_root: hierarchy_root.clone(),
         cas: cas.clone(),
@@ -173,6 +219,7 @@ pub async fn sync_hierarchy(
     // Collect results.
     let mut report = MaterializeReport::default();
     let mut materialize_error: Option<MediaPmError> = None;
+    let mut desired_managed_paths = BTreeSet::new();
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok(Ok(entry_result)) => {
@@ -180,6 +227,16 @@ pub async fn sync_hierarchy(
                     report.materialized_paths += 1;
                 } else {
                     report.skipped_paths += 1;
+                }
+                desired_managed_paths.extend(entry_result.managed_files.keys().cloned());
+                for (path, record) in entry_result.managed_files {
+                    state.managed_files.insert(path, record);
+                }
+                for (media_id, variant_hashes) in entry_result.media_variant_updates {
+                    let step_state = state.workflow_states.entry(media_id).or_default();
+                    for (variant, hash) in variant_hashes {
+                        step_state.variant_hashes.insert(variant, hash);
+                    }
                 }
             }
             Ok(Err(e)) => {
@@ -205,6 +262,16 @@ pub async fn sync_hierarchy(
     }
     if let Some(e) = materialize_error {
         return Err(e);
+    }
+
+    let stale_managed_paths: Vec<String> = state
+        .managed_files
+        .keys()
+        .filter(|path| !desired_managed_paths.contains(path.as_str()))
+        .cloned()
+        .collect();
+    for stale in stale_managed_paths {
+        state.managed_files.remove(&stale);
     }
 
     // --- Stale path cleanup ---
@@ -268,21 +335,28 @@ async fn prepare_hierarchy_entry(
             let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
 
             if let Some(hash) = hash {
-                materialize_file_entry(&target_path, &relative_path, &hash, shared, lookup).await?;
+                materialize_file_entry(&target_path, &relative_path, &hash, shared).await?;
+                let record = ManagedFileRecord {
+                    media_id: media_id.clone(),
+                    variant: effective_variant.clone(),
+                    hash: hash.to_string(),
+                };
                 Ok(PreparedHierarchyEntryResult {
                     materialized: true,
-                    relative_path,
-                    is_directory: false,
+                    managed_files: BTreeMap::from([(relative_path.clone(), record)]),
+                    media_variant_updates: BTreeMap::from([(
+                        media_id.clone(),
+                        BTreeMap::from([(effective_variant.clone(), hash.to_string())]),
+                    )]),
                 })
             } else {
-                // No content — still mark as processed but warn.
                 shared.notice(format!(
                     "media '{media_id}' variant '{effective_variant}' has no content hash; skipping"
                 ));
                 Ok(PreparedHierarchyEntryResult {
                     materialized: false,
-                    relative_path,
-                    is_directory: false,
+                    managed_files: BTreeMap::new(),
+                    media_variant_updates: BTreeMap::new(),
                 })
             }
         }
@@ -320,7 +394,6 @@ async fn materialize_file_entry(
     relative_path: &str,
     hash: &Hash,
     shared: &SyncSharedState,
-    _lookup: &MaterializationLookupContext,
 ) -> Result<(), MediaPmError> {
     use crate::config::MaterializationMethod;
     use crate::materializer::file_ops::materialize_file_from_cas_with_order;
@@ -390,73 +463,96 @@ async fn materialize_media_folder_entry(
     };
 
     let rename_rules = compile_hierarchy_folder_rename_rules(&entry.entry.rename_files)?;
+    let mut managed_files = BTreeMap::new();
+    let mut variant_hashes = BTreeMap::new();
 
     for variant_name in &selected_variants {
         let variant_path = target_path.join(variant_name);
-        let _variant_relative = format!("{relative_path}/{variant_name}");
 
-        let bytes = resolve_variant_bytes(media_id, variant_name, source, lookup).await?;
-
-        match bytes {
-            Some(data) => {
-                // Try ZIP extraction first for folder variants.
-                let is_zip = is_zip_content(&data);
-                if is_zip {
-                    let extracted = extract_zip_folder_variant_bytes(&data, &rename_rules)?;
-                    for (file_rel_path, content) in extracted {
-                        let file_target = target_path.join(&file_rel_path);
-                        if let Some(parent) = file_target.parent() {
-                            tokio::fs::create_dir_all(parent).await.map_err(|source| {
-                                MediaPmError::Io {
-                                    operation: "creating extracted-file parent directory"
-                                        .to_string(),
-                                    path: parent.to_path_buf(),
-                                    source,
-                                }
-                            })?;
-                        }
-                        tokio::fs::write(&file_target, &content).await.map_err(|source| {
-                            MediaPmError::Io {
-                                operation: "writing extracted variant file".to_string(),
-                                path: file_target.clone(),
-                                source,
-                            }
-                        })?;
-                        crate::materializer::commit::ensure_managed_path_readonly(&file_target)?;
-                    }
-                } else {
-                    // Single file variant.
-                    if let Some(parent) = variant_path.parent() {
-                        tokio::fs::create_dir_all(parent).await.map_err(|source| {
-                            MediaPmError::Io {
-                                operation: "creating variant-file parent directory".to_string(),
-                                path: parent.to_path_buf(),
-                                source,
-                            }
-                        })?;
-                    }
-                    tokio::fs::write(&variant_path, &data).await.map_err(|source| {
-                        MediaPmError::Io {
-                            operation: "writing variant file".to_string(),
-                            path: variant_path.clone(),
-                            source,
-                        }
-                    })?;
-                    crate::materializer::commit::ensure_managed_path_readonly(&variant_path)?;
+        let payload =
+            match resolve_variant_source_bytes(lookup, media_id, source, variant_name).await {
+                Ok(payload) => payload,
+                Err(error) => {
+                    shared.notice(format!(
+                        "media '{media_id}' variant '{variant_name}' resolution failed: {error}"
+                    ));
+                    continue;
                 }
+            };
+
+        let data = payload.bytes;
+        if let Some(notice) = payload.notice {
+            shared.notice(notice);
+        }
+        if let Some(source_hash) = payload.source_hash {
+            variant_hashes.insert(variant_name.clone(), source_hash.to_string());
+        }
+
+        let is_zip = is_zip_content(&data);
+        if is_zip {
+            let extracted = extract_zip_folder_variant_bytes(&data, &rename_rules)?;
+            for (file_rel_path, content) in extracted {
+                let file_target = target_path.join(&file_rel_path);
+                let file_relative = format!(
+                    "{relative_path}/{}",
+                    file_rel_path.to_string_lossy().replace('\\', "/")
+                );
+                if let Some(parent) = file_target.parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(|source| MediaPmError::Io {
+                        operation: "creating extracted-file parent directory".to_string(),
+                        path: parent.to_path_buf(),
+                        source,
+                    })?;
+                }
+                tokio::fs::write(&file_target, &content).await.map_err(|source| {
+                    MediaPmError::Io {
+                        operation: "writing extracted variant file".to_string(),
+                        path: file_target.clone(),
+                        source,
+                    }
+                })?;
+                crate::materializer::commit::ensure_managed_path_readonly(&file_target)?;
+                let hash = Hash::from_content(&content);
+                managed_files.insert(
+                    file_relative,
+                    ManagedFileRecord {
+                        media_id: media_id.to_string(),
+                        variant: variant_name.clone(),
+                        hash: hash.to_string(),
+                    },
+                );
             }
-            None => {
-                shared.notice(format!(
-                    "media '{media_id}' variant '{variant_name}' has no content; skipped"
-                ));
+        } else {
+            if let Some(parent) = variant_path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|source| MediaPmError::Io {
+                    operation: "creating variant-file parent directory".to_string(),
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
             }
+            tokio::fs::write(&variant_path, &data).await.map_err(|source| MediaPmError::Io {
+                operation: "writing variant file".to_string(),
+                path: variant_path.clone(),
+                source,
+            })?;
+            crate::materializer::commit::ensure_managed_path_readonly(&variant_path)?;
+            let file_relative = format!("{relative_path}/{variant_name}");
+            let hash = payload.source_hash.unwrap_or_else(|| Hash::from_content(&data));
+            managed_files.insert(
+                file_relative,
+                ManagedFileRecord {
+                    media_id: media_id.to_string(),
+                    variant: variant_name.clone(),
+                    hash: hash.to_string(),
+                },
+            );
         }
     }
 
     Ok(PreparedHierarchyEntryResult {
         materialized: true,
-        relative_path: relative_path.to_string(),
-        is_directory: true,
+        managed_files,
+        media_variant_updates: BTreeMap::from([(media_id.to_string(), variant_hashes)]),
     })
 }
 
@@ -525,14 +621,26 @@ async fn materialize_playlist_entry(
 
     Ok(PreparedHierarchyEntryResult {
         materialized: true,
-        relative_path: relative_path.to_string(),
-        is_directory: false,
+        managed_files: BTreeMap::new(),
+        media_variant_updates: BTreeMap::new(),
     })
 }
 
 // ---------------------------------------------------------------------------
 // Stale-path cleanup
 // ---------------------------------------------------------------------------
+
+/// Workspace-root entries that must survive stale hierarchy scans when
+/// `hierarchy_root_dir` defaults to the mediapm config directory.
+const HIERARCHY_ROOT_RESERVED_NAMES: &[&str] =
+    &["mediapm.ncl", "mediapm.conductor.ncl", "mediapm.conductor.generated.ncl", "tool-cache"];
+
+/// Returns true when a hierarchy-root scan entry must not be removed or
+/// descended into (hidden paths and workspace config artifacts).
+fn is_stale_scan_excluded(name: &str, relative_prefix: &str) -> bool {
+    name.starts_with('.')
+        || (relative_prefix.is_empty() && HIERARCHY_ROOT_RESERVED_NAMES.contains(&name))
+}
 
 /// Removes filesystem paths that are no longer present in the flattened
 /// hierarchy, plus any empty parent directories left behind.
@@ -589,6 +697,9 @@ fn remove_stale_recursive(
     })? {
         let name = entry.file_name();
         let name_str = name.to_string_lossy().to_string();
+        if is_stale_scan_excluded(&name_str, relative_prefix) {
+            continue;
+        }
         let relative_path = if relative_prefix.is_empty() {
             name_str.clone()
         } else {
@@ -703,10 +814,22 @@ mod tests {
         let cas = FileSystemCas::open(&cas_root).await.unwrap();
 
         let document = MediaPmDocument::default();
-        let state = MediaPmState::default();
+        let mut state = MediaPmState::default();
+        let conductor_state = ConductorState::new_empty();
+        let generated_doc = NickelDocument::default();
 
         let recording = RecordingProgressTracker::new();
-        let result = sync_hierarchy(&paths, &document, &state, &cas, true, Some(&recording)).await;
+        let result = sync_hierarchy(
+            &paths,
+            &document,
+            &mut state,
+            &cas,
+            true,
+            &conductor_state,
+            &generated_doc,
+            Some(&recording),
+        )
+        .await;
 
         assert!(result.is_ok());
         let ops = recording.ops();
@@ -759,10 +882,22 @@ mod tests {
             }],
             ..MediaPmDocument::default()
         };
-        let state = MediaPmState::default();
+        let mut state = MediaPmState::default();
+        let conductor_state = ConductorState::new_empty();
+        let generated_doc = NickelDocument::default();
 
         let recording = RecordingProgressTracker::new();
-        let result = sync_hierarchy(&paths, &document, &state, &cas, true, Some(&recording)).await;
+        let result = sync_hierarchy(
+            &paths,
+            &document,
+            &mut state,
+            &cas,
+            true,
+            &conductor_state,
+            &generated_doc,
+            Some(&recording),
+        )
+        .await;
 
         assert!(result.is_ok(), "sync_hierarchy should succeed: {result:?}");
         let ops = recording.ops();

@@ -184,6 +184,31 @@ impl Default for ConductorState {
     }
 }
 
+/// Re-derives a tool-call instance key from the same components recorded at
+/// execution time.
+///
+/// Builtin tools store resolved deterministic input hashes in the key rather
+/// than `command_args`, so mediapm materialization uses this helper to match
+/// persisted instances.
+#[must_use]
+pub fn derive_tool_call_instance_key(
+    tool_call_id: &str,
+    impure: bool,
+    executed_at_nanos: u64,
+    deterministic_input_hashes: &[Hash],
+    deterministic_env_vars: &[Hash],
+    deterministic_materialized_input_hashes: &[Hash],
+) -> Hash {
+    versions::derive_instance_key_v2(
+        tool_call_id,
+        impure,
+        executed_at_nanos,
+        deterministic_input_hashes,
+        deterministic_env_vars,
+        deterministic_materialized_input_hashes,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

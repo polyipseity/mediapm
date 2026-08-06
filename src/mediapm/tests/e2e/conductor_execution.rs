@@ -6,8 +6,10 @@ use std::path::Path;
 
 use bytes::Bytes;
 use mediapm::{
-    MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
-    OutputVariantValue, TransformInputValue, YtDlpOutputVariantConfig, media_id_from_uri,
+    HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaPmService, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue, PlaylistFormat,
+    SanitizeNamesConfig, TransformInputValue, YtDlpOutputVariantConfig, load_mediapm_document,
+    load_mediapm_state_document, media_id_from_uri, save_mediapm_document,
 };
 use mediapm_cas::CasApi;
 use tempfile::tempdir;
@@ -229,6 +231,61 @@ async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::M
     // after a clean shutdown released the first service's handle.
     let service = service_at(root.path()).await?;
     drop(service);
+
+    Ok(())
+}
+
+/// Materialization records managed outputs in `state.json` when hierarchy
+/// entries resolve workflow variant hashes from conductor state.
+#[tokio::test]
+async fn sync_populates_managed_files_from_conductor_state() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let mut service = service_at(root.path()).await?;
+
+    let cas = service.conductor().cas().clone();
+    let hash = cas
+        .put(Bytes::from_static(b"phase3 materializer managed_files fixture"))
+        .await
+        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seeding CAS: {e}")))?;
+
+    let uri = Url::parse("local:phase3-managed-files").expect("url must parse");
+    let media_id = media_id_from_uri(&uri);
+    service.add_media_source(
+        &import_source_spec(&hash.to_string()),
+        media_id.clone(),
+        &uri,
+        None,
+        None,
+    )?;
+
+    let paths = service.paths().clone();
+    let mut document = load_mediapm_document(&paths.mediapm_ncl)?;
+    document.hierarchy.push(HierarchyNode {
+        path: HierarchyPath::simple("imported_fixture"),
+        kind: HierarchyNodeKind::Media,
+        id: None,
+        media_id: Some(media_id.clone()),
+        variant: Some("primary".to_string()),
+        variants: vec![],
+        rename_files: vec![],
+        format: PlaylistFormat::M3u8,
+        ids: vec![],
+        sanitize_names: SanitizeNamesConfig::Inherit,
+        children: vec![],
+    });
+    save_mediapm_document(&paths.mediapm_ncl, &document)?;
+
+    service.sync_library(false).await?;
+
+    let state = load_mediapm_state_document(&paths.mediapm_state_json)?;
+    assert!(
+        !state.managed_files.is_empty(),
+        "expected managed_files after hierarchy materialization"
+    );
+    assert!(
+        state.workflow_states.get(&media_id).is_some_and(|ws| !ws.variant_hashes.is_empty()),
+        "expected workflow_states.variant_hashes for {media_id}"
+    );
 
     Ok(())
 }

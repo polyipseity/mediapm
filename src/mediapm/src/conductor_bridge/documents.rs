@@ -142,25 +142,6 @@ pub(crate) fn save_conductor_generated_document(
     save_conductor_document(&paths.conductor_generated_ncl, document, "conductor generated NCL")
 }
 
-/// Loads the conductor runtime state document (`.ncl`) from disk.
-///
-/// Returns an empty [`NickelDocument`] when the file does not exist.
-#[allow(dead_code)]
-pub(crate) fn load_conductor_state_document(
-    paths: &MediaPmPaths,
-) -> Result<NickelDocument, MediaPmError> {
-    load_conductor_document(&paths.conductor_state_config, "conductor runtime state")
-}
-
-/// Saves the conductor runtime state document (`.ncl`) to disk.
-#[allow(dead_code)]
-pub(crate) fn save_conductor_state_document(
-    paths: &MediaPmPaths,
-    document: &NickelDocument,
-) -> Result<(), MediaPmError> {
-    save_conductor_document(&paths.conductor_state_config, document, "conductor runtime state")
-}
-
 // ── Tool enumeration ─────────────────────────────────────────────────────
 
 /// One row of tool metadata for `mediapm tool list` output.

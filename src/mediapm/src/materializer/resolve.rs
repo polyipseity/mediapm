@@ -1,92 +1,30 @@
-//! Variant hash/bytes resolution and media source lookup.
-//!
-//! Provides functions to resolve variant content hashes from media source
-//! config (including default fallback), fetch full content bytes from CAS,
-//! look up a media source by hierarchy media-id reference, and enumerate
-//! available variant names for a source.
+//! Conductor-state-first variant hash/bytes resolution and instance matching.
 
-use std::collections::BTreeSet;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 
-use mediapm_cas::{CasApi, Hash};
+use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_conductor::{ConductorState, NickelDocument, ToolCallInstance};
 
+use crate::conductor_bridge::sync::find_active_tool_spec;
 use crate::config::MediaPmDocument;
 use crate::config::hierarchy_types::HierarchyEntry;
 use crate::config::source_types::MediaSourceSpec;
 use crate::error::MediaPmError;
+use crate::tools::workflows::{
+    managed_workflow_name, resolve_media_variant_output_binding_with_limits,
+};
 
-use super::metadata::MaterializationLookupContext;
-
-// ---------------------------------------------------------------------------
-// Variant hash resolution
-// ---------------------------------------------------------------------------
-
-/// Resolves the CAS hash for one variant from a media source.
-///
-/// Tries an exact variant-name match first, then falls back to `"default"`
-/// when the requested name is not `"default"` itself. Returns `Ok(None)` when
-/// no matching hash is found.
-pub(super) async fn resolve_variant_hash(
-    media_id: &str,
-    variant_name: &str,
-    source: &MediaSourceSpec,
-    _lookup_context: &MaterializationLookupContext,
-) -> Result<Option<Hash>, MediaPmError> {
-    // Exact variant-name match.
-    if let Some(hash_str) = source.variant_hashes.get(variant_name) {
-        let hash: Hash = hash_str.parse().map_err(|e| {
-            MediaPmError::Workflow(format!(
-                "media '{media_id}' variant '{variant_name}' hash '{hash_str}' is invalid: {e}"
-            ))
-        })?;
-        return Ok(Some(hash));
-    }
-
-    // Fallback to "default" variant.
-    if variant_name != "default"
-        && let Some(hash_str) = source.variant_hashes.get("default")
-    {
-        let hash: Hash = hash_str.parse().map_err(|e| {
-            MediaPmError::Workflow(format!(
-                "media '{media_id}' default variant hash '{hash_str}' is invalid: {e}"
-            ))
-        })?;
-        return Ok(Some(hash));
-    }
-
-    Ok(None)
-}
+use super::zip::{
+    extract_zip_member_bytes, parse_external_data_reference, parse_step_output_reference,
+};
+use super::{
+    ExpectedStepInputs, InputBindingHashResolution, MaterializationLookupContext,
+    RequiredStepOutputNames, RequiredStepZipMembers, StepOutputHashes, VariantSourceBytes,
+};
 
 // ---------------------------------------------------------------------------
-// Variant bytes resolution
-// ---------------------------------------------------------------------------
-
-/// Fetches the full content bytes for one variant from the CAS store.
-///
-/// Returns `Ok(None)` when no hash is available for the variant. Returns
-/// `Err` on CAS read failures or hash parse errors.
-pub(super) async fn resolve_variant_bytes(
-    media_id: &str,
-    variant_name: &str,
-    source: &MediaSourceSpec,
-    lookup_context: &MaterializationLookupContext,
-) -> Result<Option<Vec<u8>>, MediaPmError> {
-    let hash = resolve_variant_hash(media_id, variant_name, source, lookup_context).await?;
-
-    match hash {
-        Some(hash) => {
-            let bytes = lookup_context.cas.get(hash).await.map_err(|e| {
-                MediaPmError::Workflow(format!(
-                    "media '{media_id}' variant '{variant_name}': CAS get({hash}) failed: {e}"
-                ))
-            })?;
-            Ok(Some(bytes.to_vec()))
-        }
-        None => Ok(None),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Hierarchy source resolution
+// Hierarchy / variant enumeration
 // ---------------------------------------------------------------------------
 
 /// Resolves the [`MediaSourceSpec`] for one hierarchy entry's media id.
@@ -102,28 +40,564 @@ pub(super) fn resolve_hierarchy_source<'a>(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Available variant enumeration
-// ---------------------------------------------------------------------------
-
 /// Collects all available variant names for one media source.
-///
-/// Combines keys from `variant_hashes` and `output_variants` across all
-/// workflow steps.
+#[must_use]
 pub(super) fn collect_media_source_available_variants(
     source: &MediaSourceSpec,
 ) -> BTreeSet<String> {
     let mut variants = BTreeSet::new();
-
     for variant_name in source.variant_hashes.keys() {
         variants.insert(variant_name.clone());
     }
-
     for step in &source.steps {
         for variant_name in step.output_variants.keys() {
             variants.insert(variant_name.clone());
         }
     }
-
     variants
+}
+
+// ---------------------------------------------------------------------------
+// Variant hash / bytes resolution
+// ---------------------------------------------------------------------------
+
+/// Resolves the CAS hash for one variant (conductor state first, then local).
+pub(super) async fn resolve_variant_hash(
+    media_id: &str,
+    variant_name: &str,
+    source: &MediaSourceSpec,
+    lookup: &MaterializationLookupContext,
+) -> Result<Option<Hash>, MediaPmError> {
+    if let Some(state) = lookup.conductor_state.as_ref() {
+        if let Some((workflow_hash, _notice)) =
+            resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant_name)
+                .await?
+        {
+            let binding = resolve_media_variant_output_binding_with_limits(
+                source,
+                variant_name,
+                lookup.ffmpeg_slot_limits.max_input_slots,
+                lookup.ffmpeg_slot_limits.max_output_slots,
+            )?;
+            if binding.is_none_or(|binding| binding.zip_member.is_none()) {
+                return Ok(Some(workflow_hash));
+            }
+            return Ok(None);
+        }
+    }
+
+    resolve_local_variant_hash(media_id, variant_name, source)
+}
+
+/// Resolves variant bytes with optional fallback notice and source hash.
+pub(super) async fn resolve_variant_source_bytes(
+    lookup: &MaterializationLookupContext,
+    media_id: &str,
+    source: &MediaSourceSpec,
+    variant: &str,
+) -> Result<VariantSourceBytes, MediaPmError> {
+    if let Some(state) = lookup.conductor_state.as_ref()
+        && let Some((workflow_hash, fallback_notice)) =
+            resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant)
+                .await?
+    {
+        let bytes = lookup.cas.get(workflow_hash).await.map_err(|source| {
+            MediaPmError::Workflow(format!(
+                "workflow output hash '{workflow_hash}' for media '{media_id}' variant '{variant}' is missing from CAS: {source}"
+            ))
+        })?;
+
+        let (materialized_bytes, source_hash) = if let Some(binding) =
+            resolve_media_variant_output_binding_with_limits(
+                source,
+                variant,
+                lookup.ffmpeg_slot_limits.max_input_slots,
+                lookup.ffmpeg_slot_limits.max_output_slots,
+            )? {
+            if let Some(zip_member) = binding.zip_member.as_deref() {
+                (
+                    extract_zip_member_bytes(bytes.as_ref(), zip_member).map_err(|error| {
+                        MediaPmError::Workflow(format!(
+                            "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
+                        ))
+                    })?,
+                    None,
+                )
+            } else {
+                (bytes.as_ref().to_vec(), Some(workflow_hash))
+            }
+        } else {
+            (bytes.as_ref().to_vec(), Some(workflow_hash))
+        };
+
+        return Ok(VariantSourceBytes {
+            bytes: materialized_bytes,
+            notice: fallback_notice,
+            source_hash,
+        });
+    }
+
+    if source.variant_hashes.is_empty() {
+        return Err(MediaPmError::Workflow(format!(
+            "media '{media_id}' variant '{variant}' has no local variant hashes and no workflow output hash resolved from conductor state"
+        )));
+    }
+
+    let hash_string = source
+        .variant_hashes
+        .get(variant)
+        .or_else(|| source.variant_hashes.get("default"))
+        .ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' does not define hash pointer for variant '{variant}'"
+            ))
+        })?
+        .clone();
+
+    let hash = hash_string.parse::<Hash>().map_err(|_| {
+        MediaPmError::Workflow(format!(
+            "media '{media_id}' variant '{variant}' has invalid CAS hash '{hash_string}'"
+        ))
+    })?;
+
+    match lookup.cas.get(hash).await {
+        Ok(bytes) => {
+            let notice = if source.variant_hashes.contains_key(variant) {
+                None
+            } else {
+                Some(format!(
+                    "variant '{variant}' missing for media '{media_id}'; used fallback variant 'default'"
+                ))
+            };
+            Ok(VariantSourceBytes {
+                bytes: bytes.as_ref().to_vec(),
+                notice,
+                source_hash: Some(hash),
+            })
+        }
+        Err(source) => Err(MediaPmError::Workflow(format!(
+            "CAS hash '{hash}' for media '{media_id}' variant '{variant}' is missing from CAS: {source}"
+        ))),
+    }
+}
+
+fn resolve_local_variant_hash(
+    media_id: &str,
+    variant_name: &str,
+    source: &MediaSourceSpec,
+) -> Result<Option<Hash>, MediaPmError> {
+    if let Some(hash_str) = source.variant_hashes.get(variant_name) {
+        let hash: Hash = hash_str.parse().map_err(|e| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' variant '{variant_name}' hash '{hash_str}' is invalid: {e}"
+            ))
+        })?;
+        return Ok(Some(hash));
+    }
+
+    if variant_name != "default"
+        && let Some(hash_str) = source.variant_hashes.get("default")
+    {
+        let hash: Hash = hash_str.parse().map_err(|e| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' default variant hash '{hash_str}' is invalid: {e}"
+            ))
+        })?;
+        return Ok(Some(hash));
+    }
+
+    Ok(None)
+}
+
+async fn resolve_variant_hash_from_workflow_state(
+    lookup: &MaterializationLookupContext,
+    state: &ConductorState,
+    media_id: &str,
+    source: &MediaSourceSpec,
+    variant: &str,
+) -> Result<Option<(Hash, Option<String>)>, MediaPmError> {
+    let Some(binding) = resolve_media_variant_output_binding_with_limits(
+        source,
+        variant,
+        lookup.ffmpeg_slot_limits.max_input_slots,
+        lookup.ffmpeg_slot_limits.max_output_slots,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let workflow_name = managed_workflow_name(media_id);
+    let Some(workflow) =
+        lookup.generated_doc.workflows.iter().find(|workflow| workflow.name == workflow_name)
+    else {
+        return Ok(None);
+    };
+
+    let step_output_hashes = {
+        let cached = lookup.step_output_hashes_cache.lock().unwrap().get(&workflow_name).cloned();
+        if let Some(result) = cached {
+            result
+        } else {
+            let result = resolve_workflow_step_output_hashes(
+                &lookup.cas,
+                &lookup.generated_doc,
+                state,
+                workflow,
+            )
+            .await?;
+            lookup
+                .step_output_hashes_cache
+                .lock()
+                .unwrap()
+                .insert(workflow_name.clone(), result.clone());
+            result
+        }
+    };
+
+    let Some(step_output_hashes) = step_output_hashes else {
+        return Ok(None);
+    };
+
+    let output_hash = step_output_hashes
+        .get(&binding.step_id)
+        .and_then(|outputs| outputs.get(&binding.output_name))
+        .copied();
+
+    let Some(hash) = output_hash else {
+        return Ok(None);
+    };
+
+    let fallback_notice = if binding.used_default_variant {
+        Some(format!(
+            "variant '{variant}' missing for media '{media_id}'; used workflow fallback variant 'default'"
+        ))
+    } else {
+        None
+    };
+
+    Ok(Some((hash, fallback_notice)))
+}
+
+/// Resolves concrete output hashes for each workflow step using conductor state.
+pub(super) async fn resolve_workflow_step_output_hashes(
+    cas: &FileSystemCas,
+    generated_doc: &NickelDocument,
+    state: &ConductorState,
+    workflow: &mediapm_conductor::WorkflowSpec,
+) -> Result<Option<StepOutputHashes>, MediaPmError> {
+    let mut step_outputs = StepOutputHashes::new();
+    let required_step_output_names = collect_required_step_output_names(workflow);
+    let required_step_zip_members = collect_required_step_zip_members(workflow);
+
+    for step in &workflow.steps {
+        let expected_inputs =
+            resolve_expected_input_hashes(cas, generated_doc, &step.inputs, &step_outputs).await?;
+        let Some(expected_inputs) = expected_inputs else {
+            return Ok(None);
+        };
+
+        let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
+            .map(|(key, _)| key.clone())
+            .ok_or_else(|| {
+                MediaPmError::Workflow(format!(
+                    "workflow step '{}' references unknown tool '{}' in generated config",
+                    step.id, step.tool
+                ))
+            })?;
+
+        let required_output_names =
+            required_step_output_names.get(&step.id).cloned().unwrap_or_default();
+        let required_zip_members = required_step_zip_members.get(&step.id);
+
+        let mut matching_instances = state
+            .tool_call_instances
+            .iter()
+            .filter_map(|(instance_key, instance)| {
+                (instance.tool_call_id == conductor_tool_key
+                    && instance_matches_expected_inputs(instance, &expected_inputs)
+                    && instance_matches_expected_output_names(instance, &step.outputs)
+                    && instance_matches_required_output_names(instance, &required_output_names))
+                .then_some((instance_key, instance))
+            })
+            .collect::<Vec<_>>();
+
+        matching_instances.sort_by(|(left_key, left_instance), (right_key, right_instance)| {
+            compare_instance_recency(left_key, left_instance, right_key, right_instance)
+        });
+
+        let mut selected_instance = None;
+        for (_, instance) in &matching_instances {
+            if instance_has_materializable_required_outputs(
+                cas,
+                instance,
+                &required_output_names,
+                required_zip_members,
+            )
+            .await
+            {
+                selected_instance = Some(*instance);
+                break;
+            }
+        }
+
+        let Some(instance) =
+            selected_instance.or_else(|| matching_instances.first().map(|(_, instance)| *instance))
+        else {
+            return Ok(None);
+        };
+
+        let mut output_hashes = instance
+            .outputs
+            .iter()
+            .map(|(name, output)| (name.clone(), output.hash))
+            .collect::<BTreeMap<_, _>>();
+        if let Some(stdout) = instance.outputs.get("stdout") {
+            for output_name in step.outputs.keys() {
+                output_hashes.entry(output_name.clone()).or_insert(stdout.hash);
+            }
+        }
+        step_outputs.insert(step.id.clone(), output_hashes);
+    }
+
+    Ok(Some(step_outputs))
+}
+
+fn collect_required_step_output_names(
+    workflow: &mediapm_conductor::WorkflowSpec,
+) -> RequiredStepOutputNames {
+    let mut required = RequiredStepOutputNames::new();
+
+    for step in &workflow.steps {
+        for output_name in step.outputs.keys() {
+            required.entry(step.id.clone()).or_default().insert(output_name.clone());
+        }
+    }
+
+    for step in &workflow.steps {
+        for binding in step.inputs.values() {
+            if let Some(reference) = parse_step_output_reference(binding) {
+                required
+                    .entry(reference.step_id.to_string())
+                    .or_default()
+                    .insert(reference.output_name.to_string());
+            }
+        }
+    }
+
+    required
+}
+
+fn collect_required_step_zip_members(
+    workflow: &mediapm_conductor::WorkflowSpec,
+) -> RequiredStepZipMembers {
+    let mut required = RequiredStepZipMembers::new();
+
+    for step in &workflow.steps {
+        for value in step.inputs.values() {
+            let Some(reference) = parse_step_output_reference(value) else {
+                continue;
+            };
+
+            let Some(zip_member) = reference.zip_member else {
+                continue;
+            };
+
+            required
+                .entry(reference.step_id.to_string())
+                .or_default()
+                .entry(reference.output_name.to_string())
+                .or_default()
+                .insert(zip_member.to_string());
+        }
+    }
+
+    required
+}
+
+fn instance_output_ref<'a>(
+    instance: &'a ToolCallInstance,
+    output_name: &str,
+) -> Option<&'a mediapm_conductor::HashedValueRecord> {
+    instance
+        .outputs
+        .get(output_name)
+        .or_else(|| (output_name != "stdout").then(|| instance.outputs.get("stdout")).flatten())
+}
+
+fn instance_matches_required_output_names(
+    instance: &ToolCallInstance,
+    required_output_names: &BTreeSet<String>,
+) -> bool {
+    required_output_names
+        .iter()
+        .all(|output_name| instance_output_ref(instance, output_name).is_some())
+}
+
+fn compare_instance_recency(
+    left_key: &Hash,
+    left_instance: &ToolCallInstance,
+    right_key: &Hash,
+    right_instance: &ToolCallInstance,
+) -> Ordering {
+    let left_rank = instance_recency_rank(left_key, left_instance);
+    let right_rank = instance_recency_rank(right_key, right_instance);
+    right_rank.cmp(&left_rank)
+}
+
+fn instance_recency_rank(instance_key: &Hash, instance: &ToolCallInstance) -> (bool, u64, String) {
+    if instance.impure {
+        (true, instance.executed_at.as_unix_nanos(), instance_key.to_hex())
+    } else {
+        (false, 0, instance_key.to_hex())
+    }
+}
+
+async fn instance_has_materializable_required_outputs(
+    cas: &FileSystemCas,
+    instance: &ToolCallInstance,
+    required_output_names: &BTreeSet<String>,
+    required_zip_members: Option<&BTreeMap<String, BTreeSet<String>>>,
+) -> bool {
+    for output_name in required_output_names {
+        let Some(output_ref) = instance_output_ref(instance, output_name) else {
+            return false;
+        };
+
+        let Ok(output_bytes) = cas.get(output_ref.hash).await else {
+            return false;
+        };
+
+        let Some(members) = required_zip_members.and_then(|by_output| by_output.get(output_name))
+        else {
+            continue;
+        };
+
+        for member in members {
+            if extract_zip_member_bytes(output_bytes.as_ref(), member).is_err() {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+async fn resolve_expected_input_hashes(
+    cas: &FileSystemCas,
+    generated_doc: &NickelDocument,
+    step_inputs: &BTreeMap<String, String>,
+    step_outputs: &StepOutputHashes,
+) -> Result<Option<ExpectedStepInputs>, MediaPmError> {
+    let mut expected = ExpectedStepInputs::default();
+
+    for (input_name, value) in step_inputs {
+        match resolve_input_binding_hash(cas, generated_doc, value, step_outputs).await? {
+            InputBindingHashResolution::Resolved(hash) => {
+                expected.resolved_hashes.insert(input_name.clone(), hash);
+            }
+            InputBindingHashResolution::MissingPriorStepOutput => {
+                return Ok(None);
+            }
+            InputBindingHashResolution::MissingMaterializedStepOutput => {
+                expected.unresolved_hash_input_names.insert(input_name.clone());
+            }
+        }
+    }
+
+    Ok(Some(expected))
+}
+
+async fn resolve_input_binding_hash(
+    cas: &FileSystemCas,
+    generated_doc: &NickelDocument,
+    value: &str,
+    step_outputs: &StepOutputHashes,
+) -> Result<InputBindingHashResolution, MediaPmError> {
+    if let Some(reference) = parse_step_output_reference(value) {
+        let Some(hash) = step_outputs
+            .get(reference.step_id)
+            .and_then(|outputs| outputs.get(reference.output_name))
+            .copied()
+        else {
+            return Ok(InputBindingHashResolution::MissingPriorStepOutput);
+        };
+
+        if let Some(zip_member) = reference.zip_member {
+            let Ok(zip_bytes) = cas.get(hash).await else {
+                return Ok(InputBindingHashResolution::MissingMaterializedStepOutput);
+            };
+            let Ok(member_bytes) = extract_zip_member_bytes(zip_bytes.as_ref(), zip_member) else {
+                return Ok(InputBindingHashResolution::MissingMaterializedStepOutput);
+            };
+            return Ok(InputBindingHashResolution::Resolved(Hash::from_content(
+                member_bytes.as_slice(),
+            )));
+        }
+
+        return Ok(InputBindingHashResolution::Resolved(hash));
+    }
+
+    if let Some(external_hash) = parse_external_data_reference(value)? {
+        return generated_doc
+            .external_data
+            .contains_key(&external_hash)
+            .then_some(InputBindingHashResolution::Resolved(external_hash))
+            .ok_or_else(|| {
+                MediaPmError::Workflow(format!(
+                    "workflow binding references unknown external_data hash '{external_hash}'"
+                ))
+            });
+    }
+
+    Ok(InputBindingHashResolution::Resolved(Hash::from_content(value.as_bytes())))
+}
+
+/// Returns true when one runtime instance contains all expected input hashes.
+pub(super) fn instance_matches_expected_inputs(
+    instance: &ToolCallInstance,
+    expected_inputs: &ExpectedStepInputs,
+) -> bool {
+    if !expected_inputs.unresolved_hash_input_names.is_empty() {
+        return false;
+    }
+
+    if expected_inputs.resolved_hashes.is_empty() {
+        return true;
+    }
+
+    if instance.command_args.is_empty() {
+        let input_hashes: Vec<Hash> = expected_inputs.resolved_hashes.values().copied().collect();
+        let materialized_hashes: Vec<Hash> =
+            instance.materialized_inputs.values().map(|record| record.hash).collect();
+        let executed_at_nanos =
+            instance.impure.then(|| instance.executed_at.as_unix_nanos()).unwrap_or(0);
+        let derived = mediapm_conductor::derive_tool_call_instance_key(
+            &instance.tool_call_id,
+            instance.impure,
+            executed_at_nanos,
+            &input_hashes,
+            &[],
+            &materialized_hashes,
+        );
+        return derived == instance.instance_key;
+    }
+
+    let deterministic_arg_hashes: BTreeSet<Hash> = instance
+        .command_args
+        .iter()
+        .filter(|record| record.deterministic)
+        .map(|record| record.hash)
+        .collect();
+
+    expected_inputs.resolved_hashes.values().all(|hash| deterministic_arg_hashes.contains(hash))
+}
+
+fn instance_matches_expected_output_names(
+    instance: &ToolCallInstance,
+    expected_outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
+) -> bool {
+    expected_outputs.keys().all(|output_name| {
+        instance.outputs.contains_key(output_name)
+            || (output_name != "stdout" && instance.outputs.contains_key("stdout"))
+    })
 }

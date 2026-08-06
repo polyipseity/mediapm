@@ -16,6 +16,7 @@ pub(crate) mod media_tagger;
 pub(crate) mod rsgain;
 pub(crate) mod sd;
 pub(crate) mod spec;
+pub(crate) mod variant_binding;
 pub(crate) mod yt_dlp;
 pub(crate) mod yt_dlp_inputs;
 
@@ -40,6 +41,7 @@ use crate::config::{
 };
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
+pub(crate) use variant_binding::resolve_media_variant_output_binding_with_limits;
 
 // ---------------------------------------------------------------------------
 // Shared constants

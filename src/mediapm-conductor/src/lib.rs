@@ -48,7 +48,7 @@ pub use state::ConductorState;
 pub use state::versions::{decode_state_json, encode_state_json};
 pub use state::{
     AuxData, HashedValueRecord, InstanceAux, OutputSaveMode, PersistenceFlags, ResolvedInput,
-    ToolCallInstance,
+    ToolCallInstance, derive_tool_call_instance_key,
 };
 pub use tools::registered_builtin_ids;
 #[cfg(feature = "tool-presets")]

@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use mediapm_cas::Hash;
 use regex::Regex;
 use zip::ZipArchive;
 
@@ -115,6 +116,104 @@ pub(super) fn compile_hierarchy_folder_rename_rules(
     }
 
     Ok(compiled)
+}
+
+// ---------------------------------------------------------------------------
+// Binding reference parsing
+// ---------------------------------------------------------------------------
+
+/// Parsed `${step_output...}` binding reference metadata.
+pub(super) struct StepOutputReference<'a> {
+    /// Producer step id.
+    pub(super) step_id: &'a str,
+    /// Producer output name.
+    pub(super) output_name: &'a str,
+    /// Optional ZIP-member selector.
+    pub(super) zip_member: Option<&'a str>,
+}
+
+/// Parses exact `${step_output.<step_id>.<output_name>}` references with
+/// optional `${step_output.<step_id>.<output_name>:zip(<member>)}` selector.
+pub(super) fn parse_step_output_reference(value: &str) -> Option<StepOutputReference<'_>> {
+    let content = value.strip_prefix("${step_output.")?.strip_suffix('}')?;
+
+    let (selector, zip_member) = if let Some(without_suffix) = content.strip_suffix(')') {
+        if let Some((prefix, member)) = without_suffix.rsplit_once(":zip(") {
+            if member.is_empty() || member.contains('/') || member.contains('\\') {
+                return None;
+            }
+            (prefix, Some(member))
+        } else {
+            (content, None)
+        }
+    } else {
+        (content, None)
+    };
+
+    let (step_id, output_name) = selector.rsplit_once('.')?;
+    if step_id.is_empty() || output_name.is_empty() {
+        return None;
+    }
+
+    Some(StepOutputReference { step_id, output_name, zip_member })
+}
+
+/// Parses exact `${external_data.<hash>}` references.
+pub(super) fn parse_external_data_reference(value: &str) -> Result<Option<Hash>, MediaPmError> {
+    let Some(hash_text) =
+        value.strip_prefix("${external_data.").and_then(|text| text.strip_suffix('}'))
+    else {
+        return Ok(None);
+    };
+
+    if hash_text.is_empty() {
+        return Err(MediaPmError::Workflow(
+            "workflow binding '${external_data.<hash>}' requires a non-empty hash".to_string(),
+        ));
+    }
+
+    let hash = hash_text.parse::<Hash>().map_err(|source| {
+        MediaPmError::Workflow(format!(
+            "workflow binding references invalid external_data hash '{hash_text}': {source}"
+        ))
+    })?;
+    Ok(Some(hash))
+}
+
+/// Extracts one file payload from ZIP bytes using one flat member key.
+pub(super) fn extract_zip_member_bytes(
+    zip_bytes: &[u8],
+    member_key: &str,
+) -> Result<Vec<u8>, String> {
+    if member_key.is_empty() || member_key.contains('/') || member_key.contains('\\') {
+        return Err(
+            "ZIP member key must be non-empty and must not contain path separators".to_string()
+        );
+    }
+
+    let reader = std::io::Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|error| format!("decoding ZIP payload failed: {error}"))?;
+
+    let mut index = 0usize;
+    while index < archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("reading ZIP entry #{index} failed: {error}"))?;
+        let entry_name = entry.name().replace('\\', "/");
+        if entry_name == member_key {
+            if entry.is_dir() {
+                return Err(format!("ZIP member '{member_key}' resolves to a directory"));
+            }
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes)
+                .map_err(|error| format!("reading ZIP member '{member_key}' failed: {error}"))?;
+            return Ok(bytes);
+        }
+        index += 1;
+    }
+
+    Err(format!("ZIP member '{member_key}' not found in archive"))
 }
 
 // ---------------------------------------------------------------------------

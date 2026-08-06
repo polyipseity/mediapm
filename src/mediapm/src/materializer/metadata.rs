@@ -4,32 +4,57 @@
 //! `${media.metadata.<key>}` placeholders, variant-file metadata extraction
 //! from JSON/ffprobe output, and regex-based metadata string transforms.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_conductor::{ConductorState, NickelDocument};
 use regex::Regex;
 
 use crate::config::source_types::{
     MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate, MediaSourceSpec,
 };
 use crate::error::MediaPmError;
+use crate::tools::workflows::FfmpegSlotLimits;
 
 // ---------------------------------------------------------------------------
 // Lookup context
 // ---------------------------------------------------------------------------
+
+/// Per-workflow step output hash table (`step_id -> output_name -> CAS hash`).
+pub(super) type StepOutputHashes = BTreeMap<String, BTreeMap<String, Hash>>;
 
 /// Shared lookup context threaded through materialization workers.
 #[derive(Clone)]
 pub(super) struct MaterializationLookupContext {
     /// CAS store reference for resolving variant byte content.
     pub(super) cas: FileSystemCas,
+    /// Conductor runtime state after workflow execution.
+    pub(super) conductor_state: Option<ConductorState>,
+    /// Generated conductor document carrying managed workflows and tools.
+    pub(super) generated_doc: NickelDocument,
+    /// Effective ffmpeg slot limits for variant binding resolution.
+    pub(super) ffmpeg_slot_limits: FfmpegSlotLimits,
+    /// Cache for per-workflow step output hash resolution during one sync pass.
+    pub(super) step_output_hashes_cache: Arc<Mutex<BTreeMap<String, Option<StepOutputHashes>>>>,
 }
 
 impl MaterializationLookupContext {
-    /// Creates a new lookup context with the given CAS store.
+    /// Creates a lookup context for one hierarchy sync pass.
     #[must_use]
-    pub(super) fn new(cas: FileSystemCas) -> Self {
-        Self { cas }
+    pub(super) fn new(
+        cas: FileSystemCas,
+        conductor_state: Option<ConductorState>,
+        generated_doc: NickelDocument,
+        ffmpeg_slot_limits: FfmpegSlotLimits,
+    ) -> Self {
+        Self {
+            cas,
+            conductor_state,
+            generated_doc,
+            ffmpeg_slot_limits,
+            step_output_hashes_cache: Arc::new(Mutex::new(BTreeMap::new())),
+        }
     }
 }
 
@@ -38,10 +63,6 @@ impl MaterializationLookupContext {
 // ---------------------------------------------------------------------------
 
 /// Resolves one [`MediaMetadataValue`] to a concrete string.
-///
-/// Literal values return the stored text directly. Variant bindings extract
-/// the named key from the variant's produced file bytes. Fallback lists
-/// evaluate candidates top-to-bottom and return the first non-empty result.
 #[allow(dead_code)]
 pub(super) async fn resolve_metadata_value(
     value: &MediaMetadataValue,
@@ -113,10 +134,6 @@ pub(super) async fn resolve_metadata_value(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Template placeholder interpolation
-// ---------------------------------------------------------------------------
-
 /// Interpolates `${media.id}` and `${media.metadata.<key>}` placeholders in a
 /// hierarchy path template string.
 #[allow(dead_code)]
@@ -129,10 +146,8 @@ pub(super) async fn interpolate_path_template(
     let placeholder_keys = collect_metadata_placeholder_keys(template);
     let mut result = template.to_string();
 
-    // Replace ${media.id}
     result = result.replace("${media.id}", media_id);
 
-    // Replace each ${media.metadata.<key>} with its resolved value.
     for key in &placeholder_keys {
         let placeholder = format!("${{media.metadata.{key}}}");
         let resolved = if let Some(metadata_value) = source.metadata.get(key) {
@@ -150,10 +165,6 @@ pub(super) async fn interpolate_path_template(
 }
 
 /// Resolves one metadata key from a variant's produced content bytes.
-///
-/// Returns `Ok(None)` when the variant has no directly known hash or when
-/// the content is not parseable as JSON. Returns `Ok(Some(value))` when the
-/// key was found. Returns `Err` on CAS failures or hash format errors.
 pub(super) async fn resolve_variant_metadata_key(
     variant: &str,
     metadata_key: &str,
@@ -161,15 +172,13 @@ pub(super) async fn resolve_variant_metadata_key(
     source: &MediaSourceSpec,
     lookup_context: &MaterializationLookupContext,
 ) -> Result<Option<String>, MediaPmError> {
-    let Some(hash_str) = source.variant_hashes.get(variant) else {
+    use super::resolve::resolve_variant_hash;
+
+    let hash = resolve_variant_hash(media_id, variant, source, lookup_context).await?;
+
+    let Some(hash) = hash else {
         return Ok(None);
     };
-
-    let hash: Hash = hash_str.parse().map_err(|e| {
-        MediaPmError::Workflow(format!(
-            "media '{media_id}' variant '{variant}' has invalid hash '{hash_str}': {e}"
-        ))
-    })?;
 
     let bytes = lookup_context.cas.get(hash).await.map_err(|e| {
         MediaPmError::Workflow(format!(
@@ -177,7 +186,6 @@ pub(super) async fn resolve_variant_metadata_key(
         ))
     })?;
 
-    // Try JSON extraction from ffprobe-style or generic JSON payloads.
     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes)
         && let Some(value) = extract_metadata_key_from_json(&json, metadata_key)
     {
@@ -191,11 +199,8 @@ pub(super) async fn resolve_variant_metadata_key(
 // JSON metadata extraction helpers
 // ---------------------------------------------------------------------------
 
-/// Extracts one metadata key from ffprobe-style JSON (format + streams) or
-/// from a flat JSON object.
 #[allow(dead_code)]
 fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option<String> {
-    // Check format-level tags (ffprobe style).
     if let Some(format) = json.get("format").and_then(serde_json::Value::as_object) {
         if let Some(value) = lookup_json_string_key(format, key) {
             return Some(value);
@@ -207,7 +212,6 @@ fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option
         }
     }
 
-    // Check stream-level tags (ffprobe style).
     if let Some(streams) = json.get("streams").and_then(serde_json::Value::as_array) {
         for stream in streams {
             if let Some(stream_obj) = stream.as_object() {
@@ -223,7 +227,6 @@ fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option
         }
     }
 
-    // Top-level fallback for generic JSON objects.
     if let Some(obj) = json.as_object()
         && let Some(value) = lookup_json_string_key(obj, key)
     {
@@ -233,7 +236,6 @@ fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option
     None
 }
 
-/// Case-insensitive string key lookup in a JSON object.
 fn lookup_json_string_key(
     object: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -247,11 +249,6 @@ fn lookup_json_string_key(
         .map(ToString::to_string)
 }
 
-// ---------------------------------------------------------------------------
-// Regex transform
-// ---------------------------------------------------------------------------
-
-/// Applies one [`MediaMetadataRegexTransform`] to a metadata string value.
 #[allow(dead_code)]
 fn apply_metadata_regex_transform(value: &str, transform: &MediaMetadataRegexTransform) -> String {
     match Regex::new(&transform.pattern) {
@@ -260,12 +257,6 @@ fn apply_metadata_regex_transform(value: &str, transform: &MediaMetadataRegexTra
     }
 }
 
-// ---------------------------------------------------------------------------
-// Placeholder key extraction
-// ---------------------------------------------------------------------------
-
-/// Collects the set of distinct `${media.metadata.<key>}` placeholder keys
-/// from a template string (excluding `${media.id}`).
 #[allow(dead_code)]
 fn collect_metadata_placeholder_keys(template: &str) -> BTreeSet<String> {
     let mut keys = BTreeSet::new();

@@ -9,14 +9,12 @@
 
 use std::path::Path;
 
-use std::collections::BTreeMap;
-
-use crate::conductor_bridge;
 use crate::config::{
     MediaPmDocument, MediaPmState, MediaRuntimeStorage, MediaStepTool, load_mediapm_document,
 };
 use crate::error::MediaPmError;
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Registered builtins
@@ -175,25 +173,25 @@ pub(crate) fn mark_media_step_for_regeneration(
 pub(crate) fn load_or_default_conductor_state_document(
     paths: &MediaPmPaths,
 ) -> Result<mediapm_conductor::NickelDocument, MediaPmError> {
-    if paths.conductor_state_config.exists() {
-        conductor_bridge::documents::load_conductor_state_document(paths)
-    } else {
-        Ok(mediapm_conductor::NickelDocument::default())
-    }
+    let _ = paths;
+    Ok(mediapm_conductor::NickelDocument::default())
 }
 
 /// Saves a conductor state document to disk.
 ///
+/// Conductor runtime state is persisted as JSON via [`SimpleConductor`]; this
+/// legacy Nickel helper is retained as a no-op for standalone scaffolding.
+///
 /// # Errors
 ///
-/// Returns [`MediaPmError::Io`] if the file cannot be written, or
-/// [`MediaPmError::Serialization`] if serialization fails.
+/// Infallible — returns `Ok(())`.
 #[allow(dead_code)]
 pub(crate) fn save_conductor_state_document(
     paths: &MediaPmPaths,
     document: &mediapm_conductor::NickelDocument,
 ) -> Result<(), MediaPmError> {
-    conductor_bridge::documents::save_conductor_state_document(paths, document)
+    let _ = (paths, document);
+    Ok(())
 }
 
 /// Removes impure timestamps for a specific tool from all media step states.
