@@ -43,9 +43,6 @@ pub fn print_sync_summary(summary: &SyncSummary) {
     if summary.cached_instances > 0 {
         fields.push(("cached", Box::new(summary.cached_instances)));
     }
-    if summary.rematerialized_instances > 0 {
-        fields.push(("rematerialized", Box::new(summary.rematerialized_instances)));
-    }
     if summary.materialized_paths > 0 {
         fields.push(("materialized", Box::new(summary.materialized_paths)));
     }

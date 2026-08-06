@@ -12,7 +12,7 @@ use crate::api::{PathOverrides, RunWorkflowOptions, RuntimeStoragePaths};
 use crate::defaults;
 use crate::error::ConductorError;
 use crate::simple_conductor::SimpleConductor;
-use crate::state::OrchestrationState;
+use crate::state::ConductorState;
 use crate::state::versions::decode_state_json;
 
 // ---------------------------------------------------------------------------
@@ -231,6 +231,8 @@ async fn run(cli: Cli) -> Result<(), ConductorError> {
             tmp: cli.conductor_tmp_dir,
             schemas: cli.conductor_schema_dir,
             tools: cli.conductor_tools_dir,
+            config_docs: None,
+            state_file: None,
         },
     );
     match cli.command {
@@ -311,6 +313,7 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
         }
         Some(StateCommand::Export { path }) => {
             let conductor = ensure_conductor().await?;
+            conductor.ensure_persisted_state_loaded().await?;
             let state = conductor.get_state()?;
             let json = serde_json::to_string_pretty(&state)
                 .map_err(|e| ConductorError::Serialization(e.to_string()))?;
@@ -321,7 +324,7 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
         Some(StateCommand::Import { path }) => {
             let json = std::fs::read_to_string(&path)
                 .map_err(|e| ConductorError::io("reading state import", &path, e))?;
-            let state: OrchestrationState = decode_state_json(json.as_bytes())
+            let state: ConductorState = decode_state_json(json.as_bytes())
                 .map_err(|e| ConductorError::Serialization(e.to_string()))?;
             let conductor = ensure_conductor().await?;
             conductor.replace_resolved_state(state)?;
@@ -329,6 +332,7 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
         }
         Some(StateCommand::InvalidateToolCall { key }) => {
             let conductor = ensure_conductor().await?;
+            conductor.ensure_persisted_state_loaded().await?;
             let mut state = conductor.get_state()?;
             let key: Hash = key
                 .parse()

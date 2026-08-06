@@ -37,7 +37,7 @@ async fn dispatch_tool_execution<C: CasApi + Send + Sync>(
             resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
         let builtin_id = tool_spec.builtin_id.as_deref().unwrap_or(&request.step.tool);
         let result =
-            run_builtin(builtin_id, &args, &request.outermost_config_dir, sandbox_dir).await?;
+            run_builtin(cas, builtin_id, &args, &request.outermost_config_dir, sandbox_dir).await?;
         Ok((result, Vec::new()))
     } else {
         let resolved_inputs_map: BTreeMap<String, String> =

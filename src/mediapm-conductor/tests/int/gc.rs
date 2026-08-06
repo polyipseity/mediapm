@@ -1,6 +1,6 @@
 //! Integration coverage for conductor GC.
 //!
-//! These tests validate `run_conductor_gc()` semantics on `OrchestrationState`:
+//! These tests validate `run_conductor_gc()` semantics on `ConductorState`:
 //! - instances absent from `referenced_keys` are evicted past TTL
 //! - instances present in `referenced_keys` survive and get refreshed
 //! - empty state is a no-op
@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::Hash;
-use mediapm_conductor::{AuxData, InstanceAux, OrchestrationState, ToolCallInstance};
+use mediapm_conductor::{AuxData, ConductorState, InstanceAux, ToolCallInstance};
 use mediapm_utils::Timestamp;
 
 // ---------------------------------------------------------------------------
@@ -32,8 +32,8 @@ fn sample_instance(key: Hash) -> ToolCallInstance {
 
 /// Seeds an instance with aux `last_referenced_at` far enough in the past to
 /// be evicted by a zero-TTL sweep.
-fn seed_state_with(keys: &[Hash]) -> OrchestrationState {
-    let mut state = OrchestrationState::new_empty();
+fn seed_state_with(keys: &[Hash]) -> ConductorState {
+    let mut state = ConductorState::new_empty();
     state.aux = AuxData {
         tool_call_instance_counter: 0,
         conductor_gc_epoch: Timestamp::now(),
@@ -93,7 +93,7 @@ fn run_conductor_gc_preserves_referenced() {
 /// GC on empty state is a no-op.
 #[test]
 fn run_conductor_gc_empty_state_is_noop() {
-    let mut state = OrchestrationState::new_empty();
+    let mut state = ConductorState::new_empty();
     state.run_conductor_gc(&BTreeSet::new(), 0);
     assert!(state.tool_call_instances.is_empty());
 }

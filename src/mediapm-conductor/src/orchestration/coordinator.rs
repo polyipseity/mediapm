@@ -17,7 +17,7 @@ use mediapm_utils::Timestamp;
 
 use crate::config::WorkflowStepSpec;
 use crate::error::ConductorError;
-use crate::state::OrchestrationState;
+use crate::state::ConductorState;
 
 use ractor::rpc::CallResult;
 
@@ -129,6 +129,9 @@ where
     workers: Vec<ractor::ActorRef<StepWorkerMessage>>,
     /// RAII guard for the background CAS maintenance task, if started.
     background_gc_guard: Option<BackgroundMaintenanceGuard>,
+    /// Supervisor cell (the conductor actor itself) that linked step workers
+    /// are torn down with. Set in `pre_start`.
+    supervisor: Option<ractor::ActorCell>,
 }
 
 impl<C> WorkflowCoordinator<C>
@@ -138,14 +141,25 @@ where
     /// Creates a coordinator bound to one CAS implementation.
     #[must_use]
     pub(crate) fn new(cas: Arc<C>) -> Self {
-        Self { cas, workers: Vec::new(), background_gc_guard: None }
+        Self { cas, workers: Vec::new(), background_gc_guard: None, supervisor: None }
+    }
+
+    /// Attaches the supervisor cell (the conductor actor itself) so step
+    /// workers can be spawned linked to the actor's supervision tree.
+    pub(crate) fn set_supervisor(&mut self, supervisor: ractor::ActorCell) {
+        self.supervisor = Some(supervisor);
     }
 
     /// Ensures the step-worker pool is initialized.
     async fn ensure_workers(&mut self) -> Result<(), ConductorError> {
         if self.workers.is_empty() {
             let pool_size = default_worker_pool_size();
-            self.workers = spawn_step_worker_pool(self.cas.clone(), pool_size).await?;
+            let supervisor = self.supervisor.clone().ok_or_else(|| {
+                ConductorError::Internal(
+                    "cannot spawn step workers without a supervisor cell".to_string(),
+                )
+            })?;
+            self.workers = spawn_step_worker_pool(self.cas.clone(), pool_size, supervisor).await?;
         }
         Ok(())
     }
@@ -163,7 +177,7 @@ where
         &mut self,
         workflow_name: &str,
         unified: &UnifiedNickelDocument,
-        state: &mut OrchestrationState,
+        state: &mut ConductorState,
         options: &RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
         self.ensure_workers().await?;
@@ -304,7 +318,7 @@ where
     /// reclamation, and CAS metadata maintenance.
     pub(crate) async fn run_gc(
         &self,
-        state: &mut OrchestrationState,
+        state: &mut ConductorState,
         referenced_keys: &BTreeSet<Hash>,
         unified: &UnifiedNickelDocument,
     ) -> Result<crate::gc::ConductorGcReport, ConductorError> {
@@ -351,6 +365,32 @@ where
         });
         self.background_gc_guard =
             Some(BackgroundMaintenanceGuard { cancelled, handle: Some(handle) });
+    }
+
+    /// Deterministically tears down actor-owned resources: the background GC
+    /// maintenance task (cancelled and awaited so its CAS clone is released)
+    /// and every step worker (stopped with a bounded wait so their states —
+    /// including their CAS clones — drop).
+    ///
+    /// After this returns, the only CAS clone still held by the actor is
+    /// `self.cas`, which is released when the coordinator state drops on
+    /// actor stop.
+    pub(crate) async fn shutdown(&mut self) -> Result<(), ConductorError> {
+        if let Some(mut guard) = self.background_gc_guard.take()
+            && let Some(handle) = guard.handle.take()
+        {
+            guard.cancelled.store(true, Ordering::SeqCst);
+            handle.abort();
+            // Awaiting the aborted handle is deterministic: the task
+            // future is dropped at the next poll (releasing its CAS
+            // clone) and the JoinHandle then resolves with
+            // `JoinError::Cancelled`.
+            let _ = handle.await;
+        }
+        for worker in std::mem::take(&mut self.workers) {
+            let _ = worker.stop_and_wait(None, Some(std::time::Duration::from_secs(5))).await;
+        }
+        Ok(())
     }
 }
 

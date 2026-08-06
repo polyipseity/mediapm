@@ -37,6 +37,14 @@ pub struct RuntimeStoragePaths {
     pub conductor_schema_dir: PathBuf,
     /// Tool materialization subdirectory.
     pub conductor_tools_dir: PathBuf,
+    /// Explicit ordered config-document paths. Empty means standalone
+    /// discovery (parent `conductor.ncl` + `.ncl` fragments in
+    /// `conductor_dir`).
+    #[serde(default)]
+    pub config_doc_paths: Vec<PathBuf>,
+    /// Conductor state file path (pretty JSON of the current state schema).
+    #[serde(default)]
+    pub state_file_path: PathBuf,
 }
 
 impl RuntimeStoragePaths {
@@ -49,6 +57,8 @@ impl RuntimeStoragePaths {
             conductor_tmp_dir: conductor_dir.join(defaults::DEFAULT_CONDUCTOR_TMP_DIR_NAME),
             conductor_schema_dir: conductor_dir.join(defaults::DEFAULT_CONDUCTOR_SCHEMA_DIR_NAME),
             conductor_tools_dir: conductor_dir.join(defaults::DEFAULT_CONDUCTOR_TOOLS_DIR_NAME),
+            config_doc_paths: Vec::new(),
+            state_file_path: conductor_dir.join(defaults::DEFAULT_CONDUCTOR_STATE_FILE_NAME),
         }
     }
 
@@ -87,7 +97,27 @@ impl RuntimeStoragePaths {
                 &overrides.tools,
                 defaults::DEFAULT_CONDUCTOR_TOOLS_DIR_NAME,
             ),
+            config_doc_paths: overrides.config_docs.clone().unwrap_or_default(),
+            state_file_path: overrides
+                .state_file
+                .clone()
+                .unwrap_or_else(|| conductor_dir.join(defaults::DEFAULT_CONDUCTOR_STATE_FILE_NAME)),
         }
+    }
+
+    /// Attaches explicit ordered config-document paths and a state-file path.
+    ///
+    /// Explicit paths bypass standalone discovery entirely: the conductor
+    /// loads exactly these documents (in order, existing files only).
+    #[must_use]
+    pub fn with_config_paths(
+        mut self,
+        config_doc_paths: Vec<PathBuf>,
+        state_file_path: PathBuf,
+    ) -> Self {
+        self.config_doc_paths = config_doc_paths;
+        self.state_file_path = state_file_path;
+        self
     }
 }
 
@@ -104,6 +134,11 @@ pub struct PathOverrides {
     pub schemas: Option<PathBuf>,
     /// Override for tools directory.
     pub tools: Option<PathBuf>,
+    /// Explicit ordered config-document paths (standalone discovery when
+    /// `None`).
+    pub config_docs: Option<Vec<PathBuf>>,
+    /// Override for the conductor state file path.
+    pub state_file: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------

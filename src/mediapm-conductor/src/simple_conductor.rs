@@ -20,14 +20,14 @@ use crate::config::versions;
 use crate::error::ConductorError;
 use crate::orchestration::node::ConductorActorClient;
 use crate::orchestration::protocol::{UnifiedNickelDocument, find_tool_by_name};
-use crate::state::OrchestrationState;
+use crate::state::ConductorState;
 
 /// Concrete facade over the conductor orchestration runtime.
 ///
 /// Wraps a lazily initialized [`ConductorActorClient`] (which itself manages a
 /// [`WorkflowCoordinator`] actor) and exposes all CLI-required operations.
 ///
-/// Persists [`OrchestrationState`] across workflow runs so that subsequent
+/// Persists [`ConductorState`] across workflow runs so that subsequent
 /// runs can benefit from cached tool-call instances.
 pub struct SimpleConductor<C>
 where
@@ -40,7 +40,7 @@ where
     /// Resolved runtime paths.
     storage_paths: RuntimeStoragePaths,
     /// Persisted orchestration state, shared across workflow runs.
-    state: std::sync::Mutex<OrchestrationState>,
+    state: std::sync::Mutex<ConductorState>,
 }
 
 impl<C> SimpleConductor<C>
@@ -54,7 +54,7 @@ where
             cas: Arc::new(cas),
             actor_client: OnceCell::new(),
             storage_paths,
-            state: std::sync::Mutex::new(OrchestrationState::default()),
+            state: std::sync::Mutex::new(ConductorState::default()),
         }
     }
 
@@ -102,7 +102,8 @@ where
         options: RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
         let client = self.ensure_actor_client().await?;
-        let (unified, _fresh_state) = load_unified_config_and_state(self.storage_paths())?;
+        let (unified, fresh_state) =
+            load_unified_config_and_state_async(&*self.cas, self.storage_paths()).await?;
         // Apply conductor runtime config defaults to options
         let options = {
             let mut opts = options;
@@ -111,19 +112,30 @@ where
             }
             opts
         };
+        // Seed the in-memory state from the freshly loaded file state when no
+        // session state exists yet, so the actor receives the latest cached
+        // instances from disk.
+        {
+            let mut guard = self.state.lock().expect("state lock");
+            if guard.tool_call_instances.is_empty() {
+                *guard = fresh_state;
+            }
+        }
         // Take the persisted state (or default if empty) so the actor
         // receives the latest cached instances from the previous run.
         let state = {
             let mut guard = self.state.lock().expect("state lock");
             if guard.tool_call_instances.is_empty() {
-                OrchestrationState::default()
+                ConductorState::default()
             } else {
                 std::mem::take(&mut *guard)
             }
         };
         let (summary, updated_state) =
             client.run_workflow(workflow_name, options, unified, state).await?;
-        *self.state.lock().expect("state lock") = updated_state;
+        *self.state.lock().expect("state lock") = updated_state.clone();
+        // Persist state after each run so later sessions resume from disk.
+        save_state_file(self.storage_paths(), &updated_state)?;
         Ok(summary)
     }
 
@@ -138,17 +150,34 @@ where
         client.runtime_diagnostics().await
     }
 
-    /// Returns the current orchestration state (from in-memory persistence).
+    /// Loads persisted conductor state from disk into the in-memory mutex when
+    /// it is still empty, migrating v1 envelopes through CAS when needed.
     ///
     /// # Errors
     ///
-    /// Returns [`ConductorError::Io`] when the persisted state file cannot be
-    /// read.
+    /// Returns an error when the state file cannot be read or migration fails.
     ///
     /// # Panics
     ///
     /// Panics if the in-memory orchestration state mutex is poisoned.
-    pub fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
+    pub async fn ensure_persisted_state_loaded(&self) -> Result<(), ConductorError> {
+        if self.state.lock().expect("state lock").tool_call_instances.is_empty()
+            && let Some(state) = load_state_file_async(&*self.cas, self.storage_paths()).await?
+        {
+            *self.state.lock().expect("state lock") = state;
+        }
+        Ok(())
+    }
+
+    /// Returns the current orchestration state (from in-memory persistence).
+    ///
+    /// Call [`ensure_persisted_state_loaded`] before this when the conductor
+    /// may need to read or migrate a v1 state file from disk.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory orchestration state mutex is poisoned.
+    pub fn get_state(&self) -> Result<ConductorState, ConductorError> {
         Ok(self.state.lock().expect("state lock").clone())
     }
 
@@ -161,10 +190,7 @@ where
     /// # Panics
     ///
     /// Panics if the in-memory orchestration state mutex is poisoned.
-    pub fn replace_resolved_state(
-        &self,
-        new_state: OrchestrationState,
-    ) -> Result<(), ConductorError> {
+    pub fn replace_resolved_state(&self, new_state: ConductorState) -> Result<(), ConductorError> {
         *self.state.lock().expect("state lock") = new_state;
         Ok(())
     }
@@ -283,7 +309,7 @@ where
         tool: &str,
         args: &[String],
     ) -> Result<i32, ConductorError> {
-        let (unified, _state) = load_unified_config_and_state(self.storage_paths())?;
+        let unified = load_unified_config(self.storage_paths())?;
 
         let tool_spec = find_tool_by_name(&unified.tools, tool).ok_or_else(|| {
             ConductorError::Workflow(format!("tool '{tool}' not found in unified config"))
@@ -375,7 +401,7 @@ where
     /// Panics if the in-memory orchestration state mutex is poisoned.
     pub async fn run_gc(&self) -> Result<(), ConductorError> {
         let client = self.ensure_actor_client().await?;
-        let (unified, _) = load_unified_config_and_state(self.storage_paths())?;
+        let unified = load_unified_config(self.storage_paths())?;
         let referenced_keys = std::collections::BTreeSet::new();
         let state = self.state.lock().expect("state lock").clone();
         let new_state = client.run_gc(referenced_keys, state, unified).await?;
@@ -389,10 +415,29 @@ where
     ///
     /// # Errors
     ///
-    /// Delegates to [`load_unified_config_and_state`].
+    /// Delegates to [`load_unified_config`].
     pub(crate) fn get_unified_config(&self) -> Result<UnifiedNickelDocument, ConductorError> {
-        let (unified, _state) = load_unified_config_and_state(self.storage_paths())?;
-        Ok(unified)
+        load_unified_config(self.storage_paths())
+    }
+
+    /// Deterministically stops the conductor actor and releases every
+    /// actor-owned resource: the step-worker pool, the background GC task,
+    /// and the CAS clone held by the coordinator state.
+    ///
+    /// Awaited, this guarantees the underlying CAS handle is no longer
+    /// referenced by the conductor actor, so a filesystem-backed CAS can be
+    /// reopened by a later instance. It is a no-op when the actor was never
+    /// spawned (for example, config-only usage).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the shutdown RPC or the bounded actor stop wait
+    /// fails.
+    pub async fn shutdown(&self) -> Result<(), ConductorError> {
+        if let Some(client) = self.actor_client.get() {
+            client.shutdown().await?;
+        }
+        Ok(())
     }
 }
 
@@ -422,17 +467,10 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for 
 // Loading / saving helpers
 // ---------------------------------------------------------------------------
 
-/// Loads the unified configuration and orchestration state.
-///
-/// Discovers all `.ncl` config files in [`RuntimeStoragePaths::conductor_dir`]
-/// (excluding the state config), plus the root `conductor.ncl` / `mediapm.ncl`
-/// at the parent of `conductor_dir`.  Each file is independently evaluated
-/// through the versioned Nickel pipeline.  All evaluated documents are merged
-/// with error-on-conflict semantics.  The state document is loaded separately.
-pub(crate) fn load_unified_config_and_state(
+/// Loads the merged unified configuration (no state file read).
+fn load_unified_config(
     storage_paths: &RuntimeStoragePaths,
-) -> Result<(UnifiedNickelDocument, OrchestrationState), ConductorError> {
-    let state = OrchestrationState::default();
+) -> Result<UnifiedNickelDocument, ConductorError> {
     let config_paths = discover_config_paths(storage_paths);
 
     let source_docs: Vec<SourceDocument> = config_paths
@@ -444,21 +482,91 @@ pub(crate) fn load_unified_config_and_state(
         .collect::<Result<Vec<_>, ConductorError>>()?;
 
     let merged = merge_documents(&source_docs)?;
-    let unified = merged.to_unified();
+    Ok(merged.to_unified())
+}
+
+/// Loads the unified configuration and persisted orchestration state.
+async fn load_unified_config_and_state_async<C: CasApi>(
+    cas: &C,
+    storage_paths: &RuntimeStoragePaths,
+) -> Result<(UnifiedNickelDocument, ConductorState), ConductorError> {
+    let unified = load_unified_config(storage_paths)?;
+    let state = load_state_file_async(cas, storage_paths).await?.unwrap_or_default();
     Ok((unified, state))
+}
+
+/// Loads the persisted conductor state from the state file, if present.
+async fn load_state_file_async<C: CasApi>(
+    cas: &C,
+    storage_paths: &RuntimeStoragePaths,
+) -> Result<Option<ConductorState>, ConductorError> {
+    let path = &storage_paths.state_file_path;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|source| ConductorError::io("reading state file", path, source))?;
+    let version = crate::state::versions::peek_version_marker(&bytes)?;
+    let state = crate::state::versions::decode_state_json_with_cas(cas, &bytes).await?;
+    if crate::state::versions::is_orchestration_state_version_v1(version) {
+        save_state_file(storage_paths, &state)?;
+    }
+    Ok(Some(state))
+}
+
+/// Loads a v2 state file synchronously (unit tests).
+#[cfg(test)]
+fn load_state_file(
+    storage_paths: &RuntimeStoragePaths,
+) -> Result<Option<ConductorState>, ConductorError> {
+    let path = &storage_paths.state_file_path;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|source| ConductorError::io("reading state file", path, source))?;
+    crate::state::versions::decode_state_json(&bytes).map(Some)
+}
+
+/// Persists the conductor state to the state file as pretty JSON.
+fn save_state_file(
+    storage_paths: &RuntimeStoragePaths,
+    state: &ConductorState,
+) -> Result<(), ConductorError> {
+    let path = &storage_paths.state_file_path;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| {
+            ConductorError::io("creating state file directory", parent, source)
+        })?;
+    }
+    let bytes = crate::state::versions::encode_state_json(state)?;
+    std::fs::write(path, bytes)
+        .map_err(|source| ConductorError::io("writing state file", path, source))
 }
 
 /// Discovers all user config files.
 ///
-/// Scans [`RuntimeStoragePaths::conductor_dir`] for `.ncl` files that are not
-/// the state config, and also checks for `conductor.ncl` / `mediapm.ncl` at
-/// the parent of `conductor_dir`.
+/// Honors explicit config-document paths when set; otherwise scans
+/// [`RuntimeStoragePaths::conductor_dir`] for `.ncl` files and checks for
+/// `conductor.ncl` at the parent of `conductor_dir`.
 fn discover_config_paths(storage_paths: &RuntimeStoragePaths) -> Vec<PathBuf> {
+    // Explicit doc paths (mediapm passes `mediapm.conductor.ncl` +
+    // `mediapm.conductor.generated.ncl`): load exactly those, in order,
+    // skipping missing files so optional user docs do not fail loading.
+    if !storage_paths.config_doc_paths.is_empty() {
+        return storage_paths
+            .config_doc_paths
+            .iter()
+            .filter(|path| path.exists())
+            .cloned()
+            .collect();
+    }
+
     let mut paths = Vec::new();
 
-    // Root config at the project marker location.
+    // Standalone root config at the project marker location.
     if let Some(parent) = storage_paths.conductor_dir.parent() {
-        for name in ["conductor.ncl", "mediapm.ncl"] {
+        for name in ["conductor.ncl"] {
             let candidate = parent.join(name);
             if candidate.exists() {
                 paths.push(candidate);
@@ -485,11 +593,9 @@ fn discover_config_paths(storage_paths: &RuntimeStoragePaths) -> Vec<PathBuf> {
 fn find_first_config(conductor_dir: &Path) -> Option<PathBuf> {
     // Check for root configs at the parent first.
     if let Some(parent) = conductor_dir.parent() {
-        for name in ["conductor.ncl", "mediapm.ncl"] {
-            let candidate = parent.join(name);
-            if candidate.exists() {
-                return Some(candidate);
-            }
+        let candidate = parent.join("conductor.ncl");
+        if candidate.exists() {
+            return Some(candidate);
         }
     }
     // Fall back to scanning conductor_dir.
@@ -523,4 +629,126 @@ fn find_cas_binary() -> Option<PathBuf> {
             if candidate.is_file() { Some(candidate) } else { None }
         })
     })
+}
+
+impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Drop for SimpleConductor<C> {
+    /// Best-effort stop of the conductor actor on drop.
+    ///
+    /// Sends a fire-and-forget stop signal so the actor (and its linked step
+    /// workers) begin shutting down even when the caller never awaited
+    /// [`SimpleConductor::shutdown`]. This cannot deterministically wait for
+    /// teardown — blocking from inside an async runtime context is
+    /// forbidden — so callers that need deterministic release (for example,
+    /// tests reopening a filesystem CAS) must await
+    /// [`SimpleConductor::shutdown`] first.
+    fn drop(&mut self) {
+        if let Some(client) = self.actor_client.get() {
+            client.stop();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::state::ConductorState;
+
+    /// Explicit config-doc paths are used as-is (existing files only), in
+    /// order; missing explicit paths are skipped.
+    #[test]
+    fn discover_config_paths_uses_explicit_paths_in_order() {
+        let tmp = tempdir().expect("tempdir");
+        let conductor_dir = tmp.path().join("conductor_dir");
+        let paths = RuntimeStoragePaths::new(&conductor_dir);
+
+        let user = tmp.path().join("user.ncl");
+        let generated = tmp.path().join("generated.ncl");
+        std::fs::write(&user, "{}").expect("write user.ncl");
+
+        let paths = paths.with_config_paths(
+            vec![user.clone(), generated.clone()],
+            tmp.path().join("state.json"),
+        );
+        assert_eq!(discover_config_paths(&paths), vec![user]);
+    }
+
+    /// Standalone discovery never picks up `mediapm.ncl` at the parent.
+    #[test]
+    fn discover_config_paths_does_not_discover_mediapm_ncl() {
+        let tmp = tempdir().expect("tempdir");
+        let conductor_dir = tmp.path().join("conductor_dir");
+        std::fs::create_dir_all(&conductor_dir).expect("create conductor_dir");
+
+        let mediapm = tmp.path().join("mediapm.ncl");
+        let conductor = conductor_dir.join("conductor.ncl");
+        std::fs::write(&mediapm, "{}").expect("write mediapm.ncl");
+        std::fs::write(&conductor, "{}").expect("write conductor.ncl");
+
+        let paths = RuntimeStoragePaths::new(&conductor_dir);
+        let found = discover_config_paths(&paths);
+        assert!(found.contains(&conductor));
+        assert!(!found.contains(&mediapm));
+    }
+
+    /// `find_first_config` prefers `conductor.ncl` over `mediapm.ncl` at the
+    /// parent.
+    #[test]
+    fn find_first_config_drops_mediapm_ncl() {
+        let tmp = tempdir().expect("tempdir");
+        let conductor_dir = tmp.path().join("conductor_dir");
+
+        let mediapm = tmp.path().join("mediapm.ncl");
+        let conductor = tmp.path().join("conductor.ncl");
+        std::fs::write(&mediapm, "{}").expect("write mediapm.ncl");
+        std::fs::write(&conductor, "{}").expect("write conductor.ncl");
+
+        assert_eq!(find_first_config(&conductor_dir), Some(conductor));
+    }
+
+    /// A saved state file round-trips through `save_state_file` /
+    /// `load_state_file`.
+    #[test]
+    fn state_file_roundtrip() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
+
+        let state = ConductorState::new_empty();
+        save_state_file(&paths, &state).expect("save state file");
+        let loaded = load_state_file(&paths).expect("load state file");
+        assert_eq!(loaded, Some(state));
+    }
+
+    /// A missing state file loads as `None`, not an error.
+    #[test]
+    fn state_file_missing_returns_none() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
+        assert_eq!(load_state_file(&paths).expect("load missing state file"), None);
+    }
+
+    /// A corrupt state file surfaces as an error rather than a silent default.
+    #[test]
+    fn state_file_corrupt_errors() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
+        std::fs::create_dir_all(&paths.conductor_dir).expect("create conductor dir");
+        std::fs::write(&paths.state_file_path, b"not json").expect("write corrupt state");
+        assert!(load_state_file(&paths).is_err());
+    }
+
+    /// `with_config_paths` relocates the state file to the custom path.
+    #[test]
+    fn state_file_path_is_configurable() {
+        let tmp = tempdir().expect("tempdir");
+        let custom = tmp.path().join("custom").join("state.json");
+        let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"))
+            .with_config_paths(Vec::new(), custom.clone());
+
+        let state = ConductorState::new_empty();
+        save_state_file(&paths, &state).expect("save state file");
+        assert!(custom.exists());
+        assert_eq!(load_state_file(&paths).expect("load state file"), Some(state));
+    }
 }

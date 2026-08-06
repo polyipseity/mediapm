@@ -15,7 +15,7 @@ use mediapm_utils::Timestamp;
 use serde::Serialize;
 
 use crate::config::{OutputCaptureSpec, ToolInputSpec, WorkflowSpec, WorkflowStepSpec};
-pub(super) use crate::state::{OrchestrationState, ToolCallInstance};
+pub(super) use crate::state::{ConductorState, ToolCallInstance};
 
 /// Finds a tool spec by its name field (not by map key).
 #[must_use]
@@ -89,7 +89,7 @@ pub(crate) struct StepExecutionRequest {
     /// Impure timestamp captured before the level starts, when required.
     pub impure_timestamp: Option<Timestamp>,
     /// State snapshot used for cache-key and rematerialization checks.
-    pub state_snapshot: Arc<OrchestrationState>,
+    pub state_snapshot: Arc<ConductorState>,
     /// Absolute directory that directly contains the outermost conductor
     /// configuration file used for this run.
     ///

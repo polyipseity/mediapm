@@ -4,13 +4,13 @@ use std::collections::BTreeSet;
 
 use mediapm_cas::Hash;
 
-use crate::orchestration::protocol::OrchestrationState;
+use crate::orchestration::protocol::ConductorState;
 use crate::state::ToolCallInstance;
 
 /// Checks whether a cached tool call instance exists with all required outputs.
 pub(super) fn probe_cache(
     instance_key: &Hash,
-    state: &OrchestrationState,
+    state: &ConductorState,
     required_outputs: &BTreeSet<String>,
 ) -> (bool, Option<ToolCallInstance>) {
     if let Some(instance) = state.tool_call_instances.get(instance_key) {

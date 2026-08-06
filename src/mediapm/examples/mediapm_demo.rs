@@ -91,7 +91,6 @@ struct DemoManifest {
     lock_managed_tools_count: usize,
     executed_instances: usize,
     cached_instances: usize,
-    rematerialized_instances: usize,
     materialized_paths: usize,
     removed_paths: usize,
     warning_count: usize,
@@ -735,8 +734,8 @@ fn configure_document_for_local_tool_chain(
         // Default: `mediapm.conductor.ncl`.
         conductor_config: Some("mediapm.conductor.ncl".to_string()),
         // Volatile conductor state path relative to workspace root.
-        // Default: `.mediapm/state.conductor.ncl`.
-        conductor_state_config: Some(".mediapm/state.conductor.ncl".to_string()),
+        // Default: `.mediapm/state.conductor.json`.
+        conductor_state_config: Some(".mediapm/state.conductor.json".to_string()),
         // Conductor schema export directory relative to workspace root.
         // Default: `<mediapm_dir>/config/conductor`.
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
@@ -1112,9 +1111,6 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         lock_managed_tools_count: lock.managed_tools.len(),
         executed_instances: maybe_summary.as_ref().map_or(0, |summary| summary.executed_instances),
         cached_instances: maybe_summary.as_ref().map_or(0, |summary| summary.cached_instances),
-        rematerialized_instances: maybe_summary
-            .as_ref()
-            .map_or(0, |summary| summary.rematerialized_instances),
         materialized_paths: maybe_summary.as_ref().map_or(0, |summary| summary.materialized_paths),
         removed_paths: maybe_summary.as_ref().map_or(0, |summary| summary.removed_paths),
         warning_count: maybe_summary.as_ref().map_or(0, |summary| summary.warnings.len()),

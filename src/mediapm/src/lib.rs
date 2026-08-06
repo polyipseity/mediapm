@@ -82,8 +82,6 @@ pub struct SyncSummary {
     pub executed_instances: usize,
     /// Number of conductor instances served from cache.
     pub cached_instances: usize,
-    /// Number of conductor instances rematerialized from cache metadata.
-    pub rematerialized_instances: usize,
     /// Number of hierarchy paths materialized to the resolved library root.
     pub materialized_paths: usize,
     /// Number of stale hierarchy paths removed.
@@ -725,7 +723,6 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
 
 /// Builds conductor runtime options from resolved mediapm paths.
 #[must_use]
-#[allow(dead_code)]
 pub(crate) fn conductor_run_workflow_options(
     _paths: &MediaPmPaths,
     runtime_storage: &MediaRuntimeStorage,

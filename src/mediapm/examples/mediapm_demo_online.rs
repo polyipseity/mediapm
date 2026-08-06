@@ -201,7 +201,6 @@ struct DemoManifest {
     materialized_demo_sidecar_paths: BTreeMap<String, String>,
     executed_instances: usize,
     cached_instances: usize,
-    rematerialized_instances: usize,
     materialized_paths: usize,
     removed_paths: usize,
     added_tools: usize,
@@ -1209,8 +1208,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         // Default: `mediapm.conductor.generated.ncl`.
         conductor_generated_config: Some("mediapm.conductor.generated.ncl".to_string()),
         // Volatile conductor state path relative to workspace root.
-        // Default: `.mediapm/state.conductor.ncl`.
-        conductor_state_config: Some(".mediapm/state.conductor.ncl".to_string()),
+        // Default: `.mediapm/state.conductor.json`.
+        conductor_state_config: Some(".mediapm/state.conductor.json".to_string()),
         // Conductor schema export directory relative to workspace root.
         // Default: `<mediapm_dir>/config/conductor`.
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
@@ -2440,7 +2439,6 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             .collect(),
         executed_instances: summary.executed_instances,
         cached_instances: summary.cached_instances,
-        rematerialized_instances: summary.rematerialized_instances,
         materialized_paths: summary.materialized_paths,
         removed_paths: summary.removed_paths,
         added_tools: summary.added_tools,

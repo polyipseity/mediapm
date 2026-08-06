@@ -36,8 +36,12 @@ pub(super) async fn resolve_step_inputs<C: CasApi + Send + Sync>(
         inputs: &request.step.inputs,
     };
 
-    // Collect all input keys from tool spec.
-    let all_keys: BTreeSet<&String> = tool_spec.inputs.keys().collect();
+    // Collect all input keys: the tool spec declares its known input
+    // contract, but steps may also bind inputs directly (e.g. builtin steps
+    // like import bind `kind`/`hash` without declaring them on the tool
+    // spec); union both sets so step-declared bindings are never dropped.
+    let mut all_keys: BTreeSet<&String> = tool_spec.inputs.keys().collect();
+    all_keys.extend(request.step.inputs.keys());
 
     for key in all_keys {
         let value: String = request

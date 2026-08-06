@@ -35,7 +35,7 @@ const INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2";
 // ---------------------------------------------------------------------------
 // V2 wire format types
 // ---------------------------------------------------------------------------
-// These mirror the runtime `OrchestrationState` struct but live in the
+// These mirror the runtime `ConductorState` struct but live in the
 // version module so the version boundary is explicit.  The `mod.rs` bridge
 // converts between V2 wire types and the unversioned runtime representation.
 
@@ -273,8 +273,6 @@ fn legacy_instance_into_v2(
 /// `ConductorStateV2` with the V2 version marker. Instances convert into
 /// the redesigned Hash-keyed shape; the aux counter and GC epoch carry over
 /// from the envelope.
-// Only exercised by the migration test; unused in the lib-only build.
-#[allow(dead_code)]
 pub(crate) async fn migrate_v1_to_v2<C: CasApi>(
     cas: &C,
     envelope: v1::OrchestrationStateEnvelopeV1,

@@ -4,17 +4,18 @@
 //! `ractor` actor, providing a message-passing interface for workflow
 //! execution, diagnostics, and GC operations.
 
+use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 use ractor::rpc::CallResult;
-use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
+use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, SupervisionEvent};
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use crate::error::ConductorError;
-use crate::state::OrchestrationState;
+use crate::state::ConductorState;
 
 use super::coordinator::WorkflowCoordinator;
 use super::protocol::UnifiedNickelDocument;
@@ -35,9 +36,9 @@ pub(crate) enum ConductorMessage {
         /// Unified configuration documents.
         unified: UnifiedNickelDocument,
         /// Current orchestration state (cloned, actor owns its copy).
-        state: OrchestrationState,
+        state: ConductorState,
         /// Reply channel (returns summary + updated state).
-        reply: RpcReplyPort<Result<(RunSummary, OrchestrationState), ConductorError>>,
+        reply: RpcReplyPort<Result<(RunSummary, ConductorState), ConductorError>>,
     },
     /// Returns the current runtime diagnostics snapshot.
     GetRuntimeDiagnostics {
@@ -49,11 +50,17 @@ pub(crate) enum ConductorMessage {
         /// Set of referenced instance keys to retain.
         referenced_keys: std::collections::BTreeSet<Hash>,
         /// Current orchestration state (cloned, actor owns its copy).
-        state: OrchestrationState,
+        state: ConductorState,
         /// Unified configuration whose hashes protect blobs from reclamation.
         unified: UnifiedNickelDocument,
         /// Reply channel.
-        reply: RpcReplyPort<Result<OrchestrationState, ConductorError>>,
+        reply: RpcReplyPort<Result<ConductorState, ConductorError>>,
+    },
+    /// Deterministically stops all actor-owned resources (step workers and
+    /// the background GC task) before the actor is stopped.
+    Shutdown {
+        /// Reply channel.
+        reply: RpcReplyPort<Result<(), ConductorError>>,
     },
 }
 
@@ -84,9 +91,10 @@ where
 
     async fn pre_start(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         mut args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
+        args.set_supervisor(myself.get_cell());
         args.start_background_gc(crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS);
         Ok(args)
     }
@@ -117,8 +125,31 @@ where
                 let result = state.run_gc(&mut gc_state, &referenced_keys, &unified).await;
                 let _ = reply.send(result.map(|_| gc_state));
             }
+            ConductorMessage::Shutdown { reply } => {
+                let result = state.shutdown().await;
+                let _ = reply.send(result);
+            }
         }
         Ok(())
+    }
+
+    // The trait requires the `fn -> impl Future` form because ractor is used
+    // without its `async-trait` feature; `async fn` would not satisfy the
+    // trait signature, so clippy::manual_async_fn cannot apply here.
+    #[allow(unused_variables, clippy::manual_async_fn)]
+    fn handle_supervisor_evt(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        message: SupervisionEvent,
+        _state: &mut Self::State,
+    ) -> impl Future<Output = Result<(), ActorProcessingErr>> + Send {
+        async move {
+            tracing::warn!(
+                ?message,
+                "conductor supervisor event: child exit is expected during coordinator shutdown; keeping conductor alive"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -158,8 +189,8 @@ impl ConductorActorClient {
         workflow_name: &str,
         options: RunWorkflowOptions,
         unified: UnifiedNickelDocument,
-        state: OrchestrationState,
-    ) -> Result<(RunSummary, OrchestrationState), ConductorError> {
+        state: ConductorState,
+    ) -> Result<(RunSummary, ConductorState), ConductorError> {
         match self
             .actor_ref
             .call(
@@ -209,9 +240,9 @@ impl ConductorActorClient {
     pub(crate) async fn run_gc(
         &self,
         referenced_keys: std::collections::BTreeSet<Hash>,
-        state: OrchestrationState,
+        state: ConductorState,
         unified: UnifiedNickelDocument,
-    ) -> Result<OrchestrationState, ConductorError> {
+    ) -> Result<ConductorState, ConductorError> {
         match self
             .actor_ref
             .call(
@@ -228,6 +259,45 @@ impl ConductorActorClient {
             Ok(_) => Err(ConductorError::rpc_error("ConductorActor", "RPC channel closed")),
             Err(e) => Err(ConductorError::rpc_error("ConductorActor", e)),
         }
+    }
+
+    /// Deterministically stops the actor: first asks the coordinator to stop
+    /// all step workers and the background GC task, then stops the actor and
+    /// waits for its state — including the last actor-owned CAS clone — to
+    /// drop.
+    ///
+    /// Idempotent: stopping an already-stopped actor succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError::Internal`] when the actor is unreachable or
+    /// the bounded shutdown wait fails.
+    pub(crate) async fn shutdown(&self) -> Result<(), ConductorError> {
+        match self
+            .actor_ref
+            .call(|reply| ConductorMessage::Shutdown { reply }, Some(self.rpc_timeout))
+            .await
+        {
+            Ok(CallResult::Success(Ok(()))) => {}
+            Ok(CallResult::Success(Err(e))) => return Err(e),
+            Ok(CallResult::Timeout) => {
+                return Err(ConductorError::rpc_error("ConductorActor", "RPC timeout"));
+            }
+            Ok(_) => {
+                return Err(ConductorError::rpc_error("ConductorActor", "RPC channel closed"));
+            }
+            Err(e) => return Err(ConductorError::rpc_error("ConductorActor", e)),
+        }
+        self.actor_ref
+            .stop_and_wait(None, Some(std::time::Duration::from_secs(5)))
+            .await
+            .map_err(|e| ConductorError::rpc_error("ConductorActor", e))
+    }
+
+    /// Requests a best-effort stop of the actor without waiting (used from
+    /// [`Drop`] and other non-async teardown paths).
+    pub(crate) fn stop(&self) {
+        self.actor_ref.stop(None);
     }
 }
 

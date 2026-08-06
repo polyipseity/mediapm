@@ -60,6 +60,8 @@ pub(crate) const OUTPUT_IMPORT_RESULT: &str = "result";
 pub(crate) const INPUT_SOURCE_URL: &str = "source_url";
 /// Logical input name for import kind selection.
 pub(crate) const INPUT_IMPORT_KIND: &str = "kind";
+/// Input name for the import builtin's CAS hash param (`kind=cas_hash`).
+pub(crate) const INPUT_IMPORT_HASH: &str = "hash";
 /// Value for import kind: CAS hash pointer.
 pub(crate) const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
 
@@ -400,8 +402,8 @@ fn seed_local_variant_sources(
 }
 
 /// Synthesizes one import step inline (the import builtin has no per-tool
-/// submodule). The CAS hash is bound to the `source_url` input per the
-/// import-kind contract.
+/// submodule). The CAS hash is bound to the import builtin's `hash` input
+/// per its `kind=cas_hash` contract.
 #[allow(clippy::too_many_arguments)]
 fn synthesize_import_step(
     workflow: &mut WorkflowSpec,
@@ -428,7 +430,10 @@ fn synthesize_import_step(
         let step_id = media_step_id(step_index, mapping_index, step.tool, mapping);
 
         let mut inputs = BTreeMap::new();
-        inputs.insert(INPUT_SOURCE_URL.to_string(), hash.clone());
+        // The import builtin's `cas_hash` arm reads its payload under the
+        // `hash` param (not `source_url`, which is the executable-side input
+        // name used by the media tools).
+        inputs.insert(INPUT_IMPORT_HASH.to_string(), hash.clone());
         inputs.insert(INPUT_IMPORT_KIND.to_string(), kind.clone());
 
         let outputs = step_output_policy_overrides(&step.output_variants, &mapping.output)?;
@@ -959,7 +964,7 @@ mod tests {
         let step = &workflow.steps[0];
         assert_eq!(step.id, "step-0-0-import-source-to-source");
         assert_eq!(step.tool, "import");
-        assert_eq!(step.inputs.get("source_url").map(String::as_str), Some(AAA_HASH));
+        assert_eq!(step.inputs.get("hash").map(String::as_str), Some(AAA_HASH));
         assert_eq!(step.inputs.get("kind").map(String::as_str), Some("cas_hash"));
         assert!(step.depends_on.is_empty());
         assert_eq!(step.outputs.get("source").map(|output| output.save), Some(SaveMode::True));

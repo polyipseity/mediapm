@@ -85,7 +85,7 @@ impl MediaPmPaths {
             mediapm_ncl: root_dir.join("mediapm.ncl"),
             conductor_user_ncl: root_dir.join("mediapm.conductor.ncl"),
             conductor_generated_ncl: root_dir.join("mediapm.conductor.generated.ncl"),
-            conductor_state_config: runtime_root.join("state.conductor.ncl"),
+            conductor_state_config: runtime_root.join("state.conductor.json"),
             conductor_tmp_dir: tmp_dir.clone(),
             conductor_schema_dir: runtime_root.join("config").join("conductor"),
             mediapm_state_json: runtime_root.join("state.json"),
@@ -173,7 +173,7 @@ impl MediaPmPaths {
         );
 
         let conductor_state_config = overrides.conductor_state_config.clone().map_or_else(
-            || runtime_root.join("state.conductor.ncl"),
+            || runtime_root.join("state.conductor.json"),
             |raw| resolve_path(config_dir, raw),
         );
 
@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(paths.mediapm_tmp_dir, expected_tmp_dir);
         assert_eq!(
             paths.conductor_state_config,
-            root.path().join(".mediapm").join("state.conductor.ncl")
+            root.path().join(".mediapm").join("state.conductor.json")
         );
         assert_eq!(paths.conductor_tmp_dir, expected_tmp_dir);
         assert_eq!(

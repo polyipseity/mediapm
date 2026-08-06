@@ -118,7 +118,7 @@ pub struct AuxData {
 
 /// Full orchestration state snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OrchestrationState {
+pub struct ConductorState {
     /// Schema version marker.
     pub version: u32,
     /// Declared tool call instance store (`instance_key` → instance).
@@ -127,7 +127,7 @@ pub struct OrchestrationState {
     pub aux: AuxData,
 }
 
-impl OrchestrationState {
+impl ConductorState {
     /// Creates an empty initial state with the current version marker.
     #[must_use]
     pub fn new_empty() -> Self {
@@ -178,7 +178,7 @@ impl OrchestrationState {
     }
 }
 
-impl Default for OrchestrationState {
+impl Default for ConductorState {
     fn default() -> Self {
         Self::new_empty()
     }

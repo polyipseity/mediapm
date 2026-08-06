@@ -105,17 +105,24 @@ impl<C: CasApi + Send + Sync + 'static> Actor for StepWorkerActor<C> {
     }
 }
 
-/// Spawns a pool of step-worker actors.
+/// Spawns a pool of step-worker actors, linked to the conductor actor's
+/// supervision tree so they are torn down when it stops.
 pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
     cas: Arc<C>,
     pool_size: usize,
+    supervisor: ractor::ActorCell,
 ) -> Result<Vec<ActorRef<StepWorkerMessage>>, ConductorError> {
     let mut workers = Vec::with_capacity(pool_size);
     for _ in 0..pool_size {
         let state = StepWorkerState { cas: cas.clone() };
-        let (actor_ref, _handle) = ractor::spawn::<StepWorkerActor<C>>(state)
-            .await
-            .map_err(|e| ConductorError::Internal(format!("failed to spawn step worker: {e}")))?;
+        let (actor_ref, _handle) = StepWorkerActor::<C>::spawn_linked(
+            None,
+            StepWorkerActor::<C>::default(),
+            state,
+            supervisor.clone(),
+        )
+        .await
+        .map_err(|e| ConductorError::Internal(format!("failed to spawn step worker: {e}")))?;
         workers.push(actor_ref);
     }
     Ok(workers)
@@ -128,7 +135,7 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestration::protocol::{OrchestrationState, StepOutputs};
+    use crate::orchestration::protocol::{ConductorState, StepOutputs};
     use crate::state::versions::derive_instance_key_v2;
     use crate::state::{HashedValueRecord, ResolvedInput, ToolCallInstance};
     use mediapm_cas::Hash;
@@ -201,7 +208,7 @@ mod tests {
             outputs: BTreeMap::new(),
         };
 
-        let mut state = OrchestrationState::new_empty();
+        let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(instance_key, instance);
 
         let (hit, _) = cache::probe_cache(&instance_key, &state, &BTreeSet::new());
@@ -211,7 +218,7 @@ mod tests {
     /// Verifies `probe_cache` misses on unknown key.
     #[test]
     fn probe_cache_misses_on_unknown_key() {
-        let state = OrchestrationState::new_empty();
+        let state = ConductorState::new_empty();
         let (hit, _) =
             cache::probe_cache(&Hash::from_content(b"unknown-key"), &state, &BTreeSet::new());
         assert!(!hit);
@@ -237,7 +244,7 @@ mod tests {
             outputs,
         };
 
-        let mut state = OrchestrationState::new_empty();
+        let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(instance_key, instance);
 
         // Required output exists.

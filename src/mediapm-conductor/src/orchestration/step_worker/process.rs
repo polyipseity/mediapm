@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Stdio;
 
+use mediapm_cas::{CasApi, Hash};
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 
@@ -99,7 +100,12 @@ async fn collect_child_output(mut child: Child) -> Result<ExecutionResult, Condu
 
 /// Runs a builtin tool by dispatching to the appropriate handler through the
 /// [`ALL_BUILTINS`](crate::tools::ALL_BUILTINS) registry.
-pub(super) async fn run_builtin(
+///
+/// `cas` backs hash-valued builtin inputs (e.g. import `kind=cas_hash`);
+/// impure builtins that ingest pre-existing content resolve their hashes
+/// against the shared store rather than materializing sandbox copies.
+pub(super) async fn run_builtin<C: CasApi + Send + Sync>(
+    cas: &C,
     tool_name: &str,
     args: &BTreeMap<String, String>,
     outermost_config_dir: &Path,
@@ -121,12 +127,42 @@ pub(super) async fn run_builtin(
             Ok(ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 })
         }
         n if n == mediapm_conductor_builtin_import::TOOL_BUILTIN_ID => {
-            let bytes = mediapm_conductor_builtin_import::execute_content_map(
-                outermost_config_dir,
-                args,
-                &BTreeMap::new(),
-            )
-            .map_err(|e| ConductorError::Workflow(format!("import builtin failed: {e}")))?;
+            let bytes = if args.get("kind").map(String::as_str) == Some("cas_hash") {
+                // Resolve the CAS payload up front (the builtin resolver is
+                // synchronous), then hand the fetched bytes to the builtin so
+                // its argument/format validation still runs.
+                let hash_text = args.get("hash").ok_or_else(|| {
+                    ConductorError::Workflow("import kind='cas_hash' requires 'hash'".to_string())
+                })?;
+                let hash = hash_text.parse::<Hash>().map_err(|e| {
+                    ConductorError::Workflow(format!(
+                        "import kind='cas_hash' invalid hash '{hash_text}': {e}"
+                    ))
+                })?;
+                let content = cas
+                    .get(hash)
+                    .await
+                    .map_err(|e| {
+                        ConductorError::Workflow(format!(
+                            "import kind='cas_hash' CAS read failed: {e}"
+                        ))
+                    })?
+                    .to_vec();
+                mediapm_conductor_builtin_import::execute_content_map_with_hash_resolver(
+                    outermost_config_dir,
+                    args,
+                    &BTreeMap::new(),
+                    |_hash_text| Ok(content.clone()),
+                )
+                .map_err(|e| ConductorError::Workflow(format!("import builtin failed: {e}")))?
+            } else {
+                mediapm_conductor_builtin_import::execute_content_map(
+                    outermost_config_dir,
+                    args,
+                    &BTreeMap::new(),
+                )
+                .map_err(|e| ConductorError::Workflow(format!("import builtin failed: {e}")))?
+            };
             Ok(ExecutionResult { stdout: bytes, stderr: Vec::new(), exit_code: 0 })
         }
         n if n == mediapm_conductor_builtin_archive::TOOL_BUILTIN_ID => {

@@ -18,6 +18,9 @@ pub const DEFAULT_CONDUCTOR_SCHEMA_DIR_NAME: &str = "schemas";
 /// Default tools materialization directory inside `conductor_dir`.
 pub const DEFAULT_CONDUCTOR_TOOLS_DIR_NAME: &str = "tools";
 
+/// Default conductor state file name inside a runtime root.
+pub const DEFAULT_CONDUCTOR_STATE_FILE_NAME: &str = "state.json";
+
 /// Default maximum concurrent worker tasks.
 pub const DEFAULT_WORKER_POOL_SIZE: usize = 4;
 

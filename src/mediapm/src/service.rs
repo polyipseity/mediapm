@@ -33,13 +33,14 @@ pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
 use crate::tools::is_known_tool_id;
 use crate::tools::provider::RecheckPolicy;
-use crate::tools::workflows::reconcile_media_workflows;
+use crate::tools::workflows::{MANAGED_WORKFLOW_PREFIX, reconcile_media_workflows};
 
 use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaStepInvalidationSummary,
-    SyncSummary, ToolsSyncSummary, export_mediapm_nickel_config_schemas, load_runtime_dotenv,
-    local_source_default_steps, media_id_from_local_path, media_id_from_uri, merge_runtime_storage,
-    normalize_source_uri, validate_source_uri,
+    SyncSummary, ToolsSyncSummary, conductor_run_workflow_options,
+    export_mediapm_nickel_config_schemas, load_runtime_dotenv, local_source_default_steps,
+    media_id_from_local_path, media_id_from_uri, merge_runtime_storage, normalize_source_uri,
+    validate_source_uri,
 };
 
 /// Mediapm-specific entries appended to the conductor-managed `.gitignore`
@@ -936,8 +937,17 @@ impl MediaPmService<FileSystemCas> {
             .await
             .map_err(|e| MediaPmError::Workflow(format!("failed to open filesystem CAS: {e}")))?;
 
-        // Build the conductor.
-        let runtime_storage = RuntimeStoragePaths::new(&effective_paths.runtime_root);
+        // Build the conductor. Wire the mediapm-managed conductor documents
+        // (user + generated) and the volatile state file so `run_workflow`
+        // loads the merged config and persists state across syncs.
+        let runtime_storage = RuntimeStoragePaths::new(&effective_paths.runtime_root)
+            .with_config_paths(
+                vec![
+                    effective_paths.conductor_user_ncl.clone(),
+                    effective_paths.conductor_generated_ncl.clone(),
+                ],
+                effective_paths.conductor_state_config.clone(),
+            );
         let conductor = SimpleConductor::new(runtime_storage, cas);
 
         Ok(Self::new_with_runtime_storage_overrides(
@@ -965,9 +975,10 @@ impl MediaPmService<FileSystemCas> {
     /// This is the primary sync entrypoint:
     /// 1. Ensures runtime env files and schemas are up-to-date.
     /// 2. Syncs tools.
-    /// 3. Loads the mediapm document and state.
-    /// 4. Opens the filesystem CAS for materialization.
-    /// 5. Runs the materializer.
+    /// 3. Executes synthesized managed workflows through the conductor.
+    /// 4. Loads the mediapm document and state.
+    /// 5. Opens the filesystem CAS for materialization.
+    /// 6. Runs the materializer.
     ///
     /// # Errors
     ///
@@ -995,14 +1006,59 @@ impl MediaPmService<FileSystemCas> {
         let tools_report =
             self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, false).await?;
 
-        // 3. Load mediapm document and state.
+        // 3. Execute synthesized managed workflows through the conductor.
+        // The generated doc is fully machine-managed; iterate its managed
+        // `mediapm.media.*` workflows only (run_workflow resolves each
+        // against the merged user + generated config).
+        let generated_doc = load_conductor_generated_document(&effective_paths)?;
+        let workflow_names: Vec<String> = generated_doc
+            .workflows
+            .iter()
+            .filter(|workflow| workflow.name.starts_with(MANAGED_WORKFLOW_PREFIX))
+            .map(|workflow| workflow.name.clone())
+            .collect();
+        let mut executed_instances: usize = 0;
+        let mut cached_instances: usize = 0;
+        self.conductor
+            .ensure_persisted_state_loaded()
+            .await
+            .map_err(|e| MediaPmError::Workflow(format!("failed to load conductor state: {e}")))?;
+        for workflow_name in workflow_names {
+            let before = self.conductor.get_state()?;
+            let summary = self
+                .conductor
+                .run_workflow(
+                    &workflow_name,
+                    conductor_run_workflow_options(&effective_paths, &merged),
+                )
+                .await?;
+            let after = self.conductor.get_state()?;
+            let new_keys = after
+                .tool_call_instances
+                .keys()
+                .filter(|key| !before.tool_call_instances.contains_key(key))
+                .count();
+            executed_instances += new_keys;
+            // Steps that ran but produced no new instance key were cache hits
+            // (executed = new keys; cached = ran - executed).
+            let ran = summary.executed_steps + summary.cached_steps;
+            cached_instances += ran.saturating_sub(new_keys);
+            if summary.failed_steps > 0 {
+                warnings.push(format!(
+                    "workflow '{workflow_name}' had {} failed step(s)",
+                    summary.failed_steps
+                ));
+            }
+        }
+
+        // 4. Load mediapm document and state.
         let document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
         let state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
 
-        // 4. Check if any tools require sync.
+        // 5. Check if any tools require sync.
         self.append_tool_sync_hint_warning(&mut warnings, &state).await?;
 
-        // 5 – 6. Reuse the service's CAS and run the materializer. Opening a
+        // 6 – 7. Reuse the service's CAS and run the materializer. Opening a
         // second `FileSystemCas` at the same store root would fail with
         // `LockContention`, since the service constructor already holds the
         // directory lock for its lifetime.
@@ -1016,13 +1072,12 @@ impl MediaPmService<FileSystemCas> {
         )
         .await?;
 
-        // 7. Gather warnings from materializer.
+        // 8. Gather warnings from materializer.
         warnings.extend(materialize_report.notices);
 
         Ok(SyncSummary {
-            executed_instances: 0, // stub: conductor not yet wired for full sync
-            cached_instances: 0,
-            rematerialized_instances: 0,
+            executed_instances,
+            cached_instances,
             materialized_paths: materialize_report.materialized_paths,
             removed_paths: materialize_report.removed_paths,
             removed_empty_dirs: materialize_report.removed_empty_dirs,
@@ -1046,7 +1101,10 @@ impl MediaPmService<InMemoryCas> {
         let root_dir = std::env::temp_dir().join("mediapm-inmemory");
         let paths = MediaPmPaths::from_root(&root_dir);
         let cas = InMemoryCas::new();
-        let runtime_storage = RuntimeStoragePaths::new(&paths.runtime_root);
+        let runtime_storage = RuntimeStoragePaths::new(&paths.runtime_root).with_config_paths(
+            vec![paths.conductor_user_ncl.clone(), paths.conductor_generated_ncl.clone()],
+            paths.conductor_state_config.clone(),
+        );
         let conductor = SimpleConductor::new(runtime_storage, cas);
         Self::new(conductor, paths)
     }

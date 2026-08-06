@@ -11,7 +11,8 @@
 //!   re-exported from this module, never `versions::v<N>` directly.
 
 use crate::error::ConductorError;
-use crate::state::{AuxData, HashedValueRecord, InstanceAux, OrchestrationState, ToolCallInstance};
+use crate::state::{AuxData, ConductorState, HashedValueRecord, InstanceAux, ToolCallInstance};
+use mediapm_cas::CasApi;
 
 mod v1;
 mod v2;
@@ -130,7 +131,7 @@ impl From<ToolCallInstance> for v2::ToolCallInstanceV2 {
     }
 }
 
-impl From<v2::ConductorStateV2> for OrchestrationState {
+impl From<v2::ConductorStateV2> for ConductorState {
     fn from(state: v2::ConductorStateV2) -> Self {
         Self {
             version: state.version,
@@ -144,8 +145,8 @@ impl From<v2::ConductorStateV2> for OrchestrationState {
     }
 }
 
-impl From<OrchestrationState> for v2::ConductorStateV2 {
-    fn from(state: OrchestrationState) -> Self {
+impl From<ConductorState> for v2::ConductorStateV2 {
+    fn from(state: ConductorState) -> Self {
         Self {
             version: v2::CONDUCTOR_STATE_VERSION_V2,
             tool_call_instances: state
@@ -156,6 +157,11 @@ impl From<OrchestrationState> for v2::ConductorStateV2 {
             aux: state.aux.into(),
         }
     }
+}
+
+/// Returns whether `marker` is the v1 orchestration-state wire version.
+pub(crate) fn is_orchestration_state_version_v1(marker: u32) -> bool {
+    v1::is_orchestration_state_version_v1(marker)
 }
 
 /// Extracts the numeric `version` field from a JSON blob.
@@ -183,20 +189,53 @@ pub(crate) fn peek_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
 ///
 /// Returns an error if the version is unsupported. Unknown/missing versions
 /// are reported with a clear message.
-pub fn decode_state_json(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
-    // Peek the version marker first.
+pub fn decode_state_json(bytes: &[u8]) -> Result<ConductorState, ConductorError> {
     let version = peek_version_marker(bytes)?;
 
     if v2::is_conductor_state_version_v2(version) {
-        // Deserialise through the V2 wire type so the version boundary is
-        // explicit, then bridge to the runtime representation.
         let v2_state: v2::ConductorStateV2 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
         Ok(v2_state.into())
+    } else if v1::is_orchestration_state_version_v1(version) {
+        Err(ConductorError::Serialization(format!(
+            "orchestration state version {version} requires CAS-backed migration; \
+             use decode_state_json_with_cas"
+        )))
     } else {
         Err(ConductorError::Serialization(format!(
-            "unsupported orchestration state version: {version} (expected {})",
-            v2::CONDUCTOR_STATE_VERSION_V2
+            "unsupported orchestration state version: {version} (expected {} or {})",
+            v2::CONDUCTOR_STATE_VERSION_V2,
+            v1::ORCHESTRATION_STATE_VERSION_V1
+        )))
+    }
+}
+
+/// Decodes persisted state JSON, migrating v1 CAS-referenced envelopes when
+/// needed.
+///
+/// # Errors
+///
+/// Returns an error when the version is unsupported or migration fails.
+pub async fn decode_state_json_with_cas<C: CasApi>(
+    cas: &C,
+    bytes: &[u8],
+) -> Result<ConductorState, ConductorError> {
+    let version = peek_version_marker(bytes)?;
+
+    if v2::is_conductor_state_version_v2(version) {
+        let v2_state: v2::ConductorStateV2 = serde_json::from_slice(bytes)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        Ok(v2_state.into())
+    } else if v1::is_orchestration_state_version_v1(version) {
+        let envelope: v1::OrchestrationStateEnvelopeV1 = serde_json::from_slice(bytes)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        let v2_state = v2::migrate_v1_to_v2(cas, envelope).await?;
+        Ok(v2_state.into())
+    } else {
+        Err(ConductorError::Serialization(format!(
+            "unsupported orchestration state version: {version} (expected {} or {})",
+            v2::CONDUCTOR_STATE_VERSION_V2,
+            v1::ORCHESTRATION_STATE_VERSION_V1
         )))
     }
 }
@@ -207,7 +246,7 @@ pub fn decode_state_json(bytes: &[u8]) -> Result<OrchestrationState, ConductorEr
 /// # Errors
 ///
 /// Returns an error if serialization to JSON fails.
-pub fn encode_state_json(state: &OrchestrationState) -> Result<Vec<u8>, ConductorError> {
+pub fn encode_state_json(state: &ConductorState) -> Result<Vec<u8>, ConductorError> {
     // Route through V2 wire type for explicit version boundary.
     let v2_state: v2::ConductorStateV2 = state.clone().into();
     serde_json::to_vec_pretty(&v2_state).map_err(|e| ConductorError::Serialization(e.to_string()))
@@ -223,7 +262,7 @@ mod tests {
     use super::*;
     use crate::state::{OutputSaveMode, STATE_VERSION};
 
-    fn sample_state() -> OrchestrationState {
+    fn sample_state() -> ConductorState {
         let key = Hash::from_content(b"key");
         let instance = ToolCallInstance {
             instance_key: key,
@@ -247,7 +286,7 @@ mod tests {
                 HashedValueRecord { hash: Hash::from_content(b"out"), deterministic: true },
             )]),
         };
-        OrchestrationState {
+        ConductorState {
             version: STATE_VERSION,
             tool_call_instances: BTreeMap::from([(key, instance)]),
             aux: AuxData {

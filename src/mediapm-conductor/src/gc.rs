@@ -11,7 +11,7 @@ use mediapm_cas::{CasApi, CasMaintenanceApi, Hash, PruneReport};
 use crate::error::ConductorError;
 use crate::orchestration::protocol::UnifiedNickelDocument;
 
-use crate::state::OrchestrationState;
+use crate::state::ConductorState;
 
 /// Aggregate report from one full conductor GC cycle.
 #[derive(Debug, Clone, Default)]
@@ -32,7 +32,7 @@ pub struct ConductorGcReport {
 /// # Phases
 ///
 /// 1. **Instance GC** — evict stale tool-call instances from
-///    [`OrchestrationState`] using the TTL grace period.
+///    [`ConductorState`] using the TTL grace period.
 /// 2. **Root-set / orphan reclamation** — collect all referenced CAS hashes
 ///    from surviving instances and the unified config, list all CAS hashes,
 ///    delete the orphans.
@@ -44,7 +44,7 @@ pub struct ConductorGcReport {
 /// Returns [`ConductorError::Cas`] on any CAS operation failure.
 pub(crate) async fn run_conductor_gc<C>(
     cas: &C,
-    state: &mut OrchestrationState,
+    state: &mut ConductorState,
     unified: &UnifiedNickelDocument,
     referenced_keys: &BTreeSet<Hash>,
     ttl_seconds: u64,
