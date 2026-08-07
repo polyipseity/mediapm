@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Remove mediapm-owned temp directories under $TMPDIR.
+set -euo pipefail
+
+tmp_root="${TMPDIR:-/tmp}"
+dry_run=0
+removed=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) dry_run=1 ;;
+        -h | --help)
+            echo "usage: $0 [--dry-run]"
+            echo "removes: mediapm-artifact-* mediapm-cache-* mediapm-runtime-*"
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $arg" >&2
+            exit 1
+            ;;
+    esac
+done
+
+remove_if_exists() {
+    local path="$1"
+    if [[ ! -e "$path" ]]; then
+        return
+    fi
+    if [[ "$dry_run" -eq 1 ]]; then
+        echo "would remove: $path"
+    else
+        rm -rf "$path"
+        echo "removed: $path"
+    fi
+    removed=$((removed + 1))
+}
+
+while IFS= read -r -d '' dir; do
+    remove_if_exists "$dir"
+done < <(find "$tmp_root" -maxdepth 1 -type d \( \
+    -name 'mediapm-artifact-*' -o \
+    -name 'mediapm-cache-*' -o \
+    -name 'mediapm-runtime-*' \
+    \) -print0 2>/dev/null)
+
+if [[ "$removed" -eq 0 ]]; then
+    echo "no mediapm temp directories found under $tmp_root"
+else
+    if [[ "$dry_run" -eq 1 ]]; then
+        echo "would remove $removed mediapm temp director(ies) under $tmp_root"
+    else
+        echo "removed $removed mediapm temp director(ies) under $tmp_root"
+    fi
+fi
