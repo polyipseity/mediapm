@@ -6,8 +6,6 @@
 //! - Concurrent clone sharing (shared lock via Arc).
 //! - Canonical path unification (symlink -> same dir detected).
 
-use tempfile::tempdir;
-
 use mediapm_cas::api::CasApi;
 use mediapm_cas::error::CasError;
 use mediapm_cas::storage::file_system::FileSystemCas;
@@ -17,7 +15,7 @@ use mediapm_cas::storage::file_system::FileSystemCas;
 /// must succeed.
 #[tokio::test]
 async fn file_system_cas_same_process_contention() {
-    let dir = tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let cas1 = FileSystemCas::open(dir.path()).await.unwrap();
 
     // Second open must fail with LockContention.
@@ -37,7 +35,7 @@ async fn file_system_cas_same_process_contention() {
 /// `LockContention`. Release the manual lock and retry — must succeed.
 #[tokio::test]
 async fn file_system_cas_contention_with_flock_barrier() {
-    let dir = tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let lock_path = dir.path().join("lock");
 
     // Manually acquire the flock on the lock file.
@@ -70,7 +68,7 @@ async fn file_system_cas_contention_with_flock_barrier() {
 /// must both be able to operate concurrently without contention errors.
 #[tokio::test]
 async fn file_system_cas_concurrent_clones_no_contention() {
-    let dir = tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let cas = FileSystemCas::open(dir.path()).await.unwrap();
     let cas_clone = cas.clone();
 
@@ -94,7 +92,7 @@ async fn file_system_cas_concurrent_clones_no_contention() {
 #[tokio::test]
 #[cfg_attr(target_os = "windows", ignore = "symlink support varies on Windows")]
 async fn file_system_cas_contention_with_canonical_symlink() {
-    let dir = tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let link = dir.path().join("link");
     std::os::unix::fs::symlink(dir.path(), &link).unwrap();
 

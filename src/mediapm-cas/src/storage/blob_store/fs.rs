@@ -433,7 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_write_read_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -459,7 +459,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_read_missing_returns_not_found() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -474,7 +474,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delete_removes_blob() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -492,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delta_path_works() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -516,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delete_removes_both_paths() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -543,7 +543,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delete_encoding_removes_specific_encoding() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -575,7 +575,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delete_encoding_missing_is_noop() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -600,7 +600,7 @@ mod tests {
 
     #[tokio::test]
     async fn modified_skips_second_read_on_unchanged_mtime() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Modified],
@@ -623,7 +623,7 @@ mod tests {
 
     #[tokio::test]
     async fn modified_catches_tampered_blob() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Modified],
@@ -651,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn sample_triggers_at_denominator_interval() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Sample { denominator: 3 }],
@@ -676,7 +676,7 @@ mod tests {
     #[tokio::test]
     async fn stale_retriggers_after_timeout_expiry() {
         // Use a zero-length timeout so the first read records, second triggers.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Stale { timeout: std::time::Duration::ZERO }],

@@ -3,7 +3,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use bytes::Bytes;
-use tempfile::tempdir;
 
 use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ObjectEncoding};
 use mediapm_cas::hash::Hash;
@@ -337,7 +336,7 @@ async fn optimize_idempotent() {
 /// Uses `FileSystemCas` so we can inspect the filesystem directly.
 #[tokio::test]
 async fn stale_diff_removed_after_delta_to_full_promotion() {
-    let dir = tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
 
     // Two similar large buffers so VCDIFF delta makes sense.
@@ -400,7 +399,7 @@ async fn stale_diff_removed_after_delta_to_full_promotion() {
 /// Uses `FileSystemCas` so that background engine operations are real.
 #[tokio::test]
 async fn delta_cache_repeated_reads_work() {
-    let dir = tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
 
     let base_content = Bytes::from(vec![b'B'; 4096]);
@@ -449,7 +448,7 @@ async fn delta_cache_repeated_reads_work() {
 /// have an on-disk blob file.
 #[tokio::test]
 async fn file_system_cas_wal_consumer_materializes_blob() {
-    let dir = tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.expect("open cas");
 
     let data = Bytes::from_static(b"wal-materialize-test");
@@ -470,7 +469,7 @@ async fn file_system_cas_wal_consumer_materializes_blob() {
 /// batch).
 #[tokio::test]
 async fn file_system_cas_wal_consumer_processes_batches() {
-    let dir = tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.expect("open cas");
 
     // Put entries in two batches to verify consumer processes all.
@@ -514,7 +513,7 @@ async fn file_system_cas_wal_consumer_processes_batches() {
 /// session left off.
 #[tokio::test]
 async fn file_system_cas_reopen_and_consume_wal() {
-    let dir = tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
 
     // First session: open, put data, close (drop cas).
     let hash;
@@ -544,7 +543,7 @@ async fn file_system_cas_reopen_and_consume_wal() {
 /// — second call consumes 0 entries.
 #[tokio::test]
 async fn file_system_cas_wal_consumer_multiple_cycles() {
-    let dir = tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.expect("open cas");
 
     cas.put(Bytes::from_static(b"first")).await.expect("put first");
@@ -567,7 +566,7 @@ async fn file_system_cas_wal_consumer_multiple_cycles() {
 /// an explicit `run_wal_consumer()` call.
 #[tokio::test]
 async fn file_system_cas_background_task_materializes_blob() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
         dir.path(),
         vec![],
@@ -594,7 +593,7 @@ async fn file_system_cas_background_task_materializes_blob() {
 /// entries from a previous session are consumed on re-open).
 #[tokio::test]
 async fn file_system_cas_background_task_survives_reopen() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
 
     // First session: put data and let background materialize it.
     let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
@@ -625,7 +624,7 @@ async fn file_system_cas_background_task_survives_reopen() {
 /// so the blob is never materialized on disk (the two entries cancel out).
 #[tokio::test]
 async fn file_system_cas_background_task_deletes_through_wal() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
         dir.path(),
         vec![],
@@ -651,7 +650,7 @@ async fn file_system_cas_background_task_deletes_through_wal() {
 /// when the `FileSystemCas` handle is dropped.
 #[tokio::test]
 async fn file_system_cas_background_maintenance_guard_cancels_on_drop() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
         dir.path(),
         vec![],

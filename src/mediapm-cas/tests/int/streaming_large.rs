@@ -17,8 +17,6 @@ use mediapm_cas::api::CasApi;
 use mediapm_cas::hash::Hash;
 
 use bytes::Bytes;
-#[cfg(feature = "large-tests")]
-use tempfile::tempdir;
 
 /// Size of a 1 MiB payload for streaming correctness tests.
 const SIZE_1MIB: u64 = 1024 * 1024;
@@ -112,7 +110,7 @@ async fn in_memory_large_object_get_to_writer_works() {
 #[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn filesystem_large_object_get_to_writer_works() {
-    let dir = tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
     #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xFEu8; SIZE_65MIB as usize];
@@ -133,7 +131,7 @@ async fn filesystem_large_object_get_to_writer_works() {
 #[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn filesystem_get_succeeds_above_wal_inline_limit() {
-    let dir = tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
     let data = vec![0xFEu8; usize::try_from(SIZE_65MIB).expect("65 MiB fits usize")];
     let expected_hash = Hash::from_content(&data);

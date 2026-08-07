@@ -86,13 +86,12 @@ mod tests {
     use super::*;
     use fs4::AsyncFileExt;
     use std::time::Duration;
-    use tempfile::tempdir;
 
     /// Acquiring, dropping, then re-acquiring the lock must succeed.
     /// This validates RAII drop semantics (both layers released).
     #[tokio::test]
     async fn directory_lock_new_releases_on_drop() {
-        let dir = tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let guard = DirectoryLockGuard::lock(dir.path()).await.unwrap();
         drop(guard);
         // Must succeed after drop.
@@ -104,7 +103,7 @@ mod tests {
     /// acquiring again must succeed.
     #[tokio::test]
     async fn directory_lock_same_process_contention() {
-        let dir = tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let guard = DirectoryLockGuard::lock(dir.path()).await.unwrap();
 
         // Second acquire must fail with LockContention (Layer 1).
@@ -125,7 +124,7 @@ mod tests {
     /// lock and retry — must succeed.
     #[tokio::test]
     async fn directory_lock_cross_process_contention() {
-        let dir = tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let lock_path = dir.path().join("lock");
 
         // Manually acquire the flock on the lock file.
@@ -156,7 +155,7 @@ mod tests {
     /// return `LockContention` immediately, not block or timeout.
     #[tokio::test]
     async fn directory_lock_fail_fast_no_blocking() {
-        let dir = tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let _guard = DirectoryLockGuard::lock(dir.path()).await.unwrap();
 
         // Spawn a second task that tries to acquire the same lock.

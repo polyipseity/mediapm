@@ -228,12 +228,11 @@ mod tests {
     use crate::storage::wal::InMemoryWal;
     use crate::storage::wal::WalEntry;
     use bytes::Bytes;
-    use tempfile::tempdir;
 
     /// Create a [`FileSystemBlobStore`] in a temp directory for testing
     /// [`FileSystemMetadataStore`].
     async fn test_blob_store() -> FileSystemBlobStore {
-        let dir = tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         FileSystemBlobStore::create(dir.path().join("blobs"), Vec::new()).await.unwrap()
     }
 

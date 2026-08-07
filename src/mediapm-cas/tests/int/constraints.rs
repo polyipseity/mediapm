@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
-use tempfile::tempdir;
 
 use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch};
 use mediapm_cas::new_in_memory_cas;
@@ -154,7 +153,7 @@ async fn prune_all_bases_leaves_empty_entry() {
 /// false`, so constraints are WAL-only until consumed.
 #[tokio::test]
 async fn get_constraint_wal_fallback_before_consumption() {
-    let dir = tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let cas =
         mediapm_cas::FileSystemCas::open_with_strategies(dir.path(), Vec::new()).await.unwrap();
 
