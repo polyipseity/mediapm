@@ -3,6 +3,7 @@
 mod builtins;
 mod demo;
 mod demo_online;
+mod hierarchy_golden;
 /// Nickel schema strictness tests (S-C1..S-C10) — validates the strict
 /// closed-contract surface of `v1.ncl`/`mod.ncl` and the exported JSON schema.
 mod schema_strictness;

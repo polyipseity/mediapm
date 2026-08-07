@@ -14,6 +14,9 @@
 pub mod builtins;
 pub(crate) mod conductor_bridge;
 mod config;
+/// Golden demo hierarchy layout contract (examples + tests).
+#[doc(hidden)]
+pub mod demo_hierarchy_spec;
 mod error;
 pub(crate) mod global;
 pub(crate) mod hierarchy;
