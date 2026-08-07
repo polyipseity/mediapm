@@ -70,6 +70,7 @@ pub struct DemoHierarchyGoldenDocument {
 }
 
 /// Loads golden hierarchy specs from the workspace test fixture.
+#[must_use]
 pub fn load_demo_hierarchy_golden_document() -> DemoHierarchyGoldenDocument {
     let fixture_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo_hierarchy_golden.json");
@@ -163,8 +164,7 @@ fn collect_regular_files_recursive(root: &Path) -> Result<Vec<PathBuf>, String> 
 
 fn glob_pattern_to_regex(pattern: &str) -> Result<Regex, String> {
     let mut regex = String::from("^");
-    let mut chars = pattern.chars().peekable();
-    while let Some(ch) = chars.next() {
+    for ch in pattern.chars() {
         match ch {
             '*' => regex.push_str(".*"),
             '?' => regex.push('.'),
