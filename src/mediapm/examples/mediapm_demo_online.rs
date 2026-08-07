@@ -21,8 +21,8 @@ use mediapm::{
     MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
     OutputCaptureKind, OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
     ToolRequirement, TransformInputValue, VerifyStrategy, YtDlpOutputKind,
-    YtDlpOutputVariantConfig, load_mediapm_document, load_mediapm_state_document,
-    save_mediapm_document, save_mediapm_state_document,
+    YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
+    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -234,20 +234,11 @@ impl StoreSizeStats {
     }
 }
 
-/// Env var overriding the artifact root; tests set it to unique tempdirs so
-/// runs never share the canonical artifact directory (CAS flock isolation).
-const MEDIAPM_EXAMPLE_ARTIFACT_ROOT: &str = "MEDIAPM_EXAMPLE_ARTIFACT_ROOT";
-
-/// Env var overriding the user-level tool download cache root; set to a
-/// unique tempdir when tests or scripts need `sync` to never touch the real
-/// OS user cache.
-const MEDIAPM_EXAMPLE_CACHE_ROOT: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
-
-/// Runtime storage derived from the `MEDIAPM_EXAMPLE_CACHE_ROOT` override
-/// (identity behavior when unset).
+/// Runtime storage derived from the example cache-root override (identity
+/// behavior when unset).
 fn example_runtime_storage() -> MediaRuntimeStorage {
     MediaRuntimeStorage {
-        cache_root_override: std::env::var_os(MEDIAPM_EXAMPLE_CACHE_ROOT).map(PathBuf::from),
+        cache_root_override: std::env::var_os(example_isolation::CACHE_ROOT_ENV).map(PathBuf::from),
         ..MediaRuntimeStorage::default()
     }
 }
@@ -260,7 +251,7 @@ struct DemoRunPaths {
 }
 
 fn artifact_root() -> PathBuf {
-    if let Some(root) = std::env::var_os(MEDIAPM_EXAMPLE_ARTIFACT_ROOT) {
+    if let Some(root) = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV) {
         return PathBuf::from(root);
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join("artifacts").join("demo-online")
@@ -451,19 +442,25 @@ fn display_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
 }
 
-fn reset_artifact_root() -> ExampleResult<PathBuf> {
+fn reset_artifact_root() -> ExampleResult<(PathBuf, Option<tempfile::TempDir>)> {
     let root = artifact_root();
     if root.exists()
-        && let Err(error) = remove_dir_all_with_retry(&root)
+        && let Err(error) = example_isolation::remove_dir_all_with_retry(&root)
     {
-        if is_share_violation_remove_error(error.as_ref()) {
-            return prepare_fallback_artifact_root(&root);
+        if is_share_violation_remove_error(&error) {
+            let (fallback_dir, fallback_path) = example_isolation::isolated_artifact_dir()?;
+            eprintln!(
+                "[demo_online] canonical artifact root '{}' is locked; using fallback root '{}'",
+                root.display(),
+                fallback_path.display()
+            );
+            return Ok((fallback_path, Some(fallback_dir)));
         }
 
-        return Err(error);
+        return Err(error.into());
     }
     fs::create_dir_all(&root)?;
-    Ok(root)
+    Ok((root, None))
 }
 
 fn is_share_violation_remove_error(error: &(dyn Error + 'static)) -> bool {
@@ -471,78 +468,6 @@ fn is_share_violation_remove_error(error: &(dyn Error + 'static)) -> bool {
         io_error.kind() == std::io::ErrorKind::PermissionDenied
             || io_error.raw_os_error() == Some(32)
     })
-}
-
-fn prepare_fallback_artifact_root(canonical_root: &Path) -> ExampleResult<PathBuf> {
-    let suffix =
-        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
-    let fallback_root =
-        canonical_root.with_file_name(format!("demo-online-fallback-{}-{}", process::id(), suffix));
-
-    fs::create_dir_all(&fallback_root)?;
-    eprintln!(
-        "[demo_online] canonical artifact root '{}' is locked; using fallback root '{}'",
-        canonical_root.display(),
-        fallback_root.display()
-    );
-    Ok(fallback_root)
-}
-
-fn remove_dir_all_with_retry(path: &Path) -> ExampleResult<()> {
-    const ATTEMPTS: usize = 6;
-    const BACKOFF_MS: u64 = 40;
-
-    let mut last_error: Option<std::io::Error> = None;
-
-    for attempt in 0..ATTEMPTS {
-        match fs::remove_dir_all(path) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                let retryable = error.kind() == std::io::ErrorKind::PermissionDenied
-                    || error.raw_os_error() == Some(32);
-                last_error = Some(error);
-                if !retryable || attempt + 1 == ATTEMPTS {
-                    break;
-                }
-                clear_readonly_bits_recursively(path);
-                thread::sleep(Duration::from_millis(BACKOFF_MS));
-            }
-        }
-    }
-
-    match last_error {
-        Some(error) => Err(Box::new(error)),
-        None => Ok(()),
-    }
-}
-
-#[expect(
-    clippy::permissions_set_readonly_false,
-    reason = "cleanup retries must clear readonly flags on artifacts so repeated demo runs can remove prior trees"
-)]
-fn clear_readonly_bits_recursively(path: &Path) {
-    if !path.exists() {
-        return;
-    }
-
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(next) = stack.pop() {
-        if let Ok(metadata) = fs::metadata(&next) {
-            let mut permissions = metadata.permissions();
-            if permissions.readonly() {
-                permissions.set_readonly(false);
-                let _ = fs::set_permissions(&next, permissions);
-            }
-        }
-
-        if next.is_dir()
-            && let Ok(entries) = fs::read_dir(&next)
-        {
-            for entry in entries.flatten() {
-                stack.push(entry.path());
-            }
-        }
-    }
 }
 
 fn write_json_file<T>(path: &Path, value: &T) -> ExampleResult<()>
@@ -1453,11 +1378,13 @@ async fn run_tools_update_precheck(
     service: &mut MediaPmService<mediapm_cas::InMemoryCas>,
     workspace_root: &Path,
 ) -> ExampleResult<(usize, usize, usize)> {
-    let cache_root =
-        std::env::var_os(MEDIAPM_EXAMPLE_CACHE_ROOT).map(PathBuf::from).ok_or_else(|| {
-            std::io::Error::other(
-                "MEDIAPM_EXAMPLE_CACHE_ROOT must be set for full-sync demo tool-update precheck",
-            )
+    let cache_root = std::env::var_os(example_isolation::CACHE_ROOT_ENV)
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "{} must be set for full-sync demo tool-update precheck",
+                example_isolation::CACHE_ROOT_ENV
+            ))
         })?;
     seed_tool_metadata_cache_for_demo_precheck(&cache_root).await?;
 
@@ -2436,7 +2363,7 @@ fn resolve_demo_output_paths(
     reason = "this example keeps end-to-end demo orchestration and artifact assertions in one function for traceability"
 )]
 async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> {
-    let root = reset_artifact_root()?;
+    let (root, _fallback_artifact) = reset_artifact_root()?;
     let workspace_root = root.clone();
     let runtime_storage = example_runtime_storage();
 
@@ -2626,7 +2553,7 @@ fn ci_mode_detected() -> bool {
 
 #[expect(clippy::unused_async)]
 async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
-    let root = reset_artifact_root()?;
+    let (root, _fallback_artifact) = reset_artifact_root()?;
     let workspace_root = root.clone();
 
     configure_document_for_online_demo(&workspace_root)?;
@@ -2687,6 +2614,8 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use mediapm::example_isolation::{self, IsolatedExampleRoots};
+
     /// Ensures sync-mode override parser accepts disabled values (reduced mode).
     #[test]
     fn run_sync_override_accepts_disabled_tokens() {
@@ -2757,51 +2686,7 @@ mod tests {
         assert!(result.is_err(), "unknown run-sync tokens must be rejected");
     }
 
-    /// Points `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` and `MEDIAPM_EXAMPLE_CACHE_ROOT`
-    /// at unique tempdirs for the guard's lifetime so tests never share the
-    /// canonical artifact directory or the real OS user-level download cache
-    /// (flock isolation under parallel test processes).
-    struct IsolatedRun {
-        _artifact_root: tempfile::TempDir,
-        _cache_root: tempfile::TempDir,
-        previous_artifact_root: Option<std::ffi::OsString>,
-        previous_cache_root: Option<std::ffi::OsString>,
-    }
-
-    impl IsolatedRun {
-        fn new() -> Self {
-            let artifact_root = tempfile::tempdir().expect("create temp artifact root");
-            let cache_root = tempfile::tempdir().expect("create temp cache root");
-            let previous_artifact_root = std::env::var_os(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
-            let previous_cache_root = std::env::var_os(super::MEDIAPM_EXAMPLE_CACHE_ROOT);
-            unsafe {
-                std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, artifact_root.path());
-                std::env::set_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT, cache_root.path());
-            }
-            Self {
-                _artifact_root: artifact_root,
-                _cache_root: cache_root,
-                previous_artifact_root,
-                previous_cache_root,
-            }
-        }
-    }
-
-    impl Drop for IsolatedRun {
-        fn drop(&mut self) {
-            unsafe {
-                match &self.previous_artifact_root {
-                    Some(value) => std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, value),
-                    None => std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT),
-                }
-                match &self.previous_cache_root {
-                    Some(value) => std::env::set_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT, value),
-                    None => std::env::remove_var(super::MEDIAPM_EXAMPLE_CACHE_ROOT),
-                }
-            }
-        }
-    }
-
+    /// Points example env vars at unique tempdirs for the guard's lifetime.
     /// Executes the documented example entry point via `main()` in full-sync
     /// mode. The online path is nondeterministic (network + external tools), so
     /// CI skips it via `ci_mode_detected()`.
@@ -2816,7 +2701,7 @@ mod tests {
             return;
         }
 
-        let _isolated = IsolatedRun::new();
+        let _isolated = IsolatedExampleRoots::with_cache();
 
         let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
@@ -2840,11 +2725,11 @@ mod tests {
     /// Ensures artifact root remains stable for docs/scripts that reference it.
     #[test]
     fn artifact_root_is_stable() {
-        let previous_artifact_root = std::env::var_os(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
+        let previous_artifact_root = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV);
         // SAFETY: test clears one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT);
+            std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV);
         }
 
         let text = super::display_path(&super::artifact_root());
@@ -2853,8 +2738,8 @@ mod tests {
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
             match &previous_artifact_root {
-                Some(value) => std::env::set_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT, value),
-                None => std::env::remove_var(super::MEDIAPM_EXAMPLE_ARTIFACT_ROOT),
+                Some(value) => std::env::set_var(example_isolation::ARTIFACT_ROOT_ENV, value),
+                None => std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV),
             }
         }
     }
@@ -2874,7 +2759,7 @@ mod tests {
     /// prior tool downloads on repeated demo runs.
     #[test]
     fn remove_dir_all_with_retry_handles_readonly_tree() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let tree_root = temp.path().join("readonly-tree");
         std::fs::create_dir_all(&tree_root).expect("create tree root");
 
@@ -2895,8 +2780,8 @@ mod tests {
         dir_permissions.set_readonly(true);
         std::fs::set_permissions(nested_dir, dir_permissions).expect("set readonly on dir");
 
-        super::clear_readonly_bits_recursively(&tree_root);
-        super::remove_dir_all_with_retry(&tree_root).expect("retrying remove should succeed");
+        example_isolation::remove_dir_all_with_retry(&tree_root)
+            .expect("retrying remove should succeed");
         assert!(!tree_root.exists());
     }
 
@@ -3075,7 +2960,7 @@ mod tests {
     /// thumbnail/link file projections while `sidecars/` also exists.
     #[test]
     fn media_root_sidecars_accept_root_subtitle_file_named_from_output_base() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let root = temp.path();
         let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
@@ -3098,7 +2983,7 @@ mod tests {
     /// directory in addition to root projections.
     #[test]
     fn media_root_sidecars_require_dedicated_sidecars_folder() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let root = temp.path();
         let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
@@ -3121,7 +3006,7 @@ mod tests {
     /// title text as long as names stay aligned by media-id suffix.
     #[test]
     fn media_root_sidecars_accept_non_subtitle_files_aligned_by_media_id_suffix() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let root = temp.path();
         let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
