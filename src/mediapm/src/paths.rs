@@ -3,7 +3,6 @@
 //! This module centralizes where `mediapm` keeps user policy, conductor-facing
 //! Nickel documents, machine-managed state, and staging directories.
 
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// Path-override parameters resolved from `mediapm.ncl` runtime storage.
@@ -79,7 +78,7 @@ impl MediaPmPaths {
     pub fn from_root(root_dir: impl Into<PathBuf>) -> Self {
         let root_dir = root_dir.into();
         let runtime_root = root_dir.join(".mediapm");
-        let tmp_dir = default_runtime_tmp_dir(&root_dir);
+        let tmp_dir = mediapm_utils::temp::runtime_dir_for_workspace(&root_dir);
 
         Self {
             mediapm_ncl: root_dir.join("mediapm.ncl"),
@@ -160,7 +159,7 @@ impl MediaPmPaths {
             .clone()
             .map_or_else(|| config_dir.to_path_buf(), |raw| resolve_path(config_dir, raw));
 
-        let tmp_dir = default_runtime_tmp_dir(&self.root_dir);
+        let tmp_dir = mediapm_utils::temp::runtime_dir_for_workspace(&self.root_dir);
 
         let conductor_user_ncl = overrides
             .conductor_config
@@ -223,15 +222,6 @@ impl MediaPmPaths {
     }
 }
 
-/// Returns an OS-backed temporary directory unique to this workspace.
-#[must_use]
-fn default_runtime_tmp_dir(root_dir: &Path) -> PathBuf {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    root_dir.hash(&mut hasher);
-    let key = format!("{:016x}", hasher.finish());
-    std::env::temp_dir().join(format!("mediapm-{key}"))
-}
-
 /// Resolves one path value against a base directory unless it is absolute.
 #[must_use]
 fn resolve_path(base_dir: &Path, raw: impl AsRef<Path>) -> PathBuf {
@@ -243,13 +233,14 @@ fn resolve_path(base_dir: &Path, raw: impl AsRef<Path>) -> PathBuf {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{MediaPmPathOverrides, MediaPmPaths, default_runtime_tmp_dir};
+    use super::{MediaPmPathOverrides, MediaPmPaths};
+    use mediapm_utils::temp::runtime_dir_for_workspace;
 
     #[test]
     fn default_paths_use_dot_mediapm_root() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let paths = MediaPmPaths::from_root(root.path());
-        let expected_tmp_dir = default_runtime_tmp_dir(root.path());
+        let expected_tmp_dir = runtime_dir_for_workspace(root.path());
 
         assert_eq!(paths.runtime_root, root.path().join(".mediapm"));
         assert_eq!(paths.hierarchy_root_dir, root.path());
@@ -284,7 +275,7 @@ mod tests {
 
     #[test]
     fn overrides_resolve_with_split_roots() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let base = MediaPmPaths::from_root(root.path());
         let overrides = MediaPmPathOverrides {
             mediapm_dir: Some(PathBuf::from(".mediapm-runtime")),
@@ -302,7 +293,7 @@ mod tests {
         };
 
         let resolved = base.with_overrides(&overrides);
-        let expected_tmp_dir = default_runtime_tmp_dir(root.path());
+        let expected_tmp_dir = runtime_dir_for_workspace(root.path());
 
         assert_eq!(resolved.runtime_root, root.path().join(".mediapm-runtime"));
         assert_eq!(resolved.hierarchy_root_dir, root.path().join("library-custom"));

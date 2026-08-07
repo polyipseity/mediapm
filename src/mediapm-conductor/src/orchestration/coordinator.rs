@@ -5,7 +5,7 @@
 //! step-worker actors.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -125,6 +125,8 @@ where
 {
     /// Shared CAS handle passed into child actors.
     cas: Arc<C>,
+    /// Root directory for per-step sandbox trees (`{dir}/sandbox/<instance_key>`).
+    conductor_tmp_dir: PathBuf,
     /// Pool of step-worker actors for concurrent step execution.
     workers: Vec<ractor::ActorRef<StepWorkerMessage>>,
     /// RAII guard for the background CAS maintenance task, if started.
@@ -140,8 +142,14 @@ where
 {
     /// Creates a coordinator bound to one CAS implementation.
     #[must_use]
-    pub(crate) fn new(cas: Arc<C>) -> Self {
-        Self { cas, workers: Vec::new(), background_gc_guard: None, supervisor: None }
+    pub(crate) fn new(cas: Arc<C>, conductor_tmp_dir: PathBuf) -> Self {
+        Self {
+            cas,
+            conductor_tmp_dir,
+            workers: Vec::new(),
+            background_gc_guard: None,
+            supervisor: None,
+        }
     }
 
     /// Attaches the supervisor cell (the conductor actor itself) so step
@@ -227,7 +235,7 @@ where
                     },
                     state_snapshot: state_snapshot.clone(),
                     outermost_config_dir: Path::new(".").to_path_buf(),
-                    conductor_tmp_dir: std::env::temp_dir().join("mediapm-conductor"),
+                    conductor_tmp_dir: self.conductor_tmp_dir.clone(),
                     step_outputs: current_step_outputs,
                     required_output_names,
                 };
@@ -296,6 +304,12 @@ where
                     callback(executed_steps + failed_steps, total_steps, &step_id);
                 }
             }
+        }
+
+        if let Err(error) =
+            super::step_worker::sandbox::remove_runtime_tmp_dir(&self.conductor_tmp_dir).await
+        {
+            tracing::warn!("failed to remove workflow sandboxes: {error}");
         }
 
         Ok(RunSummary { total_steps, executed_steps, cached_steps, failed_steps })
@@ -440,7 +454,8 @@ mod tests {
     #[tokio::test]
     async fn background_cas_gc_spawned_task_runs_maintenance() {
         let cas = Arc::new(mediapm_cas::InMemoryCas::default());
-        let mut coordinator = WorkflowCoordinator::new(cas);
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let mut coordinator = WorkflowCoordinator::new(cas, tmp.path().join("conductor-tmp"));
         coordinator.start_background_gc(1);
         // Wait for at least one GC cycle to run (interval is 1s).
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;

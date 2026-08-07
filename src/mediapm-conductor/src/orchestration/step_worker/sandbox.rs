@@ -25,6 +25,17 @@ pub(super) fn sanitize_for_path(s: &str) -> String {
     s.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_")
 }
 
+/// Removes the conductor runtime tmp tree for one workspace.
+pub(crate) async fn remove_runtime_tmp_dir(conductor_tmp_dir: &Path) -> Result<(), ConductorError> {
+    if !conductor_tmp_dir.is_dir() {
+        return Ok(());
+    }
+
+    tokio::fs::remove_dir_all(conductor_tmp_dir).await.map_err(|source| {
+        ConductorError::io("remove conductor runtime tmp dir", conductor_tmp_dir, source)
+    })
+}
+
 /// Materializes tool content map entries into the sandbox directory.
 ///
 /// Entries with a trailing-slash key (e.g. `./{os}/`) are treated as
@@ -121,7 +132,7 @@ mod tests {
         let mut cmap = BTreeMap::new();
         cmap.insert("linux/".to_string(), hash.to_hex());
 
-        let sandbox_dir = tempfile::tempdir().unwrap();
+        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         let unpacked = sandbox_dir.path().join("linux/foo.txt");
@@ -138,7 +149,7 @@ mod tests {
         let mut cmap = BTreeMap::new();
         cmap.insert("linux/sd".to_string(), hash.to_hex());
 
-        let sandbox_dir = tempfile::tempdir().unwrap();
+        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         let file_path = sandbox_dir.path().join("linux/sd");
@@ -162,7 +173,7 @@ mod tests {
         cmap.insert("linux/".to_string(), zip_hash.to_hex());
         cmap.insert("./cfg".to_string(), file_hash.to_hex());
 
-        let sandbox_dir = tempfile::tempdir().unwrap();
+        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         // ZIP-unpacked file
@@ -182,7 +193,7 @@ mod tests {
         let mut cmap = BTreeMap::new();
         cmap.insert("linux/".to_string(), "not-a-hash".to_string());
 
-        let sandbox_dir = tempfile::tempdir().unwrap();
+        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         // No file should be created (the invalid hash is skipped).
@@ -199,7 +210,7 @@ mod tests {
         let mut cmap = BTreeMap::new();
         cmap.insert("linux/".to_string(), hash.to_hex());
 
-        let sandbox_dir = tempfile::tempdir().unwrap();
+        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         // The directory entry was created (empty).
