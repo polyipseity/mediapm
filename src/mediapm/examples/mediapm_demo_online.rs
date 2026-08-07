@@ -957,11 +957,19 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             metadata: BTreeMap::from([
                 (
                     "title".to_string(),
-                    MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                        variant: "video".to_string(),
-                        metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
-                        transform: None,
-                    }),
+                    MediaMetadataValue::Fallback(vec![
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "infojson".to_string(),
+                            metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "video".to_string(),
+                            metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Literal(DEMO_EXPECTED_TITLE.to_string()),
+                    ]),
                 ),
                 (
                     "artist".to_string(),
