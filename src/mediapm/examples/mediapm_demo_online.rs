@@ -41,6 +41,8 @@ const DEMO_WORKFLOW_DESCRIPTION: &str = "Online demo pipeline downloading video 
 
 const DEMO_METADATA_ARTIST_KEY: &str = "artist";
 
+const DEMO_METADATA_TITLE_KEY: &str = "title";
+
 const DEMO_METADATA_VIDEO_ID_KEY: &str = "id";
 
 const DEMO_METADATA_SOURCE_LITERAL: &str = "youtube-demo";
@@ -953,10 +955,22 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             title: DEMO_EXPECTED_TITLE.to_string(),
             artist: String::new(),
             metadata: BTreeMap::from([
-                ("title".to_string(), MediaMetadataValue::Literal(DEMO_EXPECTED_TITLE.to_string())),
+                (
+                    "title".to_string(),
+                    MediaMetadataValue::Variant(MediaMetadataVariantBinding {
+                        variant: "video".to_string(),
+                        metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
+                        transform: None,
+                    }),
+                ),
                 (
                     "artist".to_string(),
                     MediaMetadataValue::Fallback(vec![
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "video".to_string(),
+                            metadata_key: DEMO_METADATA_ARTIST_KEY.to_string(),
+                            transform: None,
+                        }),
                         MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
                             variant: "infojson".to_string(),
                             metadata_key: DEMO_METADATA_ARTIST_KEY.to_string(),
