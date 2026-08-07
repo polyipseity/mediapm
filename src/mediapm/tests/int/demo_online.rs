@@ -4,7 +4,6 @@
 //! remote source, hierarchy, tools) without requiring network access.
 
 use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
-use tempfile::tempdir;
 use url::Url;
 
 /// Loads a `MediaPmDocument` from a persisted `mediapm.ncl` file.
@@ -19,7 +18,7 @@ fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
 /// hash prefix, not URL query parameters.
 #[tokio::test]
 async fn add_remote_source_works() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     let uri = Url::parse("https://www.youtube.com/watch?v=dQw4w9WgXcQ").expect("url must parse");
@@ -40,7 +39,7 @@ async fn add_remote_source_works() -> Result<(), mediapm::MediaPmError> {
 #[tokio::test]
 async fn add_channel_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError>
 {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::YtDlpChannel)?;
@@ -57,7 +56,7 @@ async fn add_channel_hierarchy_preset_creates_expected_nodes() -> Result<(), med
 /// `ensure_and_load_mediapm_document` uses Nickel evaluation internally.
 #[tokio::test]
 async fn add_one_remote_tool_requirement_persists() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_tool_requirement("yt-dlp", None)?;

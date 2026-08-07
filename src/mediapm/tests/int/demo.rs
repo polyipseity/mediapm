@@ -5,7 +5,6 @@
 //! access.
 
 use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
-use tempfile::tempdir;
 use url::Url;
 
 /// Loads a `MediaPmDocument` from a persisted `mediapm.ncl` file.
@@ -17,7 +16,7 @@ fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
 /// steps.
 #[tokio::test]
 async fn add_local_source_works() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     let uri = Url::parse("local:demo-fixture").expect("url must parse");
@@ -36,7 +35,7 @@ async fn add_local_source_works() -> Result<(), mediapm::MediaPmError> {
 #[tokio::test]
 async fn add_local_source_with_explicit_title_and_description() -> Result<(), mediapm::MediaPmError>
 {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     let uri = Url::parse("local:demo-fixture").expect("url must parse");
@@ -60,7 +59,7 @@ async fn add_local_source_with_explicit_title_and_description() -> Result<(), me
 /// Adding a `Local` hierarchy preset produces non-empty hierarchy nodes.
 #[tokio::test]
 async fn add_local_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::Local)?;
@@ -77,7 +76,7 @@ async fn add_local_hierarchy_preset_creates_expected_nodes() -> Result<(), media
 /// which fails in temp directories without schema files.
 #[tokio::test]
 async fn add_tool_requirement_persists_single_call() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_tool_requirement("media-tagger", None)?;

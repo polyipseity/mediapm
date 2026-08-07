@@ -160,7 +160,7 @@ fn apply_version_contract(
     const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
     const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
 
-    let dir = tempfile::tempdir().map_err(|err| MediaPmError::Io {
+    let dir = mediapm_utils::temp::artifact_dir().map_err(|err| MediaPmError::Io {
         operation: "create mediapm schema validation temp dir".to_string(),
         path: std::env::temp_dir(),
         source: err,
@@ -273,7 +273,7 @@ pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
     const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
     const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
 
-    let dir = tempfile::tempdir().map_err(|err| MediaPmError::Io {
+    let dir = mediapm_utils::temp::artifact_dir().map_err(|err| MediaPmError::Io {
         operation: "create mediapm registry validation temp dir".to_string(),
         path: std::env::temp_dir(),
         source: err,

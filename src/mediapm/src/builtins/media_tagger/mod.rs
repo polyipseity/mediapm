@@ -41,8 +41,6 @@ mod util;
 mod tests {
     use std::collections::BTreeMap;
 
-    use tempfile::tempdir;
-
     use crate::builtins::media_tagger::acoustid::require_acoustid_api_key_for_lookup;
     use crate::builtins::media_tagger::cover_art::{
         CacheExpiryPolicy, CoverArtArchiveImage, MediaTaggerHttpCache, SelectedCoverArt,
@@ -61,7 +59,7 @@ mod tests {
     /// missing/blank `AcoustID` credentials must fail immediately.
     #[tokio::test]
     async fn run_internal_media_tagger_fails_when_acoustid_key_is_missing_for_autodetect() {
-        let workspace = tempdir().expect("tempdir");
+        let workspace = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let input_path = workspace.path().join("input.mp3");
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
@@ -128,7 +126,7 @@ mod tests {
     /// `AcoustID` lookup path is attempted and failures are surfaced.
     #[tokio::test]
     async fn run_internal_media_tagger_with_key_attempts_lookup_path() {
-        let workspace = tempdir().expect("tempdir");
+        let workspace = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let input_path = workspace.path().join("input.mp3");
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
@@ -175,7 +173,7 @@ mod tests {
     /// autodetection entirely.
     #[tokio::test]
     async fn run_internal_media_tagger_recording_none_skips_autodetect_path() {
-        let workspace = tempdir().expect("tempdir");
+        let workspace = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let input_path = workspace.path().join("input.mp3");
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
@@ -215,7 +213,7 @@ mod tests {
     /// omitted recording MBID and keeps autodetection active.
     #[tokio::test]
     async fn run_internal_media_tagger_recording_auto_keeps_autodetect_path() {
-        let workspace = tempdir().expect("tempdir");
+        let workspace = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let input_path = workspace.path().join("input.mp3");
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
@@ -399,7 +397,7 @@ mod tests {
     /// placeholder members for unused slots.
     #[tokio::test]
     async fn persist_cover_art_slot_artifacts_writes_empty_members_for_unused_slots() {
-        let root = tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let output_path = root.path().join("metadata").join("output.ffmeta");
         let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(0));
 
@@ -457,7 +455,7 @@ mod tests {
     /// can be reused after transient upstream failures.
     #[tokio::test]
     async fn media_tagger_http_cache_round_trips_cover_entries() {
-        let root = tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let cache = MediaTaggerHttpCache::new(
             Some(root.path().join("cache-store")),
             CacheExpiryPolicy::from_seconds(60),
@@ -490,7 +488,7 @@ mod tests {
     /// the same CAS-backed expiry plumbing as cover-art cache rows.
     #[tokio::test]
     async fn media_tagger_http_cache_round_trips_musicbrainz_metadata_rows() {
-        let root = tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let cache = MediaTaggerHttpCache::new(
             Some(root.path().join("cache-store")),
             CacheExpiryPolicy::from_seconds(60),

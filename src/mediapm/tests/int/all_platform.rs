@@ -12,12 +12,11 @@
 
 use mediapm::{MediaPmService, MediaRuntimeStorage};
 use mediapm_conductor::{NickelDocument, ToolKindSpec, decode_document};
-use tempfile::tempdir;
 
 #[tokio::test]
 async fn managed_tools_exist_in_generated_document() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
-    let cache_root = tempdir().expect("cache tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let runtime = MediaRuntimeStorage {
         cache_root_override: Some(cache_root.path().to_path_buf()),
         ..MediaRuntimeStorage::default()
@@ -42,8 +41,8 @@ async fn managed_tools_exist_in_generated_document() -> Result<(), mediapm::Medi
 
 #[tokio::test]
 async fn external_tool_content_map_keys_have_os_prefix() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
-    let cache_root = tempdir().expect("cache tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let runtime = MediaRuntimeStorage {
         cache_root_override: Some(cache_root.path().to_path_buf()),
         ..MediaRuntimeStorage::default()
@@ -77,8 +76,8 @@ async fn external_tool_content_map_keys_have_os_prefix() -> Result<(), mediapm::
 
 #[tokio::test]
 async fn external_tool_command_is_non_empty() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
-    let cache_root = tempdir().expect("cache tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let runtime = MediaRuntimeStorage {
         cache_root_override: Some(cache_root.path().to_path_buf()),
         ..MediaRuntimeStorage::default()
@@ -109,8 +108,8 @@ async fn external_tool_command_is_non_empty() -> Result<(), mediapm::MediaPmErro
 
 #[tokio::test]
 async fn external_tool_command_uses_context_os_selector() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
-    let cache_root = tempdir().expect("cache tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let runtime = MediaRuntimeStorage {
         cache_root_override: Some(cache_root.path().to_path_buf()),
         ..MediaRuntimeStorage::default()

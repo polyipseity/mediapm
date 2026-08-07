@@ -810,7 +810,6 @@ mod tests {
     use mediapm_cas::FileSystemCas;
     use mediapm_cas::Hash;
     use mediapm_conductor::{decode_document, decode_state_json};
-    use tempfile::tempdir;
 
     use super::*;
 
@@ -839,7 +838,7 @@ mod tests {
             .iter()
             .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
             .expect("demo workflow");
-        let cas_root = tempdir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         for instance in state.tool_call_instances.values() {
             for output in instance.outputs.values() {
@@ -877,7 +876,7 @@ mod tests {
             .expect("demo workflow");
         let ffmpeg_step =
             workflow.steps.iter().find(|step| step.id == "step-1-ffmpeg").expect("ffmpeg step");
-        let cas_root = tempdir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let import_step = workflow
@@ -954,7 +953,7 @@ mod tests {
             ..NickelDocument::default()
         };
 
-        let cas_root = tempdir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let primary_infojson_hash =
             cas.put(bytes::Bytes::from_static(b"primary-infojson")).await.expect("put primary");
@@ -1074,7 +1073,7 @@ mod tests {
             ..NickelDocument::default()
         };
 
-        let cas_root = tempdir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let infojson_hash = cas
             .put(bytes::Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))
@@ -1230,7 +1229,7 @@ mod tests {
             ..NickelDocument::default()
         };
 
-        let cas_root = tempdir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let primary_video_hash =
             cas.put(bytes::Bytes::from_static(b"primary-video-bytes")).await.expect("put primary");
@@ -1340,7 +1339,7 @@ mod tests {
             ..NickelDocument::default()
         };
 
-        let cas_root = tempdir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let infojson_hash = cas
             .put(bytes::Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))

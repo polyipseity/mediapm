@@ -1073,8 +1073,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_desired_tools_records_progress_ops() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_root = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let tracker = RecordingProgressTracker::new();
         let cas = InMemoryCas::default();
@@ -1127,8 +1127,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_desired_tools_with_override_does_not_touch_real_cache() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_root = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 
@@ -1176,8 +1176,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_desired_tools_cache_override_supports_explicit_paths() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_root = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 
@@ -1209,8 +1209,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_root = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 
@@ -1293,8 +1293,8 @@ mod tests {
     /// `ProvisionCache` deployment layout.
     #[tokio::test]
     async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_root = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 
@@ -1376,8 +1376,8 @@ mod tests {
     /// skip path must prefer the entry with a non-empty content map.
     #[tokio::test]
     async fn reconcile_skip_prefers_entry_with_content_map() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_root = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 
@@ -1566,8 +1566,8 @@ mod tests {
     /// mediapm-id set would prune every provisioned directory.
     #[tokio::test]
     async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_root = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 
@@ -1646,8 +1646,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_prunes_old_tool_version_clears_content_map() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_root = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 
@@ -1737,8 +1737,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_drops_manual_entries_from_generated_doc() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_root = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let cas = InMemoryCas::default();
 

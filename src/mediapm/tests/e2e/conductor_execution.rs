@@ -12,7 +12,6 @@ use mediapm::{
     load_mediapm_state_document, media_id_from_uri, save_mediapm_document,
 };
 use mediapm_cas::CasApi;
-use tempfile::tempdir;
 use url::Url;
 
 /// Creates a filesystem service whose tool download cache lives inside the
@@ -66,7 +65,7 @@ fn read_conductor_state(
 /// the persisted state file, and the generated doc registers the workflow.
 #[tokio::test]
 async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = service_at(root.path()).await?;
 
     let cas = service.conductor().cas().clone();
@@ -133,7 +132,7 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
 /// instance key) and the state file keeps accumulating instances.
 #[tokio::test]
 async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let uri = Url::parse("local:phase2-import").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
 
@@ -194,7 +193,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
 /// supervised by the conductor actor.
 #[tokio::test]
 async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     {
         let mut service = service_at(root.path()).await?;
 
@@ -239,7 +238,7 @@ async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::M
 /// entries resolve workflow variant hashes from conductor state.
 #[tokio::test]
 async fn sync_populates_managed_files_from_conductor_state() -> Result<(), mediapm::MediaPmError> {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = service_at(root.path()).await?;
 
     let cas = service.conductor().cas().clone();

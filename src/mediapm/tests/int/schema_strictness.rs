@@ -745,7 +745,7 @@ fn validate_with_schema(
 /// S-C9: the exported `mediapm.schema.json` is strict draft-07.
 #[test]
 fn json_schema_export_is_strict() {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir");
     let export_dir = dir.path().join("schemas");
     let conductor_dir = dir.path().join("conductor");
     mediapm::export_mediapm_nickel_config_schemas(Some(&export_dir), &conductor_dir)

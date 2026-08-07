@@ -15,7 +15,7 @@ use super::common::*;
 /// Helper: create a `ProgressDebugSink` backed by a temp file, return the
 /// sink, the path, and the `TempDir` (kept alive so the file persists).
 fn debug_sink_to_file() -> (ProgressDebugSink, std::path::PathBuf, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
     let path = dir.path().join("debug.jsonl");
     let file = std::fs::File::create(&path).unwrap();
     (ProgressDebugSink::new(Box::new(file)), path, dir)

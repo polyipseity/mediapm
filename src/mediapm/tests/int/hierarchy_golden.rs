@@ -4,7 +4,6 @@ use mediapm::demo_hierarchy_spec::{
     assert_tree_under, load_demo_hierarchy_golden_document, offline_demo_media_folder_relative,
     online_demo_media_folder_relative,
 };
-use tempfile::tempdir;
 
 #[test]
 fn golden_fixture_paths_match_shared_constants() {
@@ -15,7 +14,7 @@ fn golden_fixture_paths_match_shared_constants() {
 
 #[test]
 fn assert_tree_under_accepts_synthetic_offline_layout() {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let golden = load_demo_hierarchy_golden_document();
     let hierarchy_root = root.path();
 
@@ -32,7 +31,7 @@ fn assert_tree_under_accepts_synthetic_offline_layout() {
 
 #[test]
 fn assert_tree_under_rejects_missing_online_sidecar_gate() {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let golden = load_demo_hierarchy_golden_document();
     let hierarchy_root = root.path();
     let media_folder = hierarchy_root.join(&golden.online.media_folder);

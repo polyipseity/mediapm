@@ -342,7 +342,7 @@ fn extract_metadata_key_from_media_bytes_via_ffprobe(
     metadata_key: &str,
 ) -> Result<Option<String>, MediaPmError> {
     let extension = output_variant_extension(source, variant);
-    let temp_dir = tempfile::tempdir().map_err(|error| {
+    let temp_dir = mediapm_utils::temp::artifact_dir().map_err(|error| {
         MediaPmError::Workflow(format!(
             "failed to create temp directory for ffprobe metadata probe of variant '{variant}': {error}"
         ))

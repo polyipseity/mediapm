@@ -51,7 +51,7 @@ mod tests {
 
     #[test]
     fn write_bytes_if_changed_writes_when_content_differs() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let path = tmp.path().join("test.txt");
 
         // First write: file doesn't exist yet, should create it.
@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn write_bytes_if_changed_skips_write_when_content_identical() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let path = tmp.path().join("test.txt");
 
         // Write initial content and record mtime (with sub-second precision).
@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn write_bytes_if_changed_creates_parent_directories() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let path = tmp.path().join("a/b/c/test.txt");
 
         // File is in a deeply nested path that doesn't exist yet.

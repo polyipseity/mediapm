@@ -262,11 +262,10 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use mediapm_cas::CasApi;
-    use tempfile::TempDir;
 
     #[tokio::test]
     async fn materialize_with_copy_succeeds() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();
         let content = b"hello materializer";
         let hash = cas.put(Bytes::from_static(content)).await.unwrap();
@@ -292,7 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn hardlink_works_for_wal_only_small_blob_after_ensure() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();
         let hash = cas.put(Bytes::from_static(b"wal-only-small")).await.unwrap();
         assert!(
@@ -320,7 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn hardlink_materialization_succeeds_with_spaces_in_destination_path() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();
         let content = b"hardlink-with-spaces";
         let hash = cas.put(Bytes::from_static(content)).await.unwrap();
@@ -350,7 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_hardlink_materialization_from_shared_cas() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let cas = Arc::new(FileSystemCas::open(&dir.path().join("cas")).await.unwrap());
         let mut hashes = Vec::new();
         for seed in 0u8..3 {
@@ -388,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn hardlink_across_mediapm_store_and_media_dirs() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let store = dir.path().join(".mediapm").join("store");
         let media =
             dir.path().join("media").join("music videos").join("Artist - Title [demo.local.id]");
@@ -416,7 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn attempt_materialization_copy_without_source_works() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();
         let content = b"direct copy";
         let hash = cas.put(Bytes::from_static(content)).await.unwrap();

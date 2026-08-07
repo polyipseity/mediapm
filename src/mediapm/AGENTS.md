@@ -19,8 +19,7 @@ metadata_cache.rs          — JSON metadata cache, TTL-based expiry
 service.rs                 — MediaPmService<Cas> orchestration
 service_standalone.rs      — Standalone helpers (document loading, path resolution)
 test_util.rs               — Shared test Tokio runtime
-
-config/                    — NCL document model, serde types, version dispatch
+example_isolation.rs       — Example/test temp dirs, MEDIAPM_EXAMPLE_* env, cleanup (see example-temp-isolation.instructions.md)
   mod.rs                   —   MediaPmDocument, MediaPmState, MediaRuntimeStorage, re-exports
   defaults.rs              —   Constants (version=2, slot limits, cache TTLs, materialization order)
   custom_deserializers.rs  —   Serde helpers (f64→u64, option strings)
@@ -219,6 +218,8 @@ Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sampl
 ## Testing & Validation
 
 Development: `cargo test-pkg mediapm` / `cargo build-pkg mediapm` / selective tests.
+
+**Temp isolation:** Examples-as-tests use `mediapm::example_isolation::IsolatedExampleRoots` and `MEDIAPM_EXAMPLE_*` env overrides; integration tests use `mediapm_utils::temp::artifact_dir()` plus `cache_dir()` for `cache_root_override`. See `.agents/instructions/example-temp-isolation.instructions.md` for role prefixes, cleanup lifecycle, and parallelism (`--test-threads=1` for example binaries when debugging env races).
 
 Post-change: both demo examples mandatory:
 

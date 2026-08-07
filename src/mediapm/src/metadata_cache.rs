@@ -182,12 +182,11 @@ fn load_cache_file(path: &Path) -> Result<BTreeMap<String, MetadataCacheEntry>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     /// Ensures a newly opened cache has zero entries.
     #[test]
     fn open_creates_empty_cache() {
-        let dir = TempDir::new().expect("temp dir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let cache = MetadataCache::open(dir.path());
         assert_eq!(cache.entry_count(), 0);
     }
@@ -195,7 +194,7 @@ mod tests {
     /// Ensures set + get round-trips a value.
     #[test]
     fn set_and_get_round_trips_value() {
-        let dir = TempDir::new().expect("temp dir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let cache = MetadataCache::open(dir.path());
         let value = serde_json::json!({"title": "Test Video", "artist": "Test Artist"});
         cache.set("test-key".to_string(), value.clone());
@@ -206,7 +205,7 @@ mod tests {
     /// Ensures get returns None for missing keys.
     #[test]
     fn get_returns_none_for_missing_key() {
-        let dir = TempDir::new().expect("temp dir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let cache = MetadataCache::open(dir.path());
         assert!(cache.get("nonexistent").is_none());
     }
@@ -214,7 +213,7 @@ mod tests {
     /// Ensures flush writes to disk and can be reloaded.
     #[test]
     fn flush_persists_to_disk() {
-        let dir = TempDir::new().expect("temp dir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let value = serde_json::json!({"key": "value"});
         {
             let cache = MetadataCache::open(dir.path());
@@ -229,7 +228,7 @@ mod tests {
 
     #[test]
     fn overwrite_updates_value() {
-        let dir = TempDir::new().expect("temp dir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let cache = MetadataCache::open(dir.path());
         cache.set("k".to_string(), serde_json::json!("v1"));
         cache.set("k".to_string(), serde_json::json!("v2"));
@@ -239,7 +238,7 @@ mod tests {
 
     #[test]
     fn large_value_round_trips() {
-        let dir = TempDir::new().expect("temp dir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let value = serde_json::json!((0..1000).collect::<Vec<i32>>());
         {
             let cache = MetadataCache::open(dir.path());
@@ -253,7 +252,7 @@ mod tests {
 
     #[test]
     fn corrupt_file_starts_empty() {
-        let dir = TempDir::new().expect("temp dir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let cache_file = dir.path().join("metadata.cache.json");
         fs::write(&cache_file, "not valid json").expect("write corrupt file");
         let cache = MetadataCache::open(dir.path());
@@ -262,7 +261,7 @@ mod tests {
 
     #[test]
     fn multiple_entries_independent() {
-        let dir = TempDir::new().expect("temp dir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let cache = MetadataCache::open(dir.path());
         for i in 0..5 {
             cache.set(format!("key{i}"), serde_json::json!({"index": i}));
@@ -275,7 +274,7 @@ mod tests {
 
     #[test]
     fn flush_then_set_does_not_lose_new_values() {
-        let dir = TempDir::new().expect("temp dir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         {
             let cache = MetadataCache::open(dir.path());
             cache.set("k1".to_string(), serde_json::json!("flushed"));

@@ -16,7 +16,6 @@ use mediapm::{
     save_mediapm_document,
 };
 use mediapm_cas::CasApi;
-use tempfile::tempdir;
 use zip::write::FileOptions;
 
 async fn service_at(
@@ -359,7 +358,7 @@ fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
 #[tokio::test]
 async fn online_hierarchy_materialization_matches_golden_tree() -> Result<(), mediapm::MediaPmError>
 {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = service_at(root.path()).await?;
     let cas = service.conductor().cas().clone();
 

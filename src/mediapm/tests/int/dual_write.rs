@@ -14,7 +14,6 @@
 use std::time::Duration;
 
 use mediapm::{MediaPmService, MediaRuntimeStorage, ToolRequirement};
-use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // conductor.generated.ncl: change-detected write
@@ -29,8 +28,8 @@ use tempfile::tempdir;
 /// state.json.
 #[tokio::test]
 async fn conductor_ncl_skips_write_when_unchanged() {
-    let root = tempdir().expect("tempdir");
-    let cache_root = tempdir().expect("cache tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let runtime = MediaRuntimeStorage {
         cache_root_override: Some(cache_root.path().to_path_buf()),
         ..MediaRuntimeStorage::default()
@@ -73,8 +72,8 @@ async fn conductor_ncl_skips_write_when_unchanged() {
 /// document should not change — state.json absorbs the metadata update.
 #[tokio::test]
 async fn regression_state_only_churn_does_not_touch_conductor_file() {
-    let root = tempdir().expect("tempdir");
-    let cache_root = tempdir().expect("cache tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let mut runtime = MediaRuntimeStorage {
         cache_root_override: Some(cache_root.path().to_path_buf()),
         ..MediaRuntimeStorage::default()

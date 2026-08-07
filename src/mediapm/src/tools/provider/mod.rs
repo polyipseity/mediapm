@@ -527,7 +527,7 @@ mod tests {
         reason = "integration-style test seeds six tools' metadata caches and asserts each route"
     )]
     async fn resolve_tool_fetch_routes_all_tools() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
@@ -663,7 +663,7 @@ mod tests {
     /// Seeded metadata cache for a single tool's resolved fields, avoiding real
     /// API calls.
     async fn seed_metadata_cache(tool_name: &str) -> ToolDownloadCache {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
         let (urls, values): (Vec<&str>, Vec<&[u8]>) = match tool_name {
@@ -721,7 +721,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_tool_fetch_each_fetched_tool_has_three_os_entries() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
@@ -798,7 +798,7 @@ mod tests {
         reason = "integration-style test seeds metadata caches and asserts concrete URLs for all tools"
     )]
     async fn resolve_tool_fetch_with_metadata_cache_produces_concrete_urls() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
@@ -917,7 +917,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_latest_github_tag_round_trip() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
         let tracker = MetadataCacheTracker::new(&cache, "default");
@@ -948,7 +948,7 @@ mod tests {
         reason = "integration-style test resolves and asserts exact URLs for all managed tools"
     )]
     async fn resolve_tool_fetch_exact_urls_after_resolution() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
@@ -1204,7 +1204,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_canonical_version_is_deterministic() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache = ToolDownloadCache::open(temp_dir.path(), "metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache with known tags and hashes.
@@ -1258,7 +1258,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_fetch_providers_have_size_hint_bytes() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
@@ -1333,7 +1333,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_latest_github_tag_fallthrough_on_stale_latest() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
         let tracker = MetadataCacheTracker::new(&cache, "default");
@@ -1358,7 +1358,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_latest_autobuild_tag_returns_cached() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
         let tracker = MetadataCacheTracker::new(&cache, "default");
@@ -1374,7 +1374,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_evermeet_version_returns_cached() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
         let tracker = MetadataCacheTracker::new(&cache, "default");
@@ -1389,7 +1389,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_latest_github_tag_returns_tag_and_hash() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
         let tracker = MetadataCacheTracker::new(&cache, "default");

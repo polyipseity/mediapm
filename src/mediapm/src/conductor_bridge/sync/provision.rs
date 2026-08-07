@@ -406,7 +406,6 @@ mod tests {
     use mediapm_conductor::cache::CacheDomainConfig;
     use mediapm_conductor::cache_user_level::UserLevelCache;
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
-    use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -434,7 +433,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_and_import_rejects_unknown_tool() {
         let _cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -468,7 +467,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_and_import_generate_launcher_succeeds() {
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -566,7 +565,7 @@ mod tests {
         }
 
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -656,7 +655,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_and_import_with_pre_resolved_canonical_version() {
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -702,7 +701,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_bar_shows_cached_when_metadata_cached() {
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -741,7 +740,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_bar_shows_total_two_when_metadata_fetch_count_two() {
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -781,7 +780,7 @@ mod tests {
     #[tokio::test]
     async fn skip_bar_shows_skipped_cached_when_metadata_cached() {
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -834,7 +833,7 @@ mod tests {
     #[tokio::test]
     async fn skip_bar_shows_skipped_when_metadata_not_cached() {
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -887,7 +886,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_bar_no_cached_message_when_not_cached() {
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -929,7 +928,7 @@ mod tests {
         // (indeterminate bar — set_suffix_components works correctly after
         // disabled flag was moved out of the total==0 proxy check).
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -972,7 +971,7 @@ mod tests {
         // metadata_fetch_count=2 (e.g., ffmpeg btbn + evermeet) must show
         // "cached (2)" (not bare "cached" without count).
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -1030,7 +1029,7 @@ mod tests {
         // metadata_fetch_count=2 must show "skipped cached (2)" and fill the
         // bar to position = total.
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -1093,7 +1092,7 @@ mod tests {
         // Regression: skip bar with metadata_fetch_count=0 uses total=0
         // (indeterminate bar — set_suffix_components works correctly).
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[
@@ -1287,7 +1286,7 @@ mod tests {
 
     async fn label_setup() -> (impl CasApi, UserLevelCache, RecordingProgressTracker) {
         let cas = new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
             tmp.path(),
             &[

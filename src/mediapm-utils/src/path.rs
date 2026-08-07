@@ -131,7 +131,6 @@ mod tests {
         PathMode, absolute_root, normalize_relative_path, parse_path_mode, resolve_path_for_root,
     };
     use crate::StringMap;
-    use tempfile::tempdir;
 
     // -----------------------------------------------------------------------
     // parse_path_mode tests
@@ -255,7 +254,7 @@ mod tests {
 
     #[test]
     fn relative_mode_rejects_absolute_path() {
-        let temp = tempdir().expect("tempdir");
+        let temp = crate::temp::artifact_dir().expect("tempdir");
         let absolute_path = temp.path().join("out.bin");
         let mode = parse_path_mode(&StringMap::new(), "test").expect("default path_mode");
         assert_eq!(mode, PathMode::Relative);
@@ -273,7 +272,7 @@ mod tests {
 
     #[test]
     fn relative_mode_rejects_parent_escape() {
-        let temp = tempdir().expect("tempdir");
+        let temp = crate::temp::artifact_dir().expect("tempdir");
         let mode =
             parse_path_mode(&StringMap::new(), "test").expect("default path_mode should succeed");
 
@@ -284,7 +283,7 @@ mod tests {
 
     #[test]
     fn absolute_mode_accepts_absolute_path() {
-        let temp = tempdir().expect("tempdir");
+        let temp = crate::temp::artifact_dir().expect("tempdir");
         let absolute_path = temp.path().join("abs").join("payload.bin");
 
         let resolved = resolve_path_for_root(
@@ -300,7 +299,7 @@ mod tests {
 
     #[test]
     fn absolute_mode_rejects_relative_path() {
-        let temp = tempdir().expect("tempdir");
+        let temp = crate::temp::artifact_dir().expect("tempdir");
         let err = resolve_path_for_root(
             temp.path(),
             "test context",
@@ -314,7 +313,7 @@ mod tests {
 
     #[test]
     fn relative_mode_resolves_normal_path() {
-        let temp = tempdir().expect("tempdir");
+        let temp = crate::temp::artifact_dir().expect("tempdir");
         let resolved =
             resolve_path_for_root(temp.path(), "test", "path", "foo/bar.txt", PathMode::Relative)
                 .expect("should resolve");
@@ -323,7 +322,7 @@ mod tests {
 
     #[test]
     fn relative_mode_strips_curdir() {
-        let temp = tempdir().expect("tempdir");
+        let temp = crate::temp::artifact_dir().expect("tempdir");
         let resolved =
             resolve_path_for_root(temp.path(), "test", "path", "./foo/bar.txt", PathMode::Relative)
                 .expect("should resolve");

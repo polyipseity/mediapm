@@ -1115,7 +1115,7 @@ impl MediaPmService<InMemoryCas> {
     /// Useful for testing and short-lived operations.
     #[must_use]
     pub fn new_in_memory() -> Self {
-        let root_dir = std::env::temp_dir().join("mediapm-inmemory");
+        let root_dir = mediapm_utils::temp::runtime_dir_for_workspace(Path::new("in-memory"));
         let paths = MediaPmPaths::from_root(&root_dir);
         let cas = InMemoryCas::new();
         let runtime_storage = RuntimeStoragePaths::new(&paths.runtime_root).with_config_paths(

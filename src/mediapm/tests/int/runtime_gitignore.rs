@@ -4,7 +4,6 @@
 //! generation that fires at service construction time.
 
 use mediapm::{MediaPmService, load_mediapm_document};
-use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // Gitignore creation on service construction
@@ -14,7 +13,7 @@ use tempfile::tempdir;
 /// the runtime root with the correct default entries.
 #[tokio::test]
 async fn gitignore_created_on_service_construction() {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await.expect("create service");
 
     let gitignore_path = service.paths().runtime_root.join(".gitignore");
@@ -31,7 +30,7 @@ async fn gitignore_created_on_service_construction() {
 /// exists, preserving any user customizations.
 #[tokio::test]
 async fn gitignore_preserves_custom_content_on_reconstruction() {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await.expect("create service");
 
     let gitignore_path = service.paths().runtime_root.join(".gitignore");
@@ -64,7 +63,7 @@ async fn gitignore_preserves_custom_content_on_reconstruction() {
 /// `mediapm.ncl` document on disk, and that it loads back successfully.
 #[tokio::test]
 async fn mediapm_ncl_bootstrapped_on_fresh_construction() {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await.expect("create service");
 
     let ncl_path = service.paths().mediapm_ncl.clone();
@@ -79,7 +78,7 @@ async fn mediapm_ncl_bootstrapped_on_fresh_construction() {
 /// (user customizations are never overwritten by the bootstrap).
 #[tokio::test]
 async fn mediapm_ncl_preserved_on_reconstruction() {
-    let root = tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await.expect("create service");
 
     let ncl_path = service.paths().mediapm_ncl.clone();

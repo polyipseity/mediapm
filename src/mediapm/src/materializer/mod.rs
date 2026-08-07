@@ -809,13 +809,12 @@ mod tests {
     use crate::config::source_types::{MediaSourceSpec, MediaStep, MediaStepTool};
     use crate::config::{GenericOutputVariantConfig, OutputVariantValue};
     use mediapm_utils::progress::recording::RecordingProgressTracker;
-    use tempfile::tempdir;
 
     /// Injected [`RecordingProgressTracker`] produces no ops when hierarchy is
     /// empty (early return before any progress bar work).
     #[tokio::test]
     async fn sync_hierarchy_with_empty_hierarchy_no_progress_ops() {
-        let root = tempdir().unwrap();
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
         let paths = MediaPmPaths::from_root(root.path());
 
         // Create a CAS at the runtime store path (needed for the CAS parameter,
@@ -852,7 +851,7 @@ mod tests {
     /// hashes — the entry is still processed and advance is called).
     #[tokio::test]
     async fn sync_hierarchy_with_single_media_produces_progress_ops() {
-        let root = tempdir().unwrap();
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
         let paths = MediaPmPaths::from_root(root.path());
 
         let cas_root = paths.runtime_root.join("store");

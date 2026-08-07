@@ -389,7 +389,6 @@ pub(super) fn now_unix_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn validate_components_valid_path() {
@@ -501,7 +500,7 @@ mod tests {
 
     #[test]
     fn readonly_file() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, b"data").unwrap();
 
@@ -512,7 +511,7 @@ mod tests {
 
     #[test]
     fn readonly_directory() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let sub = dir.path().join("subdir");
         std::fs::create_dir(&sub).unwrap();
         let child = sub.join("child.txt");
@@ -526,7 +525,7 @@ mod tests {
 
     #[test]
     fn remove_file() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let file_path = dir.path().join("toremove.txt");
         std::fs::write(&file_path, b"data").unwrap();
 
@@ -537,7 +536,7 @@ mod tests {
 
     #[test]
     fn remove_dir() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let sub = dir.path().join("subdir");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("a.txt"), b"a").unwrap();
@@ -550,7 +549,7 @@ mod tests {
 
     #[test]
     fn remove_readonly_file() {
-        let dir = TempDir::new().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let file_path = dir.path().join("readonly_remove.txt");
         std::fs::write(&file_path, b"data").unwrap();
 

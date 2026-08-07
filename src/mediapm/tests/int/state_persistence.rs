@@ -21,7 +21,6 @@ use mediapm::{
     state::ser::{from_json_value, migrate_from_old_nickel, to_json_value},
 };
 use serde_json::json;
-use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // State round-trip
@@ -224,7 +223,7 @@ fn json_save_idempotent() {
 
 #[test]
 fn ncl_to_json_file_migration() {
-    let dir = tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let json_path = dir.path().join("state.json");
     let ncl_path = dir.path().join("state.ncl");
 
@@ -249,7 +248,7 @@ fn ncl_to_json_file_migration() {
 
 #[test]
 fn load_missing_state_returns_default() {
-    let dir = tempdir().expect("tempdir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let json_path = dir.path().join("state.json");
 
     let state = load_mediapm_state_document(&json_path).expect("load should return default");
@@ -457,7 +456,7 @@ fn tool_registry_entry_deserializes_empty_version() {
 /// separately in `dual_write.rs`).
 #[test]
 fn state_json_always_writes_to_disk() {
-    let tmp = tempdir().expect("tempdir");
+    let tmp = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let path = tmp.path().join("state.json");
 
     let state = MediaPmState {

@@ -327,7 +327,7 @@ mod tests {
         if Command::new("ffprobe").arg("-version").output().is_err() {
             return;
         }
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let garbage = tmp.path().join("garbage.bin");
         std::fs::write(&garbage, b"definitely-not-media-bytes").expect("write garbage");
         let err = try_fetch_local_source_metadata_with_ffprobe(&garbage, "ffprobe")

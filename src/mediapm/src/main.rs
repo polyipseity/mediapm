@@ -1192,7 +1192,6 @@ mod tests {
     use clap::Parser;
     use mediapm::MediaPmPaths;
     use std::path::PathBuf;
-    use tempfile::tempdir;
 
     use super::{Cli, inject_cas_passthrough_defaults, inject_conductor_passthrough_defaults};
 
@@ -1333,7 +1332,7 @@ mod tests {
     /// succeeds without external setup.
     #[tokio::test]
     async fn passthrough_cas_help_is_routable() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let default_root = temp.path().join("store");
 
         let result = super::passthrough_cas(&["--help".to_string()], &default_root).await;
@@ -1346,7 +1345,7 @@ mod tests {
     /// runtime-path wrapper.
     #[tokio::test]
     async fn passthrough_conductor_tool_run_help_is_routable() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let paths = MediaPmPaths::from_root(temp.path());
 
         let result = super::passthrough_conductor(

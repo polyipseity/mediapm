@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn load_conductor_user_document_returns_none_when_missing() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let loaded = load_conductor_user_document(&paths).expect("missing user doc loads as None");
         assert!(loaded.is_none());
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn load_conductor_user_document_loads_and_validates() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
 
         // A clean user doc round-trips through load + validate.

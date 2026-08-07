@@ -42,7 +42,7 @@ async fn online_sync_post_sync_dump() {
         "generate fixture first: MEDIAPM_DEMO_ONLINE_RUN_SYNC=false cargo run --example mediapm_demo_online"
     );
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     fs::copy(&fixture, root.path().join("mediapm.ncl")).expect("copy mediapm.ncl");
 
     let runtime_storage = MediaRuntimeStorage {
