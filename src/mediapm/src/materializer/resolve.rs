@@ -155,40 +155,39 @@ pub(super) async fn resolve_variant_source_bytes(
             resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant)
                 .await?
     {
-        let bytes = lookup.cas.get(workflow_hash).await.map_err(|source| {
-            MediaPmError::Workflow(format!(
-                "workflow output hash '{workflow_hash}' for media '{media_id}' variant '{variant}' is missing from CAS: {source}"
-            ))
-        })?;
-
-        let (materialized_bytes, source_hash) = if let Some(binding) =
-            resolve_media_variant_output_binding_with_limits(
+        if let Ok(bytes) = lookup.cas.get(workflow_hash).await {
+            let binding_result = resolve_media_variant_output_binding_with_limits(
                 source,
                 variant,
                 lookup.ffmpeg_slot_limits.max_input_slots,
                 lookup.ffmpeg_slot_limits.max_output_slots,
-            )? {
-            if let Some(zip_member) = binding.zip_member.as_deref() {
-                (
-                    extract_zip_member_bytes(bytes.as_ref(), zip_member).map_err(|error| {
-                        MediaPmError::Workflow(format!(
-                            "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
-                        ))
-                    })?,
-                    None,
-                )
-            } else {
-                (bytes.as_ref().to_vec(), Some(workflow_hash))
-            }
-        } else {
-            (bytes.as_ref().to_vec(), Some(workflow_hash))
-        };
+            );
+            let materialized_result = binding_result.and_then(|binding| {
+                if let Some(binding) = binding {
+                    if let Some(zip_member) = binding.zip_member.as_deref() {
+                        extract_zip_member_bytes(bytes.as_ref(), zip_member)
+                            .map(|member_bytes| (member_bytes, None))
+                            .map_err(|error| {
+                                MediaPmError::Workflow(format!(
+                                    "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
+                                ))
+                            })
+                    } else {
+                        Ok((bytes.as_ref().to_vec(), Some(workflow_hash)))
+                    }
+                } else {
+                    Ok((bytes.as_ref().to_vec(), Some(workflow_hash)))
+                }
+            });
 
-        return Ok(VariantSourceBytes {
-            bytes: materialized_bytes,
-            notice: fallback_notice,
-            source_hash,
-        });
+            if let Ok((materialized_bytes, source_hash)) = materialized_result {
+                return Ok(VariantSourceBytes {
+                    bytes: materialized_bytes,
+                    notice: fallback_notice,
+                    source_hash,
+                });
+            }
+        }
     }
 
     if source.variant_hashes.is_empty() {
