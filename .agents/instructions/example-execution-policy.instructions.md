@@ -27,9 +27,15 @@ Examples that require nondeterministic access (network, external services, manag
 
 Examples compile into test binaries (nextest `--all-targets`), so any example `main()` that persists state runs concurrently with sibling tests in the same suite. It must therefore treat itself as a test: never share canonical on-disk locations between tests and never touch the real OS user cache.
 
-Two env-var overrides exist for this, set by tests through RAII guard structs (`tempfile::TempDir` + `unsafe { std::env::set_var/remove_var }`; sound under nextest because each test runs in its own process):
+See **`example-temp-isolation.instructions.md`** for the full temp-directory model (directory classes, lifecycle, conductor sandbox teardown, parallelism constraints, and janitor script). Summary:
+
+Two env-var overrides exist for this, set by tests through the shared [`IsolatedExampleRoots`](../../src/mediapm/src/example_isolation.rs) guard (`mediapm::example_isolation`):
 
 - `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` — artifact root (the workspace dir the example mutates). Tests set it to a unique tempdir. Never share the canonical `examples/artifacts/<name>` dir between tests in the same suite (CAS `store/lock` flock races otherwise).
 - `MEDIAPM_EXAMPLE_CACHE_ROOT` — user-level tool download cache root. Tests set it to a unique tempdir and map it to `MediaRuntimeStorage.cache_root_override`, so `sync_tools()`/tool provisioning never touches the real OS cache (`default_mediapm_user_download_cache_root()`).
+
+When canonical artifact roots are locked (Windows share violations), examples may call `example_isolation::isolated_artifact_dir()` and keep the returned `TempDir` alive for the rest of the test or `main()` scope.
+
+To remove stale mediapm temp trees manually, run `scripts/clean-mediapm-temp.sh` (matches `mediapm-artifact-*`, `mediapm-cache-*`, and `mediapm-runtime-*` under `$TMPDIR`).
 
 `main()` must honor these env vars when set and fall back to canonical paths when unset, so manual `cargo run --example` behavior stays unchanged.

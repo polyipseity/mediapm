@@ -21,13 +21,13 @@ applyTo: "src/mediapm/src/paths.rs"
 | `conductor_user_ncl`      | `{root_dir}/mediapm.conductor.ncl`           | Conductor user document                                                                                                                   |
 | `conductor_generated_ncl` | `{root_dir}/mediapm.conductor.generated.ncl` | Conductor generated document                                                                                                              |
 | `conductor_state_config`  | `{runtime_root}/state.conductor.ncl`         | Conductor volatile state                                                                                                                  |
-| `conductor_tmp_dir`       | `$TMPDIR/mediapm-{hash}/`                    | Conductor sandbox tmp                                                                                                                     |
+| `conductor_tmp_dir`       | `$TMPDIR/mediapm-runtime-{16hex}/`           | Conductor sandbox tmp                                                                                                                     |
 | `conductor_schema_dir`    | `{runtime_root}/config/conductor/`           | Conductor schema exports                                                                                                                  |
 | `mediapm_state_json`       | `{runtime_root}/state.json`                   | MediaPM machine state (JSON always-write)                                                                                                |
 | `env_file`                | `{runtime_root}/.env`                        | User-authored dotenv                                                                                                                      |
 | `env_generated_file`      | `{runtime_root}/.env.generated`              | Machine-generated dotenv                                                                                                                  |
 | `schema_export_dir`       | `Some({runtime_root}/config/mediapm/)`       | MediaPM schema exports (`None` = disabled)                                                                                                |
-| `mediapm_tmp_dir`         | `$TMPDIR/mediapm-{hash}/`                    | MediaPM staging tmp                                                                                                                       |
+| `mediapm_tmp_dir`         | `$TMPDIR/mediapm-runtime-{16hex}/`           | MediaPM staging tmp                                                                                                                       |
 | `hierarchy_root_dir`      | `{root_dir}`                                 | Materialized media library root                                                                                                           |
 | `tools_dir`               | `{runtime_root}/tools/`                      | Tool-content unpack directory; subdirs are `<sanitize_tool_id(conductor_tool_id)>/payload/` and `.env.generated` paths mirror that layout |
 | `cache/`                  | `{runtime_root}/cache/`                      | Cache root                                                                                                                                |
@@ -56,5 +56,6 @@ Override fields come from `MediaRuntimeStorage` in `mediapm.ncl`:
 ## Key invariants
 
 - `tools_dir` always lives under `runtime_root`, never under workspace root directly.
-- `conductor_tmp_dir` and `mediapm_tmp_dir` use OS temp dir with a workspace-hashded name, not `runtime_root`.
+- `conductor_tmp_dir` and `mediapm_tmp_dir` use OS temp dir with a workspace-hashded `mediapm-runtime-{16hex}` name, not `runtime_root`.
+- Per-step conductor sandboxes live under `{conductor_tmp_dir}/sandbox/` and are removed after each `run_workflow` completes (see `example-temp-isolation.instructions.md`).
 - Schema export is optional — `schema_export_dir: None` disables it.

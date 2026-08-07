@@ -134,7 +134,7 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
 
 ### Testing invariants
 
-- Tests and examples must be hermetic: never read from or write to the real OS-level user cache dir. Use `cache_root_override` to inject a tempdir. Examples-as-tests drive the override through the `MEDIAPM_EXAMPLE_CACHE_ROOT` env var (see `example-execution-policy.instructions.md`).
+- Tests and examples must be hermetic: never read from or write to the real OS-level user cache dir. Use `cache_root_override` to inject a `mediapm_utils::temp::cache_dir()` path. Examples-as-tests drive the override through the `MEDIAPM_EXAMPLE_CACHE_ROOT` env var (see `example-execution-policy.instructions.md`).
 - The `default_mediapm_user_download_cache_root().is_none()` skip guard is macOS-ineffective and must not be relied upon. Use `cache_root_override` instead.
 - Test assertions should verify the override path was used (e.g., cache index files exist under the override path rather than the default).
 - Tests must verify both the skip-if-up-to-date path (state.json-only change) and the
