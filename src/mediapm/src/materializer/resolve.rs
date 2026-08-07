@@ -1042,4 +1042,366 @@ mod tests {
             "relaxed resolution should prefer the specialized yt-dlp sidecar instance"
         );
     }
+
+    #[tokio::test]
+    async fn backfill_populates_infojson_from_resolved_yt_dlp_step_outputs() {
+        use std::collections::BTreeMap;
+
+        use mediapm_conductor::{
+            HashedValueRecord, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
+            ToolSpec, WorkflowSpec, WorkflowStepSpec,
+        };
+        use mediapm_utils::Timestamp;
+
+        use crate::config::{
+            MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue,
+            TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
+        };
+        use crate::tools::workflows::{
+            managed_workflow_name, resolve_ffmpeg_slot_limits,
+            resolve_media_variant_output_binding_with_limits,
+        };
+
+        let generated = NickelDocument {
+            tools: BTreeMap::from([(
+                "yt-dlp".to_string(),
+                ToolSpec {
+                    name: "yt-dlp".to_string(),
+                    kind: ToolKindSpec::default(),
+                    ..ToolSpec::default()
+                },
+            )]),
+            ..NickelDocument::default()
+        };
+
+        let cas_root = tempdir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let infojson_hash = cas
+            .put(bytes::Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))
+            .await
+            .expect("put infojson");
+
+        let workflow = WorkflowSpec {
+            name: managed_workflow_name("youtube.dQw4w9WgXcQ"),
+            description: None,
+            display_name: None,
+            impure: true,
+            steps: vec![WorkflowStepSpec {
+                id: "step-0-0-yt-dlp-infojson-to-infojson".to_string(),
+                tool: "yt-dlp".to_string(),
+                inputs: BTreeMap::from([
+                    ("uri".to_string(), "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string()),
+                    ("skip_download".to_string(), "true".to_string()),
+                    ("write_info_json".to_string(), "true".to_string()),
+                    ("write_description".to_string(), "false".to_string()),
+                ]),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_infojson_file".to_string(),
+                    OutputCaptureSpec {
+                        name: "yt_dlp_infojson_file".to_string(),
+                        capture: "file:info.json".to_string(),
+                        save: SaveMode::True,
+                        allow_empty: false,
+                        include_topmost_folder: true,
+                    },
+                )]),
+                max_retries: 0,
+                depends_on: Vec::new(),
+            }],
+        };
+
+        let mut state = ConductorState::new_empty();
+        let instance_key = Hash::from_content(b"infojson-instance");
+        state.tool_call_instances.insert(
+            instance_key,
+            ToolCallInstance {
+                instance_key,
+                tool_call_id: "yt-dlp".to_string(),
+                impure: true,
+                executed_at: Timestamp::from_unix_nanos(1),
+                command_args: Vec::new(),
+                env_vars: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_infojson_file".to_string(),
+                    HashedValueRecord { hash: infojson_hash, deterministic: false },
+                )]),
+            },
+        );
+
+        let mut document = MediaPmDocument::default();
+        document.media.insert(
+            "youtube.dQw4w9WgXcQ".to_string(),
+            MediaSourceSpec {
+                steps: vec![MediaStep {
+                    tool: MediaStepTool::YtDlp,
+                    input_variants: Vec::new(),
+                    output_variants: BTreeMap::from([
+                        (
+                            "video".to_string(),
+                            OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                                kind: YtDlpOutputKind::Primary,
+                                ..Default::default()
+                            }),
+                        ),
+                        (
+                            "infojson".to_string(),
+                            OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                                kind: YtDlpOutputKind::Infojson,
+                                ..Default::default()
+                            }),
+                        ),
+                    ]),
+                    options: BTreeMap::from([(
+                        "uri".to_string(),
+                        TransformInputValue::String(
+                            "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),
+                        ),
+                    )]),
+                }],
+                ..MediaSourceSpec::default()
+            },
+        );
+
+        let mut generated_doc = generated.clone();
+        generated_doc.workflows.push(workflow);
+
+        let step_outputs = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated_doc,
+            &state,
+            &generated_doc.workflows[0],
+        )
+        .await
+        .expect("resolve step outputs")
+        .expect("expected outputs");
+
+        let ffmpeg_limits = resolve_ffmpeg_slot_limits(&document);
+        let binding = resolve_media_variant_output_binding_with_limits(
+            document.media.get("youtube.dQw4w9WgXcQ").expect("source"),
+            "infojson",
+            ffmpeg_limits.max_input_slots,
+            ffmpeg_limits.max_output_slots,
+        )
+        .expect("binding")
+        .expect("infojson binding");
+
+        assert!(
+            step_outputs.get(&binding.step_id).and_then(|o| o.get(&binding.output_name)).is_some(),
+            "step outputs missing infojson: binding={binding:?} keys={:?}",
+            step_outputs.keys().collect::<Vec<_>>()
+        );
+
+        backfill_source_variant_hashes_from_workflow_outputs(
+            &mut document,
+            &generated_doc,
+            &state,
+            &cas,
+        )
+        .await
+        .expect("backfill");
+
+        let source = document.media.get("youtube.dQw4w9WgXcQ").expect("source");
+        assert_eq!(
+            source.variant_hashes.get("infojson").map(String::as_str),
+            Some(infojson_hash.to_string().as_str()),
+            "backfill should insert infojson hash; got keys={:?}",
+            source.variant_hashes.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn relaxed_resolution_finds_infojson_on_primary_yt_dlp_download_instance() {
+        use mediapm_conductor::{
+            HashedValueRecord, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
+            ToolSpec, WorkflowSpec, WorkflowStepSpec,
+        };
+        use mediapm_utils::Timestamp;
+
+        let generated = NickelDocument {
+            tools: BTreeMap::from([(
+                "yt-dlp".to_string(),
+                ToolSpec {
+                    name: "yt-dlp".to_string(),
+                    kind: ToolKindSpec::default(),
+                    ..ToolSpec::default()
+                },
+            )]),
+            ..NickelDocument::default()
+        };
+
+        let cas_root = tempdir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let primary_video_hash =
+            cas.put(bytes::Bytes::from_static(b"primary-video-bytes")).await.expect("put primary");
+        let infojson_hash = cas
+            .put(bytes::Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))
+            .await
+            .expect("put infojson");
+
+        let primary_key = Hash::from_content(b"primary-download-instance");
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            primary_key,
+            ToolCallInstance {
+                instance_key: primary_key,
+                tool_call_id: "yt-dlp".to_string(),
+                impure: true,
+                executed_at: Timestamp::from_unix_nanos(2),
+                command_args: Vec::new(),
+                env_vars: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([
+                    (
+                        "primary".to_string(),
+                        HashedValueRecord { hash: primary_video_hash, deterministic: false },
+                    ),
+                    (
+                        "yt_dlp_infojson_file".to_string(),
+                        HashedValueRecord { hash: infojson_hash, deterministic: false },
+                    ),
+                    (
+                        "yt_dlp_description_file".to_string(),
+                        HashedValueRecord { hash: infojson_hash, deterministic: false },
+                    ),
+                ]),
+            },
+        );
+
+        let workflow = WorkflowSpec {
+            name: "mediapm.media.youtube.dQw4w9WgXcQ".to_string(),
+            display_name: None,
+            description: None,
+            impure: true,
+            steps: vec![WorkflowStepSpec {
+                id: "step-0-2-yt-dlp-infojson-to-infojson".to_string(),
+                tool: "yt-dlp".to_string(),
+                inputs: BTreeMap::from([
+                    ("uri".to_string(), "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string()),
+                    ("skip_download".to_string(), "true".to_string()),
+                    ("write_info_json".to_string(), "true".to_string()),
+                    ("write_description".to_string(), "false".to_string()),
+                ]),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_infojson_file".to_string(),
+                    OutputCaptureSpec {
+                        name: "yt_dlp_infojson_file".to_string(),
+                        capture: "file:info.json".to_string(),
+                        save: SaveMode::True,
+                        allow_empty: false,
+                        include_topmost_folder: true,
+                    },
+                )]),
+                max_retries: 1,
+                depends_on: Vec::new(),
+            }],
+        };
+
+        let step_outputs = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
+            .await
+            .expect("resolve workflow outputs")
+            .expect("expected workflow step outputs");
+
+        let outputs = step_outputs
+            .get("step-0-2-yt-dlp-infojson-to-infojson")
+            .expect("infojson step outputs");
+        assert_eq!(
+            outputs.get("yt_dlp_infojson_file"),
+            Some(&infojson_hash),
+            "relaxed resolution should reuse primary download instance infojson output"
+        );
+    }
+
+    #[tokio::test]
+    async fn relaxed_resolution_matches_versioned_yt_dlp_tool_call_id() {
+        use mediapm_conductor::{
+            HashedValueRecord, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
+            ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+        };
+        use mediapm_utils::Timestamp;
+
+        let versioned_tool_id = "yt-dlp@blake3:fixture-version-hash".to_string();
+        let generated = NickelDocument {
+            tools: BTreeMap::from([(
+                versioned_tool_id.clone(),
+                ToolSpec {
+                    name: "yt-dlp".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "yt-dlp".to_string(),
+                            Hash::from_content(b"yt-dlp-binary").to_string(),
+                        )]),
+                        ..ToolRuntime::default()
+                    },
+                    ..ToolSpec::default()
+                },
+            )]),
+            ..NickelDocument::default()
+        };
+
+        let cas_root = tempdir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let infojson_hash = cas
+            .put(bytes::Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))
+            .await
+            .expect("put infojson");
+
+        let instance_key = Hash::from_content(b"versioned-yt-dlp-instance");
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            instance_key,
+            ToolCallInstance {
+                instance_key,
+                tool_call_id: versioned_tool_id.clone(),
+                impure: true,
+                executed_at: Timestamp::from_unix_nanos(1),
+                command_args: Vec::new(),
+                env_vars: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_infojson_file".to_string(),
+                    HashedValueRecord { hash: infojson_hash, deterministic: false },
+                )]),
+            },
+        );
+
+        let workflow = WorkflowSpec {
+            name: "mediapm.media.youtube.dQw4w9WgXcQ".to_string(),
+            display_name: None,
+            description: None,
+            impure: true,
+            steps: vec![WorkflowStepSpec {
+                id: "step-0-2-yt-dlp-infojson-to-infojson".to_string(),
+                tool: "yt-dlp".to_string(),
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_infojson_file".to_string(),
+                    OutputCaptureSpec {
+                        name: "yt_dlp_infojson_file".to_string(),
+                        capture: "file:info.json".to_string(),
+                        save: SaveMode::True,
+                        allow_empty: false,
+                        include_topmost_folder: true,
+                    },
+                )]),
+                max_retries: 1,
+                depends_on: Vec::new(),
+            }],
+        };
+
+        let step_outputs = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
+            .await
+            .expect("resolve workflow outputs")
+            .expect("expected workflow step outputs");
+
+        let outputs = step_outputs
+            .get("step-0-2-yt-dlp-infojson-to-infojson")
+            .expect("infojson step outputs");
+        assert_eq!(
+            outputs.get("yt_dlp_infojson_file"),
+            Some(&infojson_hash),
+            "versioned yt-dlp tool_call_id should still resolve infojson output"
+        );
+    }
 }
