@@ -319,8 +319,8 @@ mod tests {
 
     #[test]
     fn link_to_sandbox_filtered_skips_foreign_platform_dirs() {
-        let payload = tempfile::tempdir().unwrap();
-        let sandbox = tempfile::tempdir().unwrap();
+        let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
 
         for os in &["linux", "macos", "windows"] {
             let dir = payload.path().join(os);
@@ -337,8 +337,8 @@ mod tests {
 
     #[test]
     fn link_to_sandbox_filtered_no_foreign_dirs_copies_all() {
-        let payload = tempfile::tempdir().unwrap();
-        let sandbox = tempfile::tempdir().unwrap();
+        let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
 
         for os in &["linux", "windows"] {
             let dir = payload.path().join(os);
@@ -354,8 +354,8 @@ mod tests {
 
     #[test]
     fn link_to_sandbox_filtered_empty_payload_creates_empty_sandbox() {
-        let payload = tempfile::tempdir().unwrap();
-        let sandbox = tempfile::tempdir().unwrap();
+        let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
 
         link_to_sandbox_filtered(payload.path(), sandbox.path(), &["linux"]).unwrap();
 
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn link_to_sandbox_filtered_nonexistent_payload_errors() {
-        let sandbox = tempfile::tempdir().unwrap();
+        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let result = link_to_sandbox_filtered(
             &PathBuf::from("/nonexistent/payload"),
             sandbox.path(),
@@ -384,7 +384,7 @@ mod tests {
 
         use crate::provision::ProvisionCache;
 
-        let tools_dir = tempfile::tempdir().unwrap();
+        let tools_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let cas = Arc::new(InMemoryCas::new());
 
         // Put some content in the CAS.

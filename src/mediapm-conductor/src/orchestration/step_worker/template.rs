@@ -1782,7 +1782,7 @@ mod tests {
         let data = b"hello file content";
         let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
 
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
@@ -1807,7 +1807,7 @@ mod tests {
         let data = b"cross-step payload bytes";
         let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
 
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
@@ -2023,7 +2023,7 @@ mod tests {
         let data = b"video-bytes";
         let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
 
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();

@@ -424,13 +424,11 @@ pub fn discover_project_root() -> Result<PathBuf, ConductorError> {
 mod tests {
     use std::fs;
 
-    use tempfile::tempdir;
-
     use super::*;
 
     #[test]
     fn ensure_runtime_gitignore_creates_file() {
-        let dir = tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let conductor_dir = dir.path().join(".conductor");
         fs::create_dir_all(&conductor_dir).expect("create conductor dir");
 
@@ -447,7 +445,7 @@ mod tests {
 
     #[test]
     fn ensure_runtime_gitignore_no_overwrite() {
-        let dir = tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let conductor_dir = dir.path().join(".conductor");
         fs::create_dir_all(&conductor_dir).expect("create conductor dir");
         let gitignore_path = conductor_dir.join(".gitignore");
@@ -460,7 +458,7 @@ mod tests {
 
     #[test]
     fn extend_runtime_gitignore_appends() {
-        let dir = tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let conductor_dir = dir.path().join(".conductor");
         fs::create_dir_all(&conductor_dir).expect("create conductor dir");
 
@@ -488,7 +486,7 @@ mod tests {
 
     #[test]
     fn extend_runtime_gitignore_no_duplicate() {
-        let dir = tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let conductor_dir = dir.path().join(".conductor");
         fs::create_dir_all(&conductor_dir).expect("create conductor dir");
 
@@ -517,7 +515,7 @@ mod tests {
     fn ensure_runtime_gitignore_wired_in_cli() {
         // This test validates that the CLI startup path creates the .gitignore.
         // We simulate the startup by calling the same functions ensure_conductor calls.
-        let dir = tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let conductor_dir = dir.path().join(".conductor");
         fs::create_dir_all(&conductor_dir).expect("create conductor dir");
 
@@ -616,7 +614,7 @@ mod tests {
 
     #[test]
     fn write_generated_dotenv_header_only() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let runtimes = BTreeMap::new();
         write_generated_dotenv(dir.path(), dir.path(), &runtimes).expect("write should succeed");
         let content = std::fs::read_to_string(dir.path().join(".env.generated"))
@@ -626,7 +624,7 @@ mod tests {
 
     #[test]
     fn write_generated_dotenv_binary_produces_dir_and_binary() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let tools_dir = dir.path().join("tools");
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/yt-dlp".to_string(), "hash".to_string());
@@ -656,7 +654,7 @@ mod tests {
 
     #[test]
     fn write_generated_dotenv_dir_produces_dir_only() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let tools_dir = dir.path().join("tools");
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/".to_string(), "hash".to_string());
@@ -685,7 +683,7 @@ mod tests {
 
     #[test]
     fn write_generated_dotenv_mixed_os_produces_no_duplicate_dirs() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let tools_dir = dir.path().join("tools");
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/yt-dlp".to_string(), "h1".to_string());
@@ -737,7 +735,7 @@ mod tests {
         // `deps/<dep_id>/<key>` entries (inlined same-step dependency payloads)
         // are content-map-relative companion paths and must NOT surface as
         // env vars — no `_DEPS_DIR`/`_DEPS` garbage, and own keys still emit.
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let tools_dir = dir.path().join("tools");
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/yt-dlp".to_string(), "h1".to_string());
@@ -777,7 +775,7 @@ mod tests {
 
     #[test]
     fn write_generated_dotenv_uses_absolute_paths() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let tools_dir = dir.path().join("tools");
         let cwd = std::env::current_dir().expect("current dir");
         std::env::set_current_dir(dir.path()).expect("cd to tempdir");
@@ -802,7 +800,7 @@ mod tests {
     /// the conductor tool id (including bare ids and ids with reserved chars).
     #[test]
     fn write_generated_dotenv_path_segment_matches_provision_cache_layout() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let tools_dir = dir.path().join("tools");
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/yt-dlp".to_string(), "h1".to_string());
@@ -851,7 +849,7 @@ mod tests {
     /// conductor tool ids that carry an `@hash` suffix.
     #[test]
     fn write_generated_dotenv_env_names_hash_free_with_conductor_keys() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let tools_dir = dir.path().join("tools");
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/yt-dlp".to_string(), "hash".to_string());

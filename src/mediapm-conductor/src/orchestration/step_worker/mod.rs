@@ -20,7 +20,7 @@ mod capture;
 mod executor;
 mod inputs;
 mod process;
-mod sandbox;
+pub(crate) mod sandbox;
 pub(crate) mod template;
 
 // ---------------------------------------------------------------------------

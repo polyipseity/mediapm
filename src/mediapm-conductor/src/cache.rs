@@ -766,7 +766,7 @@ mod tests {
     /// the original payload bytes.
     #[tokio::test]
     async fn cache_round_trips_bytes_by_logical_key() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -791,7 +791,7 @@ mod tests {
     /// Verifies that querying a non-existent key returns None.
     #[tokio::test]
     async fn lookup_bytes_nonexistent_key_returns_none() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -810,7 +810,7 @@ mod tests {
     /// first and that the new payload is returned on lookup.
     #[tokio::test]
     async fn store_bytes_overwrite_updates_payload() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -831,7 +831,7 @@ mod tests {
     /// Verifies that prune removes entries whose TTL has expired (TTL = 0).
     #[tokio::test]
     async fn prune_expired_removes_expired_entries() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         // Use zero TTL so entries expire immediately.
         let cache = Cache::open(
             root.path(),
@@ -857,7 +857,7 @@ mod tests {
     /// crash or error.
     #[tokio::test]
     async fn prune_on_empty_cache_does_not_crash() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -877,7 +877,7 @@ mod tests {
     /// Verifies that storing empty bytes is a no-op (`entry_count` unchanged).
     #[tokio::test]
     async fn store_empty_bytes_does_not_create_entry() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -899,7 +899,7 @@ mod tests {
     /// Verifies that `touch()` bumps `last_access` so an entry survives prune.
     #[tokio::test]
     async fn touch_bumps_last_access_and_prevents_prune() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -930,7 +930,7 @@ mod tests {
     /// Verifies that `lookup_bytes()` does not update `last_access`.
     #[tokio::test]
     async fn lookup_bytes_does_not_bump_last_access() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -955,7 +955,7 @@ mod tests {
     /// Verifies that `touch()` bumps `last_access`.
     #[tokio::test]
     async fn touch_bumps_last_access() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -982,7 +982,7 @@ mod tests {
     /// by another domain sharing the same CAS store.
     #[tokio::test]
     async fn prune_cross_index_payload_gc_keeps_shared_references() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[
@@ -1019,7 +1019,7 @@ mod tests {
     /// interval.
     #[tokio::test]
     async fn prune_cooldown_respects_interval() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -1053,7 +1053,7 @@ mod tests {
     /// references its hash.
     #[tokio::test]
     async fn prune_expired_removes_payload_blob_from_cas() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -1091,7 +1091,7 @@ mod tests {
     /// and both expire, the payload blob is only deleted once.
     #[tokio::test]
     async fn prune_expired_same_hash_multiple_keys_survives_one_expiry() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[CacheDomainConfig {
@@ -1123,7 +1123,7 @@ mod tests {
     /// survives when only one domain is pruned.
     #[tokio::test]
     async fn prune_expired_cross_index_shared_hash_preserves_blob() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[
@@ -1164,7 +1164,7 @@ mod tests {
     /// when BOTH domains expire their references.
     #[tokio::test]
     async fn prune_expired_removes_blob_when_no_index_references_hash() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[
@@ -1210,7 +1210,7 @@ mod tests {
     /// Verifies that the background prune loop removes expired entries.
     #[tokio::test]
     async fn background_prune_removes_expired_entries() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open_with_ttl_and_maintenance_interval(
             root.path(),
             "tools.json",
@@ -1231,7 +1231,7 @@ mod tests {
     /// Verifies that the background prune loop preserves fresh entries.
     #[tokio::test]
     async fn background_prune_preserves_fresh_entries() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open_with_ttl_and_maintenance_interval(
             root.path(),
             "tools.json",
@@ -1252,7 +1252,7 @@ mod tests {
     /// Verifies that dropping the cache cancels the background prune task.
     #[tokio::test]
     async fn background_prune_guard_drop_stops_task() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open_with_ttl_and_maintenance_interval(
             root.path(),
             "tools.json",
@@ -1276,7 +1276,7 @@ mod tests {
     /// referenced by another domain.
     #[tokio::test]
     async fn background_maintenance_cross_index_preserves_blob() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open(
             root.path(),
             &[
@@ -1337,7 +1337,7 @@ mod tests {
     /// JSON index file round-trip.
     #[tokio::test]
     async fn cross_session_persistence_preserves_data() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
 
         // ── Session 1: store entries ──
         let cache = Cache::open(
@@ -1379,7 +1379,7 @@ mod tests {
     /// open/close cycles via the `Drop` flush.
     #[tokio::test]
     async fn touch_persists_across_restart() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let domain = "test";
         let key = "touch-survive-key";
 
@@ -1432,7 +1432,7 @@ mod tests {
     /// on `Drop`, so no timestamp update is lost on clean shutdown.
     #[tokio::test]
     async fn store_survives_restart_with_in_memory_touch() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let domain = "test";
         let key = "store-touch-key";
 
@@ -1486,7 +1486,7 @@ mod tests {
     /// so a future retry can succeed.
     #[tokio::test]
     async fn lookup_bytes_keeps_entry_on_transient_cas_error() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open_with_verify_strategies(
             root.path(),
             "tools.json",

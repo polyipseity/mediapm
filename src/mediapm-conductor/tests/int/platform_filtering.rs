@@ -7,13 +7,12 @@
 //!    foreign dirs.
 
 use mediapm_conductor::provision::{link_to_sandbox, link_to_sandbox_filtered};
-use tempfile::tempdir;
 
 /// Helper: creates a payload directory with subdirectories for all three
 /// platforms, each containing a marker file.
 fn payload_with_all_platforms() -> (tempfile::TempDir, tempfile::TempDir) {
-    let payload = tempdir().expect("tempdir for payload");
-    let sandbox = tempdir().expect("tempdir for sandbox");
+    let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
+    let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
 
     for os in &["linux", "macos", "windows"] {
         let dir = payload.path().join(os);
@@ -58,8 +57,8 @@ fn link_to_sandbox_preserves_native_platform_only() {
 /// the expected result regardless of the host platform.
 #[test]
 fn link_to_sandbox_explicit_filter_works() {
-    let payload = tempdir().expect("tempdir for payload");
-    let sandbox = tempdir().expect("tempdir for sandbox");
+    let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
+    let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
 
     for os in &["linux", "windows"] {
         let dir = payload.path().join(os);
@@ -79,8 +78,8 @@ fn link_to_sandbox_explicit_filter_works() {
 /// empty sandbox without errors.
 #[test]
 fn link_to_sandbox_empty_payload_creates_empty_sandbox() {
-    let payload = tempdir().expect("tempdir for payload");
-    let sandbox = tempdir().expect("tempdir for sandbox");
+    let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
+    let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
 
     link_to_sandbox(payload.path(), sandbox.path())
         .expect("link_to_sandbox on empty payload should succeed");
@@ -96,8 +95,8 @@ fn link_to_sandbox_empty_payload_creates_empty_sandbox() {
 /// directory does not exist.
 #[test]
 fn link_to_sandbox_nonexistent_payload_errors() {
-    let payload = tempdir().expect("tempdir for payload");
-    let sandbox = tempdir().expect("tempdir for sandbox");
+    let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
+    let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
     let nonexistent = payload.path().join("does-not-exist");
 
     let result = link_to_sandbox(&nonexistent, sandbox.path());

@@ -6,6 +6,7 @@
 
 use std::future::Future;
 use std::marker::PhantomData;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ractor::rpc::CallResult;
@@ -308,11 +309,12 @@ impl ConductorActorClient {
 /// Returns [`ConductorError::Internal`] when actor spawn fails.
 pub(crate) async fn spawn_conductor_actor<C>(
     cas: Arc<C>,
+    conductor_tmp_dir: PathBuf,
 ) -> Result<ConductorActorClient, ConductorError>
 where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
 {
-    let coordinator = WorkflowCoordinator::new(cas);
+    let coordinator = WorkflowCoordinator::new(cas, conductor_tmp_dir);
     // Use anonymous spawn to avoid ractor global name registry conflicts
     // when multiple SimpleConductor instances coexist (e.g. in tests).
     let (actor_ref, _handle) = ractor::spawn::<ConductorActor<C>>(coordinator)

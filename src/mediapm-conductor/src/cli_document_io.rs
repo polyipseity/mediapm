@@ -131,7 +131,7 @@ mod tests {
     /// fields survive re-save; explicit outgoing values win).
     #[test]
     fn save_preserves_old_file_external_data_description() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let path = dir.path().join("conductor.ncl");
         let hash = Hash::from_content(b"payload");
 
@@ -171,7 +171,7 @@ mod tests {
     /// from the file being overwritten.
     #[test]
     fn save_preserves_old_file_workflow_human_fields() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let path = dir.path().join("conductor.ncl");
 
         let mut env = envelope();
@@ -206,7 +206,7 @@ mod tests {
     /// over the old file's description (explicit beats implicit).
     #[test]
     fn save_outgoing_explicit_description_wins() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let path = dir.path().join("conductor.ncl");
         let hash = Hash::from_content(b"payload");
 
@@ -244,7 +244,7 @@ mod tests {
     /// Verifies that a fresh file keeps `None` descriptions (no stale fill).
     #[test]
     fn save_fresh_file_keeps_none_descriptions() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let path = dir.path().join("fresh.ncl");
 
         let mut env = envelope();

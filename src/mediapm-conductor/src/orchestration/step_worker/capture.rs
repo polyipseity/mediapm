@@ -209,12 +209,11 @@ mod tests {
     use crate::config::OutputCaptureSpec;
     use crate::config::SaveMode;
     use std::collections::BTreeMap;
-    use tempfile::TempDir;
 
     #[tokio::test]
     async fn captures_stdout() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let execution =
             ExecutionResult { stdout: b"hello".to_vec(), stderr: Vec::new(), exit_code: 0 };
         let mut output_specs = BTreeMap::new();
@@ -240,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn captures_stderr() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let execution =
             ExecutionResult { stdout: Vec::new(), stderr: b"error output".to_vec(), exit_code: 1 };
         let mut output_specs = BTreeMap::new();
@@ -266,7 +265,7 @@ mod tests {
     #[tokio::test]
     async fn captures_process_code() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 42 };
         let mut output_specs = BTreeMap::new();
         output_specs.insert(
@@ -291,7 +290,7 @@ mod tests {
     #[tokio::test]
     async fn captures_file() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let file_path = tmp.path().join("test.txt");
         tokio::fs::write(&file_path, b"file content").await.unwrap();
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
@@ -318,7 +317,7 @@ mod tests {
     #[tokio::test]
     async fn captures_file_regex() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let file_path = tmp.path().join("result.log");
         tokio::fs::write(&file_path, b"regex match").await.unwrap();
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
@@ -345,7 +344,7 @@ mod tests {
     #[tokio::test]
     async fn captures_file_regex_against_sandbox_relative_paths() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let downloads = tmp.path().join("downloads");
         tokio::fs::create_dir(&downloads).await.unwrap();
         tokio::fs::write(
@@ -378,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn captures_folder_regex() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let downloads = tmp.path().join("downloads");
         tokio::fs::create_dir(&downloads).await.unwrap();
         tokio::fs::write(downloads.join("video.en.vtt"), b"WEBVTT").await.unwrap();
@@ -407,7 +406,7 @@ mod tests {
     #[tokio::test]
     async fn captures_folder() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let subdir = tmp.path().join("subdir");
         tokio::fs::create_dir(&subdir).await.unwrap();
         tokio::fs::write(subdir.join("a.txt"), b"content_a").await.unwrap();
@@ -438,7 +437,7 @@ mod tests {
     #[tokio::test]
     async fn implicit_outputs() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = TempDir::new().expect("temp dir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let execution =
             ExecutionResult { stdout: b"hello".to_vec(), stderr: b"error".to_vec(), exit_code: 1 };
         let output_specs = BTreeMap::new();

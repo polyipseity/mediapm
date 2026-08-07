@@ -16,7 +16,7 @@ use mediapm_conductor::{
     config::versions::encode_document,
 };
 
-use support::{ExampleResult, create_ephemeral_run_dir, write_text_file};
+use support::{ExampleResult, write_text_file};
 
 fn build_document() -> NickelDocument {
     // A small fan-out/fan-in workflow with multiple steps.
@@ -93,7 +93,8 @@ fn build_document() -> NickelDocument {
 }
 
 async fn run_diagnostics_demo() -> ExampleResult<()> {
-    let run_dir = create_ephemeral_run_dir("runtime-diagnostics")?;
+    let run_dir = mediapm_utils::temp::artifact_dir()
+        .map_err(|source| -> Box<dyn std::error::Error> { Box::new(source) })?;
     let root = run_dir.path();
     let cas_root = root.join("cas-store");
     fs::create_dir_all(root)?;

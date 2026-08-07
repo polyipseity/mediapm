@@ -83,23 +83,12 @@ mod tests {
     use std::error::Error;
     use std::io::Cursor;
 
-    use tempfile::TempDir;
-
     use super::{parse_input_file_argument, render_from_file, render_from_reader};
-
-    /// Creates an isolated working directory for one test case.
-    ///
-    /// The directory stays alive for the lifetime of the returned `TempDir`,
-    /// which prevents parallel tests from accidentally colliding on guessed
-    /// names or deleting each other's fixtures mid-assertion.
-    fn unique_temp_dir() -> Result<TempDir, Box<dyn Error>> {
-        tempfile::Builder::new().prefix("mediapm-concat-tool-").tempdir().map_err(Into::into)
-    }
 
     /// Guarantees that stdin-backed rendering prepends the fixed resource file.
     #[test]
     fn render_concatenates_fixed_resource_and_stdin() -> Result<(), Box<dyn Error>> {
-        let dir = unique_temp_dir()?;
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir for concat-tool test");
         std::fs::write(dir.path().join("resource.txt"), "fixed\n")?;
 
         let mut stdin = Cursor::new("input\n");
@@ -112,7 +101,7 @@ mod tests {
     /// Guarantees that a missing fixed resource produces a surfaced I/O error.
     #[test]
     fn render_fails_when_fixed_resource_is_missing() -> Result<(), Box<dyn Error>> {
-        let dir = unique_temp_dir()?;
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir for concat-tool test");
 
         let mut stdin = Cursor::new("input");
         render_from_reader(dir.path(), &mut stdin)
@@ -125,7 +114,7 @@ mod tests {
     /// from the same isolated working directory.
     #[test]
     fn render_from_file_concatenates_fixed_and_file_payload() -> Result<(), Box<dyn Error>> {
-        let dir = unique_temp_dir()?;
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir for concat-tool test");
         std::fs::write(dir.path().join("resource.txt"), "fixed\n")?;
         let payload_path = dir.path().join("payload.txt");
         std::fs::write(&payload_path, "input\n")?;

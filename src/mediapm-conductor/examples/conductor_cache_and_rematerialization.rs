@@ -17,7 +17,7 @@ use mediapm_conductor::{
     config::versions::encode_document,
 };
 
-use support::{ExampleResult, create_ephemeral_run_dir, write_text_file};
+use support::{ExampleResult, write_text_file};
 
 fn build_document() -> NickelDocument {
     NickelDocument {
@@ -114,7 +114,8 @@ fn build_document() -> NickelDocument {
 }
 
 async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
-    let run_dir = create_ephemeral_run_dir("cache-and-rematerialization")?;
+    let run_dir = mediapm_utils::temp::artifact_dir()
+        .map_err(|source| -> Box<dyn std::error::Error> { Box::new(source) })?;
     let root = run_dir.path();
     let cas_root = root.join("cas-store");
 

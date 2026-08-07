@@ -89,7 +89,7 @@ struct TestConductor {
 
 impl TestConductor {
     fn new() -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let conductor =
             SimpleConductor::new(RuntimeStoragePaths::new(dir.path()), InMemoryCas::new());
         Self { dir, conductor }

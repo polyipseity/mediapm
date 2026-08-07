@@ -399,7 +399,7 @@ mod tests {
     fn ensure_user_execute_bit_sets_owner_execute_permission() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let file_path = temp.path().join("tool.bin");
         fs::write(&file_path, b"tool-bytes").expect("write file");
 

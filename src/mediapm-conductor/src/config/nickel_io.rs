@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -53,13 +53,11 @@ pub(super) static NICKEL_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Returns a reference to the shared temporary Nickel workspace directory,
 /// creating it on first access.
 pub(super) fn nickel_workspace_dir() -> &'static Path {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
     DIR.get_or_init(|| {
-        let dir =
-            std::env::temp_dir().join(format!("mediapm-conductor-nickel-{}", std::process::id()));
-        let _ = fs::create_dir_all(&dir);
-        dir
+        mediapm_utils::temp::artifact_dir().expect("artifact dir for nickel workspace")
     })
+    .path()
 }
 
 /// Writes one Nickel source file into the temporary workspace.

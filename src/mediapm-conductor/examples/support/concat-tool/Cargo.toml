@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 
 [dev-dependencies]
-tempfile.workspace = true
+mediapm-utils = { workspace = true }
 
 [[bin]]
 name = "concat-tool"

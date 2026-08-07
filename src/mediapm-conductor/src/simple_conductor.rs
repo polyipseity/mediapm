@@ -62,7 +62,11 @@ where
     async fn ensure_actor_client(&self) -> Result<&ConductorActorClient, ConductorError> {
         self.actor_client
             .get_or_try_init(|| async {
-                crate::orchestration::node::spawn_conductor_actor(self.cas.clone()).await
+                crate::orchestration::node::spawn_conductor_actor(
+                    self.cas.clone(),
+                    self.storage_paths.conductor_tmp_dir.clone(),
+                )
+                .await
             })
             .await
     }
@@ -654,7 +658,6 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Drop for SimpleCondu
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
 
     use super::*;
     use crate::state::ConductorState;
@@ -663,7 +666,7 @@ mod tests {
     /// order; missing explicit paths are skipped.
     #[test]
     fn discover_config_paths_uses_explicit_paths_in_order() {
-        let tmp = tempdir().expect("tempdir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let conductor_dir = tmp.path().join("conductor_dir");
         let paths = RuntimeStoragePaths::new(&conductor_dir);
 
@@ -681,7 +684,7 @@ mod tests {
     /// Standalone discovery never picks up `mediapm.ncl` at the parent.
     #[test]
     fn discover_config_paths_does_not_discover_mediapm_ncl() {
-        let tmp = tempdir().expect("tempdir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let conductor_dir = tmp.path().join("conductor_dir");
         std::fs::create_dir_all(&conductor_dir).expect("create conductor_dir");
 
@@ -700,7 +703,7 @@ mod tests {
     /// parent.
     #[test]
     fn find_first_config_drops_mediapm_ncl() {
-        let tmp = tempdir().expect("tempdir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let conductor_dir = tmp.path().join("conductor_dir");
 
         let mediapm = tmp.path().join("mediapm.ncl");
@@ -715,7 +718,7 @@ mod tests {
     /// `load_state_file`.
     #[test]
     fn state_file_roundtrip() {
-        let tmp = tempdir().expect("tempdir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
 
         let state = ConductorState::new_empty();
@@ -727,7 +730,7 @@ mod tests {
     /// A missing state file loads as `None`, not an error.
     #[test]
     fn state_file_missing_returns_none() {
-        let tmp = tempdir().expect("tempdir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
         assert_eq!(load_state_file(&paths).expect("load missing state file"), None);
     }
@@ -735,7 +738,7 @@ mod tests {
     /// A corrupt state file surfaces as an error rather than a silent default.
     #[test]
     fn state_file_corrupt_errors() {
-        let tmp = tempdir().expect("tempdir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
         std::fs::create_dir_all(&paths.conductor_dir).expect("create conductor dir");
         std::fs::write(&paths.state_file_path, b"not json").expect("write corrupt state");
@@ -745,7 +748,7 @@ mod tests {
     /// `with_config_paths` relocates the state file to the custom path.
     #[test]
     fn state_file_path_is_configurable() {
-        let tmp = tempdir().expect("tempdir");
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let custom = tmp.path().join("custom").join("state.json");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"))
             .with_config_paths(Vec::new(), custom.clone());

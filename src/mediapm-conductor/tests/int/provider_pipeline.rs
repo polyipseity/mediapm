@@ -76,7 +76,7 @@ async fn resolve_unknown_tool_returns_error() {
 async fn fetch_echo_produces_launcher_scripts_via_cache() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
 
-    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
@@ -117,7 +117,7 @@ async fn fetch_echo_produces_launcher_scripts_via_cache() {
 #[tokio::test]
 async fn fetch_echo_is_cached_idempotently() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
@@ -138,7 +138,7 @@ async fn fetch_echo_is_cached_idempotently() {
 #[tokio::test]
 async fn process_echo_produces_correct_content_map_and_os_exec_paths() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
@@ -182,7 +182,7 @@ async fn process_echo_produces_correct_content_map_and_os_exec_paths() {
 #[tokio::test]
 async fn full_pipeline_echo_all_hashes_retrievable_from_cas() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
@@ -225,7 +225,7 @@ async fn resolve_tool_fetch_matches_sources_len_for_all_providers() {
 #[tokio::test]
 async fn process_fires_progress_per_source_entry() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
@@ -258,7 +258,7 @@ async fn process_fires_progress_per_source_entry() {
 #[tokio::test]
 async fn full_pipeline_progress_monotonic() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
@@ -308,7 +308,7 @@ async fn process_mixed_archive_binary_progress() {
     // Use echo (launcher-only) for binary sources and add a synthetic
     // zip archive as an extra source to validate mixed progress.
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = tempfile::tempdir().expect("tempdir for cache");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
         .await
         .expect("open UserLevelCache");
