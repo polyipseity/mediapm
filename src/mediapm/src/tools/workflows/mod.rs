@@ -37,7 +37,6 @@ use crate::config::source_types::step_option_scalar;
 use crate::config::{
     GenericOutputVariantConfig, MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool,
     OutputCaptureKind, OutputSaveConfig, OutputVariantValue, TransformInputValue,
-    YtDlpOutputVariantConfig,
 };
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
@@ -152,7 +151,7 @@ pub(crate) fn variant_to_output_capture_spec(
             }
         }
         OutputVariantValue::YtDlp(y) => {
-            let (capture, save) = yt_dlp_variant_capture_and_save(y);
+            let (capture, save) = yt_dlp::yt_dlp_variant_capture_and_save(y);
             OutputCaptureSpec {
                 name: name.to_string(),
                 capture,
@@ -168,28 +167,6 @@ fn generic_variant_capture_and_save(config: &GenericOutputVariantConfig) -> (Str
     let capture = match config.capture_kind {
         Some(OutputCaptureKind::Folder) => format!("file:{}/*", config.kind),
         _ => format!("file:{}", config.kind),
-    };
-    let save = match config.save {
-        OutputSaveConfig::Bool(true) => SaveMode::True,
-        OutputSaveConfig::Bool(false) => SaveMode::False,
-        OutputSaveConfig::Full => SaveMode::Full,
-    };
-    (capture, save)
-}
-
-fn yt_dlp_variant_capture_and_save(config: &YtDlpOutputVariantConfig) -> (String, SaveMode) {
-    use crate::config::YtDlpOutputKind;
-    let capture = match config.kind {
-        YtDlpOutputKind::Primary => "file:primary.*".to_string(),
-        YtDlpOutputKind::Subtitles => "file:subtitles/*".to_string(),
-        YtDlpOutputKind::Thumbnails => "file:thumbnails/*".to_string(),
-        YtDlpOutputKind::Chapters => "file:chapters/*".to_string(),
-        YtDlpOutputKind::Description => "file:description.*".to_string(),
-        YtDlpOutputKind::Infojson => "file:info.json".to_string(),
-        YtDlpOutputKind::Comment => "file:comment.*".to_string(),
-        YtDlpOutputKind::Archive => "file:archive.txt".to_string(),
-        YtDlpOutputKind::Annotation => "file:annotations.*".to_string(),
-        YtDlpOutputKind::Links => "file:links/*".to_string(),
     };
     let save = match config.save {
         OutputSaveConfig::Bool(true) => SaveMode::True,
@@ -1285,7 +1262,7 @@ mod tests {
 
         assert_eq!(step.id, "step-0-0-yt-dlp-description-to-description");
         let output = step.outputs.get("yt_dlp_description_file").expect("description output");
-        assert_eq!(output.capture, "file:description.*");
+        assert_eq!(output.capture, "file_regex:^downloads/.+(?:__mediapm__)?[.]description$");
         assert!(!step.outputs.contains_key("primary"));
     }
 

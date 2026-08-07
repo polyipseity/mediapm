@@ -136,6 +136,33 @@ pub(crate) fn synthesize_yt_dlp_step(
     Ok(())
 }
 
+/// Builds workflow-step capture selectors for one yt-dlp output variant.
+#[must_use]
+pub(crate) fn yt_dlp_variant_capture_and_save(
+    config: &crate::config::YtDlpOutputVariantConfig,
+) -> (String, mediapm_conductor::SaveMode) {
+    use crate::config::{OutputSaveConfig, YtDlpOutputKind};
+
+    let capture = match config.kind {
+        YtDlpOutputKind::Primary => format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"),
+        YtDlpOutputKind::Subtitles => format!("folder_regex:{YT_DLP_SUBTITLE_ARTIFACTS_REGEX}"),
+        YtDlpOutputKind::Thumbnails => format!("folder_regex:{YT_DLP_THUMBNAIL_ARTIFACTS_REGEX}"),
+        YtDlpOutputKind::Chapters => format!("folder_regex:{YT_DLP_CHAPTER_ARTIFACTS_REGEX}"),
+        YtDlpOutputKind::Description => format!("file_regex:{YT_DLP_DESCRIPTION_OUTPUT_REGEX}"),
+        YtDlpOutputKind::Infojson => format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}"),
+        YtDlpOutputKind::Comment => "file:comment.*".to_string(),
+        YtDlpOutputKind::Archive => format!("file_regex:{YT_DLP_ARCHIVE_OUTPUT_REGEX}"),
+        YtDlpOutputKind::Annotation => format!("file_regex:{YT_DLP_ANNOTATION_OUTPUT_REGEX}"),
+        YtDlpOutputKind::Links => format!("folder_regex:{YT_DLP_LINK_ARTIFACTS_REGEX}"),
+    };
+    let save = match config.save {
+        OutputSaveConfig::Bool(true) => mediapm_conductor::SaveMode::True,
+        OutputSaveConfig::Bool(false) => mediapm_conductor::SaveMode::False,
+        OutputSaveConfig::Full => mediapm_conductor::SaveMode::Full,
+    };
+    (capture, save)
+}
+
 /// Sandbox directory where yt-dlp materializes downloaded output artifacts.
 const SANDBOX_DOWNLOADS_DIR: &str = "downloads";
 
