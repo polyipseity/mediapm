@@ -213,7 +213,40 @@ pub(super) fn extract_zip_member_bytes(
         index += 1;
     }
 
+    if member_key.starts_with('.') {
+        return extract_zip_member_bytes_by_suffix(zip_bytes, member_key);
+    }
+
     Err(format!("ZIP member '{member_key}' not found in archive"))
+}
+
+fn extract_zip_member_bytes_by_suffix(zip_bytes: &[u8], suffix: &str) -> Result<Vec<u8>, String> {
+    if suffix.is_empty() || suffix.contains('/') || suffix.contains('\\') {
+        return Err(
+            "ZIP member suffix must be non-empty and must not contain path separators".to_string()
+        );
+    }
+
+    let reader = std::io::Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|error| format!("decoding ZIP payload failed: {error}"))?;
+
+    let mut index = 0usize;
+    while index < archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("reading ZIP entry #{index} failed: {error}"))?;
+        let entry_name = entry.name().replace('\\', "/");
+        if !entry.is_dir() && entry_name.ends_with(suffix) {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes)
+                .map_err(|error| format!("reading ZIP member suffix '{suffix}' failed: {error}"))?;
+            return Ok(bytes);
+        }
+        index += 1;
+    }
+
+    Err(format!("ZIP member suffix '{suffix}' not found in archive"))
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +330,13 @@ mod tests {
         assert_eq!(result[0].1, b"aaa");
         assert_eq!(result[1].0, PathBuf::from("dir/sub/b.txt"));
         assert_eq!(result[1].1, b"bbb");
+    }
+
+    #[test]
+    fn extract_zip_member_bytes_matches_language_suffix() {
+        let data = make_zip(&[("Rick Astley.en.vtt", b"WEBVTT")]);
+        let bytes = extract_zip_member_bytes(&data, ".en.vtt").expect("suffix match");
+        assert_eq!(bytes, b"WEBVTT");
     }
 
     #[test]

@@ -1468,6 +1468,38 @@ mod tests {
     }
 
     #[test]
+    fn yt_dlp_subtitles_en_file_capture_sets_zip_member_suffix() {
+        use crate::tools::workflows::variant_binding::resolve_media_variant_output_binding;
+
+        let document = media_document(
+            "scoped-sub-en-file",
+            media_source(
+                "",
+                vec![],
+                vec![media_step(
+                    MediaStepTool::YtDlp,
+                    vec![],
+                    vec![(
+                        "subtitles_en",
+                        json!({
+                            "kind": "subtitles",
+                            "save": true,
+                            "capture_kind": "file",
+                            "langs": "en"
+                        }),
+                    )],
+                    vec![("uri", "https://example.com/video")],
+                )],
+            ),
+        );
+        let source = document.media.get("scoped-sub-en-file").expect("source");
+        let binding = resolve_media_variant_output_binding(source, "subtitles_en")
+            .expect("resolve binding")
+            .expect("binding");
+        assert_eq!(binding.zip_member.as_deref(), Some(".en.vtt"));
+    }
+
+    #[test]
     fn yt_dlp_primary_variant_does_not_auto_inject_skip_download() {
         let document = media_document(
             "primary-a",
