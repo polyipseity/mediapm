@@ -110,13 +110,9 @@ pub(crate) async fn backfill_source_variant_hashes_from_workflow_outputs(
             continue;
         };
 
-        let Some(step_outputs) = resolve_workflow_step_output_hashes_for_backfill(
-            cas,
-            generated_doc,
-            conductor_state,
-            workflow,
-        )
-        .await?
+        let Some(step_outputs) =
+            resolve_workflow_step_output_hashes(cas, generated_doc, conductor_state, workflow)
+                .await?
         else {
             continue;
         };
@@ -337,6 +333,10 @@ async fn resolve_variant_hash_from_workflow_state(
 }
 
 /// Resolves concrete output hashes for each workflow step using conductor state.
+///
+/// Strict input-key matching is attempted per step first; steps that miss under
+/// strict matching are retried with relaxed instance selection so partial strict
+/// success (for example ffmpeg) does not block yt-dlp sidecar resolution.
 pub(super) async fn resolve_workflow_step_output_hashes(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
@@ -348,165 +348,183 @@ pub(super) async fn resolve_workflow_step_output_hashes(
     let required_step_zip_members = collect_required_step_zip_members(workflow);
 
     for step in &workflow.steps {
-        let merged_step_inputs =
-            merge_step_inputs_with_tool_defaults(generated_doc, &step.tool, &step.inputs)?;
-        let expected_inputs =
-            resolve_expected_input_hashes(cas, generated_doc, &merged_step_inputs, &step_outputs)
-                .await?;
-        let Some(expected_inputs) = expected_inputs else {
-            continue;
-        };
-
-        let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
-            .map(|(key, _)| key.clone())
-            .ok_or_else(|| {
-                MediaPmError::Workflow(format!(
-                    "workflow step '{}' references unknown tool '{}' in generated config",
-                    step.id, step.tool
-                ))
-            })?;
-
-        let required_output_names =
-            required_step_output_names.get(&step.id).cloned().unwrap_or_default();
-        let required_zip_members = required_step_zip_members.get(&step.id);
-
-        let instance_key_resolved_values =
-            build_instance_key_resolved_value_bytes(cas, &merged_step_inputs, &expected_inputs)
-                .await?;
-
-        let mut matching_instances = state
-            .tool_call_instances
-            .iter()
-            .filter_map(|(instance_key, instance)| {
-                (instance.tool_call_id == conductor_tool_key
-                    && instance_matches_expected_inputs(
-                        instance,
-                        &expected_inputs,
-                        &merged_step_inputs,
-                        &instance_key_resolved_values,
-                    )
-                    && instance_matches_expected_output_names(instance, &step.outputs)
-                    && instance_matches_required_output_names(instance, &required_output_names))
-                .then_some((instance_key, instance))
-            })
-            .collect::<Vec<_>>();
-
-        matching_instances.sort_by(|(left_key, left_instance), (right_key, right_instance)| {
-            compare_instance_recency(left_key, left_instance, right_key, right_instance)
-        });
-
-        let mut selected_instance = None;
-        for (_, instance) in &matching_instances {
-            if instance_has_materializable_required_outputs(
-                cas,
-                instance,
-                &required_output_names,
-                required_zip_members,
-            )
-            .await
-            {
-                selected_instance = Some(*instance);
-                break;
-            }
+        if let Some(outputs) = resolve_single_step_output_hashes_strict(
+            cas,
+            generated_doc,
+            state,
+            step,
+            &required_step_output_names,
+            &required_step_zip_members,
+            &step_outputs,
+        )
+        .await?
+        {
+            step_outputs.insert(step.id.clone(), outputs);
         }
+    }
 
-        let Some(instance) =
-            selected_instance.or_else(|| matching_instances.first().map(|(_, instance)| *instance))
-        else {
+    for step in &workflow.steps {
+        if step_outputs.contains_key(&step.id) {
             continue;
-        };
-
-        let mut output_hashes = instance
-            .outputs
-            .iter()
-            .map(|(name, output)| (name.clone(), output.hash))
-            .collect::<BTreeMap<_, _>>();
-        if let Some(stdout) = instance.outputs.get("stdout") {
-            for output_name in step.outputs.keys() {
-                output_hashes.entry(output_name.clone()).or_insert(stdout.hash);
-            }
         }
-        step_outputs.insert(step.id.clone(), output_hashes);
+        if let Some(outputs) =
+            resolve_single_step_output_hashes_relaxed(cas, generated_doc, state, step).await?
+        {
+            step_outputs.insert(step.id.clone(), outputs);
+        }
     }
 
     if step_outputs.is_empty() { Ok(None) } else { Ok(Some(step_outputs)) }
 }
 
-/// Resolves workflow step outputs for variant-hash backfill, falling back to
-/// relaxed instance selection when strict input-key matching finds no instances.
-async fn resolve_workflow_step_output_hashes_for_backfill(
+async fn resolve_single_step_output_hashes_strict(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
     state: &ConductorState,
-    workflow: &mediapm_conductor::WorkflowSpec,
-) -> Result<Option<StepOutputHashes>, MediaPmError> {
-    if let Some(step_outputs) =
-        resolve_workflow_step_output_hashes(cas, generated_doc, state, workflow).await?
-    {
-        return Ok(Some(step_outputs));
+    step: &mediapm_conductor::WorkflowStepSpec,
+    required_step_output_names: &RequiredStepOutputNames,
+    required_step_zip_members: &RequiredStepZipMembers,
+    prior_step_outputs: &StepOutputHashes,
+) -> Result<Option<BTreeMap<String, Hash>>, MediaPmError> {
+    let merged_step_inputs =
+        merge_step_inputs_with_tool_defaults(generated_doc, &step.tool, &step.inputs)?;
+    let expected_inputs =
+        resolve_expected_input_hashes(cas, generated_doc, &merged_step_inputs, prior_step_outputs)
+            .await?;
+    let Some(expected_inputs) = expected_inputs else {
+        return Ok(None);
+    };
+
+    let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
+        .map(|(key, _)| key.clone())
+        .ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "workflow step '{}' references unknown tool '{}' in generated config",
+                step.id, step.tool
+            ))
+        })?;
+
+    let required_output_names =
+        required_step_output_names.get(&step.id).cloned().unwrap_or_default();
+    let required_zip_members = required_step_zip_members.get(&step.id);
+
+    let instance_key_resolved_values =
+        build_instance_key_resolved_value_bytes(cas, &merged_step_inputs, &expected_inputs).await?;
+
+    let mut matching_instances = state
+        .tool_call_instances
+        .iter()
+        .filter_map(|(instance_key, instance)| {
+            (instance.tool_call_id == conductor_tool_key
+                && instance_matches_expected_inputs(
+                    instance,
+                    &expected_inputs,
+                    &merged_step_inputs,
+                    &instance_key_resolved_values,
+                )
+                && instance_matches_expected_output_names(instance, &step.outputs)
+                && instance_matches_required_output_names(instance, &required_output_names))
+            .then_some((instance_key, instance))
+        })
+        .collect::<Vec<_>>();
+
+    matching_instances.sort_by(|(left_key, left_instance), (right_key, right_instance)| {
+        compare_instance_recency(left_key, left_instance, right_key, right_instance)
+    });
+
+    let mut selected_instance = None;
+    for (_, instance) in &matching_instances {
+        if instance_has_materializable_required_outputs(
+            cas,
+            instance,
+            &required_output_names,
+            required_zip_members,
+        )
+        .await
+        {
+            selected_instance = Some(*instance);
+            break;
+        }
     }
 
-    let mut step_outputs = StepOutputHashes::new();
+    let Some(instance) =
+        selected_instance.or_else(|| matching_instances.first().map(|(_, instance)| *instance))
+    else {
+        return Ok(None);
+    };
 
-    for step in &workflow.steps {
-        let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
-            .map(|(key, _)| key.clone())
-            .ok_or_else(|| {
-                MediaPmError::Workflow(format!(
-                    "workflow step '{}' references unknown tool '{}' in generated config",
-                    step.id, step.tool
-                ))
-            })?;
+    Ok(Some(output_hashes_from_instance(instance, &step.outputs)))
+}
 
-        let required_output_names: BTreeSet<String> = step.outputs.keys().cloned().collect();
-        let mut candidates = state
-            .tool_call_instances
-            .values()
-            .filter(|instance| instance.tool_call_id == conductor_tool_key)
-            .filter(|instance| {
-                required_output_names
-                    .iter()
-                    .all(|output_name| instance.outputs.contains_key(output_name))
-            })
-            .collect::<Vec<_>>();
+async fn resolve_single_step_output_hashes_relaxed(
+    cas: &FileSystemCas,
+    generated_doc: &NickelDocument,
+    state: &ConductorState,
+    step: &mediapm_conductor::WorkflowStepSpec,
+) -> Result<Option<BTreeMap<String, Hash>>, MediaPmError> {
+    let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
+        .map(|(key, _)| key.clone())
+        .ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "workflow step '{}' references unknown tool '{}' in generated config",
+                step.id, step.tool
+            ))
+        })?;
 
-        candidates.sort_by_key(|instance| std::cmp::Reverse(instance.executed_at));
+    let required_output_names: BTreeSet<String> = step.outputs.keys().cloned().collect();
+    let mut candidates = state
+        .tool_call_instances
+        .values()
+        .filter(|instance| instance.tool_call_id == conductor_tool_key)
+        .filter(|instance| {
+            required_output_names
+                .iter()
+                .all(|output_name| instance.outputs.contains_key(output_name))
+        })
+        .collect::<Vec<_>>();
 
-        let mut selected_instance = None;
-        for instance in candidates {
-            let mut all_materialized = true;
-            for output_name in &required_output_names {
-                let Some(output) = instance.outputs.get(output_name) else {
-                    all_materialized = false;
-                    break;
-                };
-                if cas.get(output.hash).await.is_err() {
-                    all_materialized = false;
-                    break;
-                }
-            }
-            if all_materialized {
-                selected_instance = Some(instance);
+    candidates.sort_by(|left, right| {
+        left.outputs
+            .len()
+            .cmp(&right.outputs.len())
+            .then_with(|| right.executed_at.cmp(&left.executed_at))
+    });
+
+    for instance in candidates {
+        let mut all_materialized = true;
+        for output_name in &required_output_names {
+            let Some(output) = instance.outputs.get(output_name) else {
+                all_materialized = false;
+                break;
+            };
+            if cas.get(output.hash).await.is_err() {
+                all_materialized = false;
                 break;
             }
         }
-
-        if let Some(instance) = selected_instance {
-            let mut output_hashes = instance
-                .outputs
-                .iter()
-                .map(|(name, output)| (name.clone(), output.hash))
-                .collect::<BTreeMap<_, _>>();
-            if let Some(stdout) = instance.outputs.get("stdout") {
-                for output_name in step.outputs.keys() {
-                    output_hashes.entry(output_name.clone()).or_insert(stdout.hash);
-                }
-            }
-            step_outputs.insert(step.id.clone(), output_hashes);
+        if all_materialized {
+            return Ok(Some(output_hashes_from_instance(instance, &step.outputs)));
         }
     }
 
-    if step_outputs.is_empty() { Ok(None) } else { Ok(Some(step_outputs)) }
+    Ok(None)
+}
+
+fn output_hashes_from_instance(
+    instance: &ToolCallInstance,
+    step_outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
+) -> BTreeMap<String, Hash> {
+    let mut output_hashes = instance
+        .outputs
+        .iter()
+        .map(|(name, output)| (name.clone(), output.hash))
+        .collect::<BTreeMap<_, _>>();
+    if let Some(stdout) = instance.outputs.get("stdout") {
+        for output_name in step_outputs.keys() {
+            output_hashes.entry(output_name.clone()).or_insert(stdout.hash);
+        }
+    }
+    output_hashes
 }
 
 /// Unions step-declared inputs with the active tool spec contract, matching
@@ -789,6 +807,7 @@ mod tests {
     use std::path::PathBuf;
 
     use mediapm_cas::FileSystemCas;
+    use mediapm_cas::Hash;
     use mediapm_conductor::{decode_document, decode_state_json};
     use tempfile::tempdir;
 
@@ -912,5 +931,114 @@ mod tests {
             })
             .expect("ffmpeg instance matching step inputs");
         assert!(ffmpeg_instance.outputs.contains_key("primary"));
+    }
+
+    #[tokio::test]
+    async fn merged_resolution_prefers_specialized_yt_dlp_sidecar_instance() {
+        use mediapm_conductor::{
+            HashedValueRecord, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
+            ToolSpec, WorkflowSpec, WorkflowStepSpec,
+        };
+        use mediapm_utils::Timestamp;
+
+        let generated = NickelDocument {
+            tools: BTreeMap::from([(
+                "yt-dlp".to_string(),
+                ToolSpec {
+                    name: "yt-dlp".to_string(),
+                    kind: ToolKindSpec::default(),
+                    ..ToolSpec::default()
+                },
+            )]),
+            ..NickelDocument::default()
+        };
+
+        let cas_root = tempdir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let primary_infojson_hash =
+            cas.put(bytes::Bytes::from_static(b"primary-infojson")).await.expect("put primary");
+        let sidecar_infojson_hash =
+            cas.put(bytes::Bytes::from_static(b"sidecar-infojson")).await.expect("put sidecar");
+
+        let primary_key = Hash::from_content(b"primary-instance");
+        let sidecar_key = Hash::from_content(b"sidecar-instance");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            primary_key,
+            ToolCallInstance {
+                instance_key: primary_key,
+                tool_call_id: "yt-dlp".to_string(),
+                impure: true,
+                executed_at: Timestamp::from_unix_nanos(2),
+                command_args: Vec::new(),
+                env_vars: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([
+                    (
+                        "primary".to_string(),
+                        HashedValueRecord { hash: primary_infojson_hash, deterministic: false },
+                    ),
+                    (
+                        "yt_dlp_infojson_file".to_string(),
+                        HashedValueRecord { hash: primary_infojson_hash, deterministic: false },
+                    ),
+                ]),
+            },
+        );
+        state.tool_call_instances.insert(
+            sidecar_key,
+            ToolCallInstance {
+                instance_key: sidecar_key,
+                tool_call_id: "yt-dlp".to_string(),
+                impure: true,
+                executed_at: Timestamp::from_unix_nanos(1),
+                command_args: Vec::new(),
+                env_vars: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_infojson_file".to_string(),
+                    HashedValueRecord { hash: sidecar_infojson_hash, deterministic: false },
+                )]),
+            },
+        );
+
+        let workflow = WorkflowSpec {
+            name: "mediapm.media.test".to_string(),
+            display_name: None,
+            description: None,
+            impure: true,
+            steps: vec![WorkflowStepSpec {
+                id: "step-0-0-yt-dlp-infojson-to-infojson".to_string(),
+                tool: "yt-dlp".to_string(),
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_infojson_file".to_string(),
+                    OutputCaptureSpec {
+                        name: "yt_dlp_infojson_file".to_string(),
+                        capture: "file:info.json".to_string(),
+                        save: SaveMode::True,
+                        allow_empty: false,
+                        include_topmost_folder: true,
+                    },
+                )]),
+                max_retries: 1,
+                depends_on: Vec::new(),
+            }],
+        };
+
+        let step_outputs = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
+            .await
+            .expect("resolve workflow outputs")
+            .expect("expected workflow step outputs");
+
+        let outputs = step_outputs
+            .get("step-0-0-yt-dlp-infojson-to-infojson")
+            .expect("infojson step outputs");
+        assert_eq!(
+            outputs.get("yt_dlp_infojson_file"),
+            Some(&sidecar_infojson_hash),
+            "relaxed resolution should prefer the specialized yt-dlp sidecar instance"
+        );
     }
 }
