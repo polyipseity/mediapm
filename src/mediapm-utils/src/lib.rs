@@ -15,6 +15,7 @@
 //! ├── path       — PathMode, parse_path_mode, resolve_path_for_root, etc.
 //! ├── builtin    — describe(), describe_json_compact(), BuiltinCliArgs, parse_string_pairs
 //! ├── timestamp  — Timestamp (Unix-epoch nanoseconds)
+//! ├── temp       — Prefixed test/example/runtime temp directories
 //! └── generated  — GENERATED_FILE_BANNER, prepend_banner
 //! ```
 //!
@@ -29,6 +30,7 @@ pub mod builtin;
 pub mod generated;
 pub mod path;
 pub mod progress;
+pub mod temp;
 pub mod timestamp;
 pub mod types;
 

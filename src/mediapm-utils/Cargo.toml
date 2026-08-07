@@ -23,6 +23,7 @@ indicatif = { workspace = true, features = ["tokio"], optional = true }
 tokio = { workspace = true, features = ["time"], optional = true }
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
+tempfile.workspace = true
 
 [dev-dependencies]
 indicatif = { workspace = true, features = ["in_memory"] }
