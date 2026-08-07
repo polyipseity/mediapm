@@ -64,13 +64,17 @@ pub(super) fn collect_media_source_available_variants(
 // Variant hash / bytes resolution
 // ---------------------------------------------------------------------------
 
-/// Resolves the CAS hash for one variant (conductor state first, then local).
+/// Resolves the CAS hash for one variant (local backfill first, then conductor state).
 pub(super) async fn resolve_variant_hash(
     media_id: &str,
     variant_name: &str,
     source: &MediaSourceSpec,
     lookup: &MaterializationLookupContext,
 ) -> Result<Option<Hash>, MediaPmError> {
+    if let Some(local_hash) = resolve_local_variant_hash(media_id, variant_name, source)? {
+        return Ok(Some(local_hash));
+    }
+
     if let Some(state) = lookup.conductor_state.as_ref()
         && let Some((workflow_hash, _notice)) =
             resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant_name)
@@ -85,10 +89,9 @@ pub(super) async fn resolve_variant_hash(
         if binding.is_none_or(|binding| binding.zip_member.is_none()) {
             return Ok(Some(workflow_hash));
         }
-        return Ok(None);
     }
 
-    resolve_local_variant_hash(media_id, variant_name, source)
+    Ok(None)
 }
 
 /// Copies workflow output hashes into each media source's `variant_hashes` map
@@ -154,39 +157,38 @@ pub(super) async fn resolve_variant_source_bytes(
         && let Some((workflow_hash, fallback_notice)) =
             resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant)
                 .await?
+        && let Ok(bytes) = lookup.cas.get(workflow_hash).await
     {
-        if let Ok(bytes) = lookup.cas.get(workflow_hash).await {
-            let binding_result = resolve_media_variant_output_binding_with_limits(
-                source,
-                variant,
-                lookup.ffmpeg_slot_limits.max_input_slots,
-                lookup.ffmpeg_slot_limits.max_output_slots,
-            );
-            let materialized_result = binding_result.and_then(|binding| {
-                if let Some(binding) = binding {
-                    if let Some(zip_member) = binding.zip_member.as_deref() {
-                        extract_zip_member_bytes(bytes.as_ref(), zip_member)
-                            .map(|member_bytes| (member_bytes, None))
-                            .map_err(|error| {
-                                MediaPmError::Workflow(format!(
-                                    "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
-                                ))
-                            })
-                    } else {
-                        Ok((bytes.as_ref().to_vec(), Some(workflow_hash)))
-                    }
+        let binding_result = resolve_media_variant_output_binding_with_limits(
+            source,
+            variant,
+            lookup.ffmpeg_slot_limits.max_input_slots,
+            lookup.ffmpeg_slot_limits.max_output_slots,
+        );
+        let materialized_result = binding_result.and_then(|binding| {
+            if let Some(binding) = binding {
+                if let Some(zip_member) = binding.zip_member.as_deref() {
+                    extract_zip_member_bytes(bytes.as_ref(), zip_member)
+                        .map(|member_bytes| (member_bytes, None))
+                        .map_err(|error| {
+                            MediaPmError::Workflow(format!(
+                                "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
+                            ))
+                        })
                 } else {
                     Ok((bytes.as_ref().to_vec(), Some(workflow_hash)))
                 }
-            });
-
-            if let Ok((materialized_bytes, source_hash)) = materialized_result {
-                return Ok(VariantSourceBytes {
-                    bytes: materialized_bytes,
-                    notice: fallback_notice,
-                    source_hash,
-                });
+            } else {
+                Ok((bytes.as_ref().to_vec(), Some(workflow_hash)))
             }
+        });
+
+        if let Ok((materialized_bytes, source_hash)) = materialized_result {
+            return Ok(VariantSourceBytes {
+                bytes: materialized_bytes,
+                notice: fallback_notice,
+                source_hash,
+            });
         }
     }
 
@@ -234,7 +236,7 @@ pub(super) async fn resolve_variant_source_bytes(
     }
 }
 
-fn resolve_local_variant_hash(
+pub(super) fn resolve_local_variant_hash(
     media_id: &str,
     variant_name: &str,
     source: &MediaSourceSpec,
