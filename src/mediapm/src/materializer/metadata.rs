@@ -13,11 +13,15 @@ use regex::Regex;
 
 use crate::config::MediaPmDocument;
 use crate::config::hierarchy_types::FlattenedHierarchyEntry;
+use crate::config::output_types::{GenericOutputVariantConfig, OutputVariantValue};
 use crate::config::source_types::{
     MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate, MediaSourceSpec,
 };
 use crate::error::MediaPmError;
-use crate::tools::workflows::FfmpegSlotLimits;
+use crate::source_metadata::try_fetch_local_source_metadata_with_ffprobe;
+use crate::tools::workflows::{FfmpegSlotLimits, resolve_media_variant_output_binding_with_limits};
+
+use super::zip::extract_zip_member_bytes;
 
 // ---------------------------------------------------------------------------
 // Lookup context
@@ -233,19 +237,125 @@ pub(super) async fn resolve_variant_metadata_key(
         return Ok(None);
     };
 
-    let bytes = lookup_context.cas.get(hash).await.map_err(|e| {
+    extract_metadata_key_from_variant_hash(
+        media_id,
+        variant,
+        source,
+        lookup_context,
+        hash,
+        metadata_key,
+    )
+    .await
+}
+
+async fn extract_metadata_key_from_variant_hash(
+    media_id: &str,
+    variant: &str,
+    source: &MediaSourceSpec,
+    lookup_context: &MaterializationLookupContext,
+    hash: Hash,
+    metadata_key: &str,
+) -> Result<Option<String>, MediaPmError> {
+    let bytes = lookup_context.cas.get(hash).await.map_err(|error| {
         MediaPmError::Workflow(format!(
-            "media '{media_id}' variant '{variant}' CAS read failed: {e}"
+            "media '{media_id}' variant '{variant}' CAS read failed: {error}"
         ))
     })?;
 
-    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes)
-        && let Some(value) = extract_metadata_key_from_json(&json, metadata_key)
+    let metadata_bytes = metadata_probe_bytes(source, variant, lookup_context, bytes.as_ref());
+
+    if let Some(value) =
+        extract_metadata_key_from_probe_bytes(source, variant, metadata_key, &metadata_bytes)?
+    {
+        return Ok(Some(value));
+    }
+
+    if let Ok(member_bytes) = extract_zip_member_bytes(bytes.as_ref(), "info.json")
+        && let Some(value) =
+            extract_metadata_key_from_probe_bytes(source, variant, metadata_key, &member_bytes)?
+    {
+        return Ok(Some(value));
+    }
+
+    if let Ok(member_bytes) = extract_zip_member_bytes(bytes.as_ref(), ".info.json")
+        && let Some(value) =
+            extract_metadata_key_from_probe_bytes(source, variant, metadata_key, &member_bytes)?
     {
         return Ok(Some(value));
     }
 
     Ok(None)
+}
+
+fn extract_metadata_key_from_probe_bytes(
+    source: &MediaSourceSpec,
+    variant: &str,
+    metadata_key: &str,
+    probe_bytes: &[u8],
+) -> Result<Option<String>, MediaPmError> {
+    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(probe_bytes)
+        && let Some(value) = extract_metadata_key_from_json(&json, metadata_key)
+    {
+        return Ok(Some(value));
+    }
+
+    extract_metadata_key_from_media_bytes_via_ffprobe(source, variant, probe_bytes, metadata_key)
+}
+
+fn metadata_probe_bytes(
+    source: &MediaSourceSpec,
+    variant: &str,
+    lookup_context: &MaterializationLookupContext,
+    raw_bytes: &[u8],
+) -> Vec<u8> {
+    if let Ok(Some(binding)) = resolve_media_variant_output_binding_with_limits(
+        source,
+        variant,
+        lookup_context.ffmpeg_slot_limits.max_input_slots,
+        lookup_context.ffmpeg_slot_limits.max_output_slots,
+    ) && let Some(zip_member) = binding.zip_member.as_deref()
+        && let Ok(member_bytes) = extract_zip_member_bytes(raw_bytes, zip_member)
+    {
+        return member_bytes;
+    }
+
+    raw_bytes.to_vec()
+}
+
+fn output_variant_extension(source: &MediaSourceSpec, variant: &str) -> String {
+    for step in &source.steps {
+        if let Some(output) = step.output_variants.get(variant)
+            && let OutputVariantValue::Generic(GenericOutputVariantConfig { extension, .. }) =
+                output
+            && !extension.is_empty()
+        {
+            return extension.clone();
+        }
+    }
+    "mkv".to_string()
+}
+
+fn extract_metadata_key_from_media_bytes_via_ffprobe(
+    source: &MediaSourceSpec,
+    variant: &str,
+    bytes: &[u8],
+    metadata_key: &str,
+) -> Result<Option<String>, MediaPmError> {
+    let extension = output_variant_extension(source, variant);
+    let temp_dir = tempfile::tempdir().map_err(|error| {
+        MediaPmError::Workflow(format!(
+            "failed to create temp directory for ffprobe metadata probe of variant '{variant}': {error}"
+        ))
+    })?;
+    let probe_path = temp_dir.path().join(format!("probe.{extension}"));
+    std::fs::write(&probe_path, bytes).map_err(|error| {
+        MediaPmError::Workflow(format!(
+            "failed to write temp media bytes for ffprobe metadata probe of variant '{variant}': {error}"
+        ))
+    })?;
+
+    let json = try_fetch_local_source_metadata_with_ffprobe(&probe_path, "ffprobe")?;
+    Ok(extract_metadata_key_from_json(&json, metadata_key))
 }
 
 // ---------------------------------------------------------------------------
