@@ -18,6 +18,10 @@ mod config;
 #[doc(hidden)]
 pub mod demo_hierarchy_spec;
 mod error;
+/// Example and test temp isolation (`MEDIAPM_EXAMPLE_*` env overrides, fallback roots, cleanup).
+///
+/// See `.agents/instructions/example-temp-isolation.instructions.md` for the full temp-directory model.
+pub mod example_isolation;
 pub(crate) mod global;
 pub(crate) mod hierarchy;
 pub(crate) mod materializer;
