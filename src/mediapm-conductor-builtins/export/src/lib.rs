@@ -236,14 +236,12 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
 mod tests {
     use std::collections::BTreeMap;
 
-    use tempfile::tempdir;
-
     use super::{BinaryInputMap, StringMap, execute_string_map};
 
     /// Verifies file export writes input bytes directly to destination path.
     #[test]
     fn export_file_writes_bytes() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let response = execute_string_map(
             temp.path(),
             &StringMap::from([
@@ -265,7 +263,7 @@ mod tests {
     /// Verifies folder export unpacks ZIP bytes into destination directory.
     #[test]
     fn export_folder_unpacks_zip_bytes() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let source = temp.path().join("source");
         std::fs::create_dir_all(source.join("nested")).expect("create source dir");
         std::fs::write(source.join("nested").join("a.txt"), b"A").expect("write source file");
@@ -292,7 +290,7 @@ mod tests {
     /// Verifies unknown argument keys are rejected.
     #[test]
     fn export_rejects_unknown_arg() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let error = execute_string_map(
             temp.path(),
             &BTreeMap::from([

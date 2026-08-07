@@ -755,8 +755,6 @@ fn transform_zip_bytes(zip_bytes: &[u8], params: &StringMap) -> Result<Vec<u8>, 
 mod tests {
     use std::collections::BTreeMap;
 
-    use tempfile::tempdir;
-
     use super::{
         BinaryInputMap, describe_json, execute_content_map,
         pack_directory_to_uncompressed_zip_bytes, unpack_zip_bytes_to_directory,
@@ -775,7 +773,7 @@ mod tests {
         )
         .expect("archive pack file should succeed");
 
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         unpack_zip_bytes_to_directory(&payload, temp.path()).expect("unpack payload");
         assert_eq!(std::fs::read(temp.path().join("payload.txt")).ok(), Some(b"hello".to_vec()));
     }
@@ -783,7 +781,7 @@ mod tests {
     /// Verifies folder pack accepts folder ZIP payload input and preserves files.
     #[test]
     fn execute_pack_folder_accepts_folder_zip_payload() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let source = temp.path().join("folder");
         std::fs::create_dir_all(source.join("nested")).expect("create source folder");
         std::fs::write(source.join("nested").join("a.txt"), b"A").expect("write source file");
@@ -824,7 +822,7 @@ mod tests {
         )
         .expect("archive unpack should succeed");
 
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         unpack_zip_bytes_to_directory(&unpacked, temp.path()).expect("unpack folder payload");
         assert!(temp.path().join("single.txt").exists());
     }
@@ -859,7 +857,7 @@ mod tests {
         )
         .expect("transform should succeed");
 
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         unpack_zip_bytes_to_directory(&result, temp.path()).expect("unpack");
         let content = std::fs::read_to_string(temp.path().join("test.txt")).expect("read");
         assert_eq!(content, "hello  world");
@@ -884,7 +882,7 @@ mod tests {
         )
         .expect("transform with no transforms should succeed");
 
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         unpack_zip_bytes_to_directory(&result, temp.path()).expect("unpack");
         let content = std::fs::read_to_string(temp.path().join("data.bin")).expect("read");
         assert_eq!(content, "original");
@@ -893,7 +891,7 @@ mod tests {
     /// Verifies filter pattern only transforms matching ZIP entries.
     #[test]
     fn execute_transform_filter_selects_entries() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         std::fs::write(temp.path().join("keep.txt"), b"hello __mediapm__ world")
             .expect("write keep");
         std::fs::write(temp.path().join("skip.dat"), b"other __mediapm__ data")
@@ -913,7 +911,7 @@ mod tests {
         )
         .expect("transform should succeed");
 
-        let out = tempdir().expect("tempdir");
+        let out = mediapm_utils::temp::artifact_dir().expect("tempdir");
         unpack_zip_bytes_to_directory(&result, out.path()).expect("unpack");
         assert_eq!(
             std::fs::read_to_string(out.path().join("keep.txt")).ok(),
@@ -950,7 +948,7 @@ mod tests {
         )
         .expect("transform binary should succeed");
 
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         unpack_zip_bytes_to_directory(&result, temp.path()).expect("unpack");
         assert_eq!(
             std::fs::read(temp.path().join("data.bin")).ok(),

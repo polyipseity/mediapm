@@ -398,14 +398,12 @@ fn is_valid_blake3_digest(value: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
 
-    use tempfile::tempdir;
-
     use super::{describe_json, execute_content_map, execute_content_map_with_hash_resolver};
 
     /// Verifies importing a local file by default relative mode returns bytes.
     #[test]
     fn execute_file_relative_path_returns_file_bytes() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let source = temp.path().join("payload.txt");
         std::fs::write(&source, b"hello").expect("write payload");
 
@@ -422,7 +420,7 @@ mod tests {
     /// Verifies importing a local folder returns uncompressed ZIP bytes.
     #[test]
     fn execute_folder_path_returns_zip_bytes() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let source = temp.path().join("pack");
         std::fs::create_dir_all(source.join("nested")).expect("create source dir");
         std::fs::write(source.join("nested").join("a.txt"), b"abc").expect("write source file");
@@ -443,7 +441,7 @@ mod tests {
     /// Verifies fetch args reject removed destination-path option.
     #[test]
     fn execute_fetch_rejects_dest_path_arg() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let err = execute_content_map(
             temp.path(),
             &BTreeMap::from([
@@ -466,7 +464,7 @@ mod tests {
     /// Verifies `cas_hash` mode resolves payload bytes via caller hash loader.
     #[test]
     fn execute_cas_hash_uses_hash_resolver_payload() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let hash = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let payload = execute_content_map_with_hash_resolver(
             temp.path(),
@@ -491,7 +489,7 @@ mod tests {
     /// Verifies `cas_hash` mode fails fast when no hash resolver is available.
     #[test]
     fn execute_cas_hash_rejects_missing_hash_resolver() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let hash = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let err = execute_content_map(
             temp.path(),

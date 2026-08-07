@@ -209,7 +209,6 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use tempfile::tempdir;
 
     #[cfg(feature = "cli")]
     use super::{BuiltinCliArgs, run_cli_command};
@@ -220,7 +219,7 @@ mod tests {
     /// Verifies the library API can create directories and write text files.
     #[test]
     fn execute_string_map_writes_text_and_dirs() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let dir_path = "a/b";
         let file_path = "a/b/file.txt";
         execute_string_map(
@@ -253,7 +252,7 @@ mod tests {
     /// Verifies copy op supports relative paths and destination creation.
     #[test]
     fn execute_copy_copies_file() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let source_rel = "a.txt";
         let dest_rel = "out/b.txt";
         let source_path = temp.path().join(source_rel);
@@ -274,7 +273,7 @@ mod tests {
     /// Verifies relative paths resolve under the configured fs root directory.
     #[test]
     fn execute_relative_mode_resolves_under_fs_root() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         execute_string_map(
             temp.path(),
             &BTreeMap::from([
@@ -292,7 +291,7 @@ mod tests {
     /// Verifies unknown args fail fast instead of being silently ignored.
     #[test]
     fn execute_rejects_unknown_arg() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let error = execute_string_map(
             temp.path(),
             &BTreeMap::from([
@@ -309,7 +308,7 @@ mod tests {
     /// Verifies missing required operation args fail with explicit diagnostics.
     #[test]
     fn execute_rejects_missing_required_arg() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let error = execute_string_map(
             temp.path(),
             &BTreeMap::from([("op".to_string(), "write_text".to_string())]),
@@ -323,7 +322,7 @@ mod tests {
     /// Verifies successful CLI execution emits no output payload bytes.
     #[test]
     fn run_cli_executes_invocation() {
-        let temp = tempdir().expect("tempdir");
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let cli = BuiltinCliArgs::parse_from([
             "fs",
             "--root-dir",
