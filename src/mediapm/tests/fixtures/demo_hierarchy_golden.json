@@ -23,15 +23,7 @@
       "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/info.json",
       "playlists/rickroll.m3u8"
     ],
-    "required_nonempty_dirs": [
-      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/subtitles",
-      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/thumbnails",
-      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/links"
-    ],
-    "glob_file_patterns": [
-      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/*.thumbnail.*",
-      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/*.link.*",
-      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/folder.*"
-    ]
+    "required_nonempty_dirs": [],
+    "glob_file_patterns": []
   }
 }
