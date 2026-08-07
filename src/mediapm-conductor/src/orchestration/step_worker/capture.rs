@@ -47,6 +47,62 @@ async fn walk_and_collect_file_paths(root: &Path) -> Result<Vec<PathBuf>, Conduc
     Ok(file_paths)
 }
 
+/// Normalizes one sandbox file path to a forward-slash relative path.
+fn sandbox_relative_path(path: &Path, sandbox_dir: &Path) -> Option<String> {
+    path.strip_prefix(sandbox_dir)
+        .ok()
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+}
+
+async fn capture_file_regex_output(
+    regex: &regex::Regex,
+    sandbox_dir: &Path,
+    allow_empty: bool,
+) -> Result<Option<Vec<u8>>, ConductorError> {
+    let file_paths = walk_and_collect_file_paths(sandbox_dir).await?;
+    let matched_paths = file_paths
+        .iter()
+        .filter(|path| {
+            sandbox_relative_path(path, sandbox_dir)
+                .is_some_and(|relative| regex.is_match(&relative))
+        })
+        .collect::<Vec<_>>();
+    match matched_paths.len() {
+        0 if allow_empty => Ok(Some(Vec::new())),
+        0 => Ok(None),
+        1 => {
+            let data = tokio::fs::read(matched_paths[0]).await.map_err(|e| {
+                ConductorError::Workflow(format!(
+                    "failed to read matched file '{}': {e}",
+                    matched_paths[0].display()
+                ))
+            })?;
+            Ok(Some(data))
+        }
+        _ => Err(ConductorError::Workflow(format!(
+            "file_regex capture matched multiple sandbox files: {:?}",
+            matched_paths
+                .iter()
+                .filter_map(|path| sandbox_relative_path(path, sandbox_dir))
+                .collect::<Vec<_>>()
+        ))),
+    }
+}
+
+async fn capture_folder_regex_output(
+    regex: &regex::Regex,
+    sandbox_dir: &Path,
+) -> Result<Vec<u8>, ConductorError> {
+    let file_paths = walk_and_collect_file_paths(sandbox_dir).await?;
+    let file_list: Vec<String> = file_paths
+        .iter()
+        .filter_map(|path| sandbox_relative_path(path, sandbox_dir))
+        .filter(|relative| regex.is_match(relative))
+        .collect();
+    serde_json::to_vec(&file_list)
+        .map_err(|e| ConductorError::Workflow(format!("failed to serialize folder listing: {e}")))
+}
+
 /// Captures declared outputs from the execution result and persists to CAS.
 pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
     cas: &C,
@@ -99,20 +155,19 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                 let regex = regex::Regex::new(pattern).map_err(|e| {
                     ConductorError::Workflow(format!("invalid file_regex pattern '{pattern}': {e}"))
                 })?;
-                let file_paths = walk_and_collect_file_paths(sandbox_dir).await?;
-                let matched = file_paths.iter().find(|p| {
-                    p.file_name().is_some_and(|name| regex.is_match(&name.to_string_lossy()))
-                });
-                match matched {
-                    Some(path) => tokio::fs::read(path).await.map_err(|e| {
-                        ConductorError::Workflow(format!(
-                            "failed to read matched file '{}': {e}",
-                            path.display()
-                        ))
-                    })?,
-                    None if spec.allow_empty => Vec::new(),
+                match capture_file_regex_output(&regex, sandbox_dir, spec.allow_empty).await? {
+                    Some(data) => data,
                     None => continue,
                 }
+            }
+            capture if capture.starts_with("folder_regex:") => {
+                let pattern = &capture[13..];
+                let regex = regex::Regex::new(pattern).map_err(|e| {
+                    ConductorError::Workflow(format!(
+                        "invalid folder_regex pattern '{pattern}': {e}"
+                    ))
+                })?;
+                capture_folder_regex_output(&regex, sandbox_dir).await?
             }
             capture if capture.starts_with("folder:") => {
                 let relative_path = &capture[7..];
@@ -285,6 +340,68 @@ mod tests {
         let out = outputs.records.get("log").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"regex match");
+    }
+
+    #[tokio::test]
+    async fn captures_file_regex_against_sandbox_relative_paths() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let downloads = tmp.path().join("downloads");
+        tokio::fs::create_dir(&downloads).await.unwrap();
+        tokio::fs::write(
+            downloads.join("Rick Astley [dQw4w9WgXcQ]__mediapm__.info.json"),
+            b"infojson",
+        )
+        .await
+        .unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let mut output_specs = BTreeMap::new();
+        output_specs.insert(
+            "yt_dlp_infojson_file".to_string(),
+            OutputCaptureSpec {
+                name: "yt_dlp_infojson_file".to_string(),
+                capture: "file_regex:^downloads/.+(?:__mediapm__)?[.]info[.]json$".to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
+        );
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap();
+        let out = outputs.records.get("yt_dlp_infojson_file").unwrap();
+        let data = cas.get(out.hash).await.unwrap();
+        assert_eq!(data.as_ref(), b"infojson");
+    }
+
+    #[tokio::test]
+    async fn captures_folder_regex() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = TempDir::new().expect("temp dir");
+        let downloads = tmp.path().join("downloads");
+        tokio::fs::create_dir(&downloads).await.unwrap();
+        tokio::fs::write(downloads.join("video.en.vtt"), b"WEBVTT").await.unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let mut output_specs = BTreeMap::new();
+        output_specs.insert(
+            "yt_dlp_subtitle_artifacts".to_string(),
+            OutputCaptureSpec {
+                name: "yt_dlp_subtitle_artifacts".to_string(),
+                capture: "folder_regex:^downloads/(.+?)(?:__mediapm__)?[.]vtt$".to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
+        );
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap();
+        let out = outputs.records.get("yt_dlp_subtitle_artifacts").unwrap();
+        let data = cas.get(out.hash).await.unwrap();
+        let file_list: Vec<String> = serde_json::from_slice(&data).unwrap();
+        assert_eq!(file_list, vec!["downloads/video.en.vtt".to_string()]);
     }
 
     #[tokio::test]
