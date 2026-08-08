@@ -1,4 +1,7 @@
-//! Hermetic online demo hierarchy materialization using pre-seeded variant hashes.
+//! Hermetic `mediapm_demo_online` hierarchy materialization using pre-seeded variant hashes.
+//!
+//! Asserts the materialized tree matches `demo_hierarchy_golden.json` (`online`). Expected
+//! layout is documented on the `mediapm_demo_online` example module.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -361,8 +364,8 @@ fn build_online_hierarchy() -> Vec<HierarchyNode> {
 }
 
 #[tokio::test]
-async fn online_hierarchy_materialization_matches_golden_tree() -> Result<(), mediapm::MediaPmError>
-{
+async fn demo_online_hierarchy_materialization_matches_golden_tree()
+-> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = service_at(root.path()).await?;
     let cas = service.conductor().cas().clone();

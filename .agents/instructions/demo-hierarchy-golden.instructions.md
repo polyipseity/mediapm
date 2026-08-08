@@ -1,7 +1,7 @@
 ---
 description: "Use when editing demo hierarchy golden fixtures, demo_hierarchy_spec helpers, mediapm_demo_online post-sync asserts, or online hierarchy e2e seeds. Documents the two online link filename formats (yt-dlp sidecar vs mediapm root projection)."
 name: "Demo Hierarchy Golden Contract"
-applyTo: "src/mediapm/src/demo_hierarchy_spec.rs,src/mediapm/tests/fixtures/demo_hierarchy_golden.json,src/mediapm/tests/int/hierarchy_golden.rs,src/mediapm/tests/e2e/online_hierarchy_materialization.rs,src/mediapm/examples/mediapm_demo_online.rs"
+applyTo: "src/mediapm/src/demo_hierarchy_spec.rs,src/mediapm/tests/fixtures/demo_hierarchy_golden.json,src/mediapm/tests/int/demo_hierarchy_golden.rs,src/mediapm/tests/e2e/demo_online_hierarchy_materialization.rs,src/mediapm/examples/mediapm_demo_online.rs"
 ---
 
 # Demo hierarchy golden contract

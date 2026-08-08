@@ -1,7 +1,8 @@
-//! Golden hierarchy layout contract tests.
+//! Golden hierarchy layout contract tests for `mediapm_demo` and `mediapm_demo_online`.
 //!
-//! Golden JSON encodes exact link basenames for both formats (yt-dlp sidecar vs mediapm root).
-//! See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+//! Human-readable expected trees live in the example module docs (`mediapm_demo`,
+//! `mediapm_demo_online`). Golden JSON encodes exact link basenames for both formats
+//! (yt-dlp sidecar vs mediapm root). See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
 use mediapm::demo_hierarchy_spec::{
     DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID, assert_tree_under,
