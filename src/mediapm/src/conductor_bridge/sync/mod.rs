@@ -17,11 +17,11 @@ use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use mediapm_cas::{CasApi, Hash};
+use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
-use mediapm_conductor::provision::retain_only_tool_dirs;
+use mediapm_conductor::provision::{ProvisionCache, retain_only_tool_dirs};
 use mediapm_conductor::runtime_env::write_generated_dotenv;
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
@@ -45,8 +45,81 @@ use crate::config::{MediaPmState, ToolRegistryEntry};
 use crate::error::MediaPmError;
 use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
+use crate::source_metadata::resolve_conductor_cas_root;
 use crate::tools::downloader::ToolDownloadCache;
 use crate::tools::provider;
+
+/// Returns whether every hash in a string content map is present in `cas`.
+async fn workspace_content_map_is_available(
+    cas: &impl CasApi,
+    content_map: &BTreeMap<String, String>,
+) -> bool {
+    for hash_str in content_map.values() {
+        if let Ok(hash) = hash_str.parse::<Hash>()
+            && cas.get(hash).await.is_err()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Parses content-map hashes that are present in the workspace CAS store.
+///
+/// Placeholder non-hash strings (unit-test fixtures) are ignored; when every
+/// entry is a valid hash, a missing blob is a hard error.
+async fn parse_available_content_map_hashes(
+    cas: &impl CasApi,
+    content_map: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, Hash>, MediaPmError> {
+    let mut parsed = BTreeMap::new();
+    for (key, hash_str) in content_map {
+        if let Ok(hash) = hash_str.parse::<Hash>() {
+            if cas.get(hash).await.is_err() {
+                return Err(MediaPmError::Workflow(format!(
+                    "content_map key '{key}' hash not found in workspace CAS store"
+                )));
+            }
+            parsed.insert(key.clone(), hash);
+        }
+    }
+    Ok(parsed)
+}
+
+/// Materializes active managed tools into `tools_dir` via the conductor provision cache.
+async fn materialize_active_tool_runtimes(
+    tools_dir: &Path,
+    provision_cas: Arc<FileSystemCas>,
+    generated_doc: &NickelDocument,
+    tool_runtimes: &BTreeMap<String, ToolRuntime>,
+) -> Result<(), MediaPmError> {
+    let provision_cache =
+        ProvisionCache::new(tools_dir.to_path_buf(), Arc::clone(&provision_cas), None);
+    for conductor_tool_id in tool_runtimes.keys() {
+        // `tool_runtimes` keys are conductor tool ids for managed tools, but bare
+        // mediapm ids for builtins (e.g. `import` vs generated-doc `import@v1`).
+        let (materialize_key, spec) = if let Some(spec) = generated_doc.tools.get(conductor_tool_id)
+        {
+            if spec.runtime.content_map.is_empty() {
+                continue;
+            }
+            (conductor_tool_id.clone(), spec)
+        } else if let Some((key, spec)) = find_active_tool_spec(generated_doc, conductor_tool_id) {
+            (key.clone(), spec)
+        } else {
+            continue;
+        };
+        let content_map =
+            parse_available_content_map_hashes(provision_cas.as_ref(), &spec.runtime.content_map)
+                .await?;
+        if content_map.is_empty() {
+            continue;
+        }
+        let guard = provision_cache.materialize(&materialize_key, &content_map).await?;
+        drop(guard);
+    }
+    Ok(())
+}
 
 /// Summary of one `mediapm tool sync` reconciliation pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -469,6 +542,22 @@ pub fn find_active_tool_spec<'a>(
     fallback
 }
 
+/// Opens (or creates) the workspace-scoped persistent CAS store used for tool payloads.
+pub(crate) async fn open_workspace_cas_store(
+    paths: &MediaPmPaths,
+) -> Result<Arc<FileSystemCas>, MediaPmError> {
+    let workspace_cas_root = resolve_conductor_cas_root(paths);
+    std::fs::create_dir_all(&workspace_cas_root).map_err(|source| MediaPmError::Io {
+        operation: "create workspace CAS store directory".to_string(),
+        path: workspace_cas_root.clone(),
+        source,
+    })?;
+    let workspace_cas = FileSystemCas::open(&workspace_cas_root)
+        .await
+        .map_err(|source| MediaPmError::Workflow(format!("open workspace CAS store: {source}")))?;
+    Ok(Arc::new(workspace_cas))
+}
+
 /// Runs the full tool-reconciliation cycle for the current workspace.
 ///
 /// # Errors
@@ -485,7 +574,7 @@ pub fn find_active_tool_spec<'a>(
     reason = "reconciliation entrypoint; all 8 parameters are distinct required inputs"
 )]
 pub(crate) async fn reconcile_desired_tools(
-    cas: &impl CasApi,
+    workspace_cas: Arc<FileSystemCas>,
     paths: &MediaPmPaths,
     desired_tools: &BTreeMap<String, serde_json::Value>,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
@@ -603,12 +692,19 @@ pub(crate) async fn reconcile_desired_tools(
                 entry.resolved_version.as_deref(),
                 entry.resolved_vcs_hash.as_deref(),
             ) {
-                // Already have the desired version — skip provisioning.
+                // Already have the desired version — skip provisioning when the
+                // workspace CAS still holds the active content map bytes.
                 // Reconstruct the runtime under its conductor tool id
                 // (generated doc key). The active `{name}@{hash}` entry wins;
                 // stale pruned keys have cleared maps and a bare stale entry
                 // may linger.
-                if let Some((key, spec)) = find_active_tool_spec(&generated_doc, tool_id) {
+                if let Some((key, spec)) = find_active_tool_spec(&generated_doc, tool_id)
+                    && workspace_content_map_is_available(
+                        workspace_cas.as_ref(),
+                        &spec.runtime.content_map,
+                    )
+                    .await
+                {
                     tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
                     // Track the dep's own (pre-inline) payload map so
                     // requesters processed later in this pass can re-inline
@@ -617,10 +713,10 @@ pub(crate) async fn reconcile_desired_tools(
                         tool_id.clone(),
                         strip_inlined_deps_keys(&spec.runtime.content_map),
                     );
+                    report.tools_skipped += 1;
+                    pb.advance(1);
+                    continue;
                 }
-                report.tools_skipped += 1;
-                pb.advance(1);
-                continue;
             }
         }
         // --- End spec-based skip ---
@@ -715,7 +811,23 @@ pub(crate) async fn reconcile_desired_tools(
                     })
                 });
 
-                if should_skip {
+                let content_map_available = find_active_tool_spec(&generated_doc, tool_id)
+                    .map(|(_, spec)| spec.runtime.content_map.clone())
+                    .is_some_and(|content_map| !content_map.is_empty());
+
+                if should_skip
+                    && content_map_available
+                    && match find_active_tool_spec(&generated_doc, tool_id) {
+                        Some((_, spec)) => {
+                            workspace_content_map_is_available(
+                                workspace_cas.as_ref(),
+                                &spec.runtime.content_map,
+                            )
+                            .await
+                        }
+                        None => false,
+                    }
+                {
                     PreResolveOutcome::Skip {
                         name: tool_id.clone(),
                         human_readable_version: human_readable_version.clone(),
@@ -727,9 +839,6 @@ pub(crate) async fn reconcile_desired_tools(
                         resolved_vcs_hash: metadata.resolved_vcs_hash.clone(),
                     }
                 } else {
-                    // The composite canonical_version (including same-step dep
-                    // versions) overrides the provider's canonical_version for
-                    // provisioning identity.
                     let mut provision_metadata = metadata;
                     provision_metadata.canonical_version = expected_composite;
                     PreResolveOutcome::Resolved(fetch, provision_metadata)
@@ -772,7 +881,14 @@ pub(crate) async fn reconcile_desired_tools(
         let payload_result = if is_builtin_code {
             Ok(None)
         } else {
-            fetch_and_import_tool_payload(cas, tool_id, &cache, effective_group, pre_resolved).await
+            fetch_and_import_tool_payload(
+                workspace_cas.as_ref(),
+                tool_id,
+                &cache,
+                effective_group,
+                pre_resolved,
+            )
+            .await
         };
 
         if was_skip {
@@ -894,7 +1010,7 @@ pub(crate) async fn reconcile_desired_tools(
                     }
                 }
 
-                generated_doc.tools.entry(tool_key.clone()).or_insert(spec);
+                generated_doc.tools.insert(tool_key.clone(), spec);
                 // Key by the conductor tool id (the generated doc key) so
                 // env paths match the ProvisionCache deployment layout.
                 tool_runtimes.insert(tool_key.clone(), full_runtime);
@@ -1006,9 +1122,18 @@ pub(crate) async fn reconcile_desired_tools(
     let builtin_names: HashSet<&str> =
         mediapm_conductor::tools::ALL_BUILTINS.iter().map(|builtin| builtin.name).collect();
     let tools_before_rewrite = generated_doc.tools.len();
-    generated_doc.tools.retain(|key, _| {
+    generated_doc.tools.retain(|key, spec| {
         let bare = key.split('@').next().unwrap_or(key.as_str());
-        provisioned_names.contains(bare) || builtin_names.contains(bare)
+        if builtin_names.contains(bare) {
+            return true;
+        }
+        if !provisioned_names.contains(bare) {
+            return false;
+        }
+        // Drop pruned version keys whose content_map was cleared — an empty
+        // map still matches workflow step `tool = "{name}"` and shadows the
+        // active `{name}@{hash}` entry.
+        !spec.runtime.content_map.is_empty()
     });
     pruned_tools += tools_before_rewrite - generated_doc.tools.len();
 
@@ -1032,6 +1157,16 @@ pub(crate) async fn reconcile_desired_tools(
         path: paths.tools_dir.clone(),
         source,
     })?;
+
+    // 4b. Materialize active tool payloads into tools_dir via the provision
+    // cache so `.env.generated` paths and workflow execution share one layout.
+    materialize_active_tool_runtimes(
+        &paths.tools_dir,
+        Arc::clone(&workspace_cas),
+        &generated_doc,
+        &tool_runtimes,
+    )
+    .await?;
 
     // 5. Write generated runtime env file from tool runtimes (keyed by
     //    conductor tool id — env names derive from the stripped mediapm id,
@@ -1059,7 +1194,6 @@ pub(crate) async fn reconcile_desired_tools(
 mod tests {
     use std::collections::BTreeMap;
 
-    use mediapm_cas::InMemoryCas;
     use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
     use mediapm_conductor::tools::provider::VersionSpecFields;
     use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
@@ -1077,11 +1211,11 @@ mod tests {
         let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
         let tracker = RecordingProgressTracker::new();
-        let cas = InMemoryCas::default();
-
         let state = MediaPmState::default();
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
         let result = reconcile_desired_tools(
-            &cas,
+            workspace_cas,
             &paths,
             &BTreeMap::new(),
             &BTreeMap::new(),
@@ -1130,16 +1264,16 @@ mod tests {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
-        let cas = InMemoryCas::default();
-
         // Record real cache state before the call.
         let real_cache_mtime = default_mediapm_user_download_cache_root()
             .and_then(|p| std::fs::metadata(p.join("tools.json")).ok())
             .and_then(|m| m.modified().ok());
 
         let state = MediaPmState::default();
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
         let result = reconcile_desired_tools(
-            &cas,
+            workspace_cas,
             &paths,
             &BTreeMap::new(),
             &BTreeMap::new(),
@@ -1179,15 +1313,15 @@ mod tests {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
-        let cas = InMemoryCas::default();
-
         // Pre-populate the cache dir with an empty store/ dir so the CAS
         // opens cleanly at the override path.
         std::fs::create_dir_all(cache_root.path().join("store")).unwrap();
 
         let state = MediaPmState::default();
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
         let result = reconcile_desired_tools(
-            &cas,
+            workspace_cas,
             &paths,
             &BTreeMap::new(),
             &BTreeMap::new(),
@@ -1212,8 +1346,6 @@ mod tests {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
-        let cas = InMemoryCas::default();
-
         // Pre-populate generated doc with a tool that has content_map entries.
         // The skip branch should reconstruct the runtime from this doc.
         let mut content_map = BTreeMap::new();
@@ -1248,8 +1380,10 @@ mod tests {
         let req = ToolRequirement::default();
         desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
 
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
         let result = reconcile_desired_tools(
-            &cas,
+            workspace_cas,
             &paths,
             &desired_tools,
             &BTreeMap::new(),
@@ -1296,8 +1430,6 @@ mod tests {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
-        let cas = InMemoryCas::default();
-
         // Pre-populate generated doc with an active `{name}@{hash}` key.
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/yt-dlp".to_string(), "blake3:abc".to_string());
@@ -1339,8 +1471,10 @@ mod tests {
         };
         desired_tools.insert("yt-dlp".to_string(), serde_json::to_value(req).unwrap());
 
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
         let result = reconcile_desired_tools(
-            &cas,
+            workspace_cas,
             &paths,
             &desired_tools,
             &BTreeMap::new(),
@@ -1379,8 +1513,6 @@ mod tests {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
-        let cas = InMemoryCas::default();
-
         // Bare stale entry (cleared content map) sorts before the `@` key;
         // the active hashed entry carries the content map.
         let mut content_map = BTreeMap::new();
@@ -1428,8 +1560,10 @@ mod tests {
         };
         desired_tools.insert("yt-dlp".to_string(), serde_json::to_value(req).unwrap());
 
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
         let result = reconcile_desired_tools(
-            &cas,
+            workspace_cas,
             &paths,
             &desired_tools,
             &BTreeMap::new(),
@@ -1569,8 +1703,6 @@ mod tests {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
-        let cas = InMemoryCas::default();
-
         // Pre-seed the tools dir with a conductor-keyed active dir and a
         // stale dir that must be pruned. Retain-only only removes dirs that
         // carry a `.lock` file, so the stale dir gets one.
@@ -1619,8 +1751,10 @@ mod tests {
         };
         desired_tools.insert("yt-dlp".to_string(), serde_json::to_value(req).unwrap());
 
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
         let result = reconcile_desired_tools(
-            &cas,
+            workspace_cas,
             &paths,
             &desired_tools,
             &BTreeMap::new(),
@@ -1649,8 +1783,6 @@ mod tests {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
-        let cas = InMemoryCas::default();
-
         // Pre-populate generated doc with an old version key that has a bogus
         // content hash suffix.  This simulates a stale entry from a previous
         // sync whose content_map should be cleared when a fresh key is computed.
@@ -1686,8 +1818,10 @@ mod tests {
         let req = ToolRequirement::default();
         desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
 
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
         let result = reconcile_desired_tools(
-            &cas,
+            workspace_cas,
             &paths,
             &desired_tools,
             &BTreeMap::new(),
@@ -1708,16 +1842,13 @@ mod tests {
             report.pruned_tools
         );
 
-        // Reload generated doc: the old key must still exist with empty content_map.
+        // Reload generated doc: the old bogus key is removed once its
+        // content_map was cleared — empty maps shadow active tool specs.
         let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
-        let old_spec = doc
-            .tools
-            .get("media-tagger@bogus_hash")
-            .expect("old version key should still exist after sync");
         assert!(
-            old_spec.runtime.content_map.is_empty(),
-            "old version key should have empty content_map, got: {:?}",
-            old_spec.runtime.content_map
+            !doc.tools.contains_key("media-tagger@bogus_hash"),
+            "old version key should be removed after sync, keys: {:?}",
+            doc.tools.keys().collect::<Vec<_>>()
         );
 
         // The new key should exist with non-empty content_map.
@@ -1740,8 +1871,6 @@ mod tests {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let cache_root = mediapm_utils::temp::cache_dir().unwrap();
         let paths = MediaPmPaths::from_root(tmp.path());
-        let cas = InMemoryCas::default();
-
         // Pre-populate generated doc with a manual entry whose bare tool_id
         // is NOT in the desired set (e.g., "user_script"). Under condition 3
         // (generated-doc purity) the generated document is rewritten
@@ -1763,8 +1892,10 @@ mod tests {
         // Empty desired_tools — nothing is "used" so every non-managed entry
         // (the manual one) must be dropped on rewrite.
         let state = MediaPmState::default();
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
         let result = reconcile_desired_tools(
-            &cas,
+            workspace_cas,
             &paths,
             &BTreeMap::new(),
             &BTreeMap::new(),

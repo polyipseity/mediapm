@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash, InMemoryCas};
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
@@ -17,7 +18,9 @@ use url::Url;
 use crate::conductor_bridge::documents::{
     ConductorToolRow, list_tools, load_conductor_generated_document, load_conductor_user_document,
 };
-use crate::conductor_bridge::sync::{apply_resolved_field_backfills, reconcile_desired_tools};
+use crate::conductor_bridge::sync::{
+    apply_resolved_field_backfills, open_workspace_cas_store, reconcile_desired_tools,
+};
 use crate::config::{
     MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStepTool, ToolRequirement,
     load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
@@ -49,6 +52,34 @@ use crate::{
 /// out of version control.
 const MEDIAPM_EXTRA_GITIGNORE: &str = concat!("/cache/\n", "/tools/\n");
 
+/// Resolves the workspace CAS store used for tool payload import and materialization.
+pub(crate) trait WorkspaceProvisioningCas:
+    CasApi + CasMaintenanceApi + Send + Sync + Sized + 'static
+{
+    async fn workspace_provisioning_cas(
+        conductor: &SimpleConductor<Self>,
+        effective_paths: &MediaPmPaths,
+    ) -> Result<Arc<FileSystemCas>, MediaPmError>;
+}
+
+impl WorkspaceProvisioningCas for FileSystemCas {
+    async fn workspace_provisioning_cas(
+        conductor: &SimpleConductor<Self>,
+        _effective_paths: &MediaPmPaths,
+    ) -> Result<Arc<FileSystemCas>, MediaPmError> {
+        Ok(Arc::clone(conductor.cas()))
+    }
+}
+
+impl WorkspaceProvisioningCas for InMemoryCas {
+    async fn workspace_provisioning_cas(
+        _conductor: &SimpleConductor<Self>,
+        effective_paths: &MediaPmPaths,
+    ) -> Result<Arc<FileSystemCas>, MediaPmError> {
+        open_workspace_cas_store(effective_paths).await
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Service struct
 // ---------------------------------------------------------------------------
@@ -71,7 +102,10 @@ pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'stati
     runtime_storage_overrides: MediaRuntimeStorage,
 }
 
-impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas> {
+#[allow(private_bounds)]
+impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + Sized + 'static>
+    MediaPmService<Cas>
+{
     /// Creates a new service instance with the given conductor and paths.
     ///
     /// Runtime storage overrides default to [`MediaRuntimeStorage::default()`].
@@ -799,8 +833,11 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         let pg_ref: Option<&dyn ProgressGroupApi> =
             progress_group.as_ref().map(|g| g as &dyn ProgressGroupApi);
 
+        let workspace_cas =
+            Cas::workspace_provisioning_cas(self.conductor(), effective_paths).await?;
+
         let report = reconcile_desired_tools(
-            &**self.conductor.cas(),
+            workspace_cas,
             effective_paths,
             &desired_tools,
             &inherited_env_vars,
@@ -1007,6 +1044,10 @@ impl MediaPmService<FileSystemCas> {
         // 2. Sync tools.
         let tools_report =
             self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, false).await?;
+
+        // Tool sync rewrites `.env.generated`; reload dotenv so workflow
+        // unified-config env inheritance captures fresh tool paths.
+        load_runtime_dotenv(&effective_paths.env_file, &effective_paths.env_generated_file);
 
         // 3. Execute synthesized managed workflows through the conductor.
         // The generated doc is fully machine-managed; iterate its managed
