@@ -80,8 +80,6 @@ pub(crate) fn synthesize_rsgain_step_chain(
             depends_on.push(step_dependency);
         }
 
-        inputs.extend(step_option_input_bindings(step));
-
         let variant_value = step.output_variants.get(&mapping.output).ok_or_else(|| {
             MediaPmError::Workflow(format!(
                 "media '{media_id}' step #{step_index} is missing output variant '{}'",
@@ -93,6 +91,14 @@ pub(crate) fn synthesize_rsgain_step_chain(
                 "media '{media_id}' step #{step_index} output variant '{}' must decode as rsgain generic output config",
                 mapping.output
             )));
+        }
+
+        inputs.extend(step_option_input_bindings(step));
+        if !inputs.contains_key(INPUT_RSGAIN_INPUT_EXTENSION)
+            && let OutputVariantValue::Generic(config) = variant_value
+            && !config.extension.is_empty()
+        {
+            inputs.insert(INPUT_RSGAIN_INPUT_EXTENSION.to_string(), config.extension.clone());
         }
 
         // rsgain is a single-stream in-place tagger; only ffmpeg slots are
