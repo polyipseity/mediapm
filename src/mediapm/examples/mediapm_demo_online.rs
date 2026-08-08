@@ -2,6 +2,87 @@
 //!
 //! Default sync enabled; override via `MEDIAPM_DEMO_ONLINE_RUN_SYNC`.
 //! Workflow: `yt-dlp -> ffmpeg -> media-tagger -> rsgain` on `YouTube` URL.
+//!
+//! # Expected post-sync hierarchy
+//!
+//! Paths below are relative to `<artifact_root>/media/` (`runtime.hierarchy_root_dir = "media"`).
+//! Canonical machine checks: `tests/fixtures/demo_hierarchy_golden.json` (`online`) and
+//! [`mediapm::demo_hierarchy_spec`]. Offline demo tree: see `mediapm_demo`.
+//!
+//! Shared constants: artist `Rick Astley`, title `Never Gonna Give You Up`, library root `music videos`.
+//!
+//! **Media id:** `youtube.dQw4w9WgXcQ` · **Raw yt-dlp video id:** `dQw4w9WgXcQ`
+//!
+//! ## On-disk tree
+//!
+//! ```text
+//! media/
+//! ├── music videos/
+//! │   └── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/
+//! │       ├── sidecars/                                    [Folder]
+//! │       │   ├── subtitles/                             [MediaFolder → subtitles] NON-EMPTY
+//! │       │   ├── subtitles.en.vtt                         [Media → subtitles_en]
+//! │       │   ├── thumbnails/                            [MediaFolder → thumbnails] NON-EMPTY
+//! │       │   ├── links/                                   [MediaFolder → links] NON-EMPTY
+//! │       │   │   ├── Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url       # yt-dlp format
+//! │       │   │   ├── Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].webloc     # yt-dlp format
+//! │       │   │   └── Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].desktop    # yt-dlp format
+//! │       │   ├── archive.txt                              [Media → archive]
+//! │       │   ├── description.txt                          [Media → description]
+//! │       │   └── info.json                                [Media → infojson]
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].untagged.mkv   # video_untagged
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].mkv            # video (tagged + replaygain)
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].en.vtt
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].description.txt
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].info.json
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].thumbnail.<ext>   # glob `*.thumbnail.*`
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url          # mediapm rename format
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc       # mediapm rename format
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop      # mediapm rename format
+//! │       └── folder.<ext>                                    # glob `folder.*` (id `.thumbnails.folder`)
+//! └── playlists/
+//!     └── rickroll.m3u8                                      # playlist, 2 entries
+//! ```
+//!
+//! ## Link filename formats (two families)
+//!
+//! | Location | Format owner | Bracket id |
+//! | -------- | ------------ | ---------- |
+//! | `sidecars/links/` | yt-dlp `%(title)s [%(id)s].{ext}` | `dQw4w9WgXcQ` |
+//! | Media folder root | mediapm `rename_files` → `.link.$1` | `youtube.dQw4w9WgXcQ` |
+//!
+//! See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+//!
+//! ## Not on disk
+//!
+//! `sidecars/audio.m4a`, online `.mp4` media files, `video_tagged` leaf, any path containing `__mediapm__`.
+//!
+//! ## Hierarchy config (`mediapm.ncl`)
+//!
+//! ```text
+//! music videos/                                           [Folder]
+//! └── ${artist} - ${title} [${id}]/                       [Folder, id=youtube.dQw4w9WgXcQ.media_folder]
+//!     ├── sidecars/                                       [Folder: subtitles/, thumbnails/, links/, flat sidecars]
+//!     ├── ${artist} - ${title} [${id}].untagged${video_ext}   [Media, variant=video_untagged]
+//!     ├── ${artist} - ${title} [${id}]${video_ext}            [Media, variant=video]
+//!     ├── (path="")                                         [MediaFolder thumbnails → .thumbnail.$1]
+//!     ├── (path="")                                         [MediaFolder links → .link.$1]
+//!     └── (path="")                                         [MediaFolder id `.thumbnails.folder` → folder.$1]
+//! playlists/
+//! └── rickroll.m3u8                                       [Playlist]
+//! ```
+//!
+//! Resolved metadata: `video_ext` → `.mkv`. Sidecar variant map: `DEMO_SIDECAR_VARIANT_PATHS` (10 entries, no audio sidecar).
+//!
+//! # Verification
+//!
+//! ```bash
+//! cargo test -p mediapm demo_hierarchy_golden -- --test-threads=1
+//! cargo test -p mediapm demo_online_hierarchy_materialization -- --test-threads=1
+//! cargo test -p mediapm --example mediapm_demo_online -- --skip main_is_exercised --test-threads=1
+//! MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=600 cargo test -p mediapm --example mediapm_demo_online main_is_exercised -- --test-threads=1
+//! cargo run -p mediapm --example mediapm_demo_online
+//! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;

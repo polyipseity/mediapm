@@ -3,6 +3,49 @@
 //! Demonstrates local ingest + transform flow: bundled MP4 fixture → CAS
 //! → `import -> ffmpeg -> rsgain -> media-tagger` pipeline.
 //! Default sync enabled; override via `MEDIAPM_DEMO_RUN_SYNC`.
+//!
+//! # Expected post-sync hierarchy
+//!
+//! Paths below are relative to `<artifact_root>/media/` (`runtime.hierarchy_root_dir = "media"`).
+//! Canonical machine checks: `tests/fixtures/demo_hierarchy_golden.json` (`offline`) and
+//! [`mediapm::demo_hierarchy_spec`]. Online demo tree: see `mediapm_demo_online`.
+//!
+//! Shared constants: artist `Rick Astley`, title `Never Gonna Give You Up`, library root `music videos`.
+//!
+//! **Media id:** `demo.local.dQw4w9WgXcQ`
+//!
+//! ## On-disk tree
+//!
+//! ```text
+//! media/
+//! ├── music videos/
+//! │   └── Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ]/
+//! │       ├── Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ].untagged.mp4   # variant video_untagged
+//! │       └── Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ].m4a            # variant audio (replaygain target)
+//! └── playlists/
+//!     └── local-demo.m3u8                                                                   # playlist, 2 entries → tagged audio leaf
+//! ```
+//!
+//! ## Hierarchy config (`mediapm.ncl`)
+//!
+//! ```text
+//! music videos/                                           [Folder]
+//! └── ${artist} - ${title} [${id}]/                       [Folder, id=demo.local.dQw4w9WgXcQ.media_folder]
+//!     ├── ${artist} - ${title} [${id}].untagged${video_ext_untagged}   [Media, variant=video_untagged]
+//!     └── ${artist} - ${title} [${id}]${video_ext}                     [Media, variant=audio]
+//! playlists/
+//! └── local-demo.m3u8                                     [Playlist, 2 shorthand ids → demo.local.dQw4w9WgXcQ]
+//! ```
+//!
+//! Resolved metadata: `video_ext_untagged` → `.mp4`, `video_ext` → `.m4a`.
+//!
+//! # Verification
+//!
+//! ```bash
+//! cargo test -p mediapm demo_hierarchy_golden -- --test-threads=1
+//! cargo test -p mediapm --example mediapm_demo -- --skip main_is_exercised --test-threads=1
+//! cargo run -p mediapm --example mediapm_demo
+//! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;

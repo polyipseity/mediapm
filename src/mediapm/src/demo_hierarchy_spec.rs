@@ -1,7 +1,8 @@
 //! Golden hierarchy layout contract shared by demo examples and integration tests.
 //!
-//! Paths mirror `mediapm_demo` / `mediapm_demo_online` post-sync assertions and git
-//! golden commits `962cb5fe`, `849d0051`, `28f38e64`.
+//! Paths mirror `mediapm_demo` / `mediapm_demo_online` post-sync assertions. Human-readable
+//! expected trees are documented on those example modules. Machine checks use
+//! `tests/fixtures/demo_hierarchy_golden.json` and helpers in this module.
 //!
 //! ## Online link naming (two formats)
 //!
