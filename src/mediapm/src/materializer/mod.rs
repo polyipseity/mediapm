@@ -515,7 +515,7 @@ async fn materialize_media_folder_entry(
                 ));
             }
             for (file_rel_path, content) in extracted {
-                let file_rel_path = strip_yt_dlp_sandbox_downloads_prefix(&file_rel_path);
+                let file_rel_path = normalize_yt_dlp_sandbox_zip_member_path(&file_rel_path);
                 let file_target = target_path.join(&file_rel_path);
                 let file_relative = format!(
                     "{relative_path}/{}",
@@ -808,10 +808,35 @@ fn is_zip_content(data: &[u8]) -> bool {
     data.len() >= 2 && data[0] == 0x50 && data[1] == 0x4B
 }
 
+/// yt-dlp sandbox disambiguation marker in captured filenames (must not appear in hierarchy).
+const YT_DLP_MEDIAPM_SANDBOX_MARKER: &str = "__mediapm__";
+
 /// Strips yt-dlp sandbox `downloads/` prefix from one ZIP member path.
 fn strip_yt_dlp_sandbox_downloads_prefix(path: &Path) -> PathBuf {
     let normalized = path.to_string_lossy().replace('\\', "/");
     let stripped = normalized.strip_prefix("downloads/").unwrap_or(normalized.as_ref());
+    PathBuf::from(stripped)
+}
+
+/// Strips yt-dlp sandbox `__mediapm__` disambiguation marker from one path component.
+#[must_use]
+fn strip_yt_dlp_mediapm_marker_from_path_component(name: &str) -> String {
+    name.replace(YT_DLP_MEDIAPM_SANDBOX_MARKER, "")
+}
+
+/// Normalizes one yt-dlp ZIP member path for hierarchy materialization.
+#[must_use]
+fn normalize_yt_dlp_sandbox_zip_member_path(path: &Path) -> PathBuf {
+    let without_downloads = strip_yt_dlp_sandbox_downloads_prefix(path);
+    let normalized = without_downloads.to_string_lossy().replace('\\', "/");
+    if normalized.is_empty() {
+        return PathBuf::new();
+    }
+    let stripped = normalized
+        .split('/')
+        .map(strip_yt_dlp_mediapm_marker_from_path_component)
+        .collect::<Vec<_>>()
+        .join("/");
     PathBuf::from(stripped)
 }
 
@@ -840,6 +865,34 @@ mod tests {
     use crate::config::source_types::{MediaSourceSpec, MediaStep, MediaStepTool};
     use crate::config::{GenericOutputVariantConfig, OutputVariantValue};
     use mediapm_utils::progress::recording::RecordingProgressTracker;
+    use std::path::Path;
+
+    #[test]
+    fn normalize_yt_dlp_sandbox_zip_member_path_strips_downloads_and_mediapm_marker() {
+        let path = Path::new("downloads/Rick Astley [dQw4w9WgXcQ]__mediapm__.url");
+        assert_eq!(
+            normalize_yt_dlp_sandbox_zip_member_path(path),
+            PathBuf::from("Rick Astley [dQw4w9WgXcQ].url")
+        );
+    }
+
+    #[test]
+    fn normalize_yt_dlp_sandbox_zip_member_path_preserves_paths_without_marker() {
+        let path = Path::new("downloads/subtitles/foo.en.vtt");
+        assert_eq!(
+            normalize_yt_dlp_sandbox_zip_member_path(path),
+            PathBuf::from("subtitles/foo.en.vtt")
+        );
+    }
+
+    #[test]
+    fn normalize_yt_dlp_sandbox_zip_member_path_strips_marker_from_nested_components() {
+        let path = Path::new("downloads/links/Rick Astley [dQw4w9WgXcQ]__mediapm__.desktop");
+        assert_eq!(
+            normalize_yt_dlp_sandbox_zip_member_path(path),
+            PathBuf::from("links/Rick Astley [dQw4w9WgXcQ].desktop")
+        );
+    }
 
     /// Injected [`RecordingProgressTracker`] produces no ops when hierarchy is
     /// empty (early return before any progress bar work).
