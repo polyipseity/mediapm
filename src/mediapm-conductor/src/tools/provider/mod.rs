@@ -1807,7 +1807,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "download".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: crate::cache::ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -1891,7 +1891,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "download".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: crate::cache::ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -2477,9 +2477,10 @@ mod tests {
         };
 
         let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-        let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
-            .await
-            .expect("open UserLevelCache");
+        let cache =
+            UserLevelCache::open(cache_root.path(), "tools.json", crate::cache::ENTRY_TTL_SECONDS)
+                .await
+                .expect("open UserLevelCache");
 
         let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));

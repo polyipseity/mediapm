@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use mediapm_cas::{CasApi, Hash, InMemoryCas};
+use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::provision::ProvisionCache;
 
@@ -27,7 +28,7 @@ async fn download_cache_and_provision_cache_use_different_roots() {
     let tools_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
 
     // Store a payload in the download cache.
-    let download = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let download = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await
         .expect("open download cache");
     download.store_bytes("default", "my-key", b"shared-payload").await;
@@ -60,7 +61,7 @@ async fn provision_cache_prune_does_not_affect_download_cache() {
     let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
 
     // Open download cache — it creates its own FileSystemCas in store/.
-    let download = UserLevelCache::open(root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let download = UserLevelCache::open(root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await
         .expect("open download cache");
     download.store_bytes("default", "survivor", b"keep-me").await;

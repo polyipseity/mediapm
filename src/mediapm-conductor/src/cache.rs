@@ -40,8 +40,8 @@ const DEFAULT_INDEX_FILE_NAME: &str = "tools.json";
 /// Fixed interval between cache prune cycles (24 hours).
 const CACHE_PRUNE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 
-/// Fixed entry TTL for automatic cache eviction (30 days).
-pub const ENTRY_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+/// Fixed entry TTL for automatic cache eviction (7 days).
+pub const ENTRY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Minimum interval between full prune scans (24 hours).
 const PRUNE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// Minimum interval between persisted access-timestamp updates (5 minutes).
@@ -772,7 +772,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -797,7 +797,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -816,7 +816,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -863,7 +863,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -883,7 +883,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -936,7 +936,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -961,7 +961,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -1345,7 +1345,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -1361,7 +1361,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -1389,7 +1389,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: domain.to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -1411,7 +1411,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: domain.to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -1442,7 +1442,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: domain.to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -1462,7 +1462,7 @@ mod tests {
             &[CacheDomainConfig {
                 domain: domain.to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
         )
         .await
@@ -1490,7 +1490,7 @@ mod tests {
         let cache = Cache::open_with_verify_strategies(
             root.path(),
             "tools.json",
-            30 * 24 * 60 * 60,
+            ENTRY_TTL_SECONDS,
             vec![VerifyTriggerStrategy::Always],
             3600,
         )

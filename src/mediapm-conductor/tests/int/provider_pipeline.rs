@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mediapm_cas::CasApi;
 use mediapm_cas::InMemoryCas;
+use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::{
     fetch_tool_sources, process_tool_sources, resolve_tool_fetch,
@@ -77,7 +78,7 @@ async fn fetch_echo_produces_launcher_scripts_via_cache() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
 
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await
         .expect("open UserLevelCache");
 
@@ -118,7 +119,7 @@ async fn fetch_echo_produces_launcher_scripts_via_cache() {
 async fn fetch_echo_is_cached_idempotently() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await
         .expect("open UserLevelCache");
 
@@ -139,7 +140,7 @@ async fn fetch_echo_is_cached_idempotently() {
 async fn process_echo_produces_correct_content_map_and_os_exec_paths() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await
         .expect("open UserLevelCache");
     let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
@@ -183,7 +184,7 @@ async fn process_echo_produces_correct_content_map_and_os_exec_paths() {
 async fn full_pipeline_echo_all_hashes_retrievable_from_cas() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await
         .expect("open UserLevelCache");
     let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
@@ -226,7 +227,7 @@ async fn resolve_tool_fetch_matches_sources_len_for_all_providers() {
 async fn process_fires_progress_per_source_entry() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await
         .expect("open UserLevelCache");
     let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
@@ -259,7 +260,7 @@ async fn process_fires_progress_per_source_entry() {
 async fn full_pipeline_progress_monotonic() {
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await
         .expect("open UserLevelCache");
     let cas = InMemoryCas::default();
@@ -309,7 +310,7 @@ async fn process_mixed_archive_binary_progress() {
     // zip archive as an extra source to validate mixed progress.
     let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", 30 * 24 * 60 * 60)
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await
         .expect("open UserLevelCache");
     let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
