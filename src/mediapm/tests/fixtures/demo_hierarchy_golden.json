@@ -12,19 +12,31 @@
   "online": {
     "media_folder": "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]",
     "required_files": [
-      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].untagged.mp4",
-      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].mp4",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].untagged.mkv",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].mkv",
       "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].en.vtt",
       "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].description.txt",
       "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].info.json",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop",
       "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/subtitles.en.vtt",
-      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/audio.m4a",
       "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/archive.txt",
       "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/description.txt",
       "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/info.json",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/links/Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/links/Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].webloc",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/links/Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].desktop",
       "playlists/rickroll.m3u8"
     ],
-    "required_nonempty_dirs": [],
-    "glob_file_patterns": []
+    "required_nonempty_dirs": [
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/subtitles",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/thumbnails",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/sidecars/links"
+    ],
+    "glob_file_patterns": [
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/*.thumbnail.*",
+      "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/folder.*"
+    ]
   }
 }

@@ -1,8 +1,9 @@
 //! Golden hierarchy layout contract tests.
 
 use mediapm::demo_hierarchy_spec::{
-    assert_tree_under, load_demo_hierarchy_golden_document, offline_demo_media_folder_relative,
-    online_demo_media_folder_relative,
+    DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID, assert_tree_under,
+    demo_media_folder_name, load_demo_hierarchy_golden_document,
+    offline_demo_media_folder_relative, online_demo_media_folder_relative,
 };
 
 #[test]
@@ -27,6 +28,40 @@ fn assert_tree_under_accepts_synthetic_offline_layout() {
     }
 
     assert_tree_under(hierarchy_root, &golden.offline).expect("offline golden tree");
+}
+
+#[test]
+fn assert_tree_under_accepts_synthetic_online_layout() {
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let golden = load_demo_hierarchy_golden_document();
+    let hierarchy_root = root.path();
+    let media_folder = hierarchy_root.join(&golden.online.media_folder);
+
+    for relative_path in &golden.online.required_files {
+        let path = hierarchy_root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(path, b"fixture").expect("write fixture file");
+    }
+
+    for relative_dir in &golden.online.required_nonempty_dirs {
+        let dir = hierarchy_root.join(relative_dir);
+        std::fs::create_dir_all(&dir).expect("create nonempty dir");
+        std::fs::write(dir.join("member.txt"), b"fixture").expect("write dir member");
+    }
+
+    std::fs::write(
+        media_folder.join(format!(
+            "{}.thumbnail.jpg",
+            demo_media_folder_name(DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID)
+        )),
+        b"jpg",
+    )
+    .expect("write thumbnail glob match");
+    std::fs::write(media_folder.join("folder.webp"), b"webp").expect("write folder glob match");
+
+    assert_tree_under(hierarchy_root, &golden.online).expect("online golden tree");
 }
 
 #[test]
