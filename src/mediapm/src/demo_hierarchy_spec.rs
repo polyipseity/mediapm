@@ -47,6 +47,51 @@ pub fn online_demo_media_folder_relative() -> String {
     )
 }
 
+/// Raw yt-dlp video id for the online demo Rick Astley URL.
+pub const ONLINE_DEMO_YT_DLP_VIDEO_ID: &str = "dQw4w9WgXcQ";
+
+/// Yt-dlp provider title for the online demo (`%(title)s` canonical form).
+#[must_use]
+pub fn online_demo_yt_dlp_provider_title() -> String {
+    format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE}")
+}
+
+/// Public artifact basename: `{provider_title} [{video_id}].{ext}` (no `__mediapm__`).
+#[must_use]
+pub fn online_demo_public_artifact_filename(
+    provider_title: &str,
+    video_id: &str,
+    extension: &str,
+) -> String {
+    format!("{provider_title} [{video_id}].{extension}")
+}
+
+/// Public sidecar link basename under `sidecars/links/`.
+#[must_use]
+pub fn online_demo_sidecar_link_filename(extension: &str) -> String {
+    online_demo_public_artifact_filename(
+        &online_demo_yt_dlp_provider_title(),
+        ONLINE_DEMO_YT_DLP_VIDEO_ID,
+        extension,
+    )
+}
+
+/// Public root link projection basename (`…[youtube.dQw4w9WgXcQ].link.{ext}`).
+#[must_use]
+pub fn online_demo_root_link_filename(extension: &str) -> String {
+    format!("{} [{}].link.{}", online_demo_yt_dlp_provider_title(), ONLINE_DEMO_MEDIA_ID, extension)
+}
+
+/// Sandbox-only yt-dlp filename with `__mediapm__` marker (conductor fixtures only).
+#[must_use]
+pub fn yt_dlp_sandbox_artifact_filename(
+    provider_title: &str,
+    video_id: &str,
+    extension: &str,
+) -> String {
+    format!("{provider_title} [{video_id}]__mediapm__.{extension}")
+}
+
 /// One demo hierarchy golden tree specification.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct DemoHierarchyGoldenSpec {
@@ -177,4 +222,53 @@ fn glob_pattern_to_regex(pattern: &str) -> Result<Regex, String> {
     }
     regex.push('$');
     Regex::new(&regex).map_err(|error| format!("invalid glob pattern '{pattern}': {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn online_demo_sidecar_link_filenames_are_canonical() {
+        assert_eq!(
+            online_demo_sidecar_link_filename("url"),
+            "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url"
+        );
+        assert_eq!(
+            online_demo_sidecar_link_filename("webloc"),
+            "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].webloc"
+        );
+        assert_eq!(
+            online_demo_sidecar_link_filename("desktop"),
+            "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].desktop"
+        );
+    }
+
+    #[test]
+    fn online_demo_root_link_filenames_are_canonical() {
+        assert_eq!(
+            online_demo_root_link_filename("url"),
+            "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url"
+        );
+        assert_eq!(
+            online_demo_root_link_filename("webloc"),
+            "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc"
+        );
+        assert_eq!(
+            online_demo_root_link_filename("desktop"),
+            "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop"
+        );
+    }
+
+    #[test]
+    fn yt_dlp_sandbox_artifact_filename_includes_mediapm_marker() {
+        assert_eq!(
+            yt_dlp_sandbox_artifact_filename(
+                "Rick Astley - Never Gonna Give You Up",
+                ONLINE_DEMO_YT_DLP_VIDEO_ID,
+                "url"
+            ),
+            "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ]__mediapm__.url"
+        );
+    }
 }
