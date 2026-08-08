@@ -127,6 +127,7 @@ async fn archive_sandbox_relative_files_as_zip(
 async fn capture_folder_regex_output(
     regex: &regex::Regex,
     sandbox_dir: &Path,
+    allow_empty: bool,
 ) -> Result<Vec<u8>, ConductorError> {
     let file_paths = walk_and_collect_file_paths(sandbox_dir).await?;
     let file_list: Vec<String> = file_paths
@@ -134,6 +135,12 @@ async fn capture_folder_regex_output(
         .filter_map(|path| sandbox_relative_path(path, sandbox_dir))
         .filter(|relative| regex.is_match(relative))
         .collect();
+    if file_list.is_empty() && !allow_empty {
+        return Err(ConductorError::Workflow(format!(
+            "folder_regex capture matched zero sandbox files for pattern '{}'",
+            regex.as_str()
+        )));
+    }
     archive_sandbox_relative_files_as_zip(sandbox_dir, &file_list).await
 }
 
@@ -201,7 +208,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                         "invalid folder_regex pattern '{pattern}': {e}"
                     ))
                 })?;
-                capture_folder_regex_output(&regex, sandbox_dir).await?
+                capture_folder_regex_output(&regex, sandbox_dir, spec.allow_empty).await?
             }
             capture if capture.starts_with("folder:") => {
                 let relative_path = &capture[7..];
@@ -221,6 +228,12 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                         .map(|p| p.to_string_lossy().to_string())
                         .collect()
                 };
+                if file_list.is_empty() && !spec.allow_empty {
+                    return Err(ConductorError::Workflow(format!(
+                        "folder capture matched zero sandbox files under '{}'",
+                        relative_path
+                    )));
+                }
                 archive_sandbox_relative_files_as_zip(sandbox_dir, &file_list).await?
             }
             _ => continue,
@@ -438,6 +451,32 @@ mod tests {
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
         assert_eq!(bytes, b"WEBVTT");
+    }
+
+    #[tokio::test]
+    async fn folder_regex_empty_capture_errors_when_not_allowed() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let mut output_specs = BTreeMap::new();
+        output_specs.insert(
+            "yt_dlp_subtitle_artifacts".to_string(),
+            OutputCaptureSpec {
+                name: "yt_dlp_subtitle_artifacts".to_string(),
+                capture: "folder_regex:^downloads/(.+?)(?:__mediapm__)?[.]vtt$".to_string(),
+                save: SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            },
+        );
+        let persistence = PersistenceFlags { save: true, force_full: false };
+        let error = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("folder_regex capture matched zero sandbox files"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
