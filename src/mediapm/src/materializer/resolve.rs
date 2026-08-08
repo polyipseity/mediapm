@@ -102,6 +102,10 @@ pub(super) async fn resolve_variant_hash(
     Ok(None)
 }
 
+fn is_zip_content(data: &[u8]) -> bool {
+    data.len() >= 2 && data[0] == 0x50 && data[1] == 0x4B
+}
+
 /// Copies workflow output hashes into each media source's `variant_hashes` map
 /// so hierarchy materialization can resolve variants when conductor instance
 /// matching is unavailable.
@@ -161,12 +165,14 @@ pub(super) async fn resolve_variant_source_bytes(
     media_id: &str,
     source: &MediaSourceSpec,
     variant: &str,
+    full_zip_archive: bool,
 ) -> Result<VariantSourceBytes, MediaPmError> {
     if let Some(state) = lookup.conductor_state.as_ref()
         && let Some((workflow_hash, fallback_notice)) =
             resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant)
                 .await?
         && let Ok(bytes) = lookup.cas.get(workflow_hash).await
+        && (!full_zip_archive || is_zip_content(bytes.as_ref()))
     {
         let binding_result = resolve_media_variant_output_binding_with_limits(
             source,
@@ -176,7 +182,7 @@ pub(super) async fn resolve_variant_source_bytes(
         );
         let materialized_result = binding_result.and_then(|binding| {
             if let Some(binding) = binding {
-                if let Some(zip_member) = binding.zip_member.as_deref() {
+                if !full_zip_archive && let Some(zip_member) = binding.zip_member.as_deref() {
                     extract_zip_member_bytes(bytes.as_ref(), zip_member)
                         .map(|member_bytes| (member_bytes, None))
                         .map_err(|error| {
@@ -368,17 +374,22 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             &step_outputs,
         )
         .await?
+            && step_declared_outputs_resolved(step, &outputs)
         {
             step_outputs.insert(step.id.clone(), outputs);
         }
     }
 
     for step in &workflow.steps {
-        if step_outputs.contains_key(&step.id) {
+        if step_outputs
+            .get(&step.id)
+            .is_some_and(|outputs| step_declared_outputs_resolved(step, outputs))
+        {
             continue;
         }
         if let Some(outputs) =
             resolve_single_step_output_hashes_relaxed(cas, generated_doc, state, step).await?
+            && step_declared_outputs_resolved(step, &outputs)
         {
             step_outputs.insert(step.id.clone(), outputs);
         }
@@ -466,6 +477,13 @@ async fn resolve_single_step_output_hashes_strict(
     Ok(Some(output_hashes_from_instance(instance, &step.outputs)))
 }
 
+fn step_declared_outputs_resolved(
+    step: &mediapm_conductor::WorkflowStepSpec,
+    outputs: &BTreeMap<String, Hash>,
+) -> bool {
+    step.outputs.keys().all(|output_name| outputs.contains_key(output_name))
+}
+
 async fn resolve_single_step_output_hashes_relaxed(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
@@ -530,8 +548,13 @@ fn output_hashes_from_instance(
         .map(|(name, output)| (name.clone(), output.hash))
         .collect::<BTreeMap<_, _>>();
     if let Some(stdout) = instance.outputs.get("stdout") {
-        for output_name in step_outputs.keys() {
-            output_hashes.entry(output_name.clone()).or_insert(stdout.hash);
+        for (output_name, spec) in step_outputs {
+            if output_hashes.contains_key(output_name) {
+                continue;
+            }
+            if matches!(spec.capture.as_str(), "stdout" | "stderr" | "process_code") {
+                output_hashes.insert(output_name.clone(), stdout.hash);
+            }
         }
     }
     output_hashes
@@ -648,10 +671,7 @@ fn instance_output_ref<'a>(
     instance: &'a ToolCallInstance,
     output_name: &str,
 ) -> Option<&'a mediapm_conductor::HashedValueRecord> {
-    instance
-        .outputs
-        .get(output_name)
-        .or_else(|| (output_name != "stdout").then(|| instance.outputs.get("stdout")).flatten())
+    instance.outputs.get(output_name)
 }
 
 fn instance_matches_required_output_names(
@@ -805,10 +825,7 @@ fn instance_matches_expected_output_names(
     instance: &ToolCallInstance,
     expected_outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
 ) -> bool {
-    expected_outputs.keys().all(|output_name| {
-        instance.outputs.contains_key(output_name)
-            || (output_name != "stdout" && instance.outputs.contains_key("stdout"))
-    })
+    expected_outputs.keys().all(|output_name| instance.outputs.contains_key(output_name))
 }
 
 #[cfg(test)]

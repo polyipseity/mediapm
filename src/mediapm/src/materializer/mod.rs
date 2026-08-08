@@ -480,16 +480,23 @@ async fn materialize_media_folder_entry(
     for variant_name in &selected_variants {
         let variant_path = target_path.join(variant_name);
 
-        let payload =
-            match resolve_variant_source_bytes(lookup, media_id, source, variant_name).await {
-                Ok(payload) => payload,
-                Err(error) => {
-                    shared.notice(format!(
-                        "media '{media_id}' variant '{variant_name}' resolution failed: {error}"
-                    ));
-                    continue;
-                }
-            };
+        let payload = match resolve_variant_source_bytes(
+            lookup,
+            media_id,
+            source,
+            variant_name,
+            true,
+        )
+        .await
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                shared.notice(format!(
+                    "media '{media_id}' variant '{variant_name}' resolution failed: {error}"
+                ));
+                continue;
+            }
+        };
 
         let data = payload.bytes;
         if let Some(notice) = payload.notice {
@@ -502,7 +509,13 @@ async fn materialize_media_folder_entry(
         let is_zip = is_zip_content(&data);
         if is_zip {
             let extracted = extract_zip_folder_variant_bytes(&data, &rename_rules)?;
+            if extracted.is_empty() {
+                shared.notice(format!(
+                    "media '{media_id}' variant '{variant_name}': ZIP archive contained zero extractable files"
+                ));
+            }
             for (file_rel_path, content) in extracted {
+                let file_rel_path = strip_yt_dlp_sandbox_downloads_prefix(&file_rel_path);
                 let file_target = target_path.join(&file_rel_path);
                 let file_relative = format!(
                     "{relative_path}/{}",
@@ -790,9 +803,16 @@ fn is_directory_empty(path: &Path) -> Result<bool, MediaPmError> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Checks if a byte slice starts with the ZIP magic number.
+/// Checks if a byte slice is a ZIP archive (local file header or EOCD signature).
 fn is_zip_content(data: &[u8]) -> bool {
-    data.len() >= 4 && data[..4] == [0x50, 0x4b, 0x03, 0x04]
+    data.len() >= 2 && data[0] == 0x50 && data[1] == 0x4B
+}
+
+/// Strips yt-dlp sandbox `downloads/` prefix from one ZIP member path.
+fn strip_yt_dlp_sandbox_downloads_prefix(path: &Path) -> PathBuf {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let stripped = normalized.strip_prefix("downloads/").unwrap_or(normalized.as_ref());
+    PathBuf::from(stripped)
 }
 
 impl SyncSharedState {
