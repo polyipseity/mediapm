@@ -16,7 +16,7 @@
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
-use mediapm_conductor::cache::{Cache, CacheDomainConfig};
+use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{
     NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, decode_document, encode_document,
@@ -1615,7 +1615,7 @@ async fn open_test_cache(root: &std::path::Path) -> Cache {
             CacheDomainConfig {
                 domain: "tools".to_string(),
                 index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 30 * 24 * 60 * 60,
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
             },
             CacheDomainConfig {
                 domain: "tool_metadata".to_string(),

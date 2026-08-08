@@ -20,6 +20,7 @@ use std::sync::Arc;
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
+use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::provision::{ProvisionCache, retain_only_tool_dirs};
 use mediapm_conductor::runtime_env::write_generated_dotenv;
@@ -627,7 +628,7 @@ pub(crate) async fn reconcile_desired_tools(
     let content_domain = CacheDomainConfig {
         domain: "tools".to_string(),
         index_file_name: "tools.json".to_string(),
-        entry_ttl_seconds: 30 * 24 * 60 * 60,
+        entry_ttl_seconds: ENTRY_TTL_SECONDS,
     };
     let metadata_domain = CacheDomainConfig {
         domain: "tool_metadata".to_string(),

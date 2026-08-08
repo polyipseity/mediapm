@@ -404,6 +404,7 @@ mod tests {
     use mediapm_cas::storage::in_memory::new_in_memory_cas;
     use mediapm_conductor::cache::Cache;
     use mediapm_conductor::cache::CacheDomainConfig;
+    use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
     use mediapm_conductor::cache_user_level::UserLevelCache;
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
     use wiremock::matchers::{method, path};
@@ -440,7 +441,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -474,7 +475,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -572,7 +573,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -662,7 +663,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -708,7 +709,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -747,7 +748,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -787,7 +788,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -840,7 +841,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -893,7 +894,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -935,7 +936,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -978,7 +979,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -1036,7 +1037,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -1099,7 +1100,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
@@ -1293,7 +1294,7 @@ mod tests {
                 CacheDomainConfig {
                     domain: "tools".to_string(),
                     index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: 30 * 24 * 60 * 60,
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
                 },
                 CacheDomainConfig {
                     domain: "tool_metadata".to_string(),
