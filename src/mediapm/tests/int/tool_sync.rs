@@ -923,18 +923,27 @@ async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmErr
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
 
-    // Seed state.json with a media-tagger entry that matches the skip check
-    // (non-empty content_map_hash + canonical_version == MEDIAPM_GIT_HASH)
-    // but has empty resolved fields.
+    // First sync provisions media-tagger, populates workspace CAS, and writes
+    // conductor.generated.ncl so the skip path can verify content-map bytes.
+    service.sync_tools().await?;
+
     let state_path = service.paths().mediapm_state_json.clone();
-    std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
-        .expect("create state parent dir");
+    let bytes = std::fs::read(&state_path).expect("state.json after provision");
+    let provisioned_state: MediaPmState =
+        serde_json::from_slice(&bytes).expect("state.json should deserialize");
+    let provisioned = provisioned_state
+        .managed_tools
+        .iter()
+        .find(|entry| entry.tool_id == "media-tagger")
+        .expect("media-tagger entry should exist after provision");
+
+    // Reset resolved fields while preserving identity fields that trigger skip.
     let mut state = MediaPmState::default();
     state.managed_tools.push(ToolRegistryEntry {
         tool_id: "media-tagger".to_string(),
         version: "seeded-version".to_string(),
-        canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
-        content_map_hash: "blake3:abc".to_string(),
+        canonical_version: provisioned.canonical_version.clone(),
+        content_map_hash: provisioned.content_map_hash.clone(),
         deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: None,
@@ -968,7 +977,10 @@ async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmErr
     );
 
     // Identity fields preserved — skip path never re-provisions.
-    assert_eq!(entry.content_map_hash, "blake3:abc", "content_map_hash must be preserved");
+    assert_eq!(
+        entry.content_map_hash, provisioned.content_map_hash,
+        "content_map_hash must be preserved"
+    );
     assert_eq!(
         entry.deployed_at,
         mediapm_utils::Timestamp::from_unix_secs(42),
