@@ -180,6 +180,8 @@ pub(crate) fn yt_dlp_variant_inputs(config: &YtDlpOutputVariantConfig) -> BTreeM
         }
         YtDlpOutputKind::Subtitles => {
             inputs.insert("write_subs".to_string(), "true".to_string());
+            inputs.insert("write_auto_subs".to_string(), "true".to_string());
+            inputs.insert("convert_subs".to_string(), "vtt".to_string());
             inputs.insert("write_description".to_string(), "false".to_string());
             inputs.insert("write_info_json".to_string(), "false".to_string());
         }
