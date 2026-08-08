@@ -23,7 +23,7 @@ use crate::conductor_bridge::constants::{
 };
 use crate::config::output_types::ResolvedStepVariantFlow;
 use crate::config::source_types::step_option_scalar;
-use crate::config::{MediaStep, MediaStepTool, OutputVariantValue};
+use crate::config::{MediaStep, MediaStepTool, OutputVariantValue, YtDlpOutputKind};
 use crate::error::MediaPmError;
 
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
@@ -80,6 +80,12 @@ pub(crate) fn synthesize_yt_dlp_step(
             }
         };
 
+        // Download-archive sidecars are produced by the primary download sandbox; a
+        // standalone archive-only step would run before the download and capture nothing.
+        if matches!(config.kind, YtDlpOutputKind::Archive) {
+            continue;
+        }
+
         let mut inputs = BTreeMap::new();
         // Source entries carry no URI field, so the URI arrives via the step
         // `uri` option when present (empty fallback mirrors `source_uri_input`).
@@ -110,6 +116,32 @@ pub(crate) fn synthesize_yt_dlp_step(
             variant_to_output_capture_spec(&output_binding.output_name, variant_value),
         );
 
+        let mut producers_for_step = vec![(
+            mapping.output.clone(),
+            VariantProducer::StepOutput {
+                step_id: step_id.clone(),
+                output_name: output_binding.output_name,
+                zip_member: output_binding.zip_member,
+            },
+        )];
+
+        if matches!(config.kind, YtDlpOutputKind::Primary)
+            && let Some(archive_variant) = step.output_variants.get("archive")
+        {
+            outputs.insert(
+                OUTPUT_YT_DLP_ARCHIVE_FILE.to_string(),
+                variant_to_output_capture_spec(OUTPUT_YT_DLP_ARCHIVE_FILE, archive_variant),
+            );
+            producers_for_step.push((
+                "archive".to_string(),
+                VariantProducer::StepOutput {
+                    step_id: step_id.clone(),
+                    output_name: OUTPUT_YT_DLP_ARCHIVE_FILE.to_string(),
+                    zip_member: None,
+                },
+            ));
+        }
+
         workflow.steps.push(WorkflowStepSpec {
             id: step_id.clone(),
             tool: tool_id.to_string(),
@@ -119,14 +151,7 @@ pub(crate) fn synthesize_yt_dlp_step(
             depends_on: Vec::new(),
         });
 
-        pending_variant_updates.push((
-            mapping.output.clone(),
-            VariantProducer::StepOutput {
-                step_id,
-                output_name: output_binding.output_name,
-                zip_member: output_binding.zip_member,
-            },
-        ));
+        pending_variant_updates.extend(producers_for_step);
     }
 
     for (output_variant, producer) in pending_variant_updates {

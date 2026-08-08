@@ -9,9 +9,11 @@ use std::str::FromStr;
 use mediapm_cas::Hash;
 
 use crate::config::hierarchy_types::expand_variant_selectors;
-use crate::config::output_types::ResolvedStepVariantFlow;
-use crate::config::{MediaSourceSpec, MediaStep, MediaStepTool};
+use crate::config::output_types::{OutputVariantValue, ResolvedStepVariantFlow};
+use crate::config::{MediaSourceSpec, MediaStep, MediaStepTool, YtDlpOutputKind};
 use crate::error::MediaPmError;
+
+use crate::conductor_bridge::constants::OUTPUT_YT_DLP_ARCHIVE_FILE;
 
 use super::ffmpeg::ffmpeg_output_capture_name;
 use super::yt_dlp_inputs::resolve_step_output_binding;
@@ -237,6 +239,14 @@ fn register_per_mapping_variant_producers(
     variant_producers: &mut BTreeMap<String, VariantProducer>,
 ) -> Result<(), MediaPmError> {
     for (mapping_index, mapping) in mappings.iter().enumerate() {
+        if matches!(tool, MediaStepTool::YtDlp)
+            && let Some(OutputVariantValue::YtDlp(config)) =
+                step.output_variants.get(&mapping.output)
+            && matches!(config.kind, YtDlpOutputKind::Archive)
+        {
+            continue;
+        }
+
         let step_id = media_step_id(step_index, mapping_index, tool, mapping);
         let output_binding = resolve_step_output_binding(
             tool,
@@ -247,11 +257,27 @@ fn register_per_mapping_variant_producers(
         variant_producers.insert(
             mapping.output.clone(),
             VariantProducer::StepOutput {
-                step_id,
+                step_id: step_id.clone(),
                 output_name: output_binding.output_name,
                 zip_member: output_binding.zip_member,
             },
         );
+
+        if matches!(tool, MediaStepTool::YtDlp)
+            && let Some(OutputVariantValue::YtDlp(config)) =
+                step.output_variants.get(&mapping.output)
+            && matches!(config.kind, YtDlpOutputKind::Primary)
+            && step.output_variants.contains_key("archive")
+        {
+            variant_producers.insert(
+                "archive".to_string(),
+                VariantProducer::StepOutput {
+                    step_id: step_id.clone(),
+                    output_name: OUTPUT_YT_DLP_ARCHIVE_FILE.to_string(),
+                    zip_member: None,
+                },
+            );
+        }
     }
     Ok(())
 }
