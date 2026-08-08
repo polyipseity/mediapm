@@ -15,14 +15,14 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
-    HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
-    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmPaths,
-    MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
-    OutputCaptureKind, OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
-    ToolRequirement, TransformInputValue, VerifyStrategy, YtDlpOutputKind,
-    YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
-    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
+    ConfigVersionSpec, GenericOutputVariantConfig, HierarchyNode, HierarchyNodeKind, HierarchyPath,
+    MaterializationMethod, MediaMetadataValue, MediaMetadataValueCandidate,
+    MediaMetadataVariantBinding, MediaPmDocument, MediaPmPaths, MediaPmService,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
+    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRequirement,
+    TransformInputValue, VerifyStrategy, YtDlpOutputKind, YtDlpOutputVariantConfig,
+    example_isolation, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -52,12 +52,13 @@ const DEMO_EXPECTED_VIDEO_ID: &str = "dQw4w9WgXcQ";
 const DEMO_EXPECTED_TITLE: &str = "Never Gonna Give You Up";
 const DEMO_METADATA_ARTIST: &str = "Rick Astley";
 
-const DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT: &str = ".mkv";
+const DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT: &str = ".mp4";
 
 const DEMO_OUTPUT_FILE_NAME_BASE: &str =
     "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
 
-const DEMO_SAFE_SUB_LANGS: &str = "en-en,en-AU,en-CA,en-IN,en-IE,en-GB,en-US,en-orig";
+/// yt-dlp `--sub-langs` selector for the demo download step (shared by folder + scoped variants).
+const DEMO_SAFE_SUB_LANGS: &str = "en";
 
 const DEMO_UNTAGGED_MEDIA_FILE_NAME: &str = "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
 
@@ -83,15 +84,13 @@ const DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str =
 const DEMO_HIERARCHY_ROOT_TEMPLATE: &str =
     "music videos/${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
 
-const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] = [
-    ("subtitles_sidecars", "subtitles", "sidecars/subtitles/"),
+const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 8] = [
     (
         "subtitles_en_sidecars",
         DEMO_ROOT_SELECTED_SUBTITLE_VARIANT,
         DEMO_SIDECAR_SELECTED_SUBTITLE_FILE_NAME,
     ),
-    ("thumbnails_sidecars", "thumbnails", "sidecars/thumbnails/"),
-    ("links_sidecars", "links", "sidecars/links/"),
+    ("audio_sidecars", "audio", "sidecars/audio.m4a"),
     ("archive_sidecars", "archive", "sidecars/archive.txt"),
     ("description_sidecars", "description", "sidecars/description.txt"),
     ("infojson_sidecars", "infojson", "sidecars/info.json"),
@@ -140,8 +139,8 @@ const DEMO_REPLAYGAIN_FFPROBE_MAX_ATTEMPTS: usize = 20;
 
 const DEMO_REPLAYGAIN_FFPROBE_RETRY_DELAY_MILLIS: u64 = 350;
 
-const DEMO_REPLAYGAIN_REQUIRED_TAG_KEYS: [&str; 3] =
-    ["replaygain_track_gain", "replaygain_track_peak", "replaygain_reference_loudness"];
+const DEMO_REPLAYGAIN_REQUIRED_TAG_KEYS: [&str; 2] =
+    ["replaygain_track_gain", "replaygain_track_peak"];
 
 const DEMO_REPLAYGAIN_DISALLOWED_TAG_KEYS: [&str; 3] =
     ["replaygain_album_gain", "replaygain_album_peak", "replaygain_album_range"];
@@ -832,17 +831,20 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 "video_untagged".to_string(),
                 OutputVariantValue::Generic(GenericOutputVariantConfig {
                     kind: "primary".to_string(),
-                    extension: "mkv".to_string(),
+                    extension: "mp4".to_string(),
                     ..Default::default()
                 }),
             )]),
-            options: BTreeMap::new(),
+            options: BTreeMap::from([(
+                "container".to_string(),
+                TransformInputValue::String("mp4".to_string()),
+            )]),
         },
         MediaStep {
             tool: MediaStepTool::MediaTagger,
             input_variants: vec!["video_untagged".to_string()],
             output_variants: BTreeMap::from([(
-                "video".to_string(),
+                "video_tagged".to_string(),
                 OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                     kind: YtDlpOutputKind::Primary,
                     ..Default::default()
@@ -859,17 +861,59 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             ]),
         },
         MediaStep {
-            tool: MediaStepTool::Rsgain,
-            input_variants: vec!["video".to_string()],
+            tool: MediaStepTool::Ffmpeg,
+            input_variants: vec!["video_tagged".to_string()],
             output_variants: BTreeMap::from([(
-                "video".to_string(),
+                "audio".to_string(),
                 OutputVariantValue::Generic(GenericOutputVariantConfig {
-                    kind: "output_content".to_string(),
-                    extension: "mkv".to_string(),
+                    kind: "primary".to_string(),
+                    extension: "m4a".to_string(),
                     ..Default::default()
                 }),
             )]),
-            options: BTreeMap::new(),
+            options: BTreeMap::from([
+                ("vn".to_string(), TransformInputValue::String("true".to_string())),
+                ("container".to_string(), TransformInputValue::String("mp4".to_string())),
+            ]),
+        },
+        MediaStep {
+            tool: MediaStepTool::Rsgain,
+            input_variants: vec!["audio".to_string()],
+            output_variants: BTreeMap::from([(
+                "audio".to_string(),
+                OutputVariantValue::Generic(GenericOutputVariantConfig {
+                    kind: "output_content".to_string(),
+                    extension: "m4a".to_string(),
+                    ..Default::default()
+                }),
+            )]),
+            options: BTreeMap::from([(
+                "input_extension".to_string(),
+                TransformInputValue::String("m4a".to_string()),
+            )]),
+        },
+        MediaStep {
+            tool: MediaStepTool::Ffmpeg,
+            input_variants: vec!["video_tagged".to_string(), "audio".to_string()],
+            output_variants: BTreeMap::from([(
+                "video".to_string(),
+                OutputVariantValue::Generic(GenericOutputVariantConfig {
+                    kind: "primary".to_string(),
+                    extension: "mp4".to_string(),
+                    ..Default::default()
+                }),
+            )]),
+            options: BTreeMap::from([
+                ("container".to_string(), TransformInputValue::String("mp4".to_string())),
+                ("map".to_string(), TransformInputValue::String("0:v:0".to_string())),
+                ("map_metadata".to_string(), TransformInputValue::String("1".to_string())),
+                (
+                    "trailing_args".to_string(),
+                    TransformInputValue::String(
+                        r#"["-map","1:a:0","-map_metadata:s:a:0","1:s:a:0"]"#.to_string(),
+                    ),
+                ),
+            ]),
         },
     ];
 
@@ -1029,71 +1073,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         );
     }
 
-    // NOTE: Thumbnail and link variants are materialized directly to the media root
-    // with path="" (empty) instead of in dedicated subfolder containers.
-    // Only the sidecars/ folder should use nested directory organization.
-    // This ordering keeps the writable parent available long enough to create
-    // the nested `sidecars/` folder before the direct root projections are finalized.
-    media_root_children.push(HierarchyNode {
-        path: HierarchyPath::default(),
-        kind: HierarchyNodeKind::MediaFolder,
-        id: None,
-        media_id: Some(DEMO_MEDIA_ID.to_string()),
-        variant: None,
-        variants: vec!["thumbnails".to_string()],
-        rename_files: vec![HierarchyFolderRenameRule {
-            pattern: "^.*\\.([^.]+)$".to_string(),
-            replacement:
-                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1"
-                    .to_string(),
-        }],
-        format: PlaylistFormat::M3u8,
-        ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Inherit,
-        children: Vec::new(),
-    });
-
-    media_root_children.push(HierarchyNode {
-        path: HierarchyPath::default(),
-        kind: HierarchyNodeKind::MediaFolder,
-        id: None,
-        media_id: Some(DEMO_MEDIA_ID.to_string()),
-        variant: None,
-        variants: vec!["links".to_string()],
-        rename_files: vec![HierarchyFolderRenameRule {
-            pattern: "^.*\\.([^.]+)$".to_string(),
-            replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1"
-                .to_string(),
-        }],
-        format: PlaylistFormat::M3u8,
-        ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Inherit,
-        children: Vec::new(),
-    });
-
-    // Now instantiate the extra thumbnails folder projection with folder-level
-    // rename (same as the yt-dlp preset's `folder.$1` naming).
-    media_root_children.push(HierarchyNode {
-        path: HierarchyPath::default(),
-        kind: HierarchyNodeKind::MediaFolder,
-        id: Some(format!("{DEMO_MEDIA_ID}.thumbnails.folder")),
-        media_id: Some(DEMO_MEDIA_ID.to_string()),
-        variant: None,
-        variants: vec!["thumbnails".to_string()],
-        rename_files: vec![HierarchyFolderRenameRule {
-            pattern: r"^.*\.([^.]*)$".to_string(),
-            replacement: "folder.$1".to_string(),
-        }],
-        format: PlaylistFormat::M3u8,
-        ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Inherit,
-        children: Vec::new(),
-    });
-
-    // NOTE: The yt-dlp preset's extra root thumbnail projection uses `folder.$1` naming
-    // (`<media-id>.thumbnails.folder`). This demo now instantiates that `folder.<thumbnail_ext>` path
-    // above, alongside the preset-style thumbnail/link filenames inside explicit root folders
-    // (`thumbnails/` and `links/`) using separate `media_folder(path="")` projections.
+    // NOTE: Thumbnail and link root projections are omitted from the online demo
+    // hierarchy to match the golden online layout (sidecar files only).
 
     document.hierarchy = vec![
         HierarchyNode {
@@ -1633,7 +1614,7 @@ fn assert_demo_workflow_shape(machine: &NickelDocument) -> ExampleResult<(String
 
     // Require core online-demo stage ordering while allowing synthesis to
     // insert additional helper steps between these stages over time.
-    let required_order = ["yt-dlp", "ffmpeg", "media-tagger", "ffmpeg", "rsgain"];
+    let required_order = ["yt-dlp", "ffmpeg", "media-tagger", "ffmpeg", "rsgain", "ffmpeg"];
 
     let mut cursor = 0usize;
     for required_tool in required_order {
@@ -1656,9 +1637,8 @@ fn assert_demo_workflow_shape(machine: &NickelDocument) -> ExampleResult<(String
     Ok((workflow_id, workflow.steps.len()))
 }
 
-fn bytes_look_like_matroska(bytes: &[u8]) -> bool {
-    // Matroska/WebM containers begin with the EBML header marker.
-    bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
+fn bytes_look_like_mp4(bytes: &[u8]) -> bool {
+    bytes.len() >= 8 && bytes[4..8] == *b"ftyp"
 }
 
 fn collect_regular_files_recursive(root: &Path) -> ExampleResult<Vec<PathBuf>> {
@@ -1738,21 +1718,6 @@ fn assert_flat_media_root_sidecar_families(
     interpolated_root: &Path,
     expected_output_base: &str,
 ) -> ExampleResult<()> {
-    let expected_media_id =
-        parse_jellyfin_root_folder_name(expected_output_base).map(|(_, _, media_id)| media_id);
-    let expected_media_suffixes = expected_media_id
-        .as_deref()
-        .map(|media_id| {
-            let mut suffixes = vec![media_id.to_string()];
-            if let Some((_, raw_video_id)) = media_id.rsplit_once('.')
-                && !raw_video_id.is_empty()
-            {
-                suffixes.push(raw_video_id.to_string());
-            }
-            suffixes
-        })
-        .unwrap_or_default();
-
     let root_files = fs::read_dir(interpolated_root)?
         .flatten()
         .map(|entry| entry.path())
@@ -1805,81 +1770,6 @@ fn assert_flat_media_root_sidecar_families(
         return Err(format!(
             "expected flattened media root '{}' to include selected subtitle filename suffix '.en.vtt'",
             interpolated_root.display()
-        )
-        .into());
-    }
-
-    let thumbnails_files = collect_regular_files_recursive(interpolated_root)?
-        .into_iter()
-        .filter(|path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|name| name.contains(".thumbnail."))
-        })
-        .collect::<Vec<_>>();
-
-    if thumbnails_files.is_empty() {
-        return Err(format!(
-            "expected root thumbnail projection files in '{}' to exist",
-            interpolated_root.display()
-        )
-        .into());
-    }
-
-    let links_files = collect_regular_files_recursive(interpolated_root)?
-        .into_iter()
-        .filter(|path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|name| name.contains(".link."))
-        })
-        .collect::<Vec<_>>();
-
-    if links_files.is_empty() {
-        return Err(format!(
-            "expected root links projection files in '{}' to exist",
-            interpolated_root.display()
-        )
-        .into());
-    }
-
-    assert_root_projection_sidecar_names_align(
-        interpolated_root,
-        expected_output_base,
-        &expected_media_suffixes,
-        &thumbnails_files,
-        &links_files,
-    )?;
-
-    Ok(())
-}
-
-fn assert_root_projection_sidecar_names_align(
-    interpolated_root: &Path,
-    expected_output_base: &str,
-    expected_media_suffixes: &[String],
-    thumbnails_files: &[PathBuf],
-    links_files: &[PathBuf],
-) -> ExampleResult<()> {
-    let root_projection_files =
-        thumbnails_files.iter().chain(links_files.iter()).cloned().collect::<Vec<_>>();
-
-    if !root_projection_files.iter().all(|path| {
-        path.file_name().and_then(|value| value.to_str()).is_some_and(|name| {
-            name.starts_with(expected_output_base)
-                || expected_media_suffixes
-                    .iter()
-                    .any(|media_suffix| name.contains(&format!(" [{media_suffix}].")))
-        })
-    }) {
-        return Err(format!(
-            "expected root thumbnail/link sidecar names in '{}' to align with media output base '{}' or media-id suffix: {:?}",
-            interpolated_root.display(),
-            expected_output_base,
-            root_projection_files
-                .iter()
-                .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
-                .collect::<Vec<_>>()
         )
         .into());
     }
@@ -1937,13 +1827,18 @@ fn ffprobe_payload_unexpected_single_track_replaygain_tags(
 }
 
 #[must_use]
-fn ffprobe_payload_has_mkv_video_and_audio(payload: &serde_json::Value) -> bool {
-    let has_mkv_container = payload
+fn ffprobe_payload_has_mp4_video_and_audio(payload: &serde_json::Value) -> bool {
+    let has_mp4_container = payload
         .get("format")
         .and_then(|format| format.get("format_name"))
         .and_then(serde_json::Value::as_str)
         .is_some_and(|name| {
-            name.split(',').any(|entry| entry.trim().eq_ignore_ascii_case("matroska"))
+            name.split(',').any(|entry| {
+                matches!(
+                    entry.trim().to_ascii_lowercase().as_str(),
+                    "mp4" | "mov" | "m4a" | "3gp" | "3g2" | "mj2"
+                )
+            })
         });
 
     let mut has_video_stream = false;
@@ -1959,10 +1854,10 @@ fn ffprobe_payload_has_mkv_video_and_audio(payload: &serde_json::Value) -> bool 
         }
     }
 
-    has_mkv_container && has_video_stream && has_audio_stream
+    has_mp4_container && has_video_stream && has_audio_stream
 }
 
-fn assert_mkv_video_audio_with_ffprobe(path: &Path) -> ExampleResult<()> {
+fn assert_mp4_video_audio_with_ffprobe(path: &Path) -> ExampleResult<()> {
     let ffprobe_command = demo_ffprobe_command();
     let output = Command::new(ffprobe_command)
         .arg("-v")
@@ -1994,9 +1889,9 @@ fn assert_mkv_video_audio_with_ffprobe(path: &Path) -> ExampleResult<()> {
     let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("ffprobe JSON decode failed for '{}': {error}", path.display()))?;
 
-    if !ffprobe_payload_has_mkv_video_and_audio(&payload) {
+    if !ffprobe_payload_has_mp4_video_and_audio(&payload) {
         return Err(format!(
-            "expected media '{}' to keep MKV container with both video and audio streams",
+            "expected media '{}' to keep MP4 container with both video and audio streams",
             path.display()
         )
         .into());
@@ -2247,14 +2142,14 @@ fn resolve_demo_output_paths(
     }
 
     let video_bytes = fs::read(&video_path)?;
-    if !bytes_look_like_matroska(&video_bytes) {
+    if !bytes_look_like_mp4(&video_bytes) {
         return Err(format!(
-            "expected untagged demo media '{}' to contain Matroska bytes",
+            "expected untagged demo media '{}' to contain MP4 bytes",
             video_path.display()
         )
         .into());
     }
-    assert_mkv_video_audio_with_ffprobe(&video_path)?;
+    assert_mp4_video_audio_with_ffprobe(&video_path)?;
 
     let tagged_video_path = interpolated_root.join(resolved_tagged_file_name);
     if !tagged_video_path.is_file() {
@@ -2281,14 +2176,14 @@ fn resolve_demo_output_paths(
     }
 
     let tagged_video_bytes = fs::read(&tagged_video_path)?;
-    if !bytes_look_like_matroska(&tagged_video_bytes) {
+    if !bytes_look_like_mp4(&tagged_video_bytes) {
         return Err(format!(
-            "expected tagged demo media '{}' to contain Matroska bytes",
+            "expected tagged demo media '{}' to contain MP4 bytes",
             tagged_video_path.display()
         )
         .into());
     }
-    assert_mkv_video_audio_with_ffprobe(&tagged_video_path)?;
+    assert_mp4_video_audio_with_ffprobe(&tagged_video_path)?;
 
     let mut sidecar_paths = BTreeMap::new();
     for (entry_label, variant, relative_suffix) in DEMO_SIDECAR_VARIANT_PATHS {
@@ -2445,7 +2340,10 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let hierarchy_root = sync_service.resolve_effective_paths()?.hierarchy_root_dir;
     let (output_video_path, output_tagged_video_path, output_sidecar_paths) =
         resolve_demo_output_paths(&hierarchy_root)?;
-    assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
+    let audio_sidecar_path = output_sidecar_paths
+        .get("audio_sidecars")
+        .ok_or("expected replaygain audio sidecar path after sync")?;
+    assert_tagged_media_replaygain_tags(audio_sidecar_path).await?;
     let cas_root = sync_service.paths().runtime_root.join("store");
     let lock = load_mediapm_state_document(&sync_service.paths().mediapm_state_json)?;
     let cas = sync_service.conductor().cas();
@@ -2836,15 +2734,13 @@ mod tests {
         assert!(super::DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS > 0);
     }
 
-    /// Ensures ReplayGain payload detection requires single-track gain/peak
-    /// keys plus reference loudness.
+    /// Ensures ReplayGain payload detection requires single-track gain and peak keys.
     #[test]
-    fn ffprobe_payload_detection_requires_track_gain_peak_and_reference_loudness() {
+    fn ffprobe_payload_detection_requires_track_gain_and_peak() {
         let payload_with_required_keys = serde_json::json!({
             "format": {
                 "tags": {
-                    "REPLAYGAIN_TRACK_GAIN": "-8.30 dB",
-                    "replaygain_reference_loudness": "89.0 dB"
+                    "REPLAYGAIN_TRACK_GAIN": "-8.30 dB"
                 }
             },
             "streams": [
@@ -2857,31 +2753,13 @@ mod tests {
         });
         assert!(super::ffprobe_payload_has_required_replaygain_tags(&payload_with_required_keys));
 
-        let payload_missing_reference_loudness = serde_json::json!({
+        let payload_missing_track_peak = serde_json::json!({
             "format": {
                 "tags": {
                     "replaygain_track_gain": "-8.30 dB"
                 }
             },
-            "streams": [
-                {
-                    "tags": {
-                        "replaygain_track_peak": "0.991"
-                    }
-                }
-            ]
-        });
-        assert!(!super::ffprobe_payload_has_required_replaygain_tags(
-            &payload_missing_reference_loudness
-        ));
-
-        let payload_missing_track_peak = serde_json::json!({
-            "format": {
-                "tags": {
-                    "replaygain_track_gain": "-8.30 dB",
-                    "replaygain_reference_loudness": "89.0 dB"
-                }
-            }
+            "streams": []
         });
         assert!(!super::ffprobe_payload_has_required_replaygain_tags(&payload_missing_track_peak));
     }
@@ -2912,38 +2790,38 @@ mod tests {
         );
     }
 
-    /// Ensures Matroska magic-byte detection recognizes EBML headers only.
+    /// Ensures MP4 magic-byte detection recognizes `ftyp` boxes only.
     #[test]
-    fn matroska_magic_byte_detection_matches_ebml_header() {
-        assert!(super::bytes_look_like_matroska(&[0x1A, 0x45, 0xDF, 0xA3, 0x93, 0x42]));
-        assert!(!super::bytes_look_like_matroska(&[0x49, 0x44, 0x33]));
+    fn mp4_magic_byte_detection_matches_ftyp_box() {
+        assert!(super::bytes_look_like_mp4(&[0x00, 0x00, 0x00, 0x20, b'f', b't', b'y', b'p']));
+        assert!(!super::bytes_look_like_mp4(&[0x1A, 0x45, 0xDF, 0xA3, 0x93, 0x42]));
     }
 
-    /// Ensures ffprobe payload checks require MKV container and both AV streams.
+    /// Ensures ffprobe payload checks require MP4 container and both AV streams.
     #[test]
-    fn ffprobe_payload_detection_requires_mkv_container_and_av_streams() {
+    fn ffprobe_payload_detection_requires_mp4_container_and_av_streams() {
         let valid_payload = serde_json::json!({
             "format": {
-                "format_name": "matroska,webm"
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2"
             },
             "streams": [
                 { "codec_type": "video" },
                 { "codec_type": "audio" }
             ]
         });
-        assert!(super::ffprobe_payload_has_mkv_video_and_audio(&valid_payload));
+        assert!(super::ffprobe_payload_has_mp4_video_and_audio(&valid_payload));
 
         let missing_video = serde_json::json!({
             "format": {
-                "format_name": "matroska,webm"
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2"
             },
             "streams": [
                 { "codec_type": "audio" }
             ]
         });
-        assert!(!super::ffprobe_payload_has_mkv_video_and_audio(&missing_video));
+        assert!(!super::ffprobe_payload_has_mp4_video_and_audio(&missing_video));
 
-        let non_mkv = serde_json::json!({
+        let non_mp4 = serde_json::json!({
             "format": {
                 "format_name": "mp3"
             },
@@ -2952,7 +2830,7 @@ mod tests {
                 { "codec_type": "audio" }
             ]
         });
-        assert!(!super::ffprobe_payload_has_mkv_video_and_audio(&non_mkv));
+        assert!(!super::ffprobe_payload_has_mp4_video_and_audio(&non_mp4));
     }
 
     /// Ensures ffprobe sibling-path derivation rewrites ffmpeg binary names.

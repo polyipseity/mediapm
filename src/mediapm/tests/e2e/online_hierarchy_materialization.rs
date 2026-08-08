@@ -46,17 +46,17 @@ fn demo_metadata_literals() -> BTreeMap<String, MediaMetadataValue> {
     BTreeMap::from([
         ("artist".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_ARTIST.to_string())),
         ("title".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_TITLE.to_string())),
-        ("video_ext".to_string(), MediaMetadataValue::Literal(".mkv".to_string())),
+        ("video_ext".to_string(), MediaMetadataValue::Literal(".mp4".to_string())),
         ("id".to_string(), MediaMetadataValue::Literal("dQw4w9WgXcQ".to_string())),
     ])
 }
 
 fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
     let untagged_name = format!(
-        "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].untagged.mkv"
+        "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].untagged.mp4"
     );
     let tagged_name =
-        format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].mkv");
+        format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].mp4");
     let en_vtt_name =
         format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].en.vtt");
     let description_name = format!(
