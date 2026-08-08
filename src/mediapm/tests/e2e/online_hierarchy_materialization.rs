@@ -11,7 +11,8 @@ use mediapm::{
     SanitizeNamesConfig,
     demo_hierarchy_spec::{
         DEMO_LIBRARY_ROOT, DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID,
-        assert_tree_under, load_demo_hierarchy_golden_document,
+        ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_tree_under, load_demo_hierarchy_golden_document,
+        online_demo_yt_dlp_provider_title, yt_dlp_sandbox_artifact_filename,
     },
     save_mediapm_document,
 };
@@ -46,17 +47,17 @@ fn demo_metadata_literals() -> BTreeMap<String, MediaMetadataValue> {
     BTreeMap::from([
         ("artist".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_ARTIST.to_string())),
         ("title".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_TITLE.to_string())),
-        ("video_ext".to_string(), MediaMetadataValue::Literal(".mp4".to_string())),
+        ("video_ext".to_string(), MediaMetadataValue::Literal(".mkv".to_string())),
         ("id".to_string(), MediaMetadataValue::Literal("dQw4w9WgXcQ".to_string())),
     ])
 }
 
 fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
     let untagged_name = format!(
-        "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].untagged.mp4"
+        "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].untagged.mkv"
     );
     let tagged_name =
-        format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].mp4");
+        format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].mkv");
     let en_vtt_name =
         format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].en.vtt");
     let description_name = format!(
@@ -367,7 +368,7 @@ async fn online_hierarchy_materialization_matches_golden_tree() -> Result<(), me
         .await
         .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed video: {e}")))?;
     let subtitles_folder_hash = cas
-        .put(Bytes::from_static(b"WEBVTT folder fixture"))
+        .put(Bytes::from(make_zip(&[("downloads/subtitle__mediapm__.en.vtt", b"WEBVTT\n")])))
         .await
         .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed subtitles folder: {e}")))?;
     let subtitle_file_hash = cas
@@ -386,12 +387,32 @@ async fn online_hierarchy_materialization_matches_golden_tree() -> Result<(), me
         .put(Bytes::from_static(b"archive fixture"))
         .await
         .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed archive: {e}")))?;
-    let thumbnail_zip = make_zip(&[("thumb.jpg", b"jpg-bytes")]);
+    let thumbnail_zip = make_zip(&[
+        ("downloads/poster__mediapm__.jpg", b"jpg-bytes"),
+        ("downloads/wide__mediapm__.webp", b"webp-bytes"),
+    ]);
     let thumbnail_hash = cas
         .put(Bytes::from(thumbnail_zip))
         .await
         .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed thumbnails: {e}")))?;
-    let links_zip = make_zip(&[("watch.url", b"https://example.com/watch")]);
+    let provider_title = online_demo_yt_dlp_provider_title();
+    let url_member = format!(
+        "downloads/{}",
+        yt_dlp_sandbox_artifact_filename(&provider_title, ONLINE_DEMO_YT_DLP_VIDEO_ID, "url")
+    );
+    let webloc_member = format!(
+        "downloads/{}",
+        yt_dlp_sandbox_artifact_filename(&provider_title, ONLINE_DEMO_YT_DLP_VIDEO_ID, "webloc")
+    );
+    let desktop_member = format!(
+        "downloads/{}",
+        yt_dlp_sandbox_artifact_filename(&provider_title, ONLINE_DEMO_YT_DLP_VIDEO_ID, "desktop")
+    );
+    let links_zip = make_zip(&[
+        (url_member.as_str(), b"https://example.com/watch"),
+        (webloc_member.as_str(), b"webloc-bytes"),
+        (desktop_member.as_str(), b"desktop-bytes"),
+    ]);
     let links_hash = cas
         .put(Bytes::from(links_zip))
         .await
