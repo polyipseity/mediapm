@@ -815,7 +815,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 (
                     "format".to_string(),
                     TransformInputValue::String(
-                        "best[height<=144][ext=mp4]/best[height<=144]/best".to_string(),
+                        "best[height<=144]/best[height<=240]/worst".to_string(),
                     ),
                 ),
                 (
@@ -1340,8 +1340,8 @@ async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> Exampl
     for (api_url, tag, hash) in [
         (
             "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
-            "2025.07.15",
-            "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+            "2026.07.04",
+            "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
         ),
         (
             "https://api.github.com/repos/denoland/deno/releases/latest",
@@ -1402,12 +1402,14 @@ async fn run_tools_update_precheck(
 
     let summary = service.sync_tools_with_tag_update_checks(false, false).await?;
     // Stale seeds cover executable managed tools only (`import` is skipped); the
-    // precheck counts `tools_updated` for those re-provisions.
-    let expected_updated_tools = logical_tool_ids.len();
-    if summary.updated_tools != expected_updated_tools {
+    // precheck counts `tools_updated` for those re-provisions. Companion dep
+    // entries (e.g. ffmpeg requested both as a dep and explicitly) may add
+    // extra update rows beyond the logical tool id count.
+    let minimum_updated_tools = logical_tool_ids.len();
+    if summary.updated_tools < minimum_updated_tools {
         return Err(format!(
-            "tools-update precheck expected {} updated tools but observed {}",
-            expected_updated_tools, summary.updated_tools
+            "tools-update precheck expected at least {} updated tools but observed {}",
+            minimum_updated_tools, summary.updated_tools
         )
         .into());
     }
@@ -2221,8 +2223,12 @@ fn resolve_demo_output_paths(
 
     let video_path = interpolated_root.join(resolved_untagged_file_name);
     if !video_path.is_file() {
+        let observed_files = fs::read_dir(&interpolated_root)?
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
         return Err(format!(
-            "expected stable untagged media output '{}' to exist after sync",
+            "expected stable untagged media output '{}' to exist after sync; observed files in media root: {observed_files:?}",
             video_path.display()
         )
         .into());
@@ -2363,6 +2369,11 @@ fn resolve_demo_output_paths(
     reason = "this example keeps end-to-end demo orchestration and artifact assertions in one function for traceability"
 )]
 async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
+
     let (root, _fallback_artifact) = reset_artifact_root()?;
     let workspace_root = root.clone();
     let runtime_storage = example_runtime_storage();
@@ -2407,6 +2418,16 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
 
     eprintln!(
         "[demo_online] sync complete; rendering conductor timing profile (workflow scope only)..."
+    );
+    if !summary.warnings.is_empty() {
+        eprintln!("[demo_online] sync warnings ({count}):", count = summary.warnings.len());
+        for warning in &summary.warnings {
+            eprintln!("[demo_online]   - {warning}");
+        }
+    }
+    eprintln!(
+        "[demo_online] sync summary: executed_instances={} cached_instances={} materialized_paths={}",
+        summary.executed_instances, summary.cached_instances, summary.materialized_paths
     );
     // (profile timing intentionally omitted: no print_profile_timing API in new conductor)
 
