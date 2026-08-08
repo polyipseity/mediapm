@@ -84,13 +84,15 @@ const DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str =
 const DEMO_HIERARCHY_ROOT_TEMPLATE: &str =
     "music videos/${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
 
-const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 8] = [
+const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] = [
+    ("subtitles_sidecars", "subtitles", "sidecars/subtitles/"),
     (
         "subtitles_en_sidecars",
         DEMO_ROOT_SELECTED_SUBTITLE_VARIANT,
         DEMO_SIDECAR_SELECTED_SUBTITLE_FILE_NAME,
     ),
-    ("audio_sidecars", "audio", "sidecars/audio.m4a"),
+    ("thumbnails_sidecars", "thumbnails", "sidecars/thumbnails/"),
+    ("links_sidecars", "links", "sidecars/links/"),
     ("archive_sidecars", "archive", "sidecars/archive.txt"),
     ("description_sidecars", "description", "sidecars/description.txt"),
     ("infojson_sidecars", "infojson", "sidecars/info.json"),
@@ -139,8 +141,8 @@ const DEMO_REPLAYGAIN_FFPROBE_MAX_ATTEMPTS: usize = 20;
 
 const DEMO_REPLAYGAIN_FFPROBE_RETRY_DELAY_MILLIS: u64 = 350;
 
-const DEMO_REPLAYGAIN_REQUIRED_TAG_KEYS: [&str; 2] =
-    ["replaygain_track_gain", "replaygain_track_peak"];
+const DEMO_REPLAYGAIN_REQUIRED_TAG_KEYS: [&str; 3] =
+    ["replaygain_track_gain", "replaygain_track_peak", "replaygain_reference_loudness"];
 
 const DEMO_REPLAYGAIN_DISALLOWED_TAG_KEYS: [&str; 3] =
     ["replaygain_album_gain", "replaygain_album_peak", "replaygain_album_range"];
@@ -2291,10 +2293,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let hierarchy_root = sync_service.resolve_effective_paths()?.hierarchy_root_dir;
     let (output_video_path, output_tagged_video_path, output_sidecar_paths) =
         resolve_demo_output_paths(&hierarchy_root)?;
-    let audio_sidecar_path = output_sidecar_paths
-        .get("audio_sidecars")
-        .ok_or("expected replaygain audio sidecar path after sync")?;
-    assert_tagged_media_replaygain_tags(audio_sidecar_path).await?;
+    assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
     let cas_root = sync_service.paths().runtime_root.join("store");
     let lock = load_mediapm_state_document(&sync_service.paths().mediapm_state_json)?;
     let cas = sync_service.conductor().cas();
@@ -2685,13 +2684,15 @@ mod tests {
         assert!(super::DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS > 0);
     }
 
-    /// Ensures ReplayGain payload detection requires single-track gain and peak keys.
+    /// Ensures ReplayGain payload detection requires single-track gain/peak
+    /// keys plus reference loudness.
     #[test]
-    fn ffprobe_payload_detection_requires_track_gain_and_peak() {
+    fn ffprobe_payload_detection_requires_track_gain_peak_and_reference_loudness() {
         let payload_with_required_keys = serde_json::json!({
             "format": {
                 "tags": {
-                    "REPLAYGAIN_TRACK_GAIN": "-8.30 dB"
+                    "REPLAYGAIN_TRACK_GAIN": "-8.30 dB",
+                    "replaygain_reference_loudness": "89.0 dB"
                 }
             },
             "streams": [
@@ -2704,13 +2705,31 @@ mod tests {
         });
         assert!(super::ffprobe_payload_has_required_replaygain_tags(&payload_with_required_keys));
 
-        let payload_missing_track_peak = serde_json::json!({
+        let payload_missing_reference_loudness = serde_json::json!({
             "format": {
                 "tags": {
                     "replaygain_track_gain": "-8.30 dB"
                 }
             },
-            "streams": []
+            "streams": [
+                {
+                    "tags": {
+                        "replaygain_track_peak": "0.991"
+                    }
+                }
+            ]
+        });
+        assert!(!super::ffprobe_payload_has_required_replaygain_tags(
+            &payload_missing_reference_loudness
+        ));
+
+        let payload_missing_track_peak = serde_json::json!({
+            "format": {
+                "tags": {
+                    "replaygain_track_gain": "-8.30 dB",
+                    "replaygain_reference_loudness": "89.0 dB"
+                }
+            }
         });
         assert!(!super::ffprobe_payload_has_required_replaygain_tags(&payload_missing_track_peak));
     }
