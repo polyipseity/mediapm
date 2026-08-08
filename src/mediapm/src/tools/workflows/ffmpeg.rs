@@ -164,6 +164,7 @@ pub(crate) fn synthesize_ffmpeg_step(
                 } else {
                     Some(config.zip_member.clone())
                 },
+                extension: normalize_generic_output_extension(&config.extension),
             },
         ));
     }
@@ -424,6 +425,15 @@ pub(crate) fn ffmpeg_output_file_path(index: usize) -> String {
 
 /// Returns sandbox-relative ffmpeg output path honoring an optional extension override.
 #[must_use]
+pub(crate) fn ffmpeg_sandbox_output_path(index: usize, extension: Option<&str>) -> String {
+    match extension.map(str::trim) {
+        None | Some("") => ffmpeg_output_file_path(index),
+        Some(ext) => ffmpeg_output_path_for_variant(index, ext),
+    }
+}
+
+/// Returns sandbox-relative ffmpeg output path for one explicit extension token.
+#[must_use]
 fn ffmpeg_output_path_for_variant(index: usize, extension: &str) -> String {
     let trimmed = extension.trim();
     if trimmed.is_empty() {
@@ -433,9 +443,18 @@ fn ffmpeg_output_path_for_variant(index: usize, extension: &str) -> String {
     format!("output-{index}.{suffix}")
 }
 
+fn normalize_generic_output_extension(extension: &str) -> Option<String> {
+    let trimmed = extension.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.trim_start_matches('.').to_ascii_lowercase())
+    }
+}
+
 /// Returns regex pattern for one indexed ffmpeg output capture path.
 #[must_use]
-fn ffmpeg_output_file_regex(index: usize) -> String {
+pub(crate) fn ffmpeg_output_file_regex(index: usize) -> String {
     format!(r"^output-{index}(?:[.][^/\\]+)?$")
 }
 

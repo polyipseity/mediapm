@@ -122,6 +122,7 @@ pub(crate) fn synthesize_yt_dlp_step(
                 step_id: step_id.clone(),
                 output_name: output_binding.output_name,
                 zip_member: output_binding.zip_member,
+                extension: None,
             },
         )];
 
@@ -138,6 +139,7 @@ pub(crate) fn synthesize_yt_dlp_step(
                     step_id: step_id.clone(),
                     output_name: OUTPUT_YT_DLP_ARCHIVE_FILE.to_string(),
                     zip_member: None,
+                    extension: None,
                 },
             ));
         }

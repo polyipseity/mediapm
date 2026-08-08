@@ -131,12 +131,12 @@ fn resolve_media_variant_output_binding_with_ffmpeg_limits(
                 )?;
             }
             MediaStepTool::Rsgain => {
-                register_per_mapping_variant_producers(
+                register_rsgain_variant_producers(
                     step_index,
                     step.tool,
-                    &resolved_step,
+                    step,
                     &mappings,
-                    FfmpegSlotLimits::default(),
+                    ffmpeg_slot_limits,
                     &mut variant_producers,
                 )?;
             }
@@ -152,7 +152,7 @@ fn resolve_media_variant_output_binding_with_ffmpeg_limits(
     };
 
     match producer {
-        VariantProducer::StepOutput { step_id, output_name, zip_member } => {
+        VariantProducer::StepOutput { step_id, output_name, zip_member, .. } => {
             Ok(Some(ResolvedVariantOutputBinding {
                 step_id: step_id.clone(),
                 output_name: output_name.clone(),
@@ -179,6 +179,7 @@ fn register_import_variant_producers(
                 step_id,
                 output_name: mapping.output.clone(),
                 zip_member: None,
+                extension: None,
             },
         );
     }
@@ -223,6 +224,7 @@ fn register_ffmpeg_variant_producers(
                 step_id: step_id.clone(),
                 output_name: output_binding.output_name,
                 zip_member: output_binding.zip_member,
+                extension: generic_output_extension(step.output_variants.get(&mapping.output)),
             },
         );
     }
@@ -260,6 +262,7 @@ fn register_per_mapping_variant_producers(
                 step_id: step_id.clone(),
                 output_name: output_binding.output_name,
                 zip_member: output_binding.zip_member,
+                extension: generic_output_extension(step.output_variants.get(&mapping.output)),
             },
         );
 
@@ -275,6 +278,7 @@ fn register_per_mapping_variant_producers(
                     step_id: step_id.clone(),
                     output_name: OUTPUT_YT_DLP_ARCHIVE_FILE.to_string(),
                     zip_member: None,
+                    extension: None,
                 },
             );
         }
@@ -299,8 +303,49 @@ fn register_media_tagger_variant_producers(
                 step_id: apply_step_id,
                 output_name: apply_output_name,
                 zip_member: None,
+                extension: None,
             },
         );
     }
     Ok(())
+}
+
+fn register_rsgain_variant_producers(
+    step_index: usize,
+    tool: MediaStepTool,
+    step: &MediaStep,
+    mappings: &[ResolvedStepVariantFlow],
+    _ffmpeg_slot_limits: FfmpegSlotLimits,
+    variant_producers: &mut BTreeMap<String, VariantProducer>,
+) -> Result<(), MediaPmError> {
+    for (mapping_index, mapping) in mappings.iter().enumerate() {
+        let base_step_id = media_step_id(step_index, mapping_index, tool, mapping);
+        let apply_step_id = format!("{base_step_id}-ffmpeg-apply");
+        let apply_output_name = ffmpeg_output_capture_name(0);
+        variant_producers.insert(
+            mapping.output.clone(),
+            VariantProducer::StepOutput {
+                step_id: apply_step_id,
+                output_name: apply_output_name,
+                zip_member: None,
+                extension: generic_output_extension(step.output_variants.get(&mapping.output)),
+            },
+        );
+    }
+    Ok(())
+}
+
+#[must_use]
+fn generic_output_extension(value: Option<&OutputVariantValue>) -> Option<String> {
+    match value {
+        Some(OutputVariantValue::Generic(config)) => {
+            let trimmed = config.extension.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.trim_start_matches('.').to_ascii_lowercase())
+            }
+        }
+        _ => None,
+    }
 }

@@ -285,10 +285,25 @@ pub(crate) enum VariantProducer {
     /// Variant bytes come from one external-data reference.
     ExternalData { hash: Hash },
     /// Variant bytes come from one prior step output.
-    StepOutput { step_id: String, output_name: String, zip_member: Option<String> },
+    StepOutput {
+        step_id: String,
+        output_name: String,
+        zip_member: Option<String>,
+        /// Tracked container extension for downstream synthesizers (no leading dot).
+        extension: Option<String>,
+    },
 }
 
 impl VariantProducer {
+    /// Returns the tracked output extension when the producer records one.
+    #[must_use]
+    pub(crate) fn output_extension(&self) -> Option<&str> {
+        match self {
+            Self::ExternalData { .. } => None,
+            Self::StepOutput { extension, .. } => extension.as_deref(),
+        }
+    }
+
     /// Renders this producer into one input expression plus optional
     /// execution-order dependency on the producing step id.
     ///
@@ -300,7 +315,7 @@ impl VariantProducer {
     pub(crate) fn to_binding(&self) -> Result<(String, Option<String>), MediaPmError> {
         match self {
             Self::ExternalData { hash } => Ok((format!("${{external_data.{hash}}}"), None)),
-            Self::StepOutput { step_id, output_name, zip_member } => {
+            Self::StepOutput { step_id, output_name, zip_member, .. } => {
                 let expression = if let Some(member) = zip_member.as_deref() {
                     format!("${{step_output.{step_id}.{output_name}:zip({member})}}")
                 } else {
@@ -466,6 +481,7 @@ fn synthesize_import_step(
                 step_id,
                 output_name: mapping.output.clone(),
                 zip_member: None,
+                extension: None,
             },
         ));
     }
@@ -558,8 +574,10 @@ fn synthesize_media_steps(
                     step,
                     &mappings,
                     &tool_id,
+                    generated_doc,
                     &producer_snapshot,
                     variant_producers,
+                    ffmpeg_slot_limits,
                 )?;
             }
         }
@@ -891,20 +909,27 @@ mod tests {
                 ],
             ),
         );
-        let generated_doc = tools_document(&["yt-dlp", "ffmpeg", "rsgain"]);
+        let generated_doc = tools_document(&["yt-dlp", "ffmpeg", "rsgain", "sd"]);
         let plan = build_plan(&document, &generated_doc).expect("plan");
         let workflow = &plan.workflows[&managed_workflow_name("remote-a")];
 
-        assert_eq!(workflow.steps.len(), 3);
+        assert_eq!(workflow.steps.len(), 8);
         let download = &workflow.steps[0];
         let ffmpeg_step = &workflow.steps[1];
-        let rsgain_step = &workflow.steps[2];
+        let rsgain_apply = workflow
+            .steps
+            .iter()
+            .find(|step| step.id.ends_with("-ffmpeg-apply"))
+            .expect("rsgain apply step");
         assert_eq!(download.id, "step-0-0-yt-dlp-default-to-default");
         assert_eq!(ffmpeg_step.id, "step-1-ffmpeg");
-        assert_eq!(rsgain_step.id, "step-2-0-rsgain-aac-to-aac");
         assert!(download.depends_on.is_empty());
         assert_eq!(ffmpeg_step.depends_on, vec![download.id.clone()]);
-        assert_eq!(rsgain_step.depends_on, vec![ffmpeg_step.id.clone()]);
+        assert!(
+            rsgain_apply.depends_on.iter().any(|dep| dep.contains("sd-rewrite-r128-metadata")),
+            "apply step should depend on sd metadata rewrite: {:?}",
+            rsgain_apply.depends_on
+        );
         assert_eq!(
             ffmpeg_step.inputs.get("output_path_0").map(String::as_str),
             Some("output-0.mkv"),
@@ -1188,12 +1213,14 @@ mod tests {
                 ],
             ),
         );
-        let generated_doc = tools_document(&["yt-dlp", "ffmpeg", "rsgain"]);
+        let generated_doc = tools_document(&["yt-dlp", "ffmpeg", "rsgain", "sd"]);
         let plan = build_plan(&document, &generated_doc).expect("plan");
         let workflow = &plan.workflows[&managed_workflow_name("normalized-a")];
 
-        assert_eq!(workflow.steps[2].id, "step-2-0-rsgain-normalized-to-normalized");
-        assert!(workflow.steps[2].outputs.contains_key("output_content"));
+        let apply_step_id = "step-2-0-rsgain-normalized-to-normalized-ffmpeg-apply";
+        let apply_step =
+            workflow.steps.iter().find(|step| step.id == apply_step_id).expect("rsgain apply step");
+        assert!(apply_step.outputs.contains_key("primary"));
     }
 
     #[test]
@@ -1564,7 +1591,7 @@ mod tests {
                 ],
             ),
         );
-        let generated_doc = tools_document(&["import", "ffmpeg", "rsgain"]);
+        let generated_doc = tools_document(&["import", "ffmpeg", "rsgain", "sd"]);
         let plan = build_plan(&document, &generated_doc).expect("plan");
         let mut doc = generated_doc;
         doc.workflows.extend(plan.workflows.into_values());

@@ -9,46 +9,54 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
-    WorkflowSpec, WorkflowStepSpec,
+    InputBinding, NickelDocument, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec,
+    ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
 };
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
 
 use crate::conductor_bridge::constants::{
-    INPUT_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS, OUTPUT_CONTENT,
-    OUTPUT_SANDBOX_ARTIFACTS,
+    INPUT_CONTENT, INPUT_FFMETADATA_CONTENT, INPUT_LEADING_ARGS, INPUT_SD_PATTERN,
+    INPUT_SD_REPLACEMENT, INPUT_TRAILING_ARGS, OUTPUT_CONTENT, OUTPUT_SANDBOX_ARTIFACTS,
 };
 use crate::config::output_types::ResolvedStepVariantFlow;
-use crate::config::{MediaStep, MediaStepTool, OutputVariantValue};
+use crate::config::source_types::step_option_scalar;
+use crate::config::{MediaStep, MediaStepTool, OutputVariantValue, TransformInputValue};
 use crate::error::MediaPmError;
 
+use super::ffmpeg::{
+    ffmpeg_input_content_name, ffmpeg_output_capture_name, ffmpeg_output_file_regex,
+    ffmpeg_output_path_input_name, ffmpeg_sandbox_output_path,
+};
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
 use super::yt_dlp_inputs::resolve_step_output_binding;
 use super::{
-    FfmpegSlotLimits, VariantProducer, media_step_id, resolve_input_variant_producer,
-    step_option_input_bindings, variant_to_output_capture_spec,
+    FfmpegSlotLimits, VariantProducer, conductor_output_save_mode, media_step_id,
+    resolve_input_variant_producer, resolve_selected_dependency_tool_id, resolve_step_tool_id,
+    step_option_input_bindings,
 };
 
-/// Synthesizes one rsgain workflow step per variant-flow mapping edge.
+/// File extensions the provisioned `rsgain` binary accepts for in-place tagging.
+const RSGAIN_RUNTIME_INPUT_EXTENSIONS: &[&str] = &[
+    "flac", "ogg", "oga", "spx", "opus", "mp2", "mp3", "mp4", "m4a", "wma", "wv", "ape", "wav",
+    "aiff", "aif", "snd", "tak",
+];
+
+/// Expands one `rsgain` config step into ffmpeg extract → rsgain → metadata export →
+/// sd rewrite → ffmpeg apply.
 ///
-/// rsgain runs in single-track mode (in-place loudness tagging), so each
-/// mapping produces exactly one step: the mapping's input variant is bound to
-/// the `input_content` input from its producer (adding an execution-order
-/// dependency when the producer is a prior step output), and option inputs are
-/// bound from the step `options` map.
-///
-/// Output captures are keyed by the generic variant's `kind` label (for
-/// example `output_content`), matching the old step-output-policy keying; the
-/// variant-keyed `super::step_output_policy_overrides` helper is not used
-/// here. Each mapping registers its `kind`-named output as a
-/// [`VariantProducer::StepOutput`] entry keyed by the variant name.
+/// Cross-step `ffmpeg` and `sd` dependencies are consumed here: ffmpeg extracts
+/// audio and metadata, `sd` normalizes ReplayGain tag names for ffmetadata merge,
+/// and the final ffmpeg apply step writes tags back onto the source container.
 ///
 /// # Errors
 ///
-/// Returns [`MediaPmError::Workflow`] when the mapping's input variant has no
-/// producer, the output variant is missing or decodes as a non-generic
-/// (yt-dlp-shaped) config, or a producer binding fails.
+/// Returns [`MediaPmError::Workflow`] when dependency tools are missing, the input
+/// variant has no producer, or output variant decoding fails.
+#[expect(
+    clippy::too_many_lines,
+    reason = "rsgain chain synthesis keeps the full extract/tag/apply pipeline explicit"
+)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn synthesize_rsgain_step_chain(
     workflow: &mut WorkflowSpec,
@@ -57,16 +65,20 @@ pub(crate) fn synthesize_rsgain_step_chain(
     step: &MediaStep,
     mappings: &[ResolvedStepVariantFlow],
     tool_id: &str,
+    generated_doc: &NickelDocument,
     producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
+    ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> Result<(), MediaPmError> {
-    let mut pending_variant_updates = Vec::new();
+    let ffmpeg_tool_id = resolve_selected_dependency_tool_id("ffmpeg", generated_doc)?;
+    let sd_tool_id = resolve_selected_dependency_tool_id("sd", generated_doc)?;
+    let rsgain_tool_id = if tool_id.is_empty() {
+        resolve_step_tool_id(MediaStepTool::Rsgain, generated_doc)?
+    } else {
+        tool_id.to_string()
+    };
 
     for (mapping_index, mapping) in mappings.iter().enumerate() {
-        let step_id = media_step_id(step_index, mapping_index, step.tool, mapping);
-        let mut depends_on = Vec::new();
-        let mut inputs = BTreeMap::new();
-
         let producer = resolve_input_variant_producer(&mapping.input, producer_snapshot)
             .ok_or_else(|| {
                 MediaPmError::Workflow(format!(
@@ -74,80 +86,352 @@ pub(crate) fn synthesize_rsgain_step_chain(
                     mapping.input
                 ))
             })?;
-        let (input_binding, dependency) = producer.to_binding()?;
-        inputs.insert(INPUT_CONTENT.to_string(), input_binding);
-        if let Some(step_dependency) = dependency {
-            depends_on.push(step_dependency);
-        }
+        let rsgain_input_extension =
+            resolve_rsgain_input_extension(media_id, step_index, step, producer)?;
+        let extract_codec_copy = !rsgain_input_extension.eq_ignore_ascii_case("flac");
 
-        let variant_value = step.output_variants.get(&mapping.output).ok_or_else(|| {
+        let (input_binding, input_dependency) = producer.to_binding()?;
+        let base_step_id = media_step_id(step_index, mapping_index, step.tool, mapping);
+        let extract_step_id = format!("{base_step_id}-ffmpeg-extract");
+        let rsgain_step_id = format!("{base_step_id}-rsgain");
+        let metadata_export_step_id = format!("{base_step_id}-ffmpeg-export-metadata");
+        let metadata_rewrite_step_id = format!("{base_step_id}-sd-rewrite-metadata");
+        let metadata_r128_rewrite_step_id = format!("{base_step_id}-sd-rewrite-r128-metadata");
+        let apply_step_id = format!("{base_step_id}-ffmpeg-apply");
+
+        let output_variant_value = step.output_variants.get(&mapping.output).ok_or_else(|| {
             MediaPmError::Workflow(format!(
-                "media '{media_id}' step #{step_index} is missing output variant '{}'",
+                "missing output variant '{}' while resolving output policy",
                 mapping.output
             ))
         })?;
-        if !matches!(variant_value, OutputVariantValue::Generic(_)) {
+        if !matches!(output_variant_value, OutputVariantValue::Generic(_)) {
             return Err(MediaPmError::Workflow(format!(
                 "media '{media_id}' step #{step_index} output variant '{}' must decode as rsgain generic output config",
                 mapping.output
             )));
         }
+        let OutputVariantValue::Generic(output_config) = output_variant_value else {
+            unreachable!("validated above");
+        };
 
-        inputs.extend(step_option_input_bindings(step));
-        if !inputs.contains_key(INPUT_RSGAIN_INPUT_EXTENSION)
-            && let OutputVariantValue::Generic(config) = variant_value
-            && !config.extension.is_empty()
-        {
-            inputs.insert(INPUT_RSGAIN_INPUT_EXTENSION.to_string(), config.extension.clone());
-        }
-
-        // rsgain is a single-stream in-place tagger; only ffmpeg slots are
-        // bounded, so the default zeroed limits are used for the binding.
         let output_binding = resolve_step_output_binding(
             MediaStepTool::Rsgain,
             &step.output_variants,
             &mapping.output,
-            FfmpegSlotLimits::default(),
+            ffmpeg_slot_limits,
         )?;
+        let apply_output_extension =
+            resolve_rsgain_output_extension(Some(&output_config.extension), producer);
+        let apply_output_capture = ffmpeg_output_capture_name(0);
+        let apply_save_mode = conductor_output_save_mode(output_config.save);
 
-        let mut outputs = BTreeMap::new();
-        let capture_spec =
-            variant_to_output_capture_spec(&output_binding.output_name, variant_value);
-        outputs.insert(
-            output_binding.output_name.clone(),
-            OutputCaptureSpec {
-                name: output_binding.output_name.clone(),
-                capture: format!("file_regex:{}", rsgain_output_file_regex()),
-                save: capture_spec.save,
-                allow_empty: false,
-                include_topmost_folder: true,
-            },
-        );
+        let extract_inputs = BTreeMap::from([
+            (ffmpeg_input_content_name(0), input_binding.clone()),
+            (
+                ffmpeg_output_path_input_name(0),
+                ffmpeg_sandbox_output_path(0, Some(&rsgain_input_extension)),
+            ),
+            (INPUT_LEADING_ARGS.to_string(), "[]".to_string()),
+            (INPUT_TRAILING_ARGS.to_string(), r#"["-map","0:a?"]"#.to_string()),
+            ("codec_copy".to_string(), extract_codec_copy.to_string()),
+            ("vn".to_string(), "true".to_string()),
+            ("movflags".to_string(), String::new()),
+            ("map_metadata".to_string(), "-1".to_string()),
+            ("map_chapters".to_string(), "-1".to_string()),
+        ]);
+        let mut extract_depends_on = Vec::new();
+        if let Some(step_dependency) = input_dependency.clone() {
+            extract_depends_on.push(step_dependency);
+        }
 
         workflow.steps.push(WorkflowStepSpec {
-            id: step_id.clone(),
-            tool: tool_id.to_string(),
-            inputs,
-            outputs,
+            id: extract_step_id.clone(),
+            tool: ffmpeg_tool_id.clone(),
+            inputs: extract_inputs,
+            depends_on: extract_depends_on,
+            outputs: BTreeMap::from([(
+                apply_output_capture.clone(),
+                ffmpeg_slot_output_capture(0),
+            )]),
             max_retries: 0,
-            depends_on,
         });
 
-        pending_variant_updates.push((
+        let mut rsgain_inputs = BTreeMap::from([
+            (
+                INPUT_CONTENT.to_string(),
+                format!("${{step_output.{extract_step_id}.{apply_output_capture}}}"),
+            ),
+            (
+                INPUT_LEADING_ARGS.to_string(),
+                step_option_json_list(step, INPUT_LEADING_ARGS).unwrap_or_else(|| "[]".to_string()),
+            ),
+            (
+                INPUT_TRAILING_ARGS.to_string(),
+                step_option_json_list(step, INPUT_TRAILING_ARGS)
+                    .unwrap_or_else(|| "[]".to_string()),
+            ),
+            (INPUT_RSGAIN_INPUT_EXTENSION.to_string(), rsgain_input_extension.clone()),
+        ]);
+        for (key, value) in step_option_input_bindings(step) {
+            if key != INPUT_RSGAIN_INPUT_EXTENSION {
+                rsgain_inputs.insert(key, value);
+            }
+        }
+
+        workflow.steps.push(WorkflowStepSpec {
+            id: rsgain_step_id.clone(),
+            tool: rsgain_tool_id.clone(),
+            inputs: rsgain_inputs,
+            depends_on: vec![extract_step_id.clone()],
+            outputs: BTreeMap::from([(
+                output_binding.output_name.clone(),
+                rsgain_workflow_output_capture(&output_binding.output_name),
+            )]),
+            max_retries: 0,
+        });
+
+        let metadata_export_inputs = BTreeMap::from([
+            (
+                ffmpeg_input_content_name(0),
+                format!("${{step_output.{rsgain_step_id}.{}}}", output_binding.output_name),
+            ),
+            (ffmpeg_output_path_input_name(0), ffmpeg_sandbox_output_path(0, Some("ffmeta"))),
+            (INPUT_LEADING_ARGS.to_string(), "[]".to_string()),
+            (INPUT_TRAILING_ARGS.to_string(), r#"["-f","ffmetadata"]"#.to_string()),
+            ("codec_copy".to_string(), "true".to_string()),
+            ("movflags".to_string(), String::new()),
+            ("an".to_string(), "true".to_string()),
+            ("vn".to_string(), "true".to_string()),
+            ("sn".to_string(), "true".to_string()),
+            ("dn".to_string(), "true".to_string()),
+        ]);
+
+        workflow.steps.push(WorkflowStepSpec {
+            id: metadata_export_step_id.clone(),
+            tool: ffmpeg_tool_id.clone(),
+            inputs: metadata_export_inputs,
+            depends_on: vec![rsgain_step_id.clone()],
+            outputs: BTreeMap::from([(
+                apply_output_capture.clone(),
+                ffmpeg_slot_output_capture(0),
+            )]),
+            max_retries: 0,
+        });
+
+        let metadata_rewrite_inputs = BTreeMap::from([
+            (
+                INPUT_CONTENT.to_string(),
+                format!("${{step_output.{metadata_export_step_id}.{apply_output_capture}}}"),
+            ),
+            (INPUT_LEADING_ARGS.to_string(), "[]".to_string()),
+            (INPUT_TRAILING_ARGS.to_string(), "[]".to_string()),
+            (INPUT_SD_PATTERN.to_string(), "(?i)REPLAYGAIN_".to_string()),
+            (INPUT_SD_REPLACEMENT.to_string(), "replaygain_".to_string()),
+        ]);
+
+        workflow.steps.push(WorkflowStepSpec {
+            id: metadata_rewrite_step_id.clone(),
+            tool: sd_tool_id.clone(),
+            inputs: metadata_rewrite_inputs,
+            depends_on: vec![metadata_export_step_id.clone()],
+            outputs: BTreeMap::from([(OUTPUT_CONTENT.to_string(), sd_output_capture())]),
+            max_retries: 0,
+        });
+
+        let metadata_r128_rewrite_inputs = BTreeMap::from([
+            (
+                INPUT_CONTENT.to_string(),
+                format!("${{step_output.{metadata_rewrite_step_id}.{OUTPUT_CONTENT}}}"),
+            ),
+            (INPUT_LEADING_ARGS.to_string(), "[]".to_string()),
+            (INPUT_TRAILING_ARGS.to_string(), "[]".to_string()),
+            (INPUT_SD_PATTERN.to_string(), "(?i)R128_".to_string()),
+            (INPUT_SD_REPLACEMENT.to_string(), "R128_".to_string()),
+        ]);
+
+        workflow.steps.push(WorkflowStepSpec {
+            id: metadata_r128_rewrite_step_id.clone(),
+            tool: sd_tool_id.clone(),
+            inputs: metadata_r128_rewrite_inputs,
+            depends_on: vec![metadata_rewrite_step_id.clone()],
+            outputs: BTreeMap::from([(OUTPUT_CONTENT.to_string(), sd_output_capture())]),
+            max_retries: 0,
+        });
+
+        let mut apply_depends_on = vec![metadata_r128_rewrite_step_id.clone()];
+        let mut apply_inputs = BTreeMap::from([
+            (ffmpeg_input_content_name(0), input_binding),
+            (
+                INPUT_FFMETADATA_CONTENT.to_string(),
+                format!("${{step_output.{metadata_r128_rewrite_step_id}.{OUTPUT_CONTENT}}}"),
+            ),
+            (
+                ffmpeg_output_path_input_name(0),
+                ffmpeg_sandbox_output_path(0, apply_output_extension.as_deref()),
+            ),
+            (INPUT_LEADING_ARGS.to_string(), "[]".to_string()),
+            (INPUT_TRAILING_ARGS.to_string(), r#"["-map","0","-map_metadata","1"]"#.to_string()),
+            ("metadata".to_string(), "replaygain_reference_loudness=89.0 dB".to_string()),
+            ("map_metadata".to_string(), "0".to_string()),
+            ("codec_copy".to_string(), "true".to_string()),
+            ("movflags".to_string(), String::new()),
+        ]);
+        if let Some(container) =
+            apply_output_extension.as_deref().map(ffmpeg_container_for_extension)
+        {
+            apply_inputs.insert("container".to_string(), container);
+        }
+        if let Some(step_dependency) = input_dependency {
+            apply_depends_on.push(step_dependency);
+        }
+
+        workflow.steps.push(WorkflowStepSpec {
+            id: apply_step_id.clone(),
+            tool: ffmpeg_tool_id.clone(),
+            inputs: apply_inputs,
+            depends_on: apply_depends_on,
+            outputs: BTreeMap::from([(
+                apply_output_capture.clone(),
+                OutputCaptureSpec {
+                    name: apply_output_capture.clone(),
+                    capture: format!("file_regex:{}", ffmpeg_output_file_regex(0)),
+                    save: match apply_save_mode {
+                        mediapm_conductor::OutputSaveMode::Saved => SaveMode::True,
+                        mediapm_conductor::OutputSaveMode::Unsaved => SaveMode::False,
+                        mediapm_conductor::OutputSaveMode::Full => SaveMode::Full,
+                    },
+                    allow_empty: false,
+                    include_topmost_folder: true,
+                },
+            )]),
+            max_retries: 0,
+        });
+
+        variant_producers.insert(
             mapping.output.clone(),
             VariantProducer::StepOutput {
-                step_id,
-                output_name: output_binding.output_name,
+                step_id: apply_step_id,
+                output_name: apply_output_capture,
                 zip_member: output_binding.zip_member,
+                extension: apply_output_extension,
             },
-        ));
-    }
-
-    for (output_variant, producer) in pending_variant_updates {
-        variant_producers.insert(output_variant, producer);
+        );
     }
 
     Ok(())
+}
+
+/// Resolves managed rsgain extraction extension for the ffmpeg audio-extract step.
+fn resolve_rsgain_input_extension(
+    media_id: &str,
+    step_index: usize,
+    step: &MediaStep,
+    input_producer: &VariantProducer,
+) -> Result<String, MediaPmError> {
+    let configured = step_option_scalar(step, "input_extension")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+
+    let resolved = configured
+        .or_else(|| {
+            input_producer.output_extension().and_then(|extension| {
+                RSGAIN_RUNTIME_INPUT_EXTENSIONS
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+                    .then(|| extension.to_string())
+            })
+        })
+        .unwrap_or_else(|| "flac".to_string());
+
+    if RSGAIN_RUNTIME_INPUT_EXTENSIONS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&resolved))
+    {
+        return Ok(resolved);
+    }
+
+    Err(MediaPmError::Workflow(format!(
+        "media '{media_id}' step #{step_index} options.input_extension='{resolved}' is unsupported for managed rsgain; supported values are: {}",
+        RSGAIN_RUNTIME_INPUT_EXTENSIONS.join(", "),
+    )))
+}
+
+/// Resolves the effective output extension for the final ffmpeg apply step.
+#[must_use]
+fn resolve_rsgain_output_extension(
+    configured_extension: Option<&str>,
+    input_producer: &VariantProducer,
+) -> Option<String> {
+    match configured_extension.map(str::trim) {
+        Some("") => None,
+        Some(value) => normalize_output_extension(Some(value)),
+        None => input_producer
+            .output_extension()
+            .map(ToString::to_string)
+            .or_else(|| Some("mkv".to_string())),
+    }
+}
+
+#[must_use]
+fn normalize_output_extension(extension: Option<&str>) -> Option<String> {
+    let extension = extension?.trim();
+    if extension.is_empty() {
+        return None;
+    }
+    Some(extension.trim_start_matches('.').to_ascii_lowercase())
+}
+
+#[must_use]
+fn ffmpeg_slot_output_capture(index: usize) -> OutputCaptureSpec {
+    OutputCaptureSpec {
+        name: ffmpeg_output_capture_name(index),
+        capture: format!("file_regex:{}", ffmpeg_output_file_regex(index)),
+        save: SaveMode::True,
+        allow_empty: false,
+        include_topmost_folder: true,
+    }
+}
+
+#[must_use]
+fn rsgain_workflow_output_capture(output_name: &str) -> OutputCaptureSpec {
+    OutputCaptureSpec {
+        name: output_name.to_string(),
+        capture: format!("file_regex:{}", rsgain_output_file_regex()),
+        save: SaveMode::True,
+        allow_empty: false,
+        include_topmost_folder: true,
+    }
+}
+
+#[must_use]
+fn sd_output_capture() -> OutputCaptureSpec {
+    OutputCaptureSpec {
+        name: OUTPUT_CONTENT.to_string(),
+        capture: "file:inputs/input.ffmeta".to_string(),
+        save: SaveMode::True,
+        allow_empty: false,
+        include_topmost_folder: true,
+    }
+}
+
+fn ffmpeg_container_for_extension(extension: &str) -> String {
+    match extension.trim_start_matches('.').to_ascii_lowercase().as_str() {
+        "mkv" | "mka" | "mks" | "mk3d" => "matroska".to_string(),
+        "mp4" | "m4a" | "m4v" | "m4b" | "m4r" | "3gp" | "3g2" => "mp4".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn step_option_json_list(step: &MediaStep, key: &str) -> Option<String> {
+    match step.options.get(key) {
+        Some(TransformInputValue::String(value)) => {
+            let items: Vec<String> = value.split_whitespace().map(ToString::to_string).collect();
+            serde_json::to_string(&items).ok()
+        }
+        None => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,11 +440,8 @@ pub(crate) fn synthesize_rsgain_step_chain(
 
 /// Internal rsgain-only input selecting sandbox materialization extension.
 const INPUT_RSGAIN_INPUT_EXTENSION: &str = "input_extension";
-/// File extensions supported by rsgain for in-place tag writing.
-const SUPPORTED_RSGAIN_INPUT_EXTENSIONS: &[&str] = &[
-    "flac", "ogg", "oga", "spx", "opus", "mp2", "mp3", "mp4", "m4a", "mkv", "wma", "wv", "ape",
-    "wav", "aiff", "aif", "snd", "tak",
-];
+/// File extensions supported by rsgain command template materialization.
+const SUPPORTED_RSGAIN_INPUT_EXTENSIONS: &[&str] = RSGAIN_RUNTIME_INPUT_EXTENSIONS;
 
 const RSGAIN_INPUT_DEFAULTS: &[(&str, &str)] = &[
     ("input_extension", "flac"),
@@ -450,8 +731,12 @@ mod tests {
             "expected input_extension conditionals"
         );
         assert!(
-            command.iter().any(|c| c.contains("mkv")),
-            "expected mkv input_extension conditional branch"
+            command.iter().any(|c| c.contains("m4a")),
+            "expected m4a input_extension conditional branch"
+        );
+        assert!(
+            !command.iter().any(|c| c.contains("mkv")),
+            "mkv must not be passed directly to rsgain; video flows use ffmpeg extract"
         );
     }
 

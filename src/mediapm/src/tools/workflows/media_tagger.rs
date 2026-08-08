@@ -236,6 +236,7 @@ pub(crate) fn synthesize_media_tagger_step(
                 step_id: apply_step_id,
                 output_name: apply_output_name,
                 zip_member: output_binding.zip_member,
+                extension: None,
             },
         ));
     }
