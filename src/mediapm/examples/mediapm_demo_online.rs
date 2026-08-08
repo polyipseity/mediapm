@@ -14,7 +14,9 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mediapm::demo_hierarchy_spec::ONLINE_DEMO_YT_DLP_VIDEO_ID;
+use mediapm::demo_hierarchy_spec::{
+    online_demo_root_link_filename, online_demo_sidecar_link_filename,
+};
 use mediapm::{
     ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
     HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
@@ -1719,10 +1721,7 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
             .into());
         }
         "links" => {
-            assert_sidecar_links_directory_has_all_public_formats(
-                directory,
-                ONLINE_DEMO_YT_DLP_VIDEO_ID,
-            )?;
+            assert_sidecar_links_directory_has_exact_public_filenames(directory)?;
         }
         _ => {}
     }
@@ -1730,26 +1729,25 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
     Ok(())
 }
 
-// Sidecar `links/` filenames use yt-dlp `%(title)s`; live title may differ from golden
-// canonical prefix. Require all three public formats via video-id suffix only — see
-// `.agents/instructions/demo-hierarchy-golden.instructions.md`.
-fn assert_sidecar_links_directory_has_all_public_formats(
+// yt-dlp-format basenames under `sidecars/links/` — see demo-hierarchy-golden.instructions.md.
+fn assert_sidecar_links_directory_has_exact_public_filenames(
     directory: &Path,
-    video_id: &str,
 ) -> ExampleResult<()> {
-    let files = collect_regular_files_recursive(directory)?;
-    let file_names = files
-        .iter()
-        .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
-        .collect::<Vec<_>>();
-
     for extension in ["url", "webloc", "desktop"] {
-        let suffix = format!("[{video_id}].{extension}");
-        if !file_names.iter().any(|name| name.ends_with(&suffix)) {
+        let expected_name = online_demo_sidecar_link_filename(extension);
+        let path = directory.join(&expected_name);
+        if !path.is_file() {
+            let files = collect_regular_files_recursive(directory)?;
+            let observed: Vec<String> = files
+                .iter()
+                .filter_map(|entry| {
+                    entry.file_name().and_then(|value| value.to_str()).map(str::to_string)
+                })
+                .collect();
             return Err(format!(
-                "expected sidecar links directory '{}' to contain a public link file ending with '{suffix}' but found: {:?}",
+                "expected sidecar links directory '{}' to contain exact file '{}' but found: {observed:?}",
                 directory.display(),
-                file_names
+                expected_name
             )
             .into());
         }
@@ -1851,6 +1849,32 @@ fn assert_flat_media_root_sidecar_families(
         .into());
     }
 
+    // mediapm root projection basenames — exact match via demo_hierarchy_spec helpers.
+    for extension in ["url", "webloc", "desktop"] {
+        let expected_name = online_demo_root_link_filename(extension);
+        let path = interpolated_root.join(&expected_name);
+        if !path.is_file() {
+            let observed: Vec<String> = collect_regular_files_recursive(interpolated_root)?
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|name| name.contains(".link."))
+                })
+                .filter_map(|entry| {
+                    entry.file_name().and_then(|value| value.to_str()).map(str::to_string)
+                })
+                .collect();
+            return Err(format!(
+                "expected exact root link projection file '{}' in '{}' but observed link files: {observed:?}",
+                path.display(),
+                interpolated_root.display()
+            )
+            .into());
+        }
+    }
+
     let links_files = collect_regular_files_recursive(interpolated_root)?
         .into_iter()
         .filter(|path| {
@@ -1859,35 +1883,6 @@ fn assert_flat_media_root_sidecar_families(
                 .is_some_and(|name| name.contains(".link."))
         })
         .collect::<Vec<_>>();
-
-    if links_files.is_empty() {
-        return Err(format!(
-            "expected root links projection files in '{}' to exist",
-            interpolated_root.display()
-        )
-        .into());
-    }
-
-    // Root link projections use metadata rename templates; suffix on media id tolerates
-    // title prefix drift (same contract as sidecar links — see demo-hierarchy-golden.instructions.md).
-    for extension in ["url", "webloc", "desktop"] {
-        let suffix = format!("[{DEMO_MEDIA_ID}].link.{extension}");
-        if !links_files.iter().any(|path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|name| name.ends_with(&suffix))
-        }) {
-            let observed = links_files
-                .iter()
-                .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
-                .collect::<Vec<_>>();
-            return Err(format!(
-                "expected root link projection file ending with '{suffix}' in '{}' but observed: {observed:?}",
-                interpolated_root.display()
-            )
-            .into());
-        }
-    }
 
     assert_root_projection_sidecar_names_align(
         interpolated_root,
@@ -1912,10 +1907,16 @@ fn assert_root_projection_sidecar_names_align(
 
     if !root_projection_files.iter().all(|path| {
         path.file_name().and_then(|value| value.to_str()).is_some_and(|name| {
-            name.starts_with(expected_output_base)
-                || expected_media_suffixes
+            if name.contains(".link.") {
+                ["url", "webloc", "desktop"]
                     .iter()
-                    .any(|media_suffix| name.contains(&format!(" [{media_suffix}].")))
+                    .any(|extension| name == online_demo_root_link_filename(extension))
+            } else {
+                name.starts_with(expected_output_base)
+                    || expected_media_suffixes
+                        .iter()
+                        .any(|media_suffix| name.contains(&format!(" [{media_suffix}].")))
+            }
         })
     }) {
         return Err(format!(
@@ -3086,10 +3087,10 @@ mod tests {
         assert!(error.to_string().contains("expected sidecar root"));
     }
 
-    /// Ensures root-projected non-subtitle sidecars may retain provider-native
-    /// title text as long as names stay aligned by media-id suffix.
+    /// Ensures root-projected thumbnails may use provider-native title text when aligned by
+    /// media-id suffix; link projections must match exact mediapm rename basenames.
     #[test]
-    fn media_root_sidecars_accept_non_subtitle_files_aligned_by_media_id_suffix() {
+    fn media_root_sidecars_accept_thumbnail_files_aligned_by_media_id_suffix() {
         let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let root = temp.path();
         let output_base = "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]";
