@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mediapm::demo_hierarchy_spec::{ONLINE_DEMO_YT_DLP_VIDEO_ID, online_demo_root_link_filename};
+use mediapm::demo_hierarchy_spec::ONLINE_DEMO_YT_DLP_VIDEO_ID;
 use mediapm::{
     ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
     HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
@@ -1866,12 +1866,19 @@ fn assert_flat_media_root_sidecar_families(
     }
 
     for extension in ["url", "webloc", "desktop"] {
-        let expected_name = online_demo_root_link_filename(extension);
-        let expected_path = interpolated_root.join(expected_name);
-        if !expected_path.is_file() {
+        let suffix = format!("[{DEMO_MEDIA_ID}].link.{extension}");
+        if !links_files.iter().any(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+        }) {
+            let observed = links_files
+                .iter()
+                .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
+                .collect::<Vec<_>>();
             return Err(format!(
-                "expected root link projection file '{}' to exist",
-                expected_path.display()
+                "expected root link projection file ending with '{suffix}' in '{}' but observed: {observed:?}",
+                interpolated_root.display()
             )
             .into());
         }

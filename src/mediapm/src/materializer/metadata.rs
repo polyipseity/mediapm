@@ -12,7 +12,7 @@ use mediapm_conductor::{ConductorState, NickelDocument};
 use regex::Regex;
 
 use crate::config::MediaPmDocument;
-use crate::config::hierarchy_types::FlattenedHierarchyEntry;
+use crate::config::hierarchy_types::{FlattenedHierarchyEntry, HierarchyFolderRenameRule};
 use crate::config::output_types::{GenericOutputVariantConfig, OutputVariantValue};
 use crate::config::source_types::{
     MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate, MediaSourceSpec,
@@ -167,6 +167,29 @@ pub(super) async fn interpolate_path_template(
     }
 
     Ok(result)
+}
+
+/// Interpolates media placeholders in folder rename-rule replacements.
+pub(super) async fn resolve_interpolated_folder_rename_rules(
+    rules: &[HierarchyFolderRenameRule],
+    media_id: &str,
+    source: &MediaSourceSpec,
+    lookup_context: &MaterializationLookupContext,
+) -> Result<Vec<HierarchyFolderRenameRule>, MediaPmError> {
+    let mut resolved = Vec::with_capacity(rules.len());
+    for rule in rules {
+        resolved.push(HierarchyFolderRenameRule {
+            pattern: rule.pattern.clone(),
+            replacement: interpolate_path_template(
+                &rule.replacement,
+                media_id,
+                source,
+                lookup_context,
+            )
+            .await?,
+        });
+    }
+    Ok(resolved)
 }
 
 /// Resolves hierarchy path templates for one flattened entry.

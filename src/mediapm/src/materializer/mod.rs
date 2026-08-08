@@ -31,7 +31,9 @@ use crate::tools::workflows::resolve_ffmpeg_slot_limits;
 use mediapm_conductor::{ConductorState, NickelDocument};
 pub(crate) use resolve::backfill_source_variant_hashes_from_workflow_outputs;
 
-use self::metadata::{MaterializationLookupContext, StepOutputHashes};
+use self::metadata::{
+    MaterializationLookupContext, StepOutputHashes, resolve_interpolated_folder_rename_rules,
+};
 use self::playlist::{
     PlaylistEntryPathMode, RenderedPlaylistEntry, generate_playlist_bytes,
     resolve_playlist_target_relative_path,
@@ -473,7 +475,14 @@ async fn materialize_media_folder_entry(
         })?
     };
 
-    let rename_rules = compile_hierarchy_folder_rename_rules(&entry.entry.rename_files)?;
+    let interpolated_rename_rules = resolve_interpolated_folder_rename_rules(
+        &entry.entry.rename_files,
+        media_id,
+        source,
+        lookup,
+    )
+    .await?;
+    let rename_rules = compile_hierarchy_folder_rename_rules(&interpolated_rename_rules)?;
     let mut managed_files = BTreeMap::new();
     let mut variant_hashes = BTreeMap::new();
 
