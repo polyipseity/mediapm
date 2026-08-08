@@ -1,8 +1,7 @@
 //! Golden hierarchy layout contract tests.
 //!
-//! Golden JSON uses canonical link paths from `demo_hierarchy_spec` helpers. Live
-//! `mediapm_demo_online` tolerates yt-dlp title drift via suffix asserts — see
-//! `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+//! Golden JSON encodes exact link basenames for both formats (yt-dlp sidecar vs mediapm root).
+//! See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
 use mediapm::demo_hierarchy_spec::{
     DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID, assert_tree_under,
@@ -20,7 +19,6 @@ fn golden_fixture_paths_match_shared_constants() {
 
 #[test]
 fn golden_fixture_link_paths_match_helpers() {
-    // Golden encodes canonical link basenames; live demo allows yt-dlp title prefix drift.
     let golden = load_demo_hierarchy_golden_document();
     for extension in ["url", "webloc", "desktop"] {
         let sidecar_path = online_demo_sidecar_link_relative_path(extension);

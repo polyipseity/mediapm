@@ -221,7 +221,7 @@ Development: `cargo test-pkg mediapm` / `cargo build-pkg mediapm` / selective te
 
 **Temp isolation:** Examples-as-tests use `mediapm::example_isolation::IsolatedExampleRoots` and `MEDIAPM_EXAMPLE_*` env overrides; integration tests use `mediapm_utils::temp::artifact_dir()` plus `cache_dir()` for `cache_root_override`. See `.agents/instructions/example-temp-isolation.instructions.md` for role prefixes, cleanup lifecycle, and parallelism (`--test-threads=1` for example binaries when debugging env races).
 
-**Demo hierarchy golden:** Online link files use canonical title prefixes in golden fixtures and hermetic e2e seeds, but live `mediapm_demo_online` asserts tolerate yt-dlp `%(title)s` drift via video-id suffix checks. See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+**Demo hierarchy golden:** Online link files use two exact naming formats — yt-dlp shape under `sidecars/links/` vs mediapm root projections — encoded in golden helpers and live asserts. See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
 Post-change: both demo examples mandatory:
 
