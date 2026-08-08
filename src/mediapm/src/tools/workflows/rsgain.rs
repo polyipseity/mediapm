@@ -158,8 +158,8 @@ pub(crate) fn synthesize_rsgain_step_chain(
 const INPUT_RSGAIN_INPUT_EXTENSION: &str = "input_extension";
 /// File extensions supported by rsgain for in-place tag writing.
 const SUPPORTED_RSGAIN_INPUT_EXTENSIONS: &[&str] = &[
-    "flac", "ogg", "oga", "spx", "opus", "mp2", "mp3", "mp4", "m4a", "wma", "wv", "ape", "wav",
-    "aiff", "aif", "snd", "tak",
+    "flac", "ogg", "oga", "spx", "opus", "mp2", "mp3", "mp4", "m4a", "mkv", "wma", "wv", "ape",
+    "wav", "aiff", "aif", "snd", "tak",
 ];
 
 const RSGAIN_INPUT_DEFAULTS: &[(&str, &str)] = &[
@@ -448,6 +448,10 @@ mod tests {
         assert!(
             command.iter().any(|c| c.contains("input_extension")),
             "expected input_extension conditionals"
+        );
+        assert!(
+            command.iter().any(|c| c.contains("mkv")),
+            "expected mkv input_extension conditional branch"
         );
     }
 
