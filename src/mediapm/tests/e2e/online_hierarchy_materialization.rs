@@ -399,6 +399,8 @@ async fn online_hierarchy_materialization_matches_golden_tree() -> Result<(), me
         .put(Bytes::from(thumbnail_zip))
         .await
         .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed thumbnails: {e}")))?;
+    // Hermetic seeds use canonical yt-dlp title prefix (golden contract). Live sync may
+    // drift; live demo asserts use video-id suffixes — demo-hierarchy-golden.instructions.md.
     let provider_title = online_demo_yt_dlp_provider_title();
     let url_member = format!(
         "downloads/{}",

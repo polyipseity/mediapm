@@ -1730,6 +1730,9 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
     Ok(())
 }
 
+// Sidecar `links/` filenames use yt-dlp `%(title)s`; live title may differ from golden
+// canonical prefix. Require all three public formats via video-id suffix only — see
+// `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 fn assert_sidecar_links_directory_has_all_public_formats(
     directory: &Path,
     video_id: &str,
@@ -1865,6 +1868,8 @@ fn assert_flat_media_root_sidecar_families(
         .into());
     }
 
+    // Root link projections use metadata rename templates; suffix on media id tolerates
+    // title prefix drift (same contract as sidecar links — see demo-hierarchy-golden.instructions.md).
     for extension in ["url", "webloc", "desktop"] {
         let suffix = format!("[{DEMO_MEDIA_ID}].link.{extension}");
         if !links_files.iter().any(|path| {
