@@ -89,6 +89,41 @@ async fn capture_file_regex_output(
     }
 }
 
+/// Archives sandbox files referenced by forward-slash relative paths into one ZIP blob.
+async fn archive_sandbox_relative_files_as_zip(
+    sandbox_dir: &Path,
+    relative_paths: &[String],
+) -> Result<Vec<u8>, ConductorError> {
+    use std::io::Write;
+
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(cursor);
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+    for relative in relative_paths {
+        let full_path = sandbox_dir.join(relative);
+        let bytes = tokio::fs::read(&full_path).await.map_err(|source| {
+            ConductorError::Workflow(format!(
+                "failed to read sandbox file '{}' for folder capture: {source}",
+                full_path.display()
+            ))
+        })?;
+        let entry_name = relative.replace('\\', "/");
+        writer.start_file(entry_name.clone(), options).map_err(|source| {
+            ConductorError::Workflow(format!("failed to start ZIP entry '{entry_name}': {source}"))
+        })?;
+        writer.write_all(&bytes).map_err(|source| {
+            ConductorError::Workflow(format!("failed to write ZIP entry '{entry_name}': {source}"))
+        })?;
+    }
+
+    let cursor = writer.finish().map_err(|source| {
+        ConductorError::Workflow(format!("failed to finish ZIP archive: {source}"))
+    })?;
+    Ok(cursor.into_inner())
+}
+
 async fn capture_folder_regex_output(
     regex: &regex::Regex,
     sandbox_dir: &Path,
@@ -99,8 +134,7 @@ async fn capture_folder_regex_output(
         .filter_map(|path| sandbox_relative_path(path, sandbox_dir))
         .filter(|relative| regex.is_match(relative))
         .collect();
-    serde_json::to_vec(&file_list)
-        .map_err(|e| ConductorError::Workflow(format!("failed to serialize folder listing: {e}")))
+    archive_sandbox_relative_files_as_zip(sandbox_dir, &file_list).await
 }
 
 /// Captures declared outputs from the execution result and persists to CAS.
@@ -187,9 +221,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                         .map(|p| p.to_string_lossy().to_string())
                         .collect()
                 };
-                serde_json::to_vec(&file_list).map_err(|e| {
-                    ConductorError::Workflow(format!("failed to serialize folder listing: {e}"))
-                })?
+                archive_sandbox_relative_files_as_zip(sandbox_dir, &file_list).await?
             }
             _ => continue,
         };
@@ -399,8 +431,13 @@ mod tests {
             .unwrap();
         let out = outputs.records.get("yt_dlp_subtitle_artifacts").unwrap();
         let data = cas.get(out.hash).await.unwrap();
-        let file_list: Vec<String> = serde_json::from_slice(&data).unwrap();
-        assert_eq!(file_list, vec!["downloads/video.en.vtt".to_string()]);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data.as_ref())).unwrap();
+        assert_eq!(archive.len(), 1);
+        let mut entry = archive.by_index(0).unwrap();
+        assert_eq!(entry.name(), "downloads/video.en.vtt");
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+        assert_eq!(bytes, b"WEBVTT");
     }
 
     #[tokio::test]
@@ -429,9 +466,14 @@ mod tests {
             .unwrap();
         let out = outputs.records.get("folder_out").unwrap();
         let data = cas.get(out.hash).await.unwrap();
-        let file_list: Vec<String> = serde_json::from_slice(&data).unwrap();
-        assert!(file_list.contains(&"subdir/a.txt".to_string()));
-        assert!(file_list.contains(&"subdir/b.txt".to_string()));
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data.as_ref())).unwrap();
+        assert_eq!(archive.len(), 2);
+        let mut names = Vec::new();
+        for index in 0..archive.len() {
+            names.push(archive.by_index(index).unwrap().name().to_string());
+        }
+        assert!(names.contains(&"subdir/a.txt".to_string()));
+        assert!(names.contains(&"subdir/b.txt".to_string()));
     }
 
     #[tokio::test]
