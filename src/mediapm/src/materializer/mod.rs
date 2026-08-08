@@ -282,7 +282,7 @@ pub async fn sync_hierarchy(
     }
 
     // --- Stale path cleanup ---
-    let stale_result = remove_stale_paths(hierarchy_root, &flattened)?;
+    let stale_result = remove_stale_paths(hierarchy_root, &flattened, &desired_managed_paths)?;
     report.removed_paths = stale_result.0;
     report.removed_empty_dirs = stale_result.1;
 
@@ -677,6 +677,32 @@ fn is_stale_scan_excluded(name: &str, relative_prefix: &str) -> bool {
         || (relative_prefix.is_empty() && HIERARCHY_ROOT_RESERVED_NAMES.contains(&name))
 }
 
+/// Returns true when `relative_path` is declared by the flattened hierarchy or
+/// materialized as a managed descendant of one declared directory path.
+#[must_use]
+fn is_protected_hierarchy_path(
+    relative_path: &str,
+    current_paths: &BTreeSet<String>,
+    managed_paths: &BTreeSet<String>,
+) -> bool {
+    if current_paths.contains(relative_path) || managed_paths.contains(relative_path) {
+        return true;
+    }
+
+    current_paths.iter().any(|current| is_relative_path_under_prefix(relative_path, current))
+        || managed_paths.iter().any(|managed| is_relative_path_under_prefix(relative_path, managed))
+}
+
+#[must_use]
+fn is_relative_path_under_prefix(relative_path: &str, prefix: &str) -> bool {
+    if relative_path.len() <= prefix.len() {
+        return false;
+    }
+
+    let boundary = relative_path.as_bytes().get(prefix.len());
+    relative_path.starts_with(prefix) && matches!(boundary, Some(b'/'))
+}
+
 /// Removes filesystem paths that are no longer present in the flattened
 /// hierarchy, plus any empty parent directories left behind.
 ///
@@ -684,6 +710,7 @@ fn is_stale_scan_excluded(name: &str, relative_prefix: &str) -> bool {
 fn remove_stale_paths(
     hierarchy_root: &Path,
     current_entries: &[FlattenedHierarchyEntry],
+    managed_paths: &BTreeSet<String>,
 ) -> Result<(usize, usize), MediaPmError> {
     let current_paths: BTreeSet<String> =
         current_entries.iter().map(FlattenedHierarchyEntry::path_str).collect();
@@ -698,6 +725,7 @@ fn remove_stale_paths(
             hierarchy_root,
             "",
             &current_paths,
+            managed_paths,
             &mut removed_paths,
             &mut removed_empty_dirs,
         )?;
@@ -716,6 +744,7 @@ fn remove_stale_recursive(
     absolute_dir: &Path,
     relative_prefix: &str,
     current_paths: &BTreeSet<String>,
+    managed_paths: &BTreeSet<String>,
     removed_paths: &mut usize,
     removed_empty_dirs: &mut usize,
 ) -> Result<(), MediaPmError> {
@@ -757,16 +786,19 @@ fn remove_stale_recursive(
                 &absolute_path,
                 &relative_path,
                 current_paths,
+                managed_paths,
                 removed_paths,
                 removed_empty_dirs,
             )?;
 
             // After recursion, remove directory if empty and not in current hierarchy.
-            if !current_paths.contains(&relative_path) && is_directory_empty(&absolute_path)? {
+            if !is_protected_hierarchy_path(&relative_path, current_paths, managed_paths)
+                && is_directory_empty(&absolute_path)?
+            {
                 remove_path(&absolute_path)?;
                 *removed_empty_dirs += 1;
             }
-        } else if !current_paths.contains(&relative_path) {
+        } else if !is_protected_hierarchy_path(&relative_path, current_paths, managed_paths) {
             // Remove stale file.
             remove_path(&absolute_path)?;
             *removed_paths += 1;
@@ -892,6 +924,29 @@ mod tests {
             normalize_yt_dlp_sandbox_zip_member_path(path),
             PathBuf::from("links/Rick Astley [dQw4w9WgXcQ].desktop")
         );
+    }
+
+    #[test]
+    fn is_protected_hierarchy_path_accepts_managed_descendants() {
+        let current_paths = BTreeSet::from(["music videos/demo [id]/sidecars/links".to_string()]);
+        let managed_paths = BTreeSet::from([
+            "music videos/demo [id]/sidecars/links/Rick [dQw4w9WgXcQ].url".to_string(),
+        ]);
+        assert!(is_protected_hierarchy_path(
+            "music videos/demo [id]/sidecars/links/Rick [dQw4w9WgXcQ].url",
+            &current_paths,
+            &managed_paths,
+        ));
+        assert!(is_protected_hierarchy_path(
+            "music videos/demo [id]/Rick [id].link.url",
+            &BTreeSet::from(["music videos/demo [id]".to_string()]),
+            &BTreeSet::new(),
+        ));
+        assert!(!is_protected_hierarchy_path(
+            "music videos/other [id]/stale.txt",
+            &current_paths,
+            &managed_paths,
+        ));
     }
 
     /// Injected [`RecordingProgressTracker`] produces no ops when hierarchy is
