@@ -5,6 +5,8 @@
 
 use std::collections::BTreeMap;
 
+use mediapm_conductor::tools::helpers::build_os_conditional_selector;
+
 use crate::conductor_bridge::constants::{
     DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, OUTPUT_YT_DLP_ANNOTATION_FILE, OUTPUT_YT_DLP_ARCHIVE_FILE,
     OUTPUT_YT_DLP_CHAPTER_ARTIFACTS, OUTPUT_YT_DLP_DESCRIPTION_FILE, OUTPUT_YT_DLP_INFOJSON_FILE,
@@ -104,6 +106,16 @@ pub(crate) fn resolve_step_output_binding(
     })
 }
 
+/// OS-conditional inlined companion-dep path for yt-dlp post-processing.
+#[must_use]
+fn yt_dlp_managed_ffmpeg_location_selector() -> String {
+    build_os_conditional_selector(&BTreeMap::from([
+        ("linux".to_string(), "../deps/ffmpeg/linux/ffmpeg".to_string()),
+        ("macos".to_string(), "../deps/ffmpeg/macos/ffmpeg".to_string()),
+        ("windows".to_string(), "../deps/ffmpeg/windows/ffmpeg.exe".to_string()),
+    ]))
+}
+
 /// Resolves optional ZIP-member selector for yt-dlp variant materialization.
 #[must_use]
 fn yt_dlp_zip_member_for_variant(config: &YtDlpOutputVariantConfig) -> Option<String> {
@@ -158,7 +170,9 @@ pub(crate) fn yt_dlp_variant_inputs(config: &YtDlpOutputVariantConfig) -> BTreeM
     }
 
     match config.kind {
-        YtDlpOutputKind::Primary => {}
+        YtDlpOutputKind::Primary => {
+            inputs.insert("ffmpeg_location".to_string(), yt_dlp_managed_ffmpeg_location_selector());
+        }
         YtDlpOutputKind::Chapters => {
             inputs.insert("split_chapters".to_string(), "true".to_string());
             inputs.insert("write_description".to_string(), "false".to_string());

@@ -213,7 +213,6 @@ const YT_DLP_INPUT_DEFAULTS: &[(&str, &str)] = &[
     ("write_comments", "false"),
     ("write_description", "true"),
     ("write_annotations", "false"),
-    ("write_chapters", "true"),
     ("write_link", "true"),
     ("write_url_link", "true"),
     ("write_webloc_link", "true"),
@@ -222,7 +221,6 @@ const YT_DLP_INPUT_DEFAULTS: &[(&str, &str)] = &[
     ("split_chapters", "false"),
     ("no_playlist", "true"),
     ("cache_dir", ""),
-    ("ffmpeg_location", "ffmpeg"),
     ("embed_thumbnail", "false"),
     ("embed_subs", "false"),
 ];
@@ -255,7 +253,6 @@ const YT_DLP_TOKEN_SPECS: &[(&str, TokenSpec)] = &[
     ("write_comments", TokenSpec::Bool("--write-comments")),
     ("write_description", TokenSpec::Bool("--write-description")),
     ("write_annotations", TokenSpec::Bool("--write-annotations")),
-    ("write_chapters", TokenSpec::Bool("--write-chapters")),
     ("write_link", TokenSpec::Bool("--write-link")),
     ("write_url_link", TokenSpec::Bool("--write-url-link")),
     ("write_webloc_link", TokenSpec::Bool("--write-webloc-link")),
@@ -318,7 +315,6 @@ const YT_DLP_OPTION_INPUTS: &[&str] = &[
     "write_comments",
     "write_description",
     "write_annotations",
-    "write_chapters",
     "write_link",
     "write_url_link",
     "write_webloc_link",
@@ -630,7 +626,6 @@ mod tests {
             defaults.get("write_comments"),
             Some(&InputBinding::String("false".to_string()))
         );
-        assert_eq!(defaults.get("write_chapters"), Some(&InputBinding::String("true".to_string())));
         assert_eq!(defaults.get("write_url_link"), Some(&InputBinding::String("true".to_string())));
         assert_eq!(
             defaults.get("write_desktop_link"),
