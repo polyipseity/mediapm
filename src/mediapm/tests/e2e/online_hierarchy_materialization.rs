@@ -43,6 +43,29 @@ fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
 
 const MKV_HEADER: &[u8] = &[0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00];
 
+const ONLINE_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
+
+const ONLINE_UNTAGGED_MEDIA_FILE_NAME: &str = "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
+
+const ONLINE_TAGGED_MEDIA_FILE_NAME: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
+
+const ONLINE_EN_VTT_FILE_NAME: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt";
+
+const ONLINE_DESCRIPTION_FILE_NAME: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt";
+
+const ONLINE_INFOJSON_FILE_NAME: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].info.json";
+
+const ONLINE_THUMBNAIL_RENAME_REPLACEMENT: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1";
+
+const ONLINE_LINK_RENAME_REPLACEMENT: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1";
+
 fn demo_metadata_literals() -> BTreeMap<String, MediaMetadataValue> {
     BTreeMap::from([
         ("artist".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_ARTIST.to_string())),
@@ -52,26 +75,7 @@ fn demo_metadata_literals() -> BTreeMap<String, MediaMetadataValue> {
     ])
 }
 
-fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
-    let untagged_name = format!(
-        "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].untagged.mkv"
-    );
-    let tagged_name =
-        format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].mkv");
-    let en_vtt_name =
-        format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].en.vtt");
-    let description_name = format!(
-        "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].description.txt"
-    );
-    let infojson_name = format!(
-        "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].info.json"
-    );
-    let thumbnail_rename = format!(
-        "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].thumbnail.$1"
-    );
-    let link_rename =
-        format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].link.$1");
-
+fn build_online_hierarchy() -> Vec<HierarchyNode> {
     let media_root_children = vec![
         HierarchyNode {
             path: HierarchyPath::from("sidecars"),
@@ -179,7 +183,7 @@ fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
             ],
         },
         HierarchyNode {
-            path: HierarchyPath::from(untagged_name.as_str()),
+            path: HierarchyPath::from(ONLINE_UNTAGGED_MEDIA_FILE_NAME),
             kind: HierarchyNodeKind::Media,
             id: None,
             media_id: Some(ONLINE_DEMO_MEDIA_ID.to_string()),
@@ -192,7 +196,7 @@ fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
             children: Vec::new(),
         },
         HierarchyNode {
-            path: HierarchyPath::from(tagged_name.as_str()),
+            path: HierarchyPath::from(ONLINE_TAGGED_MEDIA_FILE_NAME),
             kind: HierarchyNodeKind::Media,
             id: Some(ONLINE_DEMO_MEDIA_ID.to_string()),
             media_id: Some(ONLINE_DEMO_MEDIA_ID.to_string()),
@@ -205,7 +209,7 @@ fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
             children: Vec::new(),
         },
         HierarchyNode {
-            path: HierarchyPath::from(en_vtt_name.as_str()),
+            path: HierarchyPath::from(ONLINE_EN_VTT_FILE_NAME),
             kind: HierarchyNodeKind::Media,
             id: None,
             media_id: Some(ONLINE_DEMO_MEDIA_ID.to_string()),
@@ -218,7 +222,7 @@ fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
             children: Vec::new(),
         },
         HierarchyNode {
-            path: HierarchyPath::from(description_name.as_str()),
+            path: HierarchyPath::from(ONLINE_DESCRIPTION_FILE_NAME),
             kind: HierarchyNodeKind::Media,
             id: None,
             media_id: Some(ONLINE_DEMO_MEDIA_ID.to_string()),
@@ -231,7 +235,7 @@ fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
             children: Vec::new(),
         },
         HierarchyNode {
-            path: HierarchyPath::from(infojson_name.as_str()),
+            path: HierarchyPath::from(ONLINE_INFOJSON_FILE_NAME),
             kind: HierarchyNodeKind::Media,
             id: None,
             media_id: Some(ONLINE_DEMO_MEDIA_ID.to_string()),
@@ -252,7 +256,7 @@ fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
             variants: vec!["thumbnails".to_string()],
             rename_files: vec![HierarchyFolderRenameRule {
                 pattern: "^.*\\.([^.]+)$".to_string(),
-                replacement: thumbnail_rename,
+                replacement: ONLINE_THUMBNAIL_RENAME_REPLACEMENT.to_string(),
             }],
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
@@ -268,7 +272,7 @@ fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
             variants: vec!["links".to_string()],
             rename_files: vec![HierarchyFolderRenameRule {
                 pattern: "^.*\\.([^.]+)$".to_string(),
-                replacement: link_rename,
+                replacement: ONLINE_LINK_RENAME_REPLACEMENT.to_string(),
             }],
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
@@ -306,7 +310,7 @@ fn build_online_hierarchy(media_folder_template: &str) -> Vec<HierarchyNode> {
             ids: Vec::new(),
             sanitize_names: SanitizeNamesConfig::Inherit,
             children: vec![HierarchyNode {
-                path: HierarchyPath::from(media_folder_template),
+                path: HierarchyPath::from(ONLINE_HIERARCHY_MEDIA_ROOT_TEMPLATE),
                 kind: HierarchyNodeKind::Folder,
                 id: Some(format!("{ONLINE_DEMO_MEDIA_ID}.media_folder")),
                 media_id: None,
@@ -418,9 +422,6 @@ async fn online_hierarchy_materialization_matches_golden_tree() -> Result<(), me
         .await
         .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed links: {e}")))?;
 
-    let media_folder_name =
-        format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}]");
-
     let document = MediaPmDocument {
         media: BTreeMap::from([(
             ONLINE_DEMO_MEDIA_ID.to_string(),
@@ -443,7 +444,7 @@ async fn online_hierarchy_materialization_matches_golden_tree() -> Result<(), me
                 steps: Vec::new(),
             },
         )]),
-        hierarchy: build_online_hierarchy(&media_folder_name),
+        hierarchy: build_online_hierarchy(),
         ..MediaPmDocument::default()
     };
 
