@@ -52,7 +52,7 @@ const DEMO_EXPECTED_VIDEO_ID: &str = "dQw4w9WgXcQ";
 const DEMO_EXPECTED_TITLE: &str = "Never Gonna Give You Up";
 const DEMO_METADATA_ARTIST: &str = "Rick Astley";
 
-const DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT: &str = ".mp4";
+const DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT: &str = ".mkv";
 
 const DEMO_OUTPUT_FILE_NAME_BASE: &str =
     "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
@@ -831,20 +831,17 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 "video_untagged".to_string(),
                 OutputVariantValue::Generic(GenericOutputVariantConfig {
                     kind: "primary".to_string(),
-                    extension: "mp4".to_string(),
+                    extension: "mkv".to_string(),
                     ..Default::default()
                 }),
             )]),
-            options: BTreeMap::from([(
-                "container".to_string(),
-                TransformInputValue::String("mp4".to_string()),
-            )]),
+            options: BTreeMap::new(),
         },
         MediaStep {
             tool: MediaStepTool::MediaTagger,
             input_variants: vec!["video_untagged".to_string()],
             output_variants: BTreeMap::from([(
-                "video_tagged".to_string(),
+                "video".to_string(),
                 OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                     kind: YtDlpOutputKind::Primary,
                     ..Default::default()
@@ -861,59 +858,17 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             ]),
         },
         MediaStep {
-            tool: MediaStepTool::Ffmpeg,
-            input_variants: vec!["video_tagged".to_string()],
-            output_variants: BTreeMap::from([(
-                "audio".to_string(),
-                OutputVariantValue::Generic(GenericOutputVariantConfig {
-                    kind: "primary".to_string(),
-                    extension: "m4a".to_string(),
-                    ..Default::default()
-                }),
-            )]),
-            options: BTreeMap::from([
-                ("vn".to_string(), TransformInputValue::String("true".to_string())),
-                ("container".to_string(), TransformInputValue::String("mp4".to_string())),
-            ]),
-        },
-        MediaStep {
             tool: MediaStepTool::Rsgain,
-            input_variants: vec!["audio".to_string()],
-            output_variants: BTreeMap::from([(
-                "audio".to_string(),
-                OutputVariantValue::Generic(GenericOutputVariantConfig {
-                    kind: "output_content".to_string(),
-                    extension: "m4a".to_string(),
-                    ..Default::default()
-                }),
-            )]),
-            options: BTreeMap::from([(
-                "input_extension".to_string(),
-                TransformInputValue::String("m4a".to_string()),
-            )]),
-        },
-        MediaStep {
-            tool: MediaStepTool::Ffmpeg,
-            input_variants: vec!["video_tagged".to_string(), "audio".to_string()],
+            input_variants: vec!["video".to_string()],
             output_variants: BTreeMap::from([(
                 "video".to_string(),
                 OutputVariantValue::Generic(GenericOutputVariantConfig {
-                    kind: "primary".to_string(),
-                    extension: "mp4".to_string(),
+                    kind: "output_content".to_string(),
+                    extension: "mkv".to_string(),
                     ..Default::default()
                 }),
             )]),
-            options: BTreeMap::from([
-                ("container".to_string(), TransformInputValue::String("mp4".to_string())),
-                ("map".to_string(), TransformInputValue::String("0:v:0".to_string())),
-                ("map_metadata".to_string(), TransformInputValue::String("1".to_string())),
-                (
-                    "trailing_args".to_string(),
-                    TransformInputValue::String(
-                        r#"["-map","1:a:0","-map_metadata:s:a:0","1:s:a:0"]"#.to_string(),
-                    ),
-                ),
-            ]),
+            options: BTreeMap::new(),
         },
     ];
 
@@ -1614,7 +1569,7 @@ fn assert_demo_workflow_shape(machine: &NickelDocument) -> ExampleResult<(String
 
     // Require core online-demo stage ordering while allowing synthesis to
     // insert additional helper steps between these stages over time.
-    let required_order = ["yt-dlp", "ffmpeg", "media-tagger", "ffmpeg", "rsgain", "ffmpeg"];
+    let required_order = ["yt-dlp", "ffmpeg", "media-tagger", "ffmpeg", "rsgain"];
 
     let mut cursor = 0usize;
     for required_tool in required_order {
@@ -1637,8 +1592,9 @@ fn assert_demo_workflow_shape(machine: &NickelDocument) -> ExampleResult<(String
     Ok((workflow_id, workflow.steps.len()))
 }
 
-fn bytes_look_like_mp4(bytes: &[u8]) -> bool {
-    bytes.len() >= 8 && bytes[4..8] == *b"ftyp"
+fn bytes_look_like_matroska(bytes: &[u8]) -> bool {
+    // Matroska/WebM containers begin with the EBML header marker.
+    bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
 }
 
 fn collect_regular_files_recursive(root: &Path) -> ExampleResult<Vec<PathBuf>> {
@@ -1827,18 +1783,13 @@ fn ffprobe_payload_unexpected_single_track_replaygain_tags(
 }
 
 #[must_use]
-fn ffprobe_payload_has_mp4_video_and_audio(payload: &serde_json::Value) -> bool {
-    let has_mp4_container = payload
+fn ffprobe_payload_has_mkv_video_and_audio(payload: &serde_json::Value) -> bool {
+    let has_mkv_container = payload
         .get("format")
         .and_then(|format| format.get("format_name"))
         .and_then(serde_json::Value::as_str)
         .is_some_and(|name| {
-            name.split(',').any(|entry| {
-                matches!(
-                    entry.trim().to_ascii_lowercase().as_str(),
-                    "mp4" | "mov" | "m4a" | "3gp" | "3g2" | "mj2"
-                )
-            })
+            name.split(',').any(|entry| entry.trim().eq_ignore_ascii_case("matroska"))
         });
 
     let mut has_video_stream = false;
@@ -1854,10 +1805,10 @@ fn ffprobe_payload_has_mp4_video_and_audio(payload: &serde_json::Value) -> bool 
         }
     }
 
-    has_mp4_container && has_video_stream && has_audio_stream
+    has_mkv_container && has_video_stream && has_audio_stream
 }
 
-fn assert_mp4_video_audio_with_ffprobe(path: &Path) -> ExampleResult<()> {
+fn assert_mkv_video_audio_with_ffprobe(path: &Path) -> ExampleResult<()> {
     let ffprobe_command = demo_ffprobe_command();
     let output = Command::new(ffprobe_command)
         .arg("-v")
@@ -1889,9 +1840,9 @@ fn assert_mp4_video_audio_with_ffprobe(path: &Path) -> ExampleResult<()> {
     let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("ffprobe JSON decode failed for '{}': {error}", path.display()))?;
 
-    if !ffprobe_payload_has_mp4_video_and_audio(&payload) {
+    if !ffprobe_payload_has_mkv_video_and_audio(&payload) {
         return Err(format!(
-            "expected media '{}' to keep MP4 container with both video and audio streams",
+            "expected media '{}' to keep MKV container with both video and audio streams",
             path.display()
         )
         .into());
@@ -2142,14 +2093,14 @@ fn resolve_demo_output_paths(
     }
 
     let video_bytes = fs::read(&video_path)?;
-    if !bytes_look_like_mp4(&video_bytes) {
+    if !bytes_look_like_matroska(&video_bytes) {
         return Err(format!(
-            "expected untagged demo media '{}' to contain MP4 bytes",
+            "expected untagged demo media '{}' to contain Matroska bytes",
             video_path.display()
         )
         .into());
     }
-    assert_mp4_video_audio_with_ffprobe(&video_path)?;
+    assert_mkv_video_audio_with_ffprobe(&video_path)?;
 
     let tagged_video_path = interpolated_root.join(resolved_tagged_file_name);
     if !tagged_video_path.is_file() {
@@ -2176,14 +2127,14 @@ fn resolve_demo_output_paths(
     }
 
     let tagged_video_bytes = fs::read(&tagged_video_path)?;
-    if !bytes_look_like_mp4(&tagged_video_bytes) {
+    if !bytes_look_like_matroska(&tagged_video_bytes) {
         return Err(format!(
-            "expected tagged demo media '{}' to contain MP4 bytes",
+            "expected tagged demo media '{}' to contain Matroska bytes",
             tagged_video_path.display()
         )
         .into());
     }
-    assert_mp4_video_audio_with_ffprobe(&tagged_video_path)?;
+    assert_mkv_video_audio_with_ffprobe(&tagged_video_path)?;
 
     let mut sidecar_paths = BTreeMap::new();
     for (entry_label, variant, relative_suffix) in DEMO_SIDECAR_VARIANT_PATHS {
@@ -2790,38 +2741,38 @@ mod tests {
         );
     }
 
-    /// Ensures MP4 magic-byte detection recognizes `ftyp` boxes only.
+    /// Ensures Matroska magic-byte detection recognizes EBML headers only.
     #[test]
-    fn mp4_magic_byte_detection_matches_ftyp_box() {
-        assert!(super::bytes_look_like_mp4(&[0x00, 0x00, 0x00, 0x20, b'f', b't', b'y', b'p']));
-        assert!(!super::bytes_look_like_mp4(&[0x1A, 0x45, 0xDF, 0xA3, 0x93, 0x42]));
+    fn matroska_magic_byte_detection_matches_ebml_header() {
+        assert!(super::bytes_look_like_matroska(&[0x1A, 0x45, 0xDF, 0xA3, 0x93, 0x42]));
+        assert!(!super::bytes_look_like_matroska(&[0x49, 0x44, 0x33]));
     }
 
-    /// Ensures ffprobe payload checks require MP4 container and both AV streams.
+    /// Ensures ffprobe payload checks require MKV container and both AV streams.
     #[test]
-    fn ffprobe_payload_detection_requires_mp4_container_and_av_streams() {
+    fn ffprobe_payload_detection_requires_mkv_container_and_av_streams() {
         let valid_payload = serde_json::json!({
             "format": {
-                "format_name": "mov,mp4,m4a,3gp,3g2,mj2"
+                "format_name": "matroska,webm"
             },
             "streams": [
                 { "codec_type": "video" },
                 { "codec_type": "audio" }
             ]
         });
-        assert!(super::ffprobe_payload_has_mp4_video_and_audio(&valid_payload));
+        assert!(super::ffprobe_payload_has_mkv_video_and_audio(&valid_payload));
 
         let missing_video = serde_json::json!({
             "format": {
-                "format_name": "mov,mp4,m4a,3gp,3g2,mj2"
+                "format_name": "matroska,webm"
             },
             "streams": [
                 { "codec_type": "audio" }
             ]
         });
-        assert!(!super::ffprobe_payload_has_mp4_video_and_audio(&missing_video));
+        assert!(!super::ffprobe_payload_has_mkv_video_and_audio(&missing_video));
 
-        let non_mp4 = serde_json::json!({
+        let non_mkv = serde_json::json!({
             "format": {
                 "format_name": "mp3"
             },
@@ -2830,7 +2781,7 @@ mod tests {
                 { "codec_type": "audio" }
             ]
         });
-        assert!(!super::ffprobe_payload_has_mp4_video_and_audio(&non_mp4));
+        assert!(!super::ffprobe_payload_has_mkv_video_and_audio(&non_mkv));
     }
 
     /// Ensures ffprobe sibling-path derivation rewrites ffmpeg binary names.
