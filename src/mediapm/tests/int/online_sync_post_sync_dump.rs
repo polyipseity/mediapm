@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use mediapm::{MediaPmService, MediaRuntimeStorage, load_mediapm_document};
 use mediapm_conductor::decode_state_json;
+use tracing_subscriber::EnvFilter;
 
 fn fixture_mediapm_ncl() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/artifacts/demo-online/mediapm.ncl")
@@ -33,9 +34,30 @@ fn list_files_under(root: &Path) -> Vec<String> {
     files
 }
 
+fn list_dir_names(root: &Path) -> Vec<String> {
+    fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().map(|entry| entry.file_name().to_string_lossy().to_string()).collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_env_generated_yt_dlp_path(env_file: &Path) -> Option<String> {
+    fs::read_to_string(env_file).ok().and_then(|content| {
+        content
+            .lines()
+            .find(|line| line.starts_with("MEDIAPM_TOOLS_YT_DLP="))
+            .map(|line| line.split('=').nth(1).unwrap_or("").to_string())
+    })
+}
+
 #[tokio::test]
 #[ignore = "requires network, external tools, and several minutes"]
 async fn online_sync_post_sync_dump() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
     let fixture = fixture_mediapm_ncl();
     assert!(
         fixture.is_file(),
@@ -95,9 +117,37 @@ async fn online_sync_post_sync_dump() {
         .join("Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]");
     let sidecar_info = hierarchy_root.join(&media_folder).join("sidecars/info.json");
 
+    let yt_dlp_tool_keys: Vec<String> =
+        generated_doc.tools.keys().filter(|key| key.contains("yt-dlp")).cloned().collect();
+    let yt_dlp_content_map_lens: BTreeMap<String, usize> = generated_doc
+        .tools
+        .iter()
+        .filter(|(key, _)| key.contains("yt-dlp"))
+        .map(|(key, spec)| (key.clone(), spec.runtime.content_map.len()))
+        .collect();
+    let workflow_step_tools: Vec<(String, String)> =
+        workflow.steps.iter().map(|step| (step.id.clone(), step.tool.clone())).collect();
+    let tools_dir_names = list_dir_names(&paths.tools_dir);
+    let yt_dlp_env_path = read_env_generated_yt_dlp_path(&paths.env_generated_file);
+    let yt_dlp_env_exists =
+        yt_dlp_env_path.as_ref().map(|path| Path::new(path).is_file()).unwrap_or(false);
+    let instance_count = conductor_state.tool_call_instances.len();
+
     panic!(
         "ONLINE_SYNC_POST_SYNC_DUMP\n\
 warnings: {warnings:?}\n\
+executed_instances: {executed_instances}\n\
+cached_instances: {cached_instances}\n\
+added_tools: {added_tools}\n\
+updated_tools: {updated_tools}\n\
+workflow_steps: {workflow_step_count}\n\
+workflow_step_tools (id, tool): {workflow_step_tools:#?}\n\
+yt-dlp generated tool keys: {yt_dlp_tool_keys:?}\n\
+yt-dlp content_map lens: {yt_dlp_content_map_lens:#?}\n\
+tools_dir entries: {tools_dir_names:?}\n\
+yt-dlp env path: {yt_dlp_env_path:?}\n\
+yt-dlp env path exists: {yt_dlp_env_exists}\n\
+tool_call_instances: {instance_count}\n\
 materialized_paths: {materialized}\n\
 variant_hashes ({vh_len}): {variant_keys:?}\n\
 infojson hash: {infojson_hash:?}\n\
@@ -106,6 +156,11 @@ yt-dlp instance output keys: {yt_dlp_instances:#?}\n\
 sidecars/info.json exists: {sidecar_exists}\n\
 files under hierarchy ({file_count}):\n{files:#?}",
         warnings = summary.warnings,
+        executed_instances = summary.executed_instances,
+        cached_instances = summary.cached_instances,
+        added_tools = summary.added_tools,
+        updated_tools = summary.updated_tools,
+        workflow_step_count = workflow.steps.len(),
         materialized = summary.materialized_paths,
         vh_len = source.variant_hashes.len(),
         variant_keys = source.variant_hashes.keys().collect::<Vec<_>>(),
