@@ -534,6 +534,17 @@ async fn materialize_media_folder_entry(
                 );
             }
         } else {
+            if variant_path.exists()
+                && std::fs::metadata(&variant_path)
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false)
+            {
+                shared.notice(format!(
+                    "media '{media_id}' variant '{variant_name}': skipping non-archive write because '{}' is already a directory",
+                    variant_path.display()
+                ));
+                continue;
+            }
             if let Some(parent) = variant_path.parent() {
                 tokio::fs::create_dir_all(parent).await.map_err(|source| MediaPmError::Io {
                     operation: "creating variant-file parent directory".to_string(),

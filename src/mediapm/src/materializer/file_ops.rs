@@ -196,33 +196,23 @@ pub(super) async fn materialize_file_from_cas_with_order(
     methods: &[MaterializationMethod],
     notices: &mut Vec<String>,
 ) -> Result<(), MediaPmError> {
-    // Ensure the blob is materialized in the CAS blob store so that
-    // filesystem-based methods (hardlink, symlink, reflink) can work.
-    // For WAL-only small blobs, this reads the bytes from the WAL and
-    // writes them to the blob store + metadata.
-    cas.ensure_blob_materialized(hash).await.map_err(|source| {
-        MediaPmError::Workflow(format!(
-            "ensuring CAS blob materialization for '{hash}' failed: {source}"
-        ))
-    })?;
-
     let mut failures = Vec::new();
 
     for (method_index, method) in methods.iter().enumerate() {
         remove_existing_destination_path(destination_path).await?;
 
-        if !matches!(method, MaterializationMethod::Copy) {
-            cas.ensure_blob_materialized(hash).await.map_err(|source| {
-                MediaPmError::Workflow(format!(
-                    "ensuring CAS blob materialization for '{hash}' before '{}' failed: {source}",
-                    materialization_method_label(*method),
-                ))
-            })?;
-        }
-
-        // Re-resolve after `ensure_blob_materialized` and before each attempt:
-        // background CAS maintenance may rewrite blobs between calls.
-        let source_path = cas.object_path_for_hash(hash).filter(|p| p.is_file());
+        let source_path = if matches!(method, MaterializationMethod::Copy) {
+            None
+        } else {
+            if cas.ensure_blob_materialized(hash).await.is_err() {
+                failures.push(format!(
+                    "{}: CAS blob store path unavailable for '{hash}'",
+                    materialization_method_label(*method)
+                ));
+                continue;
+            }
+            cas.object_path_for_hash(hash).filter(|p| p.is_file())
+        };
 
         match attempt_materialization_method(
             *method,

@@ -64,6 +64,10 @@ pub(super) fn collect_media_source_available_variants(
 // Variant hash / bytes resolution
 // ---------------------------------------------------------------------------
 
+async fn cas_hash_is_readable(cas: &FileSystemCas, hash: Hash) -> bool {
+    cas.get(hash).await.is_ok()
+}
+
 /// Resolves the CAS hash for one variant (local backfill first, then conductor state).
 pub(super) async fn resolve_variant_hash(
     media_id: &str,
@@ -71,7 +75,9 @@ pub(super) async fn resolve_variant_hash(
     source: &MediaSourceSpec,
     lookup: &MaterializationLookupContext,
 ) -> Result<Option<Hash>, MediaPmError> {
-    if let Some(local_hash) = resolve_local_variant_hash(media_id, variant_name, source)? {
+    if let Some(local_hash) = resolve_local_variant_hash(media_id, variant_name, source)?
+        && cas_hash_is_readable(&lookup.cas, local_hash).await
+    {
         return Ok(Some(local_hash));
     }
 
@@ -86,7 +92,9 @@ pub(super) async fn resolve_variant_hash(
             lookup.ffmpeg_slot_limits.max_input_slots,
             lookup.ffmpeg_slot_limits.max_output_slots,
         )?;
-        if binding.is_none_or(|binding| binding.zip_member.is_none()) {
+        if binding.is_none_or(|binding| binding.zip_member.is_none())
+            && cas_hash_is_readable(&lookup.cas, workflow_hash).await
+        {
             return Ok(Some(workflow_hash));
         }
     }
@@ -136,6 +144,7 @@ pub(crate) async fn backfill_source_variant_hashes_from_workflow_outputs(
                     .get(&binding.step_id)
                     .and_then(|outputs| outputs.get(&binding.output_name))
                     .copied()
+                    && cas.get(hash).await.is_ok()
                 {
                     source.variant_hashes.insert(variant_name.clone(), hash.to_string());
                 }
