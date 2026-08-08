@@ -15,14 +15,14 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    ConfigVersionSpec, GenericOutputVariantConfig, HierarchyNode, HierarchyNodeKind, HierarchyPath,
-    MaterializationMethod, MediaMetadataValue, MediaMetadataValueCandidate,
-    MediaMetadataVariantBinding, MediaPmDocument, MediaPmPaths, MediaPmService,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
-    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRequirement,
-    TransformInputValue, VerifyStrategy, YtDlpOutputKind, YtDlpOutputVariantConfig,
-    example_isolation, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
-    save_mediapm_state_document,
+    ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
+    HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
+    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmPaths,
+    MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
+    OutputCaptureKind, OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
+    ToolRequirement, TransformInputValue, VerifyStrategy, YtDlpOutputKind,
+    YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
+    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -1030,8 +1030,71 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         );
     }
 
-    // NOTE: Thumbnail and link root projections are omitted from the online demo
-    // hierarchy to match the golden online layout (sidecar files only).
+    // NOTE: Thumbnail and link variants are materialized directly to the media root
+    // with path="" (empty) instead of in dedicated subfolder containers.
+    // Only the sidecars/ folder should use nested directory organization.
+    // This ordering keeps the writable parent available long enough to create
+    // the nested `sidecars/` folder before the direct root projections are finalized.
+    media_root_children.push(HierarchyNode {
+        path: HierarchyPath::default(),
+        kind: HierarchyNodeKind::MediaFolder,
+        id: None,
+        media_id: Some(DEMO_MEDIA_ID.to_string()),
+        variant: None,
+        variants: vec!["thumbnails".to_string()],
+        rename_files: vec![HierarchyFolderRenameRule {
+            pattern: "^.*\\.([^.]+)$".to_string(),
+            replacement:
+                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1"
+                    .to_string(),
+        }],
+        format: PlaylistFormat::M3u8,
+        ids: Vec::new(),
+        sanitize_names: SanitizeNamesConfig::Inherit,
+        children: Vec::new(),
+    });
+
+    media_root_children.push(HierarchyNode {
+        path: HierarchyPath::default(),
+        kind: HierarchyNodeKind::MediaFolder,
+        id: None,
+        media_id: Some(DEMO_MEDIA_ID.to_string()),
+        variant: None,
+        variants: vec!["links".to_string()],
+        rename_files: vec![HierarchyFolderRenameRule {
+            pattern: "^.*\\.([^.]+)$".to_string(),
+            replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1"
+                .to_string(),
+        }],
+        format: PlaylistFormat::M3u8,
+        ids: Vec::new(),
+        sanitize_names: SanitizeNamesConfig::Inherit,
+        children: Vec::new(),
+    });
+
+    // Now instantiate the extra thumbnails folder projection with folder-level
+    // rename (same as the yt-dlp preset's `folder.$1` naming).
+    media_root_children.push(HierarchyNode {
+        path: HierarchyPath::default(),
+        kind: HierarchyNodeKind::MediaFolder,
+        id: Some(format!("{DEMO_MEDIA_ID}.thumbnails.folder")),
+        media_id: Some(DEMO_MEDIA_ID.to_string()),
+        variant: None,
+        variants: vec!["thumbnails".to_string()],
+        rename_files: vec![HierarchyFolderRenameRule {
+            pattern: r"^.*\.([^.]*)$".to_string(),
+            replacement: "folder.$1".to_string(),
+        }],
+        format: PlaylistFormat::M3u8,
+        ids: Vec::new(),
+        sanitize_names: SanitizeNamesConfig::Inherit,
+        children: Vec::new(),
+    });
+
+    // NOTE: The yt-dlp preset's extra root thumbnail projection uses `folder.$1` naming
+    // (`<media-id>.thumbnails.folder`). This demo now instantiates that `folder.<thumbnail_ext>` path
+    // above, alongside the preset-style thumbnail/link filenames inside explicit root folders
+    // (`thumbnails/` and `links/`) using separate `media_folder(path="")` projections.
 
     document.hierarchy = vec![
         HierarchyNode {
