@@ -2,6 +2,14 @@
 //!
 //! Paths mirror `mediapm_demo` / `mediapm_demo_online` post-sync assertions and git
 //! golden commits `962cb5fe`, `849d0051`, `28f38e64`.
+//!
+//! ## Online link naming (canonical vs live drift)
+//!
+//! Helpers here encode the **canonical** yt-dlp title prefix (`Rick Astley - Never Gonna Give You Up`)
+//! for golden JSON, hermetic e2e seeds, and `golden_fixture_link_paths_match_helpers`.
+//! Live `mediapm_demo_online` sync may materialize a different `%(title)s` prefix under
+//! `sidecars/links/` while still passing suffix asserts (`[dQw4w9WgXcQ].{url,webloc,desktop}`).
+//! That split is intentional — see `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -50,7 +58,10 @@ pub fn online_demo_media_folder_relative() -> String {
 /// Raw yt-dlp video id for the online demo Rick Astley URL.
 pub const ONLINE_DEMO_YT_DLP_VIDEO_ID: &str = "dQw4w9WgXcQ";
 
-/// Yt-dlp provider title for the online demo (`%(title)s` canonical form).
+/// Yt-dlp provider title for the online demo (`%(title)s` canonical form for golden/e2e).
+///
+/// Live sync may materialize a different prefix in `sidecars/links/`; live asserts use
+/// video-id suffixes instead of this exact string. See `demo-hierarchy-golden.instructions.md`.
 #[must_use]
 pub fn online_demo_yt_dlp_provider_title() -> String {
     format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE}")
@@ -66,7 +77,9 @@ pub fn online_demo_public_artifact_filename(
     format!("{provider_title} [{video_id}].{extension}")
 }
 
-/// Public sidecar link basename under `sidecars/links/`.
+/// Public sidecar link basename under `sidecars/links/` (canonical test contract).
+///
+/// Basename uses [`online_demo_yt_dlp_provider_title`] — not a live-sync exact-match requirement.
 #[must_use]
 pub fn online_demo_sidecar_link_filename(extension: &str) -> String {
     online_demo_public_artifact_filename(
