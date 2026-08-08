@@ -4,6 +4,7 @@ use mediapm::demo_hierarchy_spec::{
     DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID, assert_tree_under,
     demo_media_folder_name, load_demo_hierarchy_golden_document,
     offline_demo_media_folder_relative, online_demo_media_folder_relative,
+    online_demo_root_link_relative_path, online_demo_sidecar_link_relative_path,
 };
 
 #[test]
@@ -11,6 +12,23 @@ fn golden_fixture_paths_match_shared_constants() {
     let golden = load_demo_hierarchy_golden_document();
     assert_eq!(golden.offline.media_folder, offline_demo_media_folder_relative());
     assert_eq!(golden.online.media_folder, online_demo_media_folder_relative());
+}
+
+#[test]
+fn golden_fixture_link_paths_match_helpers() {
+    let golden = load_demo_hierarchy_golden_document();
+    for extension in ["url", "webloc", "desktop"] {
+        let sidecar_path = online_demo_sidecar_link_relative_path(extension);
+        assert!(
+            golden.online.required_files.iter().any(|path| path == &sidecar_path),
+            "golden online required_files missing sidecar link path '{sidecar_path}'"
+        );
+        let root_path = online_demo_root_link_relative_path(extension);
+        assert!(
+            golden.online.required_files.iter().any(|path| path == &root_path),
+            "golden online required_files missing root link path '{root_path}'"
+        );
+    }
 }
 
 #[test]

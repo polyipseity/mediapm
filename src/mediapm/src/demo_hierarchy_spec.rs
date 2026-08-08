@@ -82,6 +82,22 @@ pub fn online_demo_root_link_filename(extension: &str) -> String {
     format!("{} [{}].link.{}", online_demo_yt_dlp_provider_title(), ONLINE_DEMO_MEDIA_ID, extension)
 }
 
+/// Golden-relative path for one online demo sidecar link file under `sidecars/links/`.
+#[must_use]
+pub fn online_demo_sidecar_link_relative_path(extension: &str) -> String {
+    format!(
+        "{}/sidecars/links/{}",
+        online_demo_media_folder_relative(),
+        online_demo_sidecar_link_filename(extension)
+    )
+}
+
+/// Golden-relative path for one online demo root link projection at the media folder root.
+#[must_use]
+pub fn online_demo_root_link_relative_path(extension: &str) -> String {
+    format!("{}/{}", online_demo_media_folder_relative(), online_demo_root_link_filename(extension))
+}
+
 /// Sandbox-only yt-dlp filename with `__mediapm__` marker (conductor fixtures only).
 #[must_use]
 pub fn yt_dlp_sandbox_artifact_filename(
