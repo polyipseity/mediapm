@@ -14,6 +14,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use mediapm::demo_hierarchy_spec::{ONLINE_DEMO_YT_DLP_VIDEO_ID, online_demo_root_link_filename};
 use mediapm::{
     ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
     HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
@@ -1717,18 +1718,38 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
             )
             .into());
         }
-        "links"
-            if !extensions
-                .iter()
-                .any(|extension| matches!(extension.as_str(), "url" | "webloc" | "desktop")) =>
-        {
+        "links" => {
+            assert_sidecar_links_directory_has_all_public_formats(
+                directory,
+                ONLINE_DEMO_YT_DLP_VIDEO_ID,
+            )?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn assert_sidecar_links_directory_has_all_public_formats(
+    directory: &Path,
+    video_id: &str,
+) -> ExampleResult<()> {
+    let files = collect_regular_files_recursive(directory)?;
+    let file_names = files
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
+        .collect::<Vec<_>>();
+
+    for extension in ["url", "webloc", "desktop"] {
+        let suffix = format!("[{video_id}].{extension}");
+        if !file_names.iter().any(|name| name.ends_with(&suffix)) {
             return Err(format!(
-                "expected sidecar variant '{variant}' at '{}' to contain internet shortcut files",
-                directory.display()
+                "expected sidecar links directory '{}' to contain a public link file ending with '{suffix}' but found: {:?}",
+                directory.display(),
+                file_names
             )
             .into());
         }
-        _ => {}
     }
 
     Ok(())
@@ -1739,6 +1760,21 @@ fn assert_flat_media_root_sidecar_families(
     interpolated_root: &Path,
     expected_output_base: &str,
 ) -> ExampleResult<()> {
+    let expected_media_id =
+        parse_jellyfin_root_folder_name(expected_output_base).map(|(_, _, media_id)| media_id);
+    let expected_media_suffixes = expected_media_id
+        .as_deref()
+        .map(|media_id| {
+            let mut suffixes = vec![media_id.to_string()];
+            if let Some((_, raw_video_id)) = media_id.rsplit_once('.')
+                && !raw_video_id.is_empty()
+            {
+                suffixes.push(raw_video_id.to_string());
+            }
+            suffixes
+        })
+        .unwrap_or_default();
+
     let root_files = fs::read_dir(interpolated_root)?
         .flatten()
         .map(|entry| entry.path())
@@ -1793,6 +1829,108 @@ fn assert_flat_media_root_sidecar_families(
             interpolated_root.display()
         )
         .into());
+    }
+
+    let thumbnails_files = collect_regular_files_recursive(interpolated_root)?
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.contains(".thumbnail."))
+        })
+        .collect::<Vec<_>>();
+
+    if thumbnails_files.is_empty() {
+        return Err(format!(
+            "expected root thumbnail projection files in '{}' to exist",
+            interpolated_root.display()
+        )
+        .into());
+    }
+
+    let links_files = collect_regular_files_recursive(interpolated_root)?
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.contains(".link."))
+        })
+        .collect::<Vec<_>>();
+
+    if links_files.is_empty() {
+        return Err(format!(
+            "expected root links projection files in '{}' to exist",
+            interpolated_root.display()
+        )
+        .into());
+    }
+
+    for extension in ["url", "webloc", "desktop"] {
+        let expected_name = online_demo_root_link_filename(extension);
+        let expected_path = interpolated_root.join(expected_name);
+        if !expected_path.is_file() {
+            return Err(format!(
+                "expected root link projection file '{}' to exist",
+                expected_path.display()
+            )
+            .into());
+        }
+    }
+
+    assert_root_projection_sidecar_names_align(
+        interpolated_root,
+        expected_output_base,
+        &expected_media_suffixes,
+        &thumbnails_files,
+        &links_files,
+    )?;
+
+    Ok(())
+}
+
+fn assert_root_projection_sidecar_names_align(
+    interpolated_root: &Path,
+    expected_output_base: &str,
+    expected_media_suffixes: &[String],
+    thumbnails_files: &[PathBuf],
+    links_files: &[PathBuf],
+) -> ExampleResult<()> {
+    let root_projection_files =
+        thumbnails_files.iter().chain(links_files.iter()).cloned().collect::<Vec<_>>();
+
+    if !root_projection_files.iter().all(|path| {
+        path.file_name().and_then(|value| value.to_str()).is_some_and(|name| {
+            name.starts_with(expected_output_base)
+                || expected_media_suffixes
+                    .iter()
+                    .any(|media_suffix| name.contains(&format!(" [{media_suffix}].")))
+        })
+    }) {
+        return Err(format!(
+            "expected root thumbnail/link sidecar names in '{}' to align with media output base '{}' or media-id suffix: {:?}",
+            interpolated_root.display(),
+            expected_output_base,
+            root_projection_files
+                .iter()
+                .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
+                .collect::<Vec<_>>()
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+fn assert_no_mediapm_marker_in_hierarchy_paths(interpolated_root: &Path) -> ExampleResult<()> {
+    let files = collect_regular_files_recursive(interpolated_root)?;
+    for path in files {
+        if path.to_string_lossy().contains("__mediapm__") {
+            return Err(format!(
+                "expected no materialized hierarchy path to contain '__mediapm__' but found '{}'",
+                path.display()
+            )
+            .into());
+        }
     }
 
     Ok(())
@@ -2271,6 +2409,7 @@ fn resolve_demo_output_paths(
     }
 
     assert_flat_media_root_sidecar_families(&interpolated_root, &resolved_output_base)?;
+    assert_no_mediapm_marker_in_hierarchy_paths(&interpolated_root)?;
 
     Ok((video_path, tagged_video_path, sidecar_paths))
 }
@@ -2894,18 +3033,19 @@ mod tests {
     fn media_root_sidecars_accept_root_subtitle_file_named_from_output_base() {
         let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let root = temp.path();
-        let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
+        let output_base = "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]";
 
         std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
-        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
+        std::fs::write(root.join(format!("{output_base}.en.vtt")), b"WEBVTT")
             .expect("write subtitle");
-        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].thumbnail.jpg"), b"jpg")
+        std::fs::write(root.join(format!("{output_base}.thumbnail.jpg")), b"jpg")
             .expect("write thumbnail");
-        std::fs::write(
-            root.join("Artist - Title [youtube.dQw4w9WgXcQ].link.url"),
-            b"[InternetShortcut]",
-        )
-        .expect("write link");
+        std::fs::write(root.join(format!("{output_base}.link.url")), b"[InternetShortcut]")
+            .expect("write link");
+        std::fs::write(root.join(format!("{output_base}.link.webloc")), b"webloc")
+            .expect("write webloc link");
+        std::fs::write(root.join(format!("{output_base}.link.desktop")), b"desktop")
+            .expect("write desktop link");
 
         super::assert_flat_media_root_sidecar_families(root, output_base)
             .expect("flat media root sidecars should be accepted");
@@ -2940,21 +3080,22 @@ mod tests {
     fn media_root_sidecars_accept_non_subtitle_files_aligned_by_media_id_suffix() {
         let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let root = temp.path();
-        let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
+        let output_base = "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]";
 
         std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
-        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
+        std::fs::write(root.join(format!("{output_base}.en.vtt")), b"WEBVTT")
             .expect("write subtitle");
         std::fs::write(
             root.join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].thumbnail.webp"),
             b"webp",
         )
         .expect("write thumbnail");
-        std::fs::write(
-            root.join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].link.url"),
-            b"[InternetShortcut]",
-        )
-        .expect("write link");
+        std::fs::write(root.join(format!("{output_base}.link.url")), b"[InternetShortcut]")
+            .expect("write link");
+        std::fs::write(root.join(format!("{output_base}.link.webloc")), b"webloc")
+            .expect("write webloc link");
+        std::fs::write(root.join(format!("{output_base}.link.desktop")), b"desktop")
+            .expect("write desktop link");
 
         super::assert_flat_media_root_sidecar_families(root, output_base)
             .expect("media-id-aligned non-subtitle sidecars should be accepted");
