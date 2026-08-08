@@ -137,7 +137,7 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
 **Tool defaults**: see `.agents/instructions/preset-dispatch.instructions.md` for per-tool spec builders and default settings.
 
-**User-level cache**: `<os-cache-dir>/mediapm/cache/` (30-day eviction) — shared download cache distinct from workspace tool cache.
+**User-level cache**: `<os-cache-dir>/mediapm/cache/` (7-day eviction) — shared download cache distinct from workspace tool cache.
 
 ### Adding a New Managed Tool
 

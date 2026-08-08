@@ -17,7 +17,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
 
 1. **Load generated document** — `load_conductor_generated_document(paths)`. Returns empty `NickelDocument` if file doesn't exist.
 2. **Register builtins** — `register_missing_builtin_tools()`, `apply_builtin_runtime_defaults()`.
-3. **Open cache** — `Cache::open()` with two domains: `"tools"` (content, 30d TTL) and `"tool_metadata"` (metadata, 1d TTL) under the user-level cache root. The cache root path is determined by the `cache_root_override` parameter:
+3. **Open cache** — `Cache::open()` with two domains: `"tools"` (content, 7d TTL) and `"tool_metadata"` (metadata, 1d TTL) under the user-level cache root. The cache root path is determined by the `cache_root_override` parameter:
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
    - `Some(path)` → use the provided path as the cache root
      A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.

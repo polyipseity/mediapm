@@ -141,7 +141,7 @@ enforced at both encoding (via `encode_document()` calling
 - **Type**: User-level download cache.
 - **Location**: `<os-cache>/mediapm/cache/` (mediapm) or `<os-cache>/mediapm-conductor/cache/` (conductor standalone).
 - **Index file**: `tools.json`.
-- **TTL**: 30 days, based on **last use**.
+- **TTL**: 7 days, based on **last use**.
 - **Last-use semantics**: `last_access_unix_seconds` is set on `store_bytes()` (initial download) and updated by explicit `touch()` call. `lookup_bytes()` does NOT touch the timestamp — the consumer must call `touch()` to refresh.
 - **Consumer**: Phase 2 (fetch) calls `cache.touch(key)` on cache hit, so last use reflects when the content was last downloaded, NOT when the tool was last run.
 - **Purpose**: Avoid re-downloading identical binary payloads across tool versions, projects, or sync runs.
@@ -179,7 +179,7 @@ enforced at both encoding (via `encode_document()` calling
 
 1. The tool content cache (`tools.json`) and tool metadata cache (`tool_metadata.json`) share the same CAS `store/` and cache root but have independent index files and TTL policies. Both are `Cache` engine instances opened with different index-file names.
 2. The provision cache (`ProvisionCache`) is a fundamentally different mechanism — it manages extracted tool trees with file locks, not raw bytes with CAS hashes. Never bypass `ProvisionCache` to read from `<tools_dir>/` directly.
-3. The `tools.json` cache consumer (phase 2) calls `touch()` on cache hit — this is intentional so the 30-day TTL measures last-download, not last-run.
+3. The `tools.json` cache consumer (phase 2) calls `touch()` on cache hit — this is intentional so the 7-day TTL measures last-download, not last-run.
 4. The `tool_metadata.json` cache consumer (phase 1) must NOT call `touch()` on cache hit — this keeps the TTL anchored to creation time.
 
 ## Conductor Builtin Tool Strategy

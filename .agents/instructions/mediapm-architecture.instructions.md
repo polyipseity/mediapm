@@ -39,7 +39,7 @@ applyTo: "src/**/*.rs"
 ## Cache policy
 
 - All caches are TTL-based, not bounded by entry count.
-- Managed-tool downloads use shared user-level cache (`<os-cache-dir>/mediapm/cache/`, 30-day eviction).
+- Managed-tool downloads use shared user-level cache (`<os-cache-dir>/mediapm/cache/`, 7-day eviction).
 - Workspace-scoped tool-content cache at `<mediapm_dir>/tools/` for conductor-level payloads (24h stale-entry eviction).
 
 ## All-platform download

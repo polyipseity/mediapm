@@ -15,7 +15,7 @@ applyTo: "src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins
 
 | Cache                                     | TTL | Basis         | Content                                               | Key                                         |
 | ----------------------------------------- | --- | ------------- | ----------------------------------------------------- | ------------------------------------------- |
-| **Content cache** (`tools.json`)          | 30d | Last-use      | Raw downloaded tool payload bytes                     | Download URI (actual URL used for download) |
+| **Content cache** (`tools.json`)          | 7d  | Last-use      | Raw downloaded tool payload bytes                     | Download URI (actual URL used for download) |
 | **Metadata cache** (`tool_metadata.json`) | 1d  | Creation-time | GitHub API responses (tag names, versions)            | API endpoint URL                            |
 | **Provision cache** (RAII)                | 24h | Creation-time | Extracted tool binaries (per-platform unpack results) | Tool identity hash                          |
 
@@ -31,7 +31,7 @@ All caches live under `default_mediapm_user_download_cache_root()` (OS-specific 
 
 ```text
 <os-cache-dir>/mediapm/
-  tools.json            # Content cache (30d, last-use)
+  tools.json            # Content cache (7d, last-use)
   tool_metadata.json    # Metadata cache (1d, creation-time)
   provision/            # RAII provision cache (24h)
 ```
