@@ -36,6 +36,7 @@ Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code
 | **Workspace tool cache** | `{artifact_root}/.mediapm/cache/` | sync / materialization | Distinct from user-level download cache |
 | **User-level download cache** | `<os-cache>/mediapm/cache/` by default | `sync_tools`, provisioning | Tests must override via `MEDIAPM_EXAMPLE_CACHE_ROOT` → `MediaRuntimeStorage.cache_root_override` |
 | **Isolated download cache** | `$TMPDIR/mediapm-cache-*` | `IsolatedExampleRoots::with_cache` | Yes |
+| **Default example cache root** | `{artifact_root}/cache` | `example_cache_root()` fallback when `MEDIAPM_EXAMPLE_CACHE_ROOT` unset | Yes — lives under the (isolated or canonical) artifact root and is wiped on reset |
 | **Conductor sandbox** | `{conductor_tmp_dir}/sandbox/{instance_key}/` | step worker per workflow step | Removed when coordinator calls `remove_runtime_tmp_dir` after `run_workflow` |
 | **Conductor tmp root** | `$TMPDIR/mediapm-runtime-{16hex}/` | `runtime_dir_for_workspace` from workspace root | See `paths-layout.instructions.md` |
 | **Integration-test workspace** | `$TMPDIR/mediapm-artifact-*` | `tests/int/*`, `tests/e2e/*` via `artifact_dir()` | Yes — RAII drop removes tree when test process exits normally |
@@ -48,7 +49,7 @@ Canonical artifact roots are documentation and manual-demo targets. Examples-as-
 | Env var | Constant | Read by | Purpose |
 | ------- | -------- | ------- | ------- |
 | `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` | `example_isolation::ARTIFACT_ROOT_ENV` | Example `artifact_root()` helpers | Workspace / artifact root the example mutates |
-| `MEDIAPM_EXAMPLE_CACHE_ROOT` | `example_isolation::CACHE_ROOT_ENV` | `example_runtime_storage()` → `cache_root_override` | User-level tool download cache for sync/provisioning |
+| `MEDIAPM_EXAMPLE_CACHE_ROOT` | `example_isolation::CACHE_ROOT_ENV` | `example_runtime_storage()` → `cache_root_override` | User-level tool download cache for sync/provisioning; defaults to `<artifact_root>/cache` when unset |
 
 `main()` must honor these when set and fall back to canonical paths when unset so `cargo run --example` behavior is unchanged.
 

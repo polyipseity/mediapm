@@ -14,6 +14,15 @@ pub const ARTIFACT_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_ARTIFACT_ROOT";
 /// Env var overriding the user-level tool download cache root for example runs.
 pub const CACHE_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
 
+/// Default example cache root — a hermetic sibling of the artifact root used
+/// when [`CACHE_ROOT_ENV`] is unset, so bare `cargo run --example` never
+/// touches the real OS user cache. Lives under the artifact root, so it is
+/// wiped together with it on each run reset.
+#[must_use]
+pub fn default_example_cache_root(artifact_root: &Path) -> PathBuf {
+    artifact_root.join("cache")
+}
+
 /// RAII guard pointing example env vars at unique prefixed tempdirs for one test run.
 pub struct IsolatedExampleRoots {
     artifact_dir: tempfile::TempDir,
@@ -108,6 +117,14 @@ pub fn isolated_artifact_dir() -> std::io::Result<(tempfile::TempDir, PathBuf)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_example_cache_root_is_artifact_sibling() {
+        assert_eq!(
+            default_example_cache_root(Path::new("/tmp/example-artifact")),
+            PathBuf::from("/tmp/example-artifact/cache")
+        );
+    }
 
     #[test]
     fn isolated_roots_restore_env_and_cleanup() {

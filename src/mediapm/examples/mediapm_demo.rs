@@ -166,13 +166,22 @@ impl StoreSizeStats {
     }
 }
 
-/// Runtime storage derived from the example cache-root override (identity
-/// behavior when unset).
+/// Runtime storage for demo runs; the user-level tool cache defaults to a
+/// hermetic sibling of the artifact root when the env override is unset.
 fn example_runtime_storage() -> MediaRuntimeStorage {
     MediaRuntimeStorage {
-        cache_root_override: std::env::var_os(example_isolation::CACHE_ROOT_ENV).map(PathBuf::from),
+        cache_root_override: Some(example_cache_root()),
         ..MediaRuntimeStorage::default()
     }
+}
+
+/// Example user-level tool download cache root, honoring
+/// [`example_isolation::CACHE_ROOT_ENV`] and falling back to a hermetic
+/// `<artifact_root>/cache` sibling (wiped with the artifact root each run).
+fn example_cache_root() -> PathBuf {
+    std::env::var_os(example_isolation::CACHE_ROOT_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| example_isolation::default_example_cache_root(&artifact_root()))
 }
 
 #[derive(Debug, Clone)]
@@ -947,14 +956,7 @@ async fn run_tools_update_precheck(
     service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
     workspace_root: &Path,
 ) -> ExampleResult<(usize, usize)> {
-    let cache_root = std::env::var_os(example_isolation::CACHE_ROOT_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            std::io::Error::other(format!(
-                "{} must be set for full-sync demo tool-update precheck",
-                example_isolation::CACHE_ROOT_ENV
-            ))
-        })?;
+    let cache_root = example_cache_root();
     seed_tool_metadata_cache_for_demo_precheck(&cache_root).await?;
 
     let expected_updated_tools = configure_document_for_tools_only_precheck(workspace_root)?;
