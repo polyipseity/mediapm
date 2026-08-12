@@ -24,9 +24,9 @@
 //! │       │   ├── subtitles.en.vtt                         [Media → subtitles_en]
 //! │       │   ├── thumbnails/                            [MediaFolder → thumbnails] NON-EMPTY
 //! │       │   ├── links/                                   [MediaFolder → links] NON-EMPTY
-//! │       │   │   ├── Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url       # yt-dlp format
-//! │       │   │   ├── Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].webloc     # yt-dlp format
-//! │       │   │   └── Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].desktop    # yt-dlp format
+//! │       │   │   ├── <live yt-dlp provider title> [dQw4w9WgXcQ].url       # yt-dlp format, LIVE title
+//! │       │   │   ├── <live yt-dlp provider title> [dQw4w9WgXcQ].webloc     # yt-dlp format, LIVE title
+//! │       │   │   └── <live yt-dlp provider title> [dQw4w9WgXcQ].desktop    # yt-dlp format, LIVE title
 //! │       │   ├── archive.txt                              [Media → archive]
 //! │       │   ├── description.txt                          [Media → description]
 //! │       │   └── info.json                                [Media → infojson]
@@ -48,8 +48,14 @@
 //!
 //! | Location | Format owner | Bracket id |
 //! | -------- | ------------ | ---------- |
-//! | `sidecars/links/` | yt-dlp `%(title)s [%(id)s].{ext}` | `dQw4w9WgXcQ` |
-//! | Media folder root | mediapm `rename_files` → `.link.$1` | `youtube.dQw4w9WgXcQ` |
+//! | `sidecars/links/` | yt-dlp `%(title)s [%(id)s].{ext}` — LIVE provider title | `dQw4w9WgXcQ` |
+//! | Media folder root | mediapm `rename_files` → `.link.$1` — structural `[media.id]` suffix | `youtube.dQw4w9WgXcQ` |
+//!
+//! Sidecar links under `sidecars/links/` carry the LIVE yt-dlp provider title read from
+//! `sidecars/info.json` (`title` key), so post-sync asserts expect `{provider_title} [{video_id}].{ext}`
+//! instead of a hardcoded stand-in. Media-root projections (subtitles, thumbnails, links) are asserted
+//! STRUCTURALLY by their media-id suffix (` [{media.id}].`) — their title text is live metadata and is
+//! not hardcoded.
 //!
 //! See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 //!
@@ -95,9 +101,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mediapm::demo_hierarchy_spec::{
-    online_demo_root_link_filename, online_demo_sidecar_link_filename,
-};
+use mediapm::demo_hierarchy_spec::online_demo_public_artifact_filename;
 use mediapm::{
     ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
     HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
@@ -447,6 +451,13 @@ fn emit_watchdog_notice(message: &str) {
 struct DemoResolvedMetadata {
     artist: String,
     title: String,
+    /// yt-dlp provider title (`info.json` `title` key).
+    ///
+    /// This is the LIVE basename stem for `sidecars/links/` files:
+    /// `{provider_title} [{video_id}].{ext}`. It is read from the infojson
+    /// instead of a hardcoded stand-in so live yt-dlp title drift does not
+    /// break the post-sync asserts.
+    provider_title: String,
     video_id: String,
     media_id: String,
     video_ext: String,
@@ -522,6 +533,11 @@ fn load_resolved_demo_metadata(interpolated_root: &Path) -> ExampleResult<DemoRe
         // The hierarchy title template now binds to `video` metadata,
         // so treat the interpolated folder title as source-of-truth.
         title: folder_title,
+        provider_title: require_non_empty_json_string(
+            &payload,
+            DEMO_METADATA_TITLE_KEY,
+            &infojson_path,
+        )?,
         video_id: require_non_empty_json_string(
             &payload,
             DEMO_METADATA_VIDEO_ID_KEY,
@@ -1495,8 +1511,8 @@ async fn run_tools_update_precheck(
     let minimum_updated_tools = logical_tool_ids.len();
     if summary.updated_tools < minimum_updated_tools {
         return Err(format!(
-            "tools-update precheck expected at least {} updated tools but observed {}",
-            minimum_updated_tools, summary.updated_tools
+            "tools-update precheck expected at least {} updated tools but observed {}; warnings={:?}",
+            minimum_updated_tools, summary.updated_tools, summary.warnings
         )
         .into());
     }
@@ -1784,7 +1800,12 @@ fn is_image_extension(extension: &str) -> bool {
     matches!(extension, "jpg" | "jpeg" | "png" | "webp" | "avif" | "gif" | "bmp" | "tiff")
 }
 
-fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> ExampleResult<()> {
+fn assert_sidecar_directory_family_content(
+    variant: &str,
+    directory: &Path,
+    provider_title: &str,
+    video_id: &str,
+) -> ExampleResult<()> {
     let files = collect_regular_files_recursive(directory)?;
     let extensions = files.iter().filter_map(|path| lowercase_extension(path)).collect::<Vec<_>>();
 
@@ -1804,7 +1825,11 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
             .into());
         }
         "links" => {
-            assert_sidecar_links_directory_has_exact_public_filenames(directory)?;
+            assert_sidecar_links_directory_has_exact_public_filenames(
+                directory,
+                provider_title,
+                video_id,
+            )?;
         }
         _ => {}
     }
@@ -1813,11 +1838,16 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
 }
 
 // yt-dlp-format basenames under `sidecars/links/` — see demo-hierarchy-golden.instructions.md.
+// The basename uses the LIVE yt-dlp provider title from the infojson sidecar, so it is
+// derived via `online_demo_public_artifact_filename` instead of a hardcoded stand-in.
 fn assert_sidecar_links_directory_has_exact_public_filenames(
     directory: &Path,
+    provider_title: &str,
+    video_id: &str,
 ) -> ExampleResult<()> {
     for extension in ["url", "webloc", "desktop"] {
-        let expected_name = online_demo_sidecar_link_filename(extension);
+        let expected_name =
+            online_demo_public_artifact_filename(provider_title, video_id, extension);
         let path = directory.join(&expected_name);
         if !path.is_file() {
             let files = collect_regular_files_recursive(directory)?;
@@ -1844,20 +1874,23 @@ fn assert_flat_media_root_sidecar_families(
     interpolated_root: &Path,
     expected_output_base: &str,
 ) -> ExampleResult<()> {
-    let expected_media_id =
-        parse_jellyfin_root_folder_name(expected_output_base).map(|(_, _, media_id)| media_id);
-    let expected_media_suffixes = expected_media_id
-        .as_deref()
-        .map(|media_id| {
-            let mut suffixes = vec![media_id.to_string()];
-            if let Some((_, raw_video_id)) = media_id.rsplit_once('.')
-                && !raw_video_id.is_empty()
-            {
-                suffixes.push(raw_video_id.to_string());
-            }
-            suffixes
-        })
-        .unwrap_or_default();
+    // Root projections carry the media-id suffix (` [{media.id}].`) from the hierarchy
+    // rename templates; the title text before it is live metadata and is NOT asserted.
+    let (_, _, expected_media_id) = match parse_jellyfin_root_folder_name(expected_output_base) {
+        Some(value) => value,
+        None => {
+            return Err(format!(
+                "expected media output base '{expected_output_base}' to match '<artist> - <title> [<media-id>]'"
+            )
+            .into());
+        }
+    };
+    let mut expected_media_suffixes = vec![expected_media_id.clone()];
+    if let Some((_, raw_video_id)) = expected_media_id.rsplit_once('.')
+        && !raw_video_id.is_empty()
+    {
+        expected_media_suffixes.push(raw_video_id.to_string());
+    }
 
     let root_files = fs::read_dir(interpolated_root)?
         .flatten()
@@ -1885,14 +1918,13 @@ fn assert_flat_media_root_sidecar_families(
     }
 
     if !subtitle_files.iter().all(|path| {
-        path.file_name()
-            .and_then(|value| value.to_str())
-            .is_some_and(|name| name.starts_with(expected_output_base))
+        path.file_name().and_then(|value| value.to_str()).is_some_and(|name| {
+            expected_media_suffixes.iter().any(|suffix| name.contains(&format!(" [{suffix}].")))
+        })
     }) {
         return Err(format!(
-            "expected flattened subtitle sidecar names in '{}' to start with media output base '{}': {:?}",
+            "expected flattened subtitle sidecar names in '{}' to contain a media-id suffix ' [<suffix>].': {:?}",
             interpolated_root.display(),
-            expected_output_base,
             subtitle_files
                 .iter()
                 .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
@@ -1932,11 +1964,16 @@ fn assert_flat_media_root_sidecar_families(
         .into());
     }
 
-    // mediapm root projection basenames — exact match via demo_hierarchy_spec helpers.
+    // mediapm root link projections — structural media-id suffix, title-free:
+    // `… [{media_id}].link.{ext}` (exact tail match per extension).
     for extension in ["url", "webloc", "desktop"] {
-        let expected_name = online_demo_root_link_filename(extension);
-        let path = interpolated_root.join(&expected_name);
-        if !path.is_file() {
+        let expected_suffix = format!(" [{expected_media_id}].link.{extension}");
+        let found = root_files.iter().any(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.ends_with(&expected_suffix))
+        });
+        if !found {
             let observed: Vec<String> = collect_regular_files_recursive(interpolated_root)?
                 .into_iter()
                 .filter(|entry| {
@@ -1950,8 +1987,7 @@ fn assert_flat_media_root_sidecar_families(
                 })
                 .collect();
             return Err(format!(
-                "expected exact root link projection file '{}' in '{}' but observed link files: {observed:?}",
-                path.display(),
+                "expected a root link projection ending in '{expected_suffix}' in '{}' but observed link files: {observed:?}",
                 interpolated_root.display()
             )
             .into());
@@ -1969,7 +2005,6 @@ fn assert_flat_media_root_sidecar_families(
 
     assert_root_projection_sidecar_names_align(
         interpolated_root,
-        expected_output_base,
         &expected_media_suffixes,
         &thumbnails_files,
         &links_files,
@@ -1980,7 +2015,6 @@ fn assert_flat_media_root_sidecar_families(
 
 fn assert_root_projection_sidecar_names_align(
     interpolated_root: &Path,
-    expected_output_base: &str,
     expected_media_suffixes: &[String],
     thumbnails_files: &[PathBuf],
     links_files: &[PathBuf],
@@ -1990,22 +2024,14 @@ fn assert_root_projection_sidecar_names_align(
 
     if !root_projection_files.iter().all(|path| {
         path.file_name().and_then(|value| value.to_str()).is_some_and(|name| {
-            if name.contains(".link.") {
-                ["url", "webloc", "desktop"]
-                    .iter()
-                    .any(|extension| name == online_demo_root_link_filename(extension))
-            } else {
-                name.starts_with(expected_output_base)
-                    || expected_media_suffixes
-                        .iter()
-                        .any(|media_suffix| name.contains(&format!(" [{media_suffix}].")))
-            }
+            expected_media_suffixes
+                .iter()
+                .any(|media_suffix| name.contains(&format!(" [{media_suffix}].")))
         })
     }) {
         return Err(format!(
-            "expected root thumbnail/link sidecar names in '{}' to align with media output base '{}' or media-id suffix: {:?}",
+            "expected root thumbnail/link sidecar names in '{}' to contain a media-id suffix ' [<suffix>].': {:?}",
             interpolated_root.display(),
-            expected_output_base,
             root_projection_files
                 .iter()
                 .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
@@ -2489,7 +2515,12 @@ fn resolve_demo_output_paths(
                 }
             }
 
-            assert_sidecar_directory_family_content(variant, &output_path)?;
+            assert_sidecar_directory_family_content(
+                variant,
+                &output_path,
+                &resolved_metadata.provider_title,
+                &resolved_metadata.video_id,
+            )?;
         } else if !output_path.is_file() {
             return Err(format!(
                 "expected demo sidecar variant '{}' at '{}' to be a file",
