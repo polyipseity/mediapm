@@ -26,7 +26,6 @@ pub const CACHE_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
 static ENV_LOCK: LazyLock<parking_lot::Mutex<()>> = LazyLock::new(|| parking_lot::Mutex::new(()));
 
 /// Acquires the process-wide env lock for direct env mutation outside a guard.
-#[must_use]
 pub fn lock_process_env() -> parking_lot::MutexGuard<'static, ()> {
     ENV_LOCK.lock()
 }
@@ -53,9 +52,13 @@ pub struct IsolatedExampleRoots {
 
 impl IsolatedExampleRoots {
     /// Isolates artifact and user-level tool-download cache roots.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the prefixed artifact or cache tempdir cannot be created.
     #[must_use]
     pub fn with_cache() -> Self {
-        let _env_lock = lock_process_env();
+        let env_lock = lock_process_env();
         let artifact_dir = mediapm_utils::temp::artifact_dir().expect("create temp artifact root");
         let cache_dir = mediapm_utils::temp::cache_dir().expect("create temp cache root");
         let previous_artifact_root = std::env::var_os(ARTIFACT_ROOT_ENV);
@@ -70,14 +73,18 @@ impl IsolatedExampleRoots {
             cache_dir: Some(cache_dir),
             previous_artifact_root,
             previous_cache_root,
-            _env_lock,
+            _env_lock: env_lock,
         }
     }
 
     /// Isolates only the artifact root (no cache override).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the prefixed artifact tempdir cannot be created.
     #[must_use]
     pub fn artifact_only() -> Self {
-        let _env_lock = lock_process_env();
+        let env_lock = lock_process_env();
         let artifact_dir = mediapm_utils::temp::artifact_dir().expect("create temp artifact root");
         let previous_artifact_root = std::env::var_os(ARTIFACT_ROOT_ENV);
         // SAFETY: test/example guard scopes env overrides to this struct's lifetime.
@@ -89,7 +96,7 @@ impl IsolatedExampleRoots {
             cache_dir: None,
             previous_artifact_root,
             previous_cache_root: std::env::var_os(CACHE_ROOT_ENV),
-            _env_lock,
+            _env_lock: env_lock,
         }
     }
 
@@ -102,7 +109,7 @@ impl IsolatedExampleRoots {
     /// Isolated user-level download cache path when [`Self::with_cache`] was used.
     #[must_use]
     pub fn cache_root_path(&self) -> Option<&Path> {
-        self.cache_dir.as_ref().map(|dir| dir.path())
+        self.cache_dir.as_ref().map(tempfile::TempDir::path)
     }
 }
 
@@ -153,10 +160,10 @@ mod tests {
     #[test]
     fn isolated_roots_restore_env_and_cleanup() {
         let previous = std::env::var_os(ARTIFACT_ROOT_ENV);
-        let _guard = IsolatedExampleRoots::with_cache();
+        let guard = IsolatedExampleRoots::with_cache();
         assert!(std::env::var_os(ARTIFACT_ROOT_ENV).is_some());
         assert!(std::env::var_os(CACHE_ROOT_ENV).is_some());
-        drop(_guard);
+        drop(guard);
         match &previous {
             Some(value) => assert_eq!(std::env::var_os(ARTIFACT_ROOT_ENV), Some(value.clone())),
             None => assert!(std::env::var_os(ARTIFACT_ROOT_ENV).is_none()),

@@ -336,9 +336,10 @@ fn example_runtime_storage() -> MediaRuntimeStorage {
 /// [`example_isolation::CACHE_ROOT_ENV`] and falling back to a hermetic
 /// `<artifact_root>/cache` sibling (wiped with the artifact root each run).
 fn example_cache_root() -> PathBuf {
-    std::env::var_os(example_isolation::CACHE_ROOT_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| example_isolation::default_example_cache_root(&artifact_root()))
+    std::env::var_os(example_isolation::CACHE_ROOT_ENV).map_or_else(
+        || example_isolation::default_example_cache_root(&artifact_root()),
+        PathBuf::from,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1876,14 +1877,12 @@ fn assert_flat_media_root_sidecar_families(
 ) -> ExampleResult<()> {
     // Root projections carry the media-id suffix (` [{media.id}].`) from the hierarchy
     // rename templates; the title text before it is live metadata and is NOT asserted.
-    let (_, _, expected_media_id) = match parse_jellyfin_root_folder_name(expected_output_base) {
-        Some(value) => value,
-        None => {
-            return Err(format!(
-                "expected media output base '{expected_output_base}' to match '<artist> - <title> [<media-id>]'"
-            )
-            .into());
-        }
+    let Some((_, _, expected_media_id)) = parse_jellyfin_root_folder_name(expected_output_base)
+    else {
+        return Err(format!(
+            "expected media output base '{expected_output_base}' to match '<artist> - <title> [<media-id>]'"
+        )
+        .into());
     };
     let mut expected_media_suffixes = vec![expected_media_id.clone()];
     if let Some((_, raw_video_id)) = expected_media_id.rsplit_once('.')
