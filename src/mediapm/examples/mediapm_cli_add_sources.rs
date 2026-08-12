@@ -123,8 +123,7 @@ async fn main() -> ExampleResult<()> {
 #[cfg(test)]
 mod tests {
     use mediapm::{
-        MediaStepTool, TransformInputValue,
-        example_isolation::{self, IsolatedExampleRoots},
+        MediaStepTool, TransformInputValue, example_isolation::IsolatedExampleRoots,
         load_mediapm_document,
     };
 

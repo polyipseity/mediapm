@@ -215,10 +215,7 @@ async fn main() -> ExampleResult<()> {
 mod tests {
     use std::fs;
 
-    use mediapm::{
-        example_isolation::{self, IsolatedExampleRoots},
-        load_mediapm_document,
-    };
+    use mediapm::{example_isolation::IsolatedExampleRoots, load_mediapm_document};
     use mediapm_conductor::{NickelDocument, decode_document};
 
     use super::run_add_tools_example;
