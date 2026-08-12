@@ -83,7 +83,7 @@ Rules:
 - Bind `TempDir` to a local variable for the full test scope — do not leak paths without a cleanup owner.
 - Pass `cache_root_override` whenever the test calls `sync_tools`, provisioning, or full `sync_library`.
 - Drop exclusive CAS handles before reopening the same store path (see `StoreLocked` pattern in `rust-conventions.instructions.md`).
-- Process-global env vars: restore immediately after the consuming setup step, not at function exit, when tests in the same binary could run in parallel.
+- Process-global env vars: hold the example env lock (`example_isolation::lock_process_env()`) for the mutation scope, or keep an `IsolatedExampleRoots` guard alive; restore env before the lock/guard is released. Restore-early remains a good practice.
 
 Prefixed tempdirs clean on normal process exit. Killed nextest workers (timeout, SIGKILL) may leave `$TMPDIR/mediapm-*` trees — use `scripts/clean-mediapm-temp.sh` periodically.
 
@@ -98,10 +98,10 @@ mediapm-driven runs wire `conductor_tmp_dir` from `MediaPmPaths` (`mediapm-runti
 | Test kind | Parallelism | Constraint |
 | --------- | ----------- | ---------- |
 | Integration tests in `tests/mod.rs` harness | cargo/nextest parallel across binaries | Each test uses its own `artifact_dir()` — safe |
-| Embedded `#[cfg(test)]` in one example binary | **unsafe in parallel within the same binary** | `MEDIAPM_EXAMPLE_*` are process-global; two tests in one example crate racing on env corrupt paths and CAS locks |
-| Example `main_is_exercised` + sibling tests | Run example test binaries with `--test-threads=1` when debugging flakes | CI nextest often runs one process per test — still avoid overlapping env mutation in one binary |
+| Embedded `#[cfg(test)]` in one example binary | safe in parallel within the same binary | `IsolatedExampleRoots` holds a process-wide env lock (`example_isolation::lock_process_env()`) for its whole lifetime; direct env mutation without a guard must acquire it explicitly |
+| Example `main_is_exercised` + sibling tests | safe in parallel within the same binary | Guard-held or explicitly acquired env lock covers every `MEDIAPM_EXAMPLE_*` mutation; no `--test-threads=1` needed |
 
-When adding multiple tests to one example file, either use a single isolation guard per test and avoid parallel execution in that binary, or run `cargo test -p mediapm --example <name> -- --test-threads=1`.
+Tests that mutate `MEDIAPM_EXAMPLE_*` (or any process env) directly without a guard must hold the lock via `example_isolation::lock_process_env()` for the mutation scope. The lock is a `parking_lot::MutexGuard` (Send), so it can be held across `.await` in `#[tokio::test]` bodies that keep an `IsolatedExampleRoots` guard alive.
 
 ## Managed temp path detection
 

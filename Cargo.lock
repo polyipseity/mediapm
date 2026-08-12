@@ -2093,6 +2093,7 @@ dependencies = [
  "mediapm-utils",
  "musicbrainz_rs",
  "nickel-lang-core",
+ "parking_lot",
  "proptest",
  "regex",
  "reqwest",

@@ -42,8 +42,8 @@
 //! # Verification
 //!
 //! ```bash
-//! cargo test -p mediapm demo_hierarchy_golden -- --test-threads=1
-//! cargo test -p mediapm --example mediapm_demo -- --skip main_is_exercised --test-threads=1
+//! cargo test -p mediapm demo_hierarchy_golden
+//! cargo test -p mediapm --example mediapm_demo -- --skip main_is_exercised
 //! cargo run -p mediapm --example mediapm_demo
 //! ```
 
@@ -1388,6 +1388,7 @@ mod tests {
     /// Ensures artifact root stays stable for docs and scripts.
     #[test]
     fn artifact_root_is_stable() {
+        let _env_lock = example_isolation::lock_process_env();
         let previous_artifact_root = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV);
         // SAFETY: test clears one process env key in a controlled scope and
         // restores the previous value before exit.
@@ -1421,6 +1422,7 @@ mod tests {
     /// Ensures unset sync mode defaults to full sync enabled.
     #[test]
     fn demo_run_sync_defaults_to_enabled_when_env_unset() {
+        let _env_lock = example_isolation::lock_process_env();
         let previous = std::env::var(super::DEMO_RUN_SYNC_ENV_VAR).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.

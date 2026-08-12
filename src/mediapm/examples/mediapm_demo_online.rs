@@ -77,10 +77,10 @@
 //! # Verification
 //!
 //! ```bash
-//! cargo test -p mediapm demo_hierarchy_golden -- --test-threads=1
-//! cargo test -p mediapm demo_online_hierarchy_materialization -- --test-threads=1
-//! cargo test -p mediapm --example mediapm_demo_online -- --skip main_is_exercised --test-threads=1
-//! MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=600 cargo test -p mediapm --example mediapm_demo_online main_is_exercised -- --test-threads=1
+//! cargo test -p mediapm demo_hierarchy_golden
+//! cargo test -p mediapm demo_online_hierarchy_materialization
+//! cargo test -p mediapm --example mediapm_demo_online -- --skip main_is_exercised
+//! MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=600 cargo test -p mediapm --example mediapm_demo_online main_is_exercised
 //! cargo run -p mediapm --example mediapm_demo_online
 //! ```
 
@@ -2786,6 +2786,7 @@ mod tests {
     /// Ensures sync-mode override parser accepts disabled values (reduced mode).
     #[test]
     fn run_sync_override_accepts_disabled_tokens() {
+        let _env_lock = example_isolation::lock_process_env();
         let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
 
         // SAFETY: test mutates one process env key in a controlled scope and
@@ -2810,6 +2811,7 @@ mod tests {
     /// Ensures demo-online sync override allows unset environment (full mode).
     #[test]
     fn run_sync_override_validator_allows_unset_env() {
+        let _env_lock = example_isolation::lock_process_env();
         let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
@@ -2832,6 +2834,7 @@ mod tests {
     /// Ensures sync-mode override parser still rejects unknown tokens.
     #[test]
     fn run_sync_override_rejects_invalid_tokens() {
+        let _env_lock = example_isolation::lock_process_env();
         let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
 
         // SAFETY: test mutates one process env key in a controlled scope and
@@ -2892,6 +2895,7 @@ mod tests {
     /// Ensures artifact root remains stable for docs/scripts that reference it.
     #[test]
     fn artifact_root_is_stable() {
+        let _env_lock = example_isolation::lock_process_env();
         let previous_artifact_root = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV);
         // SAFETY: test clears one process env key in a controlled scope and
         // restores the previous value before exit.

@@ -57,6 +57,7 @@ multihash = "0.19"
 musicbrainz_rs = { version = "0.13.0", default-features = false }
 nickel-lang-core = "0.18.0"
 oxidelta = { version = "0.1.4", default-features = false }
+parking_lot = "0.12.5"
 ractor = { version = "0.15.12", features = ["tokio_runtime"] }
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = [

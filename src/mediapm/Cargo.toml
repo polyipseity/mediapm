@@ -49,6 +49,7 @@ musicbrainz_rs = { workspace = true, features = [
   "rustls",
 ], optional = true }
 nickel-lang-core.workspace = true
+parking_lot.workspace = true
 regex.workspace = true
 console.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
