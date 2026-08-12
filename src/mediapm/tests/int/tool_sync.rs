@@ -1043,6 +1043,29 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
     let bytes = serde_json::to_vec(&state).expect("state serializes");
     std::fs::write(&state_path, bytes).expect("write seeded state");
 
+    // Seed the generated doc with a media-tagger entry so the workspace-CAS
+    // skip path can find the active tool spec. Placeholder content-map
+    // values (non-hash) pass the CAS availability check.
+    let mut doc = NickelDocument::default();
+    doc.tools.insert(
+        "media-tagger@blake3:abc".to_string(),
+        ToolSpec {
+            name: "media-tagger".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: std::collections::BTreeMap::from([(
+                    "macos/media-tagger".to_string(),
+                    "provisioned".to_string(),
+                )]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let generated_path = service.paths().conductor_generated_ncl.clone();
+    let bytes = encode_document(doc).expect("seeded doc encodes");
+    std::fs::write(&generated_path, bytes).expect("write seeded generated doc");
+
     let summary = service.sync_tools().await?;
 
     assert_eq!(
@@ -1330,9 +1353,11 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
     std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
         .expect("write seeded state");
 
-    // Seed the generated doc with a yt-dlp entry whose runtime already
-    // carries inlined same-step dep keys. Content map values are non-hash
-    // placeholders (external_data invariant skips them).
+    // Seed the generated doc with entries for ALL three tools: the
+    // workspace-CAS skip path requires `find_active_tool_spec` for each tool
+    // (deps get their own generated-doc specs too, not just the requester).
+    // Content map values are non-hash placeholders (external_data invariant
+    // skips them, and they pass the CAS availability check).
     let mut doc = NickelDocument::default();
     doc.tools.insert(
         "yt-dlp@blake3:abc123".to_string(),
@@ -1345,6 +1370,36 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
                     ("linux/".to_string(), "provisioned".to_string()),
                     ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
                     ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    doc.tools.insert(
+        "ffmpeg@blake3:ffmpeg1".to_string(),
+        ToolSpec {
+            name: "ffmpeg".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/ffmpeg".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    doc.tools.insert(
+        "deno@blake3:deno1".to_string(),
+        ToolSpec {
+            name: "deno".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/deno".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
                 ]),
                 ..Default::default()
             },
@@ -1491,7 +1546,11 @@ async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
     std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
         .expect("write seeded state");
 
-    // Seed the generated doc with a yt-dlp entry carrying inlined deps keys.
+    // Seed the generated doc with entries for ALL three tools: the
+    // workspace-CAS skip path requires `find_active_tool_spec` for each tool
+    // (deps get their own generated-doc specs too, not just the requester).
+    // Content map values are non-hash placeholders (external_data invariant
+    // skips them, and they pass the CAS availability check).
     let mut doc = NickelDocument::default();
     doc.tools.insert(
         "yt-dlp@blake3:abc123".to_string(),
@@ -1504,6 +1563,36 @@ async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
                     ("linux/".to_string(), "provisioned".to_string()),
                     ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
                     ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    doc.tools.insert(
+        "ffmpeg@blake3:ffmpeg1".to_string(),
+        ToolSpec {
+            name: "ffmpeg".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/ffmpeg".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    doc.tools.insert(
+        "deno@blake3:deno1".to_string(),
+        ToolSpec {
+            name: "deno".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/deno".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
                 ]),
                 ..Default::default()
             },
