@@ -78,6 +78,10 @@ fn demo_metadata_literals() -> BTreeMap<String, MediaMetadataValue> {
     ])
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "hermetic hierarchy seed mirrors the full online demo tree"
+)]
 fn build_online_hierarchy() -> Vec<HierarchyNode> {
     let media_root_children = vec![
         HierarchyNode {
@@ -364,6 +368,10 @@ fn build_online_hierarchy() -> Vec<HierarchyNode> {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "golden-tree assert walks every projection family in one readable pass"
+)]
 async fn demo_online_hierarchy_materialization_matches_golden_tree()
 -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");

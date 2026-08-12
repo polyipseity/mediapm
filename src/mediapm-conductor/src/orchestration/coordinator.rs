@@ -181,6 +181,10 @@ where
     ///
     /// Returns [`ConductorError::Workflow`] when the workflow is not found or
     /// when step execution fails.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "level-by-level dispatch and result aggregation stay in one pass"
+    )]
     pub(crate) async fn run_workflow(
         &mut self,
         workflow_name: &str,

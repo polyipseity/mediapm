@@ -53,6 +53,10 @@ fn read_env_generated_yt_dlp_path(env_file: &Path) -> Option<String> {
 
 #[tokio::test]
 #[ignore = "requires network, external tools, and several minutes"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single panic-dump test captures every sync state slice for debugging"
+)]
 async fn online_sync_post_sync_dump() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -91,7 +95,7 @@ async fn online_sync_post_sync_dump() {
     let state_bytes = fs::read(&paths.conductor_state_config).expect("read state");
     let conductor_state = decode_state_json(&state_bytes).expect("decode state");
 
-    let workflow_name = format!("mediapm.media.youtube.dQw4w9WgXcQ");
+    let workflow_name = "mediapm.media.youtube.dQw4w9WgXcQ";
     let workflow = generated_doc
         .workflows
         .iter()
@@ -129,8 +133,7 @@ async fn online_sync_post_sync_dump() {
         workflow.steps.iter().map(|step| (step.id.clone(), step.tool.clone())).collect();
     let tools_dir_names = list_dir_names(&paths.tools_dir);
     let yt_dlp_env_path = read_env_generated_yt_dlp_path(&paths.env_generated_file);
-    let yt_dlp_env_exists =
-        yt_dlp_env_path.as_ref().map(|path| Path::new(path).is_file()).unwrap_or(false);
+    let yt_dlp_env_exists = yt_dlp_env_path.as_ref().is_some_and(|path| Path::new(path).is_file());
     let instance_count = conductor_state.tool_call_instances.len();
 
     panic!(

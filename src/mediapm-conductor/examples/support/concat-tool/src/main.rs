@@ -100,14 +100,12 @@ mod tests {
 
     /// Guarantees that a missing fixed resource produces a surfaced I/O error.
     #[test]
-    fn render_fails_when_fixed_resource_is_missing() -> Result<(), Box<dyn Error>> {
+    fn render_fails_when_fixed_resource_is_missing() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir for concat-tool test");
 
         let mut stdin = Cursor::new("input");
         render_from_reader(dir.path(), &mut stdin)
             .expect_err("missing resource.txt must return an error");
-
-        Ok(())
     }
 
     /// Guarantees that file-backed rendering concatenates the two file payloads

@@ -1069,6 +1069,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "hermetic backfill scenario keeps seed + asserts in one readable test"
+    )]
     async fn backfill_populates_infojson_from_resolved_yt_dlp_step_outputs() {
         use std::collections::BTreeMap;
 

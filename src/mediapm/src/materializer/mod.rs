@@ -557,9 +557,7 @@ async fn materialize_media_folder_entry(
             }
         } else {
             if variant_path.exists()
-                && std::fs::metadata(&variant_path)
-                    .map(|metadata| metadata.is_dir())
-                    .unwrap_or(false)
+                && std::fs::metadata(&variant_path).is_ok_and(|metadata| metadata.is_dir())
             {
                 shared.notice(format!(
                     "media '{media_id}' variant '{variant_name}': skipping non-archive write because '{}' is already a directory",

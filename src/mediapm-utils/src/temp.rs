@@ -63,12 +63,12 @@ pub fn is_managed_path(path: &Path) -> bool {
 ///
 /// Returns the last [`io::Error`] when removal fails after all attempts.
 pub fn remove_dir_all_with_retry(path: &Path) -> io::Result<()> {
+    const ATTEMPTS: usize = 6;
+    const BACKOFF_MS: u64 = 40;
+
     if !path.exists() {
         return Ok(());
     }
-
-    const ATTEMPTS: usize = 6;
-    const BACKOFF_MS: u64 = 40;
 
     let mut last_error: Option<io::Error> = None;
 

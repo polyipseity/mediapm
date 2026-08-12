@@ -138,7 +138,7 @@ fn resolve_media_variant_output_binding_with_ffmpeg_limits(
                     &mappings,
                     ffmpeg_slot_limits,
                     &mut variant_producers,
-                )?;
+                );
             }
         }
     }
@@ -317,7 +317,7 @@ fn register_rsgain_variant_producers(
     mappings: &[ResolvedStepVariantFlow],
     _ffmpeg_slot_limits: FfmpegSlotLimits,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
-) -> Result<(), MediaPmError> {
+) {
     for (mapping_index, mapping) in mappings.iter().enumerate() {
         let base_step_id = media_step_id(step_index, mapping_index, tool, mapping);
         let apply_step_id = format!("{base_step_id}-ffmpeg-apply");
@@ -332,7 +332,6 @@ fn register_rsgain_variant_producers(
             },
         );
     }
-    Ok(())
 }
 
 #[must_use]

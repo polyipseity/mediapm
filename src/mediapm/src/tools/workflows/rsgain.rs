@@ -46,7 +46,7 @@ const RSGAIN_RUNTIME_INPUT_EXTENSIONS: &[&str] = &[
 /// sd rewrite → ffmpeg apply.
 ///
 /// Cross-step `ffmpeg` and `sd` dependencies are consumed here: ffmpeg extracts
-/// audio and metadata, `sd` normalizes ReplayGain tag names for ffmetadata merge,
+/// audio and metadata, `sd` normalizes `ReplayGain` tag names for ffmetadata merge,
 /// and the final ffmpeg apply step writes tags back onto the source container.
 ///
 /// # Errors

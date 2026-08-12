@@ -230,8 +230,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                 };
                 if file_list.is_empty() && !spec.allow_empty {
                     return Err(ConductorError::Workflow(format!(
-                        "folder capture matched zero sandbox files under '{}'",
-                        relative_path
+                        "folder capture matched zero sandbox files under '{relative_path}'"
                     )));
                 }
                 archive_sandbox_relative_files_as_zip(sandbox_dir, &file_list).await?
