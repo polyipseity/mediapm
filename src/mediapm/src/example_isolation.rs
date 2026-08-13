@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-pub use mediapm_utils::temp::{ARTIFACT_PREFIX, CACHE_PREFIX, remove_dir_all_with_retry};
+pub use mediapm_utils::temp::remove_dir_all_with_retry;
 
 /// Env var overriding the example artifact root (workspace directory the example mutates).
 pub const ARTIFACT_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_ARTIFACT_ROOT";

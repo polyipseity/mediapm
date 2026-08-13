@@ -11,7 +11,7 @@ for arg in "$@"; do
         --dry-run) dry_run=1 ;;
         -h | --help)
             echo "usage: $0 [--dry-run]"
-            echo "removes: mediapm-artifact-* mediapm-cache-* mediapm-runtime-*"
+            echo "removes: mediapm-*"
             echo "         under \$TMPDIR."
             exit 0
             ;;
@@ -43,11 +43,7 @@ remove_if_exists() {
 
 while IFS= read -r -d '' dir; do
     remove_if_exists "$dir"
-done < <(find "$tmp_root" -maxdepth 1 -type d \( \
-    -name 'mediapm-artifact-*' -o \
-    -name 'mediapm-cache-*' -o \
-    -name 'mediapm-runtime-*' \
-    \) -print0 2>/dev/null)
+done < <(find "$tmp_root" -maxdepth 1 -type d -name 'mediapm-*' -print0 2>/dev/null)
 
 if [[ "$removed" -eq 0 ]]; then
     echo "no mediapm temp directories found"

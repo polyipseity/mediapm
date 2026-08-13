@@ -1,9 +1,11 @@
 //! Prefixed temporary directories for mediapm tests, examples, and runtime sandboxes.
 //!
-//! All mediapm-owned temp paths under `$TMPDIR` use `mediapm-{role}-{unique}` naming so
-//! `scripts/clean-mediapm-temp.sh` (POSIX) or `scripts/clean-mediapm-temp.ps1` (Windows)
-//! can remove orphans. See `.agents/instructions/temp-directory-spec.instructions.md` for the
-//! canonical spec (naming contract, janitor contract, regression gates, authoring rules) and
+//! Every mediapm-owned temp path under `$TMPDIR` uses a single tracked prefix `mediapm-`
+//! followed by a role suffix (`mediapm-artifact-{unique}`, `mediapm-cache-{unique}`,
+//! `mediapm-runtime-{16hex}`), so `scripts/clean-mediapm-temp.sh` (POSIX) or
+//! `scripts/clean-mediapm-temp.ps1` (Windows) can remove orphans with one `mediapm-*` glob.
+//! See `.agents/instructions/temp-directory-spec.instructions.md` for the canonical spec
+//! (naming contract, janitor contract, regression gates, authoring rules) and
 //! `.agents/instructions/example-temp-isolation.instructions.md` for example/test wiring.
 
 use std::fs;
@@ -13,14 +15,11 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-/// Prefix for example/test workspace artifact roots (`mediapm-artifact-XXXXXX`).
-pub const ARTIFACT_PREFIX: &str = "mediapm-artifact-";
-
-/// Prefix for isolated user-level download cache roots (`mediapm-cache-XXXXXX`).
-pub const CACHE_PREFIX: &str = "mediapm-cache-";
-
-/// Prefix for per-workspace conductor runtime roots (`mediapm-runtime-{16hex}`).
-pub const RUNTIME_PREFIX: &str = "mediapm-runtime-";
+/// Single prefix for every mediapm-owned temp root (`mediapm-{role}-{unique}`).
+///
+/// The janitor globs (`mediapm-*`) and `is_managed_path` are derived from this
+/// constant; no other prefix is tracked.
+pub const MEDIAPM_TEMP_PREFIX: &str = "mediapm-";
 
 /// Creates a unique artifact workspace directory under `$TMPDIR`.
 ///
@@ -28,7 +27,7 @@ pub const RUNTIME_PREFIX: &str = "mediapm-runtime-";
 ///
 /// Returns [`io::Error`] when the directory cannot be created.
 pub fn artifact_dir() -> io::Result<tempfile::TempDir> {
-    tempfile::Builder::new().prefix(ARTIFACT_PREFIX).tempdir()
+    tempfile::Builder::new().prefix(&format!("{MEDIAPM_TEMP_PREFIX}artifact-")).tempdir()
 }
 
 /// Creates a unique user-level download cache directory under `$TMPDIR`.
@@ -37,7 +36,7 @@ pub fn artifact_dir() -> io::Result<tempfile::TempDir> {
 ///
 /// Returns [`io::Error`] when the directory cannot be created.
 pub fn cache_dir() -> io::Result<tempfile::TempDir> {
-    tempfile::Builder::new().prefix(CACHE_PREFIX).tempdir()
+    tempfile::Builder::new().prefix(&format!("{MEDIAPM_TEMP_PREFIX}cache-")).tempdir()
 }
 
 /// Returns the stable conductor/mediapm runtime tmp root for one workspace.
@@ -46,17 +45,15 @@ pub fn runtime_dir_for_workspace(workspace_root: &Path) -> PathBuf {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     workspace_root.hash(&mut hasher);
     let key = format!("{:016x}", hasher.finish());
-    std::env::temp_dir().join(format!("{RUNTIME_PREFIX}{key}"))
+    std::env::temp_dir().join(format!("{MEDIAPM_TEMP_PREFIX}runtime-{key}"))
 }
 
-/// Returns true when the final path component uses a mediapm temp role prefix.
+/// Returns true when the final path component uses the mediapm temp prefix.
 #[must_use]
 pub fn is_managed_path(path: &Path) -> bool {
-    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
-        name.starts_with(ARTIFACT_PREFIX)
-            || name.starts_with(CACHE_PREFIX)
-            || name.starts_with(RUNTIME_PREFIX)
-    })
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(MEDIAPM_TEMP_PREFIX))
 }
 
 /// Removes a directory tree with readonly-bit clearing and short retries.
@@ -164,7 +161,7 @@ mod tests {
     fn artifact_dir_uses_role_prefix() {
         let dir = artifact_dir().expect("artifact dir");
         let name = dir.path().file_name().and_then(|n| n.to_str()).expect("file name");
-        assert!(name.starts_with(ARTIFACT_PREFIX));
+        assert!(name.starts_with(MEDIAPM_TEMP_PREFIX));
         assert!(is_managed_path(dir.path()));
     }
 
@@ -172,7 +169,7 @@ mod tests {
     fn cache_dir_uses_role_prefix() {
         let dir = cache_dir().expect("cache dir");
         let name = dir.path().file_name().and_then(|n| n.to_str()).expect("file name");
-        assert!(name.starts_with(CACHE_PREFIX));
+        assert!(name.starts_with(MEDIAPM_TEMP_PREFIX));
     }
 
     #[test]
@@ -182,7 +179,7 @@ mod tests {
         let second = runtime_dir_for_workspace(&root);
         assert_eq!(first, second);
         let name = first.file_name().and_then(|n| n.to_str()).expect("file name");
-        assert!(name.starts_with(RUNTIME_PREFIX));
+        assert!(name.starts_with(MEDIAPM_TEMP_PREFIX));
     }
 
     #[test]
@@ -218,8 +215,10 @@ mod tests {
         assert!(is_retryable_os_error(&io::Error::from_raw_os_error(32)));
     }
 
-    /// Collects every `mediapm-{role}-*` glob stem (trailing `*`) from a
-    /// janitor script. Path mentions (e.g. `src/mediapm-utils/src/temp.rs`
+    /// Collects every `mediapm-*` glob stem (trailing `*`) from a janitor
+    /// script. The only glob form is `mediapm-*`, so each occurrence of
+    /// `mediapm-` immediately followed by `*` contributes the stem
+    /// `mediapm-`. Path mentions (e.g. `src/mediapm-utils/src/temp.rs`
     /// comments) have no trailing `*` and are excluded.
     fn mediapm_glob_stems(script: &str) -> BTreeSet<&str> {
         let mut stems = BTreeSet::new();
@@ -227,27 +226,23 @@ mod tests {
         while let Some(relative) = script[offset..].find("mediapm-") {
             let start = offset + relative;
             let after = start + "mediapm-".len();
-            let Some(dash_offset) = script[after..].find('-') else {
-                break;
-            };
-            let end = after + dash_offset + 1; // include the terminating `-`
-            if script[end..].starts_with('*') {
-                stems.insert(&script[start..end]);
+            if script[after..].starts_with('*') {
+                stems.insert(&script[start..after]);
             }
-            offset = end;
+            offset = after;
         }
         stems
     }
 
     #[test]
     fn janitor_glob_stems_match_prefix_contract() {
-        // The janitor scripts cannot import the Rust constants, so they
-        // hardcode the glob stems; this test pins them to the single source
-        // of truth (`temp.rs`) so adding a fourth role without updating both
-        // janitors (or vice versa) fails the suite.
+        // The janitor scripts cannot import the Rust constant, so they
+        // hardcode the `mediapm-*` glob; this test pins it to the single
+        // source of truth (`temp.rs`) so the glob set drifting from
+        // `mediapm-` in either janitor fails the suite.
         let bash = include_str!("../../../scripts/clean-mediapm-temp.sh");
         let powershell = include_str!("../../../scripts/clean-mediapm-temp.ps1");
-        let expected = BTreeSet::from([ARTIFACT_PREFIX, CACHE_PREFIX, RUNTIME_PREFIX]);
+        let expected = BTreeSet::from([MEDIAPM_TEMP_PREFIX]);
         assert_eq!(
             mediapm_glob_stems(bash),
             expected,

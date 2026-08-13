@@ -15,7 +15,7 @@ foreach ($arg in $args) {
         '--dry-run' { $dryRun = $true }
         { $_ -eq '-h' -or $_ -eq '--help' } {
             Write-Output "usage: $PSCommandPath [--dry-run]"
-            Write-Output 'removes: mediapm-artifact-* mediapm-cache-* mediapm-runtime-*'
+            Write-Output 'removes: mediapm-*'
             Write-Output '         under the OS temp dir.'
             exit 0
         }
@@ -95,11 +95,9 @@ function Remove-JunkDirectory {
     $script:removed++
 }
 
-# Three temp role prefixes at depth 1 under the OS temp dir.
+# Single mediapm-* glob at depth 1 under the OS temp dir.
 foreach ($dir in Get-ChildItem -LiteralPath $tempRoot -Directory -Force) {
-    if ($dir.Name -like 'mediapm-artifact-*' -or
-        $dir.Name -like 'mediapm-cache-*' -or
-        $dir.Name -like 'mediapm-runtime-*') {
+    if ($dir.Name -like 'mediapm-*') {
         Remove-JunkDirectory -Path $dir.FullName
     }
 }

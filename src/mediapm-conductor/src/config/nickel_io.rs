@@ -379,7 +379,8 @@ mod tests {
                     && entry
                         .file_name()
                         .to_string_lossy()
-                        .starts_with(mediapm_utils::temp::ARTIFACT_PREFIX)
+                        // Produced artifact-dir role name is intentionally retained.
+                        .starts_with("mediapm-artifact-")
             })
             .count()
     }
