@@ -662,7 +662,7 @@ mod tests {
 
     /// Seeded metadata cache for a single tool's resolved fields, avoiding real
     /// API calls.
-    async fn seed_metadata_cache(tool_name: &str) -> ToolDownloadCache {
+    async fn seed_metadata_cache(tool_name: &str) -> (ToolDownloadCache, tempfile::TempDir) {
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
@@ -679,7 +679,7 @@ mod tests {
         for (url, value) in urls.into_iter().zip(values) {
             cache.store_bytes("default", url, value).await;
         }
-        cache
+        (cache, temp_dir)
     }
 
     #[tokio::test]
@@ -688,7 +688,7 @@ mod tests {
         // None by design (mixed BtbN + evermeet sources; no single version or
         // upstream VCS hash identifies the artifact set). See the why-empty
         // rationale in the ffmpeg provider module doc.
-        let cache = seed_metadata_cache("ffmpeg").await;
+        let (cache, _tmp) = seed_metadata_cache("ffmpeg").await;
         let (_, metadata) =
             resolve_tool_fetch("ffmpeg", Some((&*cache, "default")), RecheckPolicy::default())
                 .await
@@ -705,7 +705,7 @@ mod tests {
         // Regression: media-tagger's resolved_tag must stay None by design
         // (builtin launcher shipped inside mediapm; no upstream tag exists).
         // resolved_version and resolved_vcs_hash identify the mediapm build.
-        let cache = seed_metadata_cache("media-tagger").await;
+        let (cache, _tmp) = seed_metadata_cache("media-tagger").await;
         let (_, metadata) = resolve_tool_fetch(
             "media-tagger",
             Some((&*cache, "default")),

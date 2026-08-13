@@ -1285,7 +1285,8 @@ mod tests {
 
     // -- Progress bar label format tests (shortened phases + version) --
 
-    async fn label_setup() -> (impl CasApi, UserLevelCache, RecordingProgressTracker) {
+    async fn label_setup()
+    -> (impl CasApi, UserLevelCache, RecordingProgressTracker, tempfile::TempDir) {
         let cas = new_in_memory_cas();
         let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
@@ -1307,12 +1308,12 @@ mod tests {
         .expect("cache open");
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
-        (cas, cache, tracker)
+        (cas, cache, tracker, tmp)
     }
 
     #[tokio::test]
     async fn resolve_bar_label_includes_version() {
-        let (cas, cache, tracker) = label_setup().await;
+        let (cas, cache, tracker, _tmp) = label_setup().await;
         let fetch = provider::media_tagger::sources();
         let outcome = PreResolveOutcome::Resolved(fetch, test_metadata("v7.1", "v7.1", false, 1));
         let result =
@@ -1331,7 +1332,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_bar_label_omits_version_when_empty() {
-        let (cas, cache, tracker) = label_setup().await;
+        let (cas, cache, tracker, _tmp) = label_setup().await;
         let fetch = provider::media_tagger::sources();
         let outcome = PreResolveOutcome::Resolved(fetch, test_metadata("", "v1.0.0", false, 1));
         let result =
@@ -1350,7 +1351,7 @@ mod tests {
 
     #[tokio::test]
     async fn skip_bar_label_includes_version() {
-        let (cas, cache, tracker) = label_setup().await;
+        let (cas, cache, tracker, _tmp) = label_setup().await;
         let outcome = PreResolveOutcome::Skip {
             name: "test-tool".to_string(),
             human_readable_version: "v7.1".to_string(),
@@ -1378,7 +1379,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_bar_label_uses_shortened_phases() {
-        let (cas, cache, tracker) = label_setup().await;
+        let (cas, cache, tracker, _tmp) = label_setup().await;
         let fetch = provider::media_tagger::sources();
         let outcome = PreResolveOutcome::Resolved(fetch, test_metadata("", "v1.0.0", false, 1));
         let result =
