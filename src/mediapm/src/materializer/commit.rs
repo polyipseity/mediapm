@@ -521,6 +521,14 @@ mod tests {
 
         assert!(sub.metadata().unwrap().permissions().readonly());
         assert!(child.metadata().unwrap().permissions().readonly());
+
+        // The `TempDir` guard's plain `remove_dir_all` silently fails on the
+        // readonly-marked subtree (on Unix, unlinking `child.txt` requires
+        // write on its parent `sub`), which would leak the tempdir from
+        // `$TMPDIR`. Clear the bits via the retry helper so the guard has
+        // nothing left to remove.
+        mediapm_utils::temp::remove_dir_all_with_retry(dir.path())
+            .expect("cleanup of readonly-marked tree");
     }
 
     #[test]
