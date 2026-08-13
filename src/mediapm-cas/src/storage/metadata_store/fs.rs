@@ -231,14 +231,20 @@ mod tests {
 
     /// Create a [`FileSystemBlobStore`] in a temp directory for testing
     /// [`FileSystemMetadataStore`].
-    async fn test_blob_store() -> FileSystemBlobStore {
+    ///
+    /// Returns the `TempDir` alongside the store: the store lazily
+    /// `create_dir_all`s its tree on first write, so dropping the guard
+    /// before the store does would recreate the tree without RAII
+    /// ownership and leak `$TMPDIR/mediapm-artifact-*` dirs.
+    async fn test_blob_store() -> (FileSystemBlobStore, tempfile::TempDir) {
         let dir = mediapm_utils::temp::artifact_dir().unwrap();
-        FileSystemBlobStore::create(dir.path().join("blobs"), Vec::new()).await.unwrap()
+        let blob = FileSystemBlobStore::create(dir.path().join("blobs"), Vec::new()).await.unwrap();
+        (blob, dir)
     }
 
     #[tokio::test]
     async fn persists_and_restores_constraint() {
-        let blob = test_blob_store().await;
+        let (blob, _dir) = test_blob_store().await;
         let index = FileSystemMetadataStore::new(blob.clone());
 
         let target = Hash::from_content(b"t");
@@ -259,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn rebuild_from_wal_merges_persisted() {
-        let blob = test_blob_store().await;
+        let (blob, _dir) = test_blob_store().await;
 
         // Create a metadata store, add constraint via persisted flush.
         let index = FileSystemMetadataStore::new(blob.clone());
@@ -294,7 +300,7 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_blob_store_starts_empty() {
-        let blob = test_blob_store().await;
+        let (blob, _dir) = test_blob_store().await;
         let index = FileSystemMetadataStore::new(blob);
         let journal = InMemoryWal::new();
         index.rebuild_from_wal(&journal).await.unwrap();
@@ -303,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn prune_also_flushes() {
-        let blob = test_blob_store().await;
+        let (blob, _dir) = test_blob_store().await;
         let index = FileSystemMetadataStore::new(blob.clone());
 
         let live = Hash::from_content(b"live");
