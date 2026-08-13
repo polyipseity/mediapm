@@ -113,6 +113,12 @@ pub struct Cache {
     domains: BTreeMap<String, DomainState>,
     /// Background maintenance guard for periodic prune, if started.
     bg_guard: Option<Arc<BackgroundMaintenanceGuard>>,
+    /// Root directory this cache was opened at.
+    ///
+    /// Used by [`Drop`](Drop) to skip the index flush when the root has been
+    /// removed while a handle is still alive: flushing would recreate the
+    /// root as an index-only orphan directory.
+    root: PathBuf,
 }
 
 /// Creates the CAS store and loads all domain index files.
@@ -175,7 +181,9 @@ async fn open_domain_setup(
 /// owning `TempDir` already removed the directory — and `write_index_file`'s
 /// `create_dir_all` would recreate it as an orphan containing only index
 /// files (no `store/`), leaking one directory per cache instance under
-/// `$TMPDIR`.
+/// `$TMPDIR`. The [`Drop`](Drop) root-exists guard is the primary invariant
+/// against this leak; the capture pattern here is a secondary defense that
+/// avoids running the flush at teardown in the first place.
 ///
 /// Synchronous filesystem I/O (index write, hash-refererence scan) is
 /// offloaded to [`tokio::task::spawn_blocking`] to avoid blocking the
@@ -265,7 +273,8 @@ impl Cache {
     /// fails.
     pub async fn open(root: &Path, domains: &[CacheDomainConfig]) -> Result<Self, ConductorError> {
         let (cas, domains_map) = open_domain_setup(root, domains, Vec::new()).await?;
-        let mut cache = Self { cas, domains: domains_map, bg_guard: None };
+        let mut cache =
+            Self { cas, domains: domains_map, bg_guard: None, root: root.to_path_buf() };
 
         // Start background prune loop that iterates all domains.
         //
@@ -667,6 +676,15 @@ fn now_unix_seconds() -> u64 {
 /// Flushes all domain indexes on drop so throttle-deferred writes are not lost.
 impl Drop for Cache {
     fn drop(&mut self) {
+        // Skip the flush when the root no longer exists: a flush would
+        // recreate it via `write_index_file`'s `create_dir_all` as an
+        // index-only orphan directory (no `store/`). The index is
+        // meaningless outside a live root, so a vanished root means the
+        // owning scope already cleaned up — recreate nothing.
+        match self.root.try_exists() {
+            Ok(true) => {}
+            _ => return,
+        }
         for (domain, state) in &self.domains {
             let (path, index) = {
                 let Ok(guard) = state.index.lock() else {
@@ -721,7 +739,8 @@ impl Cache {
             entry_ttl_seconds,
         };
         let (cas, domains_map) = open_domain_setup(root, &[config], verify_strategies).await?;
-        let mut cache = Self { cas, domains: domains_map, bg_guard: None };
+        let mut cache =
+            Self { cas, domains: domains_map, bg_guard: None, root: root.to_path_buf() };
         // Capture owned clones of the CAS and domain map instead of a full
         // `Cache` clone: a captured clone would keep the last `Cache` alive
         // until runtime teardown, at which point its Drop index flush would
@@ -767,7 +786,8 @@ impl Cache {
             entry_ttl_seconds,
         };
         let (cas, domains_map) = open_domain_setup(root, &[config], Vec::new()).await?;
-        let mut cache = Self { cas, domains: domains_map, bg_guard: None };
+        let mut cache =
+            Self { cas, domains: domains_map, bg_guard: None, root: root.to_path_buf() };
         // Capture owned clones of the CAS and domain map instead of a full
         // `Cache` clone: a captured clone would keep the last `Cache` alive
         // until runtime teardown, at which point its Drop index flush would
@@ -883,6 +903,45 @@ mod tests {
         assert!(
             !root_path.exists(),
             "cache teardown recreated a removed tempdir (index-only orphan leak)"
+        );
+    }
+
+    /// Regression: dropping a cache whose root was removed must not recreate
+    /// the directory.
+    ///
+    /// The [`Drop`](Drop) implementation flushes every domain index via
+    /// `write_index_file`, whose `create_dir_all` would recreate a removed
+    /// root as an index-only orphan. The root-exists guard skips the flush
+    /// when the root is gone, so a live cache handle whose owning `TempDir`
+    /// was already dropped cannot leak an orphan directory.
+    #[tokio::test]
+    async fn cache_drop_skips_flush_when_root_removed() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let root_path = root.path().to_path_buf();
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache");
+        // Dirty the index so a flush (if it ran) would actually write and
+        // recreate the parent directory.
+        cache.store_bytes("test", "removed-root-key", b"payload").await;
+
+        // Remove the root while the cache handle is still alive — the exact
+        // teardown ordering of test helpers that drop their TempDir before
+        // their Cache (locals drop in reverse declaration order).
+        std::fs::remove_dir_all(&root_path).expect("remove root");
+        drop(cache);
+        drop(root);
+
+        assert!(
+            !root_path.exists(),
+            "cache drop recreated a removed root (index-only orphan leak)"
         );
     }
 
