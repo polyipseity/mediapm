@@ -13,6 +13,7 @@ members = [
 	"src/mediapm-conductor-builtins/fs",
 	"src/mediapm-conductor-builtins/import",
 	"src/mediapm-utils",
+	"tests",
 ]
 
 [workspace.package]
