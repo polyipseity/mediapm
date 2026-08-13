@@ -7,10 +7,10 @@
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    AddInsertPosition, MediaHierarchyPreset, MediaPmService, MediaSourceSpec, load_mediapm_document,
+    AddInsertPosition, MediaHierarchyPreset, MediaPmService, MediaRuntimeStorage, MediaSourceSpec,
+    example_isolation, load_mediapm_document,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -49,16 +49,41 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Runtime storage for example runs; the user-level tool cache defaults to a
+/// hermetic sibling of the artifact root when the env override is unset.
+fn example_runtime_storage() -> MediaRuntimeStorage {
+    MediaRuntimeStorage {
+        cache_root_override: Some(example_cache_root()),
+        ..MediaRuntimeStorage::default()
+    }
+}
+
+/// Example user-level tool download cache root, honoring
+/// [`example_isolation::CACHE_ROOT_ENV`] and falling back to a hermetic
+/// `<artifact_root>/cache` sibling (wiped with the artifact root each run).
+fn example_cache_root() -> PathBuf {
+    std::env::var_os(example_isolation::CACHE_ROOT_ENV).map_or_else(
+        || example_isolation::default_example_cache_root(&artifact_root()),
+        PathBuf::from,
+    )
+}
+
+/// Canonical example artifact root, honoring
+/// [`example_isolation::ARTIFACT_ROOT_ENV`] and otherwise a stable
+/// `examples/artifacts/<example>` folder (no per-run stamp), so repeated runs
+/// reuse the same workspace instead of accumulating `{pid}-{nanos}` orphans.
 fn artifact_root() -> PathBuf {
-    let base = workspace_root().join("src/mediapm/examples/artifacts");
-    let pid = std::process::id();
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    base.join(format!("{EXAMPLE_ARTIFACT_FOLDER}-{pid}-{stamp}"))
+    match std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV) {
+        Some(root) => PathBuf::from(root),
+        None => {
+            workspace_root().join("src/mediapm/examples/artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
+        }
+    }
 }
 
 fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
     if root.exists() {
-        fs::remove_dir_all(root)?;
+        example_isolation::remove_dir_all_with_retry(root)?;
     }
     fs::create_dir_all(root)?;
     Ok(())
@@ -75,7 +100,9 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
-    let mut service = MediaPmService::new_fs_at(&root).await?;
+    let mut service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(&root, example_runtime_storage())
+            .await?;
 
     let local_source_path = write_dummy_local_source(&root)?;
     let local_media_id =
@@ -130,12 +157,16 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use mediapm::{HierarchyNodeKind, load_mediapm_document};
+    use mediapm::{
+        HierarchyNodeKind, example_isolation, example_isolation::IsolatedExampleRoots,
+        load_mediapm_document,
+    };
 
-    use super::run_add_hierarchy_example;
+    use super::{EXAMPLE_ARTIFACT_FOLDER, run_add_hierarchy_example};
 
     #[tokio::test]
     async fn add_hierarchy_writes_expected_hierarchy_nodes() {
+        let _isolated = IsolatedExampleRoots::with_cache();
         let manifest = run_add_hierarchy_example().await.expect("run add-hierarchy example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
@@ -194,6 +225,37 @@ mod tests {
     /// Ensures the documented CLI entry point runs end to end via `main()`.
     #[test]
     fn main_is_exercised() {
+        let _isolated = IsolatedExampleRoots::with_cache();
         super::main().expect("example main should run to completion");
+    }
+
+    /// Ensures the artifact root is canonical (no per-run `{pid}-{nanos}` stamp)
+    /// so repeated runs do not accumulate stamped folders under `examples/artifacts/`.
+    #[test]
+    fn artifact_root_is_stable() {
+        let _env_lock = example_isolation::lock_process_env();
+        let previous_artifact_root = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV);
+        // SAFETY: test clears one process env key in a controlled scope and
+        // restores the previous value before exit.
+        unsafe {
+            std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV);
+        }
+
+        let first = super::artifact_root();
+        let second = super::artifact_root();
+        assert_eq!(first, second, "artifact root must be stable across runs");
+        let name = first.file_name().and_then(|n| n.to_str()).expect("file name");
+        assert_eq!(
+            name, EXAMPLE_ARTIFACT_FOLDER,
+            "no per-run stamped suffix allowed in the artifact folder name"
+        );
+
+        // SAFETY: restore previous env var value for test isolation.
+        unsafe {
+            match &previous_artifact_root {
+                Some(value) => std::env::set_var(example_isolation::ARTIFACT_ROOT_ENV, value),
+                None => std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV),
+            }
+        }
     }
 }
