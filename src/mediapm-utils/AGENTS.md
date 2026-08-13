@@ -7,7 +7,7 @@ Crate: `mediapm-utils`
 ## Modules
 
 | Module | Contents | Feature gate |
-|--------|----------|-------------|
+| --- | --- | --- |
 | `types` | `StringMap`, `BinaryInputMap` type aliases | always |
 | `path` | `PathMode` enum, `parse_path_mode`, `resolve_path_for_root` | always |
 | `temp` | `artifact_dir`, `cache_dir`, `runtime_dir_for_workspace`, `is_managed_path`, `remove_dir_all_with_retry` | always |

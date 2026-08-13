@@ -51,7 +51,7 @@ State Persistence (state.ncl)
 ## B. Shared Invariants Across Crates (Builtins Rows)
 
 | Invariant | Builtins Behavior |
-|-----------|-------------------|
+| --- | --- |
 | Content Identity | Pure builtins (echo, archive) produce deterministic payloads |
 | Constraint Correctness | N/A (read-only, no constraints) |
 | Reconstructability | Output bytes persist; pure outputs are deterministic |
@@ -116,7 +116,7 @@ Each builtin follows a common pattern: parameter validation → execution → ou
 ### D6. Builtin Specifications (5 Builtins)
 
 | Builtin | Kind | Purity | Key Parameters |
-|---------|------|--------|----------------|
+| --- | --- | --- | --- |
 | echo | String pass-through | Pure | `message` (required), `output` |
 | fs | File/directory operations | Impure | `operation` (read/write/remove/copy/move/list), `path`, `source`, `destination` |
 | archive | ZIP/tar+zstd pack/unpack/repack/transform | Pure | `action` (pack/unpack/repack/transform), `path`, `filter`, `mode`, `find_N`/`replace_N` |
@@ -149,7 +149,7 @@ Builtins are lightweight wrappers: parameter parsing → operation → output. N
 ## F. Key References
 
 | Reference | Details |
-|-----------|---------|
+| --- | --- |
 | Framework | CLI contract (`--arg`), API contract (`BTreeMap`) |
 | 5 Tools | echo, fs, archive, import, export |
 | Purity | Pure (echo, archive) vs. impure (fs, import, export) |
@@ -303,7 +303,7 @@ Builtins provide both CLI (spawned process) and library API (in-process). Conduc
 #### Builtin Reports "Unknown Argument"
 
 | Symptom | Cause | Resolution |
-|---|---|---|
+| --- | --- | --- |
 | `Error: Unknown argument: typo_in_key` | Typo in `--arg` name | Check `--help` for valid names |
 | Same error | Wrong builtin for operation | Use correct builtin (fs for files, archive for ZIP, etc.) |
 | Same error | Outdated builtin version | Upgrade to version with the argument |
@@ -311,7 +311,7 @@ Builtins provide both CLI (spawned process) and library API (in-process). Conduc
 #### Deterministic Builtin Produces Different Output
 
 | Symptom | Cause | Resolution |
-|---|---|---|
+| --- | --- | --- |
 | Same input, different output | Hidden environment dependency (system time, random seed) | Verify builtin source for env dependencies |
 | Same input, different output | Non-deterministic compression (ZIP timestamps) | Use `--reproducible` flag if available; verify byte-for-byte determinism |
 | Same input, different output | Floating-point precision variation by platform | Pin platform or use fixed-point arithmetic |

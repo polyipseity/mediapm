@@ -15,6 +15,7 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, README.md, .agents/**/*.md, .opencode/**/
 ## Repo-specific markdown behavior
 
 - Follow `.markdownlint.jsonc` at the repo root and `.agents/.markdownlint.jsonc` for files under `.agents/`.
+- Tables must use a single consistent column style; compact (`| --- | --- |`) is the repo convention, with single-space padded content cells. `MD060` is enabled in the editor extension and flags mixed-style tables.
 - Do not hard-wrap paragraphs just to satisfy line-length rules; `MD013` is disabled.
 - Inline HTML and bare anchor behavior are permitted where they clearly improve the document; `MD033` and `MD051` are disabled.
 - Under `.agents/**`, `MD036` is also disabled, so emphasis-only pseudo-headings are allowed when they genuinely improve readability.

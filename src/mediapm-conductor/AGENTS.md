@@ -634,7 +634,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 ## B. Shared Invariants (Conductor-Relevant Rows)
 
 | Invariant | Applies To | Description |
-|---|---|---|
+| --- | --- | --- |
 | **3-document config** | Conductor, MediaPM | User intent (`conductor.ncl`) + machine setup (`conductor.generated.ncl`) + volatile state (`state.ncl`). Machine documents are never user-edited. |
 | **Deterministic workflow keys** | Conductor | Instance key = hash(tool_id + sorted inputs + impure_timestamp). Equivalent calls produce same key regardless of content-map details or persistence flags. |
 | **Explicit version markers** | Conductor, Builtins, MediaPM | Every persisted document carries top-level `version: u32`. Sequential migrations only. |
@@ -873,7 +873,7 @@ During `reconcile_desired_tools` in `sync/mod.rs`, when an existing active tool 
 ### Hot Paths
 
 | Path | Target | Technique |
-|---|---|---|
+| --- | --- | --- |
 | **Conductor planning** | < 10ms | Level-based topological sort (no DAG simulation) |
 | **Conductor scheduling** | EWMA cost model + O(1) batch cache probe | Step-stream batch dispatch; `exists_many` via `CasExistenceBitmap` |
 | **CAS materialize** (full object fast path) | O(file_size) | `fs::copy` for filesystem backend — kernel-level copy, no userspace buffer allocation; delta fallback via `get()` + write |
@@ -881,7 +881,7 @@ During `reconcile_desired_tools` in `sync/mod.rs`, when an existing active tool 
 ### Resource Bounds
 
 | Resource | Default | Config |
-|---|---|---|
+| --- | --- | --- |
 | Delta chain depth | 32 | `MAX_DELTA_DEPTH` |
 | Actor RPC timeout (CAS) | 8 sec | `FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS` |
 | Conductor RPC timeout | 300 sec | `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS` |
@@ -907,7 +907,7 @@ All progress messages must fit within the terminal width; detected via `terminal
 ## L. Key References (Conductor Table)
 
 | Area | Reference |
-|---|---|
+| --- | --- |
 | **Public Trait** | `ConductorApi` |
 | **Implementation** | `SimpleConductor` |
 | **Schemas** | 3-document (user `conductor.ncl`, machine `conductor.generated.ncl`, state `state.ncl`) |
@@ -1236,7 +1236,7 @@ Separation of concerns: user intent (`mediapm.ncl`), machine setup (`state.ncl`)
 #### Conductor Workflow Hangs
 
 | Symptom | Cause | Resolution |
-|---|---|---|
+| --- | --- | --- |
 | Steps not advancing past timeout | Builtin crash without output | Add `timeout_ms` to step config; check builtin stderr |
 | Same | Network timeout with no timeout configured | Set tool-level timeout in `tools.<tool>.runtime` |
 | Same | DAG cycle (validation bug) | Run `conductor.validate_workflow()` to detect cycles |
@@ -1260,7 +1260,7 @@ Separation of concerns: user intent (`mediapm.ncl`), machine setup (`state.ncl`)
 ### O.7 Cross-Crate References
 
 | § | Issue | Contract |
-|---|---|---|
+| --- | --- | --- |
 | 6.2 | Builtin failure vs conductor error recovery | Validation errors → no retry. Transient errors → retry N times (`max_retries`). Persistent errors → no retry. CAS errors propagate via `?` regardless of purity. |
 | 6.4 | Tool ID collision (builtin vs managed) | Builtin IDs are reserved; managed tools cannot use them. Check on config load via `registered_builtin_ids()`. |
 | 6.6 | Cache invalidation across tool versions | `retain_only()` removes old cache entries; `content_map` cleared on version change so stale references are not preserved. |
@@ -1349,7 +1349,7 @@ stateDiagram-v2
 `ConductorApi` keeps exactly three essential methods:
 
 | Method | Purpose |
-|---|---|
+| --- | --- |
 | `run_workflow(name)` | Run a workflow by name |
 | `run_workflow_with_options(name, options)` | Run with override options |
 | `get_runtime_diagnostics()` | Retrieve runtime diagnostic counters |

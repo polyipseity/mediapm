@@ -242,7 +242,7 @@ Wraps a byte slice to track compressed bytes consumed during tar extraction. Use
 All process-phase progress now uses a single chunk threshold: `SUB_ENTRY_CHUNK = 65536 (64 KB)`.
 
 | Path | Granularity mechanism | Chunk threshold |
-|------|----------------------|-----------------|
+| --- | --- | --- |
 | ZIP extraction | Proportional estimate per read | `SUB_ENTRY_CHUNK` (same as read buffer) |
 | tar.gz extraction | `CountingReader` gate | `SUB_ENTRY_CHUNK` |
 | tar.xz extraction | `CountingReader` gate | `SUB_ENTRY_CHUNK` |

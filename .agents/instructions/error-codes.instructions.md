@@ -21,7 +21,7 @@ Display format: `error[MPM-E001]: <description>` or `warning[MPM-W001]: <descrip
 ## MPM — mediapm
 
 | Code | Title | Description | Suggested fix |
-|------|-------|-------------|---------------|
+| --- | --- | --- | --- |
 | MPM-E001 | Unknown dependency key | A dependency key does not match any known dep type or configured tool | Use a bare tool ID as the key, or check valid keys in the error message |
 | MPM-E002 | Inherit with unconfigured tool | A dependency uses `"inherit"` but the target tool is not in the tools section | Add the tool to the tools section, or use `"latest"` / explicit version |
 | MPM-E003 | Circular inherit | A dependency and its target both use `"inherit"` | Set an explicit version for the target tool to break the cycle |
@@ -36,7 +36,7 @@ Display format: `error[MPM-E001]: <description>` or `warning[MPM-W001]: <descrip
 ## CAS — mediapm-cas
 
 | Code | Title | Description | Suggested fix |
-|------|-------|-------------|---------------|
+| --- | --- | --- | --- |
 | CAS-E001 | Object not found | The requested CAS object is missing from the store | Verify the content hash and that the object was stored |
 | CAS-E002 | Invalid argument | An argument violates CAS invariants | Check argument constraints in `CasApi` documentation |
 | CAS-E003 | Internal error | Unexpected internal state in the CAS layer | File a bug report with the reproduction steps |
@@ -48,7 +48,7 @@ Display format: `error[MPM-E001]: <description>` or `warning[MPM-W001]: <descrip
 ## CND — mediapm-conductor
 
 | Code | Title | Description | Suggested fix |
-|------|-------|-------------|---------------|
+| --- | --- | --- | --- |
 | CND-E001 | Workflow error | Invalid config, missing tools, or orchestration failure | Check the conductor document and tool state |
 | CND-E002 | CAS error | Error forwarded from the CAS layer | Check the wrapped CAS error for details |
 | CND-E003 | Serialization error | JSON or Nickel encode/decode failure | Check document format and structure |

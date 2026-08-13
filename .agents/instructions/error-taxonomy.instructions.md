@@ -14,7 +14,7 @@ applyTo: "src/mediapm/src/error.rs"
 ## `MediaPmError` variants
 
 | Variant | When used | Context |
-|---------|-----------|---------|
+| --- | --- | --- |
 | `InvalidSource(String)` | Source URI fails scheme requirements | error string |
 | `Workflow(String)` | Workflow/state consistency violation, provisioning failure, invalid configuration | error string |
 | `Serialization(String)` | Serialization or schema conversion failure | error string |

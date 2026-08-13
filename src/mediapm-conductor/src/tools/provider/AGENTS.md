@@ -22,7 +22,7 @@ See `crate::tools::provider::mod.rs` for the pipeline implementation and types.
 Progress item counters (`items_done`/`total`) measure **distinct operations in each phase**, not OS-platform count:
 
 | Phase | Total | What each item represents |
-|-------|-------|--------------------------|
+| --- | --- | --- |
 | Resolve | `1` | One `resolve_tool_fetch()` call |
 | Fetch | `sources.len()` | One download or launcher generation per source |
 | Process | `∑(2 if archive else 1)` per source | Decompress + compress for archives, CAS-import for binaries |

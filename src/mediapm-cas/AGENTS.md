@@ -166,7 +166,7 @@ via symlink) is a hard error. Paths are canonicalized via
 same directory are correctly identified as contention.
 
 | Behavior | Layer 1 (DashMap) | Layer 2 (flock) |
-|---|---|---|
+| --- | --- | --- |
 | Scope | Same process | Cross process |
 | Lock acquisition | `try_lock_owned()` | `try_lock()` |
 | Blocking? | No (fail-fast) | No (fail-fast) |
@@ -186,7 +186,7 @@ Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` by forwarding to inner
 ### 2.6 Config types
 
 | Type | Role |
-|------|------|
+| --- | --- |
 | `CasConfig` | Single config object: `storage_locator` + `integrity` |
 | `CasStorageLocator` | `InMemory` or `FileSystem { path }` |
 | `CasIntegrityConfig` | `verify_on_read` strategies (`Default`: empty — no verification) |
@@ -205,7 +205,7 @@ Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` by forwarding to inner
 Singular location for all tunable constants in [`defaults`](crate::defaults):
 
 | Constant | Value | Purpose |
-|----------|-------|---------|
+| --- | --- | --- |
 | `WAL_INLINE_LIMIT` | 1 MiB | Max object size inlined in WAL. Beyond this → `PutLarge` + external blob. |
 | `DELTA_THRESHOLD` | 16 MiB | Max object size eligible for delta compression. Larger objects stored as Full. |
 | `CACHE_MAX_FRACTION_OF_TOTAL_SIZE` | 0.10 | Fraction of total store consumed by bg_engine cache at most. |
@@ -447,7 +447,7 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 `CasStore::put()` uses compile-time dispatch via associated consts (`BlobStore::SYNC_MATERIALIZE`, `MetadataStore::SYNC_MATERIALIZE`). Effective policy: `B::SYNC_MATERIALIZE && M::SYNC_MATERIALIZE`.
 
 | Backend triplet | Blob | Metadata | Effective |
-|-----------------|------|----------|-----------|
+| --- | --- | --- | --- |
 | `InMemoryCas` | `InMemoryBlobStore` (true) | `InMemoryMetadataStore` (true) | write-through |
 | `FileSystemCas` | `FileSystemBlobStore` (false) | `FileSystemMetadataStore` (false) | write-back |
 

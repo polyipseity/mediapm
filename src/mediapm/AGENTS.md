@@ -63,7 +63,7 @@ builtins/                  — Native tool implementations
 ## Key Types
 
 | Type | File | Purpose |
-|------|------|---------|
+| --- | --- | --- |
 | `MediaPmService<Cas>` | `service.rs` | Orchestration API: sync, add/remove media, tool lifecycle |
 | `MediaPmDocument` | `config/mod.rs` | Deserialized `mediapm.ncl` |
 | `MediaPmState` | `config/mod.rs` | Machine-managed `state.json` |
@@ -78,11 +78,11 @@ builtins/                  — Native tool implementations
 Four-document system, all with explicit top-level `version`:
 
 | Document | Default path | Owner | Purpose |
-|----------|-------------|-------|---------|
+| --- | --- | --- | --- |
 | `mediapm.ncl` | `<root>/mediapm.ncl` | User | Declares media, hierarchy, tools, runtime |
-| `<mediapm_dir>/conductor.ncl` | Generated | Conductor user intent + workflow defs |  |
-| `<mediapm_dir>/conductor.generated.ncl` | Machine | Tool registry, resolved hashes |  |
-| `<mediapm_dir>/state.json` | Machine | Per-media workflow state, managed files, hashes |  |
+| `<mediapm_dir>/conductor.ncl` | Generated | Conductor user intent + workflow defs | |
+| `<mediapm_dir>/conductor.generated.ncl` | Machine | Tool registry, resolved hashes | |
+| `<mediapm_dir>/state.json` | Machine | Per-media workflow state, managed files, hashes | |
 
 Config schema versioning (see `.agents/instructions/nickel.instructions.md` for the migration placement and strict version separation policies):
 
@@ -117,7 +117,7 @@ Flag resolution: CLI arg > env var (`MEDIAPM_*`) > config > default.
 MediaPM creates `SimpleConductor`, passes grouped runtime-storage paths so volatile writes go to `<mediapm_dir>/`:
 
 | Conductor path | MediaPM default |
-|---------------|-----------------|
+| --- | --- |
 | `conductor_dir` | `<mediapm_dir>` |
 | `conductor_state_config` | `<mediapm_dir>/state.conductor.ncl` |
 | `cas_store_dir` | `<mediapm_dir>/store` |
@@ -233,7 +233,7 @@ Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all`.
 ## Feature Flags
 
 | Feature | Deps | Purpose |
-|---------|------|---------|
+| --- | --- | --- |
 | `default` = `cli` + `media-tagger` | — | Production set |
 | `cli` | clap, clap_complete | CLI binary |
 | `media-tagger` | chromaprint-next, musicbrainz_rs, ffmetadata | Native tagger builtin |
