@@ -10,15 +10,15 @@ Canonical source of truth for all mediapm-owned temporary directories under the 
 
 ## Naming contract
 
-All mediapm-owned temp roots use `mediapm-{role}-{unique}` naming:
+All mediapm-owned temp roots share the single `mediapm-` prefix (`mediapm-{role}-{unique}` naming):
 
-| Role    | Prefix                | Constructor                                             | Typical use                                            |
-| ------- | --------------------- | ------------------------------------------------------- | ------------------------------------------------------ |
-| artifact | `mediapm-artifact-`   | `mediapm_utils::temp::artifact_dir()`                   | Example/test workspace roots, test harness roots       |
-| cache   | `mediapm-cache-`      | `mediapm_utils::temp::cache_dir()`                      | Hermetic user-level download cache                     |
-| runtime | `mediapm-runtime-{16hex}` | `mediapm_utils::temp::runtime_dir_for_workspace(root)` | Conductor sandbox tmp root (stable per workspace) |
+| Role    | Prefix    | Constructor                                             | Typical use                                            |
+| ------- | --------- | ------------------------------------------------------- | ------------------------------------------------------ |
+| artifact | `mediapm-` | `mediapm_utils::temp::artifact_dir()`                   | Example/test workspace roots, test harness roots       |
+| cache   | `mediapm-`  | `mediapm_utils::temp::cache_dir()`                      | Hermetic user-level download cache                     |
+| runtime | `mediapm-`  | `mediapm_utils::temp::runtime_dir_for_workspace(root)` | Conductor sandbox tmp root (stable per workspace) |
 
-- The three prefix constants live ONLY in `src/mediapm-utils/src/temp.rs`. No other file defines them.
+- The single prefix constant (`MEDIAPM_TEMP_PREFIX = "mediapm-"`) lives ONLY in `src/mediapm-utils/src/temp.rs`. No other file defines it.
 - `{unique}` for artifact/cache is a `tempfile`-generated random suffix; runtime uses a stable 16-hex hash of the workspace root path.
 
 ## Directory classes and lifecycle owners
@@ -42,18 +42,19 @@ RAII `TempDir` owners must be bound to a local for the full scope that needs the
 
 `scripts/clean-mediapm-temp.sh` (POSIX) and `scripts/clean-mediapm-temp.ps1` (Windows) are behavior-identical twins:
 
-- Glob set: the three temp-root prefixes ONLY at depth 1 under the OS temp dir (bash: `$TMPDIR`/`/tmp`; PowerShell: `[System.IO.Path]::GetTempPath()`). No workspace-relative globs of any kind.
+- Glob set: the single `mediapm-*` temp-root glob ONLY at depth 1 under the OS temp dir (bash: `$TMPDIR`/`/tmp`; PowerShell: `[System.IO.Path]::GetTempPath()`). No workspace-relative globs of any kind.
 - `--dry-run`: prints `would remove:` lines plus a count, exits 0.
 - Real run: clears readonly bits (`chmod -R u+w` / `Clear-ReadOnlyAttributes`), retries transient failures (6 attempts, 40 ms backoff — mirrors `remove_dir_all_with_retry`), prints `removed:` lines plus a count.
 - No matches: prints `no mediapm temp directories found`, exits 0.
 - Unknown argument: prints to stderr, exits 1.
 - The real OS user cache (`<os-cache>/mediapm/cache/`) is never touched.
 - Keep both scripts behaviorally identical; changing one requires the matching change in the other.
+- Self-test scripts (`test-clean-mediapm-temp.sh` / `.ps1`) are driven by the root `tests/` crate (package `mediapm-tests`) via `cargo --locked test-pkg mediapm-tests` (cargo/nextest), not invoked directly from `run-all-tests.*`.
 
 ## Regression gate contract
 
 - `scripts/run-all-tests.sh` ends with a dry-run gate: `clean-mediapm-temp.sh --dry-run | grep -q 'would remove'` -> exit 1. Any leftover managed dir fails the suite. CI-covered (ubuntu-latest).
-- `scripts/run-all-tests.ps1` mirrors the gate for parity (not CI-covered — no Windows runner).
+- `scripts/run-all-tests.ps1` mirrors the gate for parity; the ps1 janitor self-test is CI-covered via the Windows script-tests job (`cargo --locked test-pkg mediapm-tests`).
 - Unprefixed-tempdir invariant gate: `tempfile::tempdir(` and `.prefix(` may appear ONLY in `src/mediapm-utils/src/temp.rs`. Naming drift or a reintroduced unprefixed tempdir fails the suite.
 
 ## Authoring rules
