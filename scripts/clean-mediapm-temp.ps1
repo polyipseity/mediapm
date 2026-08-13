@@ -1,6 +1,5 @@
 #!/usr/bin/env pwsh
-# Remove mediapm-owned temp directories under the OS temp dir and stale
-# stamped example-artifact folders in the workspace.
+# Remove mediapm-owned temp directories under the OS temp dir.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -8,7 +7,6 @@ $tempRoot = ([System.IO.Path]::GetTempPath()).TrimEnd(
     [System.IO.Path]::DirectorySeparatorChar,
     [System.IO.Path]::AltDirectorySeparatorChar
 )
-$repoRoot = Split-Path -Parent $PSScriptRoot
 $dryRun = $false
 $removed = 0
 
@@ -18,8 +16,7 @@ foreach ($arg in $args) {
         { $_ -eq '-h' -or $_ -eq '--help' } {
             Write-Output "usage: $PSCommandPath [--dry-run]"
             Write-Output 'removes: mediapm-artifact-* mediapm-cache-* mediapm-runtime-*'
-            Write-Output '         under the OS temp dir, plus stale cli-add-hierarchy-*'
-            Write-Output '         folders under src/mediapm/examples/artifacts/'
+            Write-Output '         under the OS temp dir.'
             exit 0
         }
         default {
@@ -107,25 +104,12 @@ foreach ($dir in Get-ChildItem -LiteralPath $tempRoot -Directory -Force) {
     }
 }
 
-# Stale stamped artifact folders from examples that predate the canonical
-# artifact root (git-ignored via src/mediapm/examples/.gitignore). The
-# canonical cli-add-hierarchy folder is preserved: the glob requires a
-# trailing "-<pid>-<nanos>" stamp, so it never matches the bare name.
-$artifactsRoot = Join-Path $repoRoot 'src/mediapm/examples/artifacts'
-if (Test-Path -LiteralPath $artifactsRoot) {
-    foreach ($dir in Get-ChildItem -LiteralPath $artifactsRoot -Directory -Force) {
-        if ($dir.Name -like 'cli-add-hierarchy-*') {
-            Remove-JunkDirectory -Path $dir.FullName
-        }
-    }
-}
-
 if ($removed -eq 0) {
-    Write-Output 'no mediapm temp directories or stale artifact folders found'
+    Write-Output 'no mediapm temp directories found'
 } else {
     if ($dryRun) {
-        Write-Output "would remove $removed mediapm temp director(ies)/stale folder(s)"
+        Write-Output "would remove $removed mediapm temp director(ies)"
     } else {
-        Write-Output "removed $removed mediapm temp director(ies)/stale folder(s)"
+        Write-Output "removed $removed mediapm temp director(ies)"
     }
 }
