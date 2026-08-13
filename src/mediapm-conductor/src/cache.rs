@@ -163,6 +163,96 @@ async fn open_domain_setup(
     Ok((cas, domains_map))
 }
 
+/// Core prune logic without cooldown check, for one domain.
+///
+/// Used by the background maintenance loop so background prunes do not
+/// interfere with [`Cache::prune_expired_entries`] cooldown tracking.
+///
+/// Takes the CAS store and domain map directly instead of a full [`Cache`]:
+/// the background prune task captures owned clones of these, so it never
+/// keeps a `Cache` alive past its owning scope. A lingering `Cache` clone
+/// would run its [`Drop`](Drop) index flush at runtime teardown — after the
+/// owning `TempDir` already removed the directory — and `write_index_file`'s
+/// `create_dir_all` would recreate it as an orphan containing only index
+/// files (no `store/`), leaking one directory per cache instance under
+/// `$TMPDIR`.
+///
+/// Synchronous filesystem I/O (index write, hash-refererence scan) is
+/// offloaded to [`tokio::task::spawn_blocking`] to avoid blocking the
+/// async runtime.
+async fn prune_expired_inner_core(
+    cas: &FileSystemCas,
+    domains: &BTreeMap<String, DomainState>,
+    domain: &str,
+    now: u64,
+) -> Result<CachePruneReport, ConductorError> {
+    // ── Phase 1: collect expired entries and snapshot the index ──
+    //
+    // All domain_state borrows are dropped before any await so the
+    // resulting Future is Send (required by tokio::spawn background
+    // loop).
+    let (_cutoff, index_path, expired_keys, expired_hashes, index_snapshot) = {
+        let domain_state = domains
+            .get(domain)
+            .ok_or_else(|| ConductorError::Workflow(format!("unknown cache domain '{domain}'")))?;
+        let cutoff = now.saturating_sub(domain_state.entry_ttl_seconds);
+        let index_path = domain_state.index_path.clone();
+        let mut index = domain_state.index.lock().map_err(|_| {
+            ConductorError::Internal("locking cache index mutex failed".to_string())
+        })?;
+        let mut expired_keys = Vec::new();
+        let mut expired_hashes = Vec::new();
+        for (key, entry) in &index.entries {
+            if entry.last_access_unix_seconds <= cutoff {
+                expired_keys.push(key.clone());
+                expired_hashes.push(entry.hash.clone());
+            }
+        }
+        if !expired_keys.is_empty() {
+            for key in &expired_keys {
+                index.entries.remove(key);
+            }
+        }
+        let index_snapshot = index.clone();
+        // domain_state and index (MutexGuard) dropped here.
+        (cutoff, index_path, expired_keys, expired_hashes, index_snapshot)
+    };
+
+    // ── Phase 2: persist mutated index via spawn_blocking ──
+    // Clone index_path before move into closure; the original is
+    // still needed below for cache_root resolution.
+    let write_path = index_path.clone();
+    tokio::task::spawn_blocking(move || write_index_file(&write_path, &index_snapshot))
+        .await
+        .map_err(|e| ConductorError::Workflow(format!("prune index join error: {e}")))??;
+
+    if expired_keys.is_empty() {
+        return Ok(CachePruneReport::default());
+    }
+
+    // ── Phase 3: collect active hash references via spawn_blocking ──
+    let cache_root = index_path.parent().unwrap_or(Path::new("")).to_path_buf();
+    let active_hash_union =
+        tokio::task::spawn_blocking(move || collect_referenced_hashes_from_indexes(&cache_root))
+            .await
+            .map_err(|e| ConductorError::Workflow(format!("prune hash-scan join error: {e}")))?;
+
+    // ── Phase 4: async CAS payload removal ──
+    let mut removed_payloads = 0usize;
+    for hash_text in expired_hashes {
+        if active_hash_union.contains(&hash_text) {
+            continue;
+        }
+        let Ok(hash) = Hash::from_str(hash_text.trim()) else {
+            continue;
+        };
+        if cas.stat(hash).await.is_ok() && cas.delete(hash).await.is_ok() {
+            removed_payloads = removed_payloads.saturating_add(1);
+        }
+    }
+    Ok(CachePruneReport { removed_entries: expired_keys.len(), removed_payloads })
+}
+
 impl Cache {
     /// Opens a multi-domain cache at the given root directory.
     ///
@@ -178,17 +268,26 @@ impl Cache {
         let mut cache = Self { cas, domains: domains_map, bg_guard: None };
 
         // Start background prune loop that iterates all domains.
+        //
+        // Capture owned clones of the CAS and domain map instead of a full
+        // `Cache` clone: a captured clone would keep the last `Cache` alive
+        // until runtime teardown, at which point its Drop index flush would
+        // recreate a tempdir the owning scope already removed (orphan leak
+        // of index-only directories under `$TMPDIR`).
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancelled_clone = cancelled.clone();
-        let cache_clone = cache.clone();
-        let domain_names: Vec<String> = cache.domains.keys().cloned().collect();
+        let bg_cas = cache.cas.clone();
+        let bg_domains = cache.domains.clone();
+        let domain_names: Vec<String> = bg_domains.keys().cloned().collect();
         let handle = tokio::spawn(async move {
             loop {
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
                 }
                 for domain in &domain_names {
-                    let _ = cache_clone.prune_expired_inner(domain, now_unix_seconds()).await;
+                    let _ =
+                        prune_expired_inner_core(&bg_cas, &bg_domains, domain, now_unix_seconds())
+                            .await;
                 }
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
@@ -356,72 +455,10 @@ impl Cache {
         domain: &str,
         now: u64,
     ) -> Result<CachePruneReport, ConductorError> {
-        // ── Phase 1: collect expired entries and snapshot the index ──
-        //
-        // All domain_state borrows are dropped before any await so the
-        // resulting Future is Send (required by tokio::spawn background
-        // loop).
-        let (_cutoff, index_path, expired_keys, expired_hashes, index_snapshot) = {
-            let domain_state = self.domains.get(domain).ok_or_else(|| {
-                ConductorError::Workflow(format!("unknown cache domain '{domain}'"))
-            })?;
-            let cutoff = now.saturating_sub(domain_state.entry_ttl_seconds);
-            let index_path = domain_state.index_path.clone();
-            let mut index = domain_state.index.lock().map_err(|_| {
-                ConductorError::Internal("locking cache index mutex failed".to_string())
-            })?;
-            let mut expired_keys = Vec::new();
-            let mut expired_hashes = Vec::new();
-            for (key, entry) in &index.entries {
-                if entry.last_access_unix_seconds <= cutoff {
-                    expired_keys.push(key.clone());
-                    expired_hashes.push(entry.hash.clone());
-                }
-            }
-            if !expired_keys.is_empty() {
-                for key in &expired_keys {
-                    index.entries.remove(key);
-                }
-            }
-            let index_snapshot = index.clone();
-            // domain_state and index (MutexGuard) dropped here.
-            (cutoff, index_path, expired_keys, expired_hashes, index_snapshot)
-        };
-
-        // ── Phase 2: persist mutated index via spawn_blocking ──
-        // Clone index_path before move into closure; the original is
-        // still needed below for cache_root resolution.
-        let write_path = index_path.clone();
-        tokio::task::spawn_blocking(move || write_index_file(&write_path, &index_snapshot))
-            .await
-            .map_err(|e| ConductorError::Workflow(format!("prune index join error: {e}")))??;
-
-        if expired_keys.is_empty() {
-            return Ok(CachePruneReport::default());
-        }
-
-        // ── Phase 3: collect active hash references via spawn_blocking ──
-        let cache_root = index_path.parent().unwrap_or(Path::new("")).to_path_buf();
-        let active_hash_union = tokio::task::spawn_blocking(move || {
-            collect_referenced_hashes_from_indexes(&cache_root)
-        })
-        .await
-        .map_err(|e| ConductorError::Workflow(format!("prune hash-scan join error: {e}")))?;
-
-        // ── Phase 4: async CAS payload removal ──
-        let mut removed_payloads = 0usize;
-        for hash_text in expired_hashes {
-            if active_hash_union.contains(&hash_text) {
-                continue;
-            }
-            let Ok(hash) = Hash::from_str(hash_text.trim()) else {
-                continue;
-            };
-            if self.cas.stat(hash).await.is_ok() && self.cas.delete(hash).await.is_ok() {
-                removed_payloads = removed_payloads.saturating_add(1);
-            }
-        }
-        Ok(CachePruneReport { removed_entries: expired_keys.len(), removed_payloads })
+        // Delegate to the free core so the background task can capture the
+        // CAS + domain map directly instead of a full `Cache` clone (see
+        // `prune_expired_inner_core` for the leak rationale).
+        prune_expired_inner_core(&self.cas, &self.domains, domain, now).await
     }
 
     /// Removes one key row from a domain's cache index metadata.
@@ -685,17 +722,25 @@ impl Cache {
         };
         let (cas, domains_map) = open_domain_setup(root, &[config], verify_strategies).await?;
         let mut cache = Self { cas, domains: domains_map, bg_guard: None };
+        // Capture owned clones of the CAS and domain map instead of a full
+        // `Cache` clone: a captured clone would keep the last `Cache` alive
+        // until runtime teardown, at which point its Drop index flush would
+        // recreate a tempdir the owning scope already removed (orphan leak
+        // of index-only directories under `$TMPDIR`).
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancelled_clone = cancelled.clone();
-        let cache_clone = cache.clone();
-        let domain_names: Vec<String> = cache.domains.keys().cloned().collect();
+        let bg_cas = cache.cas.clone();
+        let bg_domains = cache.domains.clone();
+        let domain_names: Vec<String> = bg_domains.keys().cloned().collect();
         let handle = tokio::spawn(async move {
             loop {
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
                 }
                 for domain in &domain_names {
-                    let _ = cache_clone.prune_expired_inner(domain, now_unix_seconds()).await;
+                    let _ =
+                        prune_expired_inner_core(&bg_cas, &bg_domains, domain, now_unix_seconds())
+                            .await;
                 }
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
@@ -723,17 +768,25 @@ impl Cache {
         };
         let (cas, domains_map) = open_domain_setup(root, &[config], Vec::new()).await?;
         let mut cache = Self { cas, domains: domains_map, bg_guard: None };
+        // Capture owned clones of the CAS and domain map instead of a full
+        // `Cache` clone: a captured clone would keep the last `Cache` alive
+        // until runtime teardown, at which point its Drop index flush would
+        // recreate a tempdir the owning scope already removed (orphan leak
+        // of index-only directories under `$TMPDIR`).
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancelled_clone = cancelled.clone();
-        let cache_clone = cache.clone();
-        let domain_names: Vec<String> = cache.domains.keys().cloned().collect();
+        let bg_cas = cache.cas.clone();
+        let bg_domains = cache.domains.clone();
+        let domain_names: Vec<String> = bg_domains.keys().cloned().collect();
         let handle = tokio::spawn(async move {
             loop {
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
                 }
                 for domain in &domain_names {
-                    let _ = cache_clone.prune_expired_inner(domain, now_unix_seconds()).await;
+                    let _ =
+                        prune_expired_inner_core(&bg_cas, &bg_domains, domain, now_unix_seconds())
+                            .await;
                 }
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
@@ -786,6 +839,51 @@ mod tests {
         // Immediate prune should not remove fresh entry
         let retrieved_after = cache.lookup_bytes("test", key).await;
         assert_eq!(retrieved_after, Some(payload), "fresh entry must survive prune");
+    }
+
+    /// Regression: teardown must not recreate an already-removed cache dir.
+    ///
+    /// The background prune task must not keep a full `Cache` clone alive
+    /// past its owning scope: a lingering clone would run [`Drop`] index
+    /// flush at runtime teardown, after the owning `TempDir` already removed
+    /// the directory, and `write_index_file`'s `create_dir_all` would
+    /// recreate it as an orphan containing only index files (no `store/`).
+    ///
+    /// Simulates the exact teardown ordering: cache dropped while the dir
+    /// exists, dir removed, then the background task's captured state
+    /// dropped last.
+    #[tokio::test]
+    async fn cache_teardown_does_not_recreate_removed_tempdir() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let root_path = root.path().to_path_buf();
+        let mut cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache");
+        // Dirty the index so any late flush would actually write (and thus
+        // recreate the parent directory).
+        cache.store_bytes("test", "teardown-key", b"payload").await;
+
+        // Detach the background guard to control teardown ordering: cache
+        // drop flushes while the dir exists, the tempdir is then removed,
+        // and the guard drop aborts the prune task whose captured clones
+        // drop last — the step that must not recreate the directory.
+        let guard = cache.bg_guard.take();
+        drop(cache);
+        drop(root);
+        drop(guard);
+        tokio::task::yield_now().await;
+
+        assert!(
+            !root_path.exists(),
+            "cache teardown recreated a removed tempdir (index-only orphan leak)"
+        );
     }
 
     /// Verifies that querying a non-existent key returns None.
