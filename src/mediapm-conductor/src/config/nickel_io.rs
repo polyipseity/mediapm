@@ -2,10 +2,13 @@
 //!
 //! # Design
 //!
-//! These helpers manage temporary Nickel workspace directories, evaluate
-//! `.ncl` files through `nickel-lang-core`, and render Rust structs as Nickel
-//! source.  Results are cached by source-text hash to avoid re-evaluating
-//! unchanged documents across repeated decode calls.
+//! These helpers evaluate `.ncl` files through `nickel-lang-core` and render
+//! Rust structs as Nickel source.  Results are cached by source-text hash to
+//! avoid re-evaluating unchanged documents across repeated decode calls.
+//!
+//! Each evaluation allocates its own scratch workspace via
+//! `mediapm_utils::temp::artifact_dir()`; the `TempDir` guard removes it on
+//! both success and error paths, so failed decodes never leak scratch files.
 //!
 //! # Cache discipline
 //!
@@ -15,7 +18,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use blake3;
@@ -45,19 +47,6 @@ fn eval_cache() -> &'static Mutex<HashMap<EvalCacheKey, Value>> {
 fn eval_source_value_cache() -> &'static Mutex<HashMap<blake3::Hash, Value>> {
     static CACHE: OnceLock<Mutex<HashMap<blake3::Hash, Value>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Monotonically increasing counter for unique workspace filenames.
-pub(super) static NICKEL_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Returns a reference to the shared temporary Nickel workspace directory,
-/// creating it on first access.
-pub(super) fn nickel_workspace_dir() -> &'static Path {
-    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    DIR.get_or_init(|| {
-        mediapm_utils::temp::artifact_dir().expect("artifact dir for nickel workspace")
-    })
-    .path()
 }
 
 /// Writes one Nickel source file into the temporary workspace.
@@ -136,18 +125,18 @@ fn evaluate_document_source_value(
         }
     }
 
-    let workspace_dir = nickel_workspace_dir();
-    let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    let subdir = workspace_dir.join(format!("inspect-{seq}"));
-    fs::create_dir_all(&subdir).map_err(|source| ConductorError::Io {
-        operation: "creating Nickel workspace subdirectory for source value evaluation".to_string(),
-        path: subdir.clone(),
+    // Per-evaluation scratch workspace: the `TempDir` guard removes the
+    // directory on success AND on the `?` error paths below. The previous
+    // explicit cleanup ran only on success, so a failed evaluation leaked
+    // the scratch files.
+    let workspace = mediapm_utils::temp::artifact_dir().map_err(|source| ConductorError::Io {
+        operation: "creating Nickel workspace for source value evaluation".to_string(),
+        path: std::env::temp_dir(),
         source,
     })?;
 
-    let input_path = subdir.join("document_input.ncl");
-    let wrapper_path = subdir.join("inspect_document.ncl");
+    let input_path = workspace.path().join("document_input.ncl");
+    let wrapper_path = workspace.path().join("inspect_document.ncl");
 
     write_nickel_file(
         &input_path,
@@ -166,9 +155,6 @@ fn evaluate_document_source_value(
         &wrapper_path,
         &format!("evaluating {document_kind} source metadata"),
     )?;
-
-    // Clean up temporary directory after evaluation completes.
-    let _ = fs::remove_dir_all(&subdir);
 
     let cache = eval_source_value_cache();
     let mut guard = cache.lock().unwrap();
@@ -271,21 +257,21 @@ where
     let validator_name = format!("validate_document_v{requested_version}");
     let version_file_name = resolve_version_contract(requested_version, document_kind)?;
 
-    let workspace_dir = nickel_workspace_dir();
-    let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    let subdir = workspace_dir.join(format!("decode-{seq}"));
-    fs::create_dir_all(&subdir).map_err(|source| ConductorError::Io {
-        operation: "creating Nickel workspace subdirectory for document migration".to_string(),
-        path: subdir.clone(),
+    // Per-decode scratch workspace: the `TempDir` guard removes the
+    // directory on success AND on the `?` error paths below. The previous
+    // explicit cleanup ran only on success, so a failed evaluation leaked
+    // the scratch files.
+    let workspace = mediapm_utils::temp::artifact_dir().map_err(|source| ConductorError::Io {
+        operation: "creating Nickel workspace for document migration".to_string(),
+        path: std::env::temp_dir(),
         source,
     })?;
 
-    let mod_path = subdir.join("mod.ncl");
-    let v1_path = subdir.join("v1.ncl");
-    let v2_path = subdir.join("v2.ncl");
-    let input_path = subdir.join("document_input.ncl");
-    let wrapper_path = subdir.join("decode_document.ncl");
+    let mod_path = workspace.path().join("mod.ncl");
+    let v1_path = workspace.path().join("v1.ncl");
+    let v2_path = workspace.path().join("v2.ncl");
+    let input_path = workspace.path().join("document_input.ncl");
+    let wrapper_path = workspace.path().join("decode_document.ncl");
 
     write_nickel_file(&mod_path, MOD_NCL_SOURCE, "writing temporary Nickel migration helper")?;
     write_nickel_file(&v1_path, V1_NCL_SOURCE, "writing temporary Nickel v1.ncl helper")?;
@@ -306,9 +292,6 @@ version.{validator_name} (migration.migrate_to {requested_version} document)
         &wrapper_path,
         &format!("evaluating {document_kind} via Nickel migration wrapper"),
     )?;
-
-    // Clean up temporary directory after evaluation completes.
-    let _ = fs::remove_dir_all(&subdir);
 
     let json_value = serde_json::to_value(&result).map_err(|err| {
         ConductorError::Serialization(format!("failed caching evaluated {document_kind}: {err}"))
@@ -331,4 +314,134 @@ where
     T: DeserializeOwned + Serialize,
 {
     migrate_document_source_to_version(source, v_latest::NICKEL_VERSION_LATEST, document_kind)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serializes `TMPDIR` redirection within one process. The canonical
+    /// runner (nextest) isolates each test in its own process, so sibling
+    /// processes redirect their own `TMPDIR` and never churn this test's
+    /// count; under plain `cargo test --lib` this lock keeps the
+    /// redirect/restore critical section atomic against sibling threads.
+    static TEMP_COUNT_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Redirects this process's `TMPDIR` to a unique, empty root for the
+    /// lifetime of the guard, then restores the previous value and removes the
+    /// root. Counting `mediapm-artifact-*` dirs under the redirected root is
+    /// deterministic: the decode under test is the only code that can create
+    /// them there.
+    struct RedirectedTempDir {
+        // Kept solely for its `Drop` side effect (removes the redirected root
+        // after the env restore); the field is never read.
+        #[expect(dead_code)]
+        root: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl RedirectedTempDir {
+        fn new() -> Self {
+            let root = tempfile::tempdir().expect("create isolated temp root");
+            let previous = std::env::var_os("TMPDIR");
+            // SAFETY: test-only env override scoped to this guard's lifetime,
+            // serialized by TEMP_COUNT_LOCK, and restored before the root is
+            // removed. Mirrors the `IsolatedExampleRoots` precedent in
+            // `mediapm`'s example_isolation.rs.
+            unsafe { std::env::set_var("TMPDIR", root.path()) }
+            Self { root, previous }
+        }
+    }
+
+    impl Drop for RedirectedTempDir {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(previous) => {
+                    // SAFETY: symmetric with `new`, same scoping.
+                    unsafe { std::env::set_var("TMPDIR", previous) }
+                }
+                None => {
+                    // SAFETY: symmetric with `new`, same scoping.
+                    unsafe { std::env::remove_var("TMPDIR") }
+                }
+            }
+        }
+    }
+
+    /// Counts `mediapm-artifact-*` directories under the current temp root
+    /// (the redirected root while a [`RedirectedTempDir`] is live).
+    fn artifact_dir_count() -> usize {
+        std::fs::read_dir(std::env::temp_dir())
+            .expect("read temp dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(mediapm_utils::temp::ARTIFACT_PREFIX)
+            })
+            .count()
+    }
+
+    const MINIMAL_V2_DOC: &str = "{ version = 2 }";
+    // Syntax-broken document: fails evaluation after the scratch workspace
+    // exists, exercising the `?` error path that previously leaked the
+    // workspace directory.
+    const BROKEN_DOC: &str = "{ version = 2";
+
+    /// Runs `body` under a fresh redirected `TMPDIR`, asserting the
+    /// artifact-dir count under it returns to its initial value (0).
+    fn assert_no_artifact_dir_leak(body: impl FnOnce()) {
+        let _lock = TEMP_COUNT_LOCK.lock().unwrap();
+        let _env = RedirectedTempDir::new();
+        let before = artifact_dir_count();
+        assert_eq!(before, 0, "fresh redirected root must start empty");
+        body();
+        assert_eq!(
+            artifact_dir_count(),
+            before,
+            "decode must remove its scratch workspace on both success and error"
+        );
+    }
+
+    #[test]
+    fn decode_success_leaves_no_artifact_dir() {
+        assert_no_artifact_dir_leak(|| {
+            let decoded = migrate_document_source_to_version::<Value>(
+                MINIMAL_V2_DOC,
+                2,
+                "configuration document",
+            );
+            assert!(decoded.is_ok(), "minimal v2 doc must decode: {decoded:?}");
+        });
+    }
+
+    #[test]
+    fn decode_error_leaves_no_artifact_dir() {
+        assert_no_artifact_dir_leak(|| {
+            let decoded = migrate_document_source_to_version::<Value>(
+                BROKEN_DOC,
+                2,
+                "configuration document",
+            );
+            assert!(decoded.is_err(), "syntax-broken doc must fail decode");
+        });
+    }
+
+    #[test]
+    fn inspect_success_leaves_no_artifact_dir() {
+        assert_no_artifact_dir_leak(|| {
+            let value = evaluate_document_source_value(MINIMAL_V2_DOC, "configuration document");
+            assert!(value.is_ok(), "minimal v2 doc must inspect: {value:?}");
+        });
+    }
+
+    #[test]
+    fn inspect_error_leaves_no_artifact_dir() {
+        assert_no_artifact_dir_leak(|| {
+            let value = evaluate_document_source_value(BROKEN_DOC, "configuration document");
+            assert!(value.is_err(), "syntax-broken doc must fail inspection");
+        });
+    }
 }
