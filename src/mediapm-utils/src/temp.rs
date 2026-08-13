@@ -76,8 +76,7 @@ pub fn remove_dir_all_with_retry(path: &Path) -> io::Result<()> {
         match fs::remove_dir_all(path) {
             Ok(()) => return Ok(()),
             Err(error) => {
-                let retryable = error.kind() == io::ErrorKind::PermissionDenied
-                    || error.raw_os_error() == Some(32);
+                let retryable = is_retryable_os_error(&error);
                 last_error = Some(error);
                 if !retryable || attempt + 1 == ATTEMPTS {
                     break;
@@ -91,6 +90,36 @@ pub fn remove_dir_all_with_retry(path: &Path) -> io::Result<()> {
     match last_error {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+/// Returns true for OS errors where a short retry may succeed.
+///
+/// `remove_dir_all` on Unix can transiently fail with `EBUSY`, `EPERM`, or
+/// `EACCES` when a lingering background task still holds a handle into the
+/// tree (e.g. a spawned maintenance task racing test teardown); retrying
+/// after a short backoff clears those. On Windows the classic transient is
+/// `ERROR_SHARING_VIOLATION` (raw code 32). macOS raw 32 is `EPIPE`, which
+/// `remove_dir_all` never produces, so it is deliberately NOT retryable on
+/// Unix — classifying it so would mask a real failure.
+fn is_retryable_os_error(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    let Some(code) = error.raw_os_error() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        // POSIX errno values shared by macOS and Linux.
+        const EBUSY: i32 = 16;
+        const EPERM: i32 = 1;
+        const EACCES: i32 = 13;
+        code == EBUSY || code == EPERM || code == EACCES
+    }
+    #[cfg(windows)]
+    {
+        code == 32 // ERROR_SHARING_VIOLATION
     }
 }
 
@@ -156,5 +185,32 @@ mod tests {
     fn is_managed_path_rejects_unrelated_temp_children() {
         let unrelated = PathBuf::from("/tmp/.tmpUnrelated");
         assert!(!is_managed_path(&unrelated));
+    }
+
+    #[test]
+    fn remove_retry_classifies_permission_denied() {
+        assert!(is_retryable_os_error(&io::Error::from(io::ErrorKind::PermissionDenied)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_retry_classifies_unix_transient_errors() {
+        // EBUSY / EPERM / EACCES are transient remove_dir_all failures on
+        // macOS and Linux (lingering handles racing teardown).
+        for code in [16, 1, 13] {
+            assert!(
+                is_retryable_os_error(&io::Error::from_raw_os_error(code)),
+                "raw OS error {code} must be classified retryable"
+            );
+        }
+        // macOS raw 32 is EPIPE; remove_dir_all never produces it, so it
+        // must NOT be retryable (retrying would mask a real failure).
+        assert!(!is_retryable_os_error(&io::Error::from_raw_os_error(32)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remove_retry_classifies_sharing_violation() {
+        assert!(is_retryable_os_error(&io::Error::from_raw_os_error(32)));
     }
 }
