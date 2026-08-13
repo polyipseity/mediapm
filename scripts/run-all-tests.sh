@@ -21,3 +21,13 @@ if scripts/clean-mediapm-temp.sh --dry-run | grep -q 'would remove'; then
     echo "error: test suite left mediapm temp dirs behind" >&2
     exit 1
 fi
+
+# Invariant gate: no bare unprefixed tempdir creation outside the role
+# helpers. The only allowed sites are the prefix-using helpers in
+# `src/mediapm-utils/src/temp.rs` (artifact_dir/cache_dir); every other
+# tempdir must go through them.
+if grep -rnE 'tempfile::tempdir\(|\.prefix\(' src --include='*.rs' \
+    | grep -v '^src/mediapm-utils/src/temp.rs:' >/dev/null; then
+    echo "error: unprefixed tempdir/prefix use outside src/mediapm-utils/src/temp.rs" >&2
+    exit 1
+fi
