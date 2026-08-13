@@ -342,7 +342,7 @@ mod tests {
 
     impl RedirectedTempDir {
         fn new() -> Self {
-            let root = tempfile::tempdir().expect("create isolated temp root");
+            let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
             let previous = std::env::var_os("TMPDIR");
             // SAFETY: test-only env override scoped to this guard's lifetime,
             // serialized by TEMP_COUNT_LOCK, and restored before the root is
