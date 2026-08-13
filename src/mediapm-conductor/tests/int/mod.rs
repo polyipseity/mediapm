@@ -26,3 +26,7 @@ mod provider_pipeline;
 
 /// Provision cache and download cache domain separation.
 mod provision_domain_separation;
+
+/// Runtime tmp dir lifecycle: sandbox roots removed on normal and failed
+/// workflow exits.
+mod runtime_tmp_lifecycle;

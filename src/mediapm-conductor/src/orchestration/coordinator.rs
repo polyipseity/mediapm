@@ -192,123 +192,134 @@ where
         state: &mut ConductorState,
         options: &RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
-        self.ensure_workers().await?;
+        let outcome = async {
+            self.ensure_workers().await?;
 
-        let workflow = unified.workflows.get(workflow_name).ok_or_else(|| {
-            ConductorError::Workflow(format!("workflow '{workflow_name}' not found in config"))
-        })?;
+            let workflow = unified.workflows.get(workflow_name).ok_or_else(|| {
+                ConductorError::Workflow(format!("workflow '{workflow_name}' not found in config"))
+            })?;
 
-        let levels = topological_sort(&workflow.steps)?;
-        let required_outputs = compute_required_outputs(&workflow.steps);
+            let levels = topological_sort(&workflow.steps)?;
+            let required_outputs = compute_required_outputs(&workflow.steps);
 
-        let total_steps = workflow.steps.len();
-        let mut executed_steps = 0usize;
-        let mut cached_steps = 0usize;
-        let mut failed_steps = 0usize;
+            let total_steps = workflow.steps.len();
+            let mut executed_steps = 0usize;
+            let mut cached_steps = 0usize;
+            let mut failed_steps = 0usize;
 
-        let mut step_outputs: StepOutputs = BTreeMap::new();
-        let state_snapshot = Arc::new(state.clone());
+            let mut step_outputs: StepOutputs = BTreeMap::new();
+            let state_snapshot = Arc::new(state.clone());
 
-        for level in &levels {
-            let mut handles = Vec::new();
+            for level in &levels {
+                let mut handles = Vec::new();
 
-            for step_id in level {
-                let step = workflow.steps.iter().find(|s| s.id == *step_id).ok_or_else(|| {
-                    ConductorError::Internal(format!("step '{step_id}' not found in workflow"))
-                })?;
+                for step_id in level {
+                    let step =
+                        workflow.steps.iter().find(|s| s.id == *step_id).ok_or_else(|| {
+                            ConductorError::Internal(format!(
+                                "step '{step_id}' not found in workflow"
+                            ))
+                        })?;
 
-                let tool_spec = find_tool_by_name(&unified.tools, &step.tool).ok_or_else(|| {
-                    ConductorError::Workflow(format!(
-                        "step '{}' references unknown tool '{}'",
-                        step.id, step.tool,
-                    ))
-                })?;
+                    let tool_spec =
+                        find_tool_by_name(&unified.tools, &step.tool).ok_or_else(|| {
+                            ConductorError::Workflow(format!(
+                                "step '{}' references unknown tool '{}'",
+                                step.id, step.tool,
+                            ))
+                        })?;
 
-                let required_output_names =
-                    required_outputs.get(&step.id).cloned().unwrap_or_default();
+                    let required_output_names =
+                        required_outputs.get(&step.id).cloned().unwrap_or_default();
 
-                let current_step_outputs = Arc::new(step_outputs.clone());
+                    let current_step_outputs = Arc::new(step_outputs.clone());
 
-                let request = StepExecutionRequest {
-                    unified: Arc::new(unified.clone()),
-                    step: step.clone(),
-                    impure_timestamp: if tool_spec.is_impure {
-                        Some(Timestamp::now())
-                    } else {
-                        None
-                    },
-                    state_snapshot: state_snapshot.clone(),
-                    outermost_config_dir: Path::new(".").to_path_buf(),
-                    conductor_tmp_dir: self.conductor_tmp_dir.clone(),
-                    step_outputs: current_step_outputs,
-                    required_output_names,
-                };
-
-                let worker_idx = handles.len() % self.workers.len().max(1);
-                let worker = self.workers[worker_idx].clone();
-
-                let handle = tokio::spawn(async move {
-                    let result = worker
-                        .call(
-                            |reply| StepWorkerMessage::ExecuteStep(Box::new(request), reply),
-                            Some(Duration::from_millis(rpc_timeout_ms())),
-                        )
-                        .await;
-                    match result {
-                        Ok(CallResult::Success(v)) => v,
-                        Ok(CallResult::Timeout) => {
-                            Err(ConductorError::rpc_error("StepWorker", "RPC timeout"))
-                        }
-                        Ok(_) => Err(ConductorError::rpc_error("StepWorker", "RPC channel closed")),
-                        Err(e) => Err(ConductorError::rpc_error("StepWorker", e)),
-                    }
-                });
-
-                handles.push((step_id.clone(), worker_idx, handle));
-            }
-
-            for (step_id, _worker_idx, handle) in handles {
-                match handle.await {
-                    Ok(Ok(bundle)) => {
-                        if bundle.cache_hit {
-                            cached_steps += 1;
+                    let request = StepExecutionRequest {
+                        unified: Arc::new(unified.clone()),
+                        step: step.clone(),
+                        impure_timestamp: if tool_spec.is_impure {
+                            Some(Timestamp::now())
                         } else {
-                            executed_steps += 1;
+                            None
+                        },
+                        state_snapshot: state_snapshot.clone(),
+                        outermost_config_dir: Path::new(".").to_path_buf(),
+                        conductor_tmp_dir: self.conductor_tmp_dir.clone(),
+                        step_outputs: current_step_outputs,
+                        required_output_names,
+                    };
+
+                    let worker_idx = handles.len() % self.workers.len().max(1);
+                    let worker = self.workers[worker_idx].clone();
+
+                    let handle = tokio::spawn(async move {
+                        let result = worker
+                            .call(
+                                |reply| StepWorkerMessage::ExecuteStep(Box::new(request), reply),
+                                Some(Duration::from_millis(rpc_timeout_ms())),
+                            )
+                            .await;
+                        match result {
+                            Ok(CallResult::Success(v)) => v,
+                            Ok(CallResult::Timeout) => {
+                                Err(ConductorError::rpc_error("StepWorker", "RPC timeout"))
+                            }
+                            Ok(_) => {
+                                Err(ConductorError::rpc_error("StepWorker", "RPC channel closed"))
+                            }
+                            Err(e) => Err(ConductorError::rpc_error("StepWorker", e)),
                         }
-                        for (name, record) in &bundle.instance.outputs {
-                            step_outputs
-                                .entry(step_id.clone())
-                                .or_default()
-                                .insert(name.clone(), record.hash);
-                        }
-                        // Insert executed instance into state so subsequent levels
-                        // (and future runs) can find cache hits, plus the
-                        // per-output persistence modes and GC last-reference
-                        // clock on the aux record. Refreshing the clock on both
-                        // creation and cache-hit mirrors the pre-redesign
-                        // executor behavior (`conductor_gc_last_referenced_at =
-                        // now` on every bundle), keeping instances alive across
-                        // GC sweeps.
-                        let instance_key = bundle.instance.instance_key;
-                        state.tool_call_instances.insert(instance_key, bundle.instance);
-                        let aux = state.aux.instances.entry(instance_key).or_default();
-                        aux.save_modes = bundle.save_modes;
-                        aux.last_referenced_at = Timestamp::now();
-                    }
-                    Ok(Err(e)) => {
-                        failed_steps += 1;
-                        tracing::error!("step '{step_id}' failed: {e}");
-                    }
-                    Err(e) => {
-                        failed_steps += 1;
-                        tracing::error!("step '{step_id}' RPC failed: {e}");
-                    }
+                    });
+
+                    handles.push((step_id.clone(), worker_idx, handle));
                 }
-                if let Some(ref callback) = options.step_progress {
-                    callback(executed_steps + failed_steps, total_steps, &step_id);
+
+                for (step_id, _worker_idx, handle) in handles {
+                    match handle.await {
+                        Ok(Ok(bundle)) => {
+                            if bundle.cache_hit {
+                                cached_steps += 1;
+                            } else {
+                                executed_steps += 1;
+                            }
+                            for (name, record) in &bundle.instance.outputs {
+                                step_outputs
+                                    .entry(step_id.clone())
+                                    .or_default()
+                                    .insert(name.clone(), record.hash);
+                            }
+                            // Insert executed instance into state so subsequent levels
+                            // (and future runs) can find cache hits, plus the
+                            // per-output persistence modes and GC last-reference
+                            // clock on the aux record. Refreshing the clock on both
+                            // creation and cache-hit mirrors the pre-redesign
+                            // executor behavior (`conductor_gc_last_referenced_at =
+                            // now` on every bundle), keeping instances alive across
+                            // GC sweeps.
+                            let instance_key = bundle.instance.instance_key;
+                            state.tool_call_instances.insert(instance_key, bundle.instance);
+                            let aux = state.aux.instances.entry(instance_key).or_default();
+                            aux.save_modes = bundle.save_modes;
+                            aux.last_referenced_at = Timestamp::now();
+                        }
+                        Ok(Err(e)) => {
+                            failed_steps += 1;
+                            tracing::error!("step '{step_id}' failed: {e}");
+                        }
+                        Err(e) => {
+                            failed_steps += 1;
+                            tracing::error!("step '{step_id}' RPC failed: {e}");
+                        }
+                    }
+                    if let Some(ref callback) = options.step_progress {
+                        callback(executed_steps + failed_steps, total_steps, &step_id);
+                    }
                 }
             }
+
+            Ok(RunSummary { total_steps, executed_steps, cached_steps, failed_steps })
         }
+        .await;
 
         if let Err(error) =
             super::step_worker::sandbox::remove_runtime_tmp_dir(&self.conductor_tmp_dir).await
@@ -316,7 +327,7 @@ where
             tracing::warn!("failed to remove workflow sandboxes: {error}");
         }
 
-        Ok(RunSummary { total_steps, executed_steps, cached_steps, failed_steps })
+        outcome
     }
 
     /// Returns a default runtime diagnostics snapshot.
