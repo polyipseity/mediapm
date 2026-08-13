@@ -214,7 +214,11 @@ const DEMO_ONLINE_TIMEOUT_SECS_ENV: &str = "MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS";
 
 const DEMO_ONLINE_RUN_SYNC_ENV: &str = "MEDIAPM_DEMO_ONLINE_RUN_SYNC";
 
-const DEMO_ONLINE_TIMEOUT_SECS_DEFAULT: u64 = 5 * 60;
+/// Total hard-watchdog deadline; MUST equal nextest `slow-timeout.terminate-after` (600s) for the network test-group in `.config/nextest.toml`.
+const DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS: u64 = 10 * 60;
+
+const DEMO_ONLINE_TIMEOUT_SECS_DEFAULT: u64 =
+    DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS - DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS;
 
 const DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV: &str =
     "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";
@@ -3014,6 +3018,14 @@ mod tests {
     #[test]
     fn hard_watchdog_timeout_grace_is_enabled() {
         assert!(super::DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS > 0);
+    }
+
+    /// Ensures the watchdog hard limit stays in sync with nextest's network-group
+    /// `slow-timeout.terminate-after` (600s) in `.config/nextest.toml`; a future
+    /// one-sided bump fails here.
+    #[test]
+    fn hard_watchdog_total_matches_nextest_terminate_after() {
+        assert_eq!(super::DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS, 600);
     }
 
     /// Ensures ReplayGain payload detection requires single-track gain/peak
