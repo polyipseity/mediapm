@@ -22,7 +22,7 @@ $TMPDIR/mediapm-{role}-{unique}
 | **cache** | `mediapm-cache-` | `mediapm_utils::temp::cache_dir()` | Hermetic user-level tool download cache (`cache_root_override`) |
 | **runtime** | `mediapm-runtime-{16hex}` | `mediapm_utils::temp::runtime_dir_for_workspace(root)` | Conductor sandbox tmp root per workspace (stable hash of workspace path) |
 
-Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code — use the role helpers above so orphans are identifiable and `scripts/clean-mediapm-temp.sh` / `scripts/clean-mediapm-temp.ps1` can remove them.
+Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code — use the role helpers above so orphans are identifiable and the janitor can remove them. The naming contract, janitor contract, regression gates, and authoring rules are the canonical spec: **`temp-directory-spec.instructions.md`**.
 
 ## Directory classes
 
@@ -89,7 +89,7 @@ Prefixed tempdirs clean on normal process exit. Killed nextest workers (timeout,
 
 ## Lifecycle: conductor sandboxes
 
-During `run_workflow`, each executed step gets a sandbox under `{conductor_tmp_dir}/sandbox/`. After the workflow finishes (success or partial failure), the coordinator calls `remove_runtime_tmp_dir(conductor_tmp_dir)` to remove the entire runtime tmp tree. Failures are logged as warnings and do not fail the workflow result.
+During `run_workflow`, each executed step gets a sandbox under `{conductor_tmp_dir}/sandbox/`. After the workflow finishes (success or partial failure), the coordinator calls `remove_runtime_tmp_dir(conductor_tmp_dir)` to remove the entire runtime tmp tree. Failures are logged as warnings and do not fail the workflow result. The full lifecycle contract is in **`temp-directory-spec.instructions.md`** ("Runtime tmp lifecycle").
 
 mediapm-driven runs wire `conductor_tmp_dir` from `MediaPmPaths` (`mediapm-runtime-{16hex}` under `$TMPDIR`), not a hardcoded global path.
 
@@ -109,15 +109,7 @@ Tests that mutate `MEDIAPM_EXAMPLE_*` (or any process env) directly without a gu
 
 ## Manual janitor
 
-`scripts/clean-mediapm-temp.sh` (POSIX) and its twin `scripts/clean-mediapm-temp.ps1` (Windows) remove stale mediapm temp trees plus stale stamped example-artifact folders. Pick the script for the platform you are on; both support `--dry-run`.
-
-The POSIX script scans `$TMPDIR` (fallback `/tmp`); the PowerShell twin scans `[System.IO.Path]::GetTempPath()`, which matches Rust `std::env::temp_dir()`. Both match the role prefixes at depth 1:
-
-- `mediapm-artifact-*`
-- `mediapm-cache-*`
-- `mediapm-runtime-*`
-
-Both also sweep stale `cli-add-hierarchy-*` folders under `src/mediapm/examples/artifacts/`. The glob requires a trailing `-<pid>-<nanos>` stamp, so the canonical bare `cli-add-hierarchy` folder is preserved. The real OS user cache is never touched.
+`scripts/clean-mediapm-temp.sh` (POSIX) and its twin `scripts/clean-mediapm-temp.ps1` (Windows) remove stale mediapm temp trees. The full janitor contract — glob set (temp-root three prefixes only), `--dry-run` semantics, readonly/retry handling, and the parity requirement — is in **`temp-directory-spec.instructions.md`** ("Janitor contract").
 
 ## Authoring checklist
 

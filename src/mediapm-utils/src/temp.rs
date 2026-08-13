@@ -2,7 +2,9 @@
 //!
 //! All mediapm-owned temp paths under `$TMPDIR` use `mediapm-{role}-{unique}` naming so
 //! `scripts/clean-mediapm-temp.sh` (POSIX) or `scripts/clean-mediapm-temp.ps1` (Windows)
-//! can remove orphans. See `.agents/instructions/example-temp-isolation.instructions.md`.
+//! can remove orphans. See `.agents/instructions/temp-directory-spec.instructions.md` for the
+//! canonical spec (naming contract, janitor contract, regression gates, authoring rules) and
+//! `.agents/instructions/example-temp-isolation.instructions.md` for example/test wiring.
 
 use std::fs;
 use std::hash::{Hash, Hasher};

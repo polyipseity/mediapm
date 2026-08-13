@@ -56,6 +56,6 @@ Override fields come from `MediaRuntimeStorage` in `mediapm.ncl`:
 ## Key invariants
 
 - `tools_dir` always lives under `runtime_root`, never under workspace root directly.
-- `conductor_tmp_dir` and `mediapm_tmp_dir` use OS temp dir with a workspace-hashded `mediapm-runtime-{16hex}` name, not `runtime_root`.
-- Per-step conductor sandboxes live under `{conductor_tmp_dir}/sandbox/` and are removed after each `run_workflow` completes (see `example-temp-isolation.instructions.md`).
+- `conductor_tmp_dir` and `mediapm_tmp_dir` use OS temp dir with a workspace-hashded `mediapm-runtime-{16hex}` name, not `runtime_root` (see `temp-directory-spec.instructions.md`).
+- Per-step conductor sandboxes live under `{conductor_tmp_dir}/sandbox/` and are removed after each `run_workflow` completes (see `temp-directory-spec.instructions.md`).
 - Schema export is optional — `schema_export_dir: None` disables it.
