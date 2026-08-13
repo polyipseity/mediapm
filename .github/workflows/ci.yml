@@ -56,3 +56,20 @@ jobs:
           cargo --locked clippy-all
           cargo --locked fmt-check
           cargo --locked build-all
+
+  # Windows: runs ONLY the janitor script tests via the root `tests` crate.
+  # pwsh is preinstalled on the runner; the bash-based tests run through the
+  # Git Bash `bash` probe and skip with a printed reason if absent. No
+  # full-suite parity, no run-all-tests.ps1, no extra gates on Windows.
+  windows:
+    name: "Windows: Script Tests"
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606
+
+      - name: Run janitor script tests
+        run: cargo --locked test-pkg mediapm-tests
