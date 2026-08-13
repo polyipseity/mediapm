@@ -36,6 +36,6 @@ Two env-var overrides exist for this, set by tests through the shared [`Isolated
 
 When canonical artifact roots are locked (Windows share violations), examples may call `example_isolation::isolated_artifact_dir()` and keep the returned `TempDir` alive for the rest of the test or `main()` scope.
 
-To remove stale mediapm temp trees manually, run `scripts/clean-mediapm-temp.sh` (matches `mediapm-artifact-*`, `mediapm-cache-*`, and `mediapm-runtime-*` under `$TMPDIR`).
+To remove stale mediapm temp trees manually, run `scripts/clean-mediapm-temp.sh` (POSIX) or `scripts/clean-mediapm-temp.ps1` (Windows) — both match `mediapm-artifact-*`, `mediapm-cache-*`, and `mediapm-runtime-*` under the OS temp dir, and also sweep stale stamped `cli-add-hierarchy-*` folders under `src/mediapm/examples/artifacts/` (preserving the canonical bare folder).
 
 `main()` must honor these env vars when set and fall back to canonical paths when unset, so manual `cargo run --example` behavior stays unchanged.

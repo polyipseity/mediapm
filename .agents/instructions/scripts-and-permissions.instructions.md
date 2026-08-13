@@ -14,6 +14,7 @@ applyTo: "scripts/**"
 ## Placement and naming
 
 - Name scripts for the task they perform (`bootstrap`, `check`, `release`, etc.) and keep each script narrowly focused.
+- Cross-platform helper scripts ship as `.sh` + `.ps1` twins with identical CLI and output (e.g. `run-all-tests`, `clean-mediapm-temp`); each platform runs its native script.
 - Choose the extension that matches the intended shell or runtime instead of relying on ambiguous launcher behavior.
 - If a script becomes application code rather than repo automation, move it into the appropriate source tree instead of leaving it in `scripts/`.
 - Detect a script's runtime from its extension, shebang, adjacent config files, and the commands it invokes before adding stack-specific script guidance.

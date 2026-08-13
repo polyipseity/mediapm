@@ -22,7 +22,7 @@ $TMPDIR/mediapm-{role}-{unique}
 | **cache** | `mediapm-cache-` | `mediapm_utils::temp::cache_dir()` | Hermetic user-level tool download cache (`cache_root_override`) |
 | **runtime** | `mediapm-runtime-{16hex}` | `mediapm_utils::temp::runtime_dir_for_workspace(root)` | Conductor sandbox tmp root per workspace (stable hash of workspace path) |
 
-Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code — use the role helpers above so orphans are identifiable and `scripts/clean-mediapm-temp.sh` can remove them.
+Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code — use the role helpers above so orphans are identifiable and `scripts/clean-mediapm-temp.sh` / `scripts/clean-mediapm-temp.ps1` can remove them.
 
 ## Directory classes
 
@@ -40,7 +40,7 @@ Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code
 | **Conductor sandbox** | `{conductor_tmp_dir}/sandbox/{instance_key}/` | step worker per workflow step | Removed when coordinator calls `remove_runtime_tmp_dir` after `run_workflow` |
 | **Conductor tmp root** | `$TMPDIR/mediapm-runtime-{16hex}/` | `runtime_dir_for_workspace` from workspace root | See `paths-layout.instructions.md` |
 | **Integration-test workspace** | `$TMPDIR/mediapm-artifact-*` | `tests/int/*`, `tests/e2e/*` via `artifact_dir()` | Yes — RAII drop removes tree when test process exits normally |
-| **Manual debug trees** | ad-hoc fixed paths | local debugging | No — not auto-cleaned; use `scripts/clean-mediapm-temp.sh` |
+| **Manual debug trees** | ad-hoc fixed paths | local debugging | No — not auto-cleaned; use `scripts/clean-mediapm-temp.sh` / `scripts/clean-mediapm-temp.ps1` |
 
 Canonical artifact roots are documentation and manual-demo targets. Examples-as-tests must never write there concurrently.
 
@@ -85,7 +85,7 @@ Rules:
 - Drop exclusive CAS handles before reopening the same store path (see `StoreLocked` pattern in `rust-conventions.instructions.md`).
 - Process-global env vars: hold the example env lock (`example_isolation::lock_process_env()`) for the mutation scope, or keep an `IsolatedExampleRoots` guard alive; restore env before the lock/guard is released. Restore-early remains a good practice.
 
-Prefixed tempdirs clean on normal process exit. Killed nextest workers (timeout, SIGKILL) may leave `$TMPDIR/mediapm-*` trees — use `scripts/clean-mediapm-temp.sh` periodically.
+Prefixed tempdirs clean on normal process exit. Killed nextest workers (timeout, SIGKILL) may leave `$TMPDIR/mediapm-*` trees — run the janitor (`scripts/clean-mediapm-temp.sh` on POSIX, `scripts/clean-mediapm-temp.ps1` on Windows) periodically.
 
 ## Lifecycle: conductor sandboxes
 
@@ -109,13 +109,15 @@ Tests that mutate `MEDIAPM_EXAMPLE_*` (or any process env) directly without a gu
 
 ## Manual janitor
 
-`scripts/clean-mediapm-temp.sh` removes stale trees under `$TMPDIR` matching only:
+`scripts/clean-mediapm-temp.sh` (POSIX) and its twin `scripts/clean-mediapm-temp.ps1` (Windows) remove stale mediapm temp trees plus stale stamped example-artifact folders. Pick the script for the platform you are on; both support `--dry-run`.
+
+The POSIX script scans `$TMPDIR` (fallback `/tmp`); the PowerShell twin scans `[System.IO.Path]::GetTempPath()`, which matches Rust `std::env::temp_dir()`. Both match the role prefixes at depth 1:
 
 - `mediapm-artifact-*`
 - `mediapm-cache-*`
 - `mediapm-runtime-*`
 
-Supports `--dry-run`. It does not delete canonical `examples/artifacts/` or the real OS user cache.
+Both also sweep stale `cli-add-hierarchy-*` folders under `src/mediapm/examples/artifacts/`. The glob requires a trailing `-<pid>-<nanos>` stamp, so the canonical bare `cli-add-hierarchy` folder is preserved. The real OS user cache is never touched.
 
 ## Authoring checklist
 

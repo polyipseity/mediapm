@@ -1,8 +1,8 @@
 //! Prefixed temporary directories for mediapm tests, examples, and runtime sandboxes.
 //!
 //! All mediapm-owned temp paths under `$TMPDIR` use `mediapm-{role}-{unique}` naming so
-//! `scripts/clean-mediapm-temp.sh` can remove orphans. See
-//! `.agents/instructions/example-temp-isolation.instructions.md`.
+//! `scripts/clean-mediapm-temp.sh` (POSIX) or `scripts/clean-mediapm-temp.ps1` (Windows)
+//! can remove orphans. See `.agents/instructions/example-temp-isolation.instructions.md`.
 
 use std::fs;
 use std::hash::{Hash, Hasher};
