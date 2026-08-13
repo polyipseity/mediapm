@@ -156,6 +156,8 @@ fn clear_readonly_bits_recursively(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -214,5 +216,47 @@ mod tests {
     #[test]
     fn remove_retry_classifies_sharing_violation() {
         assert!(is_retryable_os_error(&io::Error::from_raw_os_error(32)));
+    }
+
+    /// Collects every `mediapm-{role}-*` glob stem (trailing `*`) from a
+    /// janitor script. Path mentions (e.g. `src/mediapm-utils/src/temp.rs`
+    /// comments) have no trailing `*` and are excluded.
+    fn mediapm_glob_stems(script: &str) -> BTreeSet<&str> {
+        let mut stems = BTreeSet::new();
+        let mut offset = 0;
+        while let Some(relative) = script[offset..].find("mediapm-") {
+            let start = offset + relative;
+            let after = start + "mediapm-".len();
+            let Some(dash_offset) = script[after..].find('-') else {
+                break;
+            };
+            let end = after + dash_offset + 1; // include the terminating `-`
+            if script[end..].starts_with('*') {
+                stems.insert(&script[start..end]);
+            }
+            offset = end;
+        }
+        stems
+    }
+
+    #[test]
+    fn janitor_glob_stems_match_prefix_contract() {
+        // The janitor scripts cannot import the Rust constants, so they
+        // hardcode the glob stems; this test pins them to the single source
+        // of truth (`temp.rs`) so adding a fourth role without updating both
+        // janitors (or vice versa) fails the suite.
+        let bash = include_str!("../../../scripts/clean-mediapm-temp.sh");
+        let powershell = include_str!("../../../scripts/clean-mediapm-temp.ps1");
+        let expected = BTreeSet::from([ARTIFACT_PREFIX, CACHE_PREFIX, RUNTIME_PREFIX]);
+        assert_eq!(
+            mediapm_glob_stems(bash),
+            expected,
+            "bash janitor glob set must match the temp.rs prefix contract"
+        );
+        assert_eq!(
+            mediapm_glob_stems(powershell),
+            expected,
+            "PowerShell janitor glob set must match the temp.rs prefix contract"
+        );
     }
 }
