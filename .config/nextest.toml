@@ -41,3 +41,26 @@ leak-timeout = "100ms"
 fail-fast = false
 retries = 2
 slow-timeout = { period = "15s", terminate-after = 120 }
+
+# ── Network-heavy test serialization & timeout ─────────────────────────
+# Demo examples and the all_platform integration tests each download the full
+# managed-tool set (ffmpeg ~163M, etc.) into a fresh empty cache. 3-7 running in
+# parallel saturate bandwidth, so a test can emit no output past the 60s/120s
+# slow-timeout and get killed (exit 124). Serialize them (max-threads = 1) and
+# give a generous terminate-after. `binary()` is exact-match on example binary
+# names; `test(all_platform)` matches the integration tests by name contains.
+# Non-network tests in these binaries are fast and just join the group.
+# terminate-after = 600 MUST stay equal to DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS in
+# src/mediapm/examples/mediapm_demo_online.rs (watchdog and runner are synced).
+[test-groups]
+network = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(mediapm_demo) or binary(mediapm_demo_online) or test(all_platform)'
+test-group = 'network'
+slow-timeout = { period = "60s", terminate-after = 600 }
+
+[[profile.ci.overrides]]
+filter = 'binary(mediapm_demo) or binary(mediapm_demo_online) or test(all_platform)'
+test-group = 'network'
+slow-timeout = { period = "60s", terminate-after = 600 }
