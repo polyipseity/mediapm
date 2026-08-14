@@ -114,7 +114,7 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
     );
 
     // `run_workflow` persists conductor state after every run.
-    let state_path = root.path().join(".mediapm").join("state.conductor.json");
+    let state_path = service.paths().conductor_state_config.clone();
     let state = read_conductor_state(&state_path)?;
     assert!(
         !state.tool_call_instances.is_empty(),
@@ -134,6 +134,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
 
     // First service: add the source and run a full sync.
     let first_executed;
+    let state_path;
     {
         let mut service = service_at(root.path(), None).await?;
         let uri = Url::parse("local:phase2-import").expect("url must parse");
@@ -142,9 +143,9 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
         let summary = service.sync_library(false).await?;
         assert!(summary.executed_instances >= 1, "first sync should execute the import workflow");
         first_executed = summary.executed_instances;
+        state_path = service.paths().conductor_state_config.clone();
     }
 
-    let state_path = root.path().join(".mediapm").join("state.conductor.json");
     let first_state = read_conductor_state(&state_path)?;
 
     // Second service on the same root: mediapm document and conductor state
