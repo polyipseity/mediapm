@@ -198,7 +198,7 @@ fn strict_v2_accepts_valid_minimal_document() {
 
 /// S-A8: the v1→v2 migration output satisfies the tightened v2 envelope.
 #[test]
-fn v1_to_v2_migration_output_passes_tightened_envelope() {
+fn parity_v1_to_v2_migration_output_passes_tightened_envelope() {
     let doc = decode_document(REALISTIC_V1_DOC.as_bytes())
         .expect("realistic v1 doc must migrate and satisfy tightened v2 envelope");
     assert!(doc.tools.contains_key("ffmpeg"), "ffmpeg tool migrated");
@@ -213,7 +213,7 @@ fn v1_to_v2_migration_output_passes_tightened_envelope() {
 
 /// S-A7: `mod.ncl` exports unversioned registry aliases.
 #[test]
-fn mod_ncl_exports_unversioned_aliases() {
+fn parity_mod_ncl_exports_unversioned_aliases() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(
         mod_source.contains("validate_document = v2_migration.validate_document_v2"),
@@ -426,7 +426,7 @@ fn strict_v1_accepts_valid_legacy_document() {
 /// S-B7/R3: the v2→v1 migration output satisfies the tightened v1 envelope,
 /// preserving tool runtimes, workflows, and external data.
 #[test]
-fn v2_to_v1_migration_output_passes_tightened_v1() {
+fn parity_v2_to_v1_migration_output_passes_tightened_v1() {
     let doc = validate_v1_document(REALISTIC_V2_DOC)
         .expect("realistic v2 doc must migrate and satisfy the tightened v1 envelope");
     let obj = doc.as_object().expect("migrated v1 doc must be an object");
