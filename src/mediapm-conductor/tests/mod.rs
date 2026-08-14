@@ -121,6 +121,19 @@ impl TestConductor {
         Self { dir, conductor }
     }
 
+    /// Builds a conductor whose runtime tmp root is the stable
+    /// `mediapm-runtime-{16hex}` path for its own tempdir (mirrors the
+    /// mediapm app layer wiring in `paths.rs`), returning the runtime tmp
+    /// root path for lifecycle assertions.
+    fn with_runtime_tmp() -> (Self, std::path::PathBuf) {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let runtime_tmp = mediapm_utils::temp::runtime_dir_for_workspace(dir.path());
+        let mut paths = RuntimeStoragePaths::new(dir.path());
+        paths.conductor_tmp_dir.clone_from(&runtime_tmp);
+        let conductor = SimpleConductor::new(paths, InMemoryCas::new());
+        (Self { dir, conductor }, runtime_tmp)
+    }
+
     fn path(&self) -> &std::path::Path {
         self.dir.path()
     }

@@ -5,8 +5,7 @@
 //! structs gain or lose fields, the Nickel schema must be updated
 //! correspondingly, and these tests force that update to be deliberate.
 
-use mediapm_conductor::config::documents::NickelDocument;
-use mediapm_conductor::config::{ToolKindSpec, ToolRuntime, ToolSpec};
+use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec};
 
 /// Validates that the Rust struct serialization shape matches the expected
 /// V2 schema contract invariants.

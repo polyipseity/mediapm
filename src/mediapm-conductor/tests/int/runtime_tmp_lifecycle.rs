@@ -8,40 +8,24 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_cas::InMemoryCas;
-use mediapm_conductor::{RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor};
+use mediapm_conductor::RunWorkflowOptions;
 
 use crate::{
-    bare_step, doc_with_workflows, echo_step, echo_tool, echo_workflow, workflow_with_steps,
-    write_conductor_config,
+    TestConductor, bare_step, doc_with_workflows, echo_step, echo_tool, echo_workflow,
+    workflow_with_steps,
 };
-
-/// Builds a conductor whose runtime tmp root is the stable
-/// `mediapm-runtime-{16hex}` path for `workspace` (mirrors the mediapm app
-/// layer wiring in `paths.rs`).
-fn conductor_for(
-    workspace: &std::path::Path,
-) -> (SimpleConductor<InMemoryCas>, std::path::PathBuf) {
-    let runtime_tmp = mediapm_utils::temp::runtime_dir_for_workspace(workspace);
-    let mut paths = RuntimeStoragePaths::new(workspace);
-    paths.conductor_tmp_dir.clone_from(&runtime_tmp);
-    (SimpleConductor::new(paths, InMemoryCas::new()), runtime_tmp)
-}
 
 #[tokio::test]
 async fn runtime_tmp_removed_on_normal_workflow_exit() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-    let (conductor, runtime_tmp) = conductor_for(workspace.path());
+    let (test, runtime_tmp) = TestConductor::with_runtime_tmp();
 
-    write_conductor_config(
-        workspace.path(),
-        doc_with_workflows(
-            BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
-            vec![echo_workflow("default", "echo@v1", "hello")],
-        ),
-    );
+    test.write_config(doc_with_workflows(
+        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+        vec![echo_workflow("default", "echo@v1", "hello")],
+    ));
 
-    let summary = conductor
+    let summary = test
+        .conductor()
         .run_workflow("default", RunWorkflowOptions::default())
         .await
         .expect("workflow runs");
@@ -56,24 +40,21 @@ async fn runtime_tmp_removed_on_normal_workflow_exit() {
 
 #[tokio::test]
 async fn runtime_tmp_removed_on_failed_workflow_unknown_tool() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-    let (conductor, runtime_tmp) = conductor_for(workspace.path());
+    let (test, runtime_tmp) = TestConductor::with_runtime_tmp();
 
     // Level 0 executes a valid echo step (creating the sandbox tree under the
     // runtime tmp root); level 1 references an unknown tool, which fails the
     // workflow after the level-0 sandbox already exists.
-    write_conductor_config(
-        workspace.path(),
-        doc_with_workflows(
-            BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
-            vec![workflow_with_steps(
-                "default",
-                vec![echo_step("echo@v1", "hello"), bare_step("s2", "no-such-tool", &["s1"])],
-            )],
-        ),
-    );
+    test.write_config(doc_with_workflows(
+        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+        vec![workflow_with_steps(
+            "default",
+            vec![echo_step("echo@v1", "hello"), bare_step("s2", "no-such-tool", &["s1"])],
+        )],
+    ));
 
-    let error = conductor
+    let error = test
+        .conductor()
         .run_workflow("default", RunWorkflowOptions::default())
         .await
         .expect_err("unknown tool fails the workflow");
