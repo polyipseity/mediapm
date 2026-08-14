@@ -1,5 +1,8 @@
 //! Contract-focused integration scenarios for the conductor.
 
+/// External-data invariant and decode validation.
+mod external_data_and_validation;
+
 /// Bootstrap, validation, and state-shape focused checks.
 mod bootstrap;
 

@@ -1,5 +1,5 @@
-//! End-to-end decode validation tests for external-data invariants and
-//! required fields.
+//! Decode validation tests for external-data invariants and required
+//! fields.
 //!
 //! Covers:
 //! - COND-O.4: Missing external_data → validation error

@@ -1,7 +1,7 @@
 //! Integration test harness for `mediapm-conductor`.
 //!
 //! `int` covers contract-focused integration behavior, `e2e` contains
-//! multi-step workflows, and `prop` provides property-test scaffolding.
+//! multi-step workflows.
 
 use std::collections::BTreeMap;
 
@@ -14,8 +14,6 @@ use mediapm_conductor::{
 
 mod e2e;
 mod int;
-#[cfg(feature = "proptest")]
-mod prop;
 
 // ---------------------------------------------------------------------------
 // Shared harness helpers
