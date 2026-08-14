@@ -42,21 +42,10 @@ fn check_no_migrate_to_error(label: &str, input: &str) -> bool {
 /// Minimal v1 document — only `version = 1`, everything else missing.
 const V1_MINIMAL: &str = r"{ version = 1 }";
 
-/// Realistic v1 machine-state header.
-const V1_HEADER: &str = r"{
-    runtime = {},
-    tools = {},
-    workflows = {},
-    external_data = {},
-    tool_configs = {},
-    version = 1,
-}";
-
-fn make_large_v1(extra_fields: usize) -> String {
-    let mut extra = String::new();
-    for i in 0..extra_fields {
-        let _ = writeln!(extra, "  _field_{i} = null,");
-    }
+/// Wraps `body` (extra record fields) in a realistic v1 machine-state
+/// document: `runtime`, `tools`, `workflows`, `external_data`,
+/// `tool_configs`, and `version = 1` all present.
+fn v1_header(body: &str) -> String {
     format!(
         r"{{
     runtime = {{}},
@@ -65,8 +54,16 @@ fn make_large_v1(extra_fields: usize) -> String {
     external_data = {{}},
     tool_configs = {{}},
     version = 1,
-{extra}}}"
+{body}}}"
     )
+}
+
+fn make_large_v1(extra_fields: usize) -> String {
+    let mut extra = String::new();
+    for i in 0..extra_fields {
+        let _ = writeln!(extra, "  _field_{i} = null,");
+    }
+    v1_header(&extra)
 }
 
 fn make_large_v1_workflows(n: usize) -> String {
@@ -90,17 +87,7 @@ fn make_large_v1_workflows(n: usize) -> String {
 "#
         );
     }
-    format!(
-        r"{{
-    runtime = {{}},
-    tools = {{}},
-    workflows = {{
-{workflows}    }},
-    external_data = {{}},
-    tool_configs = {{}},
-    version = 1,
-}}"
-    )
+    v1_header(&format!("    workflows = {{\n{workflows}    }},\n"))
 }
 
 /// The nickel migration pipeline must not throw `MissingFieldDef` on `migrate_to`
@@ -115,25 +102,21 @@ fn minimal_document_does_not_trigger_migrate_to_missing_def() {
 /// defect.
 #[test]
 fn various_inputs_do_not_trigger_migrate_to_missing_def() {
-    assert!(check_no_migrate_to_error("v1_header", V1_HEADER));
+    assert!(check_no_migrate_to_error("v1_header", &v1_header("")));
     // Only the largest variant is needed — it subsumes the smaller ones.
     assert!(check_no_migrate_to_error("v1_large_500_fields", &make_large_v1(500)));
 
-    let with_ml_string = r#"{
-    runtime = {},
-    tool_configs = {
+    let with_ml_string = v1_header(
+        r#"    tool_configs = {
         "test" = {
             command = m%%"
 multiline string here
 "%%,
         },
     },
-    tools = {},
-    workflows = {},
-    external_data = {},
-    version = 1,
-}"#;
-    assert!(check_no_migrate_to_error("v1_multiline", with_ml_string));
+"#,
+    );
+    assert!(check_no_migrate_to_error("v1_multiline", &with_ml_string));
     // Only the largest variant is needed — it subsumes the smaller ones.
     assert!(check_no_migrate_to_error("v1_100_workflows", &make_large_v1_workflows(100)));
 }

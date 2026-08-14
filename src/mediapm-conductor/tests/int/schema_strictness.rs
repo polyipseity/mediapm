@@ -14,6 +14,28 @@ use mediapm_conductor::config::{
     WorkflowStepSpec,
 };
 
+// ---------------------------------------------------------------------------
+// Error-extraction helpers (assertions stay at each call site)
+// ---------------------------------------------------------------------------
+
+/// Returns the formatted error from decoding a v2 document that must fail.
+fn v2_decode_error(doc: &str) -> String {
+    format!("{}", decode_document(doc.as_bytes()).expect_err("v2 document must be rejected"))
+}
+
+/// Returns the formatted error from validating a v1 document that must fail.
+fn v1_validation_error(doc: &str) -> String {
+    format!("{}", validate_v1_document(doc).expect_err("v1 document must be rejected"))
+}
+
+/// Returns the formatted error from deserializing `value` as `T`, which must
+/// fail.
+fn serde_reject<T: serde::de::DeserializeOwned + std::fmt::Debug>(
+    value: serde_json::Value,
+) -> String {
+    format!("{}", serde_json::from_value::<T>(value).expect_err("value must be rejected"))
+}
+
 /// A v2 document with an extra top-level field unknown to the envelope.
 const UNKNOWN_TOP_LEVEL_FIELD_DOC: &str = r#"{
     version = 2,
@@ -127,17 +149,14 @@ const REALISTIC_V1_DOC: &str = r#"{
 /// S-A1: unknown top-level fields are rejected (closed envelope, no `..`).
 #[test]
 fn strict_v2_rejects_unknown_top_level_field() {
-    let err = decode_document(UNKNOWN_TOP_LEVEL_FIELD_DOC.as_bytes())
-        .expect_err("unknown top-level field must be rejected");
-    let msg = format!("{err}");
+    let msg = v2_decode_error(UNKNOWN_TOP_LEVEL_FIELD_DOC);
     assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
 }
 
 /// S-A3: `ExternalContentRefV2.hash` must be a non-empty string.
 #[test]
 fn strict_v2_rejects_empty_hash() {
-    let err = decode_document(EMPTY_HASH_DOC.as_bytes()).expect_err("empty hash must be rejected");
-    let msg = format!("{err}");
+    let msg = v2_decode_error(EMPTY_HASH_DOC);
     assert!(
         msg.contains("hash") && msg.contains("contract"),
         "error must mention the hash contract: {msg}"
@@ -147,9 +166,7 @@ fn strict_v2_rejects_empty_hash() {
 /// S-A5: `platform_inherited_env_vars` is closed to windows/linux/macos.
 #[test]
 fn strict_v2_rejects_unknown_platform_key() {
-    let err = decode_document(UNKNOWN_PLATFORM_KEY_DOC.as_bytes())
-        .expect_err("unknown platform key must be rejected");
-    let msg = format!("{err}");
+    let msg = v2_decode_error(UNKNOWN_PLATFORM_KEY_DOC);
     assert!(
         msg.contains("other_os") || msg.contains("platform"),
         "error must mention the offending key or the platform contract: {msg}"
@@ -159,18 +176,14 @@ fn strict_v2_rejects_unknown_platform_key() {
 /// S-A4/S3: integer-guarded `max_retries` rejects fractional values.
 #[test]
 fn strict_v2_rejects_fractional_max_retries() {
-    let err = decode_document(FRACTIONAL_MAX_RETRIES_DOC.as_bytes())
-        .expect_err("fractional max_retries must be rejected");
-    let msg = format!("{err}");
+    let msg = v2_decode_error(FRACTIONAL_MAX_RETRIES_DOC);
     assert!(msg.contains("contract"), "error must mention a contract violation: {msg}");
 }
 
 /// S-A4: `inherited_env_vars` entries must be non-empty strings.
 #[test]
 fn strict_v2_rejects_empty_env_var_name() {
-    let err = decode_document(EMPTY_ENV_VAR_NAME_DOC.as_bytes())
-        .expect_err("empty env var name must be rejected");
-    let msg = format!("{err}");
+    let msg = v2_decode_error(EMPTY_ENV_VAR_NAME_DOC);
     assert!(msg.contains("contract"), "error must mention a contract violation: {msg}");
 }
 
@@ -216,9 +229,7 @@ fn mod_ncl_exports_unversioned_aliases() {
 /// envelope open; they must now fail loudly.
 #[test]
 fn regression_v2_unknown_field_no_longer_silently_dropped() {
-    let err = decode_document(UNKNOWN_TOP_LEVEL_FIELD_DOC.as_bytes())
-        .expect_err("unknown field must not be silently dropped");
-    let msg = format!("{err}");
+    let msg = v2_decode_error(UNKNOWN_TOP_LEVEL_FIELD_DOC);
     assert!(
         msg.contains("bogus_field"),
         "the unknown field must surface in the error, not be dropped: {msg}"
@@ -355,9 +366,7 @@ const REALISTIC_V2_DOC: &str = r#"{
 /// S-B1: `verify_on_read_sample_denominator` is integer-guarded.
 #[test]
 fn strict_v1_rejects_string_sample_denominator() {
-    let err = validate_v1_document(V1_STRING_SAMPLE_DENOMINATOR_DOC)
-        .expect_err("string sample denominator must be rejected");
-    let msg = format!("{err}");
+    let msg = v1_validation_error(V1_STRING_SAMPLE_DENOMINATOR_DOC);
     assert!(
         msg.contains("verify_on_read_sample_denominator"),
         "error must name the offending field: {msg}"
@@ -367,9 +376,7 @@ fn strict_v1_rejects_string_sample_denominator() {
 /// S-B2: `verify_on_read_stale_timeout_secs` is integer-guarded.
 #[test]
 fn strict_v1_rejects_fractional_stale_timeout() {
-    let err = validate_v1_document(V1_FRACTIONAL_STALE_TIMEOUT_DOC)
-        .expect_err("fractional stale timeout must be rejected");
-    let msg = format!("{err}");
+    let msg = v1_validation_error(V1_FRACTIONAL_STALE_TIMEOUT_DOC);
     assert!(
         msg.contains("verify_on_read_stale_timeout_secs"),
         "error must name the offending field: {msg}"
@@ -379,9 +386,7 @@ fn strict_v1_rejects_fractional_stale_timeout() {
 /// S-B3: `reconstructed_bytes_cache_ttl_secs` is integer-guarded.
 #[test]
 fn strict_v1_rejects_fractional_runtime_timeout() {
-    let err = validate_v1_document(V1_FRACTIONAL_RUNTIME_TIMEOUT_DOC)
-        .expect_err("fractional runtime ttl must be rejected");
-    let msg = format!("{err}");
+    let msg = v1_validation_error(V1_FRACTIONAL_RUNTIME_TIMEOUT_DOC);
     assert!(
         msg.contains("reconstructed_bytes_cache_ttl_secs"),
         "error must name the offending field: {msg}"
@@ -391,9 +396,7 @@ fn strict_v1_rejects_fractional_runtime_timeout() {
 /// S-B4: `retry_impure` is bool-guarded.
 #[test]
 fn strict_v1_rejects_string_retry_impure() {
-    let err = validate_v1_document(V1_STRING_RETRY_IMPURE_DOC)
-        .expect_err("string retry_impure must be rejected");
-    let msg = format!("{err}");
+    let msg = v1_validation_error(V1_STRING_RETRY_IMPURE_DOC);
     assert!(msg.contains("retry_impure"), "error must name the offending field: {msg}");
 }
 
@@ -401,9 +404,7 @@ fn strict_v1_rejects_string_retry_impure() {
 /// free-form values.
 #[test]
 fn strict_v1_rejects_free_form_output_value() {
-    let err = validate_v1_document(V1_FREE_FORM_OUTPUT_DOC)
-        .expect_err("free-form output value must be rejected");
-    let msg = format!("{err}");
+    let msg = v1_validation_error(V1_FREE_FORM_OUTPUT_DOC);
     assert!(msg.contains("outputs"), "error must name the offending field: {msg}");
 }
 
@@ -480,8 +481,7 @@ fn regression_v1_dyn_runtime_fields_no_longer_untyped() {
         V1_FRACTIONAL_RUNTIME_TIMEOUT_DOC,
         V1_STRING_RETRY_IMPURE_DOC,
     ] {
-        let err = validate_v1_document(doc).expect_err("Dyn runtime fields must be typed");
-        let msg = format!("{err}");
+        let msg = v1_validation_error(doc);
         assert!(msg.contains("contract"), "error must mention a contract violation: {msg}");
     }
 }
@@ -493,82 +493,68 @@ fn regression_v1_dyn_runtime_fields_no_longer_untyped() {
 /// S-D1: `ToolSpec` rejects unknown fields via serde.
 #[test]
 fn strict_serde_tool_spec_rejects_unknown_field() {
-    let err = serde_json::from_value::<ToolSpec>(serde_json::json!({
+    let msg = serde_reject::<ToolSpec>(serde_json::json!({
         "kind": { "kind": "builtin", "builtin_id": "echo@v1" },
         "name": "echo",
         "bogus_field": 1,
-    }))
-    .expect_err("unknown ToolSpec field must be rejected");
-    let msg = format!("{err}");
+    }));
     assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
 }
 
 /// S-D1: `WorkflowSpec` rejects unknown fields via serde.
 #[test]
 fn strict_serde_workflow_spec_rejects_unknown_field() {
-    let err = serde_json::from_value::<WorkflowSpec>(serde_json::json!({
+    let msg = serde_reject::<WorkflowSpec>(serde_json::json!({
         "name": "wf1",
         "bogus_field": 1,
-    }))
-    .expect_err("unknown WorkflowSpec field must be rejected");
-    let msg = format!("{err}");
+    }));
     assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
 }
 
 /// S-D1: `WorkflowStepSpec` rejects unknown fields via serde.
 #[test]
 fn strict_serde_step_spec_rejects_unknown_field() {
-    let err = serde_json::from_value::<WorkflowStepSpec>(serde_json::json!({
+    let msg = serde_reject::<WorkflowStepSpec>(serde_json::json!({
         "id": "s1",
         "tool": "echo",
         "bogus_field": 1,
-    }))
-    .expect_err("unknown WorkflowStepSpec field must be rejected");
-    let msg = format!("{err}");
+    }));
     assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
 }
 
 /// S-D1: `ToolRuntime` rejects unknown fields via serde.
 #[test]
 fn strict_serde_runtime_rejects_unknown_field() {
-    let err = serde_json::from_value::<ToolRuntime>(serde_json::json!({
+    let msg = serde_reject::<ToolRuntime>(serde_json::json!({
         "impure": true,
         "bogus_field": 1,
-    }))
-    .expect_err("unknown ToolRuntime field must be rejected");
-    let msg = format!("{err}");
+    }));
     assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
 }
 
 /// S-D1: `OutputCaptureSpec` and `ToolInputSpec` reject unknown fields.
 #[test]
 fn strict_serde_sub_specs_reject_unknown_fields() {
-    let err = serde_json::from_value::<OutputCaptureSpec>(serde_json::json!({
+    let msg = serde_reject::<OutputCaptureSpec>(serde_json::json!({
         "name": "out",
         "capture": "stdout",
         "bogus_field": 1,
-    }))
-    .expect_err("unknown OutputCaptureSpec field must be rejected");
-    let msg = format!("{err}");
+    }));
     assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
 
-    let err = serde_json::from_value::<ToolInputSpec>(serde_json::json!({
+    let msg = serde_reject::<ToolInputSpec>(serde_json::json!({
         "kind": "string",
         "bogus_field": 1,
-    }))
-    .expect_err("unknown ToolInputSpec field must be rejected");
-    let msg = format!("{err}");
+    }));
     assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
 }
 
 /// S-D1: `NickelDocument` rejects unknown top-level fields via serde.
 #[test]
 fn strict_serde_document_rejects_unknown_field() {
-    let err = serde_json::from_value::<NickelDocument>(serde_json::json!({
+    let msg = serde_reject::<NickelDocument>(serde_json::json!({
         "bogus_field": 1,
-    }))
-    .expect_err("unknown NickelDocument field must be rejected");
-    let msg = format!("{err}");
+    }));
     assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
 }
 
@@ -576,22 +562,18 @@ fn strict_serde_document_rejects_unknown_field() {
 /// the Rust serde layer, not just the Nickel contract.
 #[test]
 fn strict_platform_env_rejects_unknown_key() {
-    let err = serde_json::from_value::<ConductorRuntimeConfig>(serde_json::json!({
+    let msg = serde_reject::<ConductorRuntimeConfig>(serde_json::json!({
         "platform_inherited_env_vars": { "bsd": [] },
-    }))
-    .expect_err("unknown platform key must be rejected");
-    let msg = format!("{err}");
+    }));
     assert!(msg.contains("bsd"), "error must name the unknown key: {msg}");
 }
 
 /// S-D3: platform env var names must be non-empty in the Rust serde layer.
 #[test]
 fn strict_platform_env_rejects_empty_env_name() {
-    let err = serde_json::from_value::<ConductorRuntimeConfig>(serde_json::json!({
+    let msg = serde_reject::<ConductorRuntimeConfig>(serde_json::json!({
         "platform_inherited_env_vars": { "linux": [""] },
-    }))
-    .expect_err("empty env var name must be rejected");
-    let msg = format!("{err}");
+    }));
     assert!(msg.contains("non-empty"), "error must explain the non-empty rule: {msg}");
 }
 

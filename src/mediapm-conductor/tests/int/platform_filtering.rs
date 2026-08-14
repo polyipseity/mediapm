@@ -8,18 +8,16 @@
 
 use mediapm_conductor::provision::{link_to_sandbox, link_to_sandbox_filtered};
 
-/// Helper: creates a payload directory with subdirectories for all three
-/// platforms, each containing a marker file.
-fn payload_with_all_platforms() -> (tempfile::TempDir, tempfile::TempDir) {
+/// Creates a payload directory with a subdirectory (containing a marker file)
+/// for each of `oses`, plus a sandbox directory.
+fn platform_payload(oses: &[&str]) -> (tempfile::TempDir, tempfile::TempDir) {
     let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
     let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
-
-    for os in &["linux", "macos", "windows"] {
+    for os in oses {
         let dir = payload.path().join(os);
         std::fs::create_dir_all(&dir).expect("create platform dir");
         std::fs::write(dir.join("tool"), "content").expect("write marker file");
     }
-
     (payload, sandbox)
 }
 
@@ -27,7 +25,7 @@ fn payload_with_all_platforms() -> (tempfile::TempDir, tempfile::TempDir) {
 /// preserves only the native OS directory on the current platform.
 #[test]
 fn link_to_sandbox_preserves_native_platform_only() {
-    let (payload, sandbox) = payload_with_all_platforms();
+    let (payload, sandbox) = platform_payload(&["linux", "macos", "windows"]);
 
     link_to_sandbox(payload.path(), sandbox.path()).expect("link_to_sandbox should succeed");
 
@@ -57,14 +55,7 @@ fn link_to_sandbox_preserves_native_platform_only() {
 /// the expected result regardless of the host platform.
 #[test]
 fn link_to_sandbox_explicit_filter_works() {
-    let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
-    let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
-
-    for os in &["linux", "windows"] {
-        let dir = payload.path().join(os);
-        std::fs::create_dir_all(&dir).expect("create platform dir");
-        std::fs::write(dir.join("tool"), "content").expect("write marker file");
-    }
+    let (payload, sandbox) = platform_payload(&["linux", "windows"]);
 
     // Exclude "linux" explicitly — it should not appear in the sandbox.
     link_to_sandbox_filtered(payload.path(), sandbox.path(), &["linux"])
@@ -78,8 +69,7 @@ fn link_to_sandbox_explicit_filter_works() {
 /// empty sandbox without errors.
 #[test]
 fn link_to_sandbox_empty_payload_creates_empty_sandbox() {
-    let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
-    let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
+    let (payload, sandbox) = platform_payload(&[]);
 
     link_to_sandbox(payload.path(), sandbox.path())
         .expect("link_to_sandbox on empty payload should succeed");
@@ -95,8 +85,7 @@ fn link_to_sandbox_empty_payload_creates_empty_sandbox() {
 /// directory does not exist.
 #[test]
 fn link_to_sandbox_nonexistent_payload_errors() {
-    let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
-    let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
+    let (payload, sandbox) = platform_payload(&[]);
     let nonexistent = payload.path().join("does-not-exist");
 
     let result = link_to_sandbox(&nonexistent, sandbox.path());

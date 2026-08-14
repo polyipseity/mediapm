@@ -6,18 +6,18 @@
 //! access. The echo builtin is used because it produces launcher scripts
 //! in memory rather than downloading payloads.
 
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use mediapm_cas::CasApi;
-use mediapm_cas::InMemoryCas;
+use mediapm_cas::{CasApi, InMemoryCas};
 use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::{
-    fetch_tool_sources, process_tool_sources, resolve_tool_fetch,
+    DownloadedSource, DownloadedSources, ResolvedToolFetch, SourceProducer, fetch_tool_sources,
+    process_tool_sources, resolve_tool_fetch,
 };
-use mediapm_utils::progress::ProviderProgressSnapshot;
-use std::str::FromStr;
+use mediapm_utils::progress::{ProviderPhase, ProviderProgressSnapshot};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,6 +25,61 @@ use std::str::FromStr;
 
 /// Expected OS labels produced by the echo provider.
 const ECHO_OS_LABELS: &[&str] = &["linux", "macos", "windows"];
+
+/// Resolves the echo tool.
+async fn resolve_echo() -> ResolvedToolFetch {
+    resolve_tool_fetch("echo").await.expect("resolve echo")
+}
+
+/// Opens a fresh user-level cache in a temp dir.
+async fn open_echo_cache() -> (UserLevelCache, tempfile::TempDir) {
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
+    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
+        .await
+        .expect("open UserLevelCache");
+    (cache, cache_root)
+}
+
+/// Resolves and fetches echo sources.
+async fn fetch_echo(
+    progress_cb: Option<Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync>>,
+) -> DownloadedSources {
+    let fetch = resolve_echo().await;
+    let (cache, _cache_root) = open_echo_cache().await;
+    fetch_tool_sources(&fetch, &cache, "default", progress_cb).await.expect("fetch echo sources")
+}
+
+/// Returns a callback that records every progress snapshot.
+fn recording_progress_cb() -> (
+    Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>>,
+    Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync>,
+) {
+    let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let snap_clone = Arc::clone(&snapshots);
+    let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> =
+        Arc::new(move |snap| snap_clone.lock().unwrap().push(snap));
+    (snapshots, cb)
+}
+
+/// Asserts that snapshots for `phase` have non-decreasing position never
+/// exceeding total.
+fn assert_phase_progress_monotonic(all: &[ProviderProgressSnapshot], phase: ProviderPhase) {
+    let mut prev_pos = 0u64;
+    for (i, snap) in all.iter().enumerate() {
+        if snap.phase != phase {
+            continue;
+        }
+        let pos = snap.bytes.0;
+        let tot = snap.bytes.1;
+        assert!(
+            pos >= prev_pos,
+            "{phase:?} position decreased at snapshot {i}: {pos} < {prev_pos}",
+        );
+        assert!(pos <= tot, "{phase:?} position {pos} exceeds total {tot} at snapshot {i}");
+        prev_pos = pos;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Phase 1 — Resolve
@@ -34,7 +89,7 @@ const ECHO_OS_LABELS: &[&str] = &["linux", "macos", "windows"];
 /// source per platform.
 #[tokio::test]
 async fn resolve_echo_returns_three_launcher_sources() {
-    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
+    let fetch = resolve_echo().await;
 
     assert_eq!(fetch.tool_id, "echo");
     assert_eq!(fetch.sources.len(), ECHO_OS_LABELS.len());
@@ -75,15 +130,7 @@ async fn resolve_unknown_tool_returns_error() {
 /// cached in `UserLevelCache`.
 #[tokio::test]
 async fn fetch_echo_produces_launcher_scripts_via_cache() {
-    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
-        .await
-        .expect("open UserLevelCache");
-
-    let downloaded =
-        fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo sources");
+    let downloaded = fetch_echo(None).await;
 
     assert_eq!(downloaded.tool_id, "echo");
     assert_eq!(downloaded.entries.len(), ECHO_OS_LABELS.len());
@@ -117,11 +164,8 @@ async fn fetch_echo_produces_launcher_scripts_via_cache() {
 /// Fetching from cache returns the same bytes on the second call.
 #[tokio::test]
 async fn fetch_echo_is_cached_idempotently() {
-    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
-        .await
-        .expect("open UserLevelCache");
+    let fetch = resolve_echo().await;
+    let (cache, _cache_root) = open_echo_cache().await;
 
     let first = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("first fetch");
     let second = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("second fetch");
@@ -138,12 +182,7 @@ async fn fetch_echo_is_cached_idempotently() {
 /// with one entry per OS.
 #[tokio::test]
 async fn process_echo_produces_correct_content_map_and_os_exec_paths() {
-    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
-        .await
-        .expect("open UserLevelCache");
-    let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
+    let downloaded = fetch_echo(None).await;
     let cas = InMemoryCas::default();
 
     let result = process_tool_sources(&downloaded, &cas, None).await.expect("process echo");
@@ -182,12 +221,7 @@ async fn process_echo_produces_correct_content_map_and_os_exec_paths() {
 /// every content-map hash is retrievable from CAS.
 #[tokio::test]
 async fn full_pipeline_echo_all_hashes_retrievable_from_cas() {
-    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
-        .await
-        .expect("open UserLevelCache");
-    let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
+    let downloaded = fetch_echo(None).await;
     let cas = InMemoryCas::default();
 
     let result = process_tool_sources(&downloaded, &cas, None).await.expect("process echo");
@@ -225,12 +259,7 @@ async fn resolve_tool_fetch_matches_sources_len_for_all_providers() {
 /// source entry (launcher-based tools still trigger per-source progress).
 #[tokio::test]
 async fn process_fires_progress_per_source_entry() {
-    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
-        .await
-        .expect("open UserLevelCache");
-    let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
+    let downloaded = fetch_echo(None).await;
     let cas = InMemoryCas::default();
     let source_count = downloaded.entries.len();
 
@@ -238,7 +267,7 @@ async fn process_fires_progress_per_source_entry() {
     let cc = Arc::clone(&call_count);
     let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> = Arc::new(move |snap| {
         // Only count process phase callbacks.
-        if matches!(snap.phase, mediapm_utils::progress::ProviderPhase::Process) {
+        if matches!(snap.phase, ProviderPhase::Process) {
             cc.fetch_add(1, Ordering::Relaxed);
         }
     });
@@ -258,107 +287,52 @@ async fn process_fires_progress_per_source_entry() {
 /// input-size policy fix (prevents backward jumps, total instability).
 #[tokio::test]
 async fn full_pipeline_progress_monotonic() {
-    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
-        .await
-        .expect("open UserLevelCache");
     let cas = InMemoryCas::default();
+    let (snapshots, cb) = recording_progress_cb();
 
-    let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let snap_clone = Arc::clone(&snapshots);
-    let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> = Arc::new(move |snap| {
-        snap_clone.lock().unwrap().push(snap);
-    });
-
-    let downloaded =
-        fetch_tool_sources(&fetch, &cache, "default", Some(cb.clone())).await.expect("fetch echo");
+    let downloaded = fetch_echo(Some(cb.clone())).await;
     let _result = process_tool_sources(&downloaded, &cas, Some(cb)).await.expect("process echo");
 
     let all = snapshots.lock().unwrap().clone();
     assert!(!all.is_empty(), "should have recorded at least one snapshot");
 
-    // Group by phase, verify monotonicity within each phase.
-    for phase in &[
-        mediapm_utils::progress::ProviderPhase::Fetch,
-        mediapm_utils::progress::ProviderPhase::Process,
-    ] {
-        let phase_snaps: Vec<&ProviderProgressSnapshot> =
-            all.iter().filter(|s| &s.phase == phase).collect();
-        if phase_snaps.is_empty() {
-            continue;
-        }
-
-        let mut prev_pos = 0u64;
-        for (i, snap) in phase_snaps.iter().enumerate() {
-            let pos = snap.bytes.0;
-            let tot = snap.bytes.1;
-            assert!(
-                pos >= prev_pos,
-                "{phase:?} position decreased at snapshot {i}: {pos} < {prev_pos}",
-            );
-            assert!(pos <= tot, "{phase:?} position {pos} exceeds total {tot} at snapshot {i}");
-            prev_pos = pos;
-        }
-    }
+    // Verify monotonicity within each phase.
+    assert_phase_progress_monotonic(&all, ProviderPhase::Fetch);
+    assert_phase_progress_monotonic(&all, ProviderPhase::Process);
 }
 
 #[tokio::test]
 async fn process_mixed_archive_binary_progress() {
     // Use echo (launcher-only) for binary sources and add a synthetic
     // zip archive as an extra source to validate mixed progress.
-    let fetch = resolve_tool_fetch("echo").await.expect("resolve echo");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
-        .await
-        .expect("open UserLevelCache");
-    let downloaded = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("fetch echo");
+    let downloaded = fetch_echo(None).await;
 
     let decompressed = pseudo_random_buffer(20_000);
     let zip = synthetic_zip(&[("extra.bin", &decompressed)]);
 
     // Append a synthetic archive entry to test mixed source processing.
     let mut entries = downloaded.entries.clone();
-    entries.push(mediapm_conductor::tools::provider::DownloadedSource {
+    entries.push(DownloadedSource {
         os: "linux".to_string(),
-        producer: mediapm_conductor::tools::provider::SourceProducer::Fetch {
-            urls: vec!["https://example.com/extra.zip".to_string()],
-        },
+        producer: SourceProducer::Fetch { urls: vec!["https://example.com/extra.zip".to_string()] },
         bytes: zip,
         expected_size: None,
     });
-    let mixed = mediapm_conductor::tools::provider::DownloadedSources {
+    let mixed = DownloadedSources {
         tool_id: "echo".to_string(),
         entries,
         cached_count: downloaded.cached_count,
     };
 
     let cas = InMemoryCas::default();
-    let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let snap_clone = Arc::clone(&snapshots);
-    let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> = Arc::new(move |snap| {
-        snap_clone.lock().unwrap().push(snap);
-    });
+    let (snapshots, cb) = recording_progress_cb();
 
     let _result =
         process_tool_sources(&mixed, &cas, Some(cb)).await.expect("process mixed echo+archive");
 
     let all = snapshots.lock().unwrap().clone();
     assert!(!all.is_empty(), "should have recorded at least one snapshot");
-
-    let mut prev_pos = 0u64;
-    for (i, snap) in all.iter().enumerate() {
-        if snap.phase != mediapm_utils::progress::ProviderPhase::Process {
-            continue;
-        }
-        let pos = snap.bytes.0;
-        let tot = snap.bytes.1;
-        assert!(pos >= prev_pos, "Process position decreased at snapshot {i}: {pos} < {prev_pos}");
-        assert!(pos <= tot, "Process position {pos} exceeds total {tot} at snapshot {i}");
-        prev_pos = pos;
-    }
+    assert_phase_progress_monotonic(&all, ProviderPhase::Process);
 }
 
 /// Creates a deterministic pseudo-random buffer useful for archive tests
