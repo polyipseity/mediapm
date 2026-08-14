@@ -5,9 +5,6 @@
 //! manual `group.tick()` calls, so we check *at least* the expected output
 //! rather than exact counts.
 
-use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use mediapm_utils::progress::{ProgressDebugSink, ProgressGroup, TrackedHandle};
-use std::io::Write;
 use std::time::Duration;
 
 use super::common::*;

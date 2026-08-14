@@ -1,5 +1,3 @@
-#![allow(unused_imports)]
-
 mod color;
 mod common;
 mod consumer;

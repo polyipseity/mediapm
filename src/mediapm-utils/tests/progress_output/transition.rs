@@ -1,10 +1,3 @@
-use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use mediapm_utils::progress::{
-    DimensionSource, ProgressGroup, SuffixComponents, TestDimensionSource, TestTimeSource,
-    TimeSource, TrackedHandle,
-};
-use std::sync::Arc;
-
 use super::common::*;
 
 #[test]

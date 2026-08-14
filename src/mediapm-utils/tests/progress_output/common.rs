@@ -2,9 +2,14 @@
 
 use std::sync::Arc;
 
-use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use mediapm_utils::progress::{
-    DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TimeSource, TrackedHandle,
+// Re-export the symbols used across progress-output modules so each module can
+// rely on `use super::common::*;` alone instead of repeating the import block.
+pub use indicatif::{
+    InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike,
+};
+pub use mediapm_utils::progress::{
+    DimensionSource, ProgressDebugSink, ProgressGroup, SuffixComponents, TestDimensionSource,
+    TestTimeSource, TimeSource, TrackedHandle,
 };
 
 /// Default terminal dimensions for standard tests.
@@ -145,6 +150,28 @@ pub fn group_with_overall_and_dims(
         .capacity(capacity)
         .with_overall(label, overall_total)
         .with_dim_source(Arc::clone(dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(dynamic_height)
+        .with_ticker_enabled(false)
+        .build_with_overall()
+}
+
+/// Like [`group_with_overall_and_dims`] but also attaches a deterministic
+/// time source (needed by exact-output tests that advance elapsed time).
+pub fn group_with_overall_and_dims_and_ts(
+    mp: MultiProgress,
+    capacity: usize,
+    label: &str,
+    overall_total: u64,
+    dims: &Arc<TestDimensionSource>,
+    ts: &Arc<TestTimeSource>,
+    dynamic_height: bool,
+) -> (ProgressGroup, TrackedHandle) {
+    ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(capacity)
+        .with_overall(label, overall_total)
+        .with_dim_source(Arc::clone(dims) as Arc<dyn DimensionSource>)
+        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(dynamic_height)
         .with_ticker_enabled(false)
         .build_with_overall()

@@ -1,7 +1,3 @@
-use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use mediapm_utils::progress::{
-    DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TimeSource, TrackedHandle,
-};
 use std::sync::Arc;
 
 use super::common::*;
@@ -38,15 +34,8 @@ fn resize_width_narrow_to_wide_restores_content() {
 fn resize_width_noop_same_width_no_change() {
     let dims = Arc::new(TestDimensionSource::new((H, W)));
     let (mp, term, ts) = mk_with_size_and_ts(H, W);
-    let (group, _overall) = ProgressGroup::builder()
-        .with_multi_progress(mp)
-        .capacity(5)
-        .with_overall("overall", 10)
-        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-        .dynamic_height(false)
-        .with_ticker_enabled(false)
-        .build_with_overall();
+    let (group, _overall) =
+        group_with_overall_and_dims_and_ts(mp, 5, "overall", 10, &dims, &ts, false);
     let before = term.contents();
     let before_lines = before.lines().count();
     // (no elapsed assertion before tick — elapsed is injected on tick, and
@@ -88,15 +77,8 @@ fn resize_height_grow_adds_slots() {
 fn resize_exact_height_shrink_removes_slots() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (mp, term, ts) = mk_with_size_and_ts(6, 80);
-    let (group, _overall) = ProgressGroup::builder()
-        .with_multi_progress(mp)
-        .capacity(6)
-        .with_overall("overall", 10)
-        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-        .dynamic_height(true)
-        .with_ticker_enabled(false)
-        .build_with_overall();
+    let (group, _overall) =
+        group_with_overall_and_dims_and_ts(mp, 6, "overall", 10, &dims, &ts, true);
     let _c1 = group.add_bar(7, "fetch");
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
@@ -514,14 +496,8 @@ fn resize_height_grow_appends_not_prepends() {
 fn resize_exact_width_wide_to_narrow() {
     let dims = Arc::new(TestDimensionSource::new((4, 120)));
     let (mp, term, ts) = mk_with_size_and_ts(4, 120);
-    let (group, _overall) = ProgressGroup::builder()
-        .with_multi_progress(mp)
-        .capacity(4)
-        .with_overall("overall", 5)
-        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-        .with_ticker_enabled(false)
-        .build_with_overall();
+    let (group, _overall) =
+        group_with_overall_and_dims_and_ts(mp, 4, "overall", 5, &dims, &ts, false);
     let child = group.add_bar(10, "test");
     child.set_position(5);
     ts.advance(std::time::Duration::from_secs(1));
@@ -560,14 +536,8 @@ fn resize_exact_width_wide_to_narrow() {
 fn resize_exact_narrow_uses_compact_template() {
     let dims = Arc::new(TestDimensionSource::new((4, 40)));
     let (mp, term, ts) = mk_with_size_and_ts(4, 40);
-    let (group, _overall) = ProgressGroup::builder()
-        .with_multi_progress(mp)
-        .capacity(4)
-        .with_overall("overall", 5)
-        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-        .with_ticker_enabled(false)
-        .build_with_overall();
+    let (group, _overall) =
+        group_with_overall_and_dims_and_ts(mp, 4, "overall", 5, &dims, &ts, false);
     let child = group.add_bar(10, "test");
     child.set_position(5);
     ts.advance(std::time::Duration::from_secs(1));
@@ -590,15 +560,8 @@ fn resize_exact_narrow_uses_compact_template() {
 fn resize_exact_height_grow_adds_slots() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term, ts) = mk_with_size_and_ts(6, 80);
-    let (group, _overall) = ProgressGroup::builder()
-        .with_multi_progress(mp)
-        .capacity(4)
-        .with_overall("overall", 10)
-        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-        .dynamic_height(true)
-        .with_ticker_enabled(false)
-        .build_with_overall();
+    let (group, _overall) =
+        group_with_overall_and_dims_and_ts(mp, 4, "overall", 10, &dims, &ts, true);
     let _c1 = group.add_bar(7, "fetch");
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
