@@ -224,33 +224,31 @@ fn bash_janitor_dry_run_and_real_run() {
     });
 }
 
-/// Runs the sh-based janitor/runner self-test, skipping when `sh` is absent.
-fn assert_sh_self_test(script: &Path, ok_marker: &str) {
-    if !skip_unless("sh", &["-c", "exit 0"]) {
+/// Runs a janitor/runner self-test, skipping when its interpreter is absent.
+fn assert_self_test(
+    script: &Path,
+    ok_marker: &str,
+    program: &str,
+    probe: &[&str],
+    run: impl Fn(&Path, &Path, &[&str]) -> RunOutcome,
+) {
+    if !skip_unless(program, probe) {
         return;
     }
     let sandbox = Sandbox::new();
-    let out = run_script("sh", script, &sandbox.path, &[]);
-    assert!(out.status.success(), "self-test failed: {}", out.stderr);
-    assert!(out.stdout.contains(ok_marker), "self-test missing OK line");
-}
-
-/// Runs the pwsh-based janitor/runner self-test, skipping when `pwsh` is absent.
-fn assert_pwsh_self_test(script: &Path, ok_marker: &str) {
-    if !skip_unless("pwsh", &["--version"]) {
-        return;
-    }
-    let sandbox = Sandbox::new();
-    let out = run_pwsh(script, &sandbox.path, &[]);
+    let out = run(script, &sandbox.path, &[]);
     assert!(out.status.success(), "self-test failed: {}", out.stderr);
     assert!(out.stdout.contains(ok_marker), "self-test missing OK line");
 }
 
 #[test]
 fn bash_janitor_self_test() {
-    assert_sh_self_test(
+    assert_self_test(
         &test_script_path("test-clean-mediapm-temp.sh"),
         "test-clean-mediapm-temp: OK",
+        "sh",
+        &["-c", "exit 0"],
+        |script, sandbox, flags| run_script("sh", script, sandbox, flags),
     );
 }
 
@@ -266,22 +264,34 @@ fn pwsh_janitor_dry_run_and_real_run() {
 
 #[test]
 fn pwsh_janitor_self_test() {
-    assert_pwsh_self_test(
+    assert_self_test(
         &test_script_path("test-clean-mediapm-temp.ps1"),
         "test-clean-mediapm-temp.ps1: OK",
+        "pwsh",
+        &["--version"],
+        |script, sandbox, flags| run_pwsh(script, sandbox, flags),
     );
 }
 
 #[test]
 fn bash_runner_self_test() {
-    assert_sh_self_test(&test_script_path("test-run-all-tests.sh"), "test-run-all-tests.sh: OK");
+    assert_self_test(
+        &test_script_path("test-run-all-tests.sh"),
+        "test-run-all-tests.sh: OK",
+        "sh",
+        &["-c", "exit 0"],
+        |script, sandbox, flags| run_script("sh", script, sandbox, flags),
+    );
 }
 
 #[test]
 fn pwsh_runner_self_test() {
-    assert_pwsh_self_test(
+    assert_self_test(
         &test_script_path("test-run-all-tests.ps1"),
         "test-run-all-tests.ps1: OK",
+        "pwsh",
+        &["--version"],
+        |script, sandbox, flags| run_pwsh(script, sandbox, flags),
     );
 }
 
