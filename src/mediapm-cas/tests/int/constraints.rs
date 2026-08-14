@@ -67,6 +67,25 @@ async fn patch_constraint_remove() {
     assert!(bases.contains(&b2));
 }
 
+/// set/get constraint round-trip where the constraint value contains
+/// `Hash::empty()` (the empty-content sentinel) — kept from the former
+/// `put_get_test` file, which duplicated coverage now in `api_workflows`.
+#[tokio::test]
+async fn set_and_get_empty_constraint() {
+    let cas = new_in_memory_cas();
+
+    let data = Bytes::from("test data");
+    let hash = cas.put(data.clone()).await.unwrap();
+
+    let retrieved = cas.get(hash).await.unwrap();
+    assert_eq!(retrieved, data);
+
+    cas.set_constraint(hash, BTreeSet::from([Hash::empty()])).await.unwrap();
+
+    let constraint = cas.get_constraint(hash).await.unwrap();
+    assert_eq!(constraint, BTreeSet::from([Hash::empty()]));
+}
+
 #[tokio::test]
 async fn patch_constraint_clear() {
     let cas = new_in_memory_cas();

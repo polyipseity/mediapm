@@ -111,7 +111,7 @@ async fn optimize_delta_rewrite() {
     let cas = new_in_memory_cas();
 
     // Two similar large buffers so VCDIFF delta is meaningfully smaller.
-    let (base_content, target_content) = delta_content_pair();
+    let (base_content, target_content) = similar_content_pair(b'A', b"CHANGED");
 
     let base_hash = cas.put(base_content.clone()).await.unwrap();
     let target_hash = cas.put(target_content.clone()).await.unwrap();
@@ -302,29 +302,23 @@ async fn optimize_multi_base_picks_first_effective() {
 async fn optimize_idempotent() {
     let cas = new_in_memory_cas();
 
-    let base = Bytes::from(vec![b'Q'; 4096]);
-    let target = {
-        let mut v = vec![b'Q'; 2000];
-        v.extend_from_slice(b"IDEMPOTENT");
-        v.extend_from_slice(&vec![b'Q'; 4096 - 2000 - 10]);
-        Bytes::from(v)
-    };
+    let (base_content, target_content) = similar_content_pair(b'Q', b"IDEMPOTENT");
 
-    let base_hash = cas.put(base.clone()).await.unwrap();
-    let target_hash = cas.put(target.clone()).await.unwrap();
+    let base_hash = cas.put(base_content.clone()).await.unwrap();
+    let target_hash = cas.put(target_content.clone()).await.unwrap();
     cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
 
     // First optimization: delta rewrite.
     cas.run_maintenance_cycle().await.unwrap();
-    assert_eq!(cas.get(target_hash).await.unwrap(), target);
+    assert_eq!(cas.get(target_hash).await.unwrap(), target_content);
 
     // Second optimization: should be idempotent.
     cas.run_maintenance_cycle().await.unwrap();
-    assert_eq!(cas.get(target_hash).await.unwrap(), target);
+    assert_eq!(cas.get(target_hash).await.unwrap(), target_content);
 
     // Third optimization: still idempotent.
     cas.run_maintenance_cycle().await.unwrap();
-    assert_eq!(cas.get(target_hash).await.unwrap(), target);
+    assert_eq!(cas.get(target_hash).await.unwrap(), target_content);
 }
 
 /// After delta-to-full promotion, the stale `.diff` file is removed.
@@ -335,7 +329,7 @@ async fn stale_diff_removed_after_delta_to_full_promotion() {
     let (_dir, cas) = open_file_cas().await;
 
     // Two similar large buffers so VCDIFF delta makes sense.
-    let (base_content, target_content) = delta_content_pair();
+    let (base_content, target_content) = similar_content_pair(b'A', b"CHANGED");
 
     let base_hash = cas.put(base_content.clone()).await.unwrap();
     let target_hash = cas.put(target_content.clone()).await.unwrap();
@@ -390,13 +384,7 @@ async fn stale_diff_removed_after_delta_to_full_promotion() {
 async fn delta_cache_repeated_reads_work() {
     let (_dir, cas) = open_file_cas().await;
 
-    let base_content = Bytes::from(vec![b'B'; 4096]);
-    let target_content = {
-        let mut v = vec![b'B'; 2048];
-        v.extend_from_slice(b"DELTA_CACHE");
-        v.extend_from_slice(&vec![b'B'; 2048 - 10]);
-        Bytes::from(v)
-    };
+    let (base_content, target_content) = similar_content_pair(b'B', b"DELTA_CACHE");
 
     let base_hash = cas.put(base_content.clone()).await.unwrap();
     let target_hash = cas.put(target_content.clone()).await.unwrap();
@@ -499,7 +487,7 @@ async fn file_system_cas_wal_consumer_processes_batches() {
 /// session left off.
 #[tokio::test]
 async fn file_system_cas_reopen_and_consume_wal() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let dir = crate::common::artifact_dir();
 
     // First session: open, put data, close (drop cas).
     let hash;
@@ -569,7 +557,7 @@ async fn file_system_cas_background_task_materializes_blob() {
 /// entries from a previous session are consumed on re-open).
 #[tokio::test]
 async fn file_system_cas_background_task_survives_reopen() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let dir = crate::common::artifact_dir();
 
     // First session: put data and let background materialize it.
     let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
@@ -632,14 +620,14 @@ async fn file_system_cas_background_maintenance_guard_cancels_on_drop() {
     );
 }
 
-/// Base and target content that differ only in a small marker, so the
-/// VCDIFF delta is meaningfully smaller than the full content.
-fn delta_content_pair() -> (Bytes, Bytes) {
-    let base_content = Bytes::from(vec![b'A'; 4096]);
+/// Base and target content that differ only in `marker`, so the VCDIFF
+/// delta is meaningfully smaller than the full content.
+fn similar_content_pair(fill: u8, marker: &[u8]) -> (Bytes, Bytes) {
+    let base_content = Bytes::from(vec![fill; 4096]);
     let target_content = {
-        let mut v = vec![b'A'; 2048];
-        v.extend_from_slice(b"CHANGED");
-        v.extend_from_slice(&vec![b'A'; 2048 - 7]);
+        let mut v = vec![fill; 2048];
+        v.extend_from_slice(marker);
+        v.extend_from_slice(&vec![fill; 2048 - marker.len()]);
         Bytes::from(v)
     };
     (base_content, target_content)
