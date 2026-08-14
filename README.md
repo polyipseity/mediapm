@@ -80,13 +80,12 @@ cargo test-all    # test entire workspace
 **Online integration gate (requires network and external providers):**
 
 ```sh
-MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=300 cargo run -p mediapm --example demo_online
+MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=300 cargo run -p mediapm --example mediapm_demo_online
 ```
 
 Inspect generated artifacts under `src/mediapm/examples/artifacts/demo-online/`.
 
-`demo_online` is a full-sync integration example for normal validation runs.
-When setting `MEDIAPM_DEMO_ONLINE_RUN_SYNC` explicitly, use `true`.
+`mediapm_demo_online`'s full-sync path (network + external tools) runs only on the explicit `cargo run -p mediapm --example mediapm_demo_online` above. Its embedded `main_is_exercised` test runs reduced config-only mode in the test harness instead — deterministic, no network, skipped in CI.
 
 Integration tests across workspace crates share one harness shape:
 

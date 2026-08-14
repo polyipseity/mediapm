@@ -223,10 +223,12 @@ Development: `cargo test-pkg mediapm` / `cargo build-pkg mediapm` / selective te
 
 **Demo hierarchy golden:** Online link files use two exact naming formats — yt-dlp shape under `sidecars/links/` vs mediapm root projections — encoded in golden helpers and live asserts. See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
-Post-change: both demo examples mandatory:
+Post-change: demo examples:
 
 - `cargo run --package mediapm --example mediapm_demo`
-- `cargo run --package mediapm --example mediapm_demo_online`
+- `cargo run --package mediapm --example mediapm_demo_online` — full-sync online path (network + external tools), human-gated
+
+The online demo's embedded test (`main_is_exercised`) runs reduced (config-only) mode deterministically in the test harness (skips in CI), so the pre-push gate exercises only reduced mode — no network. Its full-sync path runs only on the explicit `cargo run --package mediapm --example mediapm_demo_online` above.
 
 Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all`.
 
