@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_cas::InMemoryCas;
-use mediapm_conductor::{RuntimeStoragePaths, SimpleConductor};
+use mediapm_conductor::{RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor};
 
 use crate::{
     bare_step, doc_with_workflows, echo_step, echo_tool, echo_workflow, workflow_with_steps,
@@ -24,7 +24,7 @@ fn conductor_for(
 ) -> (SimpleConductor<InMemoryCas>, std::path::PathBuf) {
     let runtime_tmp = mediapm_utils::temp::runtime_dir_for_workspace(workspace);
     let mut paths = RuntimeStoragePaths::new(workspace);
-    paths.conductor_tmp_dir = runtime_tmp.clone();
+    paths.conductor_tmp_dir.clone_from(&runtime_tmp);
     (SimpleConductor::new(paths, InMemoryCas::new()), runtime_tmp)
 }
 
@@ -41,8 +41,10 @@ async fn runtime_tmp_removed_on_normal_workflow_exit() {
         ),
     );
 
-    let summary =
-        conductor.run_workflow("default", Default::default()).await.expect("workflow runs");
+    let summary = conductor
+        .run_workflow("default", RunWorkflowOptions::default())
+        .await
+        .expect("workflow runs");
     assert_eq!(summary.executed_steps, 1, "echo step executes");
 
     assert!(
@@ -72,7 +74,7 @@ async fn runtime_tmp_removed_on_failed_workflow_unknown_tool() {
     );
 
     let error = conductor
-        .run_workflow("default", Default::default())
+        .run_workflow("default", RunWorkflowOptions::default())
         .await
         .expect_err("unknown tool fails the workflow");
     assert!(error.to_string().contains("no-such-tool"), "error names the unknown tool: {error}");

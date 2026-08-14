@@ -49,11 +49,14 @@ async fn fetch_echo(
     fetch_tool_sources(&fetch, &cache, "default", progress_cb).await.expect("fetch echo sources")
 }
 
-/// Returns a callback that records every progress snapshot.
-fn recording_progress_cb() -> (
+/// Shared snapshot list plus the callback that records into it.
+type ProgressRecorder = (
     Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>>,
     Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync>,
-) {
+);
+
+/// Returns a callback that records every progress snapshot.
+fn recording_progress_cb() -> ProgressRecorder {
     let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let snap_clone = Arc::clone(&snapshots);
