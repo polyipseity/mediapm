@@ -7,8 +7,9 @@
 //! avoid re-evaluating unchanged documents across repeated decode calls.
 //!
 //! Each evaluation allocates its own scratch workspace via
-//! `mediapm_utils::temp::artifact_dir()`; the `TempDir` guard removes it on
-//! both success and error paths, so failed decodes never leak scratch files.
+//! `scratch_workspace_dir()` (a `mediapm_utils::temp::artifact_dir()` by
+//! default); the `TempDir` guard removes it on both success and error paths,
+//! so failed decodes never leak scratch files.
 //!
 //! # Cache discipline
 //!
@@ -105,6 +106,31 @@ where
     })
 }
 
+// Test-only per-thread workspace-root override consulted by
+// `scratch_workspace_dir`; compiled out of non-test builds.
+#[cfg(test)]
+thread_local! {
+    static WORKSPACE_ROOT_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Creates the per-evaluation scratch workspace directory.
+///
+/// Tests override the workspace root via the `WORKSPACE_ROOT_OVERRIDE`
+/// thread-local to assert cleanup in a sibling-free directory: redirecting
+/// the process-global `TMPDIR` is racy under plain `cargo test`, where
+/// sibling lib-test threads create their own workspaces under the
+/// redirected root.
+fn scratch_workspace_dir() -> std::io::Result<tempfile::TempDir> {
+    #[cfg(test)]
+    {
+        if let Some(root) = WORKSPACE_ROOT_OVERRIDE.with(|slot| slot.borrow().clone()) {
+            return tempfile::Builder::new().tempdir_in(root);
+        }
+    }
+    mediapm_utils::temp::artifact_dir()
+}
+
 /// Evaluates one raw Nickel document source and returns its exported value.
 ///
 /// This helper is intentionally schema-agnostic and is used for metadata
@@ -129,7 +155,7 @@ fn evaluate_document_source_value(
     // directory on success AND on the `?` error paths below. The previous
     // explicit cleanup ran only on success, so a failed evaluation leaked
     // the scratch files.
-    let workspace = mediapm_utils::temp::artifact_dir().map_err(|source| ConductorError::Io {
+    let workspace = scratch_workspace_dir().map_err(|source| ConductorError::Io {
         operation: "creating Nickel workspace for source value evaluation".to_string(),
         path: std::env::temp_dir(),
         source,
@@ -261,7 +287,7 @@ where
     // directory on success AND on the `?` error paths below. The previous
     // explicit cleanup ran only on success, so a failed evaluation leaked
     // the scratch files.
-    let workspace = mediapm_utils::temp::artifact_dir().map_err(|source| ConductorError::Io {
+    let workspace = scratch_workspace_dir().map_err(|source| ConductorError::Io {
         operation: "creating Nickel workspace for document migration".to_string(),
         path: std::env::temp_dir(),
         source,
@@ -320,68 +346,34 @@ where
 mod tests {
     use super::*;
 
-    /// Serializes `TMPDIR` redirection within one process. The canonical
-    /// runner (nextest) isolates each test in its own process, so sibling
-    /// processes redirect their own `TMPDIR` and never churn this test's
-    /// count; under plain `cargo test --lib` this lock keeps the
-    /// redirect/restore critical section atomic against sibling threads.
-    static TEMP_COUNT_LOCK: Mutex<()> = Mutex::new(());
+    /// Test-owned scratch-workspace root for the current test, registered in
+    /// [`WORKSPACE_ROOT_OVERRIDE`] for its whole lifetime and deregistered on
+    /// drop (including panics). The thread-local override, unlike a
+    /// process-global `TMPDIR` redirect, cannot be disturbed by sibling
+    /// lib-test threads under plain `cargo test`.
+    struct WorkspaceRootOverride(tempfile::TempDir);
 
-    /// Redirects this process's `TMPDIR` to a unique, empty root for the
-    /// lifetime of the guard, then restores the previous value and removes the
-    /// root. Counting `mediapm-artifact-*` dirs under the redirected root is
-    /// deterministic: the decode under test is the only code that can create
-    /// them there.
-    struct RedirectedTempDir {
-        // Kept solely for its `Drop` side effect (removes the redirected root
-        // after the env restore); the field is never read.
-        #[expect(dead_code)]
-        root: tempfile::TempDir,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl RedirectedTempDir {
+    impl WorkspaceRootOverride {
         fn new() -> Self {
-            let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-            let previous = std::env::var_os("TMPDIR");
-            // SAFETY: test-only env override scoped to this guard's lifetime,
-            // serialized by TEMP_COUNT_LOCK, and restored before the root is
-            // removed. Mirrors the `IsolatedExampleRoots` precedent in
-            // `mediapm`'s example_isolation.rs.
-            unsafe { std::env::set_var("TMPDIR", root.path()) }
-            Self { root, previous }
+            let root = mediapm_utils::temp::artifact_dir().expect("isolated workspace root");
+            WORKSPACE_ROOT_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = Some(root.path().to_path_buf()));
+            Self(root)
         }
     }
 
-    impl Drop for RedirectedTempDir {
+    impl Drop for WorkspaceRootOverride {
         fn drop(&mut self) {
-            match &self.previous {
-                Some(previous) => {
-                    // SAFETY: symmetric with `new`, same scoping.
-                    unsafe { std::env::set_var("TMPDIR", previous) }
-                }
-                None => {
-                    // SAFETY: symmetric with `new`, same scoping.
-                    unsafe { std::env::remove_var("TMPDIR") }
-                }
-            }
+            WORKSPACE_ROOT_OVERRIDE.with(|slot| *slot.borrow_mut() = None);
         }
     }
 
-    /// Counts `mediapm-artifact-*` directories under the current temp root
-    /// (the redirected root while a [`RedirectedTempDir`] is live).
-    fn artifact_dir_count() -> usize {
-        std::fs::read_dir(std::env::temp_dir())
-            .expect("read temp dir")
+    /// Counts directories directly under `root` (a leaked scratch workspace).
+    fn child_dir_count(root: &tempfile::TempDir) -> usize {
+        std::fs::read_dir(root.path())
+            .expect("read isolated workspace root")
             .filter_map(Result::ok)
-            .filter(|entry| {
-                entry.file_type().is_ok_and(|kind| kind.is_dir())
-                    && entry
-                        .file_name()
-                        .to_string_lossy()
-                        // Produced artifact-dir role name is intentionally retained.
-                        .starts_with("mediapm-artifact-")
-            })
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
             .count()
     }
 
@@ -391,17 +383,17 @@ mod tests {
     // workspace directory.
     const BROKEN_DOC: &str = "{ version = 2";
 
-    /// Runs `body` under a fresh redirected `TMPDIR`, asserting the
-    /// artifact-dir count under it returns to its initial value (0).
+    /// Runs `body` with the scratch-workspace root isolated to a fresh,
+    /// test-owned directory, asserting no workspace directory remains
+    /// afterwards. Only the decode under test can create directories under
+    /// the root, so the count is deterministic under every runner.
     fn assert_no_artifact_dir_leak(body: impl FnOnce()) {
-        let _lock = TEMP_COUNT_LOCK.lock().unwrap();
-        let _env = RedirectedTempDir::new();
-        let before = artifact_dir_count();
-        assert_eq!(before, 0, "fresh redirected root must start empty");
+        let root = WorkspaceRootOverride::new();
+        assert_eq!(child_dir_count(&root.0), 0, "fresh isolated root must start empty");
         body();
         assert_eq!(
-            artifact_dir_count(),
-            before,
+            child_dir_count(&root.0),
+            0,
             "decode must remove its scratch workspace on both success and error"
         );
     }
