@@ -6,6 +6,14 @@ rust-version.workspace = true
 license-file.workspace = true
 publish.workspace = true
 description = "Integration tests for repository scripts and tooling"
+# The integration test binary is an explicit, intentionally-named target
+# ("scripts") so the crate layout is `tests/scripts/` instead of the
+# cargo-default `tests/tests/` nesting.
+autotests = false
 
 [lints]
 workspace = true
+
+[[test]]
+name = "scripts"
+path = "scripts/mod.rs"
