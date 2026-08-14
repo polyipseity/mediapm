@@ -147,9 +147,9 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Spec item                                                                                         | Test(s)                                                                                                               | Status    |
 | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------- |
 | `InMemoryCas::get()` works above `WAL_INLINE_LIMIT` (2 MiB)                                       | `in_memory_get_succeeds_above_wal_inline_limit`                                                                       | [covered] |
-| `FileSystemCas::get()` works above `WAL_INLINE_LIMIT` (65 MiB, `#[cfg(feature = "large-tests")]`) | `filesystem_get_succeeds_above_wal_inline_limit`                                                                      | [covered] |
+| `FileSystemCas::get()` works above `WAL_INLINE_LIMIT` (65 MiB, `#[cfg(feature = "large-tests")]`) | `file_system_get_succeeds_above_wal_inline_limit`                                                                      | [covered] |
 | `InMemoryCas::get()` delegates to `get_to_writer()` internally                                    | Already verified by `in_memory_get_succeeds_above_wal_inline_limit` (no separate unit test for delegation mechanics)  | [covered] |
-| `FileSystemCas::get()` delegates to `get_to_writer()` internally                                  | Already verified by `filesystem_get_succeeds_above_wal_inline_limit` (no separate unit test for delegation mechanics) | [covered] |
+| `FileSystemCas::get()` delegates to `get_to_writer()` internally                                  | Already verified by `file_system_get_succeeds_above_wal_inline_limit` (no separate unit test for delegation mechanics) | [covered] |
 | `CasApi` section in `mediapm-cas/AGENTS.md` already documents the delegation                      | Section 10 of `src/mediapm-cas/AGENTS.md` — verified accurate, no change needed                                       | [covered] |
 
 ### Cache::lookup_bytes error handling

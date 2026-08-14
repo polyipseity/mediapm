@@ -6,3 +6,4 @@ mod in_memory;
 mod maintenance;
 mod read_view;
 mod streaming_large;
+mod wal_consumer;
