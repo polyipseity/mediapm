@@ -432,13 +432,24 @@ fn state_json_always_writes_to_disk() {
     let meta1 = std::fs::metadata(&path).expect("state.json metadata after first save");
     let mtime1 = meta1.modified().expect("mtime after first save");
 
-    // Brief sleep to advance clock.
-    std::thread::sleep(std::time::Duration::from_millis(10));
-
-    // Second save with identical content: must still write to disk.
-    save_mediapm_state_document(&path, &state).expect("second save should succeed");
-    let meta2 = std::fs::metadata(&path).expect("state.json metadata after second save");
-    let mtime2 = meta2.modified().expect("mtime after second save");
+    // Always-write means every save rewrites the file. Filesystems with
+    // coarse timestamp granularity (FAT/exFAT use 2-second ticks) may need a
+    // couple of attempts before the mtime observably advances, so retry with
+    // short sleeps instead of relying on a single fixed sleep.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mtime2 = loop {
+        save_mediapm_state_document(&path, &state).expect("repeated save should succeed");
+        let meta2 = std::fs::metadata(&path).expect("state.json metadata after repeated save");
+        let mtime2 = meta2.modified().expect("mtime after repeated save");
+        if mtime2 > mtime1 {
+            break mtime2;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "state.json mtime did not advance after repeated saves (always-write policy)"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
 
     assert!(
         mtime2 > mtime1,
