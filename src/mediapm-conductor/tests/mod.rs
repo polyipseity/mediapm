@@ -36,47 +36,75 @@ fn echo_tool(name: &str) -> ToolSpec {
     }
 }
 
+/// Creates a single echo `WorkflowStepSpec` (`id: "s1"`).
+fn echo_step(tool_id: &str, text: &str) -> WorkflowStepSpec {
+    WorkflowStepSpec {
+        id: "s1".into(),
+        tool: tool_id.into(),
+        inputs: BTreeMap::from([("text".into(), text.into())]),
+        outputs: BTreeMap::new(),
+        max_retries: 0,
+        depends_on: Vec::new(),
+    }
+}
+
+/// Creates an input-less `WorkflowStepSpec` with explicit dependencies.
+fn bare_step(id: &str, tool: &str, depends_on: &[&str]) -> WorkflowStepSpec {
+    WorkflowStepSpec {
+        id: id.into(),
+        tool: tool.into(),
+        inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        max_retries: 0,
+        depends_on: depends_on.iter().map(ToString::to_string).collect(),
+    }
+}
+
+/// Creates a `WorkflowSpec` from raw steps.
+fn workflow_with_steps(name: &str, steps: Vec<WorkflowStepSpec>) -> WorkflowSpec {
+    WorkflowSpec { name: name.into(), display_name: None, description: None, impure: false, steps }
+}
+
 /// Creates a single-step echo `WorkflowSpec`.
 fn echo_workflow(name: &str, tool_id: &str, text: &str) -> WorkflowSpec {
-    WorkflowSpec {
-        name: name.into(),
-        display_name: None,
-        description: None,
-        impure: false,
-        steps: vec![WorkflowStepSpec {
-            id: "s1".into(),
-            tool: tool_id.into(),
-            inputs: BTreeMap::from([("text".into(), text.into())]),
-            outputs: BTreeMap::new(),
-            max_retries: 0,
-            depends_on: Vec::new(),
-        }],
-    }
+    workflow_with_steps(name, vec![echo_step(tool_id, text)])
+}
+
+/// Creates a `NickelDocument` with the given tools and workflows.
+fn doc_with_workflows(
+    tools: BTreeMap<String, ToolSpec>,
+    workflows: Vec<WorkflowSpec>,
+) -> NickelDocument {
+    NickelDocument { tools, workflows, ..NickelDocument::default() }
 }
 
 /// Creates a `NickelDocument` with one echo tool and one workflow.
 fn single_echo_doc(tool_id: &str, workflow_name: &str) -> NickelDocument {
-    NickelDocument {
-        tools: BTreeMap::from([(tool_id.into(), echo_tool(tool_id))]),
-        workflows: vec![echo_workflow(workflow_name, tool_id, workflow_name)],
-        ..NickelDocument::default()
-    }
+    doc_with_workflows(
+        BTreeMap::from([(tool_id.into(), echo_tool(tool_id))]),
+        vec![echo_workflow(workflow_name, tool_id, workflow_name)],
+    )
 }
 
 /// Creates a `NickelDocument` with two echo tools and two workflows
 /// (distinct `tool_id` keys for independent cache entries).
 fn dual_echo_doc() -> NickelDocument {
-    NickelDocument {
-        tools: BTreeMap::from([
+    doc_with_workflows(
+        BTreeMap::from([
             ("echo-v1@v1".into(), echo_tool("echo-v1@v1")),
             ("echo-v2@v1".into(), echo_tool("echo-v2@v1")),
         ]),
-        workflows: vec![
+        vec![
             echo_workflow("default", "echo-v1@v1", "default"),
             echo_workflow("updated", "echo-v2@v1", "updated"),
         ],
-        ..NickelDocument::default()
-    }
+    )
+}
+
+/// Writes `doc` as the conductor config at `dir/conductor.ncl`.
+fn write_conductor_config(dir: &std::path::Path, doc: NickelDocument) {
+    std::fs::write(dir.join("conductor.ncl"), encode_document(doc).expect("encode"))
+        .expect("write config");
 }
 
 /// A test fixture that owns a tempdir + `InMemoryCas` + `SimpleConductor`.
@@ -105,7 +133,6 @@ impl TestConductor {
 
     /// Write a `NickelDocument` as the config for this conductor.
     fn write_config(&self, doc: NickelDocument) {
-        let config_path = self.dir.path().join("conductor.ncl");
-        std::fs::write(&config_path, encode_document(doc).expect("encode")).expect("write config");
+        write_conductor_config(self.dir.path(), doc);
     }
 }
