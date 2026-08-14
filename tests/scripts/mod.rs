@@ -14,13 +14,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Sequence number for sandbox names (unique per process).
 static SANDBOX_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// The four scripts exercised by this crate.
-const SCRIPTS: [&str; 4] = [
-    "clean-mediapm-temp.sh",
-    "clean-mediapm-temp.ps1",
-    "test-clean-mediapm-temp.sh",
-    "test-clean-mediapm-temp.ps1",
-];
+/// Production janitor scripts exercised by this crate.
+const SCRIPTS: [&str; 2] = ["clean-mediapm-temp.sh", "clean-mediapm-temp.ps1"];
+
+/// Janitor self-test scripts exercised by this crate.
+const TEST_SCRIPTS: [&str; 2] = ["test-clean-mediapm-temp.sh", "test-clean-mediapm-temp.ps1"];
 
 /// Fake managed-prefix dirs the janitor must remove.
 const FAKE_MEDIAPM_DIRS: [&str; 3] =
@@ -67,6 +65,12 @@ fn repo_root() -> &'static Path {
 #[must_use]
 fn script_path(name: &str) -> PathBuf {
     repo_root().join("scripts").join(name)
+}
+
+/// Absolute path to a script self-test under this crate.
+#[must_use]
+fn test_script_path(name: &str) -> PathBuf {
+    repo_root().join("tests").join("scripts").join(name)
 }
 
 /// Normalizes CRLF line endings to LF for cross-platform output matching.
@@ -221,7 +225,7 @@ fn bash_janitor_self_test() {
         return;
     }
     let sandbox = Sandbox::new();
-    let out = run_script("sh", &script_path("test-clean-mediapm-temp.sh"), &sandbox.path, &[]);
+    let out = run_script("sh", &test_script_path("test-clean-mediapm-temp.sh"), &sandbox.path, &[]);
     assert!(out.status.success(), "self-test failed: {}", out.stderr);
     assert!(out.stdout.contains("test-clean-mediapm-temp: OK"), "self-test missing OK line");
 }
@@ -244,15 +248,18 @@ fn pwsh_janitor_self_test() {
         return;
     }
     let sandbox = Sandbox::new();
-    let out = run_pwsh(&script_path("test-clean-mediapm-temp.ps1"), &sandbox.path, &[]);
+    let out = run_pwsh(&test_script_path("test-clean-mediapm-temp.ps1"), &sandbox.path, &[]);
     assert!(out.status.success(), "self-test failed: {}", out.stderr);
     assert!(out.stdout.contains("test-clean-mediapm-temp.ps1: OK"), "self-test missing OK line");
 }
 
 #[test]
 fn script_files_exist_and_are_executable() {
-    for name in SCRIPTS {
-        let path = script_path(name);
+    for (name, path) in SCRIPTS
+        .iter()
+        .map(|name| (*name, script_path(name)))
+        .chain(TEST_SCRIPTS.iter().map(|name| (*name, test_script_path(name))))
+    {
         assert!(path.is_file(), "missing script: {name}");
         #[cfg(unix)]
         {

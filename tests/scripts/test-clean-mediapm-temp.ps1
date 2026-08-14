@@ -9,13 +9,13 @@
 #      globs (cli-add-hierarchy / examples/artifacts / stale stamped) - the
 #      janitor scope is the temp-root three prefixes ONLY.
 #
-# Runs only when pwsh is available (caller guards with `command -v pwsh`);
-# not CI-covered (Linux-only CI has no pwsh). Behavioral twin of
-# scripts/test-clean-mediapm-temp.sh.
+# Runs only when pwsh is available (the `mediapm-tests` crate probes and
+# skips). CI-covered via the Windows workspace-tests job. Behavioral twin of
+# test-clean-mediapm-temp.sh.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $janitor = Join-Path $repoRoot 'scripts/clean-mediapm-temp.ps1'
 
 function Fail([string]$Message) {

@@ -9,10 +9,11 @@
 #      globs (cli-add-hierarchy / examples/artifacts / stale stamped) — the
 #      janitor scope is the temp-root three prefixes ONLY.
 #
-# POSIX sh (runs from scripts/run-all-tests.sh under /bin/sh).
+# POSIX sh (driven by the `mediapm-tests` crate via `cargo test-all`; also
+# runnable standalone).
 set -eu
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 janitor="$repo_root/scripts/clean-mediapm-temp.sh"
 
 fail() {

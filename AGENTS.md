@@ -13,6 +13,7 @@
   - `src/mediapm-conductor-builtins/*/` (conductor built-ins, each with an `AGENTS.md`)
   - `src/mediapm/` (mediapm application)
   - `src/mediapm-utils/` (shared utilities for builtins)
+  - `tests/` (repository script integration tests, package `mediapm-tests`)
 - Integration tests currently live with workspace crates (for example, `src/mediapm/tests/`). Prefer one shared harness shape across crates:
   - top-level `tests/mod.rs` as the integration harness,
   - grouped submodules under `tests/e2e/`, `tests/int/`, and `tests/prop/`.
