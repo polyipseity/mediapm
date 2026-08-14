@@ -9,25 +9,12 @@
 use std::collections::BTreeMap;
 
 use mediapm_cas::InMemoryCas;
-use mediapm_conductor::{
-    NickelDocument, RuntimeStoragePaths, SimpleConductor, ToolInputKind, ToolInputSpec,
-    ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
-    config::versions::encode_document,
-};
+use mediapm_conductor::{RuntimeStoragePaths, SimpleConductor};
 
-fn echo_tool() -> ToolSpec {
-    ToolSpec {
-        kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
-        name: "echo@v1".into(),
-        inputs: BTreeMap::from([(
-            "text".into(),
-            ToolInputSpec { kind: ToolInputKind::String, required: false },
-        )]),
-        default_inputs: BTreeMap::new(),
-        outputs: BTreeMap::new(),
-        runtime: ToolRuntime::default(),
-    }
-}
+use crate::{
+    bare_step, doc_with_workflows, echo_step, echo_tool, echo_workflow, workflow_with_steps,
+    write_conductor_config,
+};
 
 /// Builds a conductor whose runtime tmp root is the stable
 /// `mediapm-runtime-{16hex}` path for `workspace` (mirrors the mediapm app
@@ -41,36 +28,17 @@ fn conductor_for(
     (SimpleConductor::new(paths, InMemoryCas::new()), runtime_tmp)
 }
 
-fn write_config(workspace: &std::path::Path, doc: NickelDocument) {
-    std::fs::write(workspace.join("conductor.ncl"), encode_document(doc).expect("encode"))
-        .expect("write config");
-}
-
 #[tokio::test]
 async fn runtime_tmp_removed_on_normal_workflow_exit() {
     let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
     let (conductor, runtime_tmp) = conductor_for(workspace.path());
 
-    write_config(
+    write_conductor_config(
         workspace.path(),
-        NickelDocument {
-            tools: BTreeMap::from([("echo@v1".into(), echo_tool())]),
-            workflows: vec![WorkflowSpec {
-                name: "default".into(),
-                display_name: None,
-                description: None,
-                impure: false,
-                steps: vec![WorkflowStepSpec {
-                    id: "s1".into(),
-                    tool: "echo@v1".into(),
-                    inputs: BTreeMap::from([("text".into(), "hello".into())]),
-                    outputs: BTreeMap::new(),
-                    max_retries: 0,
-                    depends_on: Vec::new(),
-                }],
-            }],
-            ..NickelDocument::default()
-        },
+        doc_with_workflows(
+            BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+            vec![echo_workflow("default", "echo@v1", "hello")],
+        ),
     );
 
     let summary =
@@ -92,36 +60,15 @@ async fn runtime_tmp_removed_on_failed_workflow_unknown_tool() {
     // Level 0 executes a valid echo step (creating the sandbox tree under the
     // runtime tmp root); level 1 references an unknown tool, which fails the
     // workflow after the level-0 sandbox already exists.
-    write_config(
+    write_conductor_config(
         workspace.path(),
-        NickelDocument {
-            tools: BTreeMap::from([("echo@v1".into(), echo_tool())]),
-            workflows: vec![WorkflowSpec {
-                name: "default".into(),
-                display_name: None,
-                description: None,
-                impure: false,
-                steps: vec![
-                    WorkflowStepSpec {
-                        id: "s1".into(),
-                        tool: "echo@v1".into(),
-                        inputs: BTreeMap::from([("text".into(), "hello".into())]),
-                        outputs: BTreeMap::new(),
-                        max_retries: 0,
-                        depends_on: Vec::new(),
-                    },
-                    WorkflowStepSpec {
-                        id: "s2".into(),
-                        tool: "no-such-tool".into(),
-                        inputs: BTreeMap::new(),
-                        outputs: BTreeMap::new(),
-                        max_retries: 0,
-                        depends_on: vec!["s1".into()],
-                    },
-                ],
-            }],
-            ..NickelDocument::default()
-        },
+        doc_with_workflows(
+            BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+            vec![workflow_with_steps(
+                "default",
+                vec![echo_step("echo@v1", "hello"), bare_step("s2", "no-such-tool", &["s1"])],
+            )],
+        ),
     );
 
     let error = conductor

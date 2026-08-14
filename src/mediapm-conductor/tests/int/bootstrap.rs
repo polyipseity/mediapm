@@ -2,23 +2,17 @@
 
 use std::collections::BTreeMap;
 
-use crate::{TestConductor, echo_tool, echo_workflow};
-use mediapm_conductor::{
-    NickelDocument, api::RunWorkflowOptions, config::versions::encode_document,
-};
+use crate::{TestConductor, doc_with_workflows, echo_tool, echo_workflow};
+use mediapm_conductor::api::RunWorkflowOptions;
 
 /// Protects bootstrap behavior when the config document is missing.
 #[tokio::test]
 async fn run_workflow_bootstraps_missing_documents() {
     let tc = TestConductor::new();
-
-    let doc = NickelDocument {
-        tools: BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
-        workflows: vec![echo_workflow("default", "echo@v1", "hello")],
-        ..NickelDocument::default()
-    };
-    let config_path = tc.path().join("conductor.ncl");
-    std::fs::write(&config_path, encode_document(doc).expect("encode")).expect("write config");
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+        vec![echo_workflow("default", "echo@v1", "hello")],
+    ));
 
     let summary = tc
         .conductor()
