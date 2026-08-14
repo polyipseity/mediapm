@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::common::service_at;
+use crate::common::{seed_cas, service_at};
 use bytes::Bytes;
 use mediapm::{
     HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaPmService, MediaSourceSpec, MediaStep,
@@ -11,7 +11,6 @@ use mediapm::{
     YtDlpOutputVariantConfig, load_mediapm_document, load_mediapm_state_document,
     media_id_from_uri, save_mediapm_document,
 };
-use mediapm_cas::CasApi;
 use url::Url;
 
 /// Builds a single-step `import` source spec that ingests one CAS payload
@@ -41,11 +40,7 @@ async fn seed_and_add_import_source(
     uri: &Url,
     payload: &[u8],
 ) -> Result<(), mediapm::MediaPmError> {
-    let cas = service.conductor().cas().clone();
-    let hash = cas
-        .put(Bytes::copy_from_slice(payload))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seeding CAS: {e}")))?;
+    let hash = seed_cas(service, Bytes::copy_from_slice(payload), "CAS").await?;
     service.add_media_source(
         &import_source_spec(&hash.to_string()),
         media_id_from_uri(uri),
@@ -187,11 +182,9 @@ async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::M
 
         // Seed the CAS with a real payload; the import step below references
         // an invalid hash, so the step fails instead of ingesting it.
-        let cas = service.conductor().cas().clone();
-        let _hash = cas
-            .put(Bytes::from_static(b"phase2 conductor execution fixture"))
-            .await
-            .map_err(|e| mediapm::MediaPmError::Workflow(format!("seeding CAS: {e}")))?;
+        let _hash =
+            seed_cas(&service, Bytes::from_static(b"phase2 conductor execution fixture"), "CAS")
+                .await?;
 
         let uri = Url::parse("local:phase2-failed-import").expect("url must parse");
         let media_id = media_id_from_uri(&uri);

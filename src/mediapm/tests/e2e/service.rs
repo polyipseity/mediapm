@@ -1,7 +1,7 @@
 //! API-level end-to-end tests using programmatic `MediaPmService` flows.
 
-use crate::common::read_doc;
-use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
+use crate::common::{read_doc, service_in_tempdir};
+use mediapm::{MediaHierarchyPreset, MediaSourceSpec, media_id_from_uri};
 use url::Url;
 
 // ---------------------------------------------------------------------------
@@ -11,8 +11,7 @@ use url::Url;
 /// Adding a media source persists the entry in the document.
 #[tokio::test]
 async fn add_source_persists() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     let uri = Url::parse("local:test-asset").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -27,8 +26,7 @@ async fn add_source_persists() -> Result<(), mediapm::MediaPmError> {
 /// Adding a source with a title and description preserves the metadata.
 #[tokio::test]
 async fn add_source_with_metadata() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     let uri = Url::parse("local:test-asset").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -78,8 +76,7 @@ fn media_id_parsing() {
 /// A single tool requirement persists in the document.
 #[tokio::test]
 async fn add_tool_without_version_persists() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     service.add_tool_requirement("ffmpeg", None)?;
 
@@ -97,8 +94,7 @@ async fn add_tool_without_version_persists() -> Result<(), mediapm::MediaPmError
 /// Adding a Local hierarchy preset creates non-empty hierarchy nodes.
 #[tokio::test]
 async fn add_local_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::Local)?;
 
@@ -111,8 +107,7 @@ async fn add_local_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
 /// Adding a `YtDlpChannel` hierarchy preset creates non-empty hierarchy nodes.
 #[tokio::test]
 async fn add_channel_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::YtDlpChannel)?;
 
@@ -130,8 +125,7 @@ async fn add_channel_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
 /// enforcement is not implemented).
 #[tokio::test]
 async fn source_accepts_any_scheme() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     // The service currently does not validate URI schemes; any scheme is
     // accepted.

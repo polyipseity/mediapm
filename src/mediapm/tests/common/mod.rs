@@ -3,7 +3,9 @@
 use std::io::Write;
 use std::path::Path;
 
+use bytes::Bytes;
 use mediapm::{MediaPmService, MediaRuntimeStorage};
+use mediapm_cas::CasApi;
 use mediapm_conductor::{NickelDocument, decode_document};
 use zip::write::FileOptions;
 
@@ -28,6 +30,17 @@ pub(crate) async fn service_with_cache(
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     Ok((service, root, cache_root))
+}
+
+/// Creates a filesystem service rooted at a fresh temp artifact dir.
+///
+/// The returned `TempDir` must be kept alive alongside the service (dropping
+/// it deletes the workspace); config-only tests can bind it to `_root`.
+pub(crate) async fn service_in_tempdir()
+-> Result<(MediaPmService<mediapm_cas::FileSystemCas>, tempfile::TempDir), mediapm::MediaPmError> {
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let service = MediaPmService::new_fs_at(root.path()).await?;
+    Ok((service, root))
 }
 
 /// Creates a filesystem service whose tool download cache lives inside the
@@ -56,6 +69,19 @@ pub(crate) fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     }
     zip.finish().expect("zip finish");
     buffer.into_inner()
+}
+
+/// Writes `payload` into the service's CAS and returns the content hash,
+/// mapping CAS errors to a `Workflow` error carrying `label`.
+pub(crate) async fn seed_cas(
+    service: &MediaPmService<mediapm_cas::FileSystemCas>,
+    payload: Bytes,
+    label: &str,
+) -> Result<mediapm_cas::Hash, mediapm::MediaPmError> {
+    let cas = service.conductor().cas().clone();
+    cas.put(payload)
+        .await
+        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed {label}: {e}")))
 }
 
 /// Reads and decodes the machine-generated conductor document after a sync.

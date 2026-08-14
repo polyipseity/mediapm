@@ -4,16 +4,15 @@
 //! source, hierarchy, tools) without requiring filesystem probes or network
 //! access.
 
-use crate::common::read_doc;
-use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
+use crate::common::{read_doc, service_in_tempdir};
+use mediapm::{MediaHierarchyPreset, MediaSourceSpec, media_id_from_uri};
 use url::Url;
 
 /// Adding a media source with a local URI persists the entry with no default
 /// steps.
 #[tokio::test]
 async fn add_local_source_works() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     let uri = Url::parse("local:demo-fixture").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -31,8 +30,7 @@ async fn add_local_source_works() -> Result<(), mediapm::MediaPmError> {
 #[tokio::test]
 async fn add_local_source_with_explicit_title_and_description() -> Result<(), mediapm::MediaPmError>
 {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     let uri = Url::parse("local:demo-fixture").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -55,8 +53,7 @@ async fn add_local_source_with_explicit_title_and_description() -> Result<(), me
 /// Adding a `Local` hierarchy preset produces non-empty hierarchy nodes.
 #[tokio::test]
 async fn add_local_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::Local)?;
 
@@ -72,8 +69,7 @@ async fn add_local_hierarchy_preset_creates_expected_nodes() -> Result<(), media
 /// which fails in temp directories without schema files.
 #[tokio::test]
 async fn add_tool_requirement_persists_single_call() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     service.add_tool_requirement("media-tagger", None)?;
 

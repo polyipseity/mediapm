@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::common::{make_zip, service_at};
+use crate::common::{make_zip, seed_cas, service_at};
 use bytes::Bytes;
 use mediapm::{
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaMetadataValue,
@@ -17,7 +17,6 @@ use mediapm::{
     },
     save_mediapm_document,
 };
-use mediapm_cas::CasApi;
 
 const MKV_HEADER: &[u8] = &[0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00];
 
@@ -292,40 +291,31 @@ async fn demo_online_hierarchy_materialization_matches_golden_tree()
 -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = service_at(root.path(), Some("media")).await?;
-    let cas = service.conductor().cas().clone();
 
-    let video_hash = cas
-        .put(Bytes::from_static(MKV_HEADER))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed video: {e}")))?;
-    let subtitles_folder_hash = cas
-        .put(Bytes::from(make_zip(&[("downloads/subtitle__mediapm__.en.vtt", b"WEBVTT\n")])))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed subtitles folder: {e}")))?;
-    let subtitle_file_hash = cas
-        .put(Bytes::from_static(b"WEBVTT\n"))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed subtitle file: {e}")))?;
-    let description_hash = cas
-        .put(Bytes::from_static(b"description fixture"))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed description: {e}")))?;
-    let infojson_hash = cas
-        .put(Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed infojson: {e}")))?;
-    let archive_hash = cas
-        .put(Bytes::from_static(b"archive fixture"))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed archive: {e}")))?;
+    let video_hash = seed_cas(&service, Bytes::from_static(MKV_HEADER), "video").await?;
+    let subtitles_folder_hash = seed_cas(
+        &service,
+        Bytes::from(make_zip(&[("downloads/subtitle__mediapm__.en.vtt", b"WEBVTT\n")])),
+        "subtitles folder",
+    )
+    .await?;
+    let subtitle_file_hash =
+        seed_cas(&service, Bytes::from_static(b"WEBVTT\n"), "subtitle file").await?;
+    let description_hash =
+        seed_cas(&service, Bytes::from_static(b"description fixture"), "description").await?;
+    let infojson_hash = seed_cas(
+        &service,
+        Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#),
+        "infojson",
+    )
+    .await?;
+    let archive_hash =
+        seed_cas(&service, Bytes::from_static(b"archive fixture"), "archive").await?;
     let thumbnail_zip = make_zip(&[
         ("downloads/poster__mediapm__.jpg", b"jpg-bytes"),
         ("downloads/wide__mediapm__.webp", b"webp-bytes"),
     ]);
-    let thumbnail_hash = cas
-        .put(Bytes::from(thumbnail_zip))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed thumbnails: {e}")))?;
+    let thumbnail_hash = seed_cas(&service, Bytes::from(thumbnail_zip), "thumbnails").await?;
     // yt-dlp-format sandbox ZIP members; materializer strips `__mediapm__` to yt-dlp public names.
     let provider_title = online_demo_yt_dlp_provider_title();
     let url_member = format!(
@@ -345,10 +335,7 @@ async fn demo_online_hierarchy_materialization_matches_golden_tree()
         (webloc_member.as_str(), b"webloc-bytes"),
         (desktop_member.as_str(), b"desktop-bytes"),
     ]);
-    let links_hash = cas
-        .put(Bytes::from(links_zip))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seed links: {e}")))?;
+    let links_hash = seed_cas(&service, Bytes::from(links_zip), "links").await?;
 
     let document = MediaPmDocument {
         media: BTreeMap::from([(
@@ -394,7 +381,7 @@ async fn demo_online_hierarchy_materialization_matches_golden_tree()
         thumbnail_hash,
         links_hash,
     ] {
-        cas.ensure_blob_materialized(hash).await.map_err(|source| {
+        service.conductor().cas().ensure_blob_materialized(hash).await.map_err(|source| {
             mediapm::MediaPmError::Workflow(format!(
                 "ensure blob materialized for '{hash}': {source}"
             ))

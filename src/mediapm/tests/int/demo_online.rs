@@ -3,8 +3,8 @@
 //! Tests emulate the `mediapm_demo_online` example's configuration path (add
 //! remote source, hierarchy, tools) without requiring network access.
 
-use crate::common::read_doc;
-use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
+use crate::common::{read_doc, service_in_tempdir};
+use mediapm::{MediaHierarchyPreset, MediaSourceSpec, media_id_from_uri};
 use url::Url;
 
 /// Adding a remote source via `add_media_source` persists the entry with no
@@ -14,8 +14,7 @@ use url::Url;
 /// hash prefix, not URL query parameters.
 #[tokio::test]
 async fn add_remote_source_works() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     let uri = Url::parse("https://www.youtube.com/watch?v=dQw4w9WgXcQ").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -35,8 +34,7 @@ async fn add_remote_source_works() -> Result<(), mediapm::MediaPmError> {
 #[tokio::test]
 async fn add_channel_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError>
 {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::YtDlpChannel)?;
 
@@ -52,8 +50,7 @@ async fn add_channel_hierarchy_preset_creates_expected_nodes() -> Result<(), med
 /// `ensure_and_load_mediapm_document` uses Nickel evaluation internally.
 #[tokio::test]
 async fn add_one_remote_tool_requirement_persists() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path()).await?;
+    let (mut service, _root) = service_in_tempdir().await?;
 
     service.add_tool_requirement("yt-dlp", None)?;
 
