@@ -2,6 +2,9 @@
 //!
 //! Default sync enabled; override via `MEDIAPM_DEMO_ONLINE_RUN_SYNC`.
 //! Workflow: `yt-dlp -> ffmpeg -> media-tagger -> rsgain` on `YouTube` URL.
+//! The embedded test exercises `main()` in reduced (config-only) mode; the
+//! full-sync path (network + external tools) runs only on an explicit
+//! `cargo run -p mediapm --example mediapm_demo_online`.
 //!
 //! # Expected post-sync hierarchy
 //!
@@ -86,7 +89,9 @@
 //! cargo test -p mediapm demo_hierarchy_golden
 //! cargo test -p mediapm demo_online_hierarchy_materialization
 //! cargo test -p mediapm --example mediapm_demo_online -- --skip main_is_exercised
-//! MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=600 cargo test -p mediapm --example mediapm_demo_online main_is_exercised
+//! # main_is_exercised runs reduced (config-only) mode deterministically (no network).
+//! cargo test -p mediapm --example mediapm_demo_online main_is_exercised
+//! # Full-sync online path (network + external tools) — explicit run only.
 //! cargo run -p mediapm --example mediapm_demo_online
 //! ```
 
@@ -2891,9 +2896,15 @@ mod tests {
     }
 
     /// Points example env vars at unique tempdirs for the guard's lifetime.
-    /// Executes the documented example entry point via `main()` in full-sync
-    /// mode. The online path is nondeterministic (network + external tools), so
-    /// CI skips it via `ci_mode_detected()`.
+    /// Executes the documented example entry point via `main()` in reduced
+    /// (config-only) mode.
+    ///
+    /// The online full-sync path is nondeterministic (network + external
+    /// tools) and is NOT exercised here; it runs only on an explicit
+    /// `cargo run -p mediapm --example mediapm_demo_online`. Run conditions:
+    /// (1) CI → skip via `ci_mode_detected()`; (2) any other test harness →
+    /// reduced mode via `MEDIAPM_DEMO_ONLINE_RUN_SYNC=false`; (3) explicit
+    /// `cargo run --example` → full sync (no test binary exists).
     #[test]
     fn main_is_exercised() {
         if super::ci_mode_detected() {
@@ -2911,7 +2922,7 @@ mod tests {
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "true");
+            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "false");
         }
 
         super::main().expect("example main should run to completion");
@@ -2924,6 +2935,15 @@ mod tests {
                 std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
             }
         }
+
+        // Reduced mode must leave the config-only manifest behind; proves the
+        // test exercised reduced mode, not a (network-hitting) full sync.
+        let manifest_path = _isolated.artifact_root_path().join("manifest.json");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&manifest_path).expect("config-only run should write a manifest.json"),
+        )
+        .expect("manifest.json should be valid JSON");
+        assert_eq!(manifest["run_mode"], "config-only");
     }
 
     /// Ensures artifact root remains stable for docs/scripts that reference it.
