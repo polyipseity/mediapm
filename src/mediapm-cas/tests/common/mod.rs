@@ -1,17 +1,43 @@
 //! Shared test utilities for `mediapm-cas` integration tests.
-//!
-//! Provides a lazily-initialized shared tokio runtime so simple async tests
-//! can avoid per-test runtime creation overhead.
 
-use std::sync::LazyLock;
+use std::time::Duration;
 
-/// Returns a reference to the shared lazily-initialized tokio runtime.
+use bytes::Bytes;
+
+use mediapm_cas::api::CasApi;
+
+/// Puts static bytes into `cas` and returns the content-addressable hash.
+pub(crate) async fn put_static(cas: &impl CasApi, data: &'static [u8]) -> mediapm_cas::Hash {
+    cas.put(Bytes::from_static(data)).await.unwrap()
+}
+
+/// Creates a fresh artifact tempdir (RAII guard dropped at end of test).
+pub(crate) fn artifact_dir() -> tempfile::TempDir {
+    mediapm_utils::temp::artifact_dir().unwrap()
+}
+
+/// Creates a fresh artifact tempdir and opens a `FileSystemCas` on it.
 ///
-/// Multiple threads may call `block_on` concurrently on the same runtime
-/// — `Runtime::block_on` takes `&self`, so each OS thread enters the
-/// scheduler independently.
-pub(crate) fn shared_runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: LazyLock<tokio::runtime::Runtime> =
-        LazyLock::new(|| tokio::runtime::Runtime::new().expect("build shared tokio runtime"));
-    &RUNTIME
+/// Returns the tempdir guard alongside the CAS so the directory outlives
+/// every operation performed during the test.
+pub(crate) async fn open_file_cas() -> (tempfile::TempDir, mediapm_cas::FileSystemCas) {
+    let dir = artifact_dir();
+    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+    (dir, cas)
+}
+
+/// Creates a fresh artifact tempdir and opens a `FileSystemCas` whose
+/// background WAL consumer runs every `bg_interval`.
+pub(crate) async fn open_file_cas_with_background(
+    bg_interval: Duration,
+) -> (tempfile::TempDir, mediapm_cas::FileSystemCas) {
+    let dir = artifact_dir();
+    let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
+        dir.path(),
+        vec![],
+        bg_interval,
+    )
+    .await
+    .unwrap();
+    (dir, cas)
 }

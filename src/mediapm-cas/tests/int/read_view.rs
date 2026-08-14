@@ -1,7 +1,19 @@
 use bytes::Bytes;
 
+use mediapm_cas::Hash;
+use mediapm_cas::InMemoryCas;
 use mediapm_cas::api::CasApi;
 use mediapm_cas::new_in_memory_cas;
+
+/// Puts `data`, flushes the WAL, then simulates metadata loss for it —
+/// the starting state for orphan-recovery tests: the blob remains
+/// recoverable while the read view reports the object as missing.
+async fn lose_metadata(cas: &InMemoryCas, data: Bytes) -> Hash {
+    let hash = cas.put(data).await.unwrap();
+    cas.flush().await.unwrap();
+    cas.simulate_metadata_loss_for_test(hash).await;
+    hash
+}
 
 #[tokio::test]
 async fn get_after_put_immediate_visibility() {
@@ -54,14 +66,14 @@ async fn stat_after_put() {
 #[tokio::test]
 async fn stat_missing_fails() {
     let cas = new_in_memory_cas();
-    let hash = mediapm_cas::Hash::from_content(b"nope");
+    let hash = Hash::from_content(b"nope");
     assert!(cas.stat(hash).await.is_err());
 }
 
 #[tokio::test]
 async fn delete_nonexistent_is_ok() {
     let cas = new_in_memory_cas();
-    let hash = mediapm_cas::Hash::from_content(b"ghost");
+    let hash = Hash::from_content(b"ghost");
     // Delete of an object never put should succeed (idempotent).
     cas.delete(hash).await.unwrap();
 }
@@ -75,12 +87,7 @@ async fn delete_nonexistent_is_ok() {
 async fn get_recovers_orphan_full_blob() {
     let cas = new_in_memory_cas();
     let data = Bytes::from_static(b"orphan-full-get");
-    let hash = cas.put(data.clone()).await.unwrap();
-
-    // Flush WAL so check_pending returns NotPresent.
-    cas.flush().await.unwrap();
-    // Simulate metadata loss.
-    cas.simulate_metadata_loss_for_test(hash).await;
+    let hash = lose_metadata(&cas, data.clone()).await;
 
     let retrieved = cas.get(hash).await.unwrap();
     assert_eq!(retrieved, data);
@@ -91,10 +98,7 @@ async fn get_recovers_orphan_full_blob() {
 async fn stat_recovers_orphan_full_blob() {
     let cas = new_in_memory_cas();
     let data = Bytes::from_static(b"orphan-full-stat");
-    let hash = cas.put(data.clone()).await.unwrap();
-
-    cas.flush().await.unwrap();
-    cas.simulate_metadata_loss_for_test(hash).await;
+    let hash = lose_metadata(&cas, data.clone()).await;
 
     let meta = cas.stat(hash).await.unwrap();
     assert_eq!(meta.len, data.len() as u64);
@@ -105,10 +109,7 @@ async fn stat_recovers_orphan_full_blob() {
 async fn get_to_writer_recovers_orphan_full_blob() {
     let cas = new_in_memory_cas();
     let data = Bytes::from_static(b"orphan-full-stream");
-    let hash = cas.put(data.clone()).await.unwrap();
-
-    cas.flush().await.unwrap();
-    cas.simulate_metadata_loss_for_test(hash).await;
+    let hash = lose_metadata(&cas, data.clone()).await;
 
     let mut buf = Vec::new();
     cas.get_to_writer(hash, &mut buf).await.unwrap();
@@ -136,7 +137,7 @@ async fn normal_get_unaffected_by_orphan_recovery() {
 #[tokio::test]
 async fn missing_hash_not_recovered() {
     let cas = new_in_memory_cas();
-    let hash = mediapm_cas::Hash::from_content(b"never-put");
+    let hash = Hash::from_content(b"never-put");
 
     cas.flush().await.unwrap();
     cas.simulate_metadata_loss_for_test(hash).await;
@@ -148,7 +149,7 @@ async fn missing_hash_not_recovered() {
 #[tokio::test]
 async fn missing_stat_not_recovered() {
     let cas = new_in_memory_cas();
-    let hash = mediapm_cas::Hash::from_content(b"never-put-stat");
+    let hash = Hash::from_content(b"never-put-stat");
 
     cas.flush().await.unwrap();
     cas.simulate_metadata_loss_for_test(hash).await;

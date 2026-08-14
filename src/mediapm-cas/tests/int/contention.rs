@@ -6,16 +6,17 @@
 //! - Concurrent clone sharing (shared lock via Arc).
 //! - Canonical path unification (symlink -> same dir detected).
 
-use mediapm_cas::api::CasApi;
 use mediapm_cas::error::CasError;
 use mediapm_cas::storage::file_system::FileSystemCas;
+
+use crate::common::{artifact_dir, open_file_cas, put_static};
 
 /// Opening two `FileSystemCas` instances on the same directory in the same
 /// process must return `LockContention`. Dropping the first and retrying
 /// must succeed.
 #[tokio::test]
 async fn file_system_cas_same_process_contention() {
-    let dir = mediapm_utils::temp::artifact_dir().unwrap();
+    let dir = artifact_dir();
     let cas1 = FileSystemCas::open(dir.path()).await.unwrap();
 
     // Second open must fail with LockContention.
@@ -35,7 +36,7 @@ async fn file_system_cas_same_process_contention() {
 /// `LockContention`. Release the manual lock and retry — must succeed.
 #[tokio::test]
 async fn file_system_cas_contention_with_flock_barrier() {
-    let dir = mediapm_utils::temp::artifact_dir().unwrap();
+    let dir = artifact_dir();
     let lock_path = dir.path().join("lock");
 
     // Manually acquire the flock on the lock file.
@@ -68,18 +69,15 @@ async fn file_system_cas_contention_with_flock_barrier() {
 /// must both be able to operate concurrently without contention errors.
 #[tokio::test]
 async fn file_system_cas_concurrent_clones_no_contention() {
-    let dir = mediapm_utils::temp::artifact_dir().unwrap();
-    let cas = FileSystemCas::open(dir.path()).await.unwrap();
+    let (_dir, cas) = open_file_cas().await;
     let cas_clone = cas.clone();
 
     let handle1 = tokio::spawn(async move {
-        let data = bytes::Bytes::from_static(b"from-clone-a");
-        cas.put(data).await.unwrap();
+        put_static(&cas, b"from-clone-a").await;
     });
 
     let handle2 = tokio::spawn(async move {
-        let data = bytes::Bytes::from_static(b"from-clone-b");
-        cas_clone.put(data).await.unwrap();
+        put_static(&cas_clone, b"from-clone-b").await;
     });
 
     handle1.await.unwrap();
@@ -92,7 +90,7 @@ async fn file_system_cas_concurrent_clones_no_contention() {
 #[tokio::test]
 #[cfg_attr(target_os = "windows", ignore = "symlink support varies on Windows")]
 async fn file_system_cas_contention_with_canonical_symlink() {
-    let dir = mediapm_utils::temp::artifact_dir().unwrap();
+    let dir = artifact_dir();
     let link = dir.path().join("link");
     std::os::unix::fs::symlink(dir.path(), &link).unwrap();
 

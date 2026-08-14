@@ -4,9 +4,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
+use mediapm_cas::Hash;
 use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ObjectEncoding};
-use mediapm_cas::hash::Hash;
 use mediapm_cas::new_in_memory_cas;
+
+use crate::common::{open_file_cas, open_file_cas_with_background};
 
 #[tokio::test]
 async fn run_maintenance_cycle_wal_consumer() {
@@ -109,13 +111,7 @@ async fn optimize_delta_rewrite() {
     let cas = new_in_memory_cas();
 
     // Two similar large buffers so VCDIFF delta is meaningfully smaller.
-    let base_content = Bytes::from(vec![b'A'; 4096]);
-    let target_content = {
-        let mut v = vec![b'A'; 2048];
-        v.extend_from_slice(b"CHANGED");
-        v.extend_from_slice(&vec![b'A'; 2048 - 7]);
-        Bytes::from(v)
-    };
+    let (base_content, target_content) = delta_content_pair();
 
     let base_hash = cas.put(base_content.clone()).await.unwrap();
     let target_hash = cas.put(target_content.clone()).await.unwrap();
@@ -336,17 +332,10 @@ async fn optimize_idempotent() {
 /// Uses `FileSystemCas` so we can inspect the filesystem directly.
 #[tokio::test]
 async fn stale_diff_removed_after_delta_to_full_promotion() {
-    let dir = mediapm_utils::temp::artifact_dir().unwrap();
-    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+    let (_dir, cas) = open_file_cas().await;
 
     // Two similar large buffers so VCDIFF delta makes sense.
-    let base_content = Bytes::from(vec![b'A'; 4096]);
-    let target_content = {
-        let mut v = vec![b'A'; 2048];
-        v.extend_from_slice(b"CHANGED");
-        v.extend_from_slice(&vec![b'A'; 2048 - 7]);
-        Bytes::from(v)
-    };
+    let (base_content, target_content) = delta_content_pair();
 
     let base_hash = cas.put(base_content.clone()).await.unwrap();
     let target_hash = cas.put(target_content.clone()).await.unwrap();
@@ -399,8 +388,7 @@ async fn stale_diff_removed_after_delta_to_full_promotion() {
 /// Uses `FileSystemCas` so that background engine operations are real.
 #[tokio::test]
 async fn delta_cache_repeated_reads_work() {
-    let dir = mediapm_utils::temp::artifact_dir().unwrap();
-    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+    let (_dir, cas) = open_file_cas().await;
 
     let base_content = Bytes::from(vec![b'B'; 4096]);
     let target_content = {
@@ -448,8 +436,7 @@ async fn delta_cache_repeated_reads_work() {
 /// have an on-disk blob file.
 #[tokio::test]
 async fn file_system_cas_wal_consumer_materializes_blob() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.expect("open cas");
+    let (_dir, cas) = open_file_cas().await;
 
     let data = Bytes::from_static(b"wal-materialize-test");
     let hash = cas.put(data.clone()).await.expect("put");
@@ -469,8 +456,7 @@ async fn file_system_cas_wal_consumer_materializes_blob() {
 /// batch).
 #[tokio::test]
 async fn file_system_cas_wal_consumer_processes_batches() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.expect("open cas");
+    let (_dir, cas) = open_file_cas().await;
 
     // Put entries in two batches to verify consumer processes all.
     for i in 0..5 {
@@ -543,8 +529,7 @@ async fn file_system_cas_reopen_and_consume_wal() {
 /// — second call consumes 0 entries.
 #[tokio::test]
 async fn file_system_cas_wal_consumer_multiple_cycles() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.expect("open cas");
+    let (_dir, cas) = open_file_cas().await;
 
     cas.put(Bytes::from_static(b"first")).await.expect("put first");
     cas.put(Bytes::from_static(b"second")).await.expect("put second");
@@ -566,14 +551,7 @@ async fn file_system_cas_wal_consumer_multiple_cycles() {
 /// an explicit `run_wal_consumer()` call.
 #[tokio::test]
 async fn file_system_cas_background_task_materializes_blob() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
-        dir.path(),
-        vec![],
-        Duration::from_millis(100),
-    )
-    .await
-    .expect("open CAS with background");
+    let (_dir, cas) = open_file_cas_with_background(Duration::from_millis(100)).await;
 
     let payload = Bytes::from_static(b"background-test-data");
     let hash = cas.put(payload.clone()).await.expect("put data");
@@ -584,9 +562,7 @@ async fn file_system_cas_background_task_materializes_blob() {
     assert_eq!(retrieved.to_vec(), payload.to_vec(), "background must materialize blob");
 
     drop(cas);
-    // After drop, the background guard's cancelled flag should be true.
-    // Note: we can't directly access _bg_guard after drop, but
-    // dropping without panics confirms RAII cleanup works.
+    // Dropping without panics confirms RAII cleanup works.
 }
 
 /// Verifies that the background task survives a re-open cycle (WAL
@@ -624,14 +600,7 @@ async fn file_system_cas_background_task_survives_reopen() {
 /// so the blob is never materialized on disk (the two entries cancel out).
 #[tokio::test]
 async fn file_system_cas_background_task_deletes_through_wal() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
-        dir.path(),
-        vec![],
-        Duration::from_millis(100),
-    )
-    .await
-    .expect("open CAS with background");
+    let (_dir, cas) = open_file_cas_with_background(Duration::from_millis(100)).await;
 
     let payload = Bytes::from_static(b"delete-through-wal");
     let hash = cas.put(payload.clone()).await.expect("put data");
@@ -650,14 +619,7 @@ async fn file_system_cas_background_task_deletes_through_wal() {
 /// when the `FileSystemCas` handle is dropped.
 #[tokio::test]
 async fn file_system_cas_background_maintenance_guard_cancels_on_drop() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
-        dir.path(),
-        vec![],
-        Duration::from_millis(100),
-    )
-    .await
-    .expect("open CAS with background");
+    let (_dir, cas) = open_file_cas_with_background(Duration::from_millis(100)).await;
 
     // Clone the cancelled flag from the guard (via test accessor).
     let cancelled = cas.bg_guard_ref().cancelled.clone();
@@ -668,4 +630,17 @@ async fn file_system_cas_background_maintenance_guard_cancels_on_drop() {
         cancelled.load(Ordering::SeqCst),
         "bg_guard must be cancelled after FileSystemCas drop"
     );
+}
+
+/// Base and target content that differ only in a small marker, so the
+/// VCDIFF delta is meaningfully smaller than the full content.
+fn delta_content_pair() -> (Bytes, Bytes) {
+    let base_content = Bytes::from(vec![b'A'; 4096]);
+    let target_content = {
+        let mut v = vec![b'A'; 2048];
+        v.extend_from_slice(b"CHANGED");
+        v.extend_from_slice(&vec![b'A'; 2048 - 7]);
+        Bytes::from(v)
+    };
+    (base_content, target_content)
 }

@@ -13,10 +13,14 @@
 //! - 65 MiB for `get_to_writer` and `get()` large-payload correctness
 //!   (requires `large-tests` feature).
 
-use mediapm_cas::api::CasApi;
-use mediapm_cas::hash::Hash;
-
 use bytes::Bytes;
+
+use mediapm_cas::Hash;
+use mediapm_cas::api::CasApi;
+use mediapm_cas::new_in_memory_cas;
+
+#[cfg(feature = "large-tests")]
+use crate::common::open_file_cas;
 
 /// Size of a 1 MiB payload for streaming correctness tests.
 const SIZE_1MIB: u64 = 1024 * 1024;
@@ -32,7 +36,7 @@ const SIZE_65MIB: u64 = 65 * 1024 * 1024;
 /// metadata so that `stat` returns the real size.
 #[tokio::test]
 async fn put_stream_content_len_propagated() {
-    let cas = new_in_memory_cas_for_large_tests();
+    let cas = new_in_memory_cas();
     #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xABu8; SIZE_1MIB as usize];
     let expected_hash = Hash::from_content(&data);
@@ -48,7 +52,7 @@ async fn put_stream_content_len_propagated() {
 /// written via the streaming path must be recoverable.
 #[tokio::test]
 async fn put_stream_get_to_writer_roundtrip() {
-    let cas = new_in_memory_cas_for_large_tests();
+    let cas = new_in_memory_cas();
     #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xCDu8; SIZE_1MIB as usize];
     let expected_hash = Hash::from_content(&data);
@@ -67,7 +71,7 @@ async fn put_stream_get_to_writer_roundtrip() {
 /// (regression: `get()` no longer returns `TooLarge`).
 #[tokio::test]
 async fn in_memory_get_succeeds_above_wal_inline_limit() {
-    let cas = new_in_memory_cas_for_large_tests();
+    let cas = new_in_memory_cas();
     let data = vec![0xABu8; 2 * 1024 * 1024]; // 2 MiB
     let expected_hash = Hash::from_content(&data);
     let hash = cas.put(Bytes::from(data.clone())).await.unwrap();
@@ -85,7 +89,7 @@ async fn in_memory_get_succeeds_above_wal_inline_limit() {
 #[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn in_memory_large_object_get_to_writer_works() {
-    let cas = new_in_memory_cas_for_large_tests();
+    let cas = new_in_memory_cas();
     #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xEFu8; SIZE_65MIB as usize];
     let expected_hash = Hash::from_content(&data);
@@ -110,8 +114,7 @@ async fn in_memory_large_object_get_to_writer_works() {
 #[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn filesystem_large_object_get_to_writer_works() {
-    let dir = mediapm_utils::temp::artifact_dir().unwrap();
-    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+    let (_dir, cas) = open_file_cas().await;
     #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xFEu8; SIZE_65MIB as usize];
     let expected_hash = Hash::from_content(&data);
@@ -131,22 +134,11 @@ async fn filesystem_large_object_get_to_writer_works() {
 #[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn filesystem_get_succeeds_above_wal_inline_limit() {
-    let dir = mediapm_utils::temp::artifact_dir().unwrap();
-    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+    let (_dir, cas) = open_file_cas().await;
     let data = vec![0xFEu8; usize::try_from(SIZE_65MIB).expect("65 MiB fits usize")];
     let expected_hash = Hash::from_content(&data);
     let hash = cas.put(Bytes::from(data.clone())).await.unwrap();
     assert_eq!(hash, expected_hash);
     let retrieved = cas.get(hash).await.unwrap();
     assert_eq!(retrieved.to_vec(), data);
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Create an `InMemoryCas` with large-enough limits for multi-MiB payloads.
-fn new_in_memory_cas_for_large_tests() -> mediapm_cas::InMemoryCas {
-    // The default InMemoryCas is unlimited and works fine for large data.
-    mediapm_cas::new_in_memory_cas()
 }

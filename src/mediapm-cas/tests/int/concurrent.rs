@@ -15,6 +15,8 @@ use mediapm_cas::Hash;
 use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi};
 use mediapm_cas::new_in_memory_cas;
 
+use crate::common::put_static;
+
 /// Write → Delete → Write for the same content must work.
 ///
 /// After deleting an object, putting the same content again must make it
@@ -130,10 +132,8 @@ async fn concurrent_constraint_operations() {
         handle.await.unwrap();
     }
 
-    // Verify constraint exists.
-    let retrieved = cas.get_constraint(target).await.unwrap();
-    let bases = retrieved;
-    // At least some bases should be present (last concurrent set wins).
+    // Verify constraint exists (last concurrent set wins).
+    let bases = cas.get_constraint(target).await.unwrap();
     assert!(!bases.is_empty(), "constraint should have bases");
 }
 
@@ -189,7 +189,7 @@ async fn cas_clone_concurrent_access() {
 async fn bg_engine_cancellation_graceful() {
     let cas = new_in_memory_cas();
 
-    let keep = cas.put(Bytes::from_static(b"keep")).await.unwrap();
+    let keep = put_static(&cas, b"keep").await;
     cas.set_constraint(keep, BTreeSet::new()).await.unwrap();
 
     // Drain WAL and run maintenance normally.

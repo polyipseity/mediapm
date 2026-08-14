@@ -2,8 +2,11 @@ use std::collections::BTreeSet;
 
 use bytes::Bytes;
 
+use mediapm_cas::Hash;
 use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch};
 use mediapm_cas::new_in_memory_cas;
+
+use crate::common::{open_file_cas, put_static};
 
 #[tokio::test]
 async fn set_and_get_constraint() {
@@ -25,7 +28,7 @@ async fn set_and_get_constraint() {
 #[tokio::test]
 async fn get_constraint_missing() {
     let cas = new_in_memory_cas();
-    let hash = mediapm_cas::Hash::from_content(b"nothing");
+    let hash = Hash::from_content(b"nothing");
     let retrieved = cas.get_constraint(hash).await.unwrap();
     assert!(retrieved.is_empty());
 }
@@ -33,9 +36,9 @@ async fn get_constraint_missing() {
 #[tokio::test]
 async fn patch_constraint_add() {
     let cas = new_in_memory_cas();
-    let b1 = cas.put(Bytes::from_static(b"base1")).await.unwrap();
-    let b2 = cas.put(Bytes::from_static(b"base2")).await.unwrap();
-    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
+    let b1 = put_static(&cas, b"base1").await;
+    let b2 = put_static(&cas, b"base2").await;
+    let target = put_static(&cas, b"target").await;
 
     cas.set_constraint(target, [b1].into()).await.unwrap();
     let patch =
@@ -50,9 +53,9 @@ async fn patch_constraint_add() {
 #[tokio::test]
 async fn patch_constraint_remove() {
     let cas = new_in_memory_cas();
-    let b1 = cas.put(Bytes::from_static(b"base1")).await.unwrap();
-    let b2 = cas.put(Bytes::from_static(b"base2")).await.unwrap();
-    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
+    let b1 = put_static(&cas, b"base1").await;
+    let b2 = put_static(&cas, b"base2").await;
+    let target = put_static(&cas, b"target").await;
 
     cas.set_constraint(target, [b1, b2].into()).await.unwrap();
     let patch =
@@ -67,8 +70,8 @@ async fn patch_constraint_remove() {
 #[tokio::test]
 async fn patch_constraint_clear() {
     let cas = new_in_memory_cas();
-    let b1 = cas.put(Bytes::from_static(b"base1")).await.unwrap();
-    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
+    let b1 = put_static(&cas, b"base1").await;
+    let target = put_static(&cas, b"target").await;
 
     cas.set_constraint(target, [b1].into()).await.unwrap();
     let patch =
@@ -82,7 +85,7 @@ async fn patch_constraint_clear() {
 #[tokio::test]
 async fn set_constraint_rejects_self_base() {
     let cas = new_in_memory_cas();
-    let target = cas.put(Bytes::from_static(b"self")).await.unwrap();
+    let target = put_static(&cas, b"self").await;
     let result = cas.set_constraint(target, [target].into()).await;
     assert!(result.is_err(), "constraint target cannot be its own base");
 }
@@ -91,10 +94,10 @@ async fn set_constraint_rejects_self_base() {
 #[tokio::test]
 async fn prune_one_base_preserves_others() {
     let cas = new_in_memory_cas();
-    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
-    let b1 = cas.put(Bytes::from_static(b"base1")).await.unwrap();
-    let b2 = cas.put(Bytes::from_static(b"base2")).await.unwrap();
-    let b3 = cas.put(Bytes::from_static(b"base3")).await.unwrap();
+    let target = put_static(&cas, b"target").await;
+    let b1 = put_static(&cas, b"base1").await;
+    let b2 = put_static(&cas, b"base2").await;
+    let b3 = put_static(&cas, b"base3").await;
 
     // Constraint with all three bases.
     cas.set_constraint(target, [b1, b2, b3].into()).await.unwrap();
@@ -117,8 +120,8 @@ async fn prune_one_base_preserves_others() {
 #[tokio::test]
 async fn prune_target_removes_entire_entry() {
     let cas = new_in_memory_cas();
-    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
-    let base = cas.put(Bytes::from_static(b"base")).await.unwrap();
+    let target = put_static(&cas, b"target").await;
+    let base = put_static(&cas, b"base").await;
 
     cas.set_constraint(target, [base].into()).await.unwrap();
     cas.delete(target).await.unwrap();
@@ -135,8 +138,8 @@ async fn prune_target_removes_entire_entry() {
 #[tokio::test]
 async fn prune_all_bases_leaves_empty_entry() {
     let cas = new_in_memory_cas();
-    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
-    let base = cas.put(Bytes::from_static(b"base")).await.unwrap();
+    let target = put_static(&cas, b"target").await;
+    let base = put_static(&cas, b"base").await;
 
     cas.set_constraint(target, [base].into()).await.unwrap();
     cas.delete(base).await.unwrap();
@@ -153,12 +156,10 @@ async fn prune_all_bases_leaves_empty_entry() {
 /// false`, so constraints are WAL-only until consumed.
 #[tokio::test]
 async fn get_constraint_wal_fallback_before_consumption() {
-    let dir = mediapm_utils::temp::artifact_dir().unwrap();
-    let cas =
-        mediapm_cas::FileSystemCas::open_with_strategies(dir.path(), Vec::new()).await.unwrap();
+    let (_dir, cas) = open_file_cas().await;
 
-    let base = cas.put(Bytes::from_static(b"base")).await.unwrap();
-    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
+    let base = put_static(&cas, b"base").await;
+    let target = put_static(&cas, b"target").await;
 
     // set_constraint writes to WAL. With FileSystemMetadataStore (SYNC_MATERIALIZE =
     // false), it does NOT write to index yet.
