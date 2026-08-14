@@ -13,29 +13,15 @@ use std::fs;
 
 use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
-    NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor, ToolInputKind,
-    ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
-    config::versions::encode_document,
+    NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor, WorkflowSpec,
+    WorkflowStepSpec, config::versions::encode_document,
 };
 
-use support::{ExampleResult, write_text_file};
+use support::{ExampleResult, echo_tool, write_text_file};
 
 fn build_document() -> NickelDocument {
     NickelDocument {
-        tools: BTreeMap::from([(
-            "echo@v1".into(),
-            ToolSpec {
-                kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".into() },
-                name: "echo".into(),
-                inputs: BTreeMap::from([(
-                    "text".into(),
-                    ToolInputSpec { kind: ToolInputKind::String, required: false },
-                )]),
-                default_inputs: BTreeMap::new(),
-                outputs: BTreeMap::new(),
-                runtime: ToolRuntime::default(),
-            },
-        )]),
+        tools: BTreeMap::from([("echo@v1".into(), echo_tool())]),
         workflows: vec![WorkflowSpec {
             name: "demo_workflow".into(),
             display_name: Some("Demo Workflow".into()),
