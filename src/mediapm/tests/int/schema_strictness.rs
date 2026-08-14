@@ -243,7 +243,7 @@ fn strict_state_rejects_unknown_field() {
 /// S-C8: `mod.ncl`'s `VersionContract` carries an integer guard — fractional
 /// version markers must be rejected while integers are accepted.
 #[test]
-fn mod_ncl_version_contract_rejects_float() {
+fn strict_mod_ncl_version_contract_rejects_float() {
     let result = evaluate_mod_ncl_expression("(1.5 | shared.VersionContract)");
     assert!(
         result.is_err(),
@@ -257,7 +257,7 @@ fn mod_ncl_version_contract_rejects_float() {
 
 /// S-C8: `mod.ncl` exports the registry surface and unversioned aliases.
 #[test]
-fn mod_ncl_exports_registry_surface() {
+fn parity_mod_ncl_exports_registry_surface() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(mod_source.contains("current_version = "), "mod.ncl must export current_version");
     assert!(
@@ -289,7 +289,7 @@ fn mod_ncl_exports_registry_surface() {
 
 /// S-C7: `v1.ncl` exports the version-locked validator and envelope contract.
 #[test]
-fn v1_ncl_exports_validator_and_envelope() {
+fn parity_v1_ncl_exports_validator_and_envelope() {
     let schema = include_str!("../../src/config/versions/v1.ncl");
     assert!(
         schema.contains("validate_document_v1 = fun document => document | _media_pm_document_v1"),
@@ -307,7 +307,7 @@ fn v1_ncl_exports_validator_and_envelope() {
 
 /// The v2 module exports the version-locked validator and envelope contract.
 #[test]
-fn v2_ncl_exports_validator_and_envelope() {
+fn parity_v2_ncl_exports_validator_and_envelope() {
     let schema = include_str!("../../src/config/versions/v2.ncl");
     assert!(
         schema.contains("validate_document_v2 = fun document => document | _media_pm_document_v2"),
@@ -401,7 +401,7 @@ fn strict_v2_rejects_unknown_top_level_field() {
 /// R2: the v1 envelope still accepts its optional legacy `state` field with a
 /// valid `MediaPmStateV1` payload.
 #[test]
-fn v1_ncl_accepts_state_field() {
+fn parity_v1_ncl_accepts_state_field() {
     let result = validate_v1_document(
         r#"{
       version = 1,
@@ -452,7 +452,7 @@ fn parity_v2_ncl_evaluates_cleanly() {
 /// marker becomes 2, and all other fields are preserved.  The migrated output
 /// decodes into the strict Rust `MediaPmDocument` model (`deny_unknown_fields`).
 #[test]
-fn v1_to_v2_migration_strips_state() {
+fn parity_v1_to_v2_migration_strips_state() {
     let value = evaluate_mod_ncl_expression(
         r#"(shared.migrate_to 2 {
       version = 1,
@@ -479,7 +479,7 @@ fn v1_to_v2_migration_strips_state() {
 /// R3: a stateless v2 document migrates back to v1 with the version marker
 /// dropped to 1 and no state injected.
 #[test]
-fn v2_to_v1_migration_bumps_version() {
+fn parity_v2_to_v1_migration_bumps_version() {
     let value = evaluate_mod_ncl_expression(
         r#"(shared.migrate_to 1 {
       version = 2,

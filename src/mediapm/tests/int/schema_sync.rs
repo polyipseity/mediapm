@@ -11,7 +11,7 @@ use mediapm::MediaPmDocument;
 /// Validates that the Rust struct serialization shape matches the expected
 /// V1 schema contract invariants.
 #[test]
-fn mediapm_document_serialization_invariants() {
+fn parity_mediapm_document_serialization_invariants() {
     let doc = MediaPmDocument::default();
     let json = serde_json::to_value(&doc).unwrap();
     let obj = json.as_object().expect("MediaPmDocument must serialize to a JSON object");
@@ -56,7 +56,7 @@ fn mediapm_document_serialization_invariants() {
 /// Validates that the V1 Nickel schema (`v1.ncl`) contains the expected
 /// contracts and omits removed ones.
 #[test]
-fn v1_nickel_schema_structure() {
+fn parity_v1_nickel_schema_structure() {
     let schema = include_str!("../../src/config/versions/v1.ncl");
 
     // --- MUST define ToolRequirementV1 contract ---
@@ -102,7 +102,7 @@ fn v1_nickel_schema_structure() {
 /// Validates that the V2 Nickel schema (`v2.ncl`) contains the expected
 /// contracts and omits the dropped state surface.
 #[test]
-fn v2_nickel_schema_structure() {
+fn parity_v2_nickel_schema_structure() {
     let schema = include_str!("../../src/config/versions/v2.ncl");
 
     // --- MUST define ToolRequirementV2 contract ---
