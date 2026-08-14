@@ -4,12 +4,26 @@
 //! `mediapm_demo_online`). Golden JSON encodes exact link basenames for both formats
 //! (yt-dlp sidecar vs mediapm root). See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
+use std::path::Path;
+
 use mediapm::demo_hierarchy_spec::{
     DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID, assert_tree_under,
     demo_media_folder_name, load_demo_hierarchy_golden_document,
     offline_demo_media_folder_relative, online_demo_media_folder_relative,
     online_demo_root_link_relative_path, online_demo_sidecar_link_relative_path,
 };
+
+/// Writes a placeholder file at every golden path under `root`, creating
+/// parent directories as needed.
+fn write_required_files(root: &Path, relative_paths: &[String]) {
+    for relative_path in relative_paths {
+        let path = root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(path, b"fixture").expect("write fixture file");
+    }
+}
 
 #[test]
 fn golden_fixture_paths_match_shared_constants() {
@@ -41,13 +55,7 @@ fn assert_tree_under_accepts_synthetic_offline_layout() {
     let golden = load_demo_hierarchy_golden_document();
     let hierarchy_root = root.path();
 
-    for relative_path in &golden.offline.required_files {
-        let path = hierarchy_root.join(relative_path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create parent dirs");
-        }
-        std::fs::write(path, b"fixture").expect("write fixture file");
-    }
+    write_required_files(hierarchy_root, &golden.offline.required_files);
 
     assert_tree_under(hierarchy_root, &golden.offline).expect("offline golden tree");
 }
@@ -59,13 +67,7 @@ fn assert_tree_under_accepts_synthetic_online_layout() {
     let hierarchy_root = root.path();
     let media_folder = hierarchy_root.join(&golden.online.media_folder);
 
-    for relative_path in &golden.online.required_files {
-        let path = hierarchy_root.join(relative_path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create parent dirs");
-        }
-        std::fs::write(path, b"fixture").expect("write fixture file");
-    }
+    write_required_files(hierarchy_root, &golden.online.required_files);
 
     for relative_dir in &golden.online.required_nonempty_dirs {
         let dir = hierarchy_root.join(relative_dir);

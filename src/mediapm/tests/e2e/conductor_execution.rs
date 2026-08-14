@@ -46,6 +46,28 @@ fn import_source_spec(hash: &str) -> MediaSourceSpec {
     }
 }
 
+/// Seeds the import fixture payload into the CAS and registers an import
+/// source for `uri` in the service document.
+async fn seed_and_add_import_source(
+    service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
+    uri: &Url,
+    payload: &[u8],
+) -> Result<(), mediapm::MediaPmError> {
+    let cas = service.conductor().cas().clone();
+    let hash = cas
+        .put(Bytes::copy_from_slice(payload))
+        .await
+        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seeding CAS: {e}")))?;
+    service.add_media_source(
+        &import_source_spec(&hash.to_string()),
+        media_id_from_uri(uri),
+        uri,
+        None,
+        None,
+    )?;
+    Ok(())
+}
+
 /// Decodes the conductor state file, failing with a Workflow error so `?`
 /// works in test bodies.
 fn read_conductor_state(
@@ -68,21 +90,9 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = service_at(root.path()).await?;
 
-    let cas = service.conductor().cas().clone();
-    let hash = cas
-        .put(Bytes::from_static(b"phase2 conductor execution fixture"))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seeding CAS: {e}")))?;
-
     let uri = Url::parse("local:phase2-import").expect("url must parse");
+    seed_and_add_import_source(&mut service, &uri, b"phase2 conductor execution fixture").await?;
     let media_id = media_id_from_uri(&uri);
-    service.add_media_source(
-        &import_source_spec(&hash.to_string()),
-        media_id.clone(),
-        &uri,
-        None,
-        None,
-    )?;
 
     let summary = service.sync_library(false).await?;
 
@@ -133,25 +143,14 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
 #[tokio::test]
 async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let uri = Url::parse("local:phase2-import").expect("url must parse");
-    let media_id = media_id_from_uri(&uri);
 
     // First service: add the source and run a full sync.
     let first_executed;
     {
         let mut service = service_at(root.path()).await?;
-        let cas = service.conductor().cas().clone();
-        let hash = cas
-            .put(Bytes::from_static(b"phase2 conductor execution fixture"))
-            .await
-            .map_err(|e| mediapm::MediaPmError::Workflow(format!("seeding CAS: {e}")))?;
-        service.add_media_source(
-            &import_source_spec(&hash.to_string()),
-            media_id.clone(),
-            &uri,
-            None,
-            None,
-        )?;
+        let uri = Url::parse("local:phase2-import").expect("url must parse");
+        seed_and_add_import_source(&mut service, &uri, b"phase2 conductor execution fixture")
+            .await?;
         let summary = service.sync_library(false).await?;
         assert!(summary.executed_instances >= 1, "first sync should execute the import workflow");
         first_executed = summary.executed_instances;
@@ -241,21 +240,10 @@ async fn sync_populates_managed_files_from_conductor_state() -> Result<(), media
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let mut service = service_at(root.path()).await?;
 
-    let cas = service.conductor().cas().clone();
-    let hash = cas
-        .put(Bytes::from_static(b"phase3 materializer managed_files fixture"))
-        .await
-        .map_err(|e| mediapm::MediaPmError::Workflow(format!("seeding CAS: {e}")))?;
-
     let uri = Url::parse("local:phase3-managed-files").expect("url must parse");
+    seed_and_add_import_source(&mut service, &uri, b"phase3 materializer managed_files fixture")
+        .await?;
     let media_id = media_id_from_uri(&uri);
-    service.add_media_source(
-        &import_source_spec(&hash.to_string()),
-        media_id.clone(),
-        &uri,
-        None,
-        None,
-    )?;
 
     let paths = service.paths().clone();
     let mut document = load_mediapm_document(&paths.mediapm_ncl)?;
