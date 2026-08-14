@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mediapm::{MediaPmService, MediaRuntimeStorage, load_mediapm_document};
+use crate::common::service_at;
+use mediapm::load_mediapm_document;
 use mediapm_conductor::decode_state_json;
 use tracing_subscriber::EnvFilter;
 
@@ -71,16 +72,7 @@ async fn online_sync_post_sync_dump() {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     fs::copy(&fixture, root.path().join("mediapm.ncl")).expect("copy mediapm.ncl");
 
-    let runtime_storage = MediaRuntimeStorage {
-        cache_root_override: Some(root.path().join("tool-cache")),
-        hierarchy_root_dir: Some("media".to_string()),
-        ..MediaRuntimeStorage::default()
-    };
-
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime_storage)
-            .await
-            .expect("create service");
+    let mut service = service_at(root.path(), Some("media")).await.expect("create service");
 
     let summary = service.sync_library(false).await.expect("sync_library");
 

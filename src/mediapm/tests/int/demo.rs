@@ -4,13 +4,9 @@
 //! source, hierarchy, tools) without requiring filesystem probes or network
 //! access.
 
+use crate::common::read_doc;
 use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
 use url::Url;
-
-/// Loads a `MediaPmDocument` from a persisted `mediapm.ncl` file.
-fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
-    mediapm::load_mediapm_document(path).expect("mediapm.ncl should load")
-}
 
 /// Adding a media source with a local URI persists the entry with no default
 /// steps.

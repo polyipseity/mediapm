@@ -3,13 +3,9 @@
 //! Tests emulate the `mediapm_demo_online` example's configuration path (add
 //! remote source, hierarchy, tools) without requiring network access.
 
+use crate::common::read_doc;
 use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
 use url::Url;
-
-/// Loads a `MediaPmDocument` from a persisted `mediapm.ncl` file.
-fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
-    mediapm::load_mediapm_document(path).expect("mediapm.ncl should load")
-}
 
 /// Adding a remote source via `add_media_source` persists the entry with no
 /// auto-generated steps (the caller provides the step pipeline).

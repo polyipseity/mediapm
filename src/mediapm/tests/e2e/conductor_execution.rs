@@ -2,29 +2,17 @@
 //! managed workflows through the conductor and persists conductor state.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
+use crate::common::service_at;
 use bytes::Bytes;
 use mediapm::{
-    HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaPmService, MediaRuntimeStorage,
-    MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue, PlaylistFormat,
-    SanitizeNamesConfig, TransformInputValue, YtDlpOutputVariantConfig, load_mediapm_document,
-    load_mediapm_state_document, media_id_from_uri, save_mediapm_document,
+    HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaPmService, MediaSourceSpec, MediaStep,
+    MediaStepTool, OutputVariantValue, PlaylistFormat, SanitizeNamesConfig, TransformInputValue,
+    YtDlpOutputVariantConfig, load_mediapm_document, load_mediapm_state_document,
+    media_id_from_uri, save_mediapm_document,
 };
 use mediapm_cas::CasApi;
 use url::Url;
-
-/// Creates a filesystem service whose tool download cache lives inside the
-/// workspace root, so parallel tests never contend on the OS-level cache.
-async fn service_at(
-    root: &Path,
-) -> Result<MediaPmService<mediapm_cas::FileSystemCas>, mediapm::MediaPmError> {
-    let runtime_storage = MediaRuntimeStorage {
-        cache_root_override: Some(root.join("tool-cache")),
-        ..MediaRuntimeStorage::default()
-    };
-    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, runtime_storage).await
-}
 
 /// Builds a single-step `import` source spec that ingests one CAS payload
 /// hash (`kind=cas_hash`, mirroring `local_source_default_steps`).
@@ -88,7 +76,7 @@ fn read_conductor_state(
 #[tokio::test]
 async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = service_at(root.path()).await?;
+    let mut service = service_at(root.path(), None).await?;
 
     let uri = Url::parse("local:phase2-import").expect("url must parse");
     seed_and_add_import_source(&mut service, &uri, b"phase2 conductor execution fixture").await?;
@@ -147,7 +135,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
     // First service: add the source and run a full sync.
     let first_executed;
     {
-        let mut service = service_at(root.path()).await?;
+        let mut service = service_at(root.path(), None).await?;
         let uri = Url::parse("local:phase2-import").expect("url must parse");
         seed_and_add_import_source(&mut service, &uri, b"phase2 conductor execution fixture")
             .await?;
@@ -161,7 +149,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
 
     // Second service on the same root: mediapm document and conductor state
     // persist across service instances; the impure import re-executes.
-    let mut service = service_at(root.path()).await?;
+    let mut service = service_at(root.path(), None).await?;
     let second_summary = service.sync_library(false).await?;
     assert!(
         second_summary.executed_instances >= 1,
@@ -194,7 +182,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
 async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     {
-        let mut service = service_at(root.path()).await?;
+        let mut service = service_at(root.path(), None).await?;
 
         // Seed the CAS with a real payload; the import step below references
         // an invalid hash, so the step fails instead of ingesting it.
@@ -227,7 +215,7 @@ async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::M
 
     // Sequential same-root opens must not deadlock on the CAS directory lock
     // after a clean shutdown released the first service's handle.
-    let service = service_at(root.path()).await?;
+    let service = service_at(root.path(), None).await?;
     drop(service);
 
     Ok(())
@@ -238,7 +226,7 @@ async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::M
 #[tokio::test]
 async fn sync_populates_managed_files_from_conductor_state() -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = service_at(root.path()).await?;
+    let mut service = service_at(root.path(), None).await?;
 
     let uri = Url::parse("local:phase3-managed-files").expect("url must parse");
     seed_and_add_import_source(&mut service, &uri, b"phase3 materializer managed_files fixture")

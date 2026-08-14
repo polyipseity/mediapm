@@ -4,14 +4,12 @@
 //! layout is documented on the `mediapm_demo_online` example module.
 
 use std::collections::BTreeMap;
-use std::io::Write;
-use std::path::Path;
 
+use crate::common::{make_zip, service_at};
 use bytes::Bytes;
 use mediapm::{
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaMetadataValue,
-    MediaPmDocument, MediaRuntimeStorage, MediaSourceSpec, PlaylistFormat, PlaylistItemRef,
-    SanitizeNamesConfig,
+    MediaPmDocument, MediaSourceSpec, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
     demo_hierarchy_spec::{
         DEMO_LIBRARY_ROOT, DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID,
         ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_tree_under, load_demo_hierarchy_golden_document,
@@ -20,29 +18,6 @@ use mediapm::{
     save_mediapm_document,
 };
 use mediapm_cas::CasApi;
-use zip::write::FileOptions;
-
-async fn service_at(
-    root: &Path,
-) -> Result<mediapm::MediaPmService<mediapm_cas::FileSystemCas>, mediapm::MediaPmError> {
-    let runtime_storage = MediaRuntimeStorage {
-        cache_root_override: Some(root.join("tool-cache")),
-        hierarchy_root_dir: Some("media".to_string()),
-        ..MediaRuntimeStorage::default()
-    };
-    mediapm::MediaPmService::new_fs_at_with_runtime_storage_overrides(root, runtime_storage).await
-}
-
-fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
-    let mut buffer = std::io::Cursor::new(Vec::new());
-    let mut zip = zip::ZipWriter::new(&mut buffer);
-    for (name, data) in entries {
-        zip.start_file::<&str, ()>(*name, FileOptions::default()).expect("zip entry");
-        zip.write_all(data).expect("zip bytes");
-    }
-    zip.finish().expect("zip finish");
-    buffer.into_inner()
-}
 
 const MKV_HEADER: &[u8] = &[0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00];
 
@@ -316,7 +291,7 @@ fn build_online_hierarchy() -> Vec<HierarchyNode> {
 async fn demo_online_hierarchy_materialization_matches_golden_tree()
 -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let mut service = service_at(root.path()).await?;
+    let mut service = service_at(root.path(), Some("media")).await?;
     let cas = service.conductor().cas().clone();
 
     let video_hash = cas

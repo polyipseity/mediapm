@@ -13,7 +13,8 @@
 
 use std::time::Duration;
 
-use mediapm::{MediaPmService, MediaRuntimeStorage, ToolRequirement};
+use crate::common::service_with_cache;
+use mediapm::{MediaRuntimeStorage, ToolRequirement};
 
 // ---------------------------------------------------------------------------
 // conductor.generated.ncl: change-detected write
@@ -28,16 +29,8 @@ use mediapm::{MediaPmService, MediaRuntimeStorage, ToolRequirement};
 /// state.json.
 #[tokio::test]
 async fn conductor_ncl_skips_write_when_unchanged() {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime)
-            .await
-            .expect("create service");
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await.expect("create service");
     service.sync_tools().await.expect("first sync");
     let generated_path = service.paths().conductor_generated_ncl.clone();
     let meta1 = std::fs::metadata(&generated_path).expect("generated file exists");
@@ -72,19 +65,12 @@ async fn conductor_ncl_skips_write_when_unchanged() {
 /// document should not change — state.json absorbs the metadata update.
 #[tokio::test]
 async fn regression_state_only_churn_does_not_touch_conductor_file() {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     // Use media-tagger — resolves without network; its empty canonical_version
     // gives us a stable baseline.
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime)
-            .await
-            .expect("create service");
+    let (mut service, _root, _cache_root) =
+        service_with_cache(runtime).await.expect("create service");
     service.sync_tools().await.expect("first sync");
 
     let generated_path = service.paths().conductor_generated_ncl.clone();

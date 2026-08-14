@@ -10,10 +10,9 @@
 //! network availability); they assert the structural invariants of whatever
 //! entries were produced.
 
+use crate::common::service_with_cache;
 use mediapm::MediaRuntimeStorage;
 use mediapm_conductor::{NickelDocument, ToolKindSpec, decode_document};
-
-use super::helpers::service_with_cache;
 
 /// Runs a full `sync_tools()` against a fresh hermetic service and returns
 /// the generated conductor document. Individual tools may fail to download

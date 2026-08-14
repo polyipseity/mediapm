@@ -21,10 +21,8 @@ use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{
     NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, decode_document, encode_document,
 };
-use zip::ZipWriter;
-use zip::write::SimpleFileOptions;
 
-use super::helpers::service_with_cache;
+use crate::common::{make_zip, service_with_cache};
 
 // ---------------------------------------------------------------------------
 // Shared test scaffolding
@@ -1453,18 +1451,6 @@ async fn open_test_cache(root: &std::path::Path) -> Cache {
     .expect("test cache opens")
 }
 
-/// Builds a single-entry Stored-compression zip named after the executable
-/// (`deno`), matching the archive shape `find_os_executable` expects after
-/// extraction (`<os_dir>/deno`).
-fn make_deno_zip(name: &str, content: &[u8]) -> Vec<u8> {
-    use std::io::Write;
-    let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    writer.start_file(name, options).expect("start zip entry");
-    writer.write_all(content).expect("write zip entry");
-    writer.finish().expect("finish zip").into_inner()
-}
-
 /// Hermetic fresh-sync of the provisioning path: yt-dlp (requester) with a
 /// same-step dep (deno) is provisioned entirely from a pre-seeded
 /// user-level download cache (no network). Asserts the generated-doc
@@ -1537,7 +1523,7 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
             "macos" => "deno-aarch64-apple-darwin.zip",
             _ => "deno-aarch64-unknown-linux-gnu.zip",
         };
-        let zip_bytes = make_deno_zip("deno", content);
+        let zip_bytes = make_zip(&[("deno", content)]);
         let url =
             format!("https://github.com/denoland/deno/releases/download/{deno_tag}/{zip_name}");
         cache.store_bytes("tools", &url, &zip_bytes).await;
@@ -1706,7 +1692,7 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
             "macos" => "deno-aarch64-apple-darwin.zip",
             _ => "deno-aarch64-unknown-linux-gnu.zip",
         };
-        let zip_bytes = make_deno_zip("deno", content);
+        let zip_bytes = make_zip(&[("deno", content)]);
         let url =
             format!("https://github.com/denoland/deno/releases/download/{new_deno_tag}/{zip_name}");
         cache.store_bytes("tools", &url, &zip_bytes).await;

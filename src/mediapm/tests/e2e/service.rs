@@ -1,12 +1,8 @@
 //! API-level end-to-end tests using programmatic `MediaPmService` flows.
 
+use crate::common::read_doc;
 use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
 use url::Url;
-
-/// Loads a `MediaPmDocument` from a persisted `mediapm.ncl` file.
-fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
-    mediapm::load_mediapm_document(path).expect("mediapm.ncl should load")
-}
 
 // ---------------------------------------------------------------------------
 // Source lifecycle
