@@ -120,17 +120,15 @@ fn run_pwsh(script: &Path, sandbox: &Path, flags: &[&str]) -> RunOutcome {
     capture_output(cmd, sandbox)
 }
 
-/// Probes an interpreter by spawning a harmless command; `false` when the
-/// binary is not installed (spawn fails).
+/// Probes an interpreter by spawning a harmless command; on absence prints
+/// `skipped: ...` and returns `false`.
 #[must_use]
-fn probe(program: &str, args: &[&str]) -> bool {
-    Command::new(program).args(args).output().is_ok()
-}
-
-/// Creates the fake managed and control dirs inside a sandbox.
-fn seed_sandbox(sandbox: &Path) {
-    for name in FAKE_MEDIAPM_DIRS.iter().copied().chain(CONTROL_DIRS.iter().copied()) {
-        fs::create_dir_all(sandbox.join(name)).expect("create seeded sandbox dir");
+fn skip_unless(program: &str, args: &[&str]) -> bool {
+    if Command::new(program).args(args).output().is_ok() {
+        true
+    } else {
+        println!("skipped: {program} not found");
+        false
     }
 }
 
@@ -147,7 +145,9 @@ fn assert_janitor_sequence(script_name: &str, run: impl Fn(&Path, &Path, &[&str]
     let sandbox = Sandbox::new();
     let scope = sandbox.path.join("scope");
     fs::create_dir_all(&scope).expect("create janitor scope dir");
-    seed_sandbox(&scope);
+    for name in FAKE_MEDIAPM_DIRS.iter().copied().chain(CONTROL_DIRS.iter().copied()) {
+        fs::create_dir_all(scope.join(name)).expect("create seeded sandbox dir");
+    }
     let janitor = script_path(script_name);
 
     // Dry run: reports exactly the three mediapm-* dirs, never the controls.
@@ -216,8 +216,7 @@ fn assert_janitor_sequence(script_name: &str, run: impl Fn(&Path, &Path, &[&str]
 
 #[test]
 fn bash_janitor_dry_run_and_real_run() {
-    if !probe("bash", &["--version"]) {
-        println!("skipped: bash not found");
+    if !skip_unless("bash", &["--version"]) {
         return;
     }
     assert_janitor_sequence("clean-mediapm-temp.sh", |script, sandbox, flags| {
@@ -225,22 +224,39 @@ fn bash_janitor_dry_run_and_real_run() {
     });
 }
 
-#[test]
-fn bash_janitor_self_test() {
-    if !probe("sh", &["-c", "exit 0"]) {
-        println!("skipped: sh not found");
+/// Runs the sh-based janitor/runner self-test, skipping when `sh` is absent.
+fn assert_sh_self_test(script: &Path, ok_marker: &str) {
+    if !skip_unless("sh", &["-c", "exit 0"]) {
         return;
     }
     let sandbox = Sandbox::new();
-    let out = run_script("sh", &test_script_path("test-clean-mediapm-temp.sh"), &sandbox.path, &[]);
+    let out = run_script("sh", script, &sandbox.path, &[]);
     assert!(out.status.success(), "self-test failed: {}", out.stderr);
-    assert!(out.stdout.contains("test-clean-mediapm-temp: OK"), "self-test missing OK line");
+    assert!(out.stdout.contains(ok_marker), "self-test missing OK line");
+}
+
+/// Runs the pwsh-based janitor/runner self-test, skipping when `pwsh` is absent.
+fn assert_pwsh_self_test(script: &Path, ok_marker: &str) {
+    if !skip_unless("pwsh", &["--version"]) {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    let out = run_pwsh(script, &sandbox.path, &[]);
+    assert!(out.status.success(), "self-test failed: {}", out.stderr);
+    assert!(out.stdout.contains(ok_marker), "self-test missing OK line");
+}
+
+#[test]
+fn bash_janitor_self_test() {
+    assert_sh_self_test(
+        &test_script_path("test-clean-mediapm-temp.sh"),
+        "test-clean-mediapm-temp: OK",
+    );
 }
 
 #[test]
 fn pwsh_janitor_dry_run_and_real_run() {
-    if !probe("pwsh", &["--version"]) {
-        println!("skipped: pwsh not found");
+    if !skip_unless("pwsh", &["--version"]) {
         return;
     }
     assert_janitor_sequence("clean-mediapm-temp.ps1", |script, sandbox, flags| {
@@ -250,38 +266,23 @@ fn pwsh_janitor_dry_run_and_real_run() {
 
 #[test]
 fn pwsh_janitor_self_test() {
-    if !probe("pwsh", &["--version"]) {
-        println!("skipped: pwsh not found");
-        return;
-    }
-    let sandbox = Sandbox::new();
-    let out = run_pwsh(&test_script_path("test-clean-mediapm-temp.ps1"), &sandbox.path, &[]);
-    assert!(out.status.success(), "self-test failed: {}", out.stderr);
-    assert!(out.stdout.contains("test-clean-mediapm-temp.ps1: OK"), "self-test missing OK line");
+    assert_pwsh_self_test(
+        &test_script_path("test-clean-mediapm-temp.ps1"),
+        "test-clean-mediapm-temp.ps1: OK",
+    );
 }
 
 #[test]
 fn bash_runner_self_test() {
-    if !probe("sh", &["-c", "exit 0"]) {
-        println!("skipped: sh not found");
-        return;
-    }
-    let sandbox = Sandbox::new();
-    let out = run_script("sh", &test_script_path("test-run-all-tests.sh"), &sandbox.path, &[]);
-    assert!(out.status.success(), "runner self-test failed: {}", out.stderr);
-    assert!(out.stdout.contains("test-run-all-tests.sh: OK"), "runner self-test missing OK line");
+    assert_sh_self_test(&test_script_path("test-run-all-tests.sh"), "test-run-all-tests.sh: OK");
 }
 
 #[test]
 fn pwsh_runner_self_test() {
-    if !probe("pwsh", &["--version"]) {
-        println!("skipped: pwsh not found");
-        return;
-    }
-    let sandbox = Sandbox::new();
-    let out = run_pwsh(&test_script_path("test-run-all-tests.ps1"), &sandbox.path, &[]);
-    assert!(out.status.success(), "runner self-test failed: {}", out.stderr);
-    assert!(out.stdout.contains("test-run-all-tests.ps1: OK"), "runner self-test missing OK line");
+    assert_pwsh_self_test(
+        &test_script_path("test-run-all-tests.ps1"),
+        "test-run-all-tests.ps1: OK",
+    );
 }
 
 #[test]
