@@ -49,7 +49,7 @@ RAII `TempDir` owners must be bound to a local for the full scope that needs the
 - Unknown argument: prints to stderr, exits 1.
 - The real OS user cache (`<os-cache>/mediapm/cache/`) is never touched.
 - Keep both scripts behaviorally identical; changing one requires the matching change in the other.
-- Self-test scripts (`tests/scripts/test-clean-mediapm-temp.sh` / `.ps1`) are driven by the root `tests/` crate (package `mediapm-tests`) via `cargo --locked test-pkg mediapm-tests` (cargo/nextest), not invoked directly from `run-all-tests.*`.
+- Self-test scripts (`tests/scripts/test-clean-mediapm-temp.sh` / `.ps1`, `tests/scripts/test-run-all-tests.sh` / `.ps1`) are driven by the root `tests/` crate (package `mediapm-tests`) via `cargo --locked test-pkg mediapm-tests` (cargo/nextest), not invoked directly from `run-all-tests.*`.
 
 ## Regression gate contract
 

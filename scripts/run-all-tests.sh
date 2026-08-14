@@ -1,6 +1,35 @@
 #!/bin/sh
 set -eu
 
+usage() {
+    cat <<'EOF'
+usage: run-all-tests.sh [--help]
+
+Runs the full workspace validation suite:
+  - cargo --locked test-all (nextest, all targets and features)
+  - cargo --locked test --doc --workspace
+  - janitor dry-run gate (leftover mediapm temp dirs fail the suite)
+  - unprefixed-tempdir invariant gate
+EOF
+}
+
+# Argument validation happens before any `cd` or cargo invocation so the
+# `--help`/unknown-arg paths are execution-safe (exercised by the runner
+# self-test in tests/scripts/test-run-all-tests.sh).
+case "${1:-}" in
+    '')
+        ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    *)
+        echo "error: unknown argument: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+esac
+
 cd "$(git rev-parse --show-toplevel)"
 
 cargo --locked test-all

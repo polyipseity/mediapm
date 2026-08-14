@@ -23,7 +23,7 @@ GitHub Actions (`.github/workflows/ci.yml`) mirrors the pre-push gate set:
 - `scripts/run-all-tests.sh` runs nextest (`cargo-nextest run --workspace --all-targets --all-features`) followed by `cargo test --doc --workspace` for doctests.
 - `cargo clippy-all`, `cargo fmt-check`, `cargo build-all`.
 - `cargo bin rumdl check` (project-specific markdown linting).
-- A separate `windows` job (windows-latest) runs ONLY `cargo --locked test-pkg mediapm-tests` (the root script-test crate), covering the janitor self-tests (`tests/scripts/test-clean-mediapm-temp.*`). pwsh is preinstalled on the runner; bash-based tests run via the Git Bash `bash` probe and skip with a printed reason if absent. No full-suite parity, no `run-all-tests.ps1`, no extra gates on Windows.
+- A separate `windows` job (windows-latest) runs ONLY `cargo --locked test-pkg mediapm-tests` (the root script-test crate), covering the script self-tests (`tests/scripts/test-clean-mediapm-temp.*` janitors, `tests/scripts/test-run-all-tests.*` runners). pwsh is preinstalled on the runner; bash-based tests run via the Git Bash `bash` probe and skip with a printed reason if absent. No full-suite parity, no `run-all-tests.ps1`, no extra gates on Windows.
 
 CI triggers on pull requests and pushes to any branch. Uses concurrency deduplication so only the latest run per PR/commit executes.
 

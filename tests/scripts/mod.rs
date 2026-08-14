@@ -1,4 +1,6 @@
-//! Integration tests for the mediapm temp-janitor scripts.
+//! Integration tests for repository scripts: the temp-janitor production
+//! scripts (`scripts/clean-mediapm-temp.{sh,ps1}`), their self-tests, and
+//! the run-all-tests runner self-tests (`tests/scripts/test-run-all-tests.*`).
 //!
 //! Platform-smart via runtime probes: each interpreter (`bash`, `sh`,
 //! `pwsh`) is probed by spawning a harmless command, and when the binary is
@@ -17,8 +19,13 @@ static SANDBOX_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Production janitor scripts exercised by this crate.
 const SCRIPTS: [&str; 2] = ["clean-mediapm-temp.sh", "clean-mediapm-temp.ps1"];
 
-/// Janitor self-test scripts exercised by this crate.
-const TEST_SCRIPTS: [&str; 2] = ["test-clean-mediapm-temp.sh", "test-clean-mediapm-temp.ps1"];
+/// Script self-tests exercised by this crate (janitors + runners).
+const TEST_SCRIPTS: [&str; 4] = [
+    "test-clean-mediapm-temp.sh",
+    "test-clean-mediapm-temp.ps1",
+    "test-run-all-tests.sh",
+    "test-run-all-tests.ps1",
+];
 
 /// Fake managed-prefix dirs the janitor must remove.
 const FAKE_MEDIAPM_DIRS: [&str; 3] =
@@ -251,6 +258,30 @@ fn pwsh_janitor_self_test() {
     let out = run_pwsh(&test_script_path("test-clean-mediapm-temp.ps1"), &sandbox.path, &[]);
     assert!(out.status.success(), "self-test failed: {}", out.stderr);
     assert!(out.stdout.contains("test-clean-mediapm-temp.ps1: OK"), "self-test missing OK line");
+}
+
+#[test]
+fn bash_runner_self_test() {
+    if !probe("sh", &["-c", "exit 0"]) {
+        println!("skipped: sh not found");
+        return;
+    }
+    let sandbox = Sandbox::new();
+    let out = run_script("sh", &test_script_path("test-run-all-tests.sh"), &sandbox.path, &[]);
+    assert!(out.status.success(), "runner self-test failed: {}", out.stderr);
+    assert!(out.stdout.contains("test-run-all-tests.sh: OK"), "runner self-test missing OK line");
+}
+
+#[test]
+fn pwsh_runner_self_test() {
+    if !probe("pwsh", &["--version"]) {
+        println!("skipped: pwsh not found");
+        return;
+    }
+    let sandbox = Sandbox::new();
+    let out = run_pwsh(&test_script_path("test-run-all-tests.ps1"), &sandbox.path, &[]);
+    assert!(out.status.success(), "runner self-test failed: {}", out.stderr);
+    assert!(out.stdout.contains("test-run-all-tests.ps1: OK"), "runner self-test missing OK line");
 }
 
 #[test]

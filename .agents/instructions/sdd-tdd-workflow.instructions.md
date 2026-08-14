@@ -714,7 +714,7 @@ Canonical spec: `.agents/instructions/temp-directory-spec.instructions.md`. Rows
 
 ### Script tests (root tests/ crate)
 
-Root-level cargo member `tests/` (package `mediapm-tests`) exercises the temp-janitor scripts — production (`scripts/clean-mediapm-temp.sh`, `clean-mediapm-temp.ps1`) and self-tests (`tests/scripts/test-clean-mediapm-temp.sh`, `test-clean-mediapm-temp.ps1`) — by spawning them via `Command`, sandboxing temp dirs via child-scoped env (`TMPDIR`/`TMP`/`TEMP`), normalizing CRLF, and skipping with a printed reason when the interpreter is absent.
+Root-level cargo member `tests/` (package `mediapm-tests`) exercises the repository scripts — production janitors (`scripts/clean-mediapm-temp.sh`, `clean-mediapm-temp.ps1`) and self-tests (`tests/scripts/test-clean-mediapm-temp.sh`, `test-clean-mediapm-temp.ps1`; `tests/scripts/test-run-all-tests.sh`, `test-run-all-tests.ps1`) — by spawning them via `Command`, sandboxing temp dirs via child-scoped env (`TMPDIR`/`TMP`/`TEMP`), normalizing CRLF, and skipping with a printed reason when the interpreter is absent.
 
 | Spec item                                                                                                                                    | Test(s)                                      | Status    |
 | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- | --------- |
@@ -722,5 +722,7 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the temp-ja
 | Bash janitor self-test script (`test-clean-mediapm-temp: OK`)                                                                                | `bash_janitor_self_test`                     | [covered] |
 | Pwsh janitor dry-run + real-run (sandboxed `TMP`/`TMPDIR`/`TEMP`, same assertions, skip when pwsh absent)                                    | `pwsh_janitor_dry_run_and_real_run`          | [covered] |
 | Pwsh janitor self-test (`test-clean-mediapm-temp.ps1: OK`, skip when pwsh absent)                                                            | `pwsh_janitor_self_test`                     | [covered] |
-| Static: all four scripts exist, executable bit on unix                                                                                       | static script-existence test                 | [covered] |
+| Bash runner self-test (`test-run-all-tests.sh: OK`; runner `--help`/unknown-arg handling + static gates, never runs the suite)                | `bash_runner_self_test`                      | [covered] |
+| Pwsh runner self-test (`test-run-all-tests.ps1: OK`; runner `--help`/unknown-arg handling + static gates, never runs the suite)              | `pwsh_runner_self_test`                      | [covered] |
+| Static: all six scripts exist, executable bit on unix                                                                                        | static script-existence test                 | [covered] |
 | Windows CI job runs ONLY the script tests (no full-suite parity)                                                                             | `windows` job in `.github/workflows/ci.yml`  | [covered] |
