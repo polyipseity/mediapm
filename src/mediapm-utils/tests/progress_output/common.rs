@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use mediapm_utils::progress::{ProgressGroup, TestTimeSource};
+use mediapm_utils::progress::{
+    DimensionSource, ProgressGroup, TestDimensionSource, TestTimeSource, TimeSource, TrackedHandle,
+};
 
 /// Default terminal dimensions for standard tests.
 pub const H: u16 = 24;
@@ -69,4 +71,81 @@ pub fn ins_bar(mp: &MultiProgress, before: &ProgressBar, total: u64, prefix: &st
     pb.set_style(style());
     pb.set_prefix(prefix.to_string());
     mp.insert_before(before, pb)
+}
+
+/// Build a [`ProgressGroup`] without an overall bar, ticker disabled.
+pub fn group(mp: MultiProgress, capacity: usize) -> ProgressGroup {
+    ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(capacity)
+        .with_ticker_enabled(false)
+        .build()
+}
+
+/// Build a [`ProgressGroup`] without an overall bar, with a deterministic
+/// time source and ticker disabled.
+pub fn group_with_ts(
+    mp: MultiProgress,
+    capacity: usize,
+    ts: &Arc<TestTimeSource>,
+) -> ProgressGroup {
+    ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(capacity)
+        .with_time_source(Arc::clone(ts) as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false)
+        .build()
+}
+
+/// Build a [`ProgressGroup`] with an overall bar, ticker disabled.
+pub fn group_with_overall(
+    mp: MultiProgress,
+    capacity: usize,
+    label: &str,
+    overall_total: u64,
+) -> (ProgressGroup, TrackedHandle) {
+    ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(capacity)
+        .with_overall(label, overall_total)
+        .with_ticker_enabled(false)
+        .build_with_overall()
+}
+
+/// Build a [`ProgressGroup`] with an overall bar and a deterministic time
+/// source, ticker disabled.
+pub fn group_with_overall_and_ts(
+    mp: MultiProgress,
+    capacity: usize,
+    label: &str,
+    overall_total: u64,
+    ts: &Arc<TestTimeSource>,
+) -> (ProgressGroup, TrackedHandle) {
+    ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(capacity)
+        .with_overall(label, overall_total)
+        .with_time_source(ts.clone())
+        .with_ticker_enabled(false)
+        .build_with_overall()
+}
+
+/// Build a [`ProgressGroup`] with an overall bar, a custom dimension source,
+/// and dynamic-height toggle, ticker disabled.
+pub fn group_with_overall_and_dims(
+    mp: MultiProgress,
+    capacity: usize,
+    label: &str,
+    overall_total: u64,
+    dims: &Arc<TestDimensionSource>,
+    dynamic_height: bool,
+) -> (ProgressGroup, TrackedHandle) {
+    ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(capacity)
+        .with_overall(label, overall_total)
+        .with_dim_source(Arc::clone(dims) as Arc<dyn DimensionSource>)
+        .dynamic_height(dynamic_height)
+        .with_ticker_enabled(false)
+        .build_with_overall()
 }
