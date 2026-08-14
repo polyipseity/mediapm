@@ -118,23 +118,23 @@ fn short_terminal_three_lines() {
 
 // ── Overflow ─────────────────────────────────────────────────────────────────
 
-/// Scaffold: an overall bar of total 10 plus `n` child bars of total 3
+/// Scaffold: an overall bar of total 10 plus `count` child bars of total 3
 /// inserted before it, each child ticked once and the overall ticked once.
 fn overflow_scaffold(
-    h: u16,
-    n: usize,
+    height: u16,
+    count: usize,
 ) -> (MultiProgress, InMemoryTerm, ProgressBar, Vec<ProgressBar>) {
-    let (mp, term) = mk_with_size(h, 40);
-    let o = add_bar(&mp, 10, "overall");
+    let (mp, term) = mk_with_size(height, 40);
+    let overall = add_bar(&mp, 10, "overall");
     let mut kids = Vec::new();
-    for i in 0..n {
-        let p = format!("child{i}");
-        let c = ins_bar(&mp, &o, 3, &p);
-        c.tick();
-        kids.push(c);
+    for i in 0..count {
+        let name = format!("child{i}");
+        let child = ins_bar(&mp, &overall, 3, &name);
+        child.tick();
+        kids.push(child);
     }
-    o.tick();
-    (mp, term, o, kids)
+    overall.tick();
+    (mp, term, overall, kids)
 }
 
 #[test]
