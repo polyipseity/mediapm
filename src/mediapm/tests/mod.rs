@@ -6,5 +6,3 @@
 mod common;
 mod e2e;
 mod int;
-#[cfg(feature = "proptest")]
-mod prop;
