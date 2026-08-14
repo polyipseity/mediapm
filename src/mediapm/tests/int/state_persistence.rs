@@ -261,18 +261,24 @@ fn load_missing_state_returns_default() {
 // ToolRegistryEntry serde with canonical_version
 // ---------------------------------------------------------------------------
 
-#[test]
-fn tool_registry_entry_round_trip() {
-    let entry = ToolRegistryEntry {
-        tool_id: String::new(),
+/// A minimal [`ToolRegistryEntry`] with only `tool_id` and
+/// `canonical_version` set; all other fields take their defaults.
+fn registry_entry(tool_id: &str, canonical_version: &str) -> ToolRegistryEntry {
+    ToolRegistryEntry {
+        tool_id: tool_id.to_string(),
         version: String::new(),
-        canonical_version: "abc123".to_string(),
+        canonical_version: canonical_version.to_string(),
         content_map_hash: String::new(),
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
         resolved_vcs_hash: None,
-    };
+    }
+}
+
+#[test]
+fn tool_registry_entry_round_trip() {
+    let entry = registry_entry("", "abc123");
     let json = serde_json::to_value(&entry).expect("serialize");
     let back: ToolRegistryEntry = serde_json::from_value(json).expect("deserialize");
     assert_eq!(back.canonical_version, "abc123");
@@ -297,16 +303,7 @@ fn tool_registry_entry_backward_compat_deserialize_without_canonical_version() {
 #[test]
 fn tool_registry_entry_normalize_drops_blank_entry() {
     let mut state = MediaPmState::default();
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "tool".to_string(),
-        version: String::new(),
-        canonical_version: String::new(),
-        content_map_hash: String::new(),
-        deployed_at: mediapm_utils::Timestamp::default(),
-        resolved_tag: None,
-        resolved_version: None,
-        resolved_vcs_hash: None,
-    });
+    state.managed_tools.push(registry_entry("tool", ""));
     state.normalize();
     assert!(state.managed_tools.is_empty(), "blank entry should be dropped");
 }
@@ -314,16 +311,7 @@ fn tool_registry_entry_normalize_drops_blank_entry() {
 #[test]
 fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
     let mut state = MediaPmState::default();
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "tool".to_string(),
-        version: String::new(),
-        canonical_version: "abc123".to_string(),
-        content_map_hash: String::new(),
-        deployed_at: mediapm_utils::Timestamp::default(),
-        resolved_tag: None,
-        resolved_version: None,
-        resolved_vcs_hash: None,
-    });
+    state.managed_tools.push(registry_entry("tool", "abc123"));
     state.normalize();
     assert_eq!(state.managed_tools.len(), 1, "entry with canonical_version should survive");
 }
@@ -331,16 +319,7 @@ fn tool_registry_entry_normalize_keeps_entry_with_only_canonical_version() {
 #[test]
 fn state_normalize_retains_tool_with_canonical_version() {
     let mut state = MediaPmState::default();
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "media-tagger".to_string(),
-        version: String::new(),
-        canonical_version: "abc123".to_string(),
-        content_map_hash: String::new(),
-        deployed_at: mediapm_utils::Timestamp::default(),
-        resolved_tag: None,
-        resolved_version: None,
-        resolved_vcs_hash: None,
-    });
+    state.managed_tools.push(registry_entry("media-tagger", "abc123"));
     state.normalize();
     assert!(
         state.managed_tools.iter().any(|e| e.tool_id == "media-tagger"),
@@ -351,16 +330,7 @@ fn state_normalize_retains_tool_with_canonical_version() {
 #[test]
 fn state_normalize_drops_tool_with_all_blank() {
     let mut state = MediaPmState::default();
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "blank-tool".to_string(),
-        version: String::new(),
-        canonical_version: String::new(),
-        content_map_hash: String::new(),
-        deployed_at: mediapm_utils::Timestamp::default(),
-        resolved_tag: None,
-        resolved_version: None,
-        resolved_vcs_hash: None,
-    });
+    state.managed_tools.push(registry_entry("blank-tool", ""));
     state.normalize();
     assert!(
         !state.managed_tools.iter().any(|e| e.tool_id == "blank-tool"),
@@ -373,16 +343,7 @@ fn canonical_version_json_round_trip() {
     let long = "a".repeat(64);
     let versions = vec!["", "abc123", "v1.0.0", "2025.07.15", "L2025-07-15", &long];
     for v in &versions {
-        let entry = ToolRegistryEntry {
-            tool_id: String::new(),
-            version: String::new(),
-            canonical_version: (*v).to_string(),
-            content_map_hash: String::new(),
-            deployed_at: mediapm_utils::Timestamp::default(),
-            resolved_tag: None,
-            resolved_version: None,
-            resolved_vcs_hash: None,
-        };
+        let entry = registry_entry("", v);
         let json = serde_json::to_value(&entry).unwrap();
         let back: ToolRegistryEntry = serde_json::from_value(json).unwrap();
         assert_eq!(back.canonical_version, *v, "canonical_version round-trip failed for {v:?}");

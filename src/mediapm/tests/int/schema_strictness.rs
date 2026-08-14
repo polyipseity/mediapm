@@ -833,31 +833,42 @@ fn json_schema_export_is_strict() {
 // S-E1..S-E4: Rust serde strictness for mediapm config types
 // ---------------------------------------------------------------------------
 
+/// Asserts that decoding `value` as `T` fails and that the error message
+/// contains `needle`.
+fn serde_reject<T>(value: Value, needle: &str)
+where
+    T: serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let err = serde_json::from_value::<T>(value).expect_err("serde decode must be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains(needle), "error must contain '{needle}': {msg}");
+}
+
 /// S-E1: `ToolRegistryEntry` must reject unknown fields (was silently accepted
 /// before the strictness overhaul).
 #[test]
 fn strict_tool_registry_entry_rejects_unknown_field() {
-    let err = serde_json::from_value::<ToolRegistryEntry>(json!({
-        "tool_id": "ffmpeg@v1",
-        "version": "1.0",
-        "bogus_field": 1,
-    }))
-    .expect_err("unknown ToolRegistryEntry field must be rejected");
-    let msg = format!("{err}");
-    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+    serde_reject::<ToolRegistryEntry>(
+        json!({
+            "tool_id": "ffmpeg@v1",
+            "version": "1.0",
+            "bogus_field": 1,
+        }),
+        "bogus_field",
+    );
 }
 
 /// S-E1: `MediaRuntimeStorage` must reject unknown fields (was silently
 /// accepted before the strictness overhaul).
 #[test]
 fn strict_media_runtime_rejects_unknown_field() {
-    let err = serde_json::from_value::<MediaRuntimeStorage>(json!({
-        "verify_on_read": ["modified"],
-        "bogus_field": 1,
-    }))
-    .expect_err("unknown MediaRuntimeStorage field must be rejected");
-    let msg = format!("{err}");
-    assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
+    serde_reject::<MediaRuntimeStorage>(
+        json!({
+            "verify_on_read": ["modified"],
+            "bogus_field": 1,
+        }),
+        "bogus_field",
+    );
 }
 
 /// S-E2: free-form `output_variants` values must be rejected.  Before the
@@ -884,12 +895,12 @@ fn strict_output_variants_rejects_free_form_value() {
 /// unknown names were accepted.
 #[test]
 fn strict_verify_strategy_rejects_unknown_name() {
-    let err = serde_json::from_value::<MediaRuntimeStorage>(json!({
-        "verify_on_read": ["bogus"],
-    }))
-    .expect_err("unknown verify strategy name must be rejected");
-    let msg = format!("{err}");
-    assert!(msg.contains("bogus"), "error must name the unknown strategy: {msg}");
+    serde_reject::<MediaRuntimeStorage>(
+        json!({
+            "verify_on_read": ["bogus"],
+        }),
+        "bogus",
+    );
 }
 
 /// R1 regression: before S-E3, `to_verify_strategies` silently ignored unknown
@@ -897,12 +908,12 @@ fn strict_verify_strategy_rejects_unknown_name() {
 /// fail fast at decode time instead of being dropped.
 #[test]
 fn regression_verify_on_read_unknown_no_longer_ignored() {
-    let err = serde_json::from_value::<MediaRuntimeStorage>(json!({
-        "verify_on_read": ["always", "bogus"],
-    }))
-    .expect_err("unknown strategy name must fail fast instead of being ignored");
-    let msg = format!("{err}");
-    assert!(msg.contains("bogus"), "error must name the offending strategy: {msg}");
+    serde_reject::<MediaRuntimeStorage>(
+        json!({
+            "verify_on_read": ["always", "bogus"],
+        }),
+        "bogus",
+    );
 }
 
 /// S-E2: both yt-dlp- and generic-shaped variant objects must decode through
@@ -965,10 +976,10 @@ fn strict_verify_strategy_accepts_known_names() {
 /// (serde number-from-float validation on `u64` fields).
 #[test]
 fn strict_runtime_rejects_fractional_denominator() {
-    let err = serde_json::from_value::<MediaRuntimeStorage>(json!({
-        "verify_on_read_sample_denominator": 1.5,
-    }))
-    .expect_err("fractional denominator must be rejected for the u64 field");
-    let msg = format!("{err}");
-    assert!(msg.contains("invalid type"), "error must report the invalid type: {msg}");
+    serde_reject::<MediaRuntimeStorage>(
+        json!({
+            "verify_on_read_sample_denominator": 1.5,
+        }),
+        "invalid type",
+    );
 }
