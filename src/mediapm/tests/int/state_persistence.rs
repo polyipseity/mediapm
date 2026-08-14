@@ -11,7 +11,7 @@
 //!   `load_mediapm_state_document`
 //! - Idempotency: re-saving produces identical bytes
 //!
-//! Does NOT test the full tool-sync pipeline — see `tool_sync.rs` for that.
+//! Does NOT test the full tool-sync pipeline — see `tool_sync/` for that.
 
 use std::collections::BTreeMap;
 

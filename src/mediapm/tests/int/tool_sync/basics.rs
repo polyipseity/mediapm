@@ -1,7 +1,7 @@
 use mediapm::{MediaRuntimeStorage, ToolRequirement};
-use mediapm_conductor::{NickelDocument, ToolKindSpec, decode_document};
+use mediapm_conductor::ToolKindSpec;
 
-use crate::common::service_with_cache;
+use crate::common::{read_generated_doc, service_with_cache};
 
 // ---------------------------------------------------------------------------
 // Structural side-effect tests (no counter assertions)
@@ -50,8 +50,7 @@ async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> 
     service.sync_tools().await?;
     let generated_path = &service.paths().conductor_generated_ncl;
     assert!(generated_path.exists(), "conductor.generated.ncl should exist");
-    let bytes = std::fs::read(generated_path).expect("conductor.generated.ncl should be readable");
-    let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
+    let doc = read_generated_doc(&service);
     assert!(!doc.tools.is_empty(), "generated doc must have tools");
     Ok(())
 }
@@ -160,9 +159,7 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
             .and_then(|m| m.modified().ok());
 
     service.sync_tools().await?;
-    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
-        .expect("conductor.generated.ncl should be readable");
-    let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
+    let doc = read_generated_doc(&service);
     for id in &["echo@v1", "fs@v1", "import@v1", "export@v1", "archive@v1"] {
         let tool =
             doc.tools.get(*id).unwrap_or_else(|| panic!("builtin {id} should be registered"));

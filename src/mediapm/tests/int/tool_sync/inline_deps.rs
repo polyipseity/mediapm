@@ -1,10 +1,9 @@
 use super::seeded_three_tool_skip_service;
-use crate::common::{make_zip, service_with_cache};
+use crate::common::{make_zip, read_generated_doc, service_with_cache};
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
 use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
-use mediapm_conductor::{NickelDocument, decode_document};
 
 // ---------------------------------------------------------------------------
 // Same-step dependency payload inlining (deps/<mediapm tool id>/)
@@ -63,9 +62,7 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
 
     // The exact specs match the seeded resolved versions → all three tools
     // spec-skip; the inlined structure must survive intact.
-    let doc_bytes =
-        std::fs::read(&service.paths().conductor_generated_ncl).expect("generated doc readable");
-    let doc: NickelDocument = decode_document(&doc_bytes).expect("valid Nickel document");
+    let doc = read_generated_doc(&service);
     let spec = doc
         .tools
         .values()
@@ -227,49 +224,31 @@ async fn open_test_cache(root: &std::path::Path) -> Cache {
     .expect("test cache opens")
 }
 
-/// Hermetic fresh-sync of the provisioning path: yt-dlp (requester) with a
-/// same-step dep (deno) is provisioned entirely from a pre-seeded
-/// user-level download cache (no network). Asserts the generated-doc
-/// runtime carries the dep's payload inlined under `deps/deno/<key>` with
-/// values mirroring the dep's own content map exactly, no recursion into
-/// `deps/deno/deps/`, no `companions/` residue, and a composite
-/// `canonical_version` in state.
-///
-/// Hermeticity recipe (mirrors `fetch_and_import_ytdlp_full_pipeline` in
-/// `conductor_bridge/sync/provision.rs`): pre-seed the `tool_metadata`
-/// domain with `"{tag}\n{hash}"` entries (tag resolution never touches the
-/// GitHub API), pre-seed the `tools` domain under the REWRITTEN download
-/// URLs (`/download/{tag}/...` — `resolve_tool_fetch` substitutes the
-/// `latest/download/` placeholder), then drop the cache handle BEFORE sync
-/// (two open `Cache` handles at the same root contend for the directory
-/// lock). ffmpeg is excluded because its linux payload is tar.xz (mediapm
-/// has no tar/xz decoder); deno payloads are zips built with the `zip`
-/// crate. The only tolerated network touch is `prefetch_expected_sizes`
-/// firing tolerant HEAD probes at the rewritten URLs; failures are silently
-/// ignored.
-#[allow(clippy::too_many_lines)]
-#[tokio::test]
-async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::MediaPmError> {
+/// Hermetic provisioning fixture: pre-seeds a user-level download cache with
+/// yt-dlp (fixed tag/hash/payloads) and deno (tag/hash parameterized — the
+/// zip entry content embeds the tag, so a version bump changes the payload
+/// bytes and thus the content address), then builds a fresh service whose
+/// yt-dlp requirement carries deno as a same-step dependency. See the
+/// module-level hermeticity recipe for why these two tools are seedable. The
+/// cache handle is dropped before the service is created (two open `Cache`
+/// handles at the same root contend for the directory lock).
+async fn provisioned_yt_dlp_with_deno(
+    root: &std::path::Path,
+    cache_root: &std::path::Path,
+    deno_tag: &str,
+    deno_hash: &str,
+) -> Result<MediaPmService<mediapm_cas::FileSystemCas>, mediapm::MediaPmError> {
     use std::collections::BTreeMap;
 
     let yt_dlp_tag = "2025.07.15";
     let yt_dlp_hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
-    let deno_tag = "1.46.0";
-    let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
     let yt_dlp_payloads = [
         ("yt-dlp.exe", &b"fake yt-dlp windows binary"[..]),
         ("yt-dlp_macos", &b"fake yt-dlp macos binary"[..]),
         ("yt-dlp_linux", &b"fake yt-dlp linux binary"[..]),
     ];
-    let deno_zip_payloads = [
-        ("windows", &b"fake deno 1.46.0 windows binary"[..]),
-        ("macos", &b"fake deno 1.46.0 macos binary"[..]),
-        ("linux", &b"fake deno 1.46.0 linux binary"[..]),
-    ];
 
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let cache = open_test_cache(cache_root.path()).await;
+    let cache = open_test_cache(cache_root).await;
     // Metadata cache: tag resolution is served from cache (no GitHub API).
     let yt_dlp_metadata_key = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
     cache
@@ -293,13 +272,14 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
             format!("https://github.com/yt-dlp/yt-dlp/releases/download/{yt_dlp_tag}/{filename}");
         cache.store_bytes("tools", &url, payload).await;
     }
-    for (os, content) in &deno_zip_payloads {
-        let zip_name = match *os {
+    for os in ["windows", "macos", "linux"] {
+        let zip_name = match os {
             "windows" => "deno-x86_64-pc-windows-msvc.zip",
             "macos" => "deno-aarch64-apple-darwin.zip",
             _ => "deno-aarch64-unknown-linux-gnu.zip",
         };
-        let zip_bytes = make_zip(&[("deno", content)]);
+        let zip_bytes =
+            make_zip(&[("deno", format!("fake deno {deno_tag} {os} binary").as_bytes())]);
         let url =
             format!("https://github.com/denoland/deno/releases/download/{deno_tag}/{zip_name}");
         cache.store_bytes("tools", &url, &zip_bytes).await;
@@ -309,7 +289,7 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
     drop(cache);
 
     let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
+        cache_root_override: Some(cache_root.to_path_buf()),
         ..MediaRuntimeStorage::default()
     };
     runtime.tools.insert(
@@ -323,15 +303,32 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
             ..Default::default()
         },
     );
+    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, runtime).await
+}
+
+/// Hermetic fresh-sync of the provisioning path: yt-dlp (requester) with a
+/// same-step dep (deno) is provisioned entirely from a pre-seeded
+/// user-level download cache (no network). Asserts the generated-doc
+/// runtime carries the dep's payload inlined under `deps/deno/<key>` with
+/// values mirroring the dep's own content map exactly, no recursion into
+/// `deps/deno/deps/`, no `companions/` residue, and a composite
+/// `canonical_version` in state.
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::MediaPmError> {
+    let yt_dlp_hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+    let deno_tag = "1.46.0";
+    let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
+
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+        provisioned_yt_dlp_with_deno(root.path(), cache_root.path(), deno_tag, deno_hash).await?;
     service.sync_tools().await?;
 
     // Generated doc: the requester's ACTIVE spec (name match + non-empty
     // content map — pruned stale keys keep the name with a cleared map).
-    let doc_bytes =
-        std::fs::read(&service.paths().conductor_generated_ncl).expect("generated doc readable");
-    let doc: NickelDocument = decode_document(&doc_bytes).expect("valid Nickel document");
+    let doc = read_generated_doc(&service);
     let yt_dlp_spec = doc
         .tools
         .values()
@@ -362,12 +359,9 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
         );
     }
     // The requester keeps its own binary keys.
-    for (filename, _) in &yt_dlp_payloads {
-        let os = match *filename {
-            "yt-dlp.exe" => "windows",
-            "yt-dlp_macos" => "macos",
-            _ => "linux",
-        };
+    for (filename, os) in
+        [("yt-dlp.exe", "windows"), ("yt-dlp_macos", "macos"), ("yt-dlp_linux", "linux")]
+    {
         let key = format!("{os}/{filename}");
         assert!(yt_dlp_spec.runtime.content_map.contains_key(&key), "yt-dlp missing own key {key}");
     }
@@ -418,9 +412,6 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm::MediaPmError> {
-    use std::collections::BTreeMap;
-
-    let yt_dlp_tag = "2025.07.15";
     let yt_dlp_hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
     let old_deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
     let new_deno_tag = "1.47.0";
@@ -430,68 +421,13 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
         ("yt-dlp_macos", &b"fake yt-dlp macos binary"[..]),
         ("yt-dlp_linux", &b"fake yt-dlp linux binary"[..]),
     ];
-    let deno_zip_payloads = [
-        ("windows", &b"fake deno 1.47.0 windows binary"[..]),
-        ("macos", &b"fake deno 1.47.0 macos binary"[..]),
-        ("linux", &b"fake deno 1.47.0 linux binary"[..]),
-    ];
 
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let cache = open_test_cache(cache_root.path()).await;
-    // Metadata cache: deno resolves to the NEW tag/hash; yt-dlp stays put.
-    let yt_dlp_metadata_key = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
-    cache
-        .store_bytes(
-            "tool_metadata",
-            yt_dlp_metadata_key,
-            format!("{yt_dlp_tag}\n{yt_dlp_hash}").as_bytes(),
-        )
-        .await;
-    let deno_metadata_key = "https://api.github.com/repos/denoland/deno/releases/latest";
-    cache
-        .store_bytes(
-            "tool_metadata",
-            deno_metadata_key,
-            format!("{new_deno_tag}\n{new_deno_hash}").as_bytes(),
-        )
-        .await;
-    // Payload cache: REWRITTEN download URLs (`/download/{tag}/`).
-    for (filename, payload) in &yt_dlp_payloads {
-        let url =
-            format!("https://github.com/yt-dlp/yt-dlp/releases/download/{yt_dlp_tag}/{filename}");
-        cache.store_bytes("tools", &url, payload).await;
-    }
-    for (os, content) in &deno_zip_payloads {
-        let zip_name = match *os {
-            "windows" => "deno-x86_64-pc-windows-msvc.zip",
-            "macos" => "deno-aarch64-apple-darwin.zip",
-            _ => "deno-aarch64-unknown-linux-gnu.zip",
-        };
-        let zip_bytes = make_zip(&[("deno", content)]);
-        let url =
-            format!("https://github.com/denoland/deno/releases/download/{new_deno_tag}/{zip_name}");
-        cache.store_bytes("tools", &url, &zip_bytes).await;
-    }
-    drop(cache);
-
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    runtime.tools.insert(
-        "yt-dlp".to_string(),
-        ToolRequirement {
-            version_spec: mediapm::ConfigVersionSpec::Latest,
-            dependencies: BTreeMap::from([(
-                "deno".to_string(),
-                mediapm::ConfigVersionSpec::Latest,
-            )]),
-            ..Default::default()
-        },
-    );
+    // The helper pre-seeds deno at the NEW tag/hash; yt-dlp stays put.
     let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+        provisioned_yt_dlp_with_deno(root.path(), cache_root.path(), new_deno_tag, new_deno_hash)
+            .await?;
 
     // Seed the PREVIOUS deployment records (as a prior network sync would
     // have left them). The generated doc is left empty — this sync pass
@@ -527,9 +463,7 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
 
     // Generated doc: yt-dlp's ACTIVE spec carries freshly inlined deno
     // payloads; deno's own map reflects the NEW zip contents.
-    let doc_bytes =
-        std::fs::read(&service.paths().conductor_generated_ncl).expect("generated doc readable");
-    let doc: NickelDocument = decode_document(&doc_bytes).expect("valid Nickel document");
+    let doc = read_generated_doc(&service);
     let yt_dlp_spec = doc
         .tools
         .values()

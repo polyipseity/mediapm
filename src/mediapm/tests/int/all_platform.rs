@@ -10,9 +10,9 @@
 //! network availability); they assert the structural invariants of whatever
 //! entries were produced.
 
-use crate::common::service_with_cache;
+use crate::common::{read_generated_doc, service_with_cache};
 use mediapm::MediaRuntimeStorage;
-use mediapm_conductor::{NickelDocument, ToolKindSpec, decode_document};
+use mediapm_conductor::{NickelDocument, ToolKindSpec};
 
 /// Runs a full `sync_tools()` against a fresh hermetic service and returns
 /// the generated conductor document. Individual tools may fail to download
@@ -23,9 +23,7 @@ async fn synced_doc() -> Result<NickelDocument, mediapm::MediaPmError> {
         service_with_cache(MediaRuntimeStorage::default()).await?;
     service.sync_tools().await?;
 
-    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
-        .expect("conductor.generated.ncl should be readable");
-    Ok(decode_document(&bytes).expect("valid Nickel document"))
+    Ok(read_generated_doc(&service))
 }
 
 #[tokio::test]

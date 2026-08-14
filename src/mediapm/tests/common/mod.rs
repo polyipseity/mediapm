@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::Path;
 
 use mediapm::{MediaPmService, MediaRuntimeStorage};
+use mediapm_conductor::{NickelDocument, decode_document};
 use zip::write::FileOptions;
 
 /// Loads a `MediaPmDocument` from a persisted `mediapm.ncl` file.
@@ -55,4 +56,13 @@ pub(crate) fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     }
     zip.finish().expect("zip finish");
     buffer.into_inner()
+}
+
+/// Reads and decodes the machine-generated conductor document after a sync.
+pub(crate) fn read_generated_doc(
+    service: &MediaPmService<mediapm_cas::FileSystemCas>,
+) -> NickelDocument {
+    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
+        .expect("conductor.generated.ncl should be readable");
+    decode_document(&bytes).expect("valid Nickel document")
 }
