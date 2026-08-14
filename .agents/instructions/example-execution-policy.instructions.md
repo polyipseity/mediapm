@@ -12,14 +12,15 @@ Each example file under `src/*/examples/` must contain at least one `#[cfg(test)
 
 Nextest (via `cargo test-all` / `--all-targets`) compiles examples and runs their embedded `#[cfg(test)]` modules; it never executes an example `main()` on its own.
 
-## Deterministic examples always run their full path; nondeterministic examples skip in CI only
+## Deterministic examples always run their full path; nondeterministic examples follow a three-level run model
 
 Examples that require nondeterministic access (network, external services, managed-tool downloads) must detect CI in the test that calls `main()`, never inside `main()` itself. The policy:
 
 1. **Deterministic examples** (e.g. the offline demo) always run their full path in tests — no reduced mode, no CI detection.
-2. **Nondeterministic examples** (e.g. the online demo) detect CI using the standard CI environment variables (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `DRONE`):
-   - In CI: the test skips with a documented message (the full path is nondeterministic and must not run in CI).
-   - Outside CI: the test runs the full path (no reduced mode).
+2. **Nondeterministic examples** (e.g. the online demo) follow a three-level run model:
+   - **Level 1 — CI test run** (`cargo test` with any of `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `DRONE` set): the embedded test skips with a documented message via `ci_mode_detected()` — the full path is nondeterministic and must not run in CI.
+   - **Level 2 — test harness outside CI** (`cargo test` / `cargo test-all` / pre-push hooks, no CI env): the test runs `main()` in a deterministic reduced mode (e.g. config-only) selected by the documented environment variables, never touching the network.
+   - **Level 3 — explicit run** (`cargo run --example <name>` or executing the built example binary): no test harness exists (`cfg(test)` is not compiled), so the full path runs — the only execution level that exercises network and external tools.
 
 `main()` itself must be deterministic given environment inputs: no CI detection, no network probing, and no conditional behavior other than what the documented environment variables select.
 
