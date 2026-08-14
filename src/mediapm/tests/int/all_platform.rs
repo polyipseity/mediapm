@@ -10,24 +10,28 @@
 //! network availability); they assert the structural invariants of whatever
 //! entries were produced.
 
-use mediapm::{MediaPmService, MediaRuntimeStorage};
+use mediapm::MediaRuntimeStorage;
 use mediapm_conductor::{NickelDocument, ToolKindSpec, decode_document};
 
-#[tokio::test]
-async fn managed_tools_exist_in_generated_document() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+use super::helpers::service_with_cache;
+
+/// Runs a full `sync_tools()` against a fresh hermetic service and returns
+/// the generated conductor document. Individual tools may fail to download
+/// (network), so tests only assert structural invariants of whatever
+/// entries were produced.
+async fn synced_doc() -> Result<NickelDocument, mediapm::MediaPmError> {
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
     service.sync_tools().await?;
 
     let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
         .expect("conductor.generated.ncl should be readable");
-    let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
+    Ok(decode_document(&bytes).expect("valid Nickel document"))
+}
+
+#[tokio::test]
+async fn managed_tools_exist_in_generated_document() -> Result<(), mediapm::MediaPmError> {
+    let doc = synced_doc().await?;
 
     // At least one managed tool must appear after a successful sync.
     // Individual tools may fail to download (network), so we only verify
@@ -41,19 +45,7 @@ async fn managed_tools_exist_in_generated_document() -> Result<(), mediapm::Medi
 
 #[tokio::test]
 async fn external_tool_content_map_keys_have_os_prefix() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
-    service.sync_tools().await?;
-
-    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
-        .expect("conductor.generated.ncl should be readable");
-    let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
+    let doc = synced_doc().await?;
 
     for (tool_id, spec) in &doc.tools {
         if spec.runtime.content_map.is_empty() {
@@ -76,19 +68,7 @@ async fn external_tool_content_map_keys_have_os_prefix() -> Result<(), mediapm::
 
 #[tokio::test]
 async fn external_tool_command_is_non_empty() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
-    service.sync_tools().await?;
-
-    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
-        .expect("conductor.generated.ncl should be readable");
-    let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
+    let doc = synced_doc().await?;
 
     for (tool_id, spec) in &doc.tools {
         if matches!(spec.kind, ToolKindSpec::Builtin { .. }) {
@@ -108,19 +88,7 @@ async fn external_tool_command_is_non_empty() -> Result<(), mediapm::MediaPmErro
 
 #[tokio::test]
 async fn external_tool_command_uses_context_os_selector() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
-    service.sync_tools().await?;
-
-    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
-        .expect("conductor.generated.ncl should be readable");
-    let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
+    let doc = synced_doc().await?;
     let os_keys: [&str; 3] = ["linux", "macos", "windows"];
 
     for (tool_id, spec) in &doc.tools {

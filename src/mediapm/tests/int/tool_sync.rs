@@ -24,6 +24,194 @@ use mediapm_conductor::{
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
+use super::helpers::service_with_cache;
+
+// ---------------------------------------------------------------------------
+// Shared test scaffolding
+// ---------------------------------------------------------------------------
+
+/// The v2 `state.json` fixture: map-form `managed_tools` with a single
+/// ffmpeg entry. `resolved` selects the pre-v3 wire format (string
+/// provenance fields) versus explicit `null`s.
+fn v2_state_json(resolved: bool) -> serde_json::Value {
+    let resolved_tag = if resolved {
+        serde_json::Value::String("v7.1".to_string())
+    } else {
+        serde_json::Value::Null
+    };
+    let resolved_version = if resolved {
+        serde_json::Value::String("7.1".to_string())
+    } else {
+        serde_json::Value::Null
+    };
+    let resolved_vcs_hash = if resolved {
+        serde_json::Value::String("abc".to_string())
+    } else {
+        serde_json::Value::Null
+    };
+    serde_json::json!({
+        "version": 2,
+        "managed_files": {},
+        "managed_tools": {
+            "ffmpeg": {
+                "version": "7.1",
+                "canonical_version": "ffmpeg-v7.1",
+                "content_map_hash": "blake3:abc123",
+                "deployed_at": 1_700_000_000,
+                "resolved_tag": resolved_tag,
+                "resolved_version": resolved_version,
+                "resolved_vcs_hash": resolved_vcs_hash,
+            }
+        },
+        "workflow_states": {}
+    })
+}
+
+/// Creates a service whose sync skip-path is fully hermetic for the three
+/// yt-dlp/ffmpeg/deno tools: exact version specs, a seeded `state.json` with
+/// matching entries, and a seeded generated doc that already carries the
+/// inlined `deps/` keys a previous network sync would have produced.
+#[allow(clippy::too_many_lines)]
+async fn seeded_three_tool_skip_service() -> Result<
+    (MediaPmService<mediapm_cas::FileSystemCas>, tempfile::TempDir, tempfile::TempDir),
+    mediapm::MediaPmError,
+> {
+    use std::collections::BTreeMap;
+
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert(
+        "yt-dlp".to_string(),
+        ToolRequirement {
+            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                version: Some("v2024.01.01".to_string()),
+                vcs_hash: None,
+                tag: None,
+            }),
+            dependencies: BTreeMap::from([
+                (
+                    "ffmpeg".to_string(),
+                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                        version: Some("v7.1".to_string()),
+                        vcs_hash: None,
+                        tag: None,
+                    }),
+                ),
+                (
+                    "deno".to_string(),
+                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                        version: Some("v1.46.0".to_string()),
+                        vcs_hash: None,
+                        tag: None,
+                    }),
+                ),
+            ]),
+            ..Default::default()
+        },
+    );
+    let (service, root, cache_root) = service_with_cache(runtime).await?;
+
+    // Seed state.json with matching entries for all three tools so the
+    // spec-based skip fires without network.
+    let state_path = service.paths().mediapm_state_json.clone();
+    std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
+        .expect("create state parent dir");
+    let mut state = MediaPmState::default();
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "yt-dlp".to_string(),
+        version: "seeded-version".to_string(),
+        // Non-transitive composite: segments reference each dep's OWN
+        // version segment (sorted by dep_id); composite-bearing dep entries
+        // never nest into the requester's composite.
+        canonical_version: "yt-dlp-v2024.01.01;deno:deno-v1.46.0;ffmpeg:ffmpeg-v7.1".to_string(),
+        content_map_hash: "blake3:abc123".to_string(),
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
+        resolved_tag: None,
+        resolved_version: Some("v2024.01.01".to_string()),
+        resolved_vcs_hash: None,
+    });
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "ffmpeg".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: "ffmpeg-v7.1".to_string(),
+        content_map_hash: "blake3:ffmpeg1".to_string(),
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
+        resolved_tag: None,
+        resolved_version: Some("v7.1".to_string()),
+        resolved_vcs_hash: None,
+    });
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "deno".to_string(),
+        version: "seeded-version".to_string(),
+        canonical_version: "deno-v1.46.0".to_string(),
+        content_map_hash: "blake3:deno1".to_string(),
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
+        resolved_tag: None,
+        resolved_version: Some("v1.46.0".to_string()),
+        resolved_vcs_hash: None,
+    });
+    std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
+        .expect("write seeded state");
+
+    // Seed the generated doc with entries for ALL three tools: the
+    // workspace-CAS skip path requires `find_active_tool_spec` for each tool
+    // (deps get their own generated-doc specs too, not just the requester).
+    // Content map values are non-hash placeholders (external_data invariant
+    // skips them, and they pass the CAS availability check).
+    let mut doc = NickelDocument::default();
+    doc.tools.insert(
+        "yt-dlp@blake3:abc123".to_string(),
+        ToolSpec {
+            name: "yt-dlp".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/yt-dlp".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
+                    ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
+                    ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    doc.tools.insert(
+        "ffmpeg@blake3:ffmpeg1".to_string(),
+        ToolSpec {
+            name: "ffmpeg".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/ffmpeg".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    doc.tools.insert(
+        "deno@blake3:deno1".to_string(),
+        ToolSpec {
+            name: "deno".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: BTreeMap::from([
+                    ("linux/deno".to_string(), "provisioned".to_string()),
+                    ("linux/".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let generated_path = service.paths().conductor_generated_ncl.clone();
+    let bytes = encode_document(doc).expect("seeded doc encodes");
+    std::fs::write(&generated_path, bytes).expect("write seeded generated doc");
+
+    Ok((service, root, cache_root))
+}
+
 // ---------------------------------------------------------------------------
 // Dependency validation integration tests
 // ---------------------------------------------------------------------------
@@ -37,25 +225,17 @@ use zip::write::SimpleFileOptions;
 async fn sync_rejects_bad_dependency_key() {
     use std::collections::BTreeMap;
 
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-
     let bad_deps: BTreeMap<String, mediapm::ConfigVersionSpec> =
         [("ffmpeg_version".to_string(), mediapm::ConfigVersionSpec::Latest)].into();
 
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert(
         "yt-dlp".to_string(),
         ToolRequirement { dependencies: bad_deps, ..ToolRequirement::default() },
     );
 
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime)
-            .await
-            .expect("service creation");
+    let (mut service, _root, _cache_root) =
+        service_with_cache(runtime).await.expect("service creation");
 
     // Sync should fail with MPM-E001 and a suggestion.
     let result = service.sync_tools().await;
@@ -82,16 +262,10 @@ async fn sync_rejects_bad_dependency_key() {
 async fn sync_rejects_dep_key_not_in_known_types() {
     use std::collections::BTreeMap;
 
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-
     let bad_deps: BTreeMap<String, mediapm::ConfigVersionSpec> =
         [("sd".to_string(), mediapm::ConfigVersionSpec::Latest)].into();
 
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     // Configure yt-dlp with `sd` as a dependency — `sd` is in rsgain's
     // dependency_types but NOT in yt-dlp's.
     runtime.tools.insert(
@@ -102,10 +276,8 @@ async fn sync_rejects_dep_key_not_in_known_types() {
     // a valid dependency key for yt-dlp.
     runtime.tools.insert("sd".to_string(), ToolRequirement::default());
 
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime)
-            .await
-            .expect("service creation");
+    let (mut service, _root, _cache_root) =
+        service_with_cache(runtime).await.expect("service creation");
 
     let result = service.sync_tools().await;
     let Err(err) = result else {
@@ -129,14 +301,8 @@ async fn sync_rejects_dep_key_not_in_known_types() {
 /// Sync on a completely empty workspace completes without error.
 #[tokio::test]
 async fn sync_empty_workspace_succeeds() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
     let _summary = service.sync_tools().await?;
     Ok(())
 }
@@ -144,14 +310,8 @@ async fn sync_empty_workspace_succeeds() -> Result<(), mediapm::MediaPmError> {
 /// Sync creates the expected runtime directories under `.mediapm/`.
 #[tokio::test]
 async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
     service.sync_tools().await?;
     let paths = service.paths();
     assert!(paths.runtime_root.exists(), "runtime root .mediapm/ should exist");
@@ -162,14 +322,8 @@ async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError>
 /// Sync creates `state.json` containing a version field.
 #[tokio::test]
 async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
     service.sync_tools().await?;
     let state_path = &service.paths().mediapm_state_json;
     assert!(state_path.exists(), "state.json should exist");
@@ -182,14 +336,8 @@ async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
 /// Sync creates `conductor.generated.ncl` with tools registered.
 #[tokio::test]
 async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
     service.sync_tools().await?;
     let generated_path = &service.paths().conductor_generated_ncl;
     assert!(generated_path.exists(), "conductor.generated.ncl should exist");
@@ -202,14 +350,8 @@ async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> 
 /// Sync creates `.env.generated` with a comment header.
 #[tokio::test]
 async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
     service.sync_tools().await?;
     let env_path = &service.paths().env_generated_file;
     assert!(env_path.exists(), ".env.generated should exist");
@@ -233,14 +375,8 @@ async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
 /// generated header lines or future entries.
 #[tokio::test]
 async fn sync_env_has_no_hash_in_names() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
     service.sync_tools().await?;
     let env_path = &service.paths().env_generated_file;
     let content = std::fs::read_to_string(env_path).expect("env file should be readable");
@@ -272,14 +408,8 @@ async fn sync_env_has_no_hash_in_names() -> Result<(), mediapm::MediaPmError> {
 /// maps.
 #[tokio::test]
 async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
     service.sync_tools().await?;
     let env_path = &service.paths().env_generated_file;
     let content = std::fs::read_to_string(env_path).expect("env file should be readable");
@@ -311,12 +441,8 @@ async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPm
 /// isolation regression guard).
 #[tokio::test]
 async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let (mut service, _root, cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
 
     // Record real cache state before the sync.
     let real_cache_mtime =
@@ -324,8 +450,6 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
             .and_then(|p| std::fs::metadata(p.join("tools.json")).ok())
             .and_then(|m| m.modified().ok());
 
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
     let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
         .expect("conductor.generated.ncl should be readable");
@@ -361,15 +485,9 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
 /// `.env.generated` after re-sync.
 #[tokio::test]
 async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
     service.sync_tools().await?;
 
     let env_path = service.paths().env_generated_file.clone();
@@ -397,14 +515,8 @@ async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError
 /// Re-syncing produces an identical state document (idempotency).
 #[tokio::test]
 async fn sync_is_idempotent() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
     service.sync_tools().await?;
     let state_after_first =
         std::fs::read(&service.paths().mediapm_state_json).expect("state.json should exist");
@@ -458,20 +570,14 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
 /// after sync, not an empty string or requirement version.
 #[tokio::test]
 async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("tempdir for cache");
-    let mut overrides = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    overrides.tools.insert(
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert(
         "media-tagger".to_string(),
         // `ToolRegistryEntry.canonical_version` uses the resolved canonical
         // version (git hash), not the requirement's version_spec.
         ToolRequirement::default(),
     );
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
     service.sync_tools().await?;
 
     let bytes = std::fs::read(&service.paths().mediapm_state_json)
@@ -537,15 +643,9 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
 /// set, pruning would incorrectly remove its provisioned directory.
 #[tokio::test]
 async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
     let summary = service.sync_tools().await?;
     assert_eq!(
         summary.pruned_tools, 0,
@@ -565,24 +665,7 @@ async fn state_v2_on_disk_bridges_to_v3_on_load() -> Result<(), mediapm::MediaPm
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let state_path = root.path().join("state.json");
 
-    let v2_json = serde_json::json!({
-        "version": 2,
-        "managed_files": {},
-        "managed_tools": {
-            "ffmpeg": {
-                "version": "7.1",
-                "canonical_version": "ffmpeg-v7.1",
-                "content_map_hash": "blake3:abc123",
-                "deployed_at": 1_700_000_000,
-                "resolved_tag": "v7.1",
-                "resolved_version": "7.1",
-                "resolved_vcs_hash": "abc"
-            }
-        },
-        "workflow_states": {}
-    });
-
-    std::fs::write(&state_path, serde_json::to_string_pretty(&v2_json).unwrap())
+    std::fs::write(&state_path, serde_json::to_string_pretty(&v2_state_json(true)).unwrap())
         .expect("write v2 state.json");
 
     let state = mediapm::load_mediapm_state_document(&state_path).expect("load v2 state.json");
@@ -601,37 +684,14 @@ async fn state_v2_on_disk_bridges_to_v3_on_load() -> Result<(), mediapm::MediaPm
 /// tools (none), and writes the state back as v3.
 #[tokio::test]
 async fn sync_upgrades_v2_state_to_v3_format() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let state_path = root.path().join(".mediapm").join("state.json");
-    std::fs::create_dir_all(state_path.parent().unwrap()).expect("create .mediapm dir");
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
 
-    let v2_json = serde_json::json!({
-        "version": 2,
-        "managed_files": {},
-        "managed_tools": {
-            "ffmpeg": {
-                "version": "7.1",
-                "canonical_version": "ffmpeg-v7.1",
-                "content_map_hash": "blake3:abc123",
-                "deployed_at": 1_700_000_000,
-                "resolved_tag": null,
-                "resolved_version": null,
-                "resolved_vcs_hash": null
-            }
-        },
-        "workflow_states": {}
-    });
-
-    std::fs::write(&state_path, serde_json::to_string_pretty(&v2_json).unwrap())
+    // Seed a v2-format state.json; the service loads it via the v2→v3 bridge
+    // during sync and writes the upgraded v3 format back.
+    let state_path = service.paths().mediapm_state_json.clone();
+    std::fs::write(&state_path, serde_json::to_string_pretty(&v2_state_json(false)).unwrap())
         .expect("write v2 state.json");
-
-    let runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
     service.sync_tools().await?;
 
     // After sync, state.json should be v3 format (array instead of map).
@@ -687,15 +747,9 @@ async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
 /// equals bare). Validates the refactored storage path is live.
 #[tokio::test]
 async fn sync_stores_composite_canonical_version() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
     service.sync_tools().await?;
 
     let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
@@ -734,15 +788,9 @@ async fn sync_stores_composite_canonical_version() -> Result<(), mediapm::MediaP
 /// The state.json content is identical after re-sync.
 #[tokio::test]
 async fn sync_skip_triggers_on_unchanged_composite() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     let state_path = service.paths().mediapm_state_json.clone();
 
@@ -768,12 +816,7 @@ async fn sync_skip_triggers_on_unchanged_composite() -> Result<(), mediapm::Medi
 /// `compute_composite_canonical_version` for apples-to-apples comparison.
 #[tokio::test]
 async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     // Configure media-tagger so it's a desired tool with matching deps.
     runtime.tools.insert(
         "media-tagger".to_string(),
@@ -785,8 +828,7 @@ async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm
             ..Default::default()
         },
     );
-    let service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     // Seed state with media-tagger at its expected composite canonical_version
     // (which equals bare MEDIAPM_GIT_HASH since ffmpeg is CrossStep).
@@ -814,15 +856,9 @@ async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm
 /// `canonical_version` differs from the computed composite.
 #[tokio::test]
 async fn sync_logical_requires_sync_on_composite_mismatch() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
-    let service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     // Seed state with media-tagger at a WRONG canonical_version.
     let mut state = MediaPmState::default();
@@ -862,15 +898,9 @@ async fn sync_logical_requires_sync_on_composite_mismatch() -> Result<(), mediap
 /// and `resolved_vcs_hash` is the mediapm git hash.
 #[tokio::test]
 async fn sync_populates_resolved_fields_in_state() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     service.sync_tools().await?;
 
@@ -913,15 +943,9 @@ async fn sync_populates_resolved_fields_in_state() -> Result<(), mediapm::MediaP
 /// `deployed_at`, and `version` are untouched — proving no re-provision.
 #[tokio::test]
 async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     // First sync provisions media-tagger, populates workspace CAS, and writes
     // conductor.generated.ncl so the skip path can verify content-map bytes.
@@ -1005,12 +1029,7 @@ async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmErr
 #[tokio::test]
 async fn sync_exact_version_spec_skips_when_stored_fields_match()
 -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert(
         "media-tagger".to_string(),
         ToolRequirement {
@@ -1022,8 +1041,7 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
             ..Default::default()
         },
     );
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     // Seed state.json with matching resolved fields.
     let state_path = service.paths().mediapm_state_json.clone();
@@ -1117,12 +1135,7 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
 async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmError> {
     use std::collections::BTreeMap;
 
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert(
         "ffmpeg".to_string(),
         ToolRequirement {
@@ -1134,8 +1147,7 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
             ..Default::default()
         },
     );
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     // Seed state.json with a matching ffmpeg entry (exact version "7.1").
     let state_path = service.paths().mediapm_state_json.clone();
@@ -1271,144 +1283,7 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError> {
-    use std::collections::BTreeMap;
-
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    runtime.tools.insert(
-        "yt-dlp".to_string(),
-        ToolRequirement {
-            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
-                version: Some("v2024.01.01".to_string()),
-                vcs_hash: None,
-                tag: None,
-            }),
-            dependencies: BTreeMap::from([
-                (
-                    "ffmpeg".to_string(),
-                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
-                        version: Some("v7.1".to_string()),
-                        vcs_hash: None,
-                        tag: None,
-                    }),
-                ),
-                (
-                    "deno".to_string(),
-                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
-                        version: Some("v1.46.0".to_string()),
-                        vcs_hash: None,
-                        tag: None,
-                    }),
-                ),
-            ]),
-            ..Default::default()
-        },
-    );
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
-
-    // Seed state.json with matching entries for all three tools so the
-    // spec-based skip fires without network.
-    let state_path = service.paths().mediapm_state_json.clone();
-    std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
-        .expect("create state parent dir");
-    let mut state = MediaPmState::default();
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "yt-dlp".to_string(),
-        version: "seeded-version".to_string(),
-        // Non-transitive composite: segments reference each dep's OWN
-        // version segment (sorted by dep_id); composite-bearing dep entries
-        // never nest into the requester's composite.
-        canonical_version: "yt-dlp-v2024.01.01;deno:deno-v1.46.0;ffmpeg:ffmpeg-v7.1".to_string(),
-        content_map_hash: "blake3:abc123".to_string(),
-        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
-        resolved_tag: None,
-        resolved_version: Some("v2024.01.01".to_string()),
-        resolved_vcs_hash: None,
-    });
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "ffmpeg".to_string(),
-        version: "seeded-version".to_string(),
-        canonical_version: "ffmpeg-v7.1".to_string(),
-        content_map_hash: "blake3:ffmpeg1".to_string(),
-        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
-        resolved_tag: None,
-        resolved_version: Some("v7.1".to_string()),
-        resolved_vcs_hash: None,
-    });
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "deno".to_string(),
-        version: "seeded-version".to_string(),
-        canonical_version: "deno-v1.46.0".to_string(),
-        content_map_hash: "blake3:deno1".to_string(),
-        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
-        resolved_tag: None,
-        resolved_version: Some("v1.46.0".to_string()),
-        resolved_vcs_hash: None,
-    });
-    std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
-        .expect("write seeded state");
-
-    // Seed the generated doc with entries for ALL three tools: the
-    // workspace-CAS skip path requires `find_active_tool_spec` for each tool
-    // (deps get their own generated-doc specs too, not just the requester).
-    // Content map values are non-hash placeholders (external_data invariant
-    // skips them, and they pass the CAS availability check).
-    let mut doc = NickelDocument::default();
-    doc.tools.insert(
-        "yt-dlp@blake3:abc123".to_string(),
-        ToolSpec {
-            name: "yt-dlp".to_string(),
-            kind: ToolKindSpec::default(),
-            runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/yt-dlp".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                    ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
-                    ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
-                ]),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    );
-    doc.tools.insert(
-        "ffmpeg@blake3:ffmpeg1".to_string(),
-        ToolSpec {
-            name: "ffmpeg".to_string(),
-            kind: ToolKindSpec::default(),
-            runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/ffmpeg".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                ]),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    );
-    doc.tools.insert(
-        "deno@blake3:deno1".to_string(),
-        ToolSpec {
-            name: "deno".to_string(),
-            kind: ToolKindSpec::default(),
-            runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/deno".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                ]),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    );
-    let generated_path = service.paths().conductor_generated_ncl.clone();
-    let bytes = encode_document(doc).expect("seeded doc encodes");
-    std::fs::write(&generated_path, bytes).expect("write seeded generated doc");
+    let (mut service, _root, _cache_root) = seeded_three_tool_skip_service().await?;
 
     service.sync_tools().await?;
 
@@ -1468,140 +1343,7 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
-    use std::collections::BTreeMap;
-
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
-    runtime.tools.insert(
-        "yt-dlp".to_string(),
-        ToolRequirement {
-            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
-                version: Some("v2024.01.01".to_string()),
-                vcs_hash: None,
-                tag: None,
-            }),
-            dependencies: BTreeMap::from([
-                (
-                    "ffmpeg".to_string(),
-                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
-                        version: Some("v7.1".to_string()),
-                        vcs_hash: None,
-                        tag: None,
-                    }),
-                ),
-                (
-                    "deno".to_string(),
-                    mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
-                        version: Some("v1.46.0".to_string()),
-                        vcs_hash: None,
-                        tag: None,
-                    }),
-                ),
-            ]),
-            ..Default::default()
-        },
-    );
-    let mut service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
-
-    // Seed state.json with matching entries for all three tools.
-    let state_path = service.paths().mediapm_state_json.clone();
-    std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
-        .expect("create state parent dir");
-    let mut state = MediaPmState::default();
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "yt-dlp".to_string(),
-        version: "seeded-version".to_string(),
-        canonical_version: "yt-dlp-v2024.01.01;deno:deno-v1.46.0;ffmpeg:ffmpeg-v7.1".to_string(),
-        content_map_hash: "blake3:abc123".to_string(),
-        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
-        resolved_tag: None,
-        resolved_version: Some("v2024.01.01".to_string()),
-        resolved_vcs_hash: None,
-    });
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "ffmpeg".to_string(),
-        version: "seeded-version".to_string(),
-        canonical_version: "ffmpeg-v7.1".to_string(),
-        content_map_hash: "blake3:ffmpeg1".to_string(),
-        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
-        resolved_tag: None,
-        resolved_version: Some("v7.1".to_string()),
-        resolved_vcs_hash: None,
-    });
-    state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "deno".to_string(),
-        version: "seeded-version".to_string(),
-        canonical_version: "deno-v1.46.0".to_string(),
-        content_map_hash: "blake3:deno1".to_string(),
-        deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
-        resolved_tag: None,
-        resolved_version: Some("v1.46.0".to_string()),
-        resolved_vcs_hash: None,
-    });
-    std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
-        .expect("write seeded state");
-
-    // Seed the generated doc with entries for ALL three tools: the
-    // workspace-CAS skip path requires `find_active_tool_spec` for each tool
-    // (deps get their own generated-doc specs too, not just the requester).
-    // Content map values are non-hash placeholders (external_data invariant
-    // skips them, and they pass the CAS availability check).
-    let mut doc = NickelDocument::default();
-    doc.tools.insert(
-        "yt-dlp@blake3:abc123".to_string(),
-        ToolSpec {
-            name: "yt-dlp".to_string(),
-            kind: ToolKindSpec::default(),
-            runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/yt-dlp".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                    ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
-                    ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
-                ]),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    );
-    doc.tools.insert(
-        "ffmpeg@blake3:ffmpeg1".to_string(),
-        ToolSpec {
-            name: "ffmpeg".to_string(),
-            kind: ToolKindSpec::default(),
-            runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/ffmpeg".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                ]),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    );
-    doc.tools.insert(
-        "deno@blake3:deno1".to_string(),
-        ToolSpec {
-            name: "deno".to_string(),
-            kind: ToolKindSpec::default(),
-            runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/deno".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                ]),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    );
-    let generated_path = service.paths().conductor_generated_ncl.clone();
-    let bytes = encode_document(doc).expect("seeded doc encodes");
-    std::fs::write(&generated_path, bytes).expect("write seeded generated doc");
+    let (mut service, _root, _cache_root) = seeded_three_tool_skip_service().await?;
 
     service.sync_tools().await?;
 
@@ -1644,12 +1386,7 @@ async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
 /// `CrossStep` dep to assert composite-dep tolerance.)
 #[tokio::test]
 async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.path().to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert(
         "media-tagger".to_string(),
         ToolRequirement {
@@ -1660,8 +1397,7 @@ async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
             ..Default::default()
         },
     );
-    let service =
-        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
+    let (service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     let mut state = MediaPmState::default();
     // ffmpeg stored with a COMPOSITE canonical_version — as if it had been
