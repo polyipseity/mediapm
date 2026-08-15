@@ -101,7 +101,7 @@ mediapm-driven runs wire `conductor_tmp_dir` from `MediaPmPaths` (`mediapm-runti
 | Embedded `#[cfg(test)]` in one example binary | safe in parallel within the same binary | `IsolatedExampleRoots` holds a process-wide env lock (`example_isolation::lock_process_env()`) for its whole lifetime; direct env mutation without a guard must acquire it explicitly |
 | Example `main_is_exercised` + sibling tests | safe in parallel within the same binary | Guard-held or explicitly acquired env lock covers every `MEDIAPM_EXAMPLE_*` mutation; no `--test-threads=1` needed |
 
-Tests that mutate `MEDIAPM_EXAMPLE_*` (or any process env) directly without a guard must hold the lock via `example_isolation::lock_process_env()` for the mutation scope. The lock is a `parking_lot::MutexGuard` (Send), so it can be held across `.await` in `#[tokio::test]` bodies that keep an `IsolatedExampleRoots` guard alive.
+Tests that mutate `MEDIAPM_EXAMPLE_*` (or any process env) directly without a guard must hold the lock via `example_isolation::lock_process_env()` for the mutation scope. The lock is a `parking_lot::MutexGuard` (Send), so it can be held across `.await` in `#[tokio::test]` bodies that keep an `IsolatedExampleRoots` guard alive. Never nest `lock_process_env()` inside `with_cache()`/`artifact_only()` (or inside another guard): the `parking_lot::Mutex` is non-reentrant and nesting deadlocks.
 
 ## Managed temp path detection
 

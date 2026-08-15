@@ -37,6 +37,8 @@ applyTo: "scripts/**"
 - Prefer explicit error handling, predictable exit codes, and idempotent operations where possible.
 - Do not assume Bash-only features in `.sh` unless you intentionally require Bash and document that requirement.
 - For PowerShell, prefer clear cmdlet names over aliases in committed scripts.
+- PowerShell `-File` gotcha: `pwsh -File script.ps1 --token` leaves dash-prefixed tokens unbound in `$args` (they do not bind to positional parameters). Fold the first one in when the positional param is empty, why-commented, as `run-all-tests.ps1` does.
+- POSIX sh gotcha: under `set -e`, a command-substitution assignment (`var="$(cmd)"`) aborts the script when `cmd` exits non-zero. Guard it with `if var="$(cmd)"; then` or append `|| true`, as `test-run-all-tests.sh` does.
 
 ## Tooling alignment
 

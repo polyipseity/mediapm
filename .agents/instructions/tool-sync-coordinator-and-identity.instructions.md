@@ -140,6 +140,10 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
 - Tests must verify both the skip-if-up-to-date path (state.json-only change) and the
   full-provision path (both files change). A hermetic test should assert that re-running
   sync with identical tool payloads produces identical conductor file bytes.
+- Skip-path tests (`tests/int/tool_sync.rs`) must seed generated-doc entries with a
+  non-hash placeholder content map (e.g. `"provisioned"`) for every tool that must skip:
+  skip requires `find_active_tool_spec` plus `workspace_content_map_is_available`, and the
+  placeholder passes hermetically without network.
 
 ## Content-addressed identity
 

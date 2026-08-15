@@ -36,6 +36,7 @@ All three extensions (`url`, `webloc`, `desktop`) are required in both locations
 2. **Do not** use suffix-only link asserts in live demo when exact helper filenames apply.
 3. **Do not** add materializer logic to rename sidecar link basenames into mediapm root projection shape.
 4. When extending link coverage: update helpers in `demo_hierarchy_spec.rs`, golden JSON, `golden_fixture_link_paths_match_helpers`, then live exact asserts.
+5. **Do not** modify the hermetic golden fixtures (`tests/fixtures/demo_hierarchy_golden.json`, `demo_hierarchy_spec.rs`) casually — they are the offline contract for the materialized tree; update fixtures and the helper-linkage test in the same commit as a materialization behavior change.
 
 ## Key symbols
 

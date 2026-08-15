@@ -50,6 +50,7 @@ RAII `TempDir` owners must be bound to a local for the full scope that needs the
 - The real OS user cache (`<os-cache>/mediapm/cache/`) is never touched.
 - Keep both scripts behaviorally identical; changing one requires the matching change in the other.
 - Self-test scripts (`tests/scripts/test-clean-mediapm-temp.sh` / `.ps1`, `tests/scripts/test-run-all-tests.sh` / `.ps1`) are driven by the root `tests/` crate (package `mediapm-tests`) via `cargo --locked test-pkg mediapm-tests` (cargo/nextest), not invoked directly from `run-all-tests.*`.
+- Janitor sandbox self-match gotcha: the Rust janitor tests (`tests/scripts/mod.rs`) seed fake dirs in a nested `scope` subdir of a `mediapm-`-prefixed sandbox — the sandbox root must carry the managed prefix so a leaked sandbox is reclaimed by the janitor/orphan gate, but `find -maxdepth 1 -name 'mediapm-*'` would match the root itself; the nested `scope` basename dodges the glob, and the janitor is pointed at `scope` via the child-scoped `TMPDIR`.
 
 ## Regression gate contract
 
