@@ -14,13 +14,13 @@ Nextest (via `cargo test-all` / `--all-targets`) compiles examples and runs thei
 
 ## Deterministic examples always run their full path; nondeterministic examples follow a three-level run model
 
-Examples that require nondeterministic access (network, external services, managed-tool downloads) must detect CI in the test that calls `main()`, never inside `main()` itself. The policy:
+Examples that require nondeterministic access (network, external services, managed-tool downloads) must detect CI in the test that calls `main()`, never inside `main()` itself. The three-level run model below applies to all examples that make use of the user-level tool download cache (`mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`, `mediapm_demo`, `mediapm_demo_online`), not only the online demo; deterministic examples such as the offline demo still run their full path in tests with no CI detection. The policy:
 
 1. **Deterministic examples** (e.g. the offline demo) always run their full path in tests — no reduced mode, no CI detection.
 2. **Nondeterministic examples** (e.g. the online demo) follow a three-level run model:
    - **Level 1 — CI test run** (`cargo test` with any of `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `DRONE` set): the embedded test skips with a documented message via `ci_mode_detected()` — the full path is nondeterministic and must not run in CI.
    - **Level 2 — test harness outside CI** (`cargo test` / `cargo test-all` / pre-push hooks, no CI env): the test runs `main()` in a deterministic reduced mode (e.g. config-only) selected by the documented environment variables, never touching the network.
-   - **Level 3 — explicit run** (`cargo run --example <name>` or executing the built example binary): no test harness exists (`cfg(test)` is not compiled), so the full path runs — the only execution level that exercises network and external tools.
+   - **Level 3 — explicit run** (`cargo run --example <name>` or executing the built example binary): no test harness exists (`cfg(test)` is not compiled), so the full path runs — the only execution level that exercises network and external tools. With the env overrides unset, cache-using examples resolve the real persistent user-level tool download cache via `example_isolation::user_level_cache_root()` (`<os-cache-dir>/mediapm/cache`), so downloaded tools persist across runs.
 
 `main()` itself must be deterministic given environment inputs: no CI detection, no network probing, and no conditional behavior other than what the documented environment variables select.
 
@@ -33,7 +33,7 @@ See **`example-temp-isolation.instructions.md`** for the full temp-directory mod
 Two env-var overrides exist for this, set by tests through the shared [`IsolatedExampleRoots`](../../src/mediapm/src/example_isolation.rs) guard (`mediapm::example_isolation`):
 
 - `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` — artifact root (the workspace dir the example mutates). Tests set it to a unique tempdir. Never share the canonical `examples/artifacts/<name>` dir between tests in the same suite (CAS `store/lock` flock races otherwise).
-- `MEDIAPM_EXAMPLE_CACHE_ROOT` — user-level tool download cache root. Tests set it to a unique tempdir and map it to `MediaRuntimeStorage.cache_root_override`, so `sync_tools()`/tool provisioning never touches the real OS cache (`default_mediapm_user_download_cache_root()`). Bare demo runs default to a hermetic `<artifact_root>/cache` sibling when unset.
+- `MEDIAPM_EXAMPLE_CACHE_ROOT` — user-level tool download cache root. Tests set it to a unique tempdir and map it to `MediaRuntimeStorage.cache_root_override`, so `sync_tools()`/tool provisioning never touches the real OS cache (`default_mediapm_user_download_cache_root()`). When unset (explicit `cargo run --example`), the example resolves the real user-level tool download cache via `example_isolation::user_level_cache_root()` (`<os-cache-dir>/mediapm/cache`), so explicit runs share the cache with regular mediapm syncs and persist downloads across runs; tests always set the env var to a unique tempdir via `IsolatedExampleRoots::with_cache`, keeping the real cache untouched. `example_isolation::uses_isolated_cache_root()` lets examples and test code detect whether the hermetic isolated cache is active.
 
 When canonical artifact roots are locked (Windows share violations), examples may call `example_isolation::isolated_artifact_dir()` and keep the returned `TempDir` alive for the rest of the test or `main()` scope.
 
