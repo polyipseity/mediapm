@@ -8,7 +8,7 @@ applyTo: "src/mediapm/examples/**/*.rs,src/mediapm/tests/**/*.rs,src/mediapm/src
 
 ## Purpose
 
-mediapm tests and examples can create multi-gigabyte trees (CAS stores, tool downloads, conductor sandboxes, materialized hierarchy). This document is the canonical model for where those directories live, how they are isolated from production paths, and how they are torn down. Role prefixes and helpers live in `mediapm_utils::temp` (`src/mediapm-utils/src/temp.rs`); example env wiring lives in `mediapm::example_isolation` (`src/mediapm/src/example_isolation.rs`).
+mediapm tests and examples can create multi-gigabyte trees (CAS stores, tool downloads, conductor sandboxes, materialized hierarchy). This document is the canonical model for where those directories live, how they are isolated from production paths, and how they are torn down. Role prefixes and helpers live in `mediapm_utils::temp` (`src/mediapm-utils/src/temp.rs`); example env wiring lives in `mediapm::example_isolation` (`src/mediapm/src/example_isolation.rs`). Explicit (Level 3) `cargo run --example` runs resolve the real OS user-level cache and are not hermetic — that is intentional (persistence across runs); only embedded tests isolate via `MEDIAPM_EXAMPLE_CACHE_ROOT`.
 
 ## Role prefixes (all under `$TMPDIR`)
 
@@ -34,9 +34,9 @@ Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code
 | **Workspace runtime tree** | `{artifact_root}/.mediapm/` | `MediaPmService::new_fs_at*` | Lives under isolated or canonical artifact root |
 | **Workspace CAS store** | `{artifact_root}/.mediapm/store/` | FileSystem CAS open | Holds `store/lock` flock — parallel opens on same path fail |
 | **Workspace tool cache** | `{artifact_root}/.mediapm/cache/` | sync / materialization | Distinct from user-level download cache |
-| **User-level download cache** | `<os-cache>/mediapm/cache/` by default | `sync_tools`, provisioning | Tests must override via `MEDIAPM_EXAMPLE_CACHE_ROOT` → `MediaRuntimeStorage.cache_root_override` |
+| **User-level download cache** | `<os-cache>/mediapm/cache/` by default | `sync_tools`, provisioning | Tests must override via `MEDIAPM_EXAMPLE_CACHE_ROOT` → `MediaRuntimeStorage.cache_root_override`; explicit `cargo run --example` uses it directly via `user_level_cache_root()` |
 | **Isolated download cache** | `$TMPDIR/mediapm-cache-*` | `IsolatedExampleRoots::with_cache` | Yes |
-| **Default example cache root** | `{artifact_root}/cache` | `example_cache_root()` fallback when `MEDIAPM_EXAMPLE_CACHE_ROOT` unset | Yes — lives under the (isolated or canonical) artifact root and is wiped on reset |
+| **Level-3 user-level cache** | `<os-cache>/mediapm/cache` | `example_isolation::user_level_cache_root()` when `MEDIAPM_EXAMPLE_CACHE_ROOT` unset (explicit `cargo run --example`) | No — the real persistent user-level cache, shared with regular mediapm syncs; tests never touch it |
 | **Conductor sandbox** | `{conductor_tmp_dir}/sandbox/{instance_key}/` | step worker per workflow step | Removed when coordinator calls `remove_runtime_tmp_dir` after `run_workflow` |
 | **Conductor tmp root** | `$TMPDIR/mediapm-runtime-{16hex}/` | `runtime_dir_for_workspace` from workspace root | See `paths-layout.instructions.md` |
 | **Integration-test workspace** | `$TMPDIR/mediapm-artifact-*` | `tests/int/*`, `tests/e2e/*` via `artifact_dir()` | Yes — RAII drop removes tree when test process exits normally |
@@ -49,7 +49,7 @@ Canonical artifact roots are documentation and manual-demo targets. Examples-as-
 | Env var | Constant | Read by | Purpose |
 | ------- | -------- | ------- | ------- |
 | `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` | `example_isolation::ARTIFACT_ROOT_ENV` | Example `artifact_root()` helpers | Workspace / artifact root the example mutates |
-| `MEDIAPM_EXAMPLE_CACHE_ROOT` | `example_isolation::CACHE_ROOT_ENV` | `example_runtime_storage()` → `cache_root_override` | User-level tool download cache for sync/provisioning; defaults to `<artifact_root>/cache` when unset |
+| `MEDIAPM_EXAMPLE_CACHE_ROOT` | `example_isolation::CACHE_ROOT_ENV` | `example_runtime_storage()` → `cache_root_override` | User-level tool download cache for sync/provisioning; defaults to the real user-level cache `<os-cache>/mediapm/cache` (`example_isolation::user_level_cache_root()`) when unset; `example_isolation::uses_isolated_cache_root()` reports whether the isolated override is active |
 
 `main()` must honor these when set and fall back to canonical paths when unset so `cargo run --example` behavior is unchanged.
 

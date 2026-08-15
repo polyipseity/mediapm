@@ -36,6 +36,8 @@ All caches live under `default_mediapm_user_download_cache_root()` (OS-specific 
   provision/            # RAII provision cache (24h)
 ```
 
+Explicit `cargo run --example` runs of cache-using examples (`mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`, `mediapm_demo`, `mediapm_demo_online`) resolve this same location via `mediapm::example_isolation::user_level_cache_root()`, so they share the cache with regular syncs. Embedded examples-as-tests override it with `MEDIAPM_EXAMPLE_CACHE_ROOT` → `MediaRuntimeStorage.cache_root_override` to stay hermetic.
+
 ## Shared HTTP client
 
 Configured once via `OnceLock`. All three shared clients use the same
