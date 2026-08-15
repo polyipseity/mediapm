@@ -54,10 +54,6 @@ fn read_env_generated_yt_dlp_path(env_file: &Path) -> Option<String> {
 
 #[tokio::test]
 #[ignore = "requires network, external tools, and several minutes"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "single panic-dump test captures every sync state slice for debugging"
-)]
 async fn online_sync_post_sync_dump() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
