@@ -257,9 +257,7 @@ fn pwsh_janitor_dry_run_and_real_run() {
     if !skip_unless("pwsh", &["--version"]) {
         return;
     }
-    assert_janitor_sequence("clean-mediapm-temp.ps1", |script, sandbox, flags| {
-        run_pwsh(script, sandbox, flags)
-    });
+    assert_janitor_sequence("clean-mediapm-temp.ps1", run_pwsh);
 }
 
 #[test]
@@ -269,7 +267,7 @@ fn pwsh_janitor_self_test() {
         "test-clean-mediapm-temp.ps1: OK",
         "pwsh",
         &["--version"],
-        |script, sandbox, flags| run_pwsh(script, sandbox, flags),
+        run_pwsh,
     );
 }
 
@@ -291,7 +289,7 @@ fn pwsh_runner_self_test() {
         "test-run-all-tests.ps1: OK",
         "pwsh",
         &["--version"],
-        |script, sandbox, flags| run_pwsh(script, sandbox, flags),
+        run_pwsh,
     );
 }
 
