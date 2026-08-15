@@ -1,4 +1,4 @@
-//! FileSystemCas WAL-consumption and background-consumer tests.
+//! `FileSystemCas` WAL-consumption and background-consumer tests.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
