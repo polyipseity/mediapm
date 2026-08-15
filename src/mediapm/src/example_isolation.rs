@@ -30,13 +30,39 @@ pub fn lock_process_env() -> parking_lot::MutexGuard<'static, ()> {
     ENV_LOCK.lock()
 }
 
-/// Default example cache root — a hermetic sibling of the artifact root used
-/// when [`CACHE_ROOT_ENV`] is unset, so bare `cargo run --example` never
-/// touches the real OS user cache. Lives under the artifact root, so it is
-/// wiped together with it on each run reset.
+/// Example user-level tool download cache root.
+///
+/// Honors [`CACHE_ROOT_ENV`] (set by [`IsolatedExampleRoots::with_cache`] for
+/// hermetic examples-as-test runs) and otherwise resolves the real persistent
+/// OS user-level cache via
+/// [`mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root`],
+/// so explicit `cargo run --example` runs share the cache with regular mediapm
+/// syncs and persist downloaded tools across runs.
+///
+/// # Panics
+///
+/// Panics when the env override is unset and the OS cache directory cannot be
+/// determined (mirrors the production sync error).
 #[must_use]
-pub fn default_example_cache_root(artifact_root: &Path) -> PathBuf {
-    artifact_root.join("cache")
+pub fn user_level_cache_root() -> PathBuf {
+    std::env::var_os(CACHE_ROOT_ENV).map_or_else(
+        || {
+            mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root()
+                .expect("could not determine default user-level tool cache root")
+        },
+        PathBuf::from,
+    )
+}
+
+/// Whether the example runs against an isolated (hermetic) cache root.
+///
+/// True exactly when [`CACHE_ROOT_ENV`] is present, i.e. inside
+/// examples-as-tests using [`IsolatedExampleRoots::with_cache`]. Explicit
+/// `cargo run --example` runs (env unset) resolve `false`, meaning the real
+/// user-level cache is in use.
+#[must_use]
+pub fn uses_isolated_cache_root() -> bool {
+    std::env::var_os(CACHE_ROOT_ENV).is_some()
 }
 
 /// RAII guard pointing example env vars at unique prefixed tempdirs for one test run.
@@ -149,12 +175,67 @@ pub fn isolated_artifact_dir() -> std::io::Result<(tempfile::TempDir, PathBuf)> 
 mod tests {
     use super::*;
 
+    /// Restores `CACHE_ROOT_ENV` to its prior value; every env-mutating test
+    /// below holds [`lock_process_env`] for its whole body.
+    fn restore_cache_root_env(previous: Option<OsString>) {
+        // SAFETY: env mutation is serialized by the process-wide env lock.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(CACHE_ROOT_ENV, value),
+                None => std::env::remove_var(CACHE_ROOT_ENV),
+            }
+        }
+    }
+
     #[test]
-    fn default_example_cache_root_is_artifact_sibling() {
-        assert_eq!(
-            default_example_cache_root(Path::new("/tmp/example-artifact")),
-            PathBuf::from("/tmp/example-artifact/cache")
-        );
+    fn user_level_cache_root_unset_uses_real_user_cache() {
+        let _lock = lock_process_env();
+        let previous = std::env::var_os(CACHE_ROOT_ENV);
+        // SAFETY: env mutation is serialized by the process-wide env lock.
+        unsafe {
+            std::env::remove_var(CACHE_ROOT_ENV);
+        }
+        let expected =
+            mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root()
+                .expect("could not determine default user-level tool cache root");
+        assert_eq!(user_level_cache_root(), expected);
+        restore_cache_root_env(previous);
+    }
+
+    #[test]
+    fn user_level_cache_root_override_wins() {
+        let _lock = lock_process_env();
+        let previous = std::env::var_os(CACHE_ROOT_ENV);
+        // SAFETY: env mutation is serialized by the process-wide env lock.
+        unsafe {
+            std::env::set_var(CACHE_ROOT_ENV, "/tmp/example-cache-override");
+        }
+        assert_eq!(user_level_cache_root(), PathBuf::from("/tmp/example-cache-override"));
+        restore_cache_root_env(previous);
+    }
+
+    #[test]
+    fn uses_isolated_cache_root_true_when_env_set() {
+        let _lock = lock_process_env();
+        let previous = std::env::var_os(CACHE_ROOT_ENV);
+        // SAFETY: env mutation is serialized by the process-wide env lock.
+        unsafe {
+            std::env::set_var(CACHE_ROOT_ENV, "/tmp/example-cache-override");
+        }
+        assert!(uses_isolated_cache_root());
+        restore_cache_root_env(previous);
+    }
+
+    #[test]
+    fn uses_isolated_cache_root_false_when_unset() {
+        let _lock = lock_process_env();
+        let previous = std::env::var_os(CACHE_ROOT_ENV);
+        // SAFETY: env mutation is serialized by the process-wide env lock.
+        unsafe {
+            std::env::remove_var(CACHE_ROOT_ENV);
+        }
+        assert!(!uses_isolated_cache_root());
+        restore_cache_root_env(previous);
     }
 
     #[test]

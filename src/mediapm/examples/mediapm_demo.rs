@@ -46,6 +46,11 @@
 //! cargo test -p mediapm --example mediapm_demo -- --skip main_is_exercised
 //! cargo run -p mediapm --example mediapm_demo
 //! ```
+//!
+//! The explicit `cargo run --example` run reuses the real user-level tool
+//! download cache (`<os-cache-dir>/mediapm/cache`), persisting downloaded
+//! tools across runs; embedded tests stay isolated via
+//! `MEDIAPM_EXAMPLE_CACHE_ROOT`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -166,8 +171,10 @@ impl StoreSizeStats {
     }
 }
 
-/// Runtime storage for demo runs; the user-level tool cache defaults to a
-/// hermetic sibling of the artifact root when the env override is unset.
+/// Runtime storage for demo runs; the user-level tool cache resolves to a
+/// hermetic tempdir when [`example_isolation::CACHE_ROOT_ENV`] is set
+/// (examples-as-tests) and to the real OS user-level cache otherwise
+/// (explicit `cargo run --example` runs).
 fn example_runtime_storage() -> MediaRuntimeStorage {
     MediaRuntimeStorage {
         cache_root_override: Some(example_cache_root()),
@@ -176,13 +183,11 @@ fn example_runtime_storage() -> MediaRuntimeStorage {
 }
 
 /// Example user-level tool download cache root, honoring
-/// [`example_isolation::CACHE_ROOT_ENV`] and falling back to a hermetic
-/// `<artifact_root>/cache` sibling (wiped with the artifact root each run).
+/// [`example_isolation::CACHE_ROOT_ENV`] (hermetic examples-as-test runs) and
+/// otherwise the real persistent OS user-level cache, so explicit runs
+/// persist downloaded tools across runs.
 fn example_cache_root() -> PathBuf {
-    std::env::var_os(example_isolation::CACHE_ROOT_ENV).map_or_else(
-        || example_isolation::default_example_cache_root(&artifact_root()),
-        PathBuf::from,
-    )
+    example_isolation::user_level_cache_root()
 }
 
 #[derive(Debug, Clone)]
@@ -900,7 +905,9 @@ fn seed_old_synced_tools_state_for_update_precheck(
 }
 
 /// Pre-seeds GitHub metadata cache entries so tool-update precheck does not
-/// depend on live API responses during hermetic demo test runs.
+/// depend on live API responses during hermetic demo test runs. Callers must
+/// gate this behind [`example_isolation::uses_isolated_cache_root`]; the
+/// hardcoded entries must never be written into the real user-level cache.
 async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> ExampleResult<()> {
     use mediapm_conductor::cache::{Cache, CacheDomainConfig};
     use mediapm_conductor::cache_user_level::UserLevelCache;
@@ -957,8 +964,12 @@ async fn run_tools_update_precheck(
     service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
     workspace_root: &Path,
 ) -> ExampleResult<(usize, usize)> {
-    let cache_root = example_cache_root();
-    seed_tool_metadata_cache_for_demo_precheck(&cache_root).await?;
+    // Seed hardcoded metadata only for hermetic test runs; explicit runs
+    // (env unset) use the real user-level cache and fetch live metadata.
+    if example_isolation::uses_isolated_cache_root() {
+        let cache_root = example_cache_root();
+        seed_tool_metadata_cache_for_demo_precheck(&cache_root).await?;
+    }
 
     let expected_updated_tools = configure_document_for_tools_only_precheck(workspace_root)?;
     seed_old_synced_tools_state_for_update_precheck(service)?;
