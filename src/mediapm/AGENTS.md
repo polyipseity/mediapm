@@ -227,8 +227,9 @@ Post-change: demo examples:
 
 - `cargo run --package mediapm --example mediapm_demo`
 - `cargo run --package mediapm --example mediapm_demo_online` — full-sync online path (network + external tools), human-gated
+- All cache-using examples (`mediapm_demo`, `mediapm_demo_online`, `mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`) reuse the real user-level tool download cache (`<os-cache-dir>/mediapm/cache`, via `example_isolation::user_level_cache_root()`) at explicit `cargo run --example`, so downloaded tools persist across runs and are shared with regular mediapm syncs; embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT`.
 
-The online demo's embedded test (`main_is_exercised`) runs reduced (config-only) mode deterministically in the test harness (skips in CI), so the pre-push gate exercises only reduced mode — no network. Its full-sync path runs only on the explicit `cargo run --package mediapm --example mediapm_demo_online` above.
+The online demo's embedded test (`main_is_exercised`) runs reduced (config-only) mode deterministically in the test harness (skips in CI), so the pre-push gate exercises only reduced mode — no network. Its full-sync path runs only on the explicit `cargo run --package mediapm --example mediapm_demo_online` above. That explicit run uses the real user-level tool download cache, persisting downloaded tools across runs.
 
 Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all`.
 

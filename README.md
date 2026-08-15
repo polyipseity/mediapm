@@ -85,7 +85,7 @@ MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=300 cargo run -p mediapm --example mediapm_demo
 
 Inspect generated artifacts under `src/mediapm/examples/artifacts/demo-online/`.
 
-`mediapm_demo_online`'s full-sync path (network + external tools) runs only on the explicit `cargo run -p mediapm --example mediapm_demo_online` above. Its embedded `main_is_exercised` test runs reduced config-only mode in the test harness instead — deterministic, no network, skipped in CI.
+`mediapm_demo_online`'s full-sync path (network + external tools) runs only on the explicit `cargo run -p mediapm --example mediapm_demo_online` above. Its embedded `main_is_exercised` test runs reduced config-only mode in the test harness instead — deterministic, no network, skipped in CI. The explicit run persists downloaded tools in the real user-level tool download cache (`<os-cache-dir>/mediapm/cache`), shared with regular mediapm syncs; embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT` tempdirs.
 
 Integration tests across workspace crates share one harness shape:
 
