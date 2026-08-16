@@ -208,8 +208,8 @@ Singular location for all tunable constants in [`defaults`](crate::defaults):
 | --- | --- | --- |
 | `WAL_INLINE_LIMIT` | 1 MiB | Max object size inlined in WAL. Beyond this → `PutLarge` + external blob. |
 | `DELTA_THRESHOLD` | 16 MiB | Max object size eligible for delta compression. Larger objects stored as Full. |
-| `CACHE_MAX_FRACTION_OF_TOTAL_SIZE` | 0.10 | Fraction of total store consumed by bg_engine cache at most. |
-| `CACHE_TTL` | 60 s | TTL for cached entries in bg_engine. |
+| `CACHE_MAX_FRACTION_OF_TOTAL_SIZE` | 0.10 | Fraction of total store bytes (sum of entry lengths) consumed by the reconstructed-bytes cache at most. |
+| `CACHE_TTL` | 60 s | TTL for reconstructed-bytes cache entries (from insertion). `Duration::ZERO` disables the cache. |
 | `WAL_MAX_SEGMENT_SIZE` | 64 MiB | Max bytes per FileWal segment before rotation. |
 | `OBJECT_STREAM_BUFFER_SIZE` | 262144 (256 KiB) | Buffer size for streaming blob read/write. |
 
@@ -349,7 +349,7 @@ If base not found → `CasError::CorruptObject`.
 - **DeltaPatch**: VCDIFF wrapper via `oxidelta`. `diff(base, target)` → patch; `apply(patch, base)` → reconstructed target.
 - Two functions for chain resolution:
   - `apply_delta_chain` in `delta/patch.rs`: Pure `pub(crate)` function that takes base bytes, collected delta envelopes, applies VCDIFF patches innermost-first, returns fully reconstructed payload. Used by `delta_resolve::resolve_delta_chain`.
-- `resolve_delta_chain` in [`storage/read_view.rs`](crate::storage::read_view): `pub(super)` async walker that reads delta blobs from Blob and builds the chain, then calls `apply_delta_chain`. Shared by `ComposedReadView::fetch_inner` and `BgEngine::read_full_bytes`.
+- `resolve_delta_chain` in [`storage/read_view.rs`](crate::storage::read_view): `pub(super)` async walker that reads delta blobs from Blob and builds the chain, then calls `apply_delta_chain`. Shared by `ComposedReadView::fetch_inner`, `get_to_writer`, and `BgEngine::read_full_bytes` — every delta-chain resolution flows through the shared [`resolve_full_bytes`](crate::storage::read_view) choke point, which consults and populates the reconstructed-bytes cache (§5.6).
 - **StoredObject**: Struct wrapping `DeltaState`. Encode/decode to/from versioned envelopes.
 - **Versioned envelopes**: V1/V2 (read-only, magic `b"MDCASD"`), V3+ (magic `b"CASDLT"`).
 
@@ -359,9 +359,13 @@ If base not found → `CasError::CorruptObject`.
 
 Drives WAL consumer and maintenance pass. GC never deletes objects — only prunes constraint metadata. Objects are removed solely by `CasApi::delete` materialized through the WAL consumer.
 
-**Bounded cache**: A size-bounded LRU-like cache holds recently read objects.
-Maximum size = `CACHE_MAX_FRACTION_OF_TOTAL_SIZE × total_store_size_on_disk`.
-When over budget, the oldest half of cached entries are evicted.
+**Reconstructed-bytes cache**: A single, store-wide cache (`ReconstructedBytesCache`) serves reconstructed full bytes for **all** delta-chain resolutions — public `get`/`get_to_writer`, orphan-recovery retries, maintenance, and rematerialization. It is built once in `CasStore::new` and shared (via `Arc`) by the read view and the background engine. Contract:
+
+- **Eligibility**: only `Delta`-encoded resolutions are cached; `Full` reads bypass the cache. Entries larger than `max_bytes / 4` are skipped.
+- **Budget**: `CACHE_MAX_FRACTION_OF_TOTAL_SIZE × total_store_bytes_on_disk`, where total store bytes = sum of metadata entry lengths (not object count). Established lazily on first read and refreshed each maintenance cycle; a budget of 0 skips inserts until established.
+- **Eviction**: oldest-by-insertion first, half the entries at a time, repeated until the new entry fits. `set_max_bytes` also evicts oldest-first if the budget shrinks below the cached total.
+- **TTL**: measured from insertion (not access); `Duration::ZERO` disables the cache entirely (no cache is constructed).
+- **Invalidation**: `delete()` invalidates the entry synchronously (before the WAL tombstone is consumed), and the WAL-consumer `Delete` path invalidates again before re-materialization.
 
 **Delta threshold enforcement**: Objects > `DELTA_THRESHOLD` (16 MiB) are skipped by the optimizer — they are stored as Full encoding only, never delta-compressed.
 

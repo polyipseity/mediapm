@@ -5,5 +5,6 @@ mod contention;
 mod in_memory;
 mod maintenance;
 mod read_view;
+mod reconstructed_cache;
 mod streaming_large;
 mod wal_consumer;

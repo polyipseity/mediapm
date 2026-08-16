@@ -13,11 +13,9 @@
 //! entries so orphaned bases (for deleted objects) are removed individually,
 //! not all-or-nothing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
@@ -31,7 +29,14 @@ use crate::hash::Hash;
 use super::blob_store::BlobStore;
 use super::metadata_store::{MetadataEntry, MetadataStore};
 use super::read_view::ReadView;
+use super::reconstructed_cache::{
+    ReconstructedBytesCache, budget_from_store_bytes, compute_store_bytes,
+};
 use super::wal::{Wal, WalEntry, WalPosition};
+
+/// Re-export so the cache statistics type is nameable by external callers
+/// of [`BackgroundEngine::reconstructed_cache_stats`].
+pub use super::reconstructed_cache::ReconstructedCacheStats;
 
 /// Background engine driving WAL consumption and maintenance.
 pub struct BackgroundEngine<J: Wal, M: MetadataStore, B: BlobStore> {
@@ -41,32 +46,24 @@ pub struct BackgroundEngine<J: Wal, M: MetadataStore, B: BlobStore> {
     read_view: Arc<dyn ReadView>,
     checkpoint: AtomicU64,
     cancelled: Arc<AtomicBool>,
-    /// Cache for reconstructed full bytes (avoids repeated delta-chain walks).
-    /// Shared across clones via `Arc`.
-    ///
-    /// Size-bounded: evicts entries when total cached bytes exceed
-    /// `CACHE_MAX_FRACTION_OF_TOTAL_SIZE` of total store metadata size.
-    reconstructed_cache: Arc<Mutex<HashMap<Hash, (Bytes, Instant)>>>,
-    /// Total bytes currently held in `reconstructed_cache`.
-    cached_bytes: Arc<AtomicU64>,
-    /// TTL for cache entries (default 60s).
-    reconstructed_cache_ttl: Duration,
-    /// Maximum bytes allowed in cache (computed from metadata store size).
-    cache_max_bytes: Arc<AtomicU64>,
+    /// Shared reconstructed-bytes cache (see `reconstructed_cache` module;
+    /// spec `src/mediapm-cas/AGENTS.md` §5.6). `None` when caching is
+    /// disabled (zero TTL). Shared with the read view via `Arc`.
+    reconstructed_cache: Option<Arc<ReconstructedBytesCache>>,
 }
 
 impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     /// Create a new engine, checkpointing at `start_pos`.
     ///
-    /// `cache_ttl` controls how long reconstructed full bytes remain cached
-    /// (default 60s). Pass `Duration::ZERO` to disable caching.
+    /// `reconstructed_cache` is the store-wide reconstructed-bytes cache;
+    /// pass `None` to disable caching.
     pub(crate) fn new(
         wal: J,
         metadata: M,
         blob: B,
         start_pos: WalPosition,
         read_view: Arc<dyn ReadView>,
-        cache_ttl: Duration,
+        reconstructed_cache: Option<Arc<ReconstructedBytesCache>>,
     ) -> Self {
         Self {
             wal,
@@ -75,10 +72,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             read_view,
             checkpoint: AtomicU64::new(start_pos.as_u64()),
             cancelled: Arc::new(AtomicBool::new(false)),
-            reconstructed_cache: Arc::new(Mutex::new(HashMap::new())),
-            cached_bytes: Arc::new(AtomicU64::new(0)),
-            reconstructed_cache_ttl: cache_ttl,
-            cache_max_bytes: Arc::new(AtomicU64::new(0)),
+            reconstructed_cache,
         }
     }
 
@@ -158,6 +152,11 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                         // Empty-content sentinel is indelible; skip deletion.
                         if *hash == Hash::empty() {
                             continue;
+                        }
+                        // Drop any cached reconstruction immediately — the
+                        // cache must never serve bytes for a deleted object.
+                        if let Some(cache) = &self.reconstructed_cache {
+                            cache.invalidate(hash);
                         }
                         // Before physical deletion, re-materialize any deltas
                         // that depend on this hash as their base. This prevents
@@ -254,23 +253,13 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     /// Reconstruct the full (reconstructed) bytes for a hash by walking
     /// any delta chain present in the Metadata + Blob.
     ///
-    /// Uses an internal time-based cache (TTL configurable via constructor)
-    /// to avoid repeated delta-chain walks during maintenance cycles.
+    /// Consults and populates the shared reconstructed-bytes cache via
+    /// [`resolve_full_bytes`](super::read_view::resolve_full_bytes), so
+    /// repeated delta-chain walks during maintenance and rematerialization
+    /// are served from the cache (spec: `src/mediapm-cas/AGENTS.md` §5.6).
     ///
     /// Returns `None` if the hash does not exist in the store.
     async fn read_full_bytes(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
-        // Check the time-based cache first.
-        if self.reconstructed_cache_ttl > Duration::ZERO {
-            let cache = self.reconstructed_cache.lock().unwrap();
-            if let Some((cached_bytes, expiry)) = cache.get(hash)
-                && expiry.elapsed() < self.reconstructed_cache_ttl
-            {
-                return Ok(Some(cached_bytes.clone()));
-            }
-            // Don't hold the lock while doing I/O below.
-            drop(cache);
-        }
-
         let Some(entry) = self.metadata.get(hash).await? else {
             return Ok(None);
         };
@@ -280,6 +269,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             &entry,
             &self.metadata,
             &self.blob,
+            self.reconstructed_cache.as_deref(),
             "delta self-reference detected during optimizer reconstruction",
             "delta chain: base",
         )
@@ -289,45 +279,6 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             CasError::NotFound(_) => Ok(None),
             other => Err(other),
         })?;
-
-        // Cache the result if TTL is non-zero.
-        if let Some(ref bytes) = result
-            && self.reconstructed_cache_ttl > Duration::ZERO
-        {
-            // Compute max bytes from metadata store size if not yet set.
-            if self.cache_max_bytes.load(Ordering::Relaxed) == 0 {
-                let meta_size: u64 =
-                    self.metadata.list_hashes().await.ok().map_or(0, |hashes| hashes.len() as u64);
-                #[allow(
-                    clippy::cast_precision_loss,
-                    clippy::cast_sign_loss,
-                    clippy::cast_possible_truncation
-                )]
-                let limit = (meta_size as f64 * defaults::CACHE_MAX_FRACTION_OF_TOTAL_SIZE) as u64;
-                self.cache_max_bytes.store(limit.max(1), Ordering::Relaxed);
-            }
-            let max_bytes = self.cache_max_bytes.load(Ordering::Relaxed);
-            let entry_size = bytes.len() as u64;
-
-            // Skip caching if entry is disproportionately large.
-            if entry_size <= max_bytes / 4 {
-                let mut cache = self.reconstructed_cache.lock().unwrap();
-                let current = self.cached_bytes.load(Ordering::Relaxed);
-
-                if current + entry_size > max_bytes {
-                    // Simple eviction: clear half the oldest entries.
-                    let half = (cache.len() / 2).max(1);
-                    let to_remove: Vec<Hash> = cache.keys().take(half).copied().collect();
-                    for h in &to_remove {
-                        if let Some((evicted, _)) = cache.remove(h) {
-                            self.cached_bytes.fetch_sub(evicted.len() as u64, Ordering::Relaxed);
-                        }
-                    }
-                }
-                cache.insert(*hash, (bytes.clone(), Instant::now()));
-                self.cached_bytes.fetch_add(entry_size, Ordering::Relaxed);
-            }
-        }
 
         Ok(result)
     }
@@ -349,6 +300,16 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     pub async fn run_maintenance(&self) -> Result<bool, CasError> {
         // Drain WAL first so we have a consistent view.
         self.run_wal_consumer().await?;
+
+        // Refresh the reconstructed-bytes cache budget from current store
+        // bytes. Best-effort: on metadata failure keep the previous budget —
+        // the cache is an optimization, never a correctness requirement for
+        // maintenance.
+        if let Some(cache) = &self.reconstructed_cache
+            && let Ok(total) = compute_store_bytes(&self.metadata).await
+        {
+            cache.set_max_bytes(budget_from_store_bytes(total));
+        }
 
         let mut did_work = false;
 
@@ -466,6 +427,19 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     pub fn checkpoint_position(&self) -> WalPosition {
         WalPosition::from_u64(self.checkpoint.load(Ordering::SeqCst))
     }
+
+    /// Statistics for the reconstructed-bytes cache, or `None` when the
+    /// cache is disabled (zero TTL). Primarily for tests and observability.
+    pub fn reconstructed_cache_stats(&self) -> Option<ReconstructedCacheStats> {
+        self.reconstructed_cache.as_ref().map(|cache| cache.stats())
+    }
+
+    /// Access to the shared reconstructed-bytes cache, used by
+    /// [`CasStore::delete`](super::store::CasStore) to invalidate entries
+    /// synchronously on deletion.
+    pub(crate) fn reconstructed_cache(&self) -> Option<&Arc<ReconstructedBytesCache>> {
+        self.reconstructed_cache.as_ref()
+    }
 }
 
 impl<J: Wal, M: MetadataStore, B: BlobStore> Clone for BackgroundEngine<J, M, B>
@@ -483,9 +457,6 @@ where
             checkpoint: AtomicU64::new(self.checkpoint.load(Ordering::SeqCst)),
             cancelled: self.cancelled.clone(),
             reconstructed_cache: self.reconstructed_cache.clone(),
-            cached_bytes: self.cached_bytes.clone(),
-            reconstructed_cache_ttl: self.reconstructed_cache_ttl,
-            cache_max_bytes: self.cache_max_bytes.clone(),
         }
     }
 }

@@ -39,6 +39,7 @@ use super::bg_engine::BackgroundEngine;
 use super::blob_store::BlobStore;
 use super::metadata_store::{MetadataEntry, MetadataStore};
 use super::read_view::{ComposedReadView, ReadView};
+use super::reconstructed_cache::{ReconstructedBytesCache, ReconstructedCacheStats};
 use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Composed CAS store — primary handle for all CAS operations.
@@ -89,15 +90,24 @@ impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> CasStore<J,
         M: 'static,
         B: 'static,
     {
-        let read_view: Arc<dyn ReadView> =
-            Arc::new(ComposedReadView::new(metadata.clone(), wal.clone(), blob.clone()));
+        // Single store-wide reconstructed-bytes cache shared by the read
+        // view and the background engine (spec: `src/mediapm-cas/AGENTS.md`
+        // §5.6). `Duration::ZERO` disables caching entirely.
+        let reconstructed_cache: Option<Arc<ReconstructedBytesCache>> =
+            (cache_ttl > Duration::ZERO).then(|| Arc::new(ReconstructedBytesCache::new(cache_ttl)));
+        let read_view: Arc<dyn ReadView> = Arc::new(ComposedReadView::new(
+            metadata.clone(),
+            wal.clone(),
+            blob.clone(),
+            reconstructed_cache.clone(),
+        ));
         let bg_engine = BackgroundEngine::new(
             wal.clone(),
             metadata.clone(),
             blob.clone(),
             start_pos,
             read_view.clone(),
-            cache_ttl,
+            reconstructed_cache,
         );
         Self { wal, metadata, blob, read_view, bg_engine }
     }
@@ -215,8 +225,21 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasApi for CasStore<J, M, B> {
         if hash == Hash::empty() {
             return Ok(());
         }
+        // Invalidate any cached reconstruction synchronously — the cache
+        // must never serve bytes for a deleted object.
+        if let Some(cache) = self.bg_engine.reconstructed_cache() {
+            cache.invalidate(&hash);
+        }
         self.wal.append(WalEntry::Delete { hash }).await?;
         Ok(())
+    }
+}
+
+impl<J: Wal, M: MetadataStore, B: BlobStore> CasStore<J, M, B> {
+    /// Statistics for the reconstructed-bytes cache, or `None` when the
+    /// cache is disabled (zero TTL).
+    pub fn reconstructed_cache_stats(&self) -> Option<ReconstructedCacheStats> {
+        self.bg_engine.reconstructed_cache_stats()
     }
 }
 

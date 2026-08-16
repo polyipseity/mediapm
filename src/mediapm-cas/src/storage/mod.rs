@@ -9,5 +9,6 @@ pub mod in_memory;
 pub mod metadata_store;
 pub(crate) mod pending_ops;
 pub(crate) mod read_view;
+pub(crate) mod reconstructed_cache;
 pub mod store;
 pub mod wal;

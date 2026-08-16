@@ -382,6 +382,13 @@ async fn stale_diff_removed_after_delta_to_full_promotion() {
 async fn delta_cache_repeated_reads_work() {
     let (_dir, cas) = open_file_cas().await;
 
+    // Seed fillers so the reconstructed-bytes cache budget (10 % of store
+    // bytes) admits the 4096-byte entries: 52 × 4096 = 212 992 bytes →
+    // max_bytes/4 ≈ 5 324 ≥ 4096.
+    for seed in 0..50u8 {
+        cas.put(Bytes::from(vec![seed; 4096])).await.unwrap();
+    }
+
     let (base_content, target_content) = similar_content_pair(b'B', b"DELTA_CACHE");
 
     let base_hash = cas.put(base_content.clone()).await.unwrap();
@@ -411,6 +418,15 @@ async fn delta_cache_repeated_reads_work() {
         let data = cas.get(target_hash).await.unwrap();
         assert_eq!(data, target_content);
     }
+
+    // The shared cache served the repeated reads (at least the second
+    // read of every pair; counts may be higher if the background consumer
+    // pre-populated or refreshed during the test).
+    let stats = cas.reconstructed_cache_stats().unwrap();
+    assert!(stats.hits >= 1, "repeated reads should hit the cache");
+    assert!(stats.misses >= 1, "the first delta resolution is a miss");
+    assert_eq!(stats.entries, 1, "only the target reconstruction is cached");
+    assert_eq!(stats.cached_bytes, 4096);
 }
 
 /// Base and target content that differ only in `marker`, so the VCDIFF

@@ -13,6 +13,7 @@
 //! concurrent `get()` calls miss Metadata simultaneously.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -26,6 +27,9 @@ use crate::hash::Hash;
 use super::blob_store::BlobStore;
 use super::metadata_store::{MetadataEntry, MetadataStore};
 use super::pending_ops::PendingOps;
+use super::reconstructed_cache::{
+    ReconstructedBytesCache, budget_from_store_bytes, compute_store_bytes,
+};
 use super::wal::{PendingState, Wal};
 
 /// Maximum number of delta chain hops before failing with
@@ -83,12 +87,20 @@ pub(crate) struct ComposedReadView<M: MetadataStore, J: Wal, B: BlobStore> {
     metadata: M,
     wal: J,
     blob: B,
+    /// Shared reconstructed-bytes cache for delta-chain resolutions; `None`
+    /// when caching is disabled (zero TTL).
+    reconstructed_cache: Option<Arc<ReconstructedBytesCache>>,
 }
 
 impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
     /// Create a new view.
-    pub fn new(metadata: M, wal: J, blob: B) -> Self {
-        Self { pending: PendingOps::new(), metadata, wal, blob }
+    pub fn new(
+        metadata: M,
+        wal: J,
+        blob: B,
+        reconstructed_cache: Option<Arc<ReconstructedBytesCache>>,
+    ) -> Self {
+        Self { pending: PendingOps::new(), metadata, wal, blob, reconstructed_cache }
     }
 
     /// Try to recover a blob whose metadata was lost but whose file still
@@ -213,6 +225,7 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
                             &entry,
                             &self.metadata,
                             &self.blob,
+                            self.reconstructed_cache.as_deref(),
                             "delta self-reference detected",
                             "delta chain: base",
                         )
@@ -240,6 +253,7 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
             &entry,
             &self.metadata,
             &self.blob,
+            self.reconstructed_cache.as_deref(),
             "delta self-reference detected",
             "delta chain: base",
         )
@@ -297,6 +311,7 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
                                     &entry,
                                     &self.metadata,
                                     &self.blob,
+                                    self.reconstructed_cache.as_deref(),
                                     "delta self-reference detected",
                                     "delta chain: base",
                                 )
@@ -327,13 +342,15 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
 
         match entry.encoding {
             ObjectEncoding::Full => self.blob.read_to_writer(hash, writer).await,
-            ObjectEncoding::Delta { base_hash } => {
-                // Delta resolution requires full bytes in memory.
-                let bytes = resolve_delta_chain(
+            ObjectEncoding::Delta { .. } => {
+                // Delta resolution requires full bytes in memory; the
+                // reconstructed-bytes cache serves repeated resolutions.
+                let bytes = resolve_full_bytes(
                     hash,
-                    base_hash,
+                    &entry,
                     &self.metadata,
                     &self.blob,
+                    self.reconstructed_cache.as_deref(),
                     "delta self-reference detected during get_to_writer",
                     "delta chain: base",
                 )
@@ -389,20 +406,56 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
 
 /// Given a metadata entry, read full bytes — either directly (Full) or by
 /// resolving the delta chain (Delta).
+///
+/// Delta resolutions consult and populate the shared reconstructed-bytes
+/// cache when one is provided, so repeated reads of the same hash skip the
+/// chain walk (spec: `src/mediapm-cas/AGENTS.md` §5.6).
 pub(super) async fn resolve_full_bytes<M: MetadataStore, B: BlobStore>(
     hash: &Hash,
     entry: &MetadataEntry,
     metadata: &M,
     blob: &B,
+    reconstructed_cache: Option<&ReconstructedBytesCache>,
     self_ref_msg: &str,
     base_not_found_msg: &str,
 ) -> Result<Bytes, CasError> {
     match entry.encoding {
         ObjectEncoding::Full => blob.read(hash).await,
         ObjectEncoding::Delta { base_hash } => {
-            resolve_delta_chain(hash, base_hash, metadata, blob, self_ref_msg, base_not_found_msg)
-                .await
+            if let Some(cache) = reconstructed_cache
+                && let Some(cached) = cache.get(hash)
+            {
+                return Ok(cached);
+            }
+            let result = resolve_delta_chain(
+                hash,
+                base_hash,
+                metadata,
+                blob,
+                self_ref_msg,
+                base_not_found_msg,
+            )
+            .await;
+            if let Some(cache) = reconstructed_cache
+                && let Ok(bytes) = &result
+            {
+                ensure_cache_budget(cache, metadata).await;
+                cache.insert(*hash, bytes.clone());
+            }
+            result
         }
+    }
+}
+
+/// Establish the reconstructed-bytes cache budget from the metadata store
+/// when it is not yet set. Best-effort: on metadata failure the budget is
+/// left unset (the cache skips inserts) so the read itself still succeeds.
+async fn ensure_cache_budget<M: MetadataStore>(cache: &ReconstructedBytesCache, metadata: &M) {
+    if cache.max_bytes() != 0 {
+        return;
+    }
+    if let Ok(total) = compute_store_bytes(metadata).await {
+        cache.set_max_bytes(budget_from_store_bytes(total));
     }
 }
 
@@ -535,6 +588,7 @@ mod tests {
             InMemoryMetadataStore::new(),
             InMemoryWal::new(),
             SplitBlobStore::new(),
+            None,
         )
     }
 
