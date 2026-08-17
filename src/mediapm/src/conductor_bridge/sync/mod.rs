@@ -2823,4 +2823,84 @@ mod tests {
         assert_eq!(managed[0].resolved_version.as_deref(), Some("1.1.0"));
         assert_eq!(managed[0].resolved_vcs_hash.as_deref(), Some("xyz"));
     }
+
+    /// Regression: the skip path MUST register the skipped tool in
+    /// `report.tool_records` (and therefore in `state.managed_tools`), not
+    /// only push a `resolved_field_backfill`. A provisioned-but-unregistered
+    /// tool is illegal state — the post-sync warning check would otherwise
+    /// flag it as needing sync on every pass.
+    ///
+    /// Uses `media-tagger`, whose provider resolves to `MEDIAPM_GIT_HASH`
+    /// without network access, so the skip path fires hermetically.
+    #[tokio::test]
+    async fn regression_skip_path_registers_managed_tool() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+
+        // Generated doc carries the tool with a non-empty content map.
+        // Placeholder values pass the CAS availability check without real
+        // CAS bytes.
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/media-tagger".to_string(), "provisioned".to_string());
+        let tool_spec = ToolSpec {
+            name: "media-tagger".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let mut tools = BTreeMap::new();
+        tools.insert("media-tagger@blake3:mt1".to_string(), tool_spec);
+        let doc = NickelDocument { tools, ..Default::default() };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        // State with a matching canonical_version (media-tagger resolves to
+        // the git hash without network) and non-empty content_map_hash → the
+        // skip path fires.
+        let mut state = MediaPmState::default();
+        state.managed_tools.push(ToolRegistryEntry {
+            tool_id: "media-tagger".to_string(),
+            version: format!("{}+{}", env!("CARGO_PKG_VERSION"), crate::global::MEDIAPM_GIT_HASH),
+            canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
+            content_map_hash: "blake3:mt1".to_string(),
+            deployed_at: mediapm_utils::Timestamp::default(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
+        });
+
+        let mut desired_tools = BTreeMap::new();
+        let req = ToolRequirement::default();
+        desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
+
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+        let result = reconcile_desired_tools(
+            workspace_cas,
+            &paths,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+        let report = result.unwrap();
+        assert_eq!(report.tools_skipped, 1, "skip path must fire for matching state");
+
+        // The skip path MUST contribute a tool_records entry with a non-empty
+        // content_map_hash — currently it does NOT, which is the bug.
+        let registered = report
+            .tool_records
+            .iter()
+            .find(|e| e.tool_id == "media-tagger")
+            .expect("skip path must register the tool in tool_records");
+        assert!(
+            !registered.content_map_hash.is_empty(),
+            "skip-path registration must carry a non-empty content_map_hash",
+        );
+    }
 }

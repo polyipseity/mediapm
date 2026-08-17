@@ -2,6 +2,9 @@ use super::v2_state_json;
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
+use mediapm_conductor::cache::Cache;
+use mediapm_conductor::cache::CacheDomainConfig;
+use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::VersionSpecFields;
 
 use crate::common::service_with_cache;
@@ -199,5 +202,67 @@ async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
     let state = mediapm::load_mediapm_state_document(&missing_path)?;
     assert_eq!(state.version, 3, "default state should be version 3");
     assert!(state.managed_tools.is_empty(), "default state should have no managed tools");
+    Ok(())
+}
+
+/// Regression: the post-sync warning check (`logical_tool_requires_sync`)
+/// must resolve the canonical version from the SAME cache root the sync
+/// used, not the default user-level cache. Divergent caches produce a
+/// spurious `canonical_version != expected_composite` mismatch and a false
+/// "tools require sync" warning.
+///
+/// ffmpeg is used (not media-tagger) because its provider resolves from the
+/// seeded override cache; media-tagger resolves to `MEDIAPM_GIT_HASH`
+/// regardless of cache, so it cannot demonstrate the divergence.
+#[tokio::test]
+async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::MediaPmError> {
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert("ffmpeg".to_string(), ToolRequirement::default());
+    let (service, _root, cache_root) = service_with_cache(runtime).await?;
+
+    // Seed the override cache's `tool_metadata` domain with the exact values
+    // the ffmpeg provider resolves to, so the warning check (using the sync
+    // cache root) computes the same canonical version as sync did.
+    let metadata_domain = CacheDomainConfig {
+        domain: "tool_metadata".to_string(),
+        index_file_name: "tool_metadata.json".to_string(),
+        entry_ttl_seconds: 24 * 60 * 60,
+    };
+    let cache =
+        Cache::open(cache_root.path(), &[metadata_domain]).await.expect("open override cache");
+    let user_cache = UserLevelCache::from_cache(cache);
+    user_cache
+        .store_bytes(
+            "tool_metadata",
+            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+            b"autobuild-2025-07-15-12-00",
+        )
+        .await;
+    user_cache
+        .store_bytes("tool_metadata", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2")
+        .await;
+
+    // Register ffmpeg in state with the matching canonical version and a
+    // non-empty content_map_hash so the warning check reaches the
+    // canonical-version comparison.
+    let mut state = MediaPmState::default();
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "ffmpeg".to_string(),
+        version: String::new(),
+        canonical_version: "autobuild-2025-07-15-12-00+evermeet-8.1.2".to_string(),
+        content_map_hash: "blake3:abc".to_string(),
+        deployed_at: mediapm_utils::Timestamp::default(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
+    });
+
+    // Without the fix, the warning check resolves from the default cache
+    // (None) → divergent canonical version → returns `true` (false positive).
+    // With the fix, it uses the override cache → matching version → `false`.
+    assert!(
+        !service.logical_tool_requires_sync("ffmpeg", &state).await?,
+        "warning check must resolve from the sync cache root and report no sync needed",
+    );
     Ok(())
 }
