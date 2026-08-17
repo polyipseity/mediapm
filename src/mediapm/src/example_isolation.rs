@@ -15,6 +15,16 @@ pub const ARTIFACT_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_ARTIFACT_ROOT";
 /// Env var overriding the user-level tool download cache root for example runs.
 pub const CACHE_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
 
+/// Env var gating the Level 3 full online-sync path shared by the online demo
+/// (`mediapm_demo_online`) and the non-example `online_sync_post_sync_dump`
+/// regression test. The offline demo (`mediapm_demo`) is deterministic and has
+/// no Level 3 gate.
+///
+/// Semantics differ by consumer (the 3-level model): the online demo `main()`
+/// runs full sync unless explicitly disabled (`false|0|no|off`); the
+/// regression test runs only on an enabled token (`1|true|yes|on`).
+pub const RUN_ONLINE_SYNC_ENV: &str = "MEDIAPM_RUN_ONLINE_SYNC";
+
 /// Process-wide lock serializing `MEDIAPM_EXAMPLE_*` env mutation.
 ///
 /// Examples-as-tests run embedded in one process and can execute in parallel
@@ -63,6 +73,64 @@ pub fn user_level_cache_root() -> PathBuf {
 #[must_use]
 pub fn uses_isolated_cache_root() -> bool {
     std::env::var_os(CACHE_ROOT_ENV).is_some()
+}
+
+/// Detects a CI environment from standard CI variables.
+///
+/// Used by the 3-level run model: Level 1 skips nondeterministic network paths
+/// automatically in CI. Mirrors the pattern previously duplicated in
+/// `mediapm_demo_online.rs` and `online_sync_post_sync_dump.rs`.
+#[must_use]
+pub fn ci_mode_detected() -> bool {
+    std::env::var("CI")
+        .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
+        || std::env::var("GITHUB_ACTIONS").is_ok()
+        || std::env::var("GITLAB_CI").is_ok()
+        || std::env::var("CIRCLECI").is_ok()
+        || std::env::var("TRAVIS").is_ok()
+        || std::env::var("BUILDKITE").is_ok()
+        || std::env::var("DRONE").is_ok()
+}
+
+/// Level 3 opt-in for the non-example `online_sync_post_sync_dump` regression
+/// test. Enabled tokens: `1|true|yes|on`. Anything else (unset/disabled/unknown)
+/// returns `false` (Level 2 skip). Independent of the `large-tests` Cargo feature.
+#[must_use]
+pub fn run_online_sync_enabled() -> bool {
+    std::env::var(RUN_ONLINE_SYNC_ENV)
+        .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
+/// Strict parser for the online demo `main()` Level 3 override.
+///
+/// - `None`/empty → `Ok(true)` (full sync; direct `cargo run --example` = Level 3).
+/// - enabled token (`1|true|yes|on`) → `Ok(true)`.
+/// - disabled token (`false|0|no|off`) → `Ok(false)` (reduced mode).
+/// - unknown token → `Err(...)`.
+///
+/// Fail-fast on unknown tokens preserves the prior `run_sync_override_rejects_invalid_tokens`
+/// contract.
+pub fn parse_run_online_sync_override(value: Option<&str>) -> Result<bool, String> {
+    let Some(raw) = value else {
+        return Ok(true);
+    };
+
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(true);
+    }
+
+    if matches!(normalized.as_str(), "true" | "1" | "yes" | "on") {
+        return Ok(true);
+    }
+
+    if matches!(normalized.as_str(), "false" | "0" | "no" | "off") {
+        return Ok(false);
+    }
+
+    Err(format!(
+        "{RUN_ONLINE_SYNC_ENV} only accepts enabled (true/1/yes/on) or disabled (false/0/no/off) values; got '{normalized}'"
+    ))
 }
 
 /// RAII guard pointing example env vars at unique prefixed tempdirs for one test run.
