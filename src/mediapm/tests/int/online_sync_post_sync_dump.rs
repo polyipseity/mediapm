@@ -4,40 +4,20 @@
 //! 3-level mechanism (orthogonal to the `large-tests` Cargo feature):
 //! - Level 1: CI environments (`CI`/`GITHUB_ACTIONS`/etc.) skip automatically.
 //! - Level 2: the normal test harness skips (the opt-in env var is unset).
-//! - Level 3: set `MEDIAPM_ONLINE_SYNC_REGRESSION=1` to run the full download.
+//! - Level 3: set `MEDIAPM_RUN_ONLINE_SYNC=1` to run the full download.
 //!
 //! Run (Level 3):
-//! `MEDIAPM_ONLINE_SYNC_REGRESSION=1 cargo test -p mediapm online_sync_post_sync_dump -- --nocapture --test-threads=1`
+//! `MEDIAPM_RUN_ONLINE_SYNC=1 cargo test -p mediapm online_sync_post_sync_dump -- --nocapture --test-threads=1`
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::common::service_at;
+use mediapm::example_isolation;
 use mediapm::load_mediapm_document;
 use mediapm_conductor::decode_state_json;
 use tracing_subscriber::EnvFilter;
-
-/// Detects a CI environment from standard CI variables. Mirrors the pattern in
-/// `mediapm_demo_online.rs`; kept local to avoid cross-module coupling.
-fn ci_mode_detected() -> bool {
-    std::env::var("CI")
-        .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
-        || std::env::var("GITHUB_ACTIONS").is_ok()
-        || std::env::var("GITLAB_CI").is_ok()
-        || std::env::var("CIRCLECI").is_ok()
-        || std::env::var("TRAVIS").is_ok()
-        || std::env::var("BUILDKITE").is_ok()
-        || std::env::var("DRONE").is_ok()
-}
-
-/// Level 3 opt-in for the YouTube-download regression. Enabled tokens:
-/// `1|true|yes|on`. NOT set by `run-all-tests.sh --large` or CI — this gate is
-/// independent of the `large-tests` Cargo feature.
-fn online_sync_regression_enabled() -> bool {
-    std::env::var("MEDIAPM_ONLINE_SYNC_REGRESSION")
-        .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-}
 
 fn fixture_mediapm_ncl() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/artifacts/demo-online/mediapm.ncl")
@@ -83,11 +63,11 @@ fn read_env_generated_yt_dlp_path(env_file: &Path) -> Option<String> {
 async fn online_sync_post_sync_dump() {
     // 3-level mechanism gate (orthogonal to the `large-tests` Cargo feature):
     // Level 1: CI skips automatically. Level 2: normal harness skips (opt-in
-    // env var unset). Level 3: explicit MEDIAPM_ONLINE_SYNC_REGRESSION=1 runs
+    // env var unset). Level 3: explicit MEDIAPM_RUN_ONLINE_SYNC=1 runs
     // the full YouTube download.
-    if ci_mode_detected() || !online_sync_regression_enabled() {
+    if example_isolation::ci_mode_detected() || !example_isolation::run_online_sync_enabled() {
         eprintln!(
-            "[online_sync_post_sync_dump] skipping: set MEDIAPM_ONLINE_SYNC_REGRESSION=1 \
+            "[online_sync_post_sync_dump] skipping: set MEDIAPM_RUN_ONLINE_SYNC=1 \
              to run (requires network, external tools, and several minutes)"
         );
         return;
@@ -100,7 +80,7 @@ async fn online_sync_post_sync_dump() {
     let fixture = fixture_mediapm_ncl();
     assert!(
         fixture.is_file(),
-        "generate fixture first: MEDIAPM_DEMO_ONLINE_RUN_SYNC=false cargo run --example mediapm_demo_online"
+        "generate fixture first: MEDIAPM_RUN_ONLINE_SYNC=false cargo run --example mediapm_demo_online"
     );
 
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
