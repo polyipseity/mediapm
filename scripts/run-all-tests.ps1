@@ -11,21 +11,29 @@ if ($args.Count -gt 0 -and $Arg -eq '') { $Arg = $args[0] }
 
 function Show-Usage {
     @'
-usage: run-all-tests.ps1 [--help]
+usage: run-all-tests.ps1 [--large] [--help]
 
 Runs the full workspace validation suite:
-  - cargo --locked test-all (nextest, all targets and features)
+  - cargo nextest run --workspace --all-targets (default features)
   - cargo --locked test --doc --workspace
   - janitor dry-run gate (leftover mediapm temp dirs fail the suite)
   - unprefixed-tempdir invariant gate
+
+Options:
+  --large   enable the `large-tests` Cargo feature (runs network/external-tool
+            heavy tests such as mediapm-cas streaming_large). The online demo
+            YouTube-download regression is gated separately by the 3-level
+            mechanism, not by this flag.
 '@
 }
 
 # Argument validation happens before any `Set-Location` or cargo
 # invocation so the `--help`/unknown-arg paths are execution-safe
 # (exercised by the runner self-test in tests/scripts/test-run-all-tests.ps1).
+$LARGE = $false
 switch ($Arg) {
     '' { }
+    '--large' { $LARGE = $true }
     { $_ -in @('-h', '--help') } {
         Show-Usage
         exit 0
@@ -39,7 +47,15 @@ switch ($Arg) {
 
 Set-Location (git rev-parse --show-toplevel)
 
-cargo --locked test-all
+# Default run uses default features (all features except the opt-in
+# `large-tests` feature). `--large` adds `--features large-tests`. We invoke
+# nextest directly rather than the `test-all` alias so we control the feature
+# set; `test-all` stays `--all-features` for other consumers (e.g. pre-push).
+if ($LARGE) {
+    cargo --locked nextest run --workspace --all-targets --features large-tests
+} else {
+    cargo --locked nextest run --workspace --all-targets
+}
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 cargo --locked test --doc --workspace
