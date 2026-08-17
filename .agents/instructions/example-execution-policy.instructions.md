@@ -30,9 +30,9 @@ The three-level model is not limited to example `main()` tests. Any non-determin
 
 - **Level 1 — CI skip:** the test calls `ci_mode_detected()` (same CI-env set as above) and returns early with a documented message.
 - **Level 2 — harness skip:** absent an explicit opt-in, the test returns early — the normal `cargo test` / `cargo test-all` / pre-push harness never performs the download.
-- **Level 3 — explicit opt-in:** set `MEDIAPM_ONLINE_SYNC_REGRESSION=1` (tokens `1|true|yes|on`) to run the full download and assertions.
+- **Level 3 — explicit opt-in:** set `MEDIAPM_RUN_ONLINE_SYNC=1` (tokens `1|true|yes|on`) to run the full download and assertions.
 
-This gate is **orthogonal** to the `large-tests` Cargo feature: enabling `--large` (or `--all-features`) does not run the YouTube test, and the test does not require the feature. Keep the two mechanisms separate — do not reintroduce a shared env var or conflate feature gating with the 3-level mechanism.
+This gate is **orthogonal** to the `large-tests` Cargo feature: enabling `--large` (or `--all-features`) does not run the YouTube test, and the test does not require the feature. Keep the two mechanisms separate — do not conflate feature gating with the 3-level mechanism. The single shared env var `MEDIAPM_RUN_ONLINE_SYNC` (defined as `example_isolation::RUN_ONLINE_SYNC_ENV`) is the only Level 3 gate: the online demo `main()` uses it as a disable toggle (unset/enabled = full sync; disabled = reduced mode), and the non-example regression test uses it as an enable toggle (unset/disabled/unknown = skip). The offline demo (`mediapm_demo`) has no Level 3 env var and always runs a full sync.
 
 ## Examples-as-tests must be isolated
 
