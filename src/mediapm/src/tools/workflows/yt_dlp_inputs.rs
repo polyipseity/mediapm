@@ -116,6 +116,17 @@ fn yt_dlp_managed_ffmpeg_location_selector() -> String {
     ]))
 }
 
+/// OS-conditional inlined companion-dep path for the deno JS runtime yt-dlp
+/// requires for modern `YouTube` extraction.
+#[must_use]
+fn yt_dlp_managed_js_runtimes_selector() -> String {
+    build_os_conditional_selector(&BTreeMap::from([
+        ("linux".to_string(), "../deps/deno/linux/deno".to_string()),
+        ("macos".to_string(), "../deps/deno/macos/deno".to_string()),
+        ("windows".to_string(), "../deps/deno/windows/deno.exe".to_string()),
+    ]))
+}
+
 /// Resolves optional ZIP-member selector for yt-dlp variant materialization.
 #[must_use]
 fn yt_dlp_zip_member_for_variant(config: &YtDlpOutputVariantConfig) -> Option<String> {
@@ -172,6 +183,7 @@ pub(crate) fn yt_dlp_variant_inputs(config: &YtDlpOutputVariantConfig) -> BTreeM
     match config.kind {
         YtDlpOutputKind::Primary => {
             inputs.insert("ffmpeg_location".to_string(), yt_dlp_managed_ffmpeg_location_selector());
+            inputs.insert("js_runtimes".to_string(), yt_dlp_managed_js_runtimes_selector());
         }
         YtDlpOutputKind::Chapters => {
             inputs.insert("split_chapters".to_string(), "true".to_string());
