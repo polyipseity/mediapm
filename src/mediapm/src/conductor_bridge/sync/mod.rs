@@ -1152,7 +1152,7 @@ pub(crate) async fn reconcile_desired_tools(
     if report.warnings.is_empty() {
         pb.finish_success();
     } else {
-        pb.finish_error();
+        pb.finish_warning();
     }
     if let Some(g) = owned_group {
         g.join();
