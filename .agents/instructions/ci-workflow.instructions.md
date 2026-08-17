@@ -20,7 +20,7 @@ Treat these hooks as the canonical lint/format/check gate. During normal develop
 
 GitHub Actions (`.github/workflows/ci.yml`) mirrors the pre-push gate set:
 
-- `scripts/run-all-tests.sh` runs nextest (`cargo-nextest run --workspace --all-targets --all-features`) followed by `cargo test --doc --workspace` for doctests.
+- `scripts/run-all-tests.sh` runs nextest (`cargo-nextest run --workspace --all-targets --all-features`) followed by `cargo test --doc --workspace` for doctests. A second `scripts/run-all-tests.sh --large` step exports `MEDIAPM_RUN_LARGE_TESTS=1` so network/external-tool-heavy regression tests (e.g. `online_sync_post_sync_dump`) execute; the default run skips them.
 - `cargo clippy-all`, `cargo fmt-check`, `cargo build-all`.
 - `cargo bin rumdl check` (project-specific markdown linting).
 - A separate `windows` job (windows-latest) runs ONLY `cargo --locked test-pkg mediapm-tests` (the root script-test crate), covering the script self-tests (`tests/scripts/test-clean-mediapm-temp.*` janitors, `tests/scripts/test-run-all-tests.*` runners). pwsh is preinstalled on the runner; bash-based tests run via the Git Bash `bash` probe and skip with a printed reason if absent. No full-suite parity, no `run-all-tests.ps1`, no extra gates on Windows.
