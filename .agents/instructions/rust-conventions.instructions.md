@@ -234,7 +234,7 @@ All diagnostic helpers write to stderr. `print_warning(msg)` produces `"  Δ {ms
 
 ### Progress bar architecture
 
-`mediapm-utils::progress::ProgressGroup` wraps `MultiProgress` from the indicatif crate. `TrackedHandle` wraps an `Arc<SharedState>` with an optional `ProgressBar` instance. Clones share state. `TrackedHandle` methods include: `advance(delta)`, `set_position(pos)`, `set_message(msg)`, `set_prefix(prefix)`, `set_total(total)`, `total()`, `finish()`, `finish_success(msg)`, `finish_error(msg)`, `finish_and_clear()`, `abandon()`, `snapshot()`, `is_finished()`. `ProgressHandle` is a deprecated alias.
+`mediapm-utils::progress::ProgressGroup` wraps `MultiProgress` from the indicatif crate. `TrackedHandle` wraps an `Arc<SharedState>` with an optional `ProgressBar` instance. Clones share state. `TrackedHandle` methods include: `advance(delta)`, `set_position(pos)`, `set_prefix_components(components)`, `set_suffix_components(components)`, `set_total(total)`, `total()`, `finish_success()`, `finish_error()`, `finish_warning()`, `finish_and_clear()`, `snapshot()`, `is_finished()`. `ProgressHandle` is a deprecated alias.
 
 Construction uses `ProgressGroup::new()` for a simple group without an overall bar, or `ProgressGroup::with_overall(label, total)` to pin an aggregate bar at the bottom of the group:
 
@@ -301,7 +301,7 @@ On terminals narrower than 60 columns, a compact fallback template is used witho
 
 ### Custom RHS message
 
-Call `set_message()` on any `TrackedHandle` to append custom text after the auto-computed right-hand side (count/total, elapsed, rate, ETA). The message appears separated by two spaces from the auto-computed text. Clear it by setting an empty string. Common uses include `"skipped"` (tool already provisioned at the latest version) and `"cached (N)"` (N sources served from download cache). The message works after `finish()` or `finish_success()` because the daemon ticker continues syncing shared state to the indicatif bar until the bar is removed from `MultiProgress`.
+Call `set_suffix_components(SuffixComponents { custom, .. })` on any `TrackedHandle` to append custom text after the auto-computed right-hand side (count/total, elapsed, rate, ETA). The custom text appears separated by a single space from the auto-computed text. Common uses include `"skipped"` (tool already provisioned at the latest version) and `"cached (N)"` (N sources served from download cache). The custom text works after `finish_success()` because the daemon ticker continues syncing shared state to the indicatif bar until the bar is removed from `MultiProgress`.
 
 ### Formatting helpers
 

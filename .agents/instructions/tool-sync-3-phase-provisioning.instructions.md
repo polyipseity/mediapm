@@ -54,7 +54,7 @@ per-tool visual feedback).
 - Progress: per-source bar showing `items.current/items.total` and `bytes.current/bytes.total`.
 - Bar created on-demand (only appears when phase runs).
 - **Cached sources**: when `DownloadedSources.cached_count > 0`, the fetch bar
-  shows `"cached (N)"` via `set_message()` before finishing.
+  shows `"cached (N)"` via `set_suffix_components(SuffixComponents { custom: ... })` before finishing.
 
 ### Phase 3: Process
 
@@ -96,9 +96,11 @@ per-tool visual feedback).
 - Progress bar values are relayed directly from conductor's `ProviderProgressCallback` — the bridge does not interpret item or byte counts.
 - All progress bars are `group.add_bar()` — they are owned by the calling coordinator's progress group.
 - The metadata cache must NOT have `touch()` called — its TTL (1 day) is anchored to creation time, not last use.
-- `set_message("skipped")` or `set_message("skipped cached (N)")` (where `N` =
+- `set_suffix_components(SuffixComponents { custom: "skipped" })` or
+  `set_suffix_components(SuffixComponents { custom: "skipped cached (N)" })` (where `N` =
   `metadata_fetch_count`) is called on the resolve bar before
-  `finish_success()`, depending on `metadata_cached`. `set_message("cached (N)")`
+  `finish_success()`, depending on `metadata_cached`.
+  `set_suffix_components(SuffixComponents { custom: "cached (N)" })`
   (where `N` = `downloaded.cached_count`) is called on the fetch bar before
-  `finish()`. Both work because the daemon ticker still syncs `SharedState` to
+  `finish_success()`. Both work because the daemon ticker still syncs `SharedState` to
   the indicatif bar until the bar is removed from `MultiProgress`.
