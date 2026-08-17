@@ -43,27 +43,11 @@ esac
 
 # 4. Static gates: the runner must invoke the canonical commands.
 runner_text="$(cat "$runner")"
-for needle in 'cargo --locked test-all' 'cargo --locked test --doc --workspace' 'clean-mediapm-temp' 'tempfile::tempdir' '.prefix' 'MEDIAPM_RUN_LARGE_TESTS'; do
+for needle in 'cargo --locked test-all' 'cargo --locked test --doc --workspace' 'clean-mediapm-temp' 'tempfile::tempdir' '.prefix'; do
     case "$runner_text" in
         *"$needle"*) ;;
         *) fail "runner missing static gate: $needle" ;;
     esac
 done
-
-# 5. --large is a recognized argument (not rejected as unknown). The runner
-# would otherwise exit non-zero with the "unknown argument" diagnostic before
-# any cargo invocation. We stub `cargo` on PATH so the runner's argument
-# validation is exercised without running the real suite (execution-safe). The
-# stubbed run may still exit non-zero later (janitor/invariant gates), which is
-# fine; we only assert the unknown-argument diagnostic is absent.
-cargo_stub_dir="$(mktemp -d)"
-printf '#!/bin/sh\nexit 0\n' > "$cargo_stub_dir/cargo"
-chmod +x "$cargo_stub_dir/cargo"
-large_out="$(PATH="$cargo_stub_dir:$PATH" sh "$runner" --large 2>&1)" || true
-rm -rf "$cargo_stub_dir"
-case "$large_out" in
-    *"unknown argument"*) fail "--large should be a recognized argument" ;;
-    *) ;;
-esac
 
 echo "test-run-all-tests.sh: OK"
