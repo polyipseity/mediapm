@@ -20,7 +20,8 @@ Treat these hooks as the canonical lint/format/check gate. During normal develop
 
 GitHub Actions (`.github/workflows/ci.yml`) mirrors the pre-push gate set:
 
-- `scripts/run-all-tests.sh` runs nextest (`cargo-nextest run --workspace --all-targets --all-features`) followed by `cargo test --doc --workspace` for doctests.
+- `scripts/run-all-tests.sh` runs nextest followed by `cargo test --doc --workspace` for doctests. The default run invokes nextest directly with **default features** (`cargo nextest run --workspace --all-targets`) — this excludes the opt-in `large-tests` Cargo feature (defined only in `mediapm-cas`). Passing `--large` adds `--features large-tests` (runs network/external-tool-heavy tests such as `mediapm-cas` `streaming_large`). The `test-all` alias stays `--all-features` for other consumers (e.g. pre-push).
+- The online demo YouTube-download regression (`online_sync_post_sync_dump`) is gated separately by the **3-level mechanism** (`ci_mode_detected()` skip + `MEDIAPM_ONLINE_SYNC_REGRESSION=1` opt-in), NOT by `--large` or the `large-tests` feature. The two mechanisms are orthogonal: enabling the feature does not run the YouTube test.
 - `cargo clippy-all`, `cargo fmt-check`, `cargo build-all`.
 - `cargo bin rumdl check` (project-specific markdown linting).
 - A separate `windows` job (windows-latest) runs ONLY `cargo --locked test-pkg mediapm-tests` (the root script-test crate), covering the script self-tests (`tests/scripts/test-clean-mediapm-temp.*` janitors, `tests/scripts/test-run-all-tests.*` runners). pwsh is preinstalled on the runner; bash-based tests run via the Git Bash `bash` probe and skip with a printed reason if absent. No full-suite parity, no `run-all-tests.ps1`, no extra gates on Windows.
