@@ -11,17 +11,13 @@ if ($args.Count -gt 0 -and $Arg -eq '') { $Arg = $args[0] }
 
 function Show-Usage {
     @'
-usage: run-all-tests.ps1 [--help] [--large]
+usage: run-all-tests.ps1 [--help]
 
 Runs the full workspace validation suite:
   - cargo --locked test-all (nextest, all targets and features)
   - cargo --locked test --doc --workspace
   - janitor dry-run gate (leftover mediapm temp dirs fail the suite)
   - unprefixed-tempdir invariant gate
-
-Options:
-  --large   opt in to network/external-tool-heavy tests by exporting
-             MEDIAPM_RUN_LARGE_TESTS=1 (required by online regression tests)
 '@
 }
 
@@ -33,9 +29,6 @@ switch ($Arg) {
     { $_ -in @('-h', '--help') } {
         Show-Usage
         exit 0
-    }
-    '--large' {
-        $env:MEDIAPM_RUN_LARGE_TESTS = '1'
     }
     default {
         [Console]::Error.WriteLine("error: unknown argument: $Arg")

@@ -3,17 +3,13 @@ set -eu
 
 usage() {
     cat <<'EOF'
-usage: run-all-tests.sh [--help] [--large]
+usage: run-all-tests.sh [--help]
 
 Runs the full workspace validation suite:
   - cargo --locked test-all (nextest, all targets and features)
   - cargo --locked test --doc --workspace
   - janitor dry-run gate (leftover mediapm temp dirs fail the suite)
   - unprefixed-tempdir invariant gate
-
-Options:
-  --large   opt in to network/external-tool-heavy tests by exporting
-             MEDIAPM_RUN_LARGE_TESTS=1 (required by online regression tests)
 EOF
 }
 
@@ -26,9 +22,6 @@ case "${1:-}" in
     -h | --help)
         usage
         exit 0
-        ;;
-    --large)
-        export MEDIAPM_RUN_LARGE_TESTS=1
         ;;
     *)
         echo "error: unknown argument: $1" >&2
