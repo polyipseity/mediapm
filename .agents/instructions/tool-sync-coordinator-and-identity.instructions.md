@@ -113,6 +113,32 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
 - State churn without conductor-file churn is expected and correct. A change to
   `state.json` alone means only metadata changed; a change to
   `conductor.generated.ncl` means binary artifacts changed.
+- **Skip path MUST register the tool in `state.managed_tools`.** When a tool routes
+  through `PreResolveOutcome::Skip` (already provisioned at the resolved canonical
+  version), the coordinator pushes a full `ToolRegistryEntry` into
+  `report.tool_records` — not only into `report.resolved_field_backfills`. The
+  `managed_tools` registry is the authoritative record of what is provisioned; a
+  tool that is present in `conductor.generated.ncl` (active spec, non-empty
+  `content_map`) but absent from `managed_tools` is **illegal state** and must
+  never be produced. `apply_resolved_field_backfills` only updates existing
+  `managed_tools` entries, so a skipped tool that is never recorded would be
+  unrecoverable by backfill. The skip-path entry carries a real `content_map_hash`
+  (blake3 of the active generated-doc spec's content map via `find_active_tool_spec`)
+  and a `deployed_at` timestamp, exactly like the resolved path.
+- **`ToolSyncReport.tool_records` contract:** every provisioned tool — whether it
+  took the `Resolved` path (`Ok(Some(payload))`) or the `Skip` path — contributes
+  exactly one `ToolRegistryEntry` to `report.tool_records`. `service.rs` appends
+  every `report.tool_records` entry to `state.managed_tools` after the sync pass.
+  The `resolved_field_backfills` list is a *secondary* channel for provenance
+  backfill only and is never a substitute for `tool_records` registration.
+- **Warning check resolves from the sync cache root.** `logical_tool_requires_sync`
+  (the post-sync "tools require sync before library sync" check in `service.rs`)
+  must resolve tool versions from the **same cache root the sync used**
+  (`runtime_storage_overrides.cache_root_override`), never from the default
+  user-level cache. Divergent cache roots produce divergent `canonical_version`
+  values and spurious `!=` mismatches. It must pass
+  `Some((&cache, "tool_metadata"))` to `resolve_tool_fetch`, mirroring the sync
+  path in `reconcile_desired_tools`.
 
 ### Provisioning pruning (generated doc + filesystem)
 
