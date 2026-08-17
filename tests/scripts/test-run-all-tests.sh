@@ -43,11 +43,20 @@ esac
 
 # 4. Static gates: the runner must invoke the canonical commands.
 runner_text="$(cat "$runner")"
-for needle in 'cargo --locked test-all' 'cargo --locked test --doc --workspace' 'clean-mediapm-temp' 'tempfile::tempdir' '.prefix'; do
+for needle in 'cargo --locked nextest run' 'cargo --locked test --doc --workspace' 'clean-mediapm-temp' 'tempfile::tempdir' '.prefix'; do
     case "$runner_text" in
         *"$needle"*) ;;
         *) fail "runner missing static gate: $needle" ;;
     esac
 done
+
+# 5. --large must enable the large-tests Cargo feature (not an env var).
+case "$runner_text" in
+    *'--features large-tests'*) ;;
+    *) fail "runner missing --features large-tests under --large" ;;
+esac
+case "$runner_text" in
+    *'MEDIAPM_RUN_LARGE_TESTS'*) fail "runner must not reference MEDIAPM_RUN_LARGE_TESTS" ;;
+esac
 
 echo "test-run-all-tests.sh: OK"

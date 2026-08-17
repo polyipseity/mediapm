@@ -28,8 +28,12 @@ if (-not ($bogusOut -match 'unknown argument')) { Fail '--bogus missing stderr d
 
 # 4. Static gates: the runner must invoke the canonical commands.
 $runnerText = Get-Content -LiteralPath $runner -Raw
-foreach ($needle in @('cargo --locked test-all', 'cargo --locked test --doc --workspace', 'clean-mediapm-temp', 'tempfile::tempdir', '.prefix')) {
+foreach ($needle in @('cargo --locked nextest run', 'cargo --locked test --doc --workspace', 'clean-mediapm-temp', 'tempfile::tempdir', '.prefix')) {
     if (-not $runnerText.Contains($needle)) { Fail "runner missing static gate: $needle" }
 }
+
+# 5. --large must enable the large-tests Cargo feature (not an env var).
+if (-not $runnerText.Contains('--features large-tests')) { Fail 'runner missing --features large-tests under --large' }
+if ($runnerText.Contains('MEDIAPM_RUN_LARGE_TESTS')) { Fail 'runner must not reference MEDIAPM_RUN_LARGE_TESTS' }
 
 Write-Output 'test-run-all-tests.ps1: OK'
