@@ -228,19 +228,23 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
         index_file_name: "tool_metadata.json".to_string(),
         entry_ttl_seconds: 24 * 60 * 60,
     };
-    let cache =
-        Cache::open(cache_root.path(), &[metadata_domain]).await.expect("open override cache");
-    let user_cache = UserLevelCache::from_cache(cache);
-    user_cache
-        .store_bytes(
-            "tool_metadata",
-            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
-            b"autobuild-2025-07-15-12-00",
-        )
-        .await;
-    user_cache
-        .store_bytes("tool_metadata", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2")
-        .await;
+    {
+        let cache =
+            Cache::open(cache_root.path(), &[metadata_domain]).await.expect("open override cache");
+        let user_cache = UserLevelCache::from_cache(cache);
+        user_cache
+            .store_bytes(
+                "tool_metadata",
+                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+                b"autobuild-2025-07-15-12-00",
+            )
+            .await;
+        user_cache
+            .store_bytes("tool_metadata", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2")
+            .await;
+        // Drop the handle before the warning check opens the same root
+        // (flock contention otherwise fails the cache open).
+    }
 
     // Register ffmpeg in state with the matching canonical version and a
     // non-empty content_map_hash so the warning check reaches the

@@ -10,6 +10,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash, InMemoryCas};
+use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
+use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
 use mediapm_conductor::tools::provider::ConfigVersionSpec;
 use mediapm_conductor::{RuntimeStoragePaths, SimpleConductor};
@@ -36,6 +38,7 @@ use crate::output::{ProgressGroup, ProgressGroupApi};
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
+use crate::tools::downloader::ToolDownloadCache;
 use crate::tools::is_known_tool_id;
 use crate::tools::provider::RecheckPolicy;
 use crate::tools::workflows::{MANAGED_WORKFLOW_PREFIX, reconcile_media_workflows};
@@ -255,10 +258,37 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
                 return Ok(false);
             }
             // Resolve the canonical version from the provider and compare
-            // against the recorded canonical_version in state.
+            // against the recorded canonical_version in state. Use the SAME
+            // cache root the sync path uses so the resolved canonical_version
+            // matches what was recorded during sync (a divergent default
+            // cache would produce a spurious mismatch warning).
+            let cache_root = match effective.cache_root_override.as_deref() {
+                Some(root) => root.to_path_buf(),
+                None => default_mediapm_user_download_cache_root().ok_or_else(|| {
+                    MediaPmError::Workflow(
+                        "could not determine default tool cache root".to_string(),
+                    )
+                })?,
+            };
+            let content_domain = CacheDomainConfig {
+                domain: "tools".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            };
+            let metadata_domain = CacheDomainConfig {
+                domain: "tool_metadata".to_string(),
+                index_file_name: "tool_metadata.json".to_string(),
+                entry_ttl_seconds: 24 * 60 * 60,
+            };
+            let cache = Cache::open(&cache_root, &[content_domain, metadata_domain])
+                .await
+                .map(ToolDownloadCache::from_cache)
+                .map_err(|e| {
+                    MediaPmError::Workflow(format!("failed to open tool download cache: {e}"))
+                })?;
             match crate::tools::provider::resolve_tool_fetch(
                 tool_id,
-                None,
+                Some((&cache, "tool_metadata")),
                 RecheckPolicy::default(),
             )
             .await
