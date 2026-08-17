@@ -1,6 +1,6 @@
 //! End-to-end online demo exercising managed tool provisioning.
 //!
-//! Default sync enabled; override via `MEDIAPM_DEMO_ONLINE_RUN_SYNC`.
+//! Default sync enabled; disable via `MEDIAPM_RUN_ONLINE_SYNC=false`.
 //! Workflow: `yt-dlp -> ffmpeg -> media-tagger -> rsgain` on `YouTube` URL.
 //! The embedded test exercises `main()` in reduced (config-only) mode; the
 //! full-sync path (network + external tools) runs only on an explicit
@@ -220,8 +220,6 @@ const DEMO_EXPECTED_YT_DLP_STEP_COUNT: usize = 1;
 
 const DEMO_ONLINE_TIMEOUT_SECS_ENV: &str = "MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS";
 
-const DEMO_ONLINE_RUN_SYNC_ENV: &str = "MEDIAPM_DEMO_ONLINE_RUN_SYNC";
-
 /// Total hard-watchdog deadline; MUST equal nextest `slow-timeout.terminate-after` (600s) for the network test-group in `.config/nextest.toml`.
 const DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS: u64 = 10 * 60;
 
@@ -392,30 +390,6 @@ fn online_demo_timeout() -> ExampleResult<Duration> {
     }
 
     Ok(Duration::from_secs(seconds))
-}
-
-fn demo_online_run_sync_enabled() -> ExampleResult<bool> {
-    let Some(raw_value) = std::env::var_os(DEMO_ONLINE_RUN_SYNC_ENV) else {
-        return Ok(true);
-    };
-
-    let normalized = raw_value.to_string_lossy().trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return Ok(true);
-    }
-
-    if matches!(normalized.as_str(), "true" | "1" | "yes" | "on") {
-        return Ok(true);
-    }
-
-    if matches!(normalized.as_str(), "false" | "0" | "no" | "off") {
-        return Ok(false);
-    }
-
-    Err(format!(
-        "{DEMO_ONLINE_RUN_SYNC_ENV} only accepts enabled (true/1/yes/on) or disabled (false/0/no/off) values; got '{normalized}'"
-    )
-    .into())
 }
 
 fn configure_demo_conductor_executable_timeout(sync_timeout: Duration) {
@@ -2751,21 +2725,6 @@ fn resolve_managed_tool_id(machine: &NickelDocument, logical_name: &str) -> Exam
     Ok(find_managed_tool_spec(machine, logical_name)?.name.clone())
 }
 
-/// Detects a CI environment from standard CI variables. Only the embedded
-/// `main_is_exercised` test consults this; `main()` stays deterministic given
-/// environment inputs.
-#[cfg(test)]
-fn ci_mode_detected() -> bool {
-    std::env::var("CI")
-        .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
-        || std::env::var("GITHUB_ACTIONS").is_ok()
-        || std::env::var("GITLAB_CI").is_ok()
-        || std::env::var("CIRCLECI").is_ok()
-        || std::env::var("TRAVIS").is_ok()
-        || std::env::var("BUILDKITE").is_ok()
-        || std::env::var("DRONE").is_ok()
-}
-
 #[expect(clippy::unused_async)]
 async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
     let (root, _fallback_artifact) = reset_artifact_root()?;
@@ -2788,7 +2747,9 @@ async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    let run_sync = demo_online_run_sync_enabled()?;
+    let run_sync = example_isolation::parse_run_online_sync_override(
+        std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok().as_deref(),
+    )?;
     if !run_sync {
         let paths = run_online_demo_config_only().await?;
         println!("generated artifacts root: {}", paths.artifact_root.display());
@@ -2835,21 +2796,21 @@ mod tests {
     #[test]
     fn run_sync_override_accepts_disabled_tokens() {
         let _env_lock = example_isolation::lock_process_env();
-        let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
+        let previous = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
 
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "false");
+            std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
         }
-        let result = super::demo_online_run_sync_enabled();
+        let result = example_isolation::parse_run_online_sync_override(Some("false"));
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
             if let Some(value) = previous {
-                std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, value);
+                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
             } else {
-                std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
+                std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV);
             }
         }
 
@@ -2860,19 +2821,19 @@ mod tests {
     #[test]
     fn run_sync_override_validator_allows_unset_env() {
         let _env_lock = example_isolation::lock_process_env();
-        let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
+        let previous = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
+            std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV);
         }
 
-        let result = super::demo_online_run_sync_enabled();
+        let result = example_isolation::parse_run_online_sync_override(None);
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
             if let Some(value) = previous {
-                std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, value);
+                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
             }
         }
 
@@ -2883,21 +2844,21 @@ mod tests {
     #[test]
     fn run_sync_override_rejects_invalid_tokens() {
         let _env_lock = example_isolation::lock_process_env();
-        let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
+        let previous = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
 
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "maybe");
+            std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "maybe");
         }
-        let result = super::demo_online_run_sync_enabled();
+        let result = example_isolation::parse_run_online_sync_override(Some("maybe"));
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
             if let Some(value) = previous {
-                std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, value);
+                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
             } else {
-                std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
+                std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV);
             }
         }
 
@@ -2911,12 +2872,12 @@ mod tests {
     /// The online full-sync path is nondeterministic (network + external
     /// tools) and is NOT exercised here; it runs only on an explicit
     /// `cargo run -p mediapm --example mediapm_demo_online`. Run conditions:
-    /// (1) CI → skip via `ci_mode_detected()`; (2) any other test harness →
-    /// reduced mode via `MEDIAPM_DEMO_ONLINE_RUN_SYNC=false`; (3) explicit
-    /// `cargo run --example` → full sync (no test binary exists).
+    /// (1) CI → skip via `example_isolation::ci_mode_detected()`; (2) any other
+    /// test harness → reduced mode via `MEDIAPM_RUN_ONLINE_SYNC=false`; (3)
+    /// explicit `cargo run --example` → full sync (no test binary exists).
     #[test]
     fn main_is_exercised() {
-        if super::ci_mode_detected() {
+        if example_isolation::ci_mode_detected() {
             eprintln!(
                 "[demo_online] skipping main_is_exercised in CI; \
                  the full-sync online path is nondeterministic and needs \
@@ -2927,11 +2888,11 @@ mod tests {
 
         let _isolated = IsolatedExampleRoots::with_cache();
 
-        let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
+        let previous = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "false");
+            std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
         }
 
         super::main().expect("example main should run to completion");
@@ -2939,9 +2900,9 @@ mod tests {
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
             if let Some(value) = previous {
-                std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, value);
+                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
             } else {
-                std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
+                std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV);
             }
         }
 
