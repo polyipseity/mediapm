@@ -28,8 +28,23 @@ if (-not ($bogusOut -match 'unknown argument')) { Fail '--bogus missing stderr d
 
 # 4. Static gates: the runner must invoke the canonical commands.
 $runnerText = Get-Content -LiteralPath $runner -Raw
-foreach ($needle in @('cargo --locked test-all', 'cargo --locked test --doc --workspace', 'clean-mediapm-temp', 'tempfile::tempdir', '.prefix')) {
+foreach ($needle in @('cargo --locked test-all', 'cargo --locked test --doc --workspace', 'clean-mediapm-temp', 'tempfile::tempdir', '.prefix', 'MEDIAPM_RUN_LARGE_TESTS')) {
     if (-not $runnerText.Contains($needle)) { Fail "runner missing static gate: $needle" }
 }
+
+# 5. --large is a recognized argument (not rejected as unknown). Stub `cargo`
+# on PATH so the runner's argument validation is exercised without running the
+# real suite (execution-safe). The stubbed run may still exit non-zero later
+# (janitor/invariant gates), which is fine; we only assert the unknown-argument
+# diagnostic is absent.
+$cargoStubDir = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) "cargo-stub-$(Get-Random)")
+$cargoStub = Join-Path $cargoStubDir 'cargo'
+Set-Content -LiteralPath $cargoStub -Value "exit 0"
+$oldPath = $env:PATH
+$env:PATH = "$cargoStubDir$([System.IO.Path]::PathSeparator)$env:PATH"
+$largeOut = & pwsh -NoProfile -File $runner --large 2>&1
+$env:PATH = $oldPath
+Remove-Item -Recurse -Force $cargoStubDir
+if ($largeOut -match 'unknown argument') { Fail '--large should be a recognized argument' }
 
 Write-Output 'test-run-all-tests.ps1: OK'
