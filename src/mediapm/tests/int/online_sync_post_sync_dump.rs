@@ -1,7 +1,18 @@
-//! Post-sync diagnostic for online demo variant resolution (`#[ignore]`).
+//! Regression test for online demo variant resolution.
 //!
-//! Run:
-//! `cargo test -p mediapm online_sync_post_sync_dump -- --ignored --nocapture --test-threads=1`
+//! This is a real regression test (not a diagnostic dump). It exercises the
+//! full online sync path for the demo-online fixture and asserts concrete
+//! post-sync invariants: yt-dlp tool keys are present, their content maps are
+//! non-empty, the infojson sidecar was materialized, and conductor recorded
+//! executed tool-call instances.
+//!
+//! The actual `YouTube` video download only happens on an explicit opt-in run.
+//! The test skips before any network call unless `MEDIAPM_RUN_LARGE_TESTS` is
+//! set to an enabled token (see `large_tests_enabled`). `scripts/run-all-tests.sh
+//! --large` and CI set that variable; a plain `cargo test` skips.
+//!
+//! Run explicitly:
+//! `MEDIAPM_RUN_LARGE_TESTS=1 cargo test -p mediapm online_sync_post_sync_dump -- --nocapture --test-threads=1`
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -11,6 +22,19 @@ use crate::common::service_at;
 use mediapm::load_mediapm_document;
 use mediapm_conductor::decode_state_json;
 use tracing_subscriber::EnvFilter;
+
+/// Opt-in env var that enables network/external-tool-heavy tests. Set by
+/// `scripts/run-all-tests.sh --large` and CI; unset in a plain `cargo test`.
+const LARGE_TESTS_ENV: &str = "MEDIAPM_RUN_LARGE_TESTS";
+
+/// Returns true only when large/online tests are explicitly opted in. Any
+/// other value (including unset) means the test must skip before touching the
+/// network.
+fn large_tests_enabled() -> bool {
+    std::env::var(LARGE_TESTS_ENV).is_ok_and(|value| {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    })
+}
 
 fn fixture_mediapm_ncl() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/artifacts/demo-online/mediapm.ncl")
@@ -52,9 +76,60 @@ fn read_env_generated_yt_dlp_path(env_file: &Path) -> Option<String> {
     })
 }
 
+/// Concrete post-sync facts collected from the synced workspace, used by the
+/// regression assertions so the test body stays under the line-length lint.
+struct PostSyncFacts<'a> {
+    summary: &'a mediapm::SyncSummary,
+    yt_dlp_tool_keys: Vec<String>,
+    yt_dlp_content_map_lens: BTreeMap<String, usize>,
+    tools_dir_names: Vec<String>,
+    yt_dlp_env_exists: bool,
+    instance_count: usize,
+    sidecar_exists: bool,
+    file_count: usize,
+    infojson_hash_present: bool,
+    infojson_step_count: usize,
+    workflow_step_count: usize,
+}
+
+/// Asserts the post-sync invariants that prove the online demo resolved and
+/// materialized its yt-dlp variant correctly.
+fn assert_post_sync_facts(facts: &PostSyncFacts<'_>) {
+    assert!(
+        !facts.yt_dlp_tool_keys.is_empty(),
+        "yt-dlp tool keys must be present in generated doc"
+    );
+    assert!(
+        facts.yt_dlp_content_map_lens.values().all(|len| *len > 0),
+        "every yt-dlp tool content_map must be non-empty: {:#?}",
+        facts.yt_dlp_content_map_lens
+    );
+    assert!(facts.summary.added_tools > 0, "sync must register managed tools");
+    assert!(
+        facts.summary.executed_instances > 0,
+        "yt-dlp must have executed at least one instance"
+    );
+    assert!(facts.instance_count > 0, "conductor must record tool-call instances");
+    assert!(facts.infojson_hash_present, "source variant_hashes must contain infojson");
+    assert!(facts.infojson_step_count > 0, "workflow must contain infojson steps");
+    assert!(facts.workflow_step_count > 0, "generated workflow must contain steps");
+    assert!(facts.yt_dlp_env_exists, ".env.generated must point at a real yt-dlp payload path");
+    assert!(!facts.tools_dir_names.is_empty(), "tools_dir must contain provisioned tool dirs");
+    assert!(facts.sidecar_exists, "sidecars/info.json must be materialized");
+    assert!(facts.file_count > 0, "hierarchy must contain materialized files");
+    assert!(facts.summary.materialized_paths > 0, "sync must materialize hierarchy paths");
+}
+
 #[tokio::test]
-#[ignore = "requires network, external tools, and several minutes"]
 async fn online_sync_post_sync_dump() {
+    if !large_tests_enabled() {
+        eprintln!(
+            "[online_sync_post_sync_dump] skipping: set {LARGE_TESTS_ENV}=1 to run \
+             (requires network, external tools, and several minutes)"
+        );
+        return;
+    }
+
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -83,19 +158,12 @@ async fn online_sync_post_sync_dump() {
     let state_bytes = fs::read(&paths.conductor_state_config).expect("read state");
     let conductor_state = decode_state_json(&state_bytes).expect("decode state");
 
-    let workflow_name = "mediapm.media.youtube.dQw4w9WgXcQ";
+    let workflow_name = "mediapm.media.youtube.dQw4w9WgXcQ".to_string();
     let workflow = generated_doc
         .workflows
         .iter()
         .find(|workflow| workflow.name == workflow_name)
         .expect("managed workflow");
-
-    let yt_dlp_instances: BTreeMap<String, Vec<String>> = conductor_state
-        .tool_call_instances
-        .values()
-        .filter(|instance| instance.tool_call_id.contains("yt-dlp"))
-        .map(|instance| (instance.tool_call_id.clone(), instance.outputs.keys().cloned().collect()))
-        .collect();
 
     let infojson_steps: Vec<String> = workflow
         .steps
@@ -117,47 +185,24 @@ async fn online_sync_post_sync_dump() {
         .filter(|(key, _)| key.contains("yt-dlp"))
         .map(|(key, spec)| (key.clone(), spec.runtime.content_map.len()))
         .collect();
-    let workflow_step_tools: Vec<(String, String)> =
-        workflow.steps.iter().map(|step| (step.id.clone(), step.tool.clone())).collect();
     let tools_dir_names = list_dir_names(&paths.tools_dir);
     let yt_dlp_env_path = read_env_generated_yt_dlp_path(&paths.env_generated_file);
     let yt_dlp_env_exists = yt_dlp_env_path.as_ref().is_some_and(|path| Path::new(path).is_file());
     let instance_count = conductor_state.tool_call_instances.len();
 
-    panic!(
-        "ONLINE_SYNC_POST_SYNC_DUMP\n\
-warnings: {warnings:?}\n\
-executed_instances: {executed_instances}\n\
-cached_instances: {cached_instances}\n\
-added_tools: {added_tools}\n\
-updated_tools: {updated_tools}\n\
-workflow_steps: {workflow_step_count}\n\
-workflow_step_tools (id, tool): {workflow_step_tools:#?}\n\
-yt-dlp generated tool keys: {yt_dlp_tool_keys:?}\n\
-yt-dlp content_map lens: {yt_dlp_content_map_lens:#?}\n\
-tools_dir entries: {tools_dir_names:?}\n\
-yt-dlp env path: {yt_dlp_env_path:?}\n\
-yt-dlp env path exists: {yt_dlp_env_exists}\n\
-tool_call_instances: {instance_count}\n\
-materialized_paths: {materialized}\n\
-variant_hashes ({vh_len}): {variant_keys:?}\n\
-infojson hash: {infojson_hash:?}\n\
-infojson workflow steps: {infojson_steps:?}\n\
-yt-dlp instance output keys: {yt_dlp_instances:#?}\n\
-sidecars/info.json exists: {sidecar_exists}\n\
-files under hierarchy ({file_count}):\n{files:#?}",
-        warnings = summary.warnings,
-        executed_instances = summary.executed_instances,
-        cached_instances = summary.cached_instances,
-        added_tools = summary.added_tools,
-        updated_tools = summary.updated_tools,
-        workflow_step_count = workflow.steps.len(),
-        materialized = summary.materialized_paths,
-        vh_len = source.variant_hashes.len(),
-        variant_keys = source.variant_hashes.keys().collect::<Vec<_>>(),
-        infojson_hash = source.variant_hashes.get("infojson"),
-        sidecar_exists = sidecar_info.is_file(),
-        file_count = list_files_under(&hierarchy_root).len(),
-        files = list_files_under(&hierarchy_root),
-    );
+    let facts = PostSyncFacts {
+        summary: &summary,
+        yt_dlp_tool_keys,
+        yt_dlp_content_map_lens,
+        tools_dir_names,
+        yt_dlp_env_exists,
+        instance_count,
+        sidecar_exists: sidecar_info.is_file(),
+        file_count: list_files_under(&hierarchy_root).len(),
+        infojson_hash_present: source.variant_hashes.contains_key("infojson"),
+        infojson_step_count: infojson_steps.len(),
+        workflow_step_count: workflow.steps.len(),
+    };
+
+    assert_post_sync_facts(&facts);
 }
