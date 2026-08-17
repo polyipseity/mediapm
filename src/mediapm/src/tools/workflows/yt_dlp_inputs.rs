@@ -117,14 +117,17 @@ fn yt_dlp_managed_ffmpeg_location_selector() -> String {
 }
 
 /// OS-conditional inlined companion-dep path for the deno JS runtime yt-dlp
-/// requires for modern `YouTube` extraction.
+/// requires for modern `YouTube` extraction. yt-dlp's `--js-runtimes` expects
+/// the `RUNTIME[:PATH]` form, so the `deno:` runtime name prefixes the
+/// OS-conditional path selector.
 #[must_use]
 fn yt_dlp_managed_js_runtimes_selector() -> String {
-    build_os_conditional_selector(&BTreeMap::from([
+    let inner = build_os_conditional_selector(&BTreeMap::from([
         ("linux".to_string(), "../deps/deno/linux/deno".to_string()),
         ("macos".to_string(), "../deps/deno/macos/deno".to_string()),
         ("windows".to_string(), "../deps/deno/windows/deno.exe".to_string()),
-    ]))
+    ]));
+    format!("deno:{inner}")
 }
 
 /// Resolves optional ZIP-member selector for yt-dlp variant materialization.
