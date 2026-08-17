@@ -150,6 +150,7 @@ pub(crate) fn synthesize_media_tagger_step(
     generated_doc: &NickelDocument,
     producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
+    media_tagger_cache_dir: &Path,
 ) -> Result<(), MediaPmError> {
     let ffmpeg_tool_id = resolve_media_tagger_ffmpeg_tool_id(step, generated_doc)?;
     let ffmpeg_bin_for_metadata = resolve_media_tagger_ffmpeg_bin(step);
@@ -197,6 +198,7 @@ pub(crate) fn synthesize_media_tagger_step(
                 step,
                 &input_binding,
                 &ffmpeg_bin_for_metadata,
+                media_tagger_cache_dir.to_str().unwrap_or(""),
             ),
             depends_on: metadata_depends_on,
             outputs: BTreeMap::from([(
@@ -260,6 +262,7 @@ fn build_media_tagger_metadata_inputs(
     step: &MediaStep,
     input_binding: &str,
     ffmpeg_bin_for_metadata: &str,
+    cache_dir: &str,
 ) -> BTreeMap<String, String> {
     let mut inputs = BTreeMap::from([(INPUT_CONTENT.to_string(), input_binding.to_string())]);
     inputs.extend(step_option_input_bindings(step));
@@ -290,6 +293,7 @@ fn build_media_tagger_metadata_inputs(
         inputs.insert("option_args".to_string(), option_args);
     }
     inputs.entry("ffmpeg_bin".to_string()).or_insert_with(|| ffmpeg_bin_for_metadata.to_string());
+    inputs.entry("cache_dir".to_string()).or_insert_with(|| cache_dir.to_string());
     inputs
 }
 
@@ -576,6 +580,9 @@ pub(crate) fn build_media_tagger_spec(
 mod tests {
     use super::*;
 
+    use crate::config::MediaStepTool;
+    use crate::config::source_types::TransformInputValue;
+
     #[test]
     fn build_media_tagger_command_includes_input_output_flags() {
         let command = build_media_tagger_command("media-tagger");
@@ -626,5 +633,55 @@ mod tests {
         let os_exec_paths = BTreeMap::from([("linux".into(), "media-tagger".into())]);
         let (_spec, runtime) = build_media_tagger_spec(content_map, &os_exec_paths);
         assert!(runtime.impure);
+    }
+
+    /// Ensures synthesized metadata inputs default `cache_dir` to the
+    /// caller-provided workspace cache directory (empty when omitted, so the
+    /// HTTP cache stays disabled unless a real path is threaded through).
+    #[test]
+    fn build_media_tagger_metadata_inputs_default_cache_dir() {
+        let step = MediaStep {
+            tool: MediaStepTool::MediaTagger,
+            input_variants: vec![],
+            output_variants: BTreeMap::new(),
+            options: BTreeMap::new(),
+        };
+        let inputs = build_media_tagger_metadata_inputs(
+            &step,
+            "input",
+            "ffmpeg",
+            "/workspace/cache/media_tagger",
+        );
+        assert_eq!(
+            inputs.get("cache_dir").map(String::as_str),
+            Some("/workspace/cache/media_tagger"),
+            "caller-provided cache dir must be injected when the step sets none"
+        );
+    }
+
+    /// Ensures a user-set `options.cache_dir` wins over the threaded
+    /// workspace default.
+    #[test]
+    fn build_media_tagger_metadata_inputs_step_cache_dir_wins() {
+        let step = MediaStep {
+            tool: MediaStepTool::MediaTagger,
+            input_variants: vec![],
+            output_variants: BTreeMap::new(),
+            options: BTreeMap::from([(
+                "cache_dir".to_string(),
+                TransformInputValue::String("/user/cache".to_string()),
+            )]),
+        };
+        let inputs = build_media_tagger_metadata_inputs(
+            &step,
+            "input",
+            "ffmpeg",
+            "/workspace/cache/media_tagger",
+        );
+        assert_eq!(
+            inputs.get("cache_dir").map(String::as_str),
+            Some("/user/cache"),
+            "user-set cache_dir must override the workspace default"
+        );
     }
 }

@@ -56,18 +56,22 @@ impl MetadataCache {
     /// Opens or creates a metadata cache at the given cache directory.
     ///
     /// If the cache file already exists, it is loaded into memory.
-    /// Missing or corrupt files start with an empty cache.
+    /// Missing or corrupt files start with an empty cache. The cache
+    /// directory is created on demand so [`flush`](Self::flush) can write
+    /// its temp file (a failure to create it leaves a memory-only cache;
+    /// `Drop` then skips persistence just as it does for any other write
+    /// failure).
     #[must_use]
-    #[allow(dead_code)]
     pub(crate) fn open(cache_dir: &Path) -> Self {
+        let _ = fs::create_dir_all(cache_dir);
         let cache_path = cache_dir.join("metadata.cache.json");
-        let entries = load_cache_file(&cache_path).unwrap_or_default();
-
-        MetadataCache {
-            entries: Arc::new(Mutex::new(entries)),
+        let cache = MetadataCache {
+            entries: Arc::new(Mutex::new(load_cache_file(&cache_path).unwrap_or_default())),
             cache_path,
             dirty: Arc::new(Mutex::new(false)),
-        }
+        };
+        cache.prune_expired();
+        cache
     }
 
     /// Retrieves a cached value by key, or `None` if missing or expired.
@@ -134,14 +138,20 @@ impl MetadataCache {
     }
 
     /// Prunes expired entries from memory.
-    #[allow(dead_code)]
+    ///
+    /// Marks the cache dirty only when at least one entry was removed, so a
+    /// freshly loaded cache that is already clean does not trigger a
+    /// needless rewrite on drop.
     pub(crate) fn prune_expired(&self) {
         let mut entries = self.entries.lock().unwrap();
         let now = unix_seconds_now();
+        let len_before = entries.len();
         entries.retain(|_, entry| {
             now.saturating_sub(entry.last_access_unix_seconds) <= METADATA_CACHE_ENTRY_TTL_SECONDS
         });
-        *self.dirty.lock().unwrap() = true;
+        if entries.len() != len_before {
+            *self.dirty.lock().unwrap() = true;
+        }
     }
 
     /// Returns the number of entries in the cache (for testing).
@@ -189,6 +199,51 @@ mod tests {
         let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let cache = MetadataCache::open(dir.path());
         assert_eq!(cache.entry_count(), 0);
+    }
+
+    /// Ensures opening a cache on a fresh nested directory creates the
+    /// parent directory (so the first flush can persist without an explicit
+    /// mkdir at the call site).
+    #[test]
+    fn metadata_cache_open_creates_dir() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let nested = dir.path().join("nested").join("cache");
+        let cache = MetadataCache::open(&nested);
+        assert!(nested.is_dir(), "open must create the cache directory");
+        assert_eq!(cache.entry_count(), 0);
+    }
+
+    /// Ensures opening a cache prunes entries whose last access time is
+    /// older than the TTL, while keeping fresh entries.
+    #[test]
+    fn metadata_cache_prune_expired_removes_expired() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let now = unix_seconds_now();
+        let stale = now.saturating_sub(METADATA_CACHE_ENTRY_TTL_SECONDS + 1);
+        let cache_path = dir.path().join("metadata.cache.json");
+        let seeded = BTreeMap::from([
+            (
+                "expired".to_string(),
+                MetadataCacheEntry {
+                    value: serde_json::json!("old"),
+                    last_access_unix_seconds: stale,
+                },
+            ),
+            (
+                "fresh".to_string(),
+                MetadataCacheEntry {
+                    value: serde_json::json!("new"),
+                    last_access_unix_seconds: now,
+                },
+            ),
+        ]);
+        fs::write(&cache_path, serde_json::to_string_pretty(&seeded).expect("encode seeded cache"))
+            .expect("write seeded cache");
+
+        let cache = MetadataCache::open(dir.path());
+        assert_eq!(cache.entry_count(), 1, "expired entry must be pruned at open");
+        assert!(cache.get("fresh").is_some(), "fresh entry must survive pruning");
+        assert!(cache.get("expired").is_none(), "expired entry must be gone");
     }
 
     /// Ensures set + get round-trips a value.

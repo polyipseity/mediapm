@@ -21,6 +21,7 @@ pub(crate) mod yt_dlp;
 pub(crate) mod yt_dlp_inputs;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::str::FromStr;
 
 use mediapm_cas::Hash;
@@ -506,6 +507,7 @@ fn synthesize_media_steps(
     generated_doc: &NickelDocument,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
+    media_tagger_cache_dir: &Path,
 ) -> Result<(), MediaPmError> {
     for (step_index, step) in source.steps.iter().enumerate() {
         let mappings = resolve_step_variant_flow(step)
@@ -563,6 +565,7 @@ fn synthesize_media_steps(
                     generated_doc,
                     &producer_snapshot,
                     variant_producers,
+                    media_tagger_cache_dir,
                 )?;
             }
             MediaStepTool::Rsgain => {
@@ -601,7 +604,12 @@ fn build_media_workflow_plan(
     document: &MediaPmDocument,
     generated_doc: &NickelDocument,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
-    build_media_workflow_plan_with_limits(document, generated_doc, FfmpegSlotLimits::default())
+    build_media_workflow_plan_with_limits(
+        document,
+        generated_doc,
+        FfmpegSlotLimits::default(),
+        Path::new(""),
+    )
 }
 
 /// Builds the full managed workflow/external-data plan from `mediapm` config
@@ -610,6 +618,7 @@ fn build_media_workflow_plan_with_limits(
     document: &MediaPmDocument,
     generated_doc: &NickelDocument,
     ffmpeg_slot_limits: FfmpegSlotLimits,
+    media_tagger_cache_dir: &Path,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
     let mut plan = MediaWorkflowPlan::default();
 
@@ -631,6 +640,7 @@ fn build_media_workflow_plan_with_limits(
             generated_doc,
             &mut variant_producers,
             ffmpeg_slot_limits,
+            media_tagger_cache_dir,
         )?;
 
         plan.workflows.insert(managed_workflow_name(media_id), workflow);
@@ -693,7 +703,12 @@ pub(crate) fn reconcile_media_workflows(
     generated_doc.workflows.retain(|workflow| !workflow.name.starts_with(MANAGED_WORKFLOW_PREFIX));
 
     let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(document);
-    let plan = build_media_workflow_plan_with_limits(document, generated_doc, ffmpeg_slot_limits)?;
+    let plan = build_media_workflow_plan_with_limits(
+        document,
+        generated_doc,
+        ffmpeg_slot_limits,
+        &paths.workspace_media_tagger_cache_dir(),
+    )?;
 
     generated_doc.workflows.extend(plan.workflows.into_values());
     for (hash, entry) in plan.external_data {
@@ -838,6 +853,7 @@ mod tests {
             document,
             generated_doc,
             resolve_ffmpeg_slot_limits(document),
+            Path::new(""),
         )
     }
 
@@ -1244,6 +1260,7 @@ mod tests {
             &document,
             &generated_doc,
             resolve_ffmpeg_slot_limits(&document),
+            Path::new(""),
         )
         .expect_err("default slot limits reject idx 70");
         assert!(
@@ -1255,6 +1272,7 @@ mod tests {
             &document,
             &generated_doc,
             FfmpegSlotLimits { max_input_slots: 128, max_output_slots: 128 },
+            Path::new(""),
         )
         .expect("custom slot limits accept idx 70");
         assert!(

@@ -211,9 +211,10 @@ fn parse_local_format_tags(value: &Value) -> Value {
 
 /// Fetches local source metadata, using an optional cache.
 ///
-/// Delegates to [`try_fetch_local_source_metadata_with_ffprobe`], which runs
-/// `ffprobe -v error` (not `-v quiet`) so a failing probe surfaces its
-/// diagnostic on stderr instead of an empty message.
+/// Delegates to [`fetch_local_source_metadata_with_probe`] with the real
+/// ffprobe probe, which runs `ffprobe -v error` (not `-v quiet`) so a
+/// failing probe surfaces its diagnostic on stderr instead of an empty
+/// message.
 ///
 /// # Errors
 ///
@@ -222,6 +223,27 @@ pub(crate) fn fetch_local_source_metadata(
     path: &Path,
     ffprobe_command: &str,
     cache: Option<&MetadataCache>,
+) -> Result<LocalSourceMetadata, MediaPmError> {
+    fetch_local_source_metadata_with_probe(path, cache, |path| {
+        try_fetch_local_source_metadata_with_ffprobe(path, ffprobe_command)
+    })
+}
+
+/// Fetches local source metadata through a caller-supplied probe, using an
+/// optional cache keyed by `ffprobe:{path}`.
+///
+/// On a cache hit the probe is not invoked and the cached value is returned;
+/// on a miss the probe runs and its result is stored (when a cache is
+/// present). The probe receives the media path and returns the parsed
+/// metadata JSON value.
+///
+/// # Errors
+///
+/// Returns the probe's error when the probe fails.
+fn fetch_local_source_metadata_with_probe(
+    path: &Path,
+    cache: Option<&MetadataCache>,
+    probe: impl FnOnce(&Path) -> Result<Value, MediaPmError>,
 ) -> Result<LocalSourceMetadata, MediaPmError> {
     let cache_key = format!("ffprobe:{}", path.display());
 
@@ -233,7 +255,7 @@ pub(crate) fn fetch_local_source_metadata(
         return Ok(metadata);
     }
 
-    let raw = try_fetch_local_source_metadata_with_ffprobe(path, ffprobe_command)?;
+    let raw = probe(path)?;
     let metadata = parse_local_source_metadata_from_ffprobe_json(&raw);
 
     // Update cache
@@ -443,6 +465,35 @@ mod tests {
         let metadata = parse_local_source_metadata_from_ffprobe_json(&input);
         assert_eq!(metadata.title, "Untitled");
         assert_eq!(metadata.artist, "Unknown");
+    }
+
+    /// Ensures a cache hit skips the probe on subsequent fetches.
+    #[test]
+    fn fetch_local_source_metadata_uses_cache_when_provided() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let cache = MetadataCache::open(dir.path());
+        let probe_path = dir.path().join("media.bin");
+        let mut probe_calls = 0;
+
+        let metadata = fetch_local_source_metadata_with_probe(&probe_path, Some(&cache), |_| {
+            probe_calls += 1;
+            Ok(json!({
+                "format": {
+                    "tags": { "title": "Probed Title", "artist": "Probed Artist" }
+                }
+            }))
+        })
+        .expect("first probe succeeds");
+        assert_eq!(probe_calls, 1, "first fetch must probe");
+        assert_eq!(metadata.title, "Probed Title");
+
+        let second = fetch_local_source_metadata_with_probe(&probe_path, Some(&cache), |_| {
+            probe_calls += 1;
+            Ok(json!({}))
+        })
+        .expect("cached fetch succeeds");
+        assert_eq!(probe_calls, 1, "second fetch must hit the cache, not probe");
+        assert_eq!(second.title, metadata.title);
     }
 
     // ── resolve_online_source_metadata_for_add edge cases ─────────────────

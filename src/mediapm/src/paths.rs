@@ -123,10 +123,10 @@ impl MediaPmPaths {
         self.workspace_cache_dir().join("yt-dlp")
     }
 
-    /// Returns the managed media-tagger cache root.
+    /// Returns the managed media-tagger cache root (`<runtime>/cache/media_tagger`).
     #[must_use]
     pub fn workspace_media_tagger_cache_dir(&self) -> PathBuf {
-        self.workspace_cache_dir()
+        self.workspace_cache_dir().join("media_tagger")
     }
 
     /// Returns the mediapm metadata cache root (`<runtime>/cache/mediapm`).
@@ -269,6 +269,14 @@ mod tests {
         assert_eq!(
             paths.workspace_yt_dlp_cache_dir(),
             root.path().join(".mediapm").join("cache").join("yt-dlp")
+        );
+        assert_eq!(
+            paths.workspace_media_tagger_cache_dir(),
+            root.path().join(".mediapm").join("cache").join("media_tagger")
+        );
+        assert_eq!(
+            paths.workspace_mediapm_cache_dir(),
+            root.path().join(".mediapm").join("cache").join("mediapm")
         );
         assert_eq!(paths.tools_dir, root.path().join(".mediapm").join("tools"));
     }

@@ -139,6 +139,16 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
 **User-level cache**: `<os-cache-dir>/mediapm/cache/` (7-day eviction) — shared download cache distinct from workspace tool cache.
 
+### Media Metadata Caching
+
+Two metadata caches are enabled by default for media processing:
+
+- **ffprobe metadata cache** (`metadata_cache.rs`): `MediaPmService` owns a `MetadataCache` opened at `paths.workspace_mediapm_cache_dir()` (`<runtime>/cache/mediapm/metadata.cache.json`). Every `add_local_source_*` call consults the cache keyed by `ffprobe:{path}` (access-time TTL = 1 day, `METADATA_CACHE_ENTRY_TTL_SECONDS`); the probe runs only on a miss. The cache is pruned of expired entries at open and flushed (atomically) on drop. On a hit, the cached `LocalSourceMetadata` is returned without invoking ffprobe.
+
+- **media-tagger HTTP cache**: the media-tagger workflow step synthesizes a `cache_dir` step input defaulting to `paths.workspace_media_tagger_cache_dir()` (`<runtime>/cache/media_tagger`). This is threaded through `synthesize_media_tagger_step` → `build_media_tagger_metadata_inputs` and injected as the `cache_dir` step option (overridable per-step via `options.cache_dir`). The builtin `MediaTaggerHttpCache` honors a non-empty `cache_dir`; an empty value disables caching. `cache_expiry_seconds` defaults to `86400`.
+
+Both caches are workspace-scoped (under `<runtime>/cache/`) and kept in separate subdirectories so domains do not collide.
+
 ### Adding a New Managed Tool
 
 Follow this spec-first, test-first workflow:

@@ -31,6 +31,7 @@ use crate::hierarchy::{
     insert_hierarchy_preset_node, remove_hierarchy_nodes_by_id, remove_hierarchy_nodes_by_media_id,
 };
 use crate::materializer;
+use crate::metadata_cache::MetadataCache;
 use crate::output::{ProgressGroup, ProgressGroupApi};
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 pub(crate) use crate::service_standalone::*;
@@ -100,6 +101,8 @@ pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'stati
     paths: MediaPmPaths,
     /// Runtime storage overrides passed at construction.
     runtime_storage_overrides: MediaRuntimeStorage,
+    /// Persistent local-source metadata cache (`<runtime>/cache/mediapm`).
+    metadata_cache: MetadataCache,
 }
 
 #[allow(private_bounds)]
@@ -111,7 +114,13 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// Runtime storage overrides default to [`MediaRuntimeStorage::default()`].
     #[must_use]
     pub fn new(conductor: SimpleConductor<Cas>, paths: MediaPmPaths) -> Self {
-        Self { conductor, paths, runtime_storage_overrides: MediaRuntimeStorage::default() }
+        let metadata_cache = MetadataCache::open(&paths.workspace_mediapm_cache_dir());
+        Self {
+            conductor,
+            paths,
+            runtime_storage_overrides: MediaRuntimeStorage::default(),
+            metadata_cache,
+        }
     }
 
     /// Creates a new service instance with explicit runtime storage overrides.
@@ -121,7 +130,8 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         paths: MediaPmPaths,
         runtime_storage_overrides: MediaRuntimeStorage,
     ) -> Self {
-        Self { conductor, paths, runtime_storage_overrides }
+        let metadata_cache = MetadataCache::open(&paths.workspace_mediapm_cache_dir());
+        Self { conductor, paths, runtime_storage_overrides, metadata_cache }
     }
 
     // -----------------------------------------------------------------------
@@ -474,8 +484,9 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             }
         }
 
-        // Fetch metadata via ffprobe.
-        let metadata = fetch_local_source_metadata(path, ffprobe_command, None)?;
+        // Fetch metadata via ffprobe (cache hit skips the probe).
+        let metadata =
+            fetch_local_source_metadata(path, ffprobe_command, Some(&self.metadata_cache))?;
         let title = Some(metadata.title.as_str());
         let description = Some(metadata.description.as_str());
 

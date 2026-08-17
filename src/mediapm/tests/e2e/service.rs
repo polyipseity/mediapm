@@ -1,7 +1,7 @@
 //! API-level end-to-end tests using programmatic `MediaPmService` flows.
 
 use crate::common::{read_doc, service_in_tempdir};
-use mediapm::{MediaHierarchyPreset, MediaSourceSpec, media_id_from_uri};
+use mediapm::{AddInsertPosition, MediaHierarchyPreset, MediaSourceSpec, media_id_from_uri};
 use url::Url;
 
 // ---------------------------------------------------------------------------
@@ -19,6 +19,94 @@ async fn add_source_persists() -> Result<(), mediapm::MediaPmError> {
 
     let doc = read_doc(&service.paths().mediapm_ncl);
     assert!(doc.media.contains_key(&media_id), "source should exist after add");
+
+    Ok(())
+}
+
+/// Adding a local source caches its ffprobe metadata under
+/// `<runtime>/cache/mediapm/metadata.cache.json` keyed by `ffprobe:{path}`.
+#[tokio::test]
+async fn add_local_source_caches_metadata() -> Result<(), mediapm::MediaPmError> {
+    // Skip when ffprobe is not installed (e.g., minimal CI images).
+    if std::process::Command::new("ffprobe").arg("-version").output().is_err() {
+        eprintln!("skipping: ffprobe not available");
+        return Ok(());
+    }
+    let (mut service, root) = service_in_tempdir().await?;
+
+    let media_path = root.path().join("track.wav");
+    // Minimal valid 8-bit mono 8 kHz PCM WAV so ffprobe can read metadata.
+    let wav: &[u8] = &[
+        b'R',
+        b'I',
+        b'F',
+        b'F',
+        36u32.to_le_bytes()[0],
+        36u32.to_le_bytes()[1],
+        36u32.to_le_bytes()[2],
+        36u32.to_le_bytes()[3],
+        b'W',
+        b'A',
+        b'V',
+        b'E',
+        b'f',
+        b'm',
+        b't',
+        b' ',
+        16,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0x40,
+        0x1f,
+        0,
+        0,
+        0x40,
+        0x1f,
+        0,
+        0,
+        1,
+        0,
+        8,
+        0,
+        b'd',
+        b'a',
+        b't',
+        b'a',
+        8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
+    std::fs::write(&media_path, wav).expect("write media file");
+    let media_id =
+        service.add_local_source(&media_path, "ffprobe", None, AddInsertPosition::End)?;
+    assert!(!media_id.is_empty(), "local add must produce a media id");
+
+    // The cache flushes when the service is dropped; drop before asserting.
+    drop(service);
+
+    let cache_path =
+        root.path().join(".mediapm").join("cache").join("mediapm").join("metadata.cache.json");
+    assert!(cache_path.is_file(), "metadata cache must be written after add");
+    let cache_content = std::fs::read_to_string(&cache_path).expect("read metadata cache");
+    assert!(
+        cache_content.contains(&format!("ffprobe:{}", media_path.display())),
+        "cache must contain ffprobe:{{path}} key"
+    );
 
     Ok(())
 }
