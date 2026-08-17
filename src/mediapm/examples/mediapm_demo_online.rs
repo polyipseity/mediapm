@@ -948,7 +948,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             options: BTreeMap::from([
                 (
                     "recording_mbid".to_string(),
-                    TransformInputValue::String("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae".to_string()),
+                    TransformInputValue::String("69755ab1-409e-3ad7-902f-3a839042799c".to_string()),
                 ),
                 ("release_mbid".to_string(), TransformInputValue::String(String::new())),
                 ("write_all_images".to_string(), TransformInputValue::String("false".to_string())),
