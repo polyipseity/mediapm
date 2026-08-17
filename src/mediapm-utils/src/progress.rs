@@ -4576,6 +4576,104 @@ mod tests {
         super::inner::render_prefix_components(parts, super::TrackStatus::Active)
     }
 
+    // ---- Regression: TrackStatus marker behavior (post-simplification) ----
+
+    #[test]
+    fn regression_finish_warning_stores_warning_and_decodes() {
+        let h = TrackedHandle::new(10);
+        assert!(!h.is_finished());
+        h.finish_warning();
+        assert!(h.is_finished(), "finish_warning marks the handle finished");
+        assert_eq!(h.snapshot().status, TrackStatus::Warning, "finish_warning stores Warning");
+    }
+
+    #[test]
+    fn regression_finish_error_stores_failed_and_decodes() {
+        let h = TrackedHandle::new(10);
+        h.finish_error();
+        assert!(h.is_finished(), "finish_error marks the handle finished");
+        assert_eq!(h.snapshot().status, TrackStatus::Failed, "finish_error stores Failed");
+    }
+
+    #[test]
+    fn regression_finish_success_stores_success_and_decodes() {
+        let h = TrackedHandle::new(10);
+        h.finish_success();
+        assert!(h.is_finished(), "finish_success marks the handle finished");
+        assert_eq!(h.snapshot().status, TrackStatus::Success, "finish_success stores Success");
+    }
+
+    #[test]
+    fn regression_render_prefix_components_status_markers() {
+        // Failed => red [F], Warning => yellow [W], others uncolored.
+        let parts = super::inner::PrefixComponents {
+            marker: "F".into(),
+            tool_name: "wget".into(),
+            version: String::new(),
+            phase: String::new(),
+            count: String::new(),
+            total: String::new(),
+        };
+        let failed = super::inner::render_prefix_components(&parts, TrackStatus::Failed);
+        assert_eq!(failed, "\x1b[0m\x1b[31m[F]\x1b[0m wget", "failed marker rendered red");
+
+        // Warning status colors the marker yellow; the marker glyph itself is
+        // carried by the `marker` field (set to "W" at construction).
+        let warning_parts = super::inner::PrefixComponents {
+            marker: "W".into(),
+            tool_name: "wget".into(),
+            version: String::new(),
+            phase: String::new(),
+            count: String::new(),
+            total: String::new(),
+        };
+        let warning = super::inner::render_prefix_components(&warning_parts, TrackStatus::Warning);
+        assert_eq!(warning, "\x1b[0m\x1b[33m[W]\x1b[0m wget", "warning marker rendered yellow [W]");
+
+        for status in [TrackStatus::Active, TrackStatus::Success] {
+            let normal = super::inner::render_prefix_components(&parts, status);
+            assert!(
+                !normal.contains("\x1b[31m") && !normal.contains("\x1b[33m"),
+                "{status:?}: marker must be uncolored (no red/yellow SGR)"
+            );
+            assert!(normal.contains("[F]"), "{status:?}: uncolored [F] bracket still present");
+        }
+    }
+
+    #[test]
+    fn regression_bar_color_code_status_codes() {
+        assert_eq!(super::inner::bar_color_code(TrackStatus::Failed, false), "31");
+        assert_eq!(super::inner::bar_color_code(TrackStatus::Warning, false), "33");
+        assert_eq!(super::inner::bar_color_code(TrackStatus::Success, false), "32");
+    }
+
+    #[test]
+    fn regression_snapshot_status_code_round_trip() {
+        // Each known status decodes back to the correct TrackStatus via the
+        // public finish_* API. The `_ => Success` fallback for unknown codes
+        // is covered by the inner-module unit test below.
+        let active = TrackedHandle::new(10);
+        assert_eq!(active.snapshot().status, TrackStatus::Active);
+
+        let success = TrackedHandle::new(10);
+        success.finish_success();
+        assert_eq!(success.snapshot().status, TrackStatus::Success);
+
+        let failed = TrackedHandle::new(10);
+        failed.finish_error();
+        assert_eq!(failed.snapshot().status, TrackStatus::Failed);
+
+        let warning = TrackedHandle::new(10);
+        warning.finish_warning();
+        assert_eq!(warning.snapshot().status, TrackStatus::Warning);
+
+        // finish_and_clear stores code 5, which the snapshot decoder maps to
+        // Success (the `_ => Success` fallback arm).
+        let cleared = TrackedHandle::new(10);
+        cleared.finish_and_clear();
+        assert_eq!(cleared.snapshot().status, TrackStatus::Success);
+    }
+
     // ---- prefix_components_from_str tests (Phase 2) -----------------------
 
     #[test]
