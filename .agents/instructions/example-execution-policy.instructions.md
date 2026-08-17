@@ -24,6 +24,16 @@ Examples that require nondeterministic access (network, external services, manag
 
 `main()` itself must be deterministic given environment inputs: no CI detection, no network probing, and no conditional behavior other than what the documented environment variables select.
 
+## The 3-level mechanism also gates non-example regression tests
+
+The three-level model is not limited to example `main()` tests. Any non-deterministic test that performs real network downloads (not just example entry points) must apply the same gating so it never runs in CI or in the normal harness by accident. The canonical example is `src/mediapm/tests/int/online_sync_post_sync_dump.rs`, a YouTube-download regression test:
+
+- **Level 1 — CI skip:** the test calls `ci_mode_detected()` (same CI-env set as above) and returns early with a documented message.
+- **Level 2 — harness skip:** absent an explicit opt-in, the test returns early — the normal `cargo test` / `cargo test-all` / pre-push harness never performs the download.
+- **Level 3 — explicit opt-in:** set `MEDIAPM_ONLINE_SYNC_REGRESSION=1` (tokens `1|true|yes|on`) to run the full download and assertions.
+
+This gate is **orthogonal** to the `large-tests` Cargo feature: enabling `--large` (or `--all-features`) does not run the YouTube test, and the test does not require the feature. Keep the two mechanisms separate — do not reintroduce a shared env var or conflate feature gating with the 3-level mechanism.
+
 ## Examples-as-tests must be isolated
 
 Examples compile into test binaries (nextest `--all-targets`), so any example `main()` that persists state runs concurrently with sibling tests in the same suite. It must therefore treat itself as a test: never share canonical on-disk locations between tests and never touch the real OS user cache.
