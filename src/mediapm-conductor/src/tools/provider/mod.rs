@@ -1025,6 +1025,18 @@ async fn process_single_source(
 
         let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
 
+        // yt-dlp spawns deno via its bundled JS-challenge provider, which
+        // hardcodes `cmd = [deno, 'run', *options, '-']` with
+        // `--no-config` and no `--allow-*` flags. deno 2.x enforces a sandbox,
+        // so the `ws` npm dependency's `WS_NO_BUFFER_UTIL` env access is denied
+        // (`NotCapable`), breaking the challenge and yielding HTTP 403. The
+        // `--js-runtimes` CLI only accepts `RUNTIME[:PATH]` (no args), so the
+        // only fix is to wrap the deno binary: rename the real executable and
+        // place a shim that re-execs it with `--allow-all`.
+        if tool_id == "deno" {
+            wrap_deno_binary(os_dir)?;
+        }
+
         // Item 1: compress — refine total to actual directory content size,
         // then repack to uncompressed ZIP and import to CAS.
         let dir_total = total_dir_size(os_dir);
@@ -1069,6 +1081,77 @@ async fn process_single_source(
         cm.insert(key, hash.to_hex());
         Ok(ProcessedSource { content_map: cm, exec_path: filename.to_string() })
     }
+}
+
+// ---------------------------------------------------------------------------
+// deno permission wrapper
+// ---------------------------------------------------------------------------
+
+/// Wraps the deno executable so yt-dlp's bundled JS-challenge provider can run
+/// it without sandbox denials.
+///
+/// yt-dlp invokes deno as `[deno, 'run', *options, '-']` where `options`
+/// hardcodes `--no-config` and omits any `--allow-*` flag. deno 2.x enforces a
+/// permission sandbox, so the `ws` npm package's `WS_NO_BUFFER_UTIL` env access
+/// is denied (`NotCapable`), breaking `YouTube` challenge solving (HTTP 403).
+/// Because yt-dlp's `--js-runtimes` accepts only `RUNTIME[:PATH]` (no args), we
+/// rename the real binary to `deno.real` (or `deno.real.exe`) and write a shim
+/// at the original `deno` path that re-execs it with `--allow-all`.
+fn wrap_deno_binary(os_dir: &std::path::Path) -> Result<(), crate::error::ConductorError> {
+    use crate::error::ConductorError;
+
+    let real_name = if cfg!(windows) { "deno.real.exe" } else { "deno.real" };
+    let shim_name = if cfg!(windows) { "deno.exe" } else { "deno" };
+
+    let real_path = os_dir.join(real_name);
+    let shim_path = os_dir.join(shim_name);
+
+    std::fs::rename(&shim_path, &real_path).map_err(|source| {
+        ConductorError::io(
+            format!("renaming deno binary to '{real_name}' for permission wrapper"),
+            &real_path,
+            source,
+        )
+    })?;
+
+    let shim_contents = if cfg!(windows) {
+        format!("@\"%~dp0{real_name}\" --allow-all %*\r\n")
+    } else {
+        format!("#!/bin/sh\nexec \"$(dirname \"$0\")/{real_name}\" --allow-all \"$@\"\n")
+    };
+
+    std::fs::write(&shim_path, shim_contents).map_err(|source| {
+        ConductorError::io(
+            format!("writing deno permission wrapper shim '{shim_name}'"),
+            &shim_path,
+            source,
+        )
+    })?;
+
+    // Ensure the shim is executable on unix so it can be invoked directly.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&shim_path)
+            .map_err(|source| {
+                ConductorError::io(
+                    "reading deno wrapper shim permissions".to_string(),
+                    shim_path.clone(),
+                    source,
+                )
+            })?
+            .permissions();
+        permissions.set_mode(permissions.mode() | 0o111);
+        std::fs::set_permissions(&shim_path, permissions).map_err(|source| {
+            ConductorError::io(
+                "marking deno wrapper shim executable".to_string(),
+                shim_path.clone(),
+                source,
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1677,6 +1760,43 @@ mod tests {
         assert_eq!(result.content_map.len(), 1);
         assert!(result.content_map.contains_key("windows/"));
         assert_eq!(result.exec_path, "sd.exe");
+    }
+
+    /// Verifies that processing the `deno` archive wraps the real binary so
+    /// yt-dlp's bundled JS-challenge provider can run it without sandbox
+    /// denials: the original `deno` path becomes a shim and the real binary is
+    /// renamed to `deno.real` (or `deno.real.exe` on Windows).
+    #[tokio::test]
+    async fn process_deno_archive_wraps_binary_with_permission_shim() {
+        let zip = synthetic_zip(&[("deno", EXEC_BYTES), ("deno.real", EXEC_BYTES)]);
+        let cas = InMemoryCas::default();
+        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
+        budget.add_item(0);
+        let result = process_single_source(
+            &zip,
+            Some(ARCHIVE_ZIP),
+            "linux",
+            "deno",
+            os_dir.path(),
+            "",
+            &cas,
+            &budget,
+            0usize,
+            2usize,
+            None,
+            0u64,
+            2u64,
+        )
+        .await
+        .unwrap();
+        assert!(result.content_map.contains_key("linux/"));
+        assert_eq!(result.exec_path, "deno");
+        let shim = std::fs::read_to_string(os_dir.path().join("deno")).unwrap();
+        assert!(shim.contains("deno.real"), "shim must re-exec deno.real");
+        assert!(shim.contains("--allow-all"), "shim must grant deno permissions");
+        assert!(std::fs::metadata(os_dir.path().join("deno.real")).is_ok());
     }
 
     #[tokio::test]
