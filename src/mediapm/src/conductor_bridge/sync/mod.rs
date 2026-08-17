@@ -856,11 +856,15 @@ pub(crate) async fn reconcile_desired_tools(
         };
 
         let was_skip = matches!(&pre_resolved, PreResolveOutcome::Skip { .. });
+        // Clone BEFORE pre_resolved is moved into fetch_and_import_tool_payload
+        // below, so the Skip-path registration can read its resolved fields.
+        let pre_resolved_for_skip = pre_resolved.clone();
         // Capture fresh resolved metadata for the skip backfill BEFORE
         // pre_resolved is moved into fetch_and_import_tool_payload below.
         let skip_backfill: Option<ToolRegistryEntry> = match &pre_resolved {
             PreResolveOutcome::Skip {
                 name,
+                human_readable_version,
                 version,
                 resolved_tag,
                 resolved_version,
@@ -868,7 +872,7 @@ pub(crate) async fn reconcile_desired_tools(
                 ..
             } => Some(ToolRegistryEntry {
                 tool_id: name.clone(),
-                version: String::new(),
+                version: human_readable_version.clone(),
                 canonical_version: version.clone(),
                 content_map_hash: String::new(),
                 deployed_at: mediapm_utils::Timestamp::default(),
@@ -907,6 +911,53 @@ pub(crate) async fn reconcile_desired_tools(
             // Backfill fresh resolved metadata into the persisted registry.
             if let Some(backfill) = skip_backfill {
                 report.resolved_field_backfills.push(backfill);
+            }
+            // Register the skipped tool in the managed-tool registry. A
+            // provisioned-but-unregistered tool is illegal state: the
+            // post-sync warning check would otherwise flag it as needing
+            // sync on every pass. The Resolved path already pushes a
+            // `tool_records` entry; the Skip path must do the same.
+            if let Some((_, spec)) = find_active_tool_spec(&generated_doc, tool_id) {
+                let content_map_hash: String = if spec.runtime.content_map.is_empty() {
+                    String::new()
+                } else {
+                    let json = serde_json::to_string(&spec.runtime.content_map)
+                        .expect("content_map serializes to JSON");
+                    format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
+                };
+                let (
+                    human_readable_version,
+                    expected_composite,
+                    resolved_tag,
+                    resolved_version,
+                    resolved_vcs_hash,
+                ) = match &pre_resolved_for_skip {
+                    PreResolveOutcome::Skip {
+                        human_readable_version,
+                        version,
+                        resolved_tag,
+                        resolved_version,
+                        resolved_vcs_hash,
+                        ..
+                    } => (
+                        human_readable_version.clone(),
+                        version.clone(),
+                        resolved_tag.clone(),
+                        resolved_version.clone(),
+                        resolved_vcs_hash.clone(),
+                    ),
+                    PreResolveOutcome::Resolved(..) => unreachable!("was_skip implies Skip"),
+                };
+                report.tool_records.push(ToolRegistryEntry {
+                    tool_id: tool_id.clone(),
+                    version: human_readable_version,
+                    canonical_version: expected_composite,
+                    content_map_hash,
+                    deployed_at: mediapm_utils::Timestamp::default(),
+                    resolved_tag,
+                    resolved_version,
+                    resolved_vcs_hash,
+                });
             }
             report.tools_skipped += 1;
             pb.advance(1);
