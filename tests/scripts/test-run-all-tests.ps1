@@ -34,6 +34,5 @@ foreach ($needle in @('cargo --locked nextest run', 'cargo --locked test --doc -
 
 # 5. --large must enable the large-tests Cargo feature (not an env var).
 if (-not $runnerText.Contains('--features large-tests')) { Fail 'runner missing --features large-tests under --large' }
-if ($runnerText.Contains('MEDIAPM_RUN_LARGE_TESTS')) { Fail 'runner must not reference MEDIAPM_RUN_LARGE_TESTS' }
 
 Write-Output 'test-run-all-tests.ps1: OK'

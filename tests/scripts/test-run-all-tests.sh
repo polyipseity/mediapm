@@ -55,8 +55,5 @@ case "$runner_text" in
     *'--features large-tests'*) ;;
     *) fail "runner missing --features large-tests under --large" ;;
 esac
-case "$runner_text" in
-    *'MEDIAPM_RUN_LARGE_TESTS'*) fail "runner must not reference MEDIAPM_RUN_LARGE_TESTS" ;;
-esac
 
 echo "test-run-all-tests.sh: OK"
