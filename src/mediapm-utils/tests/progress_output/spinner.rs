@@ -503,7 +503,7 @@ fn spinner_stops_on_abandoned_bar() {
     let group = group_with_ts(mp, 4, &ts);
     let abandoned = group.add_bar(5, "abandoned");
     abandoned.set_position(2);
-    abandoned.abandon();
+    abandoned.finish_error();
     let active = group.add_bar(3, "active");
     group.tick();
 

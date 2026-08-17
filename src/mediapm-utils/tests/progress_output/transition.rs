@@ -217,14 +217,14 @@ fn transition_exact_abandon_with_overall() {
     child.set_position(3);
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
-    child.abandon();
+    child.finish_error();
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
 
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [A] child ████████████░░░░░░░░░  3/5 1s\n",
+            "⠏                      [F] child ████████████░░░░░░░░░  3/5 1s\n",
             "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
@@ -292,14 +292,14 @@ fn transition_exact_abandon_with_suffix_and_overall() {
     group.tick();
     child
         .set_suffix_components(SuffixComponents { custom: "aborted".into(), ..Default::default() });
-    child.abandon();
+    child.finish_error();
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
 
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [A] child ████████████░░░░░░░░░  3/5 1s aborted\n",
+            "⠏                      [F] child ████████████░░░░░░░░░  3/5 1s aborted\n",
             "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d",
         )
     );

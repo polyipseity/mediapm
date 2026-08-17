@@ -11,11 +11,11 @@ fn renderer_with_overall_always_bottom() {
     for i in 0..3 {
         let h = group.add_bar(2, &format!("child{i}"));
         h.advance(2);
-        h.finish();
+        h.finish_success();
         overall.advance(1);
     }
     overall.advance(1);
-    overall.finish();
+    overall.finish_success();
     group.tick();
 
     assert_eq!(
@@ -296,11 +296,11 @@ fn regression_recycle_oldest_finished_slot() {
     let a3 = group.add_bar(1, "a [process]");
     let b1 = group.add_bar(1, "b [resolve]");
     let b2 = group.add_bar(1, "b [fetch]");
-    a1.finish();
-    a2.finish();
-    a3.finish();
-    b1.finish();
-    b2.finish();
+    a1.finish_success();
+    a2.finish_success();
+    a3.finish_success();
+    b1.finish_success();
+    b2.finish_success();
     overall.advance(2);
     ts.advance(Duration::from_secs(1));
     group.tick();
@@ -321,9 +321,9 @@ fn regression_recycle_oldest_finished_slot() {
 
     // Add b [process] — triggers Phase 2 compact (all slots occupied).
     let b3 = group.add_bar(1, "b [process]");
-    b3.finish();
+    b3.finish_success();
     overall.advance(1);
-    overall.finish();
+    overall.finish_success();
     group.tick();
 
     // After compact: oldest (a1 at old_i=0) is recycled, everything

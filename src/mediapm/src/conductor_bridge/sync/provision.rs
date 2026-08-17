@@ -212,7 +212,7 @@ pub(super) async fn fetch_and_import_tool_payload(
                 });
             }
             resolve_bar.set_position(bar_total.into());
-            resolve_bar.finish();
+            resolve_bar.finish_success();
             (
                 f,
                 metadata.human_readable_version,
@@ -293,7 +293,7 @@ pub(super) async fn fetch_and_import_tool_payload(
             ..Default::default()
         });
     }
-    fetch_bar.finish();
+    fetch_bar.finish_success();
 
     // Phase 3: Process — extract archives, repack to uncompressed ZIP,
     // import to CAS, build content map + command selector.
@@ -327,7 +327,7 @@ pub(super) async fn fetch_and_import_tool_payload(
             return Err(MediaPmError::Workflow(format!("tool {tool_id}: process failed: {e}")));
         }
     };
-    process_bar.finish();
+    process_bar.finish_success();
 
     Ok(Some(FetchedToolPayload {
         content_map: result.content_map,

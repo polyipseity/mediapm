@@ -13,14 +13,14 @@ fn two_lines_exact_abandoned_child() {
     child.set_position(3);
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
-    child.abandon();
+    child.finish_error();
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
 
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [A] child ████████████░░░░░░░░░  3/5 1s\n",
+            "⠏                      [F] child ████████████░░░░░░░░░  3/5 1s\n",
             "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
@@ -108,7 +108,7 @@ fn two_lines_exact_overall_abandoned() {
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
     child.finish_success();
-    overall.abandon();
+    overall.finish_error();
     ts.advance(std::time::Duration::from_secs(1));
     group.tick();
 
@@ -116,7 +116,7 @@ fn two_lines_exact_overall_abandoned() {
         term.contents(),
         concat!(
             "⠏                          child █████████████████████  5/5 1s\n",
-            "⠏                    [A] overall ░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
+            "⠏                    [F] overall ░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
         )
     );
 }

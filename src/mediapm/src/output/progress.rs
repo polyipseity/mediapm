@@ -60,7 +60,7 @@ mod tests {
             .build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(5);
-        child.finish();
+        child.finish_success();
         group.tick();
         let contents = term.contents();
         assert!(contents.contains("0s"), "elapsed must stay at 0 after finish, got:\n{contents}");
@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn consumer_child_bar_elapsed_frozen_after_abandon() {
+    fn consumer_child_bar_elapsed_frozen_after_finish_error_alt() {
         let (mp, term, ts) = mk_elapsed();
         let group = ProgressGroup::builder()
             .with_multi_progress(mp)
@@ -115,9 +115,12 @@ mod tests {
             .build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(3);
-        child.abandon();
+        child.finish_error();
         let contents = term.contents();
-        assert!(contents.contains("0s"), "elapsed must stay at 0 after abandon, got:\n{contents}");
+        assert!(
+            contents.contains("0s"),
+            "elapsed must stay at 0 after finish_error, got:\n{contents}"
+        );
     }
 
     // ── Terminal resize reactivity tests ──

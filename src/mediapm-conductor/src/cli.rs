@@ -291,7 +291,7 @@ async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
         })),
     };
     let summary = conductor.run_workflow(workflow_name, options).await?;
-    pb.finish();
+    pb.finish_success();
     group.join();
     println!("Workflow '{workflow_name}' completed: {summary:?}");
     Ok(())

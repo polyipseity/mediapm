@@ -152,16 +152,16 @@ fn worker_exact_mixed_finish_states() {
     c2.set_position(1);
     c2.finish_error();
     c3.set_position(1);
-    c3.abandon();
+    c3.finish_error();
     overall.advance(3);
-    overall.finish();
+    overall.finish_success();
     group.tick();
     assert_eq!(
         term.contents(),
         concat!(
             "⠏                       worker-a █████████████████████  2/2 0s\n",
             "⠏                   [F] worker-b ██████████░░░░░░░░░░░  1/2 0s\n",
-            "⠏                   [A] worker-c ██████████░░░░░░░░░░░  1/2 0s\n",
+            "⠏                   [F] worker-c ██████████░░░░░░░░░░░  1/2 0s\n",
             "⠏                        overall █████████████████████  3/3 0s",
         ),
     );
@@ -182,7 +182,7 @@ fn worker_exact_all_finish_with_overall() {
     c3.advance(2);
     c3.finish_success();
     overall.advance(3);
-    overall.finish();
+    overall.finish_success();
     group.tick();
     assert_eq!(
         term.contents(),

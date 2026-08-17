@@ -34,19 +34,20 @@ fn color_failed_bracket_text() {
     );
 }
 
-/// Abandoned bar: [A] bracket shown, values correct.
+/// Abandoned bar: [F] bracket shown (Abandoned variant removed; closest
+/// new semantic is finish_error which keeps the bar visible with an [F] marker).
 #[test]
 fn color_abandoned_bracket_text() {
     let (mp, term) = mk_with_size(2, 80);
     let (group, _overall) = group_with_overall(mp, 2, "overall", 1);
     let child = group.add_bar(5, "child");
     group.tick();
-    child.abandon();
+    child.finish_error();
     group.tick();
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [A] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠏                      [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
             "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
@@ -71,7 +72,7 @@ fn color_success_text() {
     );
 }
 
-/// Finished bar (via `finish()`): full count/total, no [S] bracket.
+/// Finished bar (via `finish_success()`): full count/total, no [S] bracket.
 #[test]
 fn color_finished_text() {
     let (mp, term) = mk_with_size(2, 80);
@@ -79,7 +80,7 @@ fn color_finished_text() {
     let child = group.add_bar(5, "child");
     child.set_position(5);
     group.tick();
-    child.finish();
+    child.finish_success();
     group.tick();
     assert_eq!(
         term.contents(),
@@ -156,13 +157,13 @@ fn exact_color_abandoned_child_with_overall() {
     let (group, _overall) = group_with_overall(mp, 2, "overall", 1);
     let child = group.add_bar(5, "child");
     group.tick();
-    child.abandon();
+    child.finish_error();
     group.tick();
 
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [A] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠏                      [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
             "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );

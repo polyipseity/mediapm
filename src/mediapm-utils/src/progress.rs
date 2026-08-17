@@ -725,7 +725,7 @@ mod inner {
         pub position: u64,
         /// Total work units (0 = indeterminate).
         pub total: u64,
-        /// Current status as debug string (e.g. `"Active"`, `"Finished"`).
+        /// Current status as debug string (e.g. `"Active"`, `"Warning"`).
         pub status: String,
         /// Elapsed seconds since the handle was created.
         pub elapsed_secs: f64,
@@ -825,7 +825,8 @@ mod inner {
     pub(super) fn bar_color_code(status: TrackStatus, is_overall: bool) -> &'static str {
         match status {
             TrackStatus::Failed => "31",
-            TrackStatus::Abandoned | TrackStatus::Success | TrackStatus::Finished => "32",
+            TrackStatus::Warning => "33",
+            TrackStatus::Success => "32",
             TrackStatus::Active if is_overall => "35",
             TrackStatus::Active => "33",
         }
@@ -882,10 +883,10 @@ mod inner {
     /// rendered together (`{count}/{total}`) and trimmed together as one
     /// atomic unit — a bare count or bare total is never shown.
     ///
-    /// Marker render rule: `marker` (set to `F` for failed, `A` for
-    /// abandoned, else empty) renders as a colored `[{marker}] ` bracket —
+    /// Marker render rule: `marker` (set to `F` for failed, `W` for
+    /// warning, else empty) renders as a colored `[{marker}] ` bracket —
     /// red for [`TrackStatus::Failed`], yellow for
-    /// [`TrackStatus::Abandoned`] — when non-empty. The marker brackets are
+    /// [`TrackStatus::Warning`] — when non-empty. The marker brackets are
     /// visible characters that participate in truncation.
     ///
     /// This struct is the prefix's structured single mechanism: initial
@@ -896,7 +897,7 @@ mod inner {
     /// suites.
     #[derive(Debug, Clone, PartialEq, Eq, Default)]
     pub struct PrefixComponents {
-        /// Status marker (`F` failed, `A` abandoned), empty when no marker.
+        /// Status marker (`F` failed, `W` warning), empty when no marker.
         pub marker: String,
         /// Tool/binary name (always present).
         pub tool_name: String,
@@ -1026,7 +1027,7 @@ mod inner {
     /// The render always starts with an ANSI reset to clear any SGR state
     /// from preceding template fields (e.g. `{spinner:.green}`). A non-empty
     /// `marker` renders as a colored `[{marker}] ` bracket — red for
-    /// [`TrackStatus::Failed`], yellow for [`TrackStatus::Abandoned`],
+    /// [`TrackStatus::Failed`], yellow for [`TrackStatus::Warning`],
     /// uncolored for other statuses. Then components render as
     /// `{tool_name}[ {version}][ [{phase}]][ {count}/{total}]`; empty
     /// sections are omitted, and `count`/`total` render only as a pair.
@@ -1039,7 +1040,7 @@ mod inner {
                     s.push_str(&parts.marker);
                     s.push_str("]\x1b[0m ");
                 }
-                TrackStatus::Abandoned => {
+                TrackStatus::Warning => {
                     s.push_str("\x1b[33m[");
                     s.push_str(&parts.marker);
                     s.push_str("]\x1b[0m ");
@@ -1405,10 +1406,8 @@ mod inner {
         Success,
         /// Bar finished with an error.
         Failed,
-        /// Bar was abandoned.
-        Abandoned,
-        /// Bar finished (generic, no specific status).
-        Finished,
+        /// Bar finished with a non-fatal warning (kept visible).
+        Warning,
     }
 
     /// Shared mutable state for a tracked progress handle.
@@ -1473,8 +1472,8 @@ mod inner {
                 0 => TrackStatus::Active,
                 1 => TrackStatus::Success,
                 2 => TrackStatus::Failed,
-                3 => TrackStatus::Abandoned,
-                _ => TrackStatus::Finished,
+                3 => TrackStatus::Warning,
+                _ => TrackStatus::Success,
             };
             // Fold the status marker into the prefix components so the marker
             // is truncatable data rather than fixed overhead, then render the
@@ -1482,7 +1481,7 @@ mod inner {
             let mut pc = pc.clone();
             pc.marker = match status {
                 TrackStatus::Failed => "F".to_string(),
-                TrackStatus::Abandoned => "A".to_string(),
+                TrackStatus::Warning => "W".to_string(),
                 _ => String::new(),
             };
             TrackSnapshot {
@@ -1677,12 +1676,6 @@ mod inner {
             self.state.dirty.store(true, Ordering::Release);
         }
 
-        /// Mark the bar as finished (keeps it visible).
-        pub fn finish(&self) {
-            self.state.status.store(4, Ordering::Relaxed); // Finished
-            self.state.mark_finished();
-        }
-
         /// Mark the bar as finished successfully (keeps it visible).
         pub fn finish_success(&self) {
             self.state.status.store(1, Ordering::Relaxed); // Success
@@ -1695,18 +1688,19 @@ mod inner {
             self.state.mark_finished();
         }
 
-        /// Finish and clear the bar from the display.
-        ///
-        /// Stops the ticker and marks the bar as hidden. Call this instead of
-        /// [`finish`](Self::finish) when the bar should disappear immediately.
-        pub fn finish_and_clear(&self) {
-            self.state.status.store(5, Ordering::Relaxed); // FinishedAndCleared
+        /// Mark the bar as finished with a non-fatal warning (keeps it visible).
+        pub fn finish_warning(&self) {
+            self.state.status.store(3, Ordering::Relaxed); // Warning
             self.state.mark_finished();
         }
 
-        /// Abandon the bar — leaves it visible but stops all updates.
-        pub fn abandon(&self) {
-            self.state.status.store(3, Ordering::Relaxed); // Abandoned
+        /// Finish and clear the bar from the display.
+        ///
+        /// Stops the ticker and marks the bar as hidden. Call this instead of
+        /// [`finish_success`](Self::finish_success) when the bar should
+        /// disappear immediately.
+        pub fn finish_and_clear(&self) {
+            self.state.status.store(5, Ordering::Relaxed); // FinishedAndCleared
             self.state.mark_finished();
         }
 
@@ -2300,11 +2294,11 @@ mod inner {
 
             // Truncate prefix to fit template width, accounting for ANSI
             // escapes added by render_prefix_components (which indicatif counts
-            // as visible chars). Normal: \x1b[0m = 4; failed/abandoned:
+            // as visible chars). Normal: \x1b[0m = 4; failed/warning:
             // \x1b[0m\x1b[3Xm\x1b[0m = 13. The marker brackets are visible data
             // and consume the width budget via semantic_truncate_prefix.
             let ansi_overhead: usize = match snap.status {
-                TrackStatus::Failed | TrackStatus::Abandoned => 13,
+                TrackStatus::Failed | TrackStatus::Warning => 13,
                 _ => 4,
             };
             let truncated_prefix = semantic_truncate_prefix(
@@ -2349,7 +2343,7 @@ mod inner {
                 apply_done_bar_style(&slot.bar, cols);
             }
             match status {
-                TrackStatus::Failed | TrackStatus::Abandoned => slot.bar.abandon(),
+                TrackStatus::Failed | TrackStatus::Warning => slot.bar.abandon(),
                 _ => slot.bar.finish(),
             }
             slot.bar.tick();
@@ -2958,12 +2952,12 @@ pub trait ProgressBarApi: Send + Sync {
     fn finish_success(&self);
     /// Mark the bar as finished with an error.
     fn finish_error(&self);
+    /// Mark the bar as finished with a non-fatal warning.
+    fn finish_warning(&self);
     /// Return a data-copy snapshot of the tracking state.
     fn snapshot(&self) -> TrackSnapshot;
     /// Returns `true` if the handle has been finished/abandoned.
     fn is_finished(&self) -> bool;
-    /// Mark the bar as finished (keeps it visible).
-    fn finish(&self);
     /// Jump to an absolute position.
     fn set_position(&self, pos: u64);
     /// Change the total mid-flight for dynamic workloads.
@@ -2985,14 +2979,14 @@ impl ProgressBarApi for TrackedHandle {
     fn finish_error(&self) {
         TrackedHandle::finish_error(self);
     }
+    fn finish_warning(&self) {
+        TrackedHandle::finish_warning(self);
+    }
     fn snapshot(&self) -> TrackSnapshot {
         TrackedHandle::snapshot(self)
     }
     fn is_finished(&self) -> bool {
         TrackedHandle::is_finished(self)
-    }
-    fn finish(&self) {
-        TrackedHandle::finish(self);
     }
     fn set_position(&self, pos: u64) {
         TrackedHandle::set_position(self, pos);
@@ -3090,16 +3084,14 @@ pub mod recording {
             /// Full suffix component set.
             components: super::SuffixComponents,
         },
-        /// `finish()` was called.
-        Finish,
         /// `finish_success()` was called.
         FinishSuccess,
         /// `finish_error()` was called.
         FinishError,
+        /// `finish_warning()` was called.
+        FinishWarning,
         /// `finish_and_clear()` was called.
         FinishAndClear,
-        /// `abandon()` was called.
-        Abandon,
     }
 
     /// A recording progress tracker that records operations into a shared
@@ -3237,12 +3229,6 @@ pub mod recording {
                 .push(ProgressOp::SetSuffixComponents { components });
         }
 
-        /// Mark the handle as finished.
-        pub fn finish(&self) {
-            self.ops.lock().expect("recording lock").push(ProgressOp::Finish);
-            self.mark_finished();
-        }
-
         /// Mark as finished with success.
         pub fn finish_success(&self) {
             self.ops.lock().expect("recording lock").push(ProgressOp::FinishSuccess);
@@ -3255,15 +3241,15 @@ pub mod recording {
             self.mark_finished();
         }
 
-        /// Finish and clear from display.
-        pub fn finish_and_clear(&self) {
-            self.ops.lock().expect("recording lock").push(ProgressOp::FinishAndClear);
+        /// Mark as finished with a non-fatal warning.
+        pub fn finish_warning(&self) {
+            self.ops.lock().expect("recording lock").push(ProgressOp::FinishWarning);
             self.mark_finished();
         }
 
-        /// Abandon — leaves visible but stops updates.
-        pub fn abandon(&self) {
-            self.ops.lock().expect("recording lock").push(ProgressOp::Abandon);
+        /// Finish and clear from display.
+        pub fn finish_and_clear(&self) {
+            self.ops.lock().expect("recording lock").push(ProgressOp::FinishAndClear);
             self.mark_finished();
         }
 
@@ -3330,16 +3316,15 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
         ops.iter().any(|op| {
             matches!(
                 op,
-                recording::ProgressOp::Finish
-                    | recording::ProgressOp::FinishSuccess
+                recording::ProgressOp::FinishSuccess
                     | recording::ProgressOp::FinishError
+                    | recording::ProgressOp::FinishWarning
                     | recording::ProgressOp::FinishAndClear
-                    | recording::ProgressOp::Abandon
             )
         })
     }
-    fn finish(&self) {
-        recording::RecordingTrackedHandle::finish(self);
+    fn finish_warning(&self) {
+        recording::RecordingTrackedHandle::finish_warning(self);
     }
     fn set_position(&self, pos: u64) {
         recording::RecordingTrackedHandle::set_position(self, pos);
@@ -3407,7 +3392,7 @@ mod tests {
         h.advance(10);
         h.set_position(20);
         h.set_prefix_components(PrefixComponents { tool_name: "pfx".into(), ..Default::default() });
-        h.finish();
+        h.finish_success();
 
         // Disabled handles can still be created explicitly.
         let dh = TrackedHandle::disabled();
@@ -3423,11 +3408,9 @@ mod tests {
             tool_name: "pfx".into(),
             ..Default::default()
         });
-        dh.finish();
         dh.finish_success();
         dh.finish_error();
         dh.finish_and_clear();
-        dh.abandon();
     }
 
     #[test]
@@ -3438,11 +3421,9 @@ mod tests {
         h.set_total(50);
         h.set_position(5);
         h.set_prefix_components(PrefixComponents { tool_name: "pfx".into(), ..Default::default() });
-        h.finish();
         h.finish_success();
         h.finish_error();
         h.finish_and_clear();
-        h.abandon();
     }
 
     // ---- RecordingProgressTracker ---------------------------------------
@@ -3473,7 +3454,7 @@ mod tests {
         h.advance(5);
         h.set_position(10);
         h.set_prefix_components(PrefixComponents { tool_name: "pfx".into(), ..Default::default() });
-        h.finish();
+        h.finish_success();
 
         assert_eq!(
             h.ops(),
@@ -3489,7 +3470,7 @@ mod tests {
                     count: String::new(),
                     total: String::new(),
                 },
-                ProgressOp::Finish,
+                ProgressOp::FinishSuccess,
             ]
         );
     }
@@ -3543,7 +3524,7 @@ mod tests {
 
         h1.advance(1);
         h2.advance(2);
-        h1.finish();
+        h1.finish_success();
 
         assert_eq!(
             rt.ops(),
@@ -3552,7 +3533,7 @@ mod tests {
                 ProgressOp::AddBar { total: 100, label: "second".into() },
                 ProgressOp::Advance { delta: 1 },
                 ProgressOp::Advance { delta: 2 },
-                ProgressOp::Finish,
+                ProgressOp::FinishSuccess,
             ]
         );
     }
@@ -3576,11 +3557,11 @@ mod tests {
     }
 
     #[test]
-    fn recording_handle_finish_and_clear_abandon() {
+    fn recording_handle_finish_and_clear_warning() {
         let h = RecordingTrackedHandle::new(1);
         h.finish_and_clear();
-        h.abandon();
-        assert_eq!(h.ops(), vec![ProgressOp::FinishAndClear, ProgressOp::Abandon]);
+        h.finish_warning();
+        assert_eq!(h.ops(), vec![ProgressOp::FinishAndClear, ProgressOp::FinishWarning]);
     }
 
     // ---- RecordingTrackedHandle elapsed ----------------------------------
@@ -3596,11 +3577,11 @@ mod tests {
     fn recording_handle_elapsed_frozen_after_finish() {
         let h = RecordingTrackedHandle::new(100);
         std::thread::sleep(std::time::Duration::from_millis(1));
-        h.finish();
+        h.finish_success();
         let frozen = h.snapshot_elapsed();
         // Verify the value stays frozen on subsequent reads.
         let frozen2 = h.snapshot_elapsed();
-        assert_eq!(frozen, frozen2, "elapsed should be frozen after finish");
+        assert_eq!(frozen, frozen2, "elapsed should be frozen after finish_success");
     }
 
     #[test]
@@ -3624,13 +3605,13 @@ mod tests {
     }
 
     #[test]
-    fn recording_handle_elapsed_frozen_after_abandon() {
+    fn recording_handle_elapsed_frozen_after_finish_warning() {
         let h = RecordingTrackedHandle::new(100);
         std::thread::sleep(std::time::Duration::from_millis(1));
-        h.abandon();
+        h.finish_warning();
         let frozen = h.snapshot_elapsed();
         let frozen2 = h.snapshot_elapsed();
-        assert_eq!(frozen, frozen2, "elapsed should be frozen after abandon");
+        assert_eq!(frozen, frozen2, "elapsed should be frozen after finish_warning");
     }
 
     // ---- format_elapsed (pure formatting) --------------------------------
@@ -3784,14 +3765,25 @@ mod tests {
 
     #[test]
     fn tracked_handle_elapsed_frozen_after_all_finish_methods() {
-        // finish, finish_success, finish_error, finish_and_clear, abandon
+        // finish_success, finish_error, finish_warning, finish_and_clear
         // must all freeze the elapsed.
         for (name, finish_fn) in [
-            ("finish", Box::new(|h: &TrackedHandle| h.finish()) as Box<dyn Fn(&TrackedHandle)>),
-            ("finish_success", Box::new(|h: &TrackedHandle| h.finish_success())),
-            ("finish_error", Box::new(|h: &TrackedHandle| h.finish_error())),
-            ("finish_and_clear", Box::new(|h: &TrackedHandle| h.finish_and_clear())),
-            ("abandon", Box::new(|h: &TrackedHandle| h.abandon())),
+            (
+                "finish_success",
+                Box::new(|h: &TrackedHandle| h.finish_success()) as Box<dyn Fn(&TrackedHandle)>,
+            ),
+            (
+                "finish_error",
+                Box::new(|h: &TrackedHandle| h.finish_error()) as Box<dyn Fn(&TrackedHandle)>,
+            ),
+            (
+                "finish_warning",
+                Box::new(|h: &TrackedHandle| h.finish_warning()) as Box<dyn Fn(&TrackedHandle)>,
+            ),
+            (
+                "finish_and_clear",
+                Box::new(|h: &TrackedHandle| h.finish_and_clear()) as Box<dyn Fn(&TrackedHandle)>,
+            ),
         ] {
             let ts = std::sync::Arc::new(super::TestTimeSource::new());
             let g = super::ProgressGroup::builder()
@@ -3927,7 +3919,7 @@ mod tests {
 
         let h2 = g2.add_bar(20, "group2-bar");
         h2.advance(2);
-        h2.finish();
+        h2.finish_success();
 
         assert_eq!(
             g1.ops(),
@@ -3943,7 +3935,7 @@ mod tests {
             vec![
                 ProgressOp::AddBar { total: 20, label: "group2-bar".to_string() },
                 ProgressOp::Advance { delta: 2 },
-                ProgressOp::Finish,
+                ProgressOp::FinishSuccess,
             ],
             "group2 must have its own ops, unaffected by group1"
         );
@@ -3956,8 +3948,12 @@ mod tests {
         let h = RecordingTrackedHandle::new(5);
         assert_eq!(h.ops(), vec![], "no ops yet");
 
-        h.finish();
-        assert_eq!(h.ops(), vec![ProgressOp::Finish], "finish() records Finish");
+        h.finish_success();
+        assert_eq!(
+            h.ops(),
+            vec![ProgressOp::FinishSuccess],
+            "finish_success records FinishSuccess"
+        );
 
         let h2 = RecordingTrackedHandle::new(5);
         h2.finish_success();
@@ -4007,9 +4003,9 @@ mod tests {
     }
 
     #[test]
-    fn tracked_handle_is_finished_after_abandon() {
+    fn tracked_handle_is_finished_after_finish_warning() {
         let h = TrackedHandle::new(10);
-        h.abandon();
+        h.finish_warning();
         assert!(h.is_finished());
     }
 
@@ -4070,8 +4066,8 @@ mod tests {
         overall.finish_and_clear();
         let snap = overall.snapshot();
         assert!(
-            matches!(snap.status, TrackStatus::Finished),
-            "finish_and_clear → Finished, got {:?}",
+            matches!(snap.status, TrackStatus::Success),
+            "finish_and_clear → Success, got {:?}",
             snap.status
         );
         assert_eq!(snap.position, 0, "position unchanged before advance");
@@ -4247,7 +4243,7 @@ mod tests {
 
         // Phase 1: finish resolve bar (fills the single child slot).
         let bar1 = group.add_bar(1, "tool [resolve]");
-        bar1.finish();
+        bar1.finish_success();
 
         // Tick to trigger finish_slot → bar.finish() → DoneVisible.
         ts.advance(std::time::Duration::from_millis(50));
@@ -4324,15 +4320,13 @@ mod tests {
     }
 
     #[test]
-    fn bar_color_code_abandoned() {
-        assert_eq!(super::inner::bar_color_code(super::TrackStatus::Abandoned, false), "32");
+    fn bar_color_code_warning() {
+        assert_eq!(super::inner::bar_color_code(super::TrackStatus::Warning, false), "33");
     }
 
     #[test]
-    fn bar_color_code_success_and_finished() {
-        for status in [super::TrackStatus::Success, super::TrackStatus::Finished] {
-            assert_eq!(super::inner::bar_color_code(status, false), "32");
-        }
+    fn bar_color_code_success() {
+        assert_eq!(super::inner::bar_color_code(super::TrackStatus::Success, false), "32");
     }
 
     // ---- ANSI-safe truncation helpers (Phase 1) -------------------------
@@ -4497,29 +4491,27 @@ mod tests {
     }
 
     #[test]
-    fn render_prefix_components_marker_abandoned() {
+    fn render_prefix_components_marker_warning() {
         let result = super::inner::render_prefix_components(
             &super::inner::PrefixComponents {
-                marker: "A".into(),
+                marker: "W".into(),
                 tool_name: "wget".into(),
                 version: "1.2.3".into(),
                 phase: "fch".into(),
                 count: "2".into(),
                 total: "5".into(),
             },
-            super::TrackStatus::Abandoned,
+            super::TrackStatus::Warning,
         );
         assert_eq!(
-            result, "\x1b[0m\x1b[33m[A]\x1b[0m wget 1.2.3 [fch] 2/5",
-            "abandoned marker rendered yellow"
+            result, "\x1b[0m\x1b[33m[W]\x1b[0m wget 1.2.3 [fch] 2/5",
+            "warning marker rendered yellow"
         );
     }
 
     #[test]
     fn render_prefix_components_normal_states_no_marker() {
-        for status in
-            [super::TrackStatus::Active, super::TrackStatus::Success, super::TrackStatus::Finished]
-        {
+        for status in [super::TrackStatus::Active, super::TrackStatus::Success] {
             let result = super::inner::render_prefix_components(
                 &super::inner::PrefixComponents {
                     marker: String::new(),
@@ -4558,9 +4550,8 @@ mod tests {
         for status in [
             super::TrackStatus::Active,
             super::TrackStatus::Failed,
-            super::TrackStatus::Abandoned,
+            super::TrackStatus::Warning,
             super::TrackStatus::Success,
-            super::TrackStatus::Finished,
         ] {
             let result = super::inner::render_prefix_components(
                 &super::inner::PrefixComponents {
@@ -5524,7 +5515,7 @@ mod tests {
         let bar = group.add_bar(100, "work");
         bar.set_position(100);
         ts.advance(std::time::Duration::from_millis(100));
-        bar.finish();
+        bar.finish_success();
 
         // Sync state from SharedState to indicatif, then finalize for
         // deterministic finished-bar output (no spinner animation).
@@ -5583,7 +5574,7 @@ mod tests {
         let bar = group.add_bar(1, "instant");
         bar.set_position(1);
         ts.advance(std::time::Duration::from_millis(1));
-        bar.finish();
+        bar.finish_success();
 
         // Finalize immediately — the background ticker has slept only
         // microseconds, nowhere near its 50ms interval.

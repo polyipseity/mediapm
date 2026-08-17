@@ -692,14 +692,14 @@ fn consumer_lifecycle_conductor_sync() {
     // Tool 1
     let t1 = group.add_bar(0, "yt-dlp");
     t1.advance(1);
-    t1.finish();
+    t1.finish_success();
     overall.advance(1);
     group.tick();
 
     // Tool 2
     let t2 = group.add_bar(0, "ffmpeg");
     t2.advance(1);
-    t2.finish();
+    t2.finish_success();
     overall.advance(1);
     group.tick();
 
@@ -738,7 +738,7 @@ fn consumer_lifecycle_conductor_cli() {
     assert!(lines[3].contains("steps"), "line 3 has steps: {0}", lines[3]);
 
     pb.set_position(3);
-    pb.finish();
+    pb.finish_success();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -779,7 +779,7 @@ fn progress_group_abandon_preserves_bar() {
     c.advance(2);
     group.tick();
 
-    c.abandon();
+    c.finish_error();
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -862,7 +862,7 @@ fn child_bar_elapsed_frozen_after_finish() {
     let (group, _overall) = group_with_overall_and_dims(mp, 4, "overall", 5, &dims, false);
     let child = group.add_bar(3, "tool-a");
     child.set_position(3);
-    child.finish();
+    child.finish_success();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -925,7 +925,7 @@ fn child_bar_elapsed_frozen_after_abandon() {
     let (group, _overall) = group_with_overall_and_dims(mp, 4, "overall", 5, &dims, false);
     let child = group.add_bar(3, "tool-a");
     child.set_position(2);
-    child.abandon();
+    child.finish_error();
     group.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
@@ -1074,9 +1074,9 @@ fn progress_group_join_and_clear_removes_blank_bars() {
 
     let child = group.add_bar(5, "fetch");
     child.advance(5);
-    child.finish();
+    child.finish_success();
     overall.advance(5);
-    overall.finish();
+    overall.finish_success();
     group.tick();
 
     // Before finalize: 4 lines (2 blanks + child + overall).
@@ -1117,11 +1117,11 @@ fn finalize_exact_terminal_match_after_full_lifecycle() {
     let c1 = group.add_bar(5, "alpha");
     let c2 = group.add_bar(3, "beta");
     c1.advance(5);
-    c1.finish();
+    c1.finish_success();
     c2.advance(3);
-    c2.finish();
+    c2.finish_success();
     overall.advance(10);
-    overall.finish();
+    overall.finish_success();
     group.tick();
 
     // Before finalize: 5 lines (2 blanks + alpha + beta + overall).
@@ -1174,9 +1174,9 @@ fn finalize_preserves_content_written_before_progress() {
         .build_with_overall();
     let c = group.add_bar(3, "work");
     c.advance(3);
-    c.finish();
+    c.finish_success();
     overall.advance(5);
-    overall.finish();
+    overall.finish_success();
     group.tick();
     group.join_and_clear();
 
@@ -1206,13 +1206,13 @@ fn finalize_no_blank_lines_in_output() {
     let c2 = group.add_bar(5, "beta");
     let c3 = group.add_bar(5, "gamma");
     c1.advance(5);
-    c1.finish();
+    c1.finish_success();
     c2.advance(5);
-    c2.finish();
+    c2.finish_success();
     c3.advance(5);
-    c3.finish();
+    c3.finish_success();
     overall.advance(3);
-    overall.finish();
+    overall.finish_success();
     group.tick();
 
     // Before finalize: all lines must be non-blank (all slots occupied).
