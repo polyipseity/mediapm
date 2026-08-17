@@ -2,7 +2,7 @@
 //!
 //! Demonstrates local ingest + transform flow: bundled MP4 fixture → CAS
 //! → `import -> ffmpeg -> rsgain -> media-tagger` pipeline.
-//! Default sync enabled; override via `MEDIAPM_DEMO_RUN_SYNC`.
+//! Default sync enabled; the offline demo always runs a full sync.
 //!
 //! # Expected post-sync hierarchy
 //!
@@ -93,7 +93,6 @@ const DEMO_LIBRARY_ROOT: &str = "music videos";
 const DEMO_MEDIA_FOLDER_TEMPLATE: &str =
     "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
 const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
-const DEMO_RUN_SYNC_ENV_VAR: &str = "MEDIAPM_DEMO_RUN_SYNC";
 const DEMO_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] = [
     MaterializationMethod::Hardlink,
     MaterializationMethod::Symlink,
@@ -430,19 +429,6 @@ fn write_local_av_fixture(path: &Path) -> ExampleResult<Vec<u8>> {
 
 fn bytes_contain_ascii(bytes: &[u8], marker: &[u8]) -> bool {
     bytes.windows(marker.len()).any(|window| window == marker)
-}
-
-fn sync_enabled_from_env_value(value: Option<&str>) -> bool {
-    let Some(raw) = value else {
-        return true;
-    };
-
-    let normalized = raw.trim().to_ascii_lowercase();
-    !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
-}
-
-fn demo_run_sync_enabled() -> bool {
-    sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())
 }
 
 async fn import_source_fixture_into_cas(
@@ -1179,14 +1165,12 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    let run_sync = demo_run_sync_enabled();
-
-    let paths = generate_demo_artifacts(run_sync).await?;
+    let paths = generate_demo_artifacts(true).await?;
     println!("generated artifacts root: {}", paths.artifact_root.display());
     println!("generated workspace root: {}", paths.workspace_root.display());
     println!("generated library root: {}", paths.library_root.display());
     println!("manifest: {}", paths.manifest_path.display());
-    println!("sync executed: {run_sync}");
+    println!("sync executed: true");
     Ok(())
 }
 
@@ -1199,23 +1183,7 @@ mod tests {
     fn main_is_exercised() {
         let _isolated = IsolatedExampleRoots::with_cache();
 
-        let previous = std::env::var(super::DEMO_RUN_SYNC_ENV_VAR).ok();
-        // SAFETY: test mutates one process env key in a controlled scope and
-        // restores the previous value before exit.
-        unsafe {
-            std::env::set_var(super::DEMO_RUN_SYNC_ENV_VAR, "true");
-        }
-
         super::main().expect("example main should run to completion");
-
-        // SAFETY: restore previous env var value for test isolation.
-        unsafe {
-            if let Some(value) = previous {
-                std::env::set_var(super::DEMO_RUN_SYNC_ENV_VAR, value);
-            } else {
-                std::env::remove_var(super::DEMO_RUN_SYNC_ENV_VAR);
-            }
-        }
     }
 
     /// Verifies demo artifact generation writes one complete import workflow manifest in full-sync mode.
@@ -1418,40 +1386,6 @@ mod tests {
                 None => std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV),
             }
         }
-    }
-
-    /// Verifies sync-mode parser defaults to true and recognizes explicit false
-    /// tokens used by automated test execution.
-    #[test]
-    fn sync_enabled_env_parser_handles_false_tokens() {
-        assert!(super::sync_enabled_from_env_value(None));
-        assert!(super::sync_enabled_from_env_value(Some("true")));
-        assert!(!super::sync_enabled_from_env_value(Some("false")));
-        assert!(!super::sync_enabled_from_env_value(Some("OFF")));
-        assert!(!super::sync_enabled_from_env_value(Some("0")));
-    }
-
-    /// Ensures unset sync mode defaults to full sync enabled.
-    #[test]
-    fn demo_run_sync_defaults_to_enabled_when_env_unset() {
-        let _env_lock = example_isolation::lock_process_env();
-        let previous = std::env::var(super::DEMO_RUN_SYNC_ENV_VAR).ok();
-        // SAFETY: test mutates one process env key in a controlled scope and
-        // restores the previous value before exit.
-        unsafe {
-            std::env::remove_var(super::DEMO_RUN_SYNC_ENV_VAR);
-        }
-
-        let enabled = super::demo_run_sync_enabled();
-
-        // SAFETY: restore previous env var value for test isolation.
-        unsafe {
-            if let Some(value) = previous {
-                std::env::set_var(super::DEMO_RUN_SYNC_ENV_VAR, value);
-            }
-        }
-
-        assert!(enabled, "demo runs should default to sync enabled when env override is unset");
     }
 
     /// Ensures cleanup retries can remove readonly-marked demo artifact trees
