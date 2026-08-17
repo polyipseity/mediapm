@@ -149,6 +149,30 @@ Two metadata caches are enabled by default for media processing:
 
 Both caches are workspace-scoped (under `<runtime>/cache/`) and kept in separate subdirectories so domains do not collide.
 
+### Global Tool Cache CLI
+
+The `mediapm global tool-cache` subcommand inspects and prunes the **user-level**
+tool cache (`<os-cache-dir>/mediapm/cache/`), distinct from the workspace
+metadata caches above. It is implemented in `src/mediapm/src/global.rs` and
+reuses the `mediapm-conductor` `Cache` engine directly (no background loop).
+
+- **`mediapm global tool-cache status`** — Opens the cache **without** starting
+  the 24-hour background prune loop (`Cache::open_without_background`) and
+  reports the real summed `entry_count` across the `tools` (7-day TTL) and
+  `tool_metadata` (1-day TTL) domains, plus the resolved `tool_cache_dir`,
+  `store_dir`, and `index` paths. A short-lived CLI must not spawn a lingering
+  background thread, so the prune loop is intentionally omitted here.
+- **`mediapm global tool-cache prune`** — Opens the cache without the background
+  loop, then performs an **immediate** prune (`Cache::prune_expired_immediate`)
+  that bypasses the automatic `PRUNE_INTERVAL_SECONDS` cooldown across both
+  domains, reporting `removed_entries` and `removed_payloads`. Unreferenced CAS
+  payload blobs are physically deleted; entries still referenced by any domain
+  index are retained.
+
+Both commands accept an optional `--cache-root <dir>` override (resolved via
+`MediaPmGlobalPaths::from_tool_cache_dir`) for hermetic operation; when omitted
+they use the default resolved user-level cache root.
+
 ### Adding a New Managed Tool
 
 Follow this spec-first, test-first workflow:

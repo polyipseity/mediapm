@@ -400,7 +400,7 @@ async fn main_cli() -> anyhow::Result<()> {
             }
             GlobalCommand::ToolCache { command } => match command {
                 GlobalToolCacheCommand::Status => {
-                    let status = global_tool_cache_status()?;
+                    let status = global_tool_cache_status(None).await?;
                     print_status_report(&[
                         (
                             "tool_cache_dir",
@@ -413,7 +413,7 @@ async fn main_cli() -> anyhow::Result<()> {
                     Ok(())
                 }
                 GlobalToolCacheCommand::Prune => {
-                    let summary = global_tool_cache_prune_expired()?;
+                    let summary = global_tool_cache_prune_expired(None).await?;
                     print_result(
                         StatusIcon::Success,
                         "tool cache pruned",

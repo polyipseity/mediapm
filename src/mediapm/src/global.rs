@@ -14,7 +14,9 @@
 
 use std::path::{Path, PathBuf};
 
+use mediapm_conductor::cache::{Cache, CacheDomainConfig};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
+use mediapm_conductor::error::ConductorError;
 
 /// User-agent string sent in HTTP requests by mediapm tools/downloaders.
 #[allow(dead_code)]
@@ -103,21 +105,54 @@ pub fn ensure_global_directory_layout() -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Domain configuration for the global tool download cache.
+///
+/// Mirrors the sync provisioning layout (`conductor_bridge::sync`): a `tools`
+/// domain (7-day TTL) plus a `tool_metadata` domain (1-day TTL).
+fn global_tool_cache_domains() -> Vec<CacheDomainConfig> {
+    vec![
+        CacheDomainConfig {
+            domain: "tools".to_string(),
+            index_file_name: "tools.json".to_string(),
+            entry_ttl_seconds: mediapm_conductor::cache::ENTRY_TTL_SECONDS,
+        },
+        CacheDomainConfig {
+            domain: "tool_metadata".to_string(),
+            index_file_name: "tool_metadata.json".to_string(),
+            entry_ttl_seconds: 24 * 60 * 60,
+        },
+    ]
+}
+
 /// Returns the status of the global tool cache.
+///
+/// Opens the user-level cache **without** starting the 24-hour background
+/// prune loop (a short-lived CLI must not spawn a lingering thread), then
+/// reports the real entry counts from each domain index plus the cache
+/// root/store/index paths.
+///
+/// When `cache_root_override` is `Some`, the cache is opened at that root
+/// instead of the resolved default (used by hermetic tests).
 ///
 /// # Errors
 ///
-/// Returns `std::io::Error` if the global cache root cannot be resolved.
-pub fn global_tool_cache_status() -> Result<GlobalToolCacheStatus, std::io::Error> {
-    let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve global cache root")
-    })?;
-    let entry_count = if paths.tool_cache_index.is_file() {
-        // TODO: Parse the actual tools.json index to count entries.
-        0
-    } else {
-        0
+/// Returns [`ConductorError`] if the global cache root cannot be resolved or
+/// the cache cannot be opened.
+pub async fn global_tool_cache_status(
+    cache_root_override: Option<&Path>,
+) -> Result<GlobalToolCacheStatus, ConductorError> {
+    let paths = match cache_root_override {
+        Some(root) => MediaPmGlobalPaths::from_tool_cache_dir(root),
+        None => MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
+            ConductorError::Workflow("cannot resolve global cache root".to_string())
+        })?,
     };
+    let cache =
+        Cache::open_without_background(&paths.tool_cache_dir, &global_tool_cache_domains()).await?;
+    let mut entry_count = 0u64;
+    for domain in ["tools", "tool_metadata"] {
+        entry_count = entry_count.saturating_add(cache.entry_count(domain) as u64);
+    }
     Ok(GlobalToolCacheStatus {
         tool_cache_dir: paths.tool_cache_dir,
         store_dir: paths.tool_cache_store_dir,
@@ -145,12 +180,37 @@ pub struct GlobalToolCacheStatus {
 
 /// Prunes expired entries from the global tool cache.
 ///
+/// Opens the user-level cache **without** starting the 24-hour background
+/// prune loop, then performs an immediate prune (bypassing the automatic
+/// cooldown) across both cache domains and reports the removed entry and
+/// payload counts.
+///
+/// When `cache_root_override` is `Some`, the cache is opened at that root
+/// instead of the resolved default (used by hermetic tests).
+///
 /// # Errors
 ///
-/// Returns `std::io::Error` if the cache root cannot be resolved.
-pub fn global_tool_cache_prune_expired() -> Result<GlobalToolCachePruneSummary, std::io::Error> {
-    // TODO: Implement actual TTL-based pruning
-    Ok(GlobalToolCachePruneSummary { removed_entries: 0, removed_payloads: 0 })
+/// Returns [`ConductorError`] if the global cache root cannot be resolved or
+/// the cache cannot be opened.
+pub async fn global_tool_cache_prune_expired(
+    cache_root_override: Option<&Path>,
+) -> Result<GlobalToolCachePruneSummary, ConductorError> {
+    let paths = match cache_root_override {
+        Some(root) => MediaPmGlobalPaths::from_tool_cache_dir(root),
+        None => MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
+            ConductorError::Workflow("cannot resolve global cache root".to_string())
+        })?,
+    };
+    let cache =
+        Cache::open_without_background(&paths.tool_cache_dir, &global_tool_cache_domains()).await?;
+    let mut removed_entries = 0usize;
+    let mut removed_payloads = 0usize;
+    for domain in ["tools", "tool_metadata"] {
+        let report = cache.prune_expired_immediate(domain).await?;
+        removed_entries = removed_entries.saturating_add(report.removed_entries);
+        removed_payloads = removed_payloads.saturating_add(report.removed_payloads);
+    }
+    Ok(GlobalToolCachePruneSummary { removed_entries, removed_payloads })
 }
 
 /// Summary of global tool cache pruning.
@@ -181,9 +241,14 @@ pub fn global_tool_cache_clear() -> Result<(), std::io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use super::{MEDIAPM_GIT_HASH, MediaPmGlobalPaths};
+    use super::{
+        MEDIAPM_GIT_HASH, MediaPmGlobalPaths, global_tool_cache_domains,
+        global_tool_cache_prune_expired, global_tool_cache_status,
+    };
+
+    use mediapm_conductor::cache::{Cache, CacheDomainConfig};
 
     #[test]
     fn from_cache_base_dir_uses_flat_cache_layout() {
@@ -210,5 +275,104 @@ mod tests {
         // The constant exists and compiles; it may be "" in environments
         // without .git at build time. Just verify it doesn't panic.
         let _ = MEDIAPM_GIT_HASH;
+    }
+
+    #[tokio::test]
+    async fn global_tool_cache_status_reports_real_entry_count() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        // Seed the cache with N entries via the real Cache engine.
+        let cache = Cache::open_without_background(
+            root.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: mediapm_conductor::cache::ENTRY_TTL_SECONDS,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("open cache");
+        cache.store_bytes("tools", "tool-a", b"a").await;
+        cache.store_bytes("tools", "tool-b", b"b").await;
+        cache.store_bytes("tool_metadata", "meta-a", b"m").await;
+        drop(cache);
+
+        let status = global_tool_cache_status(Some(root.path())).await.expect("status");
+        assert_eq!(status.entry_count, 3, "status must report the seeded entry count");
+    }
+
+    #[tokio::test]
+    async fn global_tool_cache_prune_expired_removes_expired_entries() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        // Seed entries via the real global domains (7d / 1d TTL). Freshly
+        // stored entries are NOT expired, so we backdate the on-disk index
+        // rows for two of them to simulate staleness before pruning.
+        let cache = Cache::open_without_background(root.path(), &global_tool_cache_domains())
+            .await
+            .expect("open cache");
+        cache.store_bytes("tools", "expired-tool", b"x").await;
+        cache.store_bytes("tool_metadata", "expired-meta", b"y").await;
+        // A fresh entry in the 7-day `tools` domain must survive the prune.
+        cache.store_bytes("tools", "fresh-tool", b"z").await;
+        drop(cache);
+
+        // Backdate only the target entries so they fall outside the domain
+        // TTL window, leaving the fresh entry untouched.
+        backdate_index_entries(
+            &root.path().join("tools.json"),
+            8 * 24 * 60 * 60,
+            &["expired-tool"],
+        );
+        backdate_index_entries(
+            &root.path().join("tool_metadata.json"),
+            2 * 24 * 60 * 60,
+            &["expired-meta"],
+        );
+
+        let summary = global_tool_cache_prune_expired(Some(root.path())).await.expect("prune");
+        assert!(
+            summary.removed_entries >= 2,
+            "prune must remove the two expired entries, got {}",
+            summary.removed_entries
+        );
+        assert!(
+            summary.removed_payloads >= 2,
+            "prune must remove the two unreferenced payloads, got {}",
+            summary.removed_payloads
+        );
+
+        // After prune, the fresh entry remains.
+        let status = global_tool_cache_status(Some(root.path())).await.expect("status");
+        assert_eq!(status.entry_count, 1, "fresh entry must survive the prune");
+    }
+
+    /// Rewrites an index file so the named entries' `last_access_unix_seconds`
+    /// are shifted backwards by `age_seconds`, simulating staleness for prune
+    /// tests. Entries not named are left untouched.
+    fn backdate_index_entries(index_path: &Path, age_seconds: u64, keys: &[&str]) {
+        use std::io::Write;
+
+        let raw = std::fs::read_to_string(index_path).expect("read index");
+        let mut value: serde_json::Value = serde_json::from_str(&raw).expect("parse index json");
+        let now = mediapm_utils::Timestamp::now().as_unix_secs();
+        if let Some(entries) = value.get_mut("entries").and_then(|e| e.as_object_mut()) {
+            for key in keys {
+                if let Some(entry) = entries.get_mut(*key).and_then(|e| e.as_object_mut()) {
+                    entry.insert(
+                        "last_access_unix_seconds".to_string(),
+                        serde_json::Value::Number((now.saturating_sub(age_seconds)).into()),
+                    );
+                }
+            }
+        }
+        let rendered = serde_json::to_string_pretty(&value).expect("re-encode index");
+        let mut file = std::fs::File::create(index_path).expect("rewrite index");
+        file.write_all(rendered.as_bytes()).expect("write index");
     }
 }

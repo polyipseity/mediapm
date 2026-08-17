@@ -624,7 +624,6 @@ pub(crate) async fn reconcile_desired_tools(
             MediaPmError::Workflow("could not determine default tool cache root".to_string())
         })?,
     };
-    let _store_dir = cache_root.join("store");
     let content_domain = CacheDomainConfig {
         domain: "tools".to_string(),
         index_file_name: "tools.json".to_string(),

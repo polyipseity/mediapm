@@ -309,6 +309,46 @@ impl Cache {
         Ok(cache)
     }
 
+    /// Opens a multi-domain cache at the given root **without** starting the
+    /// 24-hour background prune loop.
+    ///
+    /// Intended for short-lived CLI invocations (e.g. `mediapm global
+    /// tool-cache status` / `prune`) where a lingering background thread would
+    /// outlive the process and hold the CAS lock. Pruning is performed only
+    /// on explicit demand via [`Cache::prune_expired_immediate`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
+    /// fails.
+    pub async fn open_without_background(
+        root: &Path,
+        domains: &[CacheDomainConfig],
+    ) -> Result<Self, ConductorError> {
+        let (cas, domains_map) = open_domain_setup(root, domains, Vec::new()).await?;
+        Ok(Self { cas, domains: domains_map, bg_guard: None, root: root.to_path_buf() })
+    }
+
+    /// Prunes expired entries for one domain **immediately**, bypassing the
+    /// 24-hour [`PRUNE_INTERVAL_SECONDS`] cooldown enforced by
+    /// [`Cache::prune_expired_entries`].
+    ///
+    /// A manual prune must actually remove expired entries regardless of when
+    /// the last automatic or manual prune ran. The cooldown applies only to
+    /// the automatic background loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError`] when the domain is unknown or index locking
+    /// or persistence fails.
+    pub async fn prune_expired_immediate(
+        &self,
+        domain: &str,
+    ) -> Result<CachePruneReport, ConductorError> {
+        let now = now_unix_seconds();
+        self.prune_expired_inner(domain, now).await
+    }
+
     /// Returns a reference to the underlying CAS store.
     #[must_use]
     pub fn cas(&self) -> &FileSystemCas {
@@ -1242,6 +1282,94 @@ mod tests {
         let hash = Hash::from_str(&hash_text).expect("valid hash");
         let result = fresh_cas.get(hash).await;
         assert!(result.is_err(), "blob must be physically deleted from CAS after prune");
+    }
+
+    /// Verifies that `open_without_background` opens the cache without spawning
+    /// a background prune loop (no guard is installed).
+    #[tokio::test]
+    async fn cache_open_without_background_no_prune_loop() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open_without_background(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 0,
+            }],
+        )
+        .await
+        .expect("open cache without background");
+        assert!(
+            cache.get_bg_guard().is_none(),
+            "open_without_background must not install a background prune loop"
+        );
+    }
+
+    /// Verifies that `prune_expired_immediate` bypasses the 24h cooldown and
+    /// removes an expired entry even immediately after a prior prune.
+    #[tokio::test]
+    async fn cache_prune_expired_immediate_bypasses_cooldown() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open_without_background(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 0,
+            }],
+        )
+        .await
+        .expect("open cache without background");
+
+        cache.store_bytes("test", "expiring-key", b"ephemeral").await;
+        let first = cache.prune_expired_immediate("test").await.expect("first immediate prune");
+        assert!(first.removed_entries >= 1, "expired entry must be pruned");
+
+        // Store a fresh entry, then immediately prune again — cooldown must not
+        // block the immediate prune.
+        cache.store_bytes("test", "expiring-key-2", b"ephemeral-2").await;
+        let second = cache.prune_expired_immediate("test").await.expect("second immediate prune");
+        assert!(
+            second.removed_entries >= 1,
+            "immediate prune must bypass cooldown and remove the new expired entry"
+        );
+    }
+
+    /// Verifies that `prune_expired_immediate` reports removed payloads when
+    /// the expired entry's blob is unreferenced by any domain.
+    #[tokio::test]
+    async fn cache_prune_expired_immediate_reports_payloads() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open_without_background(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 0,
+            }],
+        )
+        .await
+        .expect("open cache without background");
+
+        let payload = b"ephemeral-blob".to_vec();
+        cache.store_bytes("test", "expiring-key", &payload).await;
+        let hash_text = cache.get_entry_hash("test", "expiring-key").expect("entry must exist");
+
+        let report = cache.prune_expired_immediate("test").await.expect("immediate prune");
+        assert!(report.removed_entries >= 1, "expired entry must be pruned");
+        assert!(
+            report.removed_payloads >= 1,
+            "unreferenced payload blob must be reported as removed"
+        );
+
+        drop(cache);
+        let store_dir = root.path().join("store");
+        let fresh_cas = FileSystemCas::open(&store_dir).await.expect("open fresh cas");
+        let hash = Hash::from_str(&hash_text).expect("valid hash");
+        assert!(
+            fresh_cas.get(hash).await.is_err(),
+            "blob must be physically deleted from CAS after immediate prune"
+        );
     }
 
     /// Verifies that when two keys in the same index share the same hash
