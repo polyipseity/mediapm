@@ -175,10 +175,15 @@ pub(super) async fn fetch_and_import_tool_payload(
     // Track created bars so we can mark them red on error.
     let mut error_bars: Vec<Arc<dyn crate::output::ProgressBarApi>> = Vec::new();
 
-    // Helper to mark all tracked bars as errored before returning Err.
+    // Helper to mark the still-active bars as errored before returning Err.
+    // Bars already finished (e.g. resolve/fetch that succeeded before the
+    // failing phase) are skipped so they keep their success status instead
+    // of being retroactively marked failed.
     let finish_error_bars = |bars: &[Arc<dyn crate::output::ProgressBarApi>]| {
         for bar in bars {
-            bar.finish_error();
+            if !bar.is_finished() {
+                bar.finish_error();
+            }
         }
     };
 
