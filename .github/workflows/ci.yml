@@ -50,6 +50,9 @@ jobs:
       - name: Run tests
         run: scripts/run-all-tests.sh
 
+      - name: Run large tests
+        run: scripts/run-all-tests.sh --large
+
       - name: Build project
         run: |
           cargo --locked bin rumdl check
