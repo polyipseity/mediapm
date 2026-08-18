@@ -18,7 +18,7 @@ fn resolve_group() -> (ProgressGroup, InMemoryTerm) {
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .with_ticker_enabled(false)
-        .build_with_overall();
+        .build();
     (group, term)
 }
 

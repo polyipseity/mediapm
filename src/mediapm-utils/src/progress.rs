@@ -370,6 +370,7 @@ mod inner {
     use std::collections::VecDeque;
     use std::fmt::Write as _;
     use std::io::Write;
+    use std::marker::PhantomData;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::{Duration, Instant};
@@ -825,10 +826,10 @@ mod inner {
     pub(super) fn bar_color_code(status: TrackStatus, is_overall: bool) -> &'static str {
         match status {
             TrackStatus::Failed => "31",
-            TrackStatus::Warning => "33",
-            TrackStatus::Success => "32",
             TrackStatus::Active if is_overall => "35",
-            TrackStatus::Active => "33",
+            // Active (non-overall) and Warning share yellow (33).
+            TrackStatus::Active | TrackStatus::Warning => "33",
+            TrackStatus::Success => "32",
         }
     }
 
@@ -1470,6 +1471,10 @@ mod inner {
             let sc = self.suffix_components.read().expect("shared_state suffix_components lock");
             let status = match self.status.load(Ordering::Relaxed) {
                 0 => TrackStatus::Active,
+                // Code 1 is the canonical Success encoding; the wildcard
+                // fallback also maps to Success for forward-compatibility
+                // with unknown status codes (see snapshot_status_code_round_trip).
+                #[allow(clippy::match_same_arms)]
                 1 => TrackStatus::Success,
                 2 => TrackStatus::Failed,
                 3 => TrackStatus::Warning,
@@ -2527,7 +2532,31 @@ mod inner {
 
     // ---- ProgressGroupBuilder -------------------------------------------------
 
-    /// Builder for [`ProgressGroup`] with optional configuration.
+    /// Marker type indicating the builder has no overall bar yet.
+    ///
+    /// [`ProgressGroupBuilder<NoOverall>`] does not expose [`build()`](ProgressGroupBuilder::build)
+    /// — call [`with_overall()`](ProgressGroupBuilder::with_overall) first to transition
+    /// to [`HasOverall`].
+    pub struct NoOverall;
+
+    /// Marker type indicating the builder has an overall bar configured.
+    ///
+    /// [`ProgressGroupBuilder<HasOverall>`] exposes [`build()`](ProgressGroupBuilder::build)
+    /// which returns both the group and the overall bar handle.
+    pub struct HasOverall;
+
+    /// Builder for [`ProgressGroup`] with compile-time overall-bar enforcement.
+    ///
+    /// The phantom type parameter `S` tracks whether an overall bar has been
+    /// configured:
+    ///
+    /// - [`ProgressGroupBuilder<NoOverall>`] — `build()` is **not available**.
+    ///   Call [`with_overall()`](Self::with_overall) to transition to `HasOverall`.
+    /// - [`ProgressGroupBuilder<HasOverall>`] — `build()` returns
+    ///   `(ProgressGroup, TrackedHandle)`.
+    ///
+    /// This makes it impossible to construct a `ProgressGroup` without an
+    /// overall bar — the compiler rejects any attempt.
     ///
     /// # Defaults
     ///
@@ -2542,10 +2571,12 @@ mod inner {
     /// # Examples
     ///
     /// ```ignore
-    /// let group = ProgressGroup::builder().build();
-    /// let (group, overall) = ProgressGroup::builder().with_overall("sync", 10).build_with_overall();
+    /// // Type-safe: compiler requires with_overall() before build().
+    /// let (group, overall) = ProgressGroup::builder()
+    ///     .with_overall("sync", 10)
+    ///     .build();
     /// ```
-    pub struct ProgressGroupBuilder {
+    pub struct ProgressGroupBuilder<S = NoOverall> {
         mp: Option<MultiProgress>,
         dim_source: Arc<dyn DimensionSource>,
         overall: Option<(String, u64)>,
@@ -2555,9 +2586,10 @@ mod inner {
         pre_roll_term: Option<Box<dyn TermLike>>,
         debug_sink: Option<ProgressDebugSink>,
         ticker_enabled: bool,
+        _state: PhantomData<S>,
     }
 
-    impl Default for ProgressGroupBuilder {
+    impl Default for ProgressGroupBuilder<NoOverall> {
         fn default() -> Self {
             Self {
                 mp: None,
@@ -2569,99 +2601,97 @@ mod inner {
                 pre_roll_term: None,
                 debug_sink: None,
                 ticker_enabled: true,
+                _state: PhantomData,
             }
         }
     }
 
-    impl ProgressGroupBuilder {
-        /// Use an existing [`MultiProgress`] instead of creating a fresh one.
-        #[must_use]
-        pub fn with_multi_progress(mut self, mp: MultiProgress) -> Self {
-            self.mp = Some(mp);
-            self
-        }
+    /// Configuration methods shared by both `NoOverall` and `HasOverall` states.
+    macro_rules! impl_builder_config {
+        ($ty:ty) => {
+            impl ProgressGroupBuilder<$ty> {
+                /// Use an existing [`MultiProgress`] instead of creating a fresh one.
+                #[must_use]
+                pub fn with_multi_progress(mut self, mp: MultiProgress) -> Self {
+                    self.mp = Some(mp);
+                    self
+                }
 
-        /// Use an injectable dimension source (for tests).
-        #[must_use]
-        pub fn with_dim_source(mut self, dim_source: Arc<dyn DimensionSource>) -> Self {
-            self.dim_source = dim_source;
-            self
-        }
+                /// Use an injectable dimension source (for tests).
+                #[must_use]
+                pub fn with_dim_source(mut self, dim_source: Arc<dyn DimensionSource>) -> Self {
+                    self.dim_source = dim_source;
+                    self
+                }
 
-        /// Add an overall aggregate bar pinned at the bottom.
-        ///
-        /// `label` is parsed into [`PrefixComponents`] at construction,
-        /// exactly like [`ProgressGroup::add_bar`] — the overall bar shares
-        /// the single canonical prefix path and the legacy `set_prefix(String)`
-        /// API does not exist here either.
-        #[must_use]
-        pub fn with_overall(mut self, label: &str, total: u64) -> Self {
-            self.overall = Some((label.to_string(), total));
-            self
-        }
+                /// Set the exact slot capacity (clamped to `[1, MAX_SLOTS]`).
+                /// When `None` (default), capacity is derived from terminal height.
+                #[must_use]
+                pub fn capacity(mut self, n: usize) -> Self {
+                    self.capacity = Some(n);
+                    self
+                }
 
-        /// Set the exact slot capacity (clamped to `[1, MAX_SLOTS]`).
-        /// When `None` (default), capacity is derived from terminal height.
-        #[must_use]
-        pub fn capacity(mut self, n: usize) -> Self {
-            self.capacity = Some(n);
-            self
-        }
+                /// Enable or disable dynamic height adaptation (default: `true`).
+                #[must_use]
+                pub fn dynamic_height(mut self, enabled: bool) -> Self {
+                    self.dynamic_height = enabled;
+                    self
+                }
 
-        /// Enable or disable dynamic height adaptation (default: `true`).
-        #[must_use]
-        pub fn dynamic_height(mut self, enabled: bool) -> Self {
-            self.dynamic_height = enabled;
-            self
-        }
+                /// Use an injectable time source (for tests).
+                #[must_use]
+                pub fn with_time_source(mut self, time_source: Arc<dyn TimeSource>) -> Self {
+                    self.time_source = time_source;
+                    self
+                }
 
-        /// Use an injectable time source (for tests).
-        #[must_use]
-        pub fn with_time_source(mut self, time_source: Arc<dyn TimeSource>) -> Self {
-            self.time_source = time_source;
-            self
-        }
+                /// Use an injectable term for pre-roll capture (for test assertions).
+                ///
+                /// When called, pre-roll newlines are written to `term` instead of
+                /// `console::Term::stderr()`.  The user must also pass a compatible
+                /// [`MultiProgress`] created from the same term via
+                /// `ProgressDrawTarget::term_like`.
+                #[must_use]
+                pub fn with_pre_roll_capture(mut self, term: Box<dyn TermLike>) -> Self {
+                    self.pre_roll_term = Some(term);
+                    self
+                }
 
-        /// Use an injectable term for pre-roll capture (for test assertions).
-        ///
-        /// When called, pre-roll newlines are written to `term` instead of
-        /// `console::Term::stderr()`.  The user must also pass a compatible
-        /// [`MultiProgress`] created from the same term via
-        /// `ProgressDrawTarget::term_like`.
-        #[must_use]
-        pub fn with_pre_roll_capture(mut self, term: Box<dyn TermLike>) -> Self {
-            self.pre_roll_term = Some(term);
-            self
-        }
+                /// Attach a JSONL debug sink for progress bar state snapshots.
+                #[must_use]
+                pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
+                    self.debug_sink = Some(sink);
+                    self
+                }
 
-        /// Attach a JSONL debug sink for progress bar state snapshots.
-        #[must_use]
-        pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
-            self.debug_sink = Some(sink);
-            self
-        }
+                /// Disable or enable the background render ticker thread (default:
+                /// enabled).  Disable in tests for deterministic progress bar output.
+                #[must_use]
+                pub fn with_ticker_enabled(mut self, enabled: bool) -> Self {
+                    self.ticker_enabled = enabled;
+                    self
+                }
+            }
+        };
+    }
 
-        /// Disable or enable the background render ticker thread (default:
-        /// enabled).  Disable in tests for deterministic progress bar output.
-        #[must_use]
-        pub fn with_ticker_enabled(mut self, enabled: bool) -> Self {
-            self.ticker_enabled = enabled;
-            self
-        }
+    impl_builder_config!(NoOverall);
+    impl_builder_config!(HasOverall);
 
+    impl ProgressGroupBuilder<NoOverall> {
         /// Build a group without an overall bar.
+        ///
+        /// Use this when no overall aggregate bar is needed (e.g., the
+        /// standalone conductor CLI). For workflow/materialization progress
+        /// screens that require an overall bar, call [`with_overall()`](Self::with_overall)
+        /// first to transition to [`HasOverall`], then use [`build()`](ProgressGroupBuilder::build).
         ///
         /// # Panics
         ///
-        /// Panics if [`with_overall`](Self::with_overall) was called — use
-        /// [`build_with_overall`](Self::build_with_overall) instead.
         /// Panics when the internal `Mutex` is poisoned.
         #[must_use]
         pub fn build(self) -> ProgressGroup {
-            assert!(
-                self.overall.is_none(),
-                "use build_with_overall() when with_overall() was called"
-            );
             let cap = self.capacity.unwrap_or_else(|| {
                 let (rows, _) = self.dim_source.dimensions();
                 (rows as usize).clamp(1, MAX_SLOTS)
@@ -2700,16 +2730,45 @@ mod inner {
             ProgressGroup { renderer, ticker }
         }
 
-        /// Build a group with an overall aggregate bar.
+        /// Add an overall aggregate bar pinned at the bottom slot.
+        ///
+        /// Transitions the builder from [`NoOverall`] to [`HasOverall`],
+        /// enabling [`build()`](ProgressGroupBuilder::build).
+        ///
+        /// `label` is parsed into [`PrefixComponents`] at construction,
+        /// exactly like [`ProgressGroup::add_bar`] — the overall bar shares
+        /// the single canonical prefix path and the legacy `set_prefix(String)`
+        /// API does not exist here either.
+        #[must_use]
+        pub fn with_overall(self, label: &str, total: u64) -> ProgressGroupBuilder<HasOverall> {
+            ProgressGroupBuilder {
+                mp: self.mp,
+                dim_source: self.dim_source,
+                overall: Some((label.to_string(), total)),
+                capacity: self.capacity,
+                dynamic_height: self.dynamic_height,
+                time_source: self.time_source,
+                pre_roll_term: self.pre_roll_term,
+                debug_sink: self.debug_sink,
+                ticker_enabled: self.ticker_enabled,
+                _state: PhantomData,
+            }
+        }
+    }
+
+    impl ProgressGroupBuilder<HasOverall> {
+        /// Build a group with the overall bar pinned at the bottom slot.
+        ///
+        /// Returns both the [`ProgressGroup`] and a [`TrackedHandle`] for the
+        /// overall bar. The caller owns the overall handle and must advance/
+        /// finish it when the tracked operation completes.
         ///
         /// # Panics
         ///
-        /// Panics if [`with_overall`](Self::with_overall) was not called.
         /// Panics when the internal `Mutex` is poisoned.
         #[must_use]
-        pub fn build_with_overall(self) -> (ProgressGroup, TrackedHandle) {
-            let (label, total) =
-                self.overall.expect("with_overall() must be called before build_with_overall()");
+        pub fn build(self) -> (ProgressGroup, TrackedHandle) {
+            let (label, total) = self.overall.expect("HasOverall builder must have overall set");
             let cap = self.capacity.unwrap_or_else(|| {
                 let (rows, _) = self.dim_source.dimensions();
                 (rows as usize).clamp(1, MAX_SLOTS)
@@ -3117,6 +3176,22 @@ pub mod recording {
             Self { ops: Arc::new(Mutex::new(Vec::new())) }
         }
 
+        /// Create a tracker with a pre-recorded overall bar.
+        ///
+        /// The overall bar is recorded as an [`AddBar`](ProgressOp::AddBar) operation
+        /// immediately. The returned [`RecordingTrackedHandle`] represents the overall bar
+        /// for direct manipulation in tests.
+        ///
+        /// This mirrors the type-state builder pattern: callers who need an overall bar
+        /// call `with_overall()` instead of `new()`, receiving the overall handle
+        /// alongside the tracker.
+        #[must_use]
+        pub fn with_overall(label: &str, total: u64) -> (Self, RecordingTrackedHandle) {
+            let tracker = Self::new();
+            let overall = tracker.add_bar(total, label);
+            (tracker, overall)
+        }
+
         /// Record adding a bar with the given `total` and `label`.
         ///
         /// Returns a [`RecordingTrackedHandle`] that shares this tracker's
@@ -3391,7 +3466,7 @@ mod tests {
         let g = ProgressGroup::builder().build();
         let ch = g.add_bar(50, "child");
         assert_eq!(ch.total(), 50);
-        let (_og, oh) = ProgressGroup::builder().with_overall("all", 300).build_with_overall();
+        let (_og, oh) = ProgressGroup::builder().with_overall("all", 300).build();
         assert_eq!(oh.total(), 300);
         g.join_and_clear();
 
@@ -3819,7 +3894,7 @@ mod tests {
 
     #[test]
     fn progress_group_with_overall_creates_both() {
-        let (g, overall) = ProgressGroup::builder().with_overall("all", 100).build_with_overall();
+        let (g, overall) = ProgressGroup::builder().with_overall("all", 100).build();
         assert_eq!(overall.total(), 100, "overall bar must have total == 100");
         let child = g.add_bar(50, "child");
         assert_eq!(child.total(), 50, "child bar must have total == 50");
@@ -4043,7 +4118,7 @@ mod tests {
             .with_multi_progress(mp)
             .capacity(4)
             .with_overall("overall", 10)
-            .build_with_overall();
+            .build();
 
         // 4 slots total → 3 child slots + 1 overall.
         // Add 5 children → first 3 get slots, last 2 have no display slot.
@@ -4069,8 +4144,7 @@ mod tests {
         // finish_and_clear on a ProgressGroup-managed handle (bar=None,
         // tick_fn=Some) must still mark state as finished.
 
-        let (_group, overall) =
-            ProgressGroup::builder().with_overall("all", 10).build_with_overall();
+        let (_group, overall) = ProgressGroup::builder().with_overall("all", 10).build();
         overall.finish_and_clear();
         let snap = overall.snapshot();
         assert!(
@@ -4158,7 +4232,7 @@ mod tests {
             // so the assertion below checks a distinct-glyph set.)
             .with_ticker_enabled(false)
             .with_overall("syncing", 3)
-            .build_with_overall();
+            .build();
 
         let bar1 = group.add_bar(100, "tool [resolve]");
         let bar2 = group.add_bar(100, "tool [fetch]");
@@ -4247,7 +4321,7 @@ mod tests {
             .capacity(2)
             .dynamic_height(false)
             .with_overall("syncing", 3)
-            .build_with_overall();
+            .build();
 
         // Phase 1: finish resolve bar (fills the single child slot).
         let bar1 = group.add_bar(1, "tool [resolve]");
@@ -5272,7 +5346,7 @@ mod tests {
             .with_ticker_enabled(false)
             .capacity(4)
             .with_overall("overall", 10)
-            .build_with_overall();
+            .build();
         let bar = group.add_bar(100, "child");
         bar.advance(50);
         overall.advance(5);
@@ -5517,7 +5591,7 @@ mod tests {
             .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
             .capacity(2)
             .with_overall("total", 100)
-            .build_with_overall();
+            .build();
 
         // Wait for the background ticker to fire pre_roll.
         std::thread::sleep(std::time::Duration::from_millis(200));

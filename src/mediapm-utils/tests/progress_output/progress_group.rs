@@ -950,7 +950,7 @@ fn orphan_reattach_preserves_elapsed() {
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(true)
         .with_ticker_enabled(false)
-        .build_with_overall();
+        .build();
     let _child = group.add_bar(10, "worker");
 
     // Tick to show the bar with initial elapsed.
@@ -1171,7 +1171,7 @@ fn finalize_preserves_content_written_before_progress() {
         .capacity(4)
         .with_overall("overall", 5)
         .with_ticker_enabled(false)
-        .build_with_overall();
+        .build();
     let c = group.add_bar(3, "work");
     c.advance(3);
     c.finish_success();

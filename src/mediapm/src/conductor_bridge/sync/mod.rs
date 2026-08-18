@@ -654,7 +654,7 @@ pub(crate) async fn reconcile_desired_tools(
             let (g, p) = ProgressGroup::builder()
                 .dynamic_height(true)
                 .with_overall("syncing tools", total_tools)
-                .build_with_overall();
+                .build();
             (Some(g), Arc::new(p))
         };
     let effective_group: &dyn ProgressGroupApi = owned_group

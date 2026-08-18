@@ -168,6 +168,7 @@ pub async fn sync_hierarchy(
     conductor_state: &ConductorState,
     generated_doc: &NickelDocument,
     progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>,
+    overall_bar: Option<Arc<dyn ProgressBarApi>>,
 ) -> Result<MaterializeReport, MediaPmError> {
     let hierarchy_root = &paths.hierarchy_root_dir;
 
@@ -195,22 +196,37 @@ pub async fn sync_hierarchy(
     // --- Concurrent materialization ---
     let worker_count = hierarchy_worker_count();
     let semaphore = Arc::new(Semaphore::new(worker_count));
-    let (owned_group, pb) = if let Some(ref pg) = progress_group {
-        let bar = pg.add_bar(flattened.len() as u64, "materializing [mat]");
-        bar.set_prefix_components(PrefixComponents {
-            tool_name: "materializing".to_string(),
-            phase: "mat".to_string(),
-            count: "0".to_string(),
-            total: flattened.len().to_string(),
-            ..PrefixComponents::default()
-        });
-        (None, bar)
-    } else {
-        let g = ProgressGroup::builder().dynamic_height(true).build();
-        let p: Arc<dyn ProgressBarApi> =
-            Arc::new(g.add_bar(flattened.len() as u64, "materializing [mat]"));
-        (Some(g), p)
-    };
+
+    // Use the caller-provided overall bar if available, otherwise create one
+    // from the progress group or from a local fallback group.
+    let (owned_group, pb): (Option<ProgressGroup>, Arc<dyn ProgressBarApi>) =
+        if let Some(bar) = overall_bar {
+            // Caller owns the overall bar — set the real entry count.
+            bar.set_total(flattened.len() as u64);
+            bar.set_prefix_components(PrefixComponents {
+                tool_name: "materializing".to_string(),
+                phase: "mat".to_string(),
+                count: "0".to_string(),
+                total: flattened.len().to_string(),
+                ..PrefixComponents::default()
+            });
+            (None, bar)
+        } else if let Some(ref pg) = progress_group {
+            let bar = pg.add_bar(flattened.len() as u64, "materializing [mat]");
+            bar.set_prefix_components(PrefixComponents {
+                tool_name: "materializing".to_string(),
+                phase: "mat".to_string(),
+                count: "0".to_string(),
+                total: flattened.len().to_string(),
+                ..PrefixComponents::default()
+            });
+            (None, bar)
+        } else {
+            let g = ProgressGroup::builder().dynamic_height(true).build();
+            let p: Arc<dyn ProgressBarApi> =
+                Arc::new(g.add_bar(flattened.len() as u64, "materializing [mat]"));
+            (Some(g), p)
+        };
 
     let mut join_set = tokio::task::JoinSet::new();
     let document_arc = Arc::new(document.clone());
@@ -324,6 +340,10 @@ pub async fn sync_hierarchy(
 /// - `Media`: single-file variant materialization.
 /// - `MediaFolder`: multi-variant or ZIP-folder materialization.
 /// - `Playlist`: playlist file generation.
+#[expect(
+    clippy::too_many_lines,
+    reason = "hierarchy dispatch consolidates variant-specific staging and progress tracking"
+)]
 async fn prepare_hierarchy_entry(
     entry: &FlattenedHierarchyEntry,
     document: &MediaPmDocument,
@@ -442,15 +462,12 @@ async fn prepare_hierarchy_entry(
             )
             .await;
             if let Some(ref bar) = entry_bar {
-                match &result {
-                    Ok(_) => {
-                        bar.advance(1);
-                        bar.finish_success();
-                    }
-                    Err(_) => {
-                        bar.advance(1);
-                        bar.finish_error();
-                    }
+                if result.is_ok() {
+                    bar.advance(1);
+                    bar.finish_success();
+                } else {
+                    bar.advance(1);
+                    bar.finish_error();
                 }
             }
             result
@@ -461,15 +478,12 @@ async fn prepare_hierarchy_entry(
                 materialize_playlist_entry(entry, document, &target_path, &relative_path, shared)
                     .await;
             if let Some(ref bar) = entry_bar {
-                match &result {
-                    Ok(_) => {
-                        bar.advance(1);
-                        bar.finish_success();
-                    }
-                    Err(_) => {
-                        bar.advance(1);
-                        bar.finish_error();
-                    }
+                if result.is_ok() {
+                    bar.advance(1);
+                    bar.finish_success();
+                } else {
+                    bar.advance(1);
+                    bar.finish_error();
                 }
             }
             result
@@ -545,6 +559,7 @@ async fn materialize_file_entry(
 /// Materialises a media-folder (multi-variant or ZIP-folder) entry.
 #[expect(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "media-folder materialization handles folder variants and rename rules inline"
 )]
 async fn materialize_media_folder_entry(
@@ -1104,6 +1119,7 @@ mod tests {
             &conductor_state,
             &generated_doc,
             Some(Arc::new(recording.clone())),
+            None,
         )
         .await;
 
@@ -1118,7 +1134,7 @@ mod tests {
     /// `Advance(1)` + `FinishSuccess`.
     ///
     /// The order is deterministic because the single spawned task completes
-    /// (advance + entry_bar ops) before the overall bar is finished.
+    /// (advance + `entry_bar` ops) before the overall bar is finished.
     #[tokio::test]
     async fn sync_hierarchy_with_single_media_produces_progress_ops() {
         let root = mediapm_utils::temp::artifact_dir().unwrap();
@@ -1176,6 +1192,7 @@ mod tests {
             &conductor_state,
             &generated_doc,
             Some(Arc::new(recording.clone())),
+            None,
         )
         .await;
 

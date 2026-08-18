@@ -35,7 +35,7 @@ fn color_failed_bracket_text() {
 }
 
 /// Abandoned bar: [F] bracket shown (Abandoned variant removed; closest
-/// new semantic is finish_error which keeps the bar visible with an [F] marker).
+/// new semantic is `finish_error` which keeps the bar visible with an [F] marker).
 #[test]
 fn color_abandoned_bracket_text() {
     let (mp, term) = mk_with_size(2, 80);

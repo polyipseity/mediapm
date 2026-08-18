@@ -282,12 +282,16 @@ async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
     use mediapm_utils::progress::ProgressGroup;
     let conductor = ensure_conductor().await?;
 
-    let group: Arc<dyn ProgressGroupApi + Send + Sync> =
-        Arc::new(ProgressGroup::builder().dynamic_height(true).build());
+    let (group, overall): (Arc<dyn ProgressGroupApi + Send + Sync>, _) = {
+        let (g, overall) =
+            ProgressGroup::builder().dynamic_height(true).with_overall("workflow [wf]", 1).build();
+        (Arc::new(g), Arc::new(overall))
+    };
     let options = RunWorkflowOptions {
         retry_impure: false,
         tool_selector: None,
         progress_group: Some(group.clone()),
+        overall_bar: Some(overall),
     };
     let summary = conductor.run_workflow(workflow_name, options).await?;
     group.join();

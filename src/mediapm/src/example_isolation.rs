@@ -110,6 +110,7 @@ pub fn run_online_sync_enabled() -> bool {
 ///
 /// Fail-fast on unknown tokens preserves the prior `run_sync_override_rejects_invalid_tokens`
 /// contract.
+#[expect(clippy::missing_errors_doc, reason = "public helper documented above")]
 pub fn parse_run_online_sync_override(value: Option<&str>) -> Result<bool, String> {
     let Some(raw) = value else {
         return Ok(true);

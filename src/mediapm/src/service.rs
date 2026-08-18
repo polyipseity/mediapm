@@ -34,7 +34,7 @@ use crate::hierarchy::{
 };
 use crate::materializer;
 use crate::metadata_cache::MetadataCache;
-use crate::output::{ProgressGroup, ProgressGroupApi};
+use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
@@ -1064,6 +1064,10 @@ impl MediaPmService<FileSystemCas> {
     ///
     /// Returns the first critical error encountered; non-fatal issues are
     /// collected as warnings.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "orchestrates tool sync, workflow execution, and materialization in one entrypoint"
+    )]
     pub async fn sync_library_with_tag_update_checks(
         &mut self,
         verify_materialization: bool,
@@ -1112,13 +1116,19 @@ impl MediaPmService<FileSystemCas> {
 
         // Surface the conductor-owned workflow progress screen during sync.
         // When --no-progress is set, use a disabled group (zero-cost no-op
-        // handles); otherwise build a live dynamic-height group that the
-        // conductor populates with one overall bar plus one child per step.
-        let workflow_group: ProgressGroup = if no_progress {
-            ProgressGroup::disabled()
-        } else {
-            ProgressGroup::builder().dynamic_height(true).build()
-        };
+        // handles); otherwise build a live dynamic-height group with a pinned
+        // overall bar at the bottom slot. The coordinator receives the overall
+        // handle and sets its total to the actual step count.
+        let (workflow_group, workflow_overall): (ProgressGroup, Option<Arc<dyn ProgressBarApi>>) =
+            if no_progress {
+                (ProgressGroup::disabled(), None)
+            } else {
+                let (g, overall) = ProgressGroup::builder()
+                    .dynamic_height(true)
+                    .with_overall("workflow [wf]", 1)
+                    .build();
+                (g, Some(Arc::new(overall)))
+            };
         let workflow_pg: Option<Arc<dyn ProgressGroupApi + Send + Sync>> =
             Some(Arc::new(workflow_group));
         for workflow_name in workflow_names {
@@ -1127,7 +1137,12 @@ impl MediaPmService<FileSystemCas> {
                 .conductor
                 .run_workflow(
                     &workflow_name,
-                    conductor_run_workflow_options(&effective_paths, &merged, workflow_pg.clone()),
+                    conductor_run_workflow_options(
+                        &effective_paths,
+                        &merged,
+                        workflow_pg.clone(),
+                        workflow_overall.clone(),
+                    ),
                 )
                 .await?;
             let after = self.conductor.get_state()?;
@@ -1180,10 +1195,17 @@ impl MediaPmService<FileSystemCas> {
         // The materialization progress screen is owned by mediapm (not the
         // conductor): it gets its own group so the two screens never share a
         // draw target. A disabled group is used under --no-progress.
-        let materialize_group: ProgressGroup = if no_progress {
-            ProgressGroup::disabled()
+        let (materialize_group, materialize_overall): (
+            ProgressGroup,
+            Option<Arc<dyn ProgressBarApi>>,
+        ) = if no_progress {
+            (ProgressGroup::disabled(), None)
         } else {
-            ProgressGroup::builder().dynamic_height(true).build()
+            let (g, overall) = ProgressGroup::builder()
+                .dynamic_height(true)
+                .with_overall("materializing [mat]", 1)
+                .build();
+            (g, Some(Arc::new(overall)))
         };
         let materialize_pg: Option<Arc<dyn ProgressGroupApi + Send + Sync>> =
             Some(Arc::new(materialize_group));
@@ -1196,6 +1218,7 @@ impl MediaPmService<FileSystemCas> {
             &conductor_state,
             &generated_doc,
             materialize_pg.clone(),
+            materialize_overall.clone(),
         )
         .await?;
         if let Some(ref group) = materialize_pg {

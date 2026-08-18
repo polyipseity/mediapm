@@ -59,7 +59,8 @@ fn broken_tool(name: &str) -> mediapm_conductor::ToolSpec {
 // ---------------------------------------------------------------------------
 
 /// Single-step echo workflow emits the expected `[wf]` progress sequence:
-/// overall bar → step bar with prefix → advance → finish → overall finish.
+/// overall bar (total set by coordinator) → step bar with prefix → advance
+/// → finish → overall finish.
 #[tokio::test]
 async fn single_step_success_progress_ops() {
     let tc = TestConductor::new();
@@ -68,13 +69,14 @@ async fn single_step_success_progress_ops() {
         vec![crate::echo_workflow("default", "echo@v1", "hello")],
     ));
 
-    let tracker = RecordingProgressTracker::new();
+    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow [wf]", 1);
     let summary = tc
         .conductor()
         .run_workflow(
             "default",
             RunWorkflowOptions {
                 progress_group: Some(Arc::new(tracker.clone())),
+                overall_bar: Some(Arc::new(overall)),
                 ..Default::default()
             },
         )
@@ -87,8 +89,9 @@ async fn single_step_success_progress_ops() {
     assert_eq!(
         tracker.ops(),
         vec![
-            // Overall bar created first.
+            // Overall bar created by with_overall(), total set to real step count by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
+            ProgressOp::SetTotal { total: 1 },
             // Step bar created before dispatch.
             ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
             ProgressOp::SetPrefixComponents {
@@ -125,13 +128,14 @@ async fn two_step_same_level_success_progress_ops() {
         }],
     ));
 
-    let tracker = RecordingProgressTracker::new();
+    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow [wf]", 1);
     let summary = tc
         .conductor()
         .run_workflow(
             "default",
             RunWorkflowOptions {
                 progress_group: Some(Arc::new(tracker.clone())),
+                overall_bar: Some(Arc::new(overall)),
                 ..Default::default()
             },
         )
@@ -144,8 +148,9 @@ async fn two_step_same_level_success_progress_ops() {
     assert_eq!(
         tracker.ops(),
         vec![
-            // Overall bar.
-            ProgressOp::AddBar { total: 2, label: "workflow [wf]".into() },
+            // Overall bar created by with_overall(), total set by coordinator.
+            ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
+            ProgressOp::SetTotal { total: 2 },
             // Step 1 bar (spawned first).
             ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
             ProgressOp::SetPrefixComponents {
@@ -199,13 +204,14 @@ async fn two_step_sequential_levels_progress_ops() {
         }],
     ));
 
-    let tracker = RecordingProgressTracker::new();
+    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow [wf]", 1);
     let summary = tc
         .conductor()
         .run_workflow(
             "default",
             RunWorkflowOptions {
                 progress_group: Some(Arc::new(tracker.clone())),
+                overall_bar: Some(Arc::new(overall)),
                 ..Default::default()
             },
         )
@@ -218,8 +224,9 @@ async fn two_step_sequential_levels_progress_ops() {
     assert_eq!(
         tracker.ops(),
         vec![
-            // Overall bar.
-            ProgressOp::AddBar { total: 2, label: "workflow [wf]".into() },
+            // Overall bar created by with_overall(), total set by coordinator.
+            ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
+            ProgressOp::SetTotal { total: 2 },
             // Level 0: step 1.
             ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
             ProgressOp::SetPrefixComponents {
@@ -271,13 +278,14 @@ async fn step_failure_emits_finish_warning() {
         }],
     ));
 
-    let tracker = RecordingProgressTracker::new();
+    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow [wf]", 1);
     let summary = tc
         .conductor()
         .run_workflow(
             "default",
             RunWorkflowOptions {
                 progress_group: Some(Arc::new(tracker.clone())),
+                overall_bar: Some(Arc::new(overall)),
                 ..Default::default()
             },
         )
@@ -290,8 +298,9 @@ async fn step_failure_emits_finish_warning() {
     assert_eq!(
         tracker.ops(),
         vec![
-            // Overall bar created.
+            // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
+            ProgressOp::SetTotal { total: 1 },
             // Step bar created before dispatch.
             ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
             ProgressOp::SetPrefixComponents {
@@ -355,13 +364,14 @@ async fn three_step_same_level_progress_ops() {
         }],
     ));
 
-    let tracker = RecordingProgressTracker::new();
+    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow [wf]", 1);
     let summary = tc
         .conductor()
         .run_workflow(
             "default",
             RunWorkflowOptions {
                 progress_group: Some(Arc::new(tracker.clone())),
+                overall_bar: Some(Arc::new(overall)),
                 ..Default::default()
             },
         )
@@ -374,7 +384,8 @@ async fn three_step_same_level_progress_ops() {
     assert_eq!(
         tracker.ops(),
         vec![
-            ProgressOp::AddBar { total: 3, label: "workflow [wf]".into() },
+            ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
+            ProgressOp::SetTotal { total: 3 },
             ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),

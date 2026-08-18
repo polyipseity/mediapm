@@ -211,13 +211,18 @@ where
             let mut failed_steps = 0usize;
 
             // Compose the conductor-owned workflow progress screen: one overall
-            // bar plus one child bar per step. When no progress group is
-            // supplied the conductor runs silently.
+            // bar plus one child bar per step. The overall bar is pinned at the
+            // bottom slot by the caller via `with_overall()` — the coordinator
+            // receives it through `options.overall_bar` and uses it directly.
             #[cfg(feature = "progress")]
-            let overall_bar: Option<Arc<dyn ProgressBarApi>> = options
-                .progress_group
-                .as_ref()
-                .map(|g| g.add_bar(total_steps as u64, "workflow [wf]"));
+            let overall_bar: Option<Arc<dyn ProgressBarApi>> = options.overall_bar.clone();
+
+            // The overall bar is created by the caller with a placeholder
+            // total; set the real total now that we know the step count.
+            #[cfg(feature = "progress")]
+            if let Some(ref ob) = overall_bar {
+                ob.set_total(total_steps as u64);
+            }
 
             let mut step_outputs: StepOutputs = BTreeMap::new();
             let state_snapshot = Arc::new(state.clone());

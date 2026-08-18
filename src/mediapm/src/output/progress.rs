@@ -163,7 +163,7 @@ mod tests {
             .with_overall("syncing tools", 5)
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
             .dynamic_height(false)
-            .build_with_overall();
+            .build();
         let contents_wide = term.contents();
         assert!(contents_wide.contains("syncing tools"), "overall visible");
 

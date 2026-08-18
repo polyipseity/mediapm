@@ -803,10 +803,12 @@ pub(crate) fn conductor_run_workflow_options(
     _paths: &MediaPmPaths,
     runtime_storage: &MediaRuntimeStorage,
     progress_group: Option<Arc<dyn mediapm_utils::progress::ProgressGroupApi + Send + Sync>>,
+    overall_bar: Option<Arc<dyn mediapm_utils::progress::ProgressBarApi>>,
 ) -> mediapm_conductor::RunWorkflowOptions {
     mediapm_conductor::RunWorkflowOptions {
         retry_impure: runtime_storage.retry_impure,
         progress_group,
+        overall_bar,
         ..mediapm_conductor::RunWorkflowOptions::default()
     }
 }

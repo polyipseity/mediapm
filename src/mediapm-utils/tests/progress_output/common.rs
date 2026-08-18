@@ -114,7 +114,7 @@ pub fn group_with_overall(
         .capacity(capacity)
         .with_overall(label, overall_total)
         .with_ticker_enabled(false)
-        .build_with_overall()
+        .build()
 }
 
 /// Build a [`ProgressGroup`] with an overall bar and a deterministic time
@@ -132,7 +132,7 @@ pub fn group_with_overall_and_ts(
         .with_overall(label, overall_total)
         .with_time_source(ts.clone())
         .with_ticker_enabled(false)
-        .build_with_overall()
+        .build()
 }
 
 /// Build a [`ProgressGroup`] with an overall bar, a custom dimension source,
@@ -152,7 +152,7 @@ pub fn group_with_overall_and_dims(
         .with_dim_source(Arc::clone(dims) as Arc<dyn DimensionSource>)
         .dynamic_height(dynamic_height)
         .with_ticker_enabled(false)
-        .build_with_overall()
+        .build()
 }
 
 /// Like [`group_with_overall_and_dims`] but also attaches a deterministic
@@ -174,5 +174,5 @@ pub fn group_with_overall_and_dims_and_ts(
         .with_time_source(ts.clone() as Arc<dyn TimeSource>)
         .dynamic_height(dynamic_height)
         .with_ticker_enabled(false)
-        .build_with_overall()
+        .build()
 }

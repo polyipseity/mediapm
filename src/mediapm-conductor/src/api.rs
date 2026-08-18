@@ -11,7 +11,7 @@ use mediapm_cas::CasApi;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "progress")]
-use mediapm_utils::progress::ProgressGroupApi;
+use mediapm_utils::progress::{ProgressBarApi, ProgressGroupApi};
 
 use crate::defaults;
 use crate::error::ConductorError;
@@ -223,6 +223,15 @@ pub struct RunWorkflowOptions {
     /// `progress` feature (e.g. `mediapm-cas` uses `default-features = false`).
     #[cfg(feature = "progress")]
     pub progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>,
+    /// Pinned overall bar for the workflow progress screen.
+    ///
+    /// The caller creates this via `ProgressGroup::builder().with_overall()`
+    /// and passes it here. The coordinator uses it directly instead of
+    /// creating a child bar, ensuring the overall bar is pinned at the
+    /// bottom slot. When `None`, the conductor does not display a workflow
+    /// progress screen.
+    #[cfg(feature = "progress")]
+    pub overall_bar: Option<Arc<dyn ProgressBarApi>>,
 }
 
 impl std::fmt::Debug for RunWorkflowOptions {
@@ -232,6 +241,7 @@ impl std::fmt::Debug for RunWorkflowOptions {
         #[cfg(feature = "progress")]
         {
             dbg.field("progress_group", &self.progress_group.as_ref().map(|_| "…"));
+            dbg.field("overall_bar", &self.overall_bar.as_ref().map(|_| "…"));
         }
         dbg.finish()
     }
