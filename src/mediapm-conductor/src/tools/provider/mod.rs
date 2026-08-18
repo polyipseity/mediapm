@@ -1034,7 +1034,7 @@ async fn process_single_source(
         // only fix is to wrap the deno binary: rename the real executable and
         // place a shim that re-execs it with `--allow-all`.
         if tool_id == "deno" {
-            wrap_deno_binary(os_dir)?;
+            wrap_deno_binary(os_dir, &exec_path)?;
         }
 
         // Item 1: compress — refine total to actual directory content size,
@@ -1097,19 +1097,37 @@ async fn process_single_source(
 /// Because yt-dlp's `--js-runtimes` accepts only `RUNTIME[:PATH]` (no args), we
 /// rename the real binary to `deno.real` (or `deno.real.exe`) and write a shim
 /// at the original `deno` path that re-execs it with `--allow-all`.
-fn wrap_deno_binary(os_dir: &std::path::Path) -> Result<(), crate::error::ConductorError> {
+///
+/// `exec_rel` is the executable path discovered by [`find_os_executable`],
+/// which already handles nested per-OS layouts (e.g. `windows/deno.exe`,
+/// `darwin/deno`, `linux/deno`) as well as the flat `deno` case. The real
+/// binary is renamed **within the same directory** as the original so the shim
+/// can re-exec it via a sibling-relative path; the shim is written back at the
+/// original path, leaving `exec_rel` unchanged for downstream consumers.
+fn wrap_deno_binary(
+    os_dir: &std::path::Path,
+    exec_rel: &str,
+) -> Result<(), crate::error::ConductorError> {
     use crate::error::ConductorError;
 
     let real_name = if cfg!(windows) { "deno.real.exe" } else { "deno.real" };
-    let shim_name = if cfg!(windows) { "deno.exe" } else { "deno" };
 
-    let real_path = os_dir.join(real_name);
-    let shim_path = os_dir.join(shim_name);
+    let exec_abs = os_dir.join(exec_rel);
+    let real_abs = exec_abs
+        .parent()
+        .ok_or_else(|| {
+            ConductorError::io(
+                "deno executable path has no parent directory".to_string(),
+                exec_abs.clone(),
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "no parent"),
+            )
+        })?
+        .join(real_name);
 
-    std::fs::rename(&shim_path, &real_path).map_err(|source| {
+    std::fs::rename(&exec_abs, &real_abs).map_err(|source| {
         ConductorError::io(
             format!("renaming deno binary to '{real_name}' for permission wrapper"),
-            &real_path,
+            &real_abs,
             source,
         )
     })?;
@@ -1120,10 +1138,10 @@ fn wrap_deno_binary(os_dir: &std::path::Path) -> Result<(), crate::error::Conduc
         format!("#!/bin/sh\nexec \"$(dirname \"$0\")/{real_name}\" --allow-all \"$@\"\n")
     };
 
-    std::fs::write(&shim_path, shim_contents).map_err(|source| {
+    std::fs::write(&exec_abs, shim_contents).map_err(|source| {
         ConductorError::io(
-            format!("writing deno permission wrapper shim '{shim_name}'"),
-            &shim_path,
+            format!("writing deno permission wrapper shim '{exec_rel}'"),
+            &exec_abs,
             source,
         )
     })?;
@@ -1132,20 +1150,20 @@ fn wrap_deno_binary(os_dir: &std::path::Path) -> Result<(), crate::error::Conduc
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(&shim_path)
+        let mut permissions = std::fs::metadata(&exec_abs)
             .map_err(|source| {
                 ConductorError::io(
                     "reading deno wrapper shim permissions".to_string(),
-                    shim_path.clone(),
+                    exec_abs.clone(),
                     source,
                 )
             })?
             .permissions();
         permissions.set_mode(permissions.mode() | 0o111);
-        std::fs::set_permissions(&shim_path, permissions).map_err(|source| {
+        std::fs::set_permissions(&exec_abs, permissions).map_err(|source| {
             ConductorError::io(
                 "marking deno wrapper shim executable".to_string(),
-                shim_path.clone(),
+                exec_abs.clone(),
                 source,
             )
         })?;
@@ -1767,7 +1785,7 @@ mod tests {
     /// denials: the original `deno` path becomes a shim and the real binary is
     /// renamed to `deno.real` (or `deno.real.exe` on Windows).
     #[tokio::test]
-    async fn process_deno_archive_wraps_binary_with_permission_shim() {
+    async fn deno_wrap_flat_layout() {
         let zip = synthetic_zip(&[("deno", EXEC_BYTES), ("deno.real", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
         let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
@@ -1797,6 +1815,155 @@ mod tests {
         assert!(shim.contains("deno.real"), "shim must re-exec deno.real");
         assert!(shim.contains("--allow-all"), "shim must grant deno permissions");
         assert!(std::fs::metadata(os_dir.path().join("deno.real")).is_ok());
+    }
+
+    #[tokio::test]
+    async fn deno_wrap_nested_windows_layout() {
+        let real_name = if cfg!(windows) { "deno.real.exe" } else { "deno.real" };
+        let zip = synthetic_zip(&[("windows/deno.exe", EXEC_BYTES)]);
+        let cas = InMemoryCas::default();
+        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
+        budget.add_item(0);
+        let result = process_single_source(
+            &zip,
+            Some(ARCHIVE_ZIP),
+            "windows",
+            "deno",
+            os_dir.path(),
+            "",
+            &cas,
+            &budget,
+            0usize,
+            2usize,
+            None,
+            0u64,
+            2u64,
+        )
+        .await
+        .unwrap();
+        assert!(result.content_map.contains_key("windows/"));
+        assert_eq!(result.exec_path, "windows/deno.exe");
+        let shim = std::fs::read_to_string(os_dir.path().join("windows/deno.exe")).unwrap();
+        assert!(
+            shim.contains(real_name),
+            "shim must re-exec the renamed deno binary '{real_name}'"
+        );
+        assert!(shim.contains("--allow-all"), "shim must grant deno permissions");
+        assert!(std::fs::metadata(os_dir.path().join("windows").join(real_name)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn deno_wrap_nested_darwin_layout() {
+        let real_name = if cfg!(windows) { "deno.real.exe" } else { "deno.real" };
+        let zip = synthetic_zip(&[("darwin/deno", EXEC_BYTES)]);
+        let cas = InMemoryCas::default();
+        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
+        budget.add_item(0);
+        let result = process_single_source(
+            &zip,
+            Some(ARCHIVE_ZIP),
+            "darwin",
+            "deno",
+            os_dir.path(),
+            "",
+            &cas,
+            &budget,
+            0usize,
+            2usize,
+            None,
+            0u64,
+            2u64,
+        )
+        .await
+        .unwrap();
+        assert!(result.content_map.contains_key("darwin/"));
+        assert_eq!(result.exec_path, "darwin/deno");
+        let shim = std::fs::read_to_string(os_dir.path().join("darwin/deno")).unwrap();
+        assert!(
+            shim.contains(real_name),
+            "shim must re-exec the renamed deno binary '{real_name}'"
+        );
+        assert!(shim.contains("--allow-all"), "shim must grant deno permissions");
+        assert!(std::fs::metadata(os_dir.path().join("darwin").join(real_name)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn deno_wrap_missing_binary_surfaces_error() {
+        // No deno executable in the archive — the wrap must surface a clear
+        // error rather than silently succeeding (regression guard for the
+        // flat-path assumption that previously masked the nested layout).
+        let zip = synthetic_zip(&[("readme.txt", b"not a binary")]);
+        let cas = InMemoryCas::default();
+        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
+        budget.add_item(0);
+        let err = process_single_source(
+            &zip,
+            Some(ARCHIVE_ZIP),
+            "linux",
+            "deno",
+            os_dir.path(),
+            "",
+            &cas,
+            &budget,
+            0usize,
+            2usize,
+            None,
+            0u64,
+            2u64,
+        )
+        .await
+        .expect_err("missing deno binary must surface an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("deno.real") || msg.contains("No such file") || msg.contains("ENOENT"),
+            "error must name the missing deno binary: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_deno_spec_present_after_process() {
+        // Regression guard for the original bug: the real deno GitHub release
+        // zip extracts to a nested per-OS subdirectory (e.g. windows/deno.exe),
+        // so the flat-path assumption in wrap_deno_binary made the process
+        // phase fail with [W] and deno was never inserted into the generated
+        // doc's content_map. This asserts the process phase now succeeds and
+        // yields a non-empty content_map keyed by the OS label for the nested
+        // layout (S-DENO-6 at the provider-pipeline level).
+        let zip = synthetic_zip(&[("windows/deno.exe", EXEC_BYTES)]);
+        let cas = InMemoryCas::default();
+        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let mut budget = MultiItemBudget::new();
+        budget.add_item(0);
+        budget.add_item(0);
+        let result = process_single_source(
+            &zip,
+            Some(ARCHIVE_ZIP),
+            "windows",
+            "deno",
+            os_dir.path(),
+            "",
+            &cas,
+            &budget,
+            0usize,
+            2usize,
+            None,
+            0u64,
+            2u64,
+        )
+        .await
+        .expect("deno process phase must succeed for nested release layout");
+        let entry = result
+            .content_map
+            .get("windows/")
+            .expect("deno content_map must contain the windows/ key");
+        assert!(!entry.is_empty(), "deno content_map entry must be non-empty");
+        assert_eq!(result.exec_path, "windows/deno.exe");
     }
 
     #[tokio::test]
