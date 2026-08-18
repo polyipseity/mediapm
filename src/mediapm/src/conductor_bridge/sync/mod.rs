@@ -846,7 +846,7 @@ pub(crate) async fn reconcile_desired_tools(
             }
             Err(e) => {
                 let error_bar = effective_group.add_bar(1, &format!("{tool_id} [res]"));
-                error_bar.finish_error();
+                error_bar.finish_warning();
                 report.warnings.push(format!(
                     "tool {tool_id}: resolve failed (will retry on next sync): {e}",
                 ));
@@ -1307,6 +1307,69 @@ mod tests {
         assert!(
             matches!(&finish_successes[0], ProgressOp::FinishSuccess),
             "expected FinishSuccess"
+        );
+    }
+
+    // Non-fatal tool-sync failures (resolve/provision errors) are recorded as
+    // `report.warnings` and retried on the next sync. The child bars for those
+    // failed tools must therefore finish with a warning (yellow `[W]`), never
+    // with an error (red `[F]`). This guards the Phase 2 fix: a resolve failure
+    // used to call `finish_error()` on the child bar, producing a misleading
+    // `[F]` while the overall bar correctly showed `[W]`.
+    #[tokio::test]
+    async fn reconcile_desired_tools_resolve_failure_shows_warning_not_error() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let tracker = RecordingProgressTracker::new();
+        let state = MediaPmState::default();
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+
+        // An unknown tool name has no provider registered for resolution, so
+        // `resolve_tool_fetch` returns Err and the tool is skipped with a
+        // warning rather than aborting the whole sync.
+        let mut desired = BTreeMap::new();
+        desired.insert(
+            "nonexistent-tool".to_string(),
+            serde_json::json!({ "version_spec": "latest" }),
+        );
+
+        let result = reconcile_desired_tools(
+            workspace_cas,
+            &paths,
+            &desired,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            Some(&tracker),
+        )
+        .await;
+
+        // The sync still succeeds overall (the failure is non-fatal).
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+        let report = result.unwrap();
+        assert_eq!(
+            report.warnings.len(),
+            1,
+            "expected exactly one warning for the unresolvable tool, got {:?}",
+            report.warnings
+        );
+
+        let ops = tracker.ops();
+        let finish_errors: Vec<&ProgressOp> =
+            ops.iter().filter(|op| matches!(op, ProgressOp::FinishError)).collect();
+        assert!(
+            finish_errors.is_empty(),
+            "non-fatal tool-sync failure must not emit FinishError (red [F]); got {finish_errors:?}",
+        );
+
+        let finish_warnings: Vec<&ProgressOp> =
+            ops.iter().filter(|op| matches!(op, ProgressOp::FinishWarning)).collect();
+        assert!(
+            !finish_warnings.is_empty(),
+            "expected at least one FinishWarning (yellow [W]) for the failed tool, got {ops:?}",
         );
     }
 
