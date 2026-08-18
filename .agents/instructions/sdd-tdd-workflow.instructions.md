@@ -816,7 +816,7 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the reposit
 | `mediapm` passes workflow `ProgressGroup` to `run_workflow` calls via `conductor_run_workflow_options`         | `feat(mediapm)` commit — service.rs + lib.rs wiring                                  | [covered] |
 | Workflow `ProgressGroup` built disabled (`ProgressGroup::disabled()`) under `--no-progress`                   | `feat(mediapm)` commit — service.rs conditional                                      | [covered] |
 | Per-step bars finish before overall bar (level-loop ordering guarantee)                                       | coordinator.rs code structure (sequential `for` over `handles` before overall finish) | [covered] |
-| Workflow screen unit tests with `RecordingProgressTracker`                                                    | Phase 5 — `test: cover workflow and materialization progress screens`                 | [missing] |
+| Workflow screen unit tests with `RecordingProgressTracker`                                                    | `single_step_success_progress_ops`, `two_step_same_level_success_progress_ops`, `two_step_sequential_levels_progress_ops`, `step_failure_emits_finish_warning`, `no_progress_group_succeeds_silently`, `three_step_same_level_progress_ops` (6 tests, `tests/int/workflow_progress.rs`) | [covered] |
 
 ### Mediapm materialization progress screen (`[mat]`/`[stg]`/`[vrf]`/`[cmt]`)
 
@@ -831,4 +831,4 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the reposit
 | Materialization `ProgressGroup` built disabled under `--no-progress`                                          | `feat(mediapm)` commit — service.rs conditional                                      | [covered] |
 | Overall `finish_warning` when any entry skipped, `finish_success` otherwise                                   | `feat(mediapm)` commit — materializer/mod.rs overall finish block                    | [covered] |
 | `SyncSharedState.verify_materialization` wired into blake3 re-hash verification after materialization         | `refactor(conductor): wire verify_materialization flag` commit — materializer/mod.rs  | [covered] |
-| Materialization screen unit tests with `RecordingProgressTracker`                                             | Phase 5 — `test: cover workflow and materialization progress screens`                 | [missing] |
+| Materialization screen unit tests with `RecordingProgressTracker`                                             | `sync_hierarchy_with_single_media_produces_progress_ops`, `sync_hierarchy_with_empty_hierarchy_no_progress_ops` (2 tests, `src/mediapm/src/materializer/mod.rs`)                                                                                                                        | [covered] |

@@ -33,3 +33,7 @@ mod provision_domain_separation;
 /// Runtime tmp dir lifecycle: sandbox roots removed on normal and failed
 /// workflow exits.
 mod runtime_tmp_lifecycle;
+
+/// Workflow progress screen `[wf]`: overall bar + per-step bars with
+/// `SetPrefixComponents`, `Advance`, and `FinishSuccess`/`FinishWarning`.
+mod workflow_progress;

@@ -1023,7 +1023,7 @@ mod tests {
     };
     use crate::config::source_types::{MediaSourceSpec, MediaStep, MediaStepTool};
     use crate::config::{GenericOutputVariantConfig, OutputVariantValue};
-    use mediapm_utils::progress::recording::RecordingProgressTracker;
+    use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
     use std::path::Path;
 
     #[test]
@@ -1112,9 +1112,13 @@ mod tests {
         assert!(ops.is_empty(), "empty hierarchy should produce no progress ops, got {ops:?}");
     }
 
-    /// Injected [`RecordingProgressTracker`] records progress ops when
-    /// hierarchy has one media entry (even when the source has no variant
-    /// hashes — the entry is still processed and advance is called).
+    /// Single media entry with no CAS content emits the full progress
+    /// sequence: overall `[mat]` bar → per-entry `[stg]`/`[vrf]` phases →
+    /// `Advance(1)` + `FinishWarning` (skipped) → overall
+    /// `Advance(1)` + `FinishSuccess`.
+    ///
+    /// The order is deterministic because the single spawned task completes
+    /// (advance + entry_bar ops) before the overall bar is finished.
     #[tokio::test]
     async fn sync_hierarchy_with_single_media_produces_progress_ops() {
         let root = mediapm_utils::temp::artifact_dir().unwrap();
@@ -1177,21 +1181,49 @@ mod tests {
 
         assert!(result.is_ok(), "sync_hierarchy should succeed: {result:?}");
         let ops = recording.ops();
-        assert!(!ops.is_empty(), "non-empty hierarchy should produce progress ops, got {ops:?}");
-        // Expect: AddBar (materializing), Advance, FinishSuccess or FinishError
-        assert!(
-            ops.iter().any(|op| matches!(
-                op,
-                mediapm_utils::progress::recording::ProgressOp::AddBar { .. }
-            )),
-            "expected AddBar op: {ops:?}"
-        );
-        assert!(
-            ops.iter().any(|op| matches!(
-                op,
-                mediapm_utils::progress::recording::ProgressOp::Advance { .. }
-            )),
-            "expected Advance op: {ops:?}"
+        // Exact op sequence: overall `[mat]` bar → per-entry `[stg]`/`[vrf]`
+        // phases → `Advance(1)` + `FinishWarning` (skipped, no CAS content)
+        // → overall `Advance(1)` + `FinishSuccess`.
+        assert_eq!(
+            ops,
+            vec![
+                // Overall bar.
+                ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() },
+                ProgressOp::SetPrefixComponents {
+                    marker: String::new(),
+                    tool_name: "materializing".into(),
+                    version: String::new(),
+                    phase: "mat".into(),
+                    count: "0".into(),
+                    total: "1".into(),
+                },
+                // Per-entry bar: staging.
+                ProgressOp::AddBar { total: 3, label: "test_file [stg]".into() },
+                ProgressOp::SetPrefixComponents {
+                    marker: String::new(),
+                    tool_name: "test_file".into(),
+                    version: String::new(),
+                    phase: "stg".into(),
+                    count: "0".into(),
+                    total: "3".into(),
+                },
+                // Per-entry bar: verify phase (set before hash resolution).
+                ProgressOp::SetPrefixComponents {
+                    marker: String::new(),
+                    tool_name: "test_file".into(),
+                    version: String::new(),
+                    phase: "vrf".into(),
+                    count: "1".into(),
+                    total: "3".into(),
+                },
+                // Skipped: advance(1) on entry_bar + FinishWarning.
+                ProgressOp::Advance { delta: 1 },
+                ProgressOp::FinishWarning,
+                // Overall bar: advance(1) after entry completes + finish_success.
+                ProgressOp::Advance { delta: 1 },
+                ProgressOp::FinishSuccess,
+            ],
+            "\nops mismatch — expected [mat] overall + [stg]→[vrf] skip path",
         );
     }
 }
