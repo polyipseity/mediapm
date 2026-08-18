@@ -113,17 +113,15 @@ use mediapm::demo_hierarchy_spec::online_demo_public_artifact_filename;
 use mediapm::{
     ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
     HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
-    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmPaths,
-    MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
-    OutputCaptureKind, OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
-    ToolRequirement, TransformInputValue, VerifyStrategy, YtDlpOutputKind,
-    YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
-    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
+    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmService,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
+    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRequirement,
+    TransformInputValue, VerifyStrategy, YtDlpOutputKind, YtDlpOutputVariantConfig,
+    example_isolation, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
-    NickelDocument, RuntimeStoragePaths, SimpleConductor, ToolKindSpec, ToolRuntime, ToolSpec,
-    decode_document, default_runtime_inherited_env_vars, encode_document,
+    NickelDocument, ToolKindSpec, ToolSpec, decode_document, default_runtime_inherited_env_vars,
 };
 use same_file::is_same_file;
 use serde::Serialize;
@@ -289,10 +287,6 @@ struct DemoManifest {
     conductor_generated_ncl_path: String,
     workflow_id: String,
     workflow_step_count: usize,
-    tool_update_precheck_executed: bool,
-    tool_update_precheck_updated_tools: usize,
-    tool_update_precheck_added_tools: usize,
-    tool_update_precheck_pruned_tools: usize,
     materialization_preference_order: Vec<String>,
     materialized_demo_video_path: String,
     materialized_demo_tagged_video_path: String,
@@ -1341,178 +1335,6 @@ fn load_machine(path: &Path) -> ExampleResult<NickelDocument> {
     Ok(decode_document(raw.as_bytes())?)
 }
 
-fn seed_old_synced_tools_state_for_update_precheck(
-    service: &MediaPmService<mediapm_cas::InMemoryCas>,
-    logical_tool_ids: &[String],
-) -> ExampleResult<()> {
-    service.refresh_runtime_configuration()?;
-
-    // The generated conductor document does not exist on a fresh workspace
-    // (it is first produced by a sync); start from an empty document so the
-    // stale-tool seed can be applied before the first sync runs.
-    let machine_path = service.paths().conductor_generated_ncl.clone();
-    let mut machine: NickelDocument = if machine_path.exists() {
-        decode_document(fs::read(&machine_path)?.as_slice())?
-    } else {
-        NickelDocument::default()
-    };
-    let lock = load_mediapm_state_document(&service.paths().mediapm_state_json)?;
-
-    for logical_tool_name in logical_tool_ids {
-        if logical_tool_name.eq_ignore_ascii_case("import") {
-            continue;
-        }
-
-        let stale_payload = format!("stale-tool-payload::{logical_tool_name}");
-        let stale_hash = Hash::from_content(stale_payload.as_bytes());
-        // Generated-doc key follows the "{name}@{content_map_hash}" convention
-        // so prune logic treats the seeded entry as an old version of the tool.
-        let stale_tool_id = format!("{logical_tool_name}@{stale_hash}");
-        let stale_relative_path = format!("legacy/{logical_tool_name}/tool.bin");
-
-        // The seeded stale spec's content_map references `stale_hash`, and the
-        // generated doc's `content_map ⊆ external_data` invariant requires a
-        // matching entry for the pre-sync document to decode. Reconcile
-        // rebuilds external_data from scratch (DataUsageTracker), so this
-        // entry only satisfies the pre-sync invariant — it is replaced, not
-        // retained, once sync runs.
-        machine.external_data.insert(
-            stale_hash,
-            mediapm_conductor::ExternalDataEntry {
-                description: Some(format!("stale payload for {logical_tool_name}")),
-                save_mode: mediapm_conductor::OutputSaveMode::Saved,
-            },
-        );
-        // The seeded spec must carry the bare logical tool id as `name` so the
-        // reconcile's `already_exists` check (`spec.name == tool_id`) counts it
-        // as an update rather than an addition.
-        machine.tools.insert(
-            stale_tool_id.clone(),
-            ToolSpec {
-                name: logical_tool_name.clone(),
-                kind: ToolKindSpec::Executable {
-                    command: vec![format!("./{stale_relative_path}")],
-                    env_vars: BTreeMap::new(),
-                    success_codes: vec![0],
-                },
-                runtime: ToolRuntime {
-                    content_map: BTreeMap::from([(
-                        stale_relative_path.clone(),
-                        stale_hash.to_string(),
-                    )]),
-                    ..ToolRuntime::default()
-                },
-                ..ToolSpec::default()
-            },
-        );
-
-        // Stale generated-doc entries (above) force re-provision; managed_tools
-        // seeding is intentionally omitted so post-sync registry rows are not
-        // shadowed by stale canonical_version rows during workflow execution.
-    }
-
-    fs::write(&service.paths().conductor_generated_ncl, encode_document(machine)?)?;
-    save_mediapm_state_document(&service.paths().mediapm_state_json, &lock)?;
-
-    Ok(())
-}
-
-/// Pre-seeds GitHub metadata cache entries so tool-update precheck does not
-/// depend on live API responses during hermetic demo test runs. Callers must
-/// gate this behind [`example_isolation::uses_isolated_cache_root`]; the
-/// hardcoded entries must never be written into the real user-level cache.
-async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> ExampleResult<()> {
-    use mediapm_conductor::cache::{Cache, CacheDomainConfig};
-    use mediapm_conductor::cache_user_level::UserLevelCache;
-
-    const METADATA_DOMAIN: &str = "tool_metadata";
-    let metadata_domain = CacheDomainConfig {
-        domain: METADATA_DOMAIN.to_string(),
-        index_file_name: "tool_metadata.json".to_string(),
-        entry_ttl_seconds: 24 * 60 * 60,
-    };
-    let cache = Cache::open(cache_root, &[metadata_domain])
-        .await
-        .map_err(|e| std::io::Error::other(format!("open tool metadata cache: {e}")))?;
-    let cache = UserLevelCache::from_cache(cache);
-
-    for (api_url, tag, hash) in [
-        (
-            "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
-            "2026.07.04",
-            "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
-        ),
-        (
-            "https://api.github.com/repos/denoland/deno/releases/latest",
-            "v2.2.12",
-            "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
-        ),
-        (
-            "https://api.github.com/repos/complexlogic/rsgain/releases/latest",
-            "v3.7",
-            "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2",
-        ),
-        (
-            "https://api.github.com/repos/chmln/sd/releases/latest",
-            "v1.1.0",
-            "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3",
-        ),
-    ] {
-        cache.store_bytes(METADATA_DOMAIN, api_url, format!("{tag}\n{hash}").as_bytes()).await;
-    }
-
-    cache
-        .store_bytes(
-            METADATA_DOMAIN,
-            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
-            b"autobuild-2025-07-15-12-00",
-        )
-        .await;
-    cache.store_bytes(METADATA_DOMAIN, "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
-
-    Ok(())
-}
-
-async fn run_tools_update_precheck(
-    service: &mut MediaPmService<mediapm_cas::InMemoryCas>,
-    workspace_root: &Path,
-) -> ExampleResult<(usize, usize, usize)> {
-    // Seed hardcoded metadata only for hermetic test runs; explicit runs
-    // (env unset) use the real user-level cache and fetch live metadata.
-    if example_isolation::uses_isolated_cache_root() {
-        let cache_root = example_cache_root();
-        seed_tool_metadata_cache_for_demo_precheck(&cache_root).await?;
-    }
-
-    let logical_tool_ids = configure_document_for_online_demo(workspace_root)?;
-    let mut document = load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
-    document.media.clear();
-    document.hierarchy.clear();
-    save_mediapm_document(&workspace_root.join("mediapm.ncl"), &document)?;
-    seed_old_synced_tools_state_for_update_precheck(service, &logical_tool_ids)?;
-
-    let tools_only_document = load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
-    if !tools_only_document.media.is_empty() || !tools_only_document.hierarchy.is_empty() {
-        return Err("tools-update precheck must start with empty media/hierarchy".into());
-    }
-
-    let summary = service.sync_tools_with_tag_update_checks(false, false).await?;
-    // Stale seeds cover executable managed tools only (`import` is skipped); the
-    // precheck counts `tools_updated` for those re-provisions. Companion dep
-    // entries (e.g. ffmpeg requested both as a dep and explicitly) may add
-    // extra update rows beyond the logical tool id count.
-    let minimum_updated_tools = logical_tool_ids.len();
-    if summary.updated_tools < minimum_updated_tools {
-        return Err(format!(
-            "tools-update precheck expected at least {} updated tools but observed {}; warnings={:?}",
-            minimum_updated_tools, summary.updated_tools, summary.warnings
-        )
-        .into());
-    }
-
-    Ok((summary.updated_tools, summary.added_tools, summary.pruned_tools))
-}
-
 fn resolve_tool_binaries(
     machine: &NickelDocument,
     tool_ids: &[String],
@@ -2546,28 +2368,12 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let workspace_root = root.clone();
     let runtime_storage = example_runtime_storage();
 
-    // Phase 1: tools update precheck with an in-memory conductor facade.
-    //
-    // `sync_tools*` internally opens the persistent runtime CAS store to
-    // import managed tool payload bytes.  The in-memory facade avoids holding
-    // the CAS store open while it is being written to by the tool sync.
-    let mut service = {
-        let cas = mediapm_cas::InMemoryCas::new();
-        let conductor =
-            SimpleConductor::new(RuntimeStoragePaths::new(&workspace_root.join(".mediapm")), cas);
-        MediaPmService::new_with_runtime_storage_overrides(
-            conductor,
-            MediaPmPaths::from_root(&workspace_root),
-            runtime_storage.clone(),
-        )
-    };
-    let (precheck_updated_tools, precheck_added_tools, precheck_pruned_tools) =
-        run_tools_update_precheck(&mut service, &workspace_root).await?;
     let logical_tool_ids = configure_document_for_online_demo(&workspace_root)?;
 
-    // Phase 2: full library sync with a filesystem-backed CAS so that tool
-    // payload bytes (stored on disk by the precheck) are visible to workflow
-    // execution.
+    // Full library sync with a filesystem-backed CAS. `sync_library*` re-provisions
+    // managed tools internally (step 2), so there is no separate tool-sync
+    // precheck: running one would only re-provision the same tools into a
+    // discarded in-memory CAS before the real sync re-provisions them again.
     let mut sync_service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(&workspace_root, runtime_storage)
             .await
@@ -2652,10 +2458,6 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         conductor_generated_ncl_path: display_path(&sync_service.paths().conductor_generated_ncl),
         workflow_id,
         workflow_step_count,
-        tool_update_precheck_executed: true,
-        tool_update_precheck_updated_tools: precheck_updated_tools,
-        tool_update_precheck_added_tools: precheck_added_tools,
-        tool_update_precheck_pruned_tools: precheck_pruned_tools,
         materialization_preference_order,
         materialized_demo_video_path: display_path(&output_video_path),
         materialized_demo_tagged_video_path: display_path(&output_tagged_video_path),
