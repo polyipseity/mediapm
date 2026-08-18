@@ -37,6 +37,7 @@ pub(crate) mod util;
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use url::Url;
 
@@ -801,9 +802,11 @@ pub(crate) fn ensure_mediapm_executable_env() -> Result<(), MediaPmError> {
 pub(crate) fn conductor_run_workflow_options(
     _paths: &MediaPmPaths,
     runtime_storage: &MediaRuntimeStorage,
+    progress_group: Option<Arc<dyn mediapm_utils::progress::ProgressGroupApi + Send + Sync>>,
 ) -> mediapm_conductor::RunWorkflowOptions {
     mediapm_conductor::RunWorkflowOptions {
         retry_impure: runtime_storage.retry_impure,
+        progress_group,
         ..mediapm_conductor::RunWorkflowOptions::default()
     }
 }

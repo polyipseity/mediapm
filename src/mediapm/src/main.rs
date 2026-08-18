@@ -102,8 +102,13 @@ async fn main_cli() -> anyhow::Result<()> {
             let recheck_policy = args.recheck_policy.resolve();
             let verify_materialization = args.verify_materialization.resolve(true);
             let check_tag_updates = matches!(recheck_policy, RecheckPolicy::ForceReResolve);
+            let no_progress = args.no_progress;
             let summary = service
-                .sync_library_with_tag_update_checks(verify_materialization, check_tag_updates)
+                .sync_library_with_tag_update_checks(
+                    verify_materialization,
+                    check_tag_updates,
+                    no_progress,
+                )
                 .await?;
             mediapm::output::print_sync_summary(&summary);
             Ok(())

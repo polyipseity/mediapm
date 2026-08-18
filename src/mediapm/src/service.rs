@@ -1047,7 +1047,7 @@ impl MediaPmService<FileSystemCas> {
         &mut self,
         verify_materialization: bool,
     ) -> Result<SyncSummary, MediaPmError> {
-        self.sync_library_with_tag_update_checks(verify_materialization, false).await
+        self.sync_library_with_tag_update_checks(verify_materialization, false, false).await
     }
 
     /// Runs a full library sync with optional tag-update checks.
@@ -1068,6 +1068,7 @@ impl MediaPmService<FileSystemCas> {
         &mut self,
         verify_materialization: bool,
         check_tag_updates: bool,
+        no_progress: bool,
     ) -> Result<SyncSummary, MediaPmError> {
         let effective_paths = self.resolve_effective_paths()?;
         let merged = self.resolve_effective_runtime_storage()?;
@@ -1108,13 +1109,25 @@ impl MediaPmService<FileSystemCas> {
             .await
             .map_err(|e| MediaPmError::Workflow(format!("failed to load conductor state: {e}")))?;
         ensure_mediapm_executable_env()?;
+
+        // Surface the conductor-owned workflow progress screen during sync.
+        // When --no-progress is set, use a disabled group (zero-cost no-op
+        // handles); otherwise build a live dynamic-height group that the
+        // conductor populates with one overall bar plus one child per step.
+        let workflow_group: ProgressGroup = if no_progress {
+            ProgressGroup::disabled()
+        } else {
+            ProgressGroup::builder().dynamic_height(true).build()
+        };
+        let workflow_pg: Option<Arc<dyn ProgressGroupApi + Send + Sync>> =
+            Some(Arc::new(workflow_group));
         for workflow_name in workflow_names {
             let before = self.conductor.get_state()?;
             let summary = self
                 .conductor
                 .run_workflow(
                     &workflow_name,
-                    conductor_run_workflow_options(&effective_paths, &merged),
+                    conductor_run_workflow_options(&effective_paths, &merged, workflow_pg.clone()),
                 )
                 .await?;
             let after = self.conductor.get_state()?;
@@ -1134,6 +1147,12 @@ impl MediaPmService<FileSystemCas> {
                     summary.failed_steps
                 ));
             }
+        }
+        // Block until the conductor-owned workflow screen has flushed its
+        // final frame (indicatif has no blocking join; this drains the
+        // ticker and releases the draw target).
+        if let Some(ref group) = workflow_pg {
+            group.join();
         }
 
         // 4. Load mediapm document and state.

@@ -2386,7 +2386,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     );
 
     let summary = sync_service
-        .sync_library_with_tag_update_checks(true, false)
+        .sync_library_with_tag_update_checks(true, false, false)
         .await
         .map_err(|error| format!("online demo sync failed: {error}"))?;
 
