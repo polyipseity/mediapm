@@ -107,25 +107,32 @@ pub(crate) fn resolve_step_output_binding(
 }
 
 /// OS-conditional inlined companion-dep path for yt-dlp post-processing.
+///
+/// The path is relative to the sandbox root (a direct child), because the
+/// step process runs with the sandbox directory as its working directory and
+/// the inlined companion payload is materialized at `deps/ffmpeg/<os>/ffmpeg`.
 #[must_use]
 fn yt_dlp_managed_ffmpeg_location_selector() -> String {
     build_os_conditional_selector(&BTreeMap::from([
-        ("linux".to_string(), "../deps/ffmpeg/linux/ffmpeg".to_string()),
-        ("macos".to_string(), "../deps/ffmpeg/macos/ffmpeg".to_string()),
-        ("windows".to_string(), "../deps/ffmpeg/windows/ffmpeg.exe".to_string()),
+        ("linux".to_string(), "deps/ffmpeg/linux/ffmpeg".to_string()),
+        ("macos".to_string(), "deps/ffmpeg/macos/ffmpeg".to_string()),
+        ("windows".to_string(), "deps/ffmpeg/windows/ffmpeg.exe".to_string()),
     ]))
 }
 
 /// OS-conditional inlined companion-dep path for the deno JS runtime yt-dlp
 /// requires for modern `YouTube` extraction. yt-dlp's `--js-runtimes` expects
 /// the `RUNTIME[:PATH]` form, so the `deno:` runtime name prefixes the
-/// OS-conditional path selector.
+/// OS-conditional path selector. The path is relative to the sandbox root (a
+/// direct child), because the step process runs with the sandbox directory as
+/// its working directory and the inlined companion payload is materialized at
+/// `deps/deno/<os>/deno`.
 #[must_use]
 fn yt_dlp_managed_js_runtimes_selector() -> String {
     let inner = build_os_conditional_selector(&BTreeMap::from([
-        ("linux".to_string(), "../deps/deno/linux/deno".to_string()),
-        ("macos".to_string(), "../deps/deno/macos/deno".to_string()),
-        ("windows".to_string(), "../deps/deno/windows/deno.exe".to_string()),
+        ("linux".to_string(), "deps/deno/linux/deno".to_string()),
+        ("macos".to_string(), "deps/deno/macos/deno".to_string()),
+        ("windows".to_string(), "deps/deno/windows/deno.exe".to_string()),
     ]));
     format!("deno:{inner}")
 }
@@ -250,4 +257,29 @@ pub(crate) fn yt_dlp_variant_inputs(config: &YtDlpOutputVariantConfig) -> BTreeM
     }
 
     inputs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffmpeg_selector_is_sandbox_relative_without_parent_prefix() {
+        let selector = yt_dlp_managed_ffmpeg_location_selector();
+        assert!(!selector.contains("../"), "selector must not escape the sandbox root: {selector}");
+        assert!(
+            selector.contains("deps/ffmpeg/"),
+            "selector must reference the inlined ffmpeg payload: {selector}"
+        );
+    }
+
+    #[test]
+    fn deno_selector_is_sandbox_relative_without_parent_prefix() {
+        let selector = yt_dlp_managed_js_runtimes_selector();
+        assert!(!selector.contains("../"), "selector must not escape the sandbox root: {selector}");
+        assert!(
+            selector.starts_with("deno:") && selector.contains("deps/deno/"),
+            "selector must reference the inlined deno payload: {selector}"
+        );
+    }
 }
