@@ -2,6 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+#[cfg(feature = "progress")]
+use mediapm_utils::progress::ProgressGroupApi;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
@@ -278,20 +282,14 @@ async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
     use mediapm_utils::progress::ProgressGroup;
     let conductor = ensure_conductor().await?;
 
-    let (group, pb) =
-        ProgressGroup::builder().dynamic_height(true).with_overall("steps", 0).build_with_overall();
-    let pb2 = pb.clone();
-
+    let group: Arc<dyn ProgressGroupApi + Send + Sync> =
+        Arc::new(ProgressGroup::builder().dynamic_height(true).build());
     let options = RunWorkflowOptions {
         retry_impure: false,
         tool_selector: None,
-        step_progress: Some(Box::new(move |completed, total, _step_name| {
-            pb2.set_total(total as u64);
-            pb2.set_position(completed as u64);
-        })),
+        progress_group: Some(group.clone()),
     };
     let summary = conductor.run_workflow(workflow_name, options).await?;
-    pb.finish_success();
     group.join();
     println!("Workflow '{workflow_name}' completed: {summary:?}");
     Ok(())

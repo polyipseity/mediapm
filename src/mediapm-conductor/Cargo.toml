@@ -9,17 +9,18 @@ description = "Orchestration contracts and state model for mediapm"
 
 [features]
 default = ["cli"]
+progress = ["mediapm-utils/progress"]
 cli = [
   "dep:clap",
   "dep:clap_complete",
   "mediapm-cas/cli",
-  "mediapm-utils/progress",
+  "progress",
   "tool-presets",
   "fetch",
 ]
 fetch = ["mediapm-conductor-builtin-import/fetch"]
 proptest = []
-tool-presets = ["dep:flate2", "dep:tar", "dep:zip", "dep:xz2", "mediapm-utils/progress"]
+tool-presets = ["dep:flate2", "dep:tar", "dep:zip", "dep:xz2", "progress"]
 
 [lints]
 workspace = true

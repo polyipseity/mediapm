@@ -3012,12 +3012,17 @@ impl ProgressBarApi for TrackedHandle {
 pub trait ProgressGroupApi {
     /// Add a child bar and return an [`Arc`]-wrapped handle.
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi>;
+    /// Block until all bars in the group reach a finished state.
+    fn join(&self);
 }
 
 #[cfg(feature = "progress")]
 impl ProgressGroupApi for ProgressGroup {
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
         Arc::new(ProgressGroup::add_bar(self, total, label))
+    }
+    fn join(&self) {
+        ProgressGroup::join(self);
     }
 }
 
@@ -3344,6 +3349,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
 impl ProgressGroupApi for recording::RecordingProgressTracker {
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
         Arc::new(recording::RecordingProgressTracker::add_bar(self, total, label))
+    }
+    fn join(&self) {
+        // Recording tracker has no display to block on.
     }
 }
 

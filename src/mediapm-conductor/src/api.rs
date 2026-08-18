@@ -10,6 +10,9 @@ use std::sync::Arc;
 use mediapm_cas::CasApi;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "progress")]
+use mediapm_utils::progress::ProgressGroupApi;
+
 use crate::defaults;
 use crate::error::ConductorError;
 use crate::provision::Metadata;
@@ -213,23 +216,24 @@ pub struct RunWorkflowOptions {
     pub retry_impure: bool,
     /// Optional tool selector override (managed tool id).
     pub tool_selector: Option<String>,
-    /// Optional callback invoked after each step completes.
-    /// Arguments: (`completed_steps`, `total_steps`, `step_name`).
-    /// Must be `Send + Sync` so that `&RunWorkflowOptions` is `Send` across await points.
-    #[expect(
-        clippy::type_complexity,
-        reason = "public callback field; a type alias would add indirection"
-    )]
-    pub step_progress: Option<Box<dyn Fn(usize, usize, &str) + Send + Sync>>,
+    /// Optional progress group the conductor composes its own workflow
+    /// progress screen into (one overall bar + one child bar per step).
+    /// When `None`, the conductor runs silently with no progress output.
+    /// Feature-gated so the conductor library compiles without the
+    /// `progress` feature (e.g. `mediapm-cas` uses `default-features = false`).
+    #[cfg(feature = "progress")]
+    pub progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>,
 }
 
 impl std::fmt::Debug for RunWorkflowOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunWorkflowOptions")
-            .field("retry_impure", &self.retry_impure)
-            .field("tool_selector", &self.tool_selector)
-            .field("step_progress", &self.step_progress.as_ref().map(|_| "…"))
-            .finish()
+        let mut dbg = f.debug_struct("RunWorkflowOptions");
+        dbg.field("retry_impure", &self.retry_impure).field("tool_selector", &self.tool_selector);
+        #[cfg(feature = "progress")]
+        {
+            dbg.field("progress_group", &self.progress_group.as_ref().map(|_| "…"));
+        }
+        dbg.finish()
     }
 }
 

@@ -15,6 +15,9 @@ use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasMaintenanceApi, Hash};
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use mediapm_utils::Timestamp;
 
+#[cfg(feature = "progress")]
+use mediapm_utils::progress::{PrefixComponents, ProgressBarApi};
+
 use crate::config::WorkflowStepSpec;
 use crate::error::ConductorError;
 use crate::state::ConductorState;
@@ -207,6 +210,15 @@ where
             let mut cached_steps = 0usize;
             let mut failed_steps = 0usize;
 
+            // Compose the conductor-owned workflow progress screen: one overall
+            // bar plus one child bar per step. When no progress group is
+            // supplied the conductor runs silently.
+            #[cfg(feature = "progress")]
+            let overall_bar: Option<Arc<dyn ProgressBarApi>> = options
+                .progress_group
+                .as_ref()
+                .map(|g| g.add_bar(total_steps as u64, "workflow [wf]"));
+
             let mut step_outputs: StepOutputs = BTreeMap::new();
             let state_snapshot = Arc::new(state.clone());
 
@@ -252,6 +264,25 @@ where
                     let worker_idx = handles.len() % self.workers.len().max(1);
                     let worker = self.workers[worker_idx].clone();
 
+                    // Create the per-step child bar before dispatch so it
+                    // appears immediately (phase `[wf]`, count/total by step
+                    // index within the workflow).
+                    #[cfg(feature = "progress")]
+                    let step_bar: Option<Arc<dyn ProgressBarApi>> =
+                        options.progress_group.as_ref().map(|g| {
+                            let bar = g.add_bar(1, &format!("{step_id} [wf]"));
+                            bar.set_prefix_components(PrefixComponents {
+                                marker: String::new(),
+                                tool_name: step_id.clone(),
+                                version: String::new(),
+                                phase: "wf".to_string(),
+                                count: (handles.len() + 1).to_string(),
+                                total: total_steps.to_string(),
+                            });
+                            bar
+                        });
+                    #[cfg(not(feature = "progress"))]
+                    let step_bar: Option<Arc<dyn ProgressBarApi>> = None;
                     let handle = tokio::spawn(async move {
                         let result = worker
                             .call(
@@ -271,10 +302,10 @@ where
                         }
                     });
 
-                    handles.push((step_id.clone(), worker_idx, handle));
+                    handles.push((step_id.clone(), worker_idx, handle, step_bar));
                 }
 
-                for (step_id, _worker_idx, handle) in handles {
+                for (step_id, _worker_idx, handle, step_bar) in handles {
                     match handle.await {
                         Ok(Ok(bundle)) => {
                             if bundle.cache_hit {
@@ -301,19 +332,45 @@ where
                             let aux = state.aux.instances.entry(instance_key).or_default();
                             aux.save_modes = bundle.save_modes;
                             aux.last_referenced_at = Timestamp::now();
+                            #[cfg(feature = "progress")]
+                            if let Some(ref bar) = step_bar {
+                                bar.advance(1);
+                                bar.finish_success();
+                            }
                         }
                         Ok(Err(e)) => {
                             failed_steps += 1;
                             tracing::error!("step '{step_id}' failed: {e}");
+                            #[cfg(feature = "progress")]
+                            if let Some(ref bar) = step_bar {
+                                bar.advance(1);
+                                bar.finish_warning();
+                            }
                         }
                         Err(e) => {
                             failed_steps += 1;
                             tracing::error!("step '{step_id}' RPC failed: {e}");
+                            #[cfg(feature = "progress")]
+                            if let Some(ref bar) = step_bar {
+                                bar.advance(1);
+                                bar.finish_warning();
+                            }
                         }
                     }
-                    if let Some(ref callback) = options.step_progress {
-                        callback(executed_steps + failed_steps, total_steps, &step_id);
-                    }
+                }
+            }
+
+            // Finish the overall workflow bar: a non-fatal warning (yellow
+            // `[W]`) when any step failed, otherwise success. Failed steps
+            // are recorded in `RunSummary.failed_steps` and surfaced to the
+            // caller, so the bar must not claim unconditional success.
+            #[cfg(feature = "progress")]
+            if let Some(ref bar) = overall_bar {
+                bar.set_position(total_steps as u64);
+                if failed_steps > 0 {
+                    bar.finish_warning();
+                } else {
+                    bar.finish_success();
                 }
             }
 
