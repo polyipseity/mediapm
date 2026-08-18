@@ -802,3 +802,33 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the reposit
 | Pwsh runner self-test (`test-run-all-tests.ps1: OK`; runner `--help`/unknown-arg handling + static gates, never runs the suite)              | `pwsh_runner_self_test`                      | [covered] |
 | Static: all six scripts exist, executable bit on unix                                                                                        | static script-existence test                 | [covered] |
 | Windows CI job runs ONLY the script tests (no full-suite parity)                                                                             | `windows` job in `.github/workflows/ci.yml`  | [covered] |
+
+### Conductor workflow progress screen (`[wf]`)
+
+| Spec item                                                                                                     | Test(s)                                                                                | Status    |
+| ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------- |
+| `RunWorkflowOptions.progress_group` field is `#[cfg(feature = "progress")]` and absent without the feature    | `RunWorkflowOptions::default()` compiles without `progress` feature (compilation)      | [covered] |
+| Coordinator builds overall bar (`total_steps`, label `"workflow [wf]"`) when progress group is `Some`         | `feat(conductor)` commit — coordinator.rs `overall_bar` construction                  | [covered] |
+| Per-step child bar created before dispatch with `phase: "wf"`, correct `count`/`total`                        | `feat(conductor)` commit — coordinator.rs `step_bar` construction                     | [covered] |
+| Per-step `finish_success` on `Ok(Ok(bundle))`, `finish_warning` on `Ok(Err(_))` or `Err(_)`                  | `feat(conductor)` commit — coordinator.rs match arms                                  | [covered] |
+| Overall bar `finish_warning` when `failed_steps > 0`, `finish_success` otherwise                              | `feat(conductor)` commit — coordinator.rs overall bar finish block                    | [covered] |
+| `cli.rs` builds `ProgressGroup`, passes as `progress_group`, calls `group.join()` after run                   | `feat(conductor)` commit — cli.rs migration                                           | [covered] |
+| `mediapm` passes workflow `ProgressGroup` to `run_workflow` calls via `conductor_run_workflow_options`         | `feat(mediapm)` commit — service.rs + lib.rs wiring                                  | [covered] |
+| Workflow `ProgressGroup` built disabled (`ProgressGroup::disabled()`) under `--no-progress`                   | `feat(mediapm)` commit — service.rs conditional                                      | [covered] |
+| Per-step bars finish before overall bar (level-loop ordering guarantee)                                       | coordinator.rs code structure (sequential `for` over `handles` before overall finish) | [covered] |
+| Workflow screen unit tests with `RecordingProgressTracker`                                                    | Phase 5 — `test: cover workflow and materialization progress screens`                 | [missing] |
+
+### Mediapm materialization progress screen (`[mat]`/`[stg]`/`[vrf]`/`[cmt]`)
+
+| Spec item                                                                                                     | Test(s)                                                                                | Status    |
+| ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------- |
+| `sync_hierarchy` builds overall bar with `PrefixComponents { phase: "mat" }` and entry-count total            | `feat(mediapm)` commit — materializer/mod.rs overall bar construction                | [covered] |
+| Per-entry child bar created with `PrefixComponents { phase: "stg" }` during staging                           | `feat(mediapm)` commit — materializer/mod.rs per-entry bar creation                  | [covered] |
+| Per-entry bar phase transitions: `[stg]` → `[vrf]` → `[cmt]`                                                | `feat(mediapm)` commit — materializer/mod.rs `set_prefix_components` calls           | [covered] |
+| Per-entry `finish_warning` on skipped/notice entries, `finish_success` on completion                          | `feat(mediapm)` commit — materializer/mod.rs finish-state wiring                     | [covered] |
+| `MediaFolder` per-file sub-bars for extracted ZIP members (byte-level via `content.len()`)                    | `feat(mediapm)` commit — materializer/mod.rs `materialize_media_folder_entry`        | [covered] |
+| `service.rs` passes materialization `ProgressGroup` (distinct from workflow) to `sync_hierarchy`              | `feat(mediapm)` commit — service.rs `materialize_group` wiring                       | [covered] |
+| Materialization `ProgressGroup` built disabled under `--no-progress`                                          | `feat(mediapm)` commit — service.rs conditional                                      | [covered] |
+| Overall `finish_warning` when any entry skipped, `finish_success` otherwise                                   | `feat(mediapm)` commit — materializer/mod.rs overall finish block                    | [covered] |
+| `SyncSharedState.verify_materialization` wired into blake3 re-hash verification after materialization         | `refactor(conductor): wire verify_materialization flag` commit — materializer/mod.rs  | [covered] |
+| Materialization screen unit tests with `RecordingProgressTracker`                                             | Phase 5 — `test: cover workflow and materialization progress screens`                 | [missing] |

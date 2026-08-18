@@ -124,8 +124,7 @@ struct SyncSharedState {
     cas: FileSystemCas,
     /// Flattened hierarchy for stale-path scanning.
     flattened: Vec<FlattenedHierarchyEntry>,
-    /// Whether to CAS-verify materialized outputs.
-    #[allow(dead_code)]
+    /// Whether to CAS-verify materialized outputs after writing.
     verify_materialization: bool,
 }
 
@@ -520,6 +519,22 @@ async fn materialize_file_entry(
         &mut notices,
     )
     .await?;
+
+    // Verify materialized content matches the expected CAS hash.
+    if shared.verify_materialization {
+        let data = tokio::fs::read(target_path).await.map_err(|source| MediaPmError::Io {
+            operation: "reading materialized file for verification".to_string(),
+            path: target_path.to_path_buf(),
+            source,
+        })?;
+        let actual_hash = Hash::from_content(&data);
+        if actual_hash != *hash {
+            return Err(MediaPmError::Workflow(format!(
+                "materialized file '{relative_path}' verification failed: \
+                 expected {hash}, got {actual_hash}"
+            )));
+        }
+    }
 
     // Mark output as read-only.
     crate::materializer::commit::ensure_managed_path_readonly(target_path)?;

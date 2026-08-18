@@ -52,8 +52,8 @@ Key ecosystem (from `Cargo.toml`):
 
 ## Progress bar boundary (no indicatif in library)
 
-- The conductor **library** must never depend on `indicatif`. Progress is communicated upward via `RunWorkflowOptions.step_progress: Option<Box<dyn Fn(usize, usize, &str) + Send + Sync>>` (completed, total, step_name).
-- The conductor **CLI binary** (`src/mediapm-conductor/src/cli.rs`) can create `ProgressGroup` from `mediapm-utils/progress` and wrap it in a callback.
+- The conductor **library** must never depend on `indicatif`. Progress is communicated upward via `RunWorkflowOptions.progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>` (feature-gated behind `progress`). The conductor composes the workflow screen (`[wf]` phase) from this group.
+- The conductor **CLI binary** (`src/mediapm-conductor/src/cli.rs`) builds a `ProgressGroup`, wraps it in `Arc`, and passes it as `progress_group`.
 - `DownloadProgressSnapshot` and `ProgressCallback` from `mediapm-utils` are available in the library for download progress.
 
 ## Provider progress size tracking
