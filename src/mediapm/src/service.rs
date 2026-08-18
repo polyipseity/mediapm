@@ -1176,6 +1176,17 @@ impl MediaPmService<FileSystemCas> {
         // second `FileSystemCas` at the same store root would fail with
         // `LockContention`, since the service constructor already holds the
         // directory lock for its lifetime.
+        //
+        // The materialization progress screen is owned by mediapm (not the
+        // conductor): it gets its own group so the two screens never share a
+        // draw target. A disabled group is used under --no-progress.
+        let materialize_group: ProgressGroup = if no_progress {
+            ProgressGroup::disabled()
+        } else {
+            ProgressGroup::builder().dynamic_height(true).build()
+        };
+        let materialize_pg: Option<Arc<dyn ProgressGroupApi + Send + Sync>> =
+            Some(Arc::new(materialize_group));
         let materialize_report = materializer::sync_hierarchy(
             &effective_paths,
             &document,
@@ -1184,9 +1195,12 @@ impl MediaPmService<FileSystemCas> {
             verify_materialization,
             &conductor_state,
             &generated_doc,
-            None,
+            materialize_pg.clone(),
         )
         .await?;
+        if let Some(ref group) = materialize_pg {
+            group.join();
+        }
 
         save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
 

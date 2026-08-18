@@ -25,7 +25,7 @@ use crate::config::hierarchy_types::{
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
-use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
+use crate::output::progress::{PrefixComponents, ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
 use crate::tools::workflows::resolve_ffmpeg_slot_limits;
 use mediapm_conductor::{ConductorState, NickelDocument};
@@ -168,7 +168,7 @@ pub async fn sync_hierarchy(
     verify_materialization: bool,
     conductor_state: &ConductorState,
     generated_doc: &NickelDocument,
-    progress_group: Option<&dyn ProgressGroupApi>,
+    progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>,
 ) -> Result<MaterializeReport, MediaPmError> {
     let hierarchy_root = &paths.hierarchy_root_dir;
 
@@ -196,12 +196,20 @@ pub async fn sync_hierarchy(
     // --- Concurrent materialization ---
     let worker_count = hierarchy_worker_count();
     let semaphore = Arc::new(Semaphore::new(worker_count));
-    let (owned_group, pb) = if let Some(pg) = progress_group {
-        (None, pg.add_bar(flattened.len() as u64, "materializing"))
+    let (owned_group, pb) = if let Some(ref pg) = progress_group {
+        let bar = pg.add_bar(flattened.len() as u64, "materializing [mat]");
+        bar.set_prefix_components(PrefixComponents {
+            tool_name: "materializing".to_string(),
+            phase: "mat".to_string(),
+            count: "0".to_string(),
+            total: flattened.len().to_string(),
+            ..PrefixComponents::default()
+        });
+        (None, bar)
     } else {
         let g = ProgressGroup::builder().dynamic_height(true).build();
         let p: Arc<dyn ProgressBarApi> =
-            Arc::new(g.add_bar(flattened.len() as u64, "materializing"));
+            Arc::new(g.add_bar(flattened.len() as u64, "materializing [mat]"));
         (Some(g), p)
     };
 
@@ -215,11 +223,18 @@ pub async fn sync_hierarchy(
         let lookup_context = lookup_context.clone();
         let semaphore = semaphore.clone();
         let pb = pb.clone();
+        let progress_group = progress_group.clone();
 
         join_set.spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
-            let result =
-                prepare_hierarchy_entry(&entry, document.as_ref(), &shared, &lookup_context).await;
+            let result = prepare_hierarchy_entry(
+                &entry,
+                document.as_ref(),
+                &shared,
+                &lookup_context,
+                progress_group,
+            )
+            .await;
             pb.advance(1);
             result
         });
@@ -315,9 +330,24 @@ async fn prepare_hierarchy_entry(
     document: &MediaPmDocument,
     shared: &SyncSharedState,
     lookup: &MaterializationLookupContext,
+    progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     let relative_path = entry.path_str();
     let target_path = shared.hierarchy_root.join(&relative_path);
+
+    // Per-entry phase bar: stage → verify → commit. Owned by mediapm (not the
+    // conductor), so it carries the `[stg]`/`[vrf]`/`[cmt]` phase tags.
+    let entry_bar: Option<Arc<dyn ProgressBarApi>> = progress_group.clone().map(|pg| {
+        let bar = pg.add_bar(3, &format!("{relative_path} [stg]"));
+        bar.set_prefix_components(PrefixComponents {
+            tool_name: relative_path.clone(),
+            phase: "stg".to_string(),
+            count: "0".to_string(),
+            total: "3".to_string(),
+            ..PrefixComponents::default()
+        });
+        bar
+    });
 
     match entry.entry.kind {
         HierarchyEntryKind::Media => {
@@ -341,15 +371,37 @@ async fn prepare_hierarchy_entry(
 
             let effective_variant = variant_selector.first().cloned().unwrap_or(variant_name);
 
+            if let Some(ref bar) = entry_bar {
+                bar.set_prefix_components(PrefixComponents {
+                    tool_name: relative_path.clone(),
+                    phase: "vrf".to_string(),
+                    count: "1".to_string(),
+                    total: "3".to_string(),
+                    ..PrefixComponents::default()
+                });
+            }
             let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
 
             if let Some(hash) = hash {
+                if let Some(ref bar) = entry_bar {
+                    bar.set_prefix_components(PrefixComponents {
+                        tool_name: relative_path.clone(),
+                        phase: "cmt".to_string(),
+                        count: "2".to_string(),
+                        total: "3".to_string(),
+                        ..PrefixComponents::default()
+                    });
+                }
                 materialize_file_entry(&target_path, &relative_path, &hash, shared).await?;
                 let record = ManagedFileRecord {
                     media_id: media_id.clone(),
                     variant: effective_variant.clone(),
                     hash: hash.to_string(),
                 };
+                if let Some(ref bar) = entry_bar {
+                    bar.advance(1);
+                    bar.finish_success();
+                }
                 Ok(PreparedHierarchyEntryResult {
                     materialized: true,
                     managed_files: BTreeMap::from([(relative_path.clone(), record)]),
@@ -362,6 +414,10 @@ async fn prepare_hierarchy_entry(
                 shared.notice(format!(
                     "media '{media_id}' variant '{effective_variant}' has no content hash; skipping"
                 ));
+                if let Some(ref bar) = entry_bar {
+                    bar.advance(1);
+                    bar.finish_warning();
+                }
                 Ok(PreparedHierarchyEntryResult {
                     materialized: false,
                     managed_files: BTreeMap::new(),
@@ -375,7 +431,7 @@ async fn prepare_hierarchy_entry(
             let media_id = &entry.entry.media_id;
 
             // Multi-variant materialization (directory output).
-            materialize_media_folder_entry(
+            let result = materialize_media_folder_entry(
                 entry,
                 source,
                 media_id,
@@ -383,12 +439,41 @@ async fn prepare_hierarchy_entry(
                 &relative_path,
                 shared,
                 lookup,
+                progress_group,
             )
-            .await
+            .await;
+            if let Some(ref bar) = entry_bar {
+                match &result {
+                    Ok(_) => {
+                        bar.advance(1);
+                        bar.finish_success();
+                    }
+                    Err(_) => {
+                        bar.advance(1);
+                        bar.finish_error();
+                    }
+                }
+            }
+            result
         }
         HierarchyEntryKind::Playlist => {
             // Playlist generation.
-            materialize_playlist_entry(entry, document, &target_path, &relative_path, shared).await
+            let result =
+                materialize_playlist_entry(entry, document, &target_path, &relative_path, shared)
+                    .await;
+            if let Some(ref bar) = entry_bar {
+                match &result {
+                    Ok(_) => {
+                        bar.advance(1);
+                        bar.finish_success();
+                    }
+                    Err(_) => {
+                        bar.advance(1);
+                        bar.finish_error();
+                    }
+                }
+            }
+            result
         }
     }
 }
@@ -455,6 +540,7 @@ async fn materialize_media_folder_entry(
     relative_path: &str,
     shared: &SyncSharedState,
     lookup: &MaterializationLookupContext,
+    progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     tokio::fs::create_dir_all(target_path).await.map_err(|source| MediaPmError::Io {
         operation: "creating media-folder directory".to_string(),
@@ -515,6 +601,8 @@ async fn materialize_media_folder_entry(
             variant_hashes.insert(variant_name.clone(), source_hash.to_string());
         }
 
+        // Per-variant file sub-bar: advanced once per written extracted/file
+        // member so the materialization screen shows per-file progress.
         let is_zip = is_zip_content(&data);
         if is_zip {
             let extracted = extract_zip_folder_variant_bytes(&data, &rename_rules)?;
@@ -523,6 +611,17 @@ async fn materialize_media_folder_entry(
                     "media '{media_id}' variant '{variant_name}': ZIP archive contained zero extractable files"
                 ));
             }
+            let file_bar = progress_group.clone().map(|pg| {
+                let sub = pg.add_bar(extracted.len() as u64, &format!("{variant_name} [wrt]"));
+                sub.set_prefix_components(PrefixComponents {
+                    tool_name: format!("{relative_path}/{variant_name}"),
+                    phase: "wrt".to_string(),
+                    count: "0".to_string(),
+                    total: extracted.len().to_string(),
+                    ..PrefixComponents::default()
+                });
+                sub
+            });
             for (file_rel_path, content) in extracted {
                 let file_rel_path = normalize_yt_dlp_sandbox_zip_member_path(&file_rel_path);
                 let file_target = target_path.join(&file_rel_path);
@@ -554,6 +653,12 @@ async fn materialize_media_folder_entry(
                         hash: hash.to_string(),
                     },
                 );
+                if let Some(ref sub) = file_bar {
+                    sub.advance(1);
+                }
+            }
+            if let Some(ref sub) = file_bar {
+                sub.finish_success();
             }
         } else {
             if variant_path.exists()
@@ -983,7 +1088,7 @@ mod tests {
             true,
             &conductor_state,
             &generated_doc,
-            Some(&recording),
+            Some(Arc::new(recording.clone())),
         )
         .await;
 
@@ -1051,7 +1156,7 @@ mod tests {
             true,
             &conductor_state,
             &generated_doc,
-            Some(&recording),
+            Some(Arc::new(recording.clone())),
         )
         .await;
 
