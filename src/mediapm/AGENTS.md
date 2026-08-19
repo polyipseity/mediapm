@@ -139,6 +139,8 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
 **User-level cache**: `<os-cache-dir>/mediapm/cache/` (7-day eviction) — shared download cache distinct from workspace tool cache.
 
+**Companion dep path contract**: Inlined companion dep content map keys follow `deps/{mediapm_tool_id}/{os}/{filename}` (e.g. `deps/ffmpeg/macos/ffmpeg`). The OS directory component is already embedded in the key structure. OS-conditional selectors for these paths MUST NOT use `build_os_conditional_selector` (which prepends `{os}/`) — use `build_raw_os_conditional_selector` instead. Using the wrong helper produces double-prefixed paths like `macos/deps/ffmpeg/macos/ffmpeg` that break runtime path resolution. See `mediapm-conductor::tools::helpers` module docs for the two selector flavors.
+
 ### Media Metadata Caching
 
 Two metadata caches are enabled by default for media processing:

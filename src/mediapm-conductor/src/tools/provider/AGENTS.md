@@ -17,6 +17,17 @@ See `crate::tools::provider::mod.rs` for the pipeline implementation and types.
 
 ## Invariants
 
+### OS-conditional selector flavors
+
+`crate::tools::helpers` provides two selector functions. **Do not mix them up.**
+
+| Function | Input shape | Output | Use case |
+| --- | --- | --- | --- |
+| `build_os_conditional_selector` | Flat binary names (no OS in path) | Prepends `{os}/` to each value | Command path selectors: `{"linux": "sd-x86_64-linux"}` → `linux/sd-x86_64-linux` |
+| `build_raw_os_conditional_selector` | Pre-qualified paths (OS already in path) | Uses values as-is | Companion dep selectors: `{"macos": "deps/ffmpeg/macos/ffmpeg"}` → `deps/ffmpeg/macos/ffmpeg` |
+
+**Invariant:** Inlined companion dep content map keys follow `deps/{tool_id}/{os}/{filename}`. The OS directory component is already embedded in the key. Callers MUST use `build_raw_os_conditional_selector` for these paths. Using `build_os_conditional_selector` produces double-prefixed paths (`macos/deps/ffmpeg/macos/ffmpeg`) that break runtime resolution.
+
 ### Item semantics per phase
 
 Progress item counters (`items_done`/`total`) measure **distinct operations in each phase**, not OS-platform count:
