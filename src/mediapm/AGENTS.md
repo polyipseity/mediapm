@@ -257,7 +257,7 @@ Development: `cargo test-pkg mediapm` / `cargo build-pkg mediapm` / selective te
 
 **Temp isolation:** Examples-as-tests use `mediapm::example_isolation::IsolatedExampleRoots` and `MEDIAPM_EXAMPLE_*` env overrides; integration tests use `mediapm_utils::temp::artifact_dir()` plus `cache_dir()` for `cache_root_override`. See `.agents/instructions/example-temp-isolation.instructions.md` for role prefixes, cleanup lifecycle, and example env serialization (process-wide lock held by `IsolatedExampleRoots` / `lock_process_env()`).
 
-**Demo hierarchy golden:** Online link files use two exact naming formats — yt-dlp shape under `sidecars/links/` vs mediapm root projections — encoded in golden helpers and live asserts. See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+**Demo hierarchy golden:** Online link files use two exact naming formats — yt-dlp shape under `sidecars/links/` vs mediapm root projections — encoded in golden helpers and live asserts. Content verification covers exact bytes in the e2e test and resilient structural checks (magic bytes, link format, ffprobe metadata) in the live demo. See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
 Post-change: demo examples:
 
