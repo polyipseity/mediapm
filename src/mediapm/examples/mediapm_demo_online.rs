@@ -2068,13 +2068,13 @@ async fn assert_tagged_media_replaygain_tags(tagged_video_path: &Path) -> Exampl
     .into())
 }
 
-fn assert_sidecar_file_content_shape(variant: &str, path: &Path) -> ExampleResult<()> {
+fn assert_sidecar_content_expectations(variant: &str, path: &Path) -> ExampleResult<()> {
     match variant {
         "description" | "playlist_description" | "archive" => {
             let text = fs::read_to_string(path)?;
             if text.trim().is_empty() {
                 return Err(format!(
-                    "expected sidecar variant '{variant}' at '{}' to contain non-empty text",
+                    "[sidecar] expected variant '{variant}' at '{}' to contain non-empty text",
                     path.display()
                 )
                 .into());
@@ -2085,7 +2085,7 @@ fn assert_sidecar_file_content_shape(variant: &str, path: &Path) -> ExampleResul
             let value: serde_json::Value = serde_json::from_slice(&payload)?;
             if !value.is_object() {
                 return Err(format!(
-                    "expected sidecar variant '{variant}' at '{}' to contain a JSON object",
+                    "[sidecar] expected variant '{variant}' at '{}' to contain a JSON object",
                     path.display()
                 )
                 .into());
@@ -2142,155 +2142,102 @@ fn resolve_interpolated_demo_root(hierarchy_root: &Path) -> ExampleResult<PathBu
     Ok(candidates.remove(0))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
-)]
-fn resolve_demo_output_paths(
-    hierarchy_root: &Path,
-) -> ExampleResult<(PathBuf, PathBuf, BTreeMap<String, PathBuf>)> {
-    let interpolated_root = resolve_interpolated_demo_root(hierarchy_root)?;
-    if !interpolated_root.exists() {
-        return Err(format!(
-            "expected interpolated hierarchy root '{}' to exist after sync",
-            interpolated_root.display()
-        )
-        .into());
+fn assert_video_file_integrity(path: &Path, context: &str) -> ExampleResult<()> {
+    let bytes = fs::read(path)
+        .map_err(|e| format!("{context}: read video file '{}': {e}", path.display()))?;
+    if bytes_look_like_matroska(&bytes) {
+        Ok(())
+    } else {
+        Err(format!("{context}: '{}' does not start with a Matroska (EBML) header", path.display())
+            .into())
     }
+}
 
-    let resolved_metadata = load_resolved_demo_metadata(&interpolated_root)?;
-    if resolved_metadata.media_id != DEMO_MEDIA_ID {
-        return Err(format!(
-            "expected resolved media id '{}' but observed '{}'",
-            DEMO_MEDIA_ID, resolved_metadata.media_id
+fn assert_file_extension(
+    path: &Path,
+    expected_extension: &str,
+    context: &str,
+) -> ExampleResult<()> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case(expected_extension) => Ok(()),
+        Some(ext) => Err(format!(
+            "{context}: expected extension '{expected_extension}', got '{ext}' for '{}'",
+            path.display()
         )
-        .into());
-    }
-    if resolved_metadata.video_id != DEMO_EXPECTED_VIDEO_ID {
-        return Err(format!(
-            "expected resolved video id '{}' but observed '{}'",
-            DEMO_EXPECTED_VIDEO_ID, resolved_metadata.video_id
+        .into()),
+        None => Err(format!(
+            "{context}: expected extension '{expected_extension}', got none for '{}'",
+            path.display()
         )
-        .into());
+        .into()),
     }
-    if !resolved_metadata.video_ext.eq_ignore_ascii_case(DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT) {
-        return Err(format!(
-            "expected resolved video extension '{}' but observed '{}'",
-            DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT, resolved_metadata.video_ext
-        )
-        .into());
-    }
+}
 
+fn assert_metadata_files_present(
+    interpolated_root: &Path,
+    resolved_metadata: &DemoResolvedMetadata,
+) -> ExampleResult<()> {
     let resolved_output_base =
-        resolve_demo_metadata_template(DEMO_OUTPUT_FILE_NAME_BASE, &resolved_metadata);
-    let root_folder_name = interpolated_root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| format!("invalid UTF-8 media root '{}'", interpolated_root.display()))?;
+        resolve_demo_metadata_template(DEMO_OUTPUT_FILE_NAME_BASE, resolved_metadata);
+    let root_folder_name =
+        interpolated_root.file_name().and_then(|value| value.to_str()).ok_or_else(|| {
+            format!("[metadata] invalid UTF-8 media root '{}'", interpolated_root.display())
+        })?;
     if root_folder_name != resolved_output_base {
         return Err(format!(
-            "interpolated root folder '{root_folder_name}' must match resolved base '{resolved_output_base}'"
+            "[metadata] interpolated root folder '{root_folder_name}' must match resolved base '{resolved_output_base}'"
         )
         .into());
     }
 
-    let resolved_untagged_file_name =
-        resolve_demo_metadata_template(DEMO_UNTAGGED_MEDIA_FILE_NAME, &resolved_metadata);
-    let resolved_tagged_file_name =
-        resolve_demo_metadata_template(DEMO_TAGGED_MEDIA_FILE_NAME, &resolved_metadata);
+    let untagged_name =
+        resolve_demo_metadata_template(DEMO_UNTAGGED_MEDIA_FILE_NAME, resolved_metadata);
+    let tagged_name =
+        resolve_demo_metadata_template(DEMO_TAGGED_MEDIA_FILE_NAME, resolved_metadata);
 
-    if !resolved_untagged_file_name.starts_with(&resolved_output_base)
-        || !resolved_tagged_file_name.starts_with(&resolved_output_base)
+    if !untagged_name.starts_with(&resolved_output_base)
+        || !tagged_name.starts_with(&resolved_output_base)
     {
-        return Err("demo metadata template naming invariants drifted".into());
+        return Err("[metadata] demo metadata template naming invariants drifted".into());
     }
 
-    let video_path = interpolated_root.join(resolved_untagged_file_name);
-    if !video_path.is_file() {
-        let observed_files = fs::read_dir(&interpolated_root)?
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .collect::<Vec<_>>();
+    let info_path = interpolated_root.join(&resolved_output_base).with_extension("json");
+    // The info.json may live inside sidecars/; verify the primary sidecar exists.
+    let sidecar_info = interpolated_root.join("sidecars").join("info.json");
+    if !info_path.is_file() && !sidecar_info.is_file() {
         return Err(format!(
-            "expected stable untagged media output '{}' to exist after sync; observed files in media root: {observed_files:?}",
-            video_path.display()
+            "[metadata] expected info.json at '{}' or '{}', not found",
+            info_path.display(),
+            sidecar_info.display()
         )
         .into());
     }
 
-    if !video_path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
-        extension
-            .eq_ignore_ascii_case(DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT.trim_start_matches('.'))
-    }) {
-        return Err(format!(
-            "expected untagged demo media '{}' to keep extension '{}'",
-            video_path.display(),
-            DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT
-        )
-        .into());
-    }
+    Ok(())
+}
 
-    let video_bytes = fs::read(&video_path)?;
-    if !bytes_look_like_matroska(&video_bytes) {
-        return Err(format!(
-            "expected untagged demo media '{}' to contain Matroska bytes",
-            video_path.display()
-        )
-        .into());
-    }
-    assert_mkv_video_audio_with_ffprobe(&video_path)?;
-
-    let tagged_video_path = interpolated_root.join(resolved_tagged_file_name);
-    if !tagged_video_path.is_file() {
-        return Err(format!(
-            "expected stable tagged media output '{}' to exist after sync",
-            tagged_video_path.display()
-        )
-        .into());
-    }
-
-    if !tagged_video_path.extension().and_then(|extension| extension.to_str()).is_some_and(
-        |extension| {
-            extension.eq_ignore_ascii_case(
-                DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT.trim_start_matches('.'),
-            )
-        },
-    ) {
-        return Err(format!(
-            "expected tagged demo media '{}' to keep extension '{}'",
-            tagged_video_path.display(),
-            DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT
-        )
-        .into());
-    }
-
-    let tagged_video_bytes = fs::read(&tagged_video_path)?;
-    if !bytes_look_like_matroska(&tagged_video_bytes) {
-        return Err(format!(
-            "expected tagged demo media '{}' to contain Matroska bytes",
-            tagged_video_path.display()
-        )
-        .into());
-    }
-    assert_mkv_video_audio_with_ffprobe(&tagged_video_path)?;
-
+fn assert_sidecar_files_present(
+    interpolated_root: &Path,
+    resolved_metadata: &DemoResolvedMetadata,
+) -> ExampleResult<BTreeMap<String, PathBuf>> {
     let mut sidecar_paths = BTreeMap::new();
+
     for (entry_label, variant, relative_suffix) in DEMO_SIDECAR_VARIANT_PATHS {
         let resolved_relative_suffix =
-            resolve_demo_metadata_template(relative_suffix, &resolved_metadata);
+            resolve_demo_metadata_template(relative_suffix, resolved_metadata);
 
         if !resolved_relative_suffix.starts_with("sidecars/")
             && !resolved_relative_suffix.is_empty()
             && resolved_relative_suffix.contains('/')
         {
             return Err(format!(
-                "demo sidecar mapping '{entry_label}' must stay flat outside sidecars/ but uses nested path '{relative_suffix}'"
+                "[sidecar] mapping '{entry_label}' must stay flat outside sidecars/ but uses nested path '{relative_suffix}'"
             )
             .into());
         }
 
         let output_path = if resolved_relative_suffix.is_empty() {
-            interpolated_root.clone()
+            interpolated_root.to_path_buf()
         } else {
             interpolated_root.join(&resolved_relative_suffix)
         };
@@ -2303,7 +2250,7 @@ fn resolve_demo_output_paths(
             }
 
             return Err(format!(
-                "expected demo sidecar variant '{}' at '{}' to exist after sync",
+                "[sidecar] expected variant '{}' at '{}' to exist after sync",
                 variant,
                 output_path.display()
             )
@@ -2313,7 +2260,7 @@ fn resolve_demo_output_paths(
         if resolved_relative_suffix.ends_with('/') || resolved_relative_suffix.is_empty() {
             if !output_path.is_dir() {
                 return Err(format!(
-                    "expected demo sidecar variant '{}' at '{}' to be a directory",
+                    "[sidecar] expected variant '{}' at '{}' to be a directory",
                     variant,
                     output_path.display()
                 )
@@ -2336,17 +2283,102 @@ fn resolve_demo_output_paths(
             )?;
         } else if !output_path.is_file() {
             return Err(format!(
-                "expected demo sidecar variant '{}' at '{}' to be a file",
+                "[sidecar] expected variant '{}' at '{}' to be a file",
                 variant,
                 output_path.display()
             )
             .into());
         } else {
-            assert_sidecar_file_content_shape(variant, &output_path)?;
+            assert_sidecar_content_expectations(variant, &output_path)?;
         }
 
         sidecar_paths.insert(entry_label.to_string(), output_path);
     }
+
+    Ok(sidecar_paths)
+}
+
+fn resolve_demo_output_paths(
+    hierarchy_root: &Path,
+) -> ExampleResult<(PathBuf, PathBuf, BTreeMap<String, PathBuf>)> {
+    let interpolated_root = resolve_interpolated_demo_root(hierarchy_root)?;
+    if !interpolated_root.exists() {
+        return Err(format!(
+            "[metadata] expected interpolated hierarchy root '{}' to exist after sync",
+            interpolated_root.display()
+        )
+        .into());
+    }
+
+    let resolved_metadata = load_resolved_demo_metadata(&interpolated_root)?;
+    if resolved_metadata.media_id != DEMO_MEDIA_ID {
+        return Err(format!(
+            "[metadata] expected resolved media id '{}' but observed '{}'",
+            DEMO_MEDIA_ID, resolved_metadata.media_id
+        )
+        .into());
+    }
+    if resolved_metadata.video_id != DEMO_EXPECTED_VIDEO_ID {
+        return Err(format!(
+            "[metadata] expected resolved video id '{}' but observed '{}'",
+            DEMO_EXPECTED_VIDEO_ID, resolved_metadata.video_id
+        )
+        .into());
+    }
+    if !resolved_metadata.video_ext.eq_ignore_ascii_case(DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT) {
+        return Err(format!(
+            "[metadata] expected resolved video extension '{}' but observed '{}'",
+            DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT, resolved_metadata.video_ext
+        )
+        .into());
+    }
+
+    assert_metadata_files_present(&interpolated_root, &resolved_metadata)?;
+
+    let resolved_output_base =
+        resolve_demo_metadata_template(DEMO_OUTPUT_FILE_NAME_BASE, &resolved_metadata);
+    let resolved_untagged_file_name =
+        resolve_demo_metadata_template(DEMO_UNTAGGED_MEDIA_FILE_NAME, &resolved_metadata);
+    let resolved_tagged_file_name =
+        resolve_demo_metadata_template(DEMO_TAGGED_MEDIA_FILE_NAME, &resolved_metadata);
+
+    let video_path = interpolated_root.join(&resolved_untagged_file_name);
+    if !video_path.is_file() {
+        let observed_files = fs::read_dir(&interpolated_root)?
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "[video] expected untagged media '{}' to exist after sync; observed files: {observed_files:?}",
+            video_path.display()
+        )
+        .into());
+    }
+    assert_file_extension(
+        &video_path,
+        DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT.trim_start_matches('.'),
+        "[video] untagged",
+    )?;
+    assert_video_file_integrity(&video_path, "[video] untagged")?;
+    assert_mkv_video_audio_with_ffprobe(&video_path)?;
+
+    let tagged_video_path = interpolated_root.join(&resolved_tagged_file_name);
+    if !tagged_video_path.is_file() {
+        return Err(format!(
+            "[video] expected tagged media '{}' to exist after sync",
+            tagged_video_path.display()
+        )
+        .into());
+    }
+    assert_file_extension(
+        &tagged_video_path,
+        DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT.trim_start_matches('.'),
+        "[video] tagged",
+    )?;
+    assert_video_file_integrity(&tagged_video_path, "[video] tagged")?;
+    assert_mkv_video_audio_with_ffprobe(&tagged_video_path)?;
+
+    let sidecar_paths = assert_sidecar_files_present(&interpolated_root, &resolved_metadata)?;
 
     assert_flat_media_root_sidecar_families(&interpolated_root, &resolved_output_base)?;
     assert_no_mediapm_marker_in_hierarchy_paths(&interpolated_root)?;
