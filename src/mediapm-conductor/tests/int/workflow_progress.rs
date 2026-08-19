@@ -17,6 +17,19 @@ use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Pins the worker pool size so progress-bar assertions are deterministic.
+///
+/// # Safety
+///
+/// Sets a process-wide env var; only safe when all concurrent tests agree on
+/// the same value.
+fn fix_worker_pool_size() {
+    // SAFETY: all tests in this module expect pool_size = 2.
+    unsafe {
+        std::env::set_var("MEDIAPM_CONDUCTOR_WORKER_POOL_SIZE", "2");
+    }
+}
+
 /// Creates a step with the given id (overrides `echo_step`'s fixed `"s1"`).
 fn step(id: &str, tool: &str, text: &str) -> WorkflowStepSpec {
     WorkflowStepSpec {
@@ -59,10 +72,11 @@ fn broken_tool(name: &str) -> mediapm_conductor::ToolSpec {
 // ---------------------------------------------------------------------------
 
 /// Single-step echo workflow emits the expected `[wf]` progress sequence:
-/// overall bar (total set by coordinator) → step bar with prefix → advance
-/// → finish → overall finish.
+/// overall bar (total set by coordinator) → per-worker idle bars → step bar
+/// via worker-0 slot → advance → finish → overall finish.
 #[tokio::test]
 async fn single_step_success_progress_ops() {
+    fix_worker_pool_size();
     let tc = TestConductor::new();
     tc.write_config(doc_with_workflows(
         BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
@@ -89,11 +103,29 @@ async fn single_step_success_progress_ops() {
     assert_eq!(
         tracker.ops(),
         vec![
-            // Overall bar created by with_overall(), total set to real step count by coordinator.
+            // Overall bar created by with_overall(), total set to real step count.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
             ProgressOp::SetTotal { total: 1 },
-            // Step bar created before dispatch.
-            ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
+            // Per-worker idle bars (2 workers).
+            ProgressOp::AddBar { total: 1, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-0".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            ProgressOp::AddBar { total: 1, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-1".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            // Dispatch s1 to worker-0 (consume idle bar).
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),
                 tool_name: "s1".into(),
@@ -102,6 +134,7 @@ async fn single_step_success_progress_ops() {
                 count: "1".into(),
                 total: "1".into(),
             },
+            ProgressOp::SetTotal { total: 1 },
             // Step completes — advance and finish success.
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
@@ -112,10 +145,11 @@ async fn single_step_success_progress_ops() {
     );
 }
 
-/// Two independent steps at the same level — both step bars appear before any
-/// await, then both complete with `advance` + `finish_success`.
+/// Two independent steps at the same level — each worker's idle bar is
+/// consumed by its assigned step, then both complete.
 #[tokio::test]
 async fn two_step_same_level_success_progress_ops() {
+    fix_worker_pool_size();
     let tc = TestConductor::new();
     tc.write_config(doc_with_workflows(
         BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
@@ -151,8 +185,26 @@ async fn two_step_same_level_success_progress_ops() {
             // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
             ProgressOp::SetTotal { total: 2 },
-            // Step 1 bar (spawned first).
-            ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
+            // Per-worker idle bars (2 workers).
+            ProgressOp::AddBar { total: 2, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-0".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            ProgressOp::AddBar { total: 2, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-1".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            // Dispatch s1 to worker-0 (consume idle bar).
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),
                 tool_name: "s1".into(),
@@ -161,8 +213,8 @@ async fn two_step_same_level_success_progress_ops() {
                 count: "1".into(),
                 total: "2".into(),
             },
-            // Step 2 bar (spawned second).
-            ProgressOp::AddBar { total: 1, label: "s2 [wf]".into() },
+            ProgressOp::SetTotal { total: 1 },
+            // Dispatch s2 to worker-1 (consume idle bar).
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),
                 tool_name: "s2".into(),
@@ -171,6 +223,7 @@ async fn two_step_same_level_success_progress_ops() {
                 count: "2".into(),
                 total: "2".into(),
             },
+            ProgressOp::SetTotal { total: 1 },
             // Step 1 completes.
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
@@ -186,9 +239,11 @@ async fn two_step_same_level_success_progress_ops() {
 
 /// Two steps with a dependency — step2 depends on step1 (two levels).
 /// The coordinator awaits level 0 before starting level 1, guaranteeing
-/// sequential progress ops.
+/// sequential progress ops.  Worker-0's idle bar is consumed at level 0;
+/// level 1 creates a fresh bar for step2.
 #[tokio::test]
 async fn two_step_sequential_levels_progress_ops() {
+    fix_worker_pool_size();
     let tc = TestConductor::new();
     tc.write_config(doc_with_workflows(
         BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
@@ -227,8 +282,26 @@ async fn two_step_sequential_levels_progress_ops() {
             // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
             ProgressOp::SetTotal { total: 2 },
-            // Level 0: step 1.
-            ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
+            // Per-worker idle bars (2 workers).
+            ProgressOp::AddBar { total: 2, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-0".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            ProgressOp::AddBar { total: 2, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-1".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            // Level 0: dispatch s1 to worker-0 (consume idle bar).
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),
                 tool_name: "s1".into(),
@@ -237,11 +310,11 @@ async fn two_step_sequential_levels_progress_ops() {
                 count: "1".into(),
                 total: "2".into(),
             },
+            ProgressOp::SetTotal { total: 1 },
             // Level 0 await — step 1 completes.
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
-            // Level 1: step 2 (count resets per level since `handles` is
-            // scoped to each level iteration).
+            // Level 1: dispatch s2 to worker-0 (idle consumed, fresh bar).
             ProgressOp::AddBar { total: 1, label: "s2 [wf]".into() },
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),
@@ -266,6 +339,7 @@ async fn two_step_sequential_levels_progress_ops() {
 /// also receives `finish_warning` (`failed_steps > 0`).
 #[tokio::test]
 async fn step_failure_emits_finish_warning() {
+    fix_worker_pool_size();
     let tc = TestConductor::new();
     tc.write_config(doc_with_workflows(
         BTreeMap::from([("broken".into(), broken_tool("broken"))]),
@@ -301,8 +375,26 @@ async fn step_failure_emits_finish_warning() {
             // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
             ProgressOp::SetTotal { total: 1 },
-            // Step bar created before dispatch.
-            ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
+            // Per-worker idle bars (2 workers).
+            ProgressOp::AddBar { total: 1, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-0".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            ProgressOp::AddBar { total: 1, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-1".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            // Dispatch s1 to worker-0 (consume idle bar).
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),
                 tool_name: "s1".into(),
@@ -311,6 +403,7 @@ async fn step_failure_emits_finish_warning() {
                 count: "1".into(),
                 total: "1".into(),
             },
+            ProgressOp::SetTotal { total: 1 },
             // Step fails — advance + finish_warning (not finish_error).
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishWarning,
@@ -345,9 +438,10 @@ async fn no_progress_group_succeeds_silently() {
 
 /// A workflow with three independent steps at the same level — verifies
 /// correct `count`/`total` progression and that all steps finish before
-/// the overall bar.
+/// the overall bar.  With `pool_size=2`, the third step creates a fresh bar.
 #[tokio::test]
 async fn three_step_same_level_progress_ops() {
+    fix_worker_pool_size();
     let tc = TestConductor::new();
     tc.write_config(doc_with_workflows(
         BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
@@ -384,9 +478,29 @@ async fn three_step_same_level_progress_ops() {
     assert_eq!(
         tracker.ops(),
         vec![
+            // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
             ProgressOp::SetTotal { total: 3 },
-            ProgressOp::AddBar { total: 1, label: "s1 [wf]".into() },
+            // Per-worker idle bars (2 workers).
+            ProgressOp::AddBar { total: 3, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-0".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            ProgressOp::AddBar { total: 3, label: "idle [wf]".into() },
+            ProgressOp::SetPrefixComponents {
+                marker: String::new(),
+                tool_name: "worker-1".into(),
+                version: String::new(),
+                phase: "wf".into(),
+                count: String::new(),
+                total: String::new(),
+            },
+            // Dispatch s1 to worker-0 (consume idle bar).
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),
                 tool_name: "s1".into(),
@@ -395,7 +509,8 @@ async fn three_step_same_level_progress_ops() {
                 count: "1".into(),
                 total: "3".into(),
             },
-            ProgressOp::AddBar { total: 1, label: "s2 [wf]".into() },
+            ProgressOp::SetTotal { total: 1 },
+            // Dispatch s2 to worker-1 (consume idle bar).
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),
                 tool_name: "s2".into(),
@@ -404,6 +519,8 @@ async fn three_step_same_level_progress_ops() {
                 count: "2".into(),
                 total: "3".into(),
             },
+            ProgressOp::SetTotal { total: 1 },
+            // Dispatch s3 to worker-0 (idle consumed, fresh bar).
             ProgressOp::AddBar { total: 1, label: "s3 [wf]".into() },
             ProgressOp::SetPrefixComponents {
                 marker: String::new(),
@@ -413,12 +530,14 @@ async fn three_step_same_level_progress_ops() {
                 count: "3".into(),
                 total: "3".into(),
             },
+            // All three steps complete.
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
+            // Overall bar finished.
             ProgressOp::SetPosition { pos: 3 },
             ProgressOp::FinishSuccess,
         ],

@@ -211,9 +211,12 @@ where
             let mut failed_steps = 0usize;
 
             // Compose the conductor-owned workflow progress screen: one overall
-            // bar plus one child bar per step. The overall bar is pinned at the
-            // bottom slot by the caller via `with_overall()` — the coordinator
-            // receives it through `options.overall_bar` and uses it directly.
+            // bar plus one bar per worker slot.  The overall bar is pinned at
+            // the bottom slot by the caller via `with_overall()` — the
+            // coordinator receives it through `options.overall_bar` and uses it
+            // directly.  Worker bars are pre-created (one per pool member) and
+            // consumed on first dispatch; subsequent dispatches to the same
+            // worker create a fresh bar.
             #[cfg(feature = "progress")]
             let overall_bar: Option<Arc<dyn ProgressBarApi>> = options.overall_bar.clone();
 
@@ -222,6 +225,28 @@ where
             #[cfg(feature = "progress")]
             if let Some(ref ob) = overall_bar {
                 ob.set_total(total_steps as u64);
+            }
+
+            // Pre-create one progress bar per worker slot.  Each bar starts
+            // in the idle state and is consumed when the worker is first
+            // dispatched a step.  Subsequent dispatches to the same worker
+            // create a fresh bar (the idle bar was already consumed).
+            #[cfg(feature = "progress")]
+            let mut worker_bars: Vec<Option<Arc<dyn ProgressBarApi>>> = Vec::new();
+            #[cfg(feature = "progress")]
+            if let Some(ref pg) = options.progress_group {
+                for i in 0..self.workers.len() {
+                    let bar = pg.add_bar(total_steps as u64, "idle [wf]");
+                    bar.set_prefix_components(PrefixComponents {
+                        marker: String::new(),
+                        tool_name: format!("worker-{i}"),
+                        version: String::new(),
+                        phase: "wf".to_string(),
+                        count: String::new(),
+                        total: String::new(),
+                    });
+                    worker_bars.push(Some(bar));
+                }
             }
 
             let mut step_outputs: StepOutputs = BTreeMap::new();
@@ -269,22 +294,39 @@ where
                     let worker_idx = handles.len() % self.workers.len().max(1);
                     let worker = self.workers[worker_idx].clone();
 
-                    // Create the per-step child bar before dispatch so it
-                    // appears immediately (phase `[wf]`, count/total by step
-                    // index within the workflow).
+                    // Create or update the worker's progress bar before
+                    // dispatch so it appears immediately.  The first dispatch
+                    // to a worker consumes the pre-created idle bar (updating
+                    // its label); subsequent dispatches create a fresh bar.
                     #[cfg(feature = "progress")]
                     let step_bar: Option<Arc<dyn ProgressBarApi>> =
-                        options.progress_group.as_ref().map(|g| {
-                            let bar = g.add_bar(1, &format!("{step_id} [wf]"));
-                            bar.set_prefix_components(PrefixComponents {
-                                marker: String::new(),
-                                tool_name: step_id.clone(),
-                                version: String::new(),
-                                phase: "wf".to_string(),
-                                count: (handles.len() + 1).to_string(),
-                                total: total_steps.to_string(),
-                            });
-                            bar
+                        options.progress_group.as_ref().map(|pg| {
+                            if worker_idx < worker_bars.len() && worker_bars[worker_idx].is_some() {
+                                // First dispatch: consume the idle bar.
+                                let bar = worker_bars[worker_idx].take().unwrap();
+                                bar.set_prefix_components(PrefixComponents {
+                                    marker: String::new(),
+                                    tool_name: step_id.clone(),
+                                    version: String::new(),
+                                    phase: "wf".to_string(),
+                                    count: (handles.len() + 1).to_string(),
+                                    total: total_steps.to_string(),
+                                });
+                                bar.set_total(1);
+                                bar
+                            } else {
+                                // Subsequent dispatch: fresh bar.
+                                let bar = pg.add_bar(1, &format!("{step_id} [wf]"));
+                                bar.set_prefix_components(PrefixComponents {
+                                    marker: String::new(),
+                                    tool_name: step_id.clone(),
+                                    version: String::new(),
+                                    phase: "wf".to_string(),
+                                    count: (handles.len() + 1).to_string(),
+                                    total: total_steps.to_string(),
+                                });
+                                bar
+                            }
                         });
                     #[cfg(not(feature = "progress"))]
                     let step_bar: Option<Arc<dyn ProgressBarApi>> = None;
