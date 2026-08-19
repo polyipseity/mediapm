@@ -788,6 +788,27 @@ deno's process phase (`[pro]`) previously failed with `[W]` in the online demo: 
 | S-DENO-6 (regression guard): process phase yields a non-empty `content_map` keyed by OS label for the nested release layout             | `regression_deno_spec_present_after_process` (asserts `windows/` key present, entry non-empty, `exec_path == "windows/deno.exe"`)                                         | [covered] |
 | Spec contract documented in `src/mediapm-conductor/src/tools/provider/AGENTS.md` (deno permission wrapper contract)                    | Section "deno permission wrapper contract" (S-DENO-1..6)                                                                                                                 | [covered] |
 
+### OS-conditional selector flavors (companion dep path fix)
+
+`build_os_conditional_selector` prepends `{os}/` to each value — correct for flat binary names but wrong for pre-qualified companion dep paths like `deps/ffmpeg/{os}/ffmpeg`. The fix introduces `build_raw_os_conditional_selector` which uses values as-is, and switches the two yt-dlp callers.
+
+| Spec item | Test(s) | Status |
+| --------- | ------- | ------ |
+| `build_raw_os_conditional_selector` single entry collapses to literal path | `raw_os_selector_single_entry_collapses_to_path` | [covered] |
+| `build_raw_os_conditional_selector` multi entry uses paths as-is (no OS prepend) | `raw_os_selector_multiple_entries_use_paths_as_is` | [covered] |
+| `build_raw_os_conditional_selector` empty map returns empty string | `raw_os_selector_empty_returns_empty` | [covered] |
+| Both selector helpers produce balanced `${}` template expressions | `both_selectors_produce_balanced_template_expressions` | [covered] |
+| ffmpeg selector exact resolved path has no double OS prefix | `ffmpeg_selector_resolves_to_sandbox_relative_deps_path` | [covered] |
+| deno selector exact resolved path has no double OS prefix | `deno_selector_resolves_to_sandbox_relative_deps_path` | [covered] |
+| ffmpeg selector has no OS prefix duplication (regression guard) | `ffmpeg_selector_has_no_os_prefix_duplication` | [covered] |
+| deno selector has no OS prefix duplication (regression guard) | `deno_selector_has_no_os_prefix_duplication` | [covered] |
+| `yt_dlp_variant_inputs` primary ffmpeg_location has no double prefix | `yt_dlp_primary_variant_inputs_ffmpeg_location_has_no_double_prefix` | [covered] |
+| `yt_dlp_variant_inputs` primary js_runtimes has no double prefix | `yt_dlp_primary_variant_inputs_js_runtimes_has_no_double_prefix` | [covered] |
+| `build_os_conditional_selector` single entry still works (no regression) | `os_selector_single_entry_collapses_to_literal` | [covered] |
+| `build_os_conditional_selector` multi entry still works (no regression) | `os_selector_multiple_entries_nests_with_os_prefix` | [covered] |
+| `build_os_conditional_selector` empty returns empty (no regression) | `os_selector_empty_returns_empty` | [covered] |
+| Spec documented in `src/mediapm/src/AGENTS.md` and `src/mediapm-conductor/src/tools/provider/AGENTS.md` | Sections "Companion dep path contract" and "OS-conditional selector flavors" | [covered] |
+
 ### Script tests (root tests/ crate)
 
 Root-level cargo member `tests/` (package `mediapm-tests`) exercises the repository scripts — production janitors (`scripts/clean-mediapm-temp.sh`, `clean-mediapm-temp.ps1`) and self-tests (`tests/scripts/test-clean-mediapm-temp.sh`, `test-clean-mediapm-temp.ps1`; `tests/scripts/test-run-all-tests.sh`, `test-run-all-tests.ps1`) — by spawning them via `Command`, sandboxing temp dirs via child-scoped env (`TMPDIR`/`TMP`/`TEMP`), normalizing CRLF, and skipping with a printed reason when the interpreter is absent.
