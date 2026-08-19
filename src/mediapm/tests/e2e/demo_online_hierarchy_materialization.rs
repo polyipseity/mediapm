@@ -12,8 +12,10 @@ use mediapm::{
     MediaPmDocument, MediaSourceSpec, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
     demo_hierarchy_spec::{
         DEMO_LIBRARY_ROOT, DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID,
-        ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_tree_under, load_demo_hierarchy_golden_document,
-        online_demo_yt_dlp_provider_title, yt_dlp_sandbox_artifact_filename,
+        ONLINE_DEMO_PLAYLIST, ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_tree_under,
+        load_demo_hierarchy_golden_document, online_demo_root_link_filename,
+        online_demo_sidecar_link_filename, online_demo_yt_dlp_provider_title,
+        yt_dlp_sandbox_artifact_filename,
     },
     save_mediapm_document,
 };
@@ -76,6 +78,162 @@ fn node(
         sanitize_names: SanitizeNamesConfig::Inherit,
         children,
     }
+}
+
+fn assert_file_bytes(path: &std::path::Path, expected: &[u8], label: &str) -> Result<(), String> {
+    let actual =
+        std::fs::read(path).map_err(|e| format!("{label}: read '{}': {e}", path.display()))?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label}: content mismatch at '{}': expected {} bytes, got {} bytes",
+            path.display(),
+            expected.len(),
+            actual.len(),
+        ))
+    }
+}
+
+fn assert_materialized_content_matches_seeds(
+    hierarchy_root: &std::path::Path,
+) -> Result<(), String> {
+    let media_folder =
+        hierarchy_root.join(mediapm::demo_hierarchy_spec::online_demo_media_folder_relative());
+    let provider_title = online_demo_yt_dlp_provider_title();
+    let video_id = ONLINE_DEMO_YT_DLP_VIDEO_ID;
+
+    // Tagged video file
+    let tagged_name = format!("{provider_title} [{video_id}].mkv");
+    assert_file_bytes(&media_folder.join(&tagged_name), MKV_HEADER, "[video tagged]")?;
+
+    // Untagged video file
+    let untagged_name = format!("{provider_title} [{video_id}].untagged.mkv");
+    assert_file_bytes(&media_folder.join(&untagged_name), MKV_HEADER, "[video untagged]")?;
+
+    // Subtitle (root-level .en.vtt from primary variant)
+    let vtt_name = format!("{provider_title} [{video_id}].en.vtt");
+    assert_file_bytes(&media_folder.join(&vtt_name), b"WEBVTT\n", "[subtitle root]")?;
+    // Subtitle (sidecar)
+    assert_file_bytes(
+        &media_folder.join("sidecars/subtitles.en.vtt"),
+        b"WEBVTT\n",
+        "[subtitle sidecar]",
+    )?;
+
+    // Description (root-level)
+    let desc_name = format!("{provider_title} [{video_id}].description.txt");
+    assert_file_bytes(
+        &media_folder.join(&desc_name),
+        b"description fixture",
+        "[description root]",
+    )?;
+    // Description (sidecar)
+    assert_file_bytes(
+        &media_folder.join("sidecars/description.txt"),
+        b"description fixture",
+        "[description sidecar]",
+    )?;
+
+    // Info.json (root-level)
+    let info_name = format!("{provider_title} [{video_id}].info.json");
+    assert_file_bytes(
+        &media_folder.join(&info_name),
+        br#"{"title":"Never Gonna Give You Up"}"#,
+        "[infojson root]",
+    )?;
+    // Info.json (sidecar)
+    assert_file_bytes(
+        &media_folder.join("sidecars/info.json"),
+        br#"{"title":"Never Gonna Give You Up"}"#,
+        "[infojson sidecar]",
+    )?;
+
+    // Archive (sidecar only)
+    assert_file_bytes(
+        &media_folder.join("sidecars/archive.txt"),
+        b"archive fixture",
+        "[archive sidecar]",
+    )?;
+
+    // Thumbnails (sidecar)
+    assert_file_bytes(
+        &media_folder.join("sidecars/thumbnails/poster.jpg"),
+        b"jpg-bytes",
+        "[thumbnail poster]",
+    )?;
+    assert_file_bytes(
+        &media_folder.join("sidecars/thumbnails/wide.webp"),
+        b"webp-bytes",
+        "[thumbnail wide]",
+    )?;
+
+    // Thumbnails (root projection)
+    let thumb_jpg_name = format!("{provider_title} [{video_id}].thumbnail.jpg");
+    assert_file_bytes(&media_folder.join(&thumb_jpg_name), b"jpg-bytes", "[thumbnail root jpg]")?;
+    let thumb_webp_name = format!("{provider_title} [{video_id}].thumbnail.webp");
+    assert_file_bytes(
+        &media_folder.join(&thumb_webp_name),
+        b"webp-bytes",
+        "[thumbnail root webp]",
+    )?;
+
+    // folder.jpg / folder.webp
+    assert_file_bytes(&media_folder.join("folder.jpg"), b"jpg-bytes", "[folder.jpg]")?;
+    assert_file_bytes(&media_folder.join("folder.webp"), b"webp-bytes", "[folder.webp]")?;
+
+    // Links (sidecar)
+    assert_file_bytes(
+        &media_folder.join("sidecars/links").join(&online_demo_sidecar_link_filename("url")),
+        b"https://example.com/watch",
+        "[link sidecar url]",
+    )?;
+    assert_file_bytes(
+        &media_folder.join("sidecars/links").join(&online_demo_sidecar_link_filename("webloc")),
+        b"webloc-bytes",
+        "[link sidecar webloc]",
+    )?;
+    assert_file_bytes(
+        &media_folder.join("sidecars/links").join(&online_demo_sidecar_link_filename("desktop")),
+        b"desktop-bytes",
+        "[link sidecar desktop]",
+    )?;
+
+    // Links (root projection)
+    assert_file_bytes(
+        &media_folder.join(&online_demo_root_link_filename("url")),
+        b"https://example.com/watch",
+        "[link root url]",
+    )?;
+    assert_file_bytes(
+        &media_folder.join(&online_demo_root_link_filename("webloc")),
+        b"webloc-bytes",
+        "[link root webloc]",
+    )?;
+    assert_file_bytes(
+        &media_folder.join(&online_demo_root_link_filename("desktop")),
+        b"desktop-bytes",
+        "[link root desktop]",
+    )?;
+
+    // Playlist (structural: starts with #EXTM3U and contains .mkv)
+    let playlist_path = hierarchy_root.join("playlists").join(ONLINE_DEMO_PLAYLIST);
+    let playlist_bytes = std::fs::read(&playlist_path)
+        .map_err(|e| format!("[playlist] read '{}': {e}", playlist_path.display()))?;
+    if !playlist_bytes.starts_with(b"#EXTM3U") {
+        return Err(format!(
+            "[playlist] '{}' should start with '#EXTM3U'",
+            playlist_path.display()
+        ));
+    }
+    if !playlist_bytes.windows(4).any(|w| w == b".mkv") {
+        return Err(format!(
+            "[playlist] '{}' should contain '.mkv' reference",
+            playlist_path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 fn rename_rule(pattern: &str, replacement: &str) -> HierarchyFolderRenameRule {
@@ -398,6 +556,9 @@ async fn demo_online_hierarchy_materialization_matches_golden_tree()
             "online hierarchy should match golden tree: {error}; sync warnings: {:?}",
             summary.warnings
         );
+    }
+    if let Err(error) = assert_materialized_content_matches_seeds(&hierarchy_root) {
+        panic!("materialized content should match CAS seeds: {error}");
     }
 
     Ok(())
