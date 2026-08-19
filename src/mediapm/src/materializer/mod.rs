@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mediapm_cas::{FileSystemCas, Hash};
+use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
@@ -27,7 +27,9 @@ use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
 use crate::output::progress::{PrefixComponents, ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
-use crate::tools::workflows::resolve_ffmpeg_slot_limits;
+use crate::tools::workflows::{
+    resolve_ffmpeg_slot_limits, resolve_media_variant_output_binding_with_limits,
+};
 use mediapm_conductor::{ConductorState, NickelDocument};
 pub(crate) use resolve::backfill_source_variant_hashes_from_workflow_outputs;
 
@@ -42,6 +44,7 @@ use self::resolve::{
     collect_media_source_available_variants, resolve_hierarchy_source, resolve_variant_hash,
     resolve_variant_source_bytes,
 };
+use self::zip::extract_zip_member_bytes;
 
 // ---------------------------------------------------------------------------
 // Internal resolve types (shared with resolve.rs)
@@ -411,11 +414,60 @@ async fn prepare_hierarchy_entry(
                         ..PrefixComponents::default()
                     });
                 }
-                materialize_file_entry(&target_path, &relative_path, &hash, shared).await?;
+
+                // Check if this variant has a zip_member binding (e.g., subtitles_en
+                // produces a ZIP containing `.en.vtt`). The raw CAS hash points at the
+                // ZIP archive; we must extract the specific member before writing.
+                let binding = resolve_media_variant_output_binding_with_limits(
+                    source,
+                    &effective_variant,
+                    lookup.ffmpeg_slot_limits.max_input_slots,
+                    lookup.ffmpeg_slot_limits.max_output_slots,
+                )?;
+                let materialized_hash = if let Some(zip_member) =
+                    binding.as_ref().and_then(|b| b.zip_member.as_deref())
+                {
+                    let zip_bytes = shared.cas.get(hash).await.map_err(|source| {
+                        MediaPmError::Workflow(format!(
+                            "reading ZIP variant '{hash}' for media '{media_id}' \
+                                 variant '{effective_variant}' member extraction: {source}"
+                        ))
+                    })?;
+                    let extracted_bytes = extract_zip_member_bytes(&zip_bytes, zip_member)
+                        .map_err(|error| {
+                            MediaPmError::Workflow(format!(
+                                "extracting ZIP member '{zip_member}' for media '{media_id}' \
+                                 variant '{effective_variant}': {error}"
+                            ))
+                        })?;
+                    if let Some(parent) = target_path.parent() {
+                        tokio::fs::create_dir_all(parent).await.map_err(|source| {
+                            MediaPmError::Io {
+                                operation: "creating parent directory for extracted variant"
+                                    .to_string(),
+                                path: parent.to_path_buf(),
+                                source,
+                            }
+                        })?;
+                    }
+                    tokio::fs::write(&target_path, &extracted_bytes).await.map_err(|source| {
+                        MediaPmError::Io {
+                            operation: "writing extracted ZIP member".to_string(),
+                            path: target_path.clone(),
+                            source,
+                        }
+                    })?;
+                    crate::materializer::commit::ensure_managed_path_readonly(&target_path)?;
+                    Hash::from_content(&extracted_bytes)
+                } else {
+                    materialize_file_entry(&target_path, &relative_path, &hash, shared).await?;
+                    hash
+                };
+
                 let record = ManagedFileRecord {
                     media_id: media_id.clone(),
                     variant: effective_variant.clone(),
-                    hash: hash.to_string(),
+                    hash: materialized_hash.to_string(),
                 };
                 if let Some(ref bar) = entry_bar {
                     bar.advance(1);
@@ -426,7 +478,10 @@ async fn prepare_hierarchy_entry(
                     managed_files: BTreeMap::from([(relative_path.clone(), record)]),
                     media_variant_updates: BTreeMap::from([(
                         media_id.clone(),
-                        BTreeMap::from([(effective_variant.clone(), hash.to_string())]),
+                        BTreeMap::from([(
+                            effective_variant.clone(),
+                            materialized_hash.to_string(),
+                        )]),
                     )]),
                 })
             } else {
