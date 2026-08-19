@@ -3455,14 +3455,30 @@ mod tests {
         std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
         std::fs::write(root.join(format!("{output_base}.en.vtt")), b"WEBVTT")
             .expect("write subtitle");
-        std::fs::write(root.join(format!("{output_base}.thumbnail.jpg")), b"jpg")
-            .expect("write thumbnail");
-        std::fs::write(root.join(format!("{output_base}.link.url")), b"[InternetShortcut]")
-            .expect("write link");
-        std::fs::write(root.join(format!("{output_base}.link.webloc")), b"webloc")
-            .expect("write webloc link");
-        std::fs::write(root.join(format!("{output_base}.link.desktop")), b"desktop")
-            .expect("write desktop link");
+        std::fs::write(
+            root.join(format!("{output_base}.thumbnail.jpg")),
+            &[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0],
+        )
+        .expect("write thumbnail");
+        std::fs::write(
+            root.join(format!("{output_base}.link.url")),
+            format!("[InternetShortcut]\nURL=https://www.youtube.com/watch?v=dQw4w9WgXcQ\n"),
+        )
+        .expect("write link");
+        std::fs::write(
+            root.join(format!("{output_base}.link.webloc")),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>URL</key><string>https://www.youtube.com/watch?v=dQw4w9WgXcQ</string></dict></plist>\n"
+            ),
+        )
+        .expect("write webloc link");
+        std::fs::write(
+            root.join(format!("{output_base}.link.desktop")),
+            format!(
+                "[Desktop Entry]\nType=Link\nName=Video\nURL=https://www.youtube.com/watch?v=dQw4w9WgXcQ\nEncoding=UTF-8\n"
+            ),
+        )
+        .expect("write desktop link");
 
         super::assert_flat_media_root_sidecar_families(root, output_base)
             .expect("flat media root sidecars should be accepted");
@@ -3504,15 +3520,28 @@ mod tests {
             .expect("write subtitle");
         std::fs::write(
             root.join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].thumbnail.webp"),
-            b"webp",
+            b"RIFF\x00\x00\x00\x00WEBP",
         )
         .expect("write thumbnail");
-        std::fs::write(root.join(format!("{output_base}.link.url")), b"[InternetShortcut]")
-            .expect("write link");
-        std::fs::write(root.join(format!("{output_base}.link.webloc")), b"webloc")
-            .expect("write webloc link");
-        std::fs::write(root.join(format!("{output_base}.link.desktop")), b"desktop")
-            .expect("write desktop link");
+        std::fs::write(
+            root.join(format!("{output_base}.link.url")),
+            format!("[InternetShortcut]\nURL=https://www.youtube.com/watch?v=dQw4w9WgXcQ\n"),
+        )
+        .expect("write link");
+        std::fs::write(
+            root.join(format!("{output_base}.link.webloc")),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>URL</key><string>https://www.youtube.com/watch?v=dQw4w9WgXcQ</string></dict></plist>\n"
+            ),
+        )
+        .expect("write webloc link");
+        std::fs::write(
+            root.join(format!("{output_base}.link.desktop")),
+            format!(
+                "[Desktop Entry]\nType=Link\nName=Video\nURL=https://www.youtube.com/watch?v=dQw4w9WgXcQ\nEncoding=UTF-8\n"
+            ),
+        )
+        .expect("write desktop link");
 
         super::assert_flat_media_root_sidecar_families(root, output_base)
             .expect("media-id-aligned non-subtitle sidecars should be accepted");
