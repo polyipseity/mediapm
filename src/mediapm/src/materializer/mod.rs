@@ -1091,8 +1091,9 @@ mod tests {
         ));
     }
 
-    /// Injected [`RecordingProgressTracker`] produces no ops when hierarchy is
-    /// empty (early return before any progress bar work).
+    /// Injected [`RecordingProgressTracker`] with overall bar produces no ops
+    /// beyond the overall `AddBar` when hierarchy is empty (early return
+    /// before any per-entry progress bar work).
     #[tokio::test]
     async fn sync_hierarchy_with_empty_hierarchy_no_progress_ops() {
         let root = mediapm_utils::temp::artifact_dir().unwrap();
@@ -1109,7 +1110,7 @@ mod tests {
         let conductor_state = ConductorState::new_empty();
         let generated_doc = NickelDocument::default();
 
-        let recording = RecordingProgressTracker::new();
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
         let result = sync_hierarchy(
             &paths,
             &document,
@@ -1119,13 +1120,19 @@ mod tests {
             &conductor_state,
             &generated_doc,
             Some(Arc::new(recording.clone())),
-            None,
+            Some(Arc::new(overall)),
         )
         .await;
 
         assert!(result.is_ok());
         let ops = recording.ops();
-        assert!(ops.is_empty(), "empty hierarchy should produce no progress ops, got {ops:?}");
+        // Only the overall bar AddBar from with_overall(); the early return
+        // prevents set_total/set_prefix_components from running.
+        assert_eq!(
+            ops,
+            vec![ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() }],
+            "empty hierarchy should only produce the overall AddBar, got {ops:?}",
+        );
     }
 
     /// Single media entry with no CAS content emits the full progress
@@ -1182,7 +1189,7 @@ mod tests {
         let conductor_state = ConductorState::new_empty();
         let generated_doc = NickelDocument::default();
 
-        let recording = RecordingProgressTracker::new();
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
         let result = sync_hierarchy(
             &paths,
             &document,
@@ -1192,20 +1199,22 @@ mod tests {
             &conductor_state,
             &generated_doc,
             Some(Arc::new(recording.clone())),
-            None,
+            Some(Arc::new(overall)),
         )
         .await;
 
         assert!(result.is_ok(), "sync_hierarchy should succeed: {result:?}");
         let ops = recording.ops();
-        // Exact op sequence: overall `[mat]` bar → per-entry `[stg]`/`[vrf]`
-        // phases → `Advance(1)` + `FinishWarning` (skipped, no CAS content)
-        // → overall `Advance(1)` + `FinishSuccess`.
+        // Exact op sequence: overall `[mat]` bar (AddBar from with_overall,
+        // then SetTotal + SetPrefixComponents from sync_hierarchy) → per-entry
+        // `[stg]`/`[vrf]` phases → `Advance(1)` + `FinishWarning` (skipped, no
+        // CAS content) → overall `Advance(1)` + `FinishSuccess`.
         assert_eq!(
             ops,
             vec![
-                // Overall bar.
+                // Overall bar created by with_overall(), total set by sync_hierarchy.
                 ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() },
+                ProgressOp::SetTotal { total: 1 },
                 ProgressOp::SetPrefixComponents {
                     marker: String::new(),
                     tool_name: "materializing".into(),
