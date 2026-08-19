@@ -878,3 +878,29 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the reposit
 | Overall `finish_warning` when any entry skipped, `finish_success` otherwise                                   | `feat(mediapm)` commit — materializer/mod.rs overall finish block                    | [covered] |
 | `SyncSharedState.verify_materialization` wired into blake3 re-hash verification after materialization         | `refactor(conductor): wire verify_materialization flag` commit — materializer/mod.rs  | [covered] |
 | Materialization screen unit tests with `RecordingProgressTracker`                                             | `sync_hierarchy_with_single_media_produces_progress_ops`, `sync_hierarchy_with_empty_hierarchy_no_progress_ops` (2 tests, `src/mediapm/src/materializer/mod.rs`)                                                                                                                        | [covered] |
+
+### Demo online content verification (e2e exact bytes + live demo resilient checks)
+
+| Spec item | Test(s) | Status |
+|-----------|---------|--------|
+| Shared constants: `ONLINE_DEMO_YOUTUBE_URL`, `ONLINE_DEMO_YT_DLP_VIDEO_ID` in `demo_hierarchy_spec.rs` | Imported by e2e test and online demo; compilation check | [covered] |
+| Shared helpers: `assert_starts_with_webvtt`, `assert_valid_image_magic_bytes`, `assert_content_contains_youtube_url`, `assert_ffprobe_has_video_and_audio` in `demo_hierarchy_spec.rs` | Used by e2e test + online demo; compilation check | [covered] |
+| E2e `assert_materialized_content_matches_seeds`: exact byte assertions for MKV (MKV_HEADER), VTT (WEBVTT prefix), description, info.json, archive, thumbnails (jpg/webp bytes), links (url/webloc/desktop bytes), folder projections | `demo_online_hierarchy_materialization::tests::main_is_exercised` (integration, pre-seeded CAS with deterministic bytes) | [covered] |
+| E2e `assert_file_bytes` helper: reads file and asserts exact byte equality against expected seed content | Used by `assert_materialized_content_matches_seeds` for all 22+ file assertions | [covered] |
+| E2e playlist content structural check: `starts_with("#EXTM3U")` + `contains(".mkv")` | `demo_online_hierarchy_materialization::tests::main_is_exercised` | [covered] |
+| Live demo `assert_sidecar_content_expectations`: infojson `id` == VIDEO_ID, `extractor` == "youtube", `webpage_url` contains video ID, `upload_date` YYYYMMDD, `duration` > 0 | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_sidecar_content_expectations`: subtitle VTT starts with "WEBVTT", contains "Kind: captions" + "Language: en" | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_link_file_content_format`: .url format ([InternetShortcut] + URL= + YouTube URL) | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_link_file_content_format`: .desktop format ([Desktop Entry] + Type=Link + Name= + URL= + Encoding=UTF-8 + YouTube URL) | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_link_file_content_format`: .webloc format (XML plist + `<key>URL</key>` + `<string>` with YouTube URL) | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_playlist_content_format`: `#EXTM3U` header + `.mkv` reference | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_valid_image_magic_bytes`: JPEG (FF D8 FF) / PNG (89 50 4E 47) / WebP (RIFF+WEBP) magic byte validation | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `ffprobe_json_payload`: runs ffprobe with `-show_entries` + `-of json`, returns parsed `serde_json::Value` | Shared helper used by `assert_tagged_media_metadata` and `assert_untagged_media_metadata` | [covered] |
+| Live demo `assert_video_stream_properties`: h264, yuv420p, progressive, 25/1, 16:9, 256x144, bt709 color | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_audio_stream_properties`: aac, 44100, stereo, 2 channels | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_format_tags_structural`: title, ARTIST, ALBUM, DATE, LABEL, GENRE (contains "blue-eyed soul"/"dance"), COMMENT (contains video ID), ISRC exists, MUSICBRAINZ_* IDs exist, REPLAYGAIN_REFERENCE_LOUDNESS ~89.0 | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_tagged_media_metadata`: matroska container, 2 streams, positive duration, full video+audio+tag assertions | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_untagged_media_metadata`: matroska container, 2 streams, positive duration, video+audio properties, NO REPLAYGAIN_TRACK_GAIN | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_video_file_integrity`: reads bytes, checks `bytes_look_like_matroska`, calls `assert_mkv_video_audio_with_ffprobe` | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
+| Live demo `assert_eq_field` / `assert_tag_eq` shared helpers for ffprobe stream/tag field comparison | Used by video/audio/tag assertion functions | [covered] |
+| Demo hierarchy golden fixture: no content fields (content checks stay in code, not JSON) | `demo_hierarchy_golden.json` contains structural layout only; content verification is code-only | [covered] |
