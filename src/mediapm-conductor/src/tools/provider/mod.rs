@@ -1032,7 +1032,7 @@ async fn process_single_source(
         // (`NotCapable`), breaking the challenge and yielding HTTP 403. The
         // `--js-runtimes` CLI only accepts `RUNTIME[:PATH]` (no args), so the
         // only fix is to wrap the deno binary: rename the real executable and
-        // place a shim that re-execs it with `--allow-all`.
+        // place a shim that injects `--allow-all` after the first arg (`run`).
         if tool_id == "deno" {
             wrap_deno_binary(os_dir, &exec_path)?;
         }
@@ -1096,7 +1096,9 @@ async fn process_single_source(
 /// is denied (`NotCapable`), breaking `YouTube` challenge solving (HTTP 403).
 /// Because yt-dlp's `--js-runtimes` accepts only `RUNTIME[:PATH]` (no args), we
 /// rename the real binary to `deno.real` (or `deno.real.exe`) and write a shim
-/// at the original `deno` path that re-execs it with `--allow-all`.
+/// at the original `deno` path that injects `--allow-all` after the first arg
+/// (typically `run`). deno 2.x requires `--allow-all` after the subcommand, not
+/// as a top-level flag.
 ///
 /// `exec_rel` is the executable path discovered by [`find_os_executable`],
 /// which already handles nested per-OS layouts (e.g. `windows/deno.exe`,
@@ -1132,10 +1134,17 @@ fn wrap_deno_binary(
         )
     })?;
 
+    // deno 2.x only accepts `--allow-all` *after* the subcommand (e.g. `run`),
+    // not as a top-level flag. yt-dlp always invokes `deno run ...`, so the shim
+    // peels the first arg, injects `--allow-all`, and forwards the rest:
+    //   unix:   deno "$1" --allow-all "$2" "$3" ...
+    //   windows: deno %1 --allow-all %2 %3 ...
     let shim_contents = if cfg!(windows) {
-        format!("@\"%~dp0{real_name}\" --allow-all %*\r\n")
+        format!("@set \"first=%1\"\r\n@shift\r\n@\"%~dp0{real_name}\" %first% --allow-all %*\r\n")
     } else {
-        format!("#!/bin/sh\nexec \"$(dirname \"$0\")/{real_name}\" --allow-all \"$@\"\n")
+        format!(
+            "#!/bin/sh\nfirst=\"$1\"; shift; exec \"$(dirname \"$0\")/{real_name}\" \"$first\" --allow-all \"$@\"\n"
+        )
     };
 
     std::fs::write(&exec_abs, shim_contents).map_err(|source| {
@@ -1814,6 +1823,10 @@ mod tests {
         let shim = std::fs::read_to_string(os_dir.path().join("deno")).unwrap();
         assert!(shim.contains("deno.real"), "shim must re-exec deno.real");
         assert!(shim.contains("--allow-all"), "shim must grant deno permissions");
+        // deno 2.x: --allow-all must come AFTER the first arg (typically `run`)
+        let first_pos = shim.find("$first").expect("shim must reference $first");
+        let allow_pos = shim.find("--allow-all").expect("shim must contain --allow-all");
+        assert!(first_pos < allow_pos, "--allow-all must come after the first arg in unix shim");
         assert!(std::fs::metadata(os_dir.path().join("deno.real")).is_ok());
     }
 
@@ -1851,6 +1864,15 @@ mod tests {
             "shim must re-exec the renamed deno binary '{real_name}'"
         );
         assert!(shim.contains("--allow-all"), "shim must grant deno permissions");
+        // deno 2.x: --allow-all must come AFTER the first arg (typically `run`)
+        // Note: cfg!(windows) is false at compile time on macOS/Linux, so even
+        // the Windows-layout test produces a unix shim.
+        let first_marker = if cfg!(windows) { "%first%" } else { "$first" };
+        let first_pos = shim.find(first_marker).unwrap_or_else(|| {
+            panic!("shim must reference first-arg placeholder '{first_marker}': {shim}")
+        });
+        let allow_pos = shim.find("--allow-all").expect("shim must contain --allow-all");
+        assert!(first_pos < allow_pos, "--allow-all must come after the first arg in shim");
         assert!(std::fs::metadata(os_dir.path().join("windows").join(real_name)).is_ok());
     }
 
@@ -1888,6 +1910,10 @@ mod tests {
             "shim must re-exec the renamed deno binary '{real_name}'"
         );
         assert!(shim.contains("--allow-all"), "shim must grant deno permissions");
+        // deno 2.x: --allow-all must come AFTER the first arg (typically `run`)
+        let first_pos = shim.find("$first").expect("shim must reference $first");
+        let allow_pos = shim.find("--allow-all").expect("shim must contain --allow-all");
+        assert!(first_pos < allow_pos, "--allow-all must come after the first arg in unix shim");
         assert!(std::fs::metadata(os_dir.path().join("darwin").join(real_name)).is_ok());
     }
 

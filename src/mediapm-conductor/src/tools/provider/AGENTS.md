@@ -111,9 +111,12 @@ invariants (tracked as `S-DENO-1..6` in the workspace coverage matrix):
   executable, so the shim re-execs it via a sibling-relative path
   (`$(dirname "$0")/deno.real` on unix, `%~dp0deno.real.exe` on Windows).
 - **S-DENO-3 (shim contract):** A shim is written at the original executable
-  path that re-execs the real binary with `--allow-all`. On unix the shim is
-  `#!/bin/sh\nexec "$(dirname "$0")/{real_name}" --allow-all "$@"\n` and is marked
-  executable (`+0o111`). On Windows it is `@"%~dp0{real_name}" --allow-all %*\r\n`.
+  path that injects `--allow-all` **after** the first arg (typically `run`).
+  deno 2.x only accepts `--allow-all` as a post-subcommand flag, not at top
+  level. On unix the shim is
+  `#!/bin/sh\nfirst="$1"; shift; exec "$(dirname "$0")/{real_name}" "$first" --allow-all "$@"\n`
+  and is marked executable (`+0o111`). On Windows it is
+  `@set "first=%1"\r\n@shift\r\n@\"%~dp0{real_name}\" %first% --allow-all %*\r\n`.
 - **S-DENO-4 (exec_path stability):** The `exec_path` returned by
   `process_single_source` is UNCHANGED by the wrap — it still points at the shim
   location.
