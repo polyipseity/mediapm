@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::tools::helpers::build_os_conditional_selector;
+use mediapm_conductor::tools::helpers::build_raw_os_conditional_selector;
 
 use crate::conductor_bridge::constants::{
     DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, OUTPUT_YT_DLP_ANNOTATION_FILE, OUTPUT_YT_DLP_ARCHIVE_FILE,
@@ -111,9 +111,14 @@ pub(crate) fn resolve_step_output_binding(
 /// The path is relative to the sandbox root (a direct child), because the
 /// step process runs with the sandbox directory as its working directory and
 /// the inlined companion payload is materialized at `deps/ffmpeg/<os>/ffmpeg`.
+///
+/// Uses `build_raw_os_conditional_selector` because the paths already contain
+/// the OS directory component (`deps/ffmpeg/{os}/ffmpeg`). Using
+/// `build_os_conditional_selector` would produce double-prefixed paths like
+/// `macos/deps/ffmpeg/macos/ffmpeg`.
 #[must_use]
 fn yt_dlp_managed_ffmpeg_location_selector() -> String {
-    build_os_conditional_selector(&BTreeMap::from([
+    build_raw_os_conditional_selector(&BTreeMap::from([
         ("linux".to_string(), "deps/ffmpeg/linux/ffmpeg".to_string()),
         ("macos".to_string(), "deps/ffmpeg/macos/ffmpeg".to_string()),
         ("windows".to_string(), "deps/ffmpeg/windows/ffmpeg.exe".to_string()),
@@ -127,9 +132,14 @@ fn yt_dlp_managed_ffmpeg_location_selector() -> String {
 /// direct child), because the step process runs with the sandbox directory as
 /// its working directory and the inlined companion payload is materialized at
 /// `deps/deno/<os>/deno`.
+///
+/// Uses `build_raw_os_conditional_selector` because the paths already contain
+/// the OS directory component (`deps/deno/{os}/deno`). Using
+/// `build_os_conditional_selector` would produce double-prefixed paths like
+/// `deno:macos/deps/deno/macos/deno`.
 #[must_use]
 fn yt_dlp_managed_js_runtimes_selector() -> String {
-    let inner = build_os_conditional_selector(&BTreeMap::from([
+    let inner = build_raw_os_conditional_selector(&BTreeMap::from([
         ("linux".to_string(), "deps/deno/linux/deno".to_string()),
         ("macos".to_string(), "deps/deno/macos/deno".to_string()),
         ("windows".to_string(), "deps/deno/windows/deno.exe".to_string()),
@@ -263,23 +273,150 @@ pub(crate) fn yt_dlp_variant_inputs(config: &YtDlpOutputVariantConfig) -> BTreeM
 mod tests {
     use super::*;
 
+    // ── Selector exact-output regression tests ────────────────────────────
+
     #[test]
-    fn ffmpeg_selector_is_sandbox_relative_without_parent_prefix() {
+    fn ffmpeg_selector_resolves_to_sandbox_relative_deps_path() {
         let selector = yt_dlp_managed_ffmpeg_location_selector();
-        assert!(!selector.contains("../"), "selector must not escape the sandbox root: {selector}");
+        // On all platforms (BTreeMap iterates by key order, 3 OSes present),
+        // the selector must be a nested template. The key invariant: each
+        // branch must resolve to `deps/ffmpeg/{os}/ffmpeg` WITHOUT double
+        // OS-prefix duplication (the original bug produced
+        // `macos/deps/ffmpeg/macos/ffmpeg`).
         assert!(
-            selector.contains("deps/ffmpeg/"),
-            "selector must reference the inlined ffmpeg payload: {selector}"
+            selector.contains("deps/ffmpeg/linux/ffmpeg"),
+            "selector must contain literal deps path: {selector}"
+        );
+        assert!(
+            selector.contains("deps/ffmpeg/macos/ffmpeg"),
+            "selector must contain literal deps path: {selector}"
+        );
+        assert!(
+            selector.contains("deps/ffmpeg/windows/ffmpeg.exe"),
+            "selector must contain literal deps path: {selector}"
+        );
+        // Core regression: no OS label appears before `deps/`
+        assert!(
+            !selector.contains("linux/deps/"),
+            "selector must not double-prefix linux: {selector}"
+        );
+        assert!(
+            !selector.contains("macos/deps/"),
+            "selector must not double-prefix macos: {selector}"
+        );
+        assert!(
+            !selector.contains("windows/deps/"),
+            "selector must not double-prefix windows: {selector}"
+        );
+        assert!(
+            selector.contains("${context.os == "),
+            "selector must be a nested template: {selector}"
         );
     }
 
     #[test]
-    fn deno_selector_is_sandbox_relative_without_parent_prefix() {
+    fn deno_selector_resolves_to_sandbox_relative_deps_path() {
         let selector = yt_dlp_managed_js_runtimes_selector();
-        assert!(!selector.contains("../"), "selector must not escape the sandbox root: {selector}");
+        assert!(selector.starts_with("deno:"), "selector must start with deno: prefix: {selector}");
         assert!(
-            selector.starts_with("deno:") && selector.contains("deps/deno/"),
-            "selector must reference the inlined deno payload: {selector}"
+            selector.contains("deps/deno/linux/deno"),
+            "selector must contain literal deps path: {selector}"
+        );
+        assert!(
+            selector.contains("deps/deno/macos/deno"),
+            "selector must contain literal deps path: {selector}"
+        );
+        assert!(
+            selector.contains("deps/deno/windows/deno.exe"),
+            "selector must contain literal deps path: {selector}"
+        );
+        // Core regression: no OS label appears before `deps/`
+        assert!(
+            !selector.contains("deno:linux/deps/"),
+            "selector must not double-prefix linux: {selector}"
+        );
+        assert!(
+            !selector.contains("deno:macos/deps/"),
+            "selector must not double-prefix macos: {selector}"
+        );
+        assert!(
+            !selector.contains("deno:windows/deps/"),
+            "selector must not double-prefix windows: {selector}"
+        );
+    }
+
+    #[test]
+    fn ffmpeg_selector_has_no_os_prefix_duplication() {
+        let selector = yt_dlp_managed_ffmpeg_location_selector();
+        // Core regression: no OS label appears before `deps/`
+        assert!(
+            !selector.starts_with("linux/")
+                && !selector.starts_with("macos/")
+                && !selector.starts_with("windows/"),
+            "selector must not start with an OS label (double-prefix bug): {selector}"
+        );
+    }
+
+    #[test]
+    fn deno_selector_has_no_os_prefix_duplication() {
+        let selector = yt_dlp_managed_js_runtimes_selector();
+        assert!(
+            !selector.starts_with("deno:linux/")
+                && !selector.starts_with("deno:macos/")
+                && !selector.starts_with("deno:windows/"),
+            "selector must not start with deno:OS (double-prefix bug): {selector}"
+        );
+    }
+
+    // ── Variant-inputs integration regression tests ───────────────────────
+
+    #[test]
+    fn yt_dlp_primary_variant_inputs_ffmpeg_location_has_no_double_prefix() {
+        let config =
+            YtDlpOutputVariantConfig { kind: YtDlpOutputKind::Primary, ..Default::default() };
+        let inputs = yt_dlp_variant_inputs(&config);
+        let ffmpeg_loc =
+            inputs.get("ffmpeg_location").expect("ffmpeg_location must be set for primary");
+        assert!(
+            !ffmpeg_loc.starts_with("linux/")
+                && !ffmpeg_loc.starts_with("macos/")
+                && !ffmpeg_loc.starts_with("windows/"),
+            "ffmpeg_location in variant inputs must not have double OS prefix: {ffmpeg_loc}"
+        );
+        assert!(
+            ffmpeg_loc.contains("deps/ffmpeg/"),
+            "ffmpeg_location must reference inlined ffmpeg: {ffmpeg_loc}"
+        );
+    }
+
+    #[test]
+    fn yt_dlp_primary_variant_inputs_js_runtimes_has_no_double_prefix() {
+        let config =
+            YtDlpOutputVariantConfig { kind: YtDlpOutputKind::Primary, ..Default::default() };
+        let inputs = yt_dlp_variant_inputs(&config);
+        let js_runtimes = inputs.get("js_runtimes").expect("js_runtimes must be set for primary");
+        // With 3 OSes, selector is `deno:${context.os == ...}` — the deno:
+        // prefix is outside the template, so we check the inner paths.
+        assert!(
+            js_runtimes.starts_with("deno:"),
+            "js_runtimes must start with deno: prefix: {js_runtimes}"
+        );
+        assert!(
+            js_runtimes.contains("deps/deno/linux/deno"),
+            "js_runtimes must contain inlined deno path: {js_runtimes}"
+        );
+        // Core regression: no OS label appears before `deps/` inside the template
+        assert!(
+            !js_runtimes.contains("linux/deps/"),
+            "js_runtimes must not double-prefix linux: {js_runtimes}"
+        );
+        assert!(
+            !js_runtimes.contains("macos/deps/"),
+            "js_runtimes must not double-prefix macos: {js_runtimes}"
+        );
+        assert!(
+            !js_runtimes.contains("windows/deps/"),
+            "js_runtimes must not double-prefix windows: {js_runtimes}"
         );
     }
 }
