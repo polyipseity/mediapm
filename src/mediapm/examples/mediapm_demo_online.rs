@@ -2322,8 +2322,6 @@ fn ffprobe_json_payload(path: &Path, show_entries: &str) -> ExampleResult<serde_
         .arg("error")
         .arg("-show_entries")
         .arg(show_entries)
-        .arg("-show_format")
-        .arg("tags")
         .arg("-of")
         .arg("json")
         .arg(path)
