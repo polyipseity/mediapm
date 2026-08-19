@@ -109,7 +109,10 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mediapm::demo_hierarchy_spec::online_demo_public_artifact_filename;
+use mediapm::demo_hierarchy_spec::{
+    ONLINE_DEMO_YOUTUBE_URL, ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_valid_image_magic_bytes,
+    online_demo_public_artifact_filename,
+};
 use mediapm::{
     ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
     HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
@@ -1645,6 +1648,17 @@ fn assert_sidecar_directory_family_content(
                 provider_title,
                 video_id,
             )?;
+            for entry in &files {
+                assert_link_file_content_format(entry)?;
+            }
+        }
+        "thumbnails" => {
+            for entry in &files {
+                let ext = entry.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if is_image_extension(ext) {
+                    assert_valid_image_magic_bytes(entry).map_err(|e| format!("[sidecar] {e}"))?;
+                }
+            }
         }
         _ => {}
     }
@@ -1815,6 +1829,16 @@ fn assert_flat_media_root_sidecar_families(
                 .is_some_and(|name| name.contains(".link."))
         })
         .collect::<Vec<_>>();
+
+    for thumb in &thumbnails_files {
+        let ext = thumb.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if is_image_extension(ext) {
+            assert_valid_image_magic_bytes(thumb).map_err(|e| format!("[root-projection] {e}"))?;
+        }
+    }
+    for link in &links_files {
+        assert_link_file_content_format(link)?;
+    }
 
     assert_root_projection_sidecar_names_align(
         interpolated_root,
@@ -2090,10 +2114,435 @@ fn assert_sidecar_content_expectations(variant: &str, path: &Path) -> ExampleRes
                 )
                 .into());
             }
+            if !variant.starts_with("playlist") {
+                let id = value.get("id").and_then(serde_json::Value::as_str).unwrap_or("");
+                if id != ONLINE_DEMO_YT_DLP_VIDEO_ID {
+                    return Err(format!(
+                        "[sidecar] infojson 'id' field expected '{ONLINE_DEMO_YT_DLP_VIDEO_ID}', got '{id}'",
+                    )
+                    .into());
+                }
+                let extractor =
+                    value.get("extractor").and_then(serde_json::Value::as_str).unwrap_or("");
+                if extractor != "youtube" {
+                    return Err(format!(
+                        "[sidecar] infojson 'extractor' field expected 'youtube', got '{extractor}'",
+                    )
+                    .into());
+                }
+                let webpage_url =
+                    value.get("webpage_url").and_then(serde_json::Value::as_str).unwrap_or("");
+                if !webpage_url.contains(ONLINE_DEMO_YT_DLP_VIDEO_ID) {
+                    return Err(format!(
+                        "[sidecar] infojson 'webpage_url' '{webpage_url}' does not contain video ID",
+                    )
+                    .into());
+                }
+                let upload_date =
+                    value.get("upload_date").and_then(serde_json::Value::as_str).unwrap_or("");
+                if upload_date.len() != 8 || !upload_date.chars().all(|c| c.is_ascii_digit()) {
+                    return Err(format!(
+                        "[sidecar] infojson 'upload_date' expected YYYYMMDD (8 digits), got '{upload_date}'",
+                    )
+                    .into());
+                }
+                let duration =
+                    value.get("duration").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                if duration <= 0.0 {
+                    return Err(format!(
+                        "[sidecar] infojson 'duration' expected positive, got '{duration}'",
+                    )
+                    .into());
+                }
+            }
+        }
+        v if v.starts_with("subtitles") && !v.contains("playlist") => {
+            let text = fs::read_to_string(path)?;
+            if !text.starts_with("WEBVTT") {
+                return Err(format!(
+                    "[sidecar] expected subtitle variant '{variant}' at '{}' to start with 'WEBVTT'",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.contains("Kind: captions") {
+                return Err(format!(
+                    "[sidecar] expected subtitle variant '{variant}' at '{}' to contain 'Kind: captions'",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.contains("Language: en") {
+                return Err(format!(
+                    "[sidecar] expected subtitle variant '{variant}' at '{}' to contain 'Language: en'",
+                    path.display()
+                )
+                .into());
+            }
         }
         _ => {}
     }
 
+    Ok(())
+}
+
+fn assert_link_file_content_format(path: &Path) -> ExampleResult<()> {
+    let text = fs::read_to_string(path)?;
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "url" => {
+            if !text.contains("[InternetShortcut]") {
+                return Err(format!(
+                    "[link] .url file '{}' missing '[InternetShortcut]' header",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.lines().any(|line| line.starts_with("URL=")) {
+                return Err(
+                    format!("[link] .url file '{}' missing 'URL=' line", path.display()).into()
+                );
+            }
+            if !text.contains(ONLINE_DEMO_YOUTUBE_URL) {
+                return Err(format!(
+                    "[link] .url file '{}' does not contain YouTube URL",
+                    path.display()
+                )
+                .into());
+            }
+        }
+        "desktop" => {
+            if !text.contains("[Desktop Entry]") {
+                return Err(format!(
+                    "[link] .desktop file '{}' missing '[Desktop Entry]' header",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.contains("Type=Link") {
+                return Err(format!(
+                    "[link] .desktop file '{}' missing 'Type=Link'",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.lines().any(|line| line.starts_with("Name=")) {
+                return Err(format!(
+                    "[link] .desktop file '{}' missing 'Name=' line",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.lines().any(|line| line.starts_with("URL=")) {
+                return Err(format!(
+                    "[link] .desktop file '{}' missing 'URL=' line",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.contains("Encoding=UTF-8") {
+                return Err(format!(
+                    "[link] .desktop file '{}' missing 'Encoding=UTF-8'",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.contains(ONLINE_DEMO_YOUTUBE_URL) {
+                return Err(format!(
+                    "[link] .desktop file '{}' does not contain YouTube URL",
+                    path.display()
+                )
+                .into());
+            }
+        }
+        "webloc" => {
+            if !text.contains("<?xml") {
+                return Err(format!(
+                    "[link] .webloc file '{}' missing '<?xml' declaration",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.contains("<plist") {
+                return Err(format!(
+                    "[link] .webloc file '{}' missing '<plist' element",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.contains("<key>URL</key>") {
+                return Err(format!(
+                    "[link] .webloc file '{}' missing '<key>URL</key>'",
+                    path.display()
+                )
+                .into());
+            }
+            if !text.contains(&format!("<string>{ONLINE_DEMO_YOUTUBE_URL}</string>")) {
+                return Err(format!(
+                    "[link] .webloc file '{}' missing '<string>{ONLINE_DEMO_YOUTUBE_URL}</string>'",
+                    path.display()
+                )
+                .into());
+            }
+        }
+        other => {
+            return Err(format!(
+                "[link] unexpected link file extension '{other}' for '{}'",
+                path.display()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn assert_playlist_content_format(path: &Path) -> ExampleResult<()> {
+    let text = fs::read_to_string(path)?;
+    if !text.starts_with("#EXTM3U") {
+        return Err(format!(
+            "[playlist] expected playlist file '{}' to start with '#EXTM3U'",
+            path.display()
+        )
+        .into());
+    }
+    if !text.contains(".mkv") {
+        return Err(format!(
+            "[playlist] expected playlist file '{}' to reference a '.mkv' file",
+            path.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn ffprobe_json_payload(path: &Path, show_entries: &str) -> ExampleResult<serde_json::Value> {
+    let ffprobe_command = demo_ffprobe_command();
+    let output = Command::new(ffprobe_command)
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg(show_entries)
+        .arg("-show_format")
+        .arg("tags")
+        .arg("-of")
+        .arg("json")
+        .arg(path)
+        .output()
+        .map_err(|error| {
+            format!(
+                "[ffprobe] failed to launch ffprobe command '{}' for '{}': {error}",
+                ffprobe_command,
+                path.display()
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "[ffprobe] ffprobe failed for '{}' with status {}: {stderr}",
+            path.display(),
+            output.status
+        )
+        .into());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!("[ffprobe] JSON decode failed for '{}': {error}", path.display()).into()
+    })
+}
+
+fn assert_eq_field(stream: &serde_json::Value, field: &str, expected: &str) -> ExampleResult<()> {
+    let actual = stream.get(field).and_then(serde_json::Value::as_str).unwrap_or("");
+    if actual != expected {
+        return Err(format!(
+            "[ffprobe] stream field '{field}' expected '{expected}', got '{actual}'",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn assert_tag_eq(
+    tags: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    expected: &str,
+) -> ExampleResult<()> {
+    let actual = tags.get(key).and_then(serde_json::Value::as_str).unwrap_or("");
+    if actual != expected {
+        return Err(format!("[ffprobe] tag '{key}' expected '{expected}', got '{actual}'",).into());
+    }
+    Ok(())
+}
+
+fn assert_video_stream_properties(payload: &serde_json::Value) -> ExampleResult<()> {
+    let streams = payload
+        .get("streams")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "[ffprobe] payload missing 'streams' array".to_string())?;
+    let video = streams
+        .iter()
+        .find(|s| s.get("codec_type").and_then(serde_json::Value::as_str) == Some("video"))
+        .ok_or_else(|| "[ffprobe] no video stream found".to_string())?;
+    assert_eq_field(video, "codec_name", "h264")?;
+    assert_eq_field(video, "pix_fmt", "yuv420p")?;
+    assert_eq_field(video, "field_order", "progressive")?;
+    assert_eq_field(video, "r_frame_rate", "25/1")?;
+    assert_eq_field(video, "display_aspect_ratio", "16:9")?;
+    assert_eq_field(video, "sample_aspect_ratio", "1:1")?;
+    assert_eq_field(video, "color_space", "bt709")?;
+    assert_eq_field(video, "color_transfer", "bt709")?;
+    assert_eq_field(video, "color_primaries", "bt709")?;
+    assert_eq_field(video, "width", "256")?;
+    assert_eq_field(video, "height", "144")?;
+    Ok(())
+}
+
+fn assert_audio_stream_properties(payload: &serde_json::Value) -> ExampleResult<()> {
+    let streams = payload
+        .get("streams")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "[ffprobe] payload missing 'streams' array".to_string())?;
+    let audio = streams
+        .iter()
+        .find(|s| s.get("codec_type").and_then(serde_json::Value::as_str) == Some("audio"))
+        .ok_or_else(|| "[ffprobe] no audio stream found".to_string())?;
+    assert_eq_field(audio, "codec_name", "aac")?;
+    assert_eq_field(audio, "sample_rate", "44100")?;
+    assert_eq_field(audio, "channel_layout", "stereo")?;
+    assert_eq_field(audio, "channels", "2")?;
+    Ok(())
+}
+
+fn assert_format_tags_structural(payload: &serde_json::Value) -> ExampleResult<()> {
+    let format_tags = payload
+        .get("format")
+        .and_then(|format| format.get("tags"))
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "[ffprobe] payload missing format.tags".to_string())?;
+    assert_tag_eq(format_tags, "title", "Never Gonna Give You Up")?;
+    assert_tag_eq(format_tags, "ARTIST", "Rick Astley")?;
+    assert_tag_eq(format_tags, "ALBUM", "Never Gonna Give You Up")?;
+    assert_tag_eq(format_tags, "DATE", "1987-07-27")?;
+    assert_tag_eq(format_tags, "LABEL", "RCA")?;
+    let genre = format_tags.get("GENRE").and_then(serde_json::Value::as_str).unwrap_or("");
+    if !genre.contains("blue-eyed soul") && !genre.contains("dance") {
+        return Err(format!(
+            "[ffprobe] tag 'GENRE' expected to contain 'blue-eyed soul' or 'dance', got '{genre}'",
+        )
+        .into());
+    }
+    let comment = format_tags.get("COMMENT").and_then(serde_json::Value::as_str).unwrap_or("");
+    if !comment.contains(ONLINE_DEMO_YT_DLP_VIDEO_ID) {
+        return Err(format!(
+            "[ffprobe] tag 'COMMENT' expected to contain video ID '{ONLINE_DEMO_YT_DLP_VIDEO_ID}', got '{comment}'",
+        )
+        .into());
+    }
+    if !format_tags.contains_key("ISRC") {
+        return Err("[ffprobe] tag 'ISRC' expected to exist".into());
+    }
+    for key in [
+        "MUSICBRAINZ_ARTISTID",
+        "MUSICBRAINZ_ALBUMARTISTID",
+        "MUSICBRAINZ_ALBUMID",
+        "MUSICBRAINZ_RECORDINGID",
+    ] {
+        if !format_tags.contains_key(key) {
+            return Err(format!("[ffprobe] tag '{key}' expected to exist").into());
+        }
+    }
+    let replaygain = format_tags
+        .get("REPLAYGAIN_REFERENCE_LOUDNESS")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if !replaygain.contains("89.0") {
+        return Err(format!(
+            "[ffprobe] tag 'REPLAYGAIN_REFERENCE_LOUDNESS' expected to contain '89.0', got '{replaygain}'",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn assert_tagged_media_metadata(path: &Path) -> ExampleResult<()> {
+    let payload =
+        ffprobe_json_payload(path, "format=format_name,duration,nb_streams:stream=codec_type")?;
+    let format_name = payload
+        .get("format")
+        .and_then(|format| format.get("format_name"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if !format_name.contains("matroska") {
+        return Err(format!(
+            "[ffprobe] format_name expected to contain 'matroska', got '{format_name}'",
+        )
+        .into());
+    }
+    let nb_streams = payload
+        .get("format")
+        .and_then(|format| format.get("nb_streams"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if nb_streams != 2 {
+        return Err(format!("[ffprobe] nb_streams expected 2, got '{nb_streams}'",).into());
+    }
+    let duration = payload
+        .get("format")
+        .and_then(|format| format.get("duration"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    if duration <= 0.0 {
+        return Err(format!("[ffprobe] duration expected positive, got '{duration}'",).into());
+    }
+    assert_video_stream_properties(&payload)?;
+    assert_audio_stream_properties(&payload)?;
+    let full_payload = ffprobe_json_payload(path, "format_tags:stream_tags")?;
+    assert_format_tags_structural(&full_payload)?;
+    Ok(())
+}
+
+fn assert_untagged_media_metadata(path: &Path) -> ExampleResult<()> {
+    let payload =
+        ffprobe_json_payload(path, "format=format_name,duration,nb_streams:stream=codec_type")?;
+    let format_name = payload
+        .get("format")
+        .and_then(|format| format.get("format_name"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if !format_name.contains("matroska") {
+        return Err(format!(
+            "[ffprobe] format_name expected to contain 'matroska', got '{format_name}'",
+        )
+        .into());
+    }
+    let nb_streams = payload
+        .get("format")
+        .and_then(|format| format.get("nb_streams"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if nb_streams != 2 {
+        return Err(format!("[ffprobe] nb_streams expected 2, got '{nb_streams}'",).into());
+    }
+    let duration = payload
+        .get("format")
+        .and_then(|format| format.get("duration"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    if duration <= 0.0 {
+        return Err(format!("[ffprobe] duration expected positive, got '{duration}'",).into());
+    }
+    assert_video_stream_properties(&payload)?;
+    assert_audio_stream_properties(&payload)?;
+    let full_payload = ffprobe_json_payload(path, "format_tags:stream_tags")?;
+    if let Some(tags) = full_payload
+        .get("format")
+        .and_then(|f| f.get("tags"))
+        .and_then(serde_json::Value::as_object)
+    {
+        if tags.contains_key("REPLAYGAIN_TRACK_GAIN") {
+            return Err("[ffprobe] untagged media should not have REPLAYGAIN_TRACK_GAIN tag".into());
+        }
+    }
     Ok(())
 }
 
@@ -2361,6 +2810,7 @@ fn resolve_demo_output_paths(
     )?;
     assert_video_file_integrity(&video_path, "[video] untagged")?;
     assert_mkv_video_audio_with_ffprobe(&video_path)?;
+    assert_untagged_media_metadata(&video_path)?;
 
     let tagged_video_path = interpolated_root.join(&resolved_tagged_file_name);
     if !tagged_video_path.is_file() {
@@ -2377,6 +2827,7 @@ fn resolve_demo_output_paths(
     )?;
     assert_video_file_integrity(&tagged_video_path, "[video] tagged")?;
     assert_mkv_video_audio_with_ffprobe(&tagged_video_path)?;
+    assert_tagged_media_metadata(&tagged_video_path)?;
 
     let sidecar_paths = assert_sidecar_files_present(&interpolated_root, &resolved_metadata)?;
 
@@ -2451,6 +2902,8 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let hierarchy_root = sync_service.resolve_effective_paths()?.hierarchy_root_dir;
     let (output_video_path, output_tagged_video_path, output_sidecar_paths) =
         resolve_demo_output_paths(&hierarchy_root)?;
+    let playlist_path = hierarchy_root.join("playlists").join("rickroll.m3u8");
+    assert_playlist_content_format(&playlist_path)?;
     assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
     let cas_root = sync_service.paths().runtime_root.join("store");
     let lock = load_mediapm_state_document(&sync_service.paths().mediapm_state_json)?;
