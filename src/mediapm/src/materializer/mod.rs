@@ -721,6 +721,16 @@ async fn materialize_media_folder_entry(
                         source,
                     })?;
                 }
+                // Rewrite .desktop Name= content to strip yt-dlp artifacts.
+                let content =
+                    if file_target.extension().is_some_and(|e| e.eq_ignore_ascii_case("desktop")) {
+                        let rewritten = rewrite_desktop_link_content(
+                            std::str::from_utf8(&content).unwrap_or_default(),
+                        );
+                        rewritten.into_bytes()
+                    } else {
+                        content
+                    };
                 tokio::fs::write(&file_target, &content).await.map_err(|source| {
                     MediaPmError::Io {
                         operation: "writing extracted variant file".to_string(),
@@ -1053,6 +1063,30 @@ fn strip_yt_dlp_mediapm_marker_from_path_component(name: &str) -> String {
     name.replace(YT_DLP_MEDIAPM_SANDBOX_MARKER, "")
 }
 
+/// Rewrites the content of a `.desktop` link file produced by yt-dlp.
+///
+/// yt-dlp's output template embeds the `downloads/` prefix and `__mediapm__`
+/// marker in the `Name=` field, and escapes spaces as `\s`. This helper
+/// strips both artifacts and unescapes spaces so the displayed name is clean.
+#[must_use]
+fn rewrite_desktop_link_content(content: &str) -> String {
+    content
+        .lines()
+        .map(|line| {
+            if let Some(rest) = line.strip_prefix("Name=") {
+                let cleaned = rest
+                    .trim_start_matches("downloads/")
+                    .replace(YT_DLP_MEDIAPM_SANDBOX_MARKER, "")
+                    .replace("\\s", " ");
+                format!("Name={cleaned}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Normalizes one yt-dlp ZIP member path for hierarchy materialization.
 #[must_use]
 fn normalize_yt_dlp_sandbox_zip_member_path(path: &Path) -> PathBuf {
@@ -1121,6 +1155,44 @@ mod tests {
             normalize_yt_dlp_sandbox_zip_member_path(path),
             PathBuf::from("links/Rick Astley [dQw4w9WgXcQ].desktop")
         );
+    }
+
+    #[test]
+    fn regression_desktop_link_name_strips_downloads_prefix() {
+        let input = "[Desktop Entry]\nName=downloads/Rick Astley - Never Gonna Give You Up\nURL=https://example.com";
+        let expected =
+            "[Desktop Entry]\nName=Rick Astley - Never Gonna Give You Up\nURL=https://example.com";
+        assert_eq!(rewrite_desktop_link_content(input), expected);
+    }
+
+    #[test]
+    fn regression_desktop_link_name_strips_mediapm_marker() {
+        let input =
+            "[Desktop Entry]\nName=Rick Astley [dQw4w9WgXcQ]__mediapm__\nURL=https://example.com";
+        let expected = "[Desktop Entry]\nName=Rick Astley [dQw4w9WgXcQ]\nURL=https://example.com";
+        assert_eq!(rewrite_desktop_link_content(input), expected);
+    }
+
+    #[test]
+    fn regression_desktop_link_name_unescapes_spaces() {
+        let input = "Name=downloads/Rick\\sAstley\\s[dQw4w9WgXcQ]__mediapm__";
+        let expected = "Name=Rick Astley [dQw4w9WgXcQ]";
+        assert_eq!(rewrite_desktop_link_content(input), expected);
+    }
+
+    #[test]
+    fn regression_desktop_link_name_full_ytdlp_template() {
+        let input = "[Desktop Entry]\nName=downloads/Rick\\sAstley\\s-\\sNever\\sGonna\\sGive\\sYou\\sUp\\s[dQw4w9WgXcQ]__mediapm__\nURL=https://example.com";
+        let expected = "[Desktop Entry]\nName=Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ]\nURL=https://example.com";
+        assert_eq!(rewrite_desktop_link_content(input), expected);
+    }
+
+    #[test]
+    fn regression_desktop_link_name_preserves_non_name_lines() {
+        let input =
+            "[Desktop Entry]\nType=Link\nName=downloads/Test__mediapm__\nURL=https://example.com";
+        let expected = "[Desktop Entry]\nType=Link\nName=Test\nURL=https://example.com";
+        assert_eq!(rewrite_desktop_link_content(input), expected);
     }
 
     #[test]
