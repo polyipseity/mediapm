@@ -774,6 +774,31 @@ Canonical spec: `.agents/instructions/temp-directory-spec.instructions.md`. Rows
 | SIGKILL / crash leaves runtime tree; janitor reclaims it (documented manual behavior)                                                                                  | Documented in `temp-directory-spec.instructions.md` (Runtime tmp lifecycle); manual janitor run                                                                             | [covered] |
 | sh + ps1 parity documented (behavioral twins, same glob set, same output)                                                                                              | Documented in `temp-directory-spec.instructions.md` (Janitor contract)                                                                                                      | [covered] |
 
+### Media ZIP member extraction (root-level subtitle fix)
+
+| Spec item | Test(s) | Status |
+|-----------|---------|--------|
+| `Media` hierarchy arm resolves `zip_member` binding via `resolve_media_variant_output_binding_with_limits` | `resolve_media_variant_output_binding_with_limits` called in `prepare_hierarchy_entry` `Media` arm (compilation + existing integration tests) | [covered] |
+| ZIP bytes read from CAS via `shared.cas.get(hash)` when `zip_member` is present | Compilation check (`CasApi` trait imported, `.get()` method call in `Media` arm) | [covered] |
+| `extract_zip_member_bytes` extracts the specific member from the ZIP archive | Compilation check (imported from `materializer::zip`, called in `Media` arm) | [covered] |
+| `ManagedFileRecord` and `media_variant_updates` use the **extracted** hash, not the ZIP hash | `Hash::from_content(&extracted_bytes)` stored in `materialized_hash` before record construction | [covered] |
+| Parent directory created before writing extracted bytes | `tokio::fs::create_dir_all(parent)` guard present before `tokio::fs::write` | [covered] |
+| `ensure_managed_path_readonly` applied after writing extracted bytes | Called on `&target_path` after write, same as non-ZIP path | [covered] |
+| `MediaPmError::Workflow` used for CAS/ZIP extraction errors (not `MediaPmError::Io`) | Both `.map_err` blocks use `MediaPmError::Workflow(format!(...))` with descriptive context | [covered] |
+
+### .desktop Name= content rewrite (yt-dlp artifact cleanup)
+
+| Spec item | Test(s) | Status |
+|-----------|---------|--------|
+| `rewrite_desktop_link_content` strips `downloads/` prefix from `Name=` lines | `regression_desktop_link_name_strips_downloads_prefix` | [covered] |
+| `rewrite_desktop_link_content` strips `__mediapm__` marker from `Name=` lines | `regression_desktop_link_name_strips_mediapm_marker` | [covered] |
+| `rewrite_desktop_link_content` unescapes `\s` → space in `Name=` lines | `regression_desktop_link_name_unescapes_spaces` | [covered] |
+| `rewrite_desktop_link_content` handles full yt-dlp template (all three artifacts) | `regression_desktop_link_name_full_ytdlp_template` | [covered] |
+| `rewrite_desktop_link_content` preserves non-`Name=` lines unchanged | `regression_desktop_link_name_preserves_non_name_lines` | [covered] |
+| Call site in `materialize_media_folder_entry` checks `.desktop` extension before rewriting | Compilation check (`.extension().is_some_and(|e| e.eq_ignore_ascii_case("desktop"))` guard in extraction write loop) | [covered] |
+| Already-clean `Name=` lines pass through unchanged (no-op rewrite) | `regression_desktop_link_name_preserves_non_name_lines` (non-Name lines) + existing integration tests | [covered] |
+| `.url` and non-`.desktop` files not affected | Extension guard `.eq_ignore_ascii_case("desktop")` ensures only `.desktop` rewritten | [covered] |
+
 ### deno permission wrapper (S-DENO-1..6)
 
 deno's process phase (`[pro]`) previously failed with `[W]` in the online demo: `wrap_deno_binary` hardcoded a flat `os_dir/deno` path, but the real deno GitHub release zip extracts to a nested per-OS subdirectory (`windows/deno.exe`, `darwin/deno`, `linux/deno`). `find_os_executable` correctly discovered the nested path, but the wrap renamed a non-existent flat binary → `ENOENT` → process `[W]` → deno never provisioned. The fix passes the discovered `exec_rel` into `wrap_deno_binary`, renames in the same directory, and writes the shim at the original path.
