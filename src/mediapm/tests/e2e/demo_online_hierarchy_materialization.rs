@@ -75,7 +75,7 @@ fn node(
         rename_files,
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Inherit,
+        sanitize_names: Some(SanitizeNamesConfig::Inherit),
         children,
     }
 }

@@ -1307,7 +1307,7 @@ mod tests {
                 rename_files: vec![],
                 format: PlaylistFormat::M3u8,
                 ids: vec![],
-                sanitize_names: SanitizeNamesConfig::Inherit,
+                sanitize_names: Some(SanitizeNamesConfig::Inherit),
                 children: vec![],
             }],
             ..MediaPmDocument::default()

@@ -904,3 +904,14 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the reposit
 | Live demo `assert_video_file_integrity`: reads bytes, checks `bytes_look_like_matroska`, calls `assert_mkv_video_audio_with_ffprobe` | `mediapm_demo_online::tests::main_is_exercised` (CI → skip; explicit `cargo run` → full path) | [covered] |
 | Live demo `assert_eq_field` / `assert_tag_eq` shared helpers for ffprobe stream/tag field comparison | Used by video/audio/tag assertion functions | [covered] |
 | Demo hierarchy golden fixture: no content fields (content checks stay in code, not JSON) | `demo_hierarchy_golden.json` contains structural layout only; content verification is code-only | [covered] |
+
+### Stage 3: mediapm.ncl config format hardening (no-Option policy, optional sanitize_names, grouped runtime, v2 direct, conductor parity)
+
+| Spec item | Test(s) | Status |
+| --- | --- | --- |
+| (a) Repo-wide no-`Option` policy: resolved config types (`MediaRuntimeStorage`/`MediaRuntimeStorage` resolved, `ConductorRuntimeConfig`) hold plain values; `Option` only on boundary structs (`*Latest`); `cache_root_override` is the sole documented `Option` exception (reason: testing only) | `cargo check` clean; `MediaRuntimeStorageLatest`/`ConductorRuntimeConfigLatest` are the boundary types; `MediaRuntimeStorage::cache_root_override` docstring records the exception | [covered] |
+| (b) `sanitize_names` optional at boundary: `HierarchyNodeLatest.sanitize_names: Option<SanitizeNamesConfig>` resolves `None` to `Inherit` via `From`; `HierarchyNode.sanitize_names: SanitizeNamesConfig` resolved | (to be added by the sanitize_names boundary slice) | [partial] |
+| (c) Flat `runtime` grouped into sub-records (`paths`, `materialization`, `verification`, `caching`, `lifecycle`, `environment`; top-level `path_sanitization`, `retry_impure`) in both Rust and Nickel v2 contracts | `parity_mediapm_document_serialization_invariants` (runtime object has no `tools` key), `parity_v2_ncl_evaluates_cleanly`, conductor `schema_strictness` 26 tests green | [covered] |
+| (d) v2 changed directly, no backwards compatibility; v1→v2 migration still decodes into grouped v2 shape | `parity_v1_to_v2_migration_output_passes_tightened_envelope` green | [covered] |
+| (e) Conductor `ConductorRuntimeConfig` grouped (`environment` sub-record holds `platform_inherited_env_vars`; top-level `retry_impure`); `ConductorRuntimeConfigLatest` boundary mirrors with `Option` | `regression_valid_conductor_docs_still_round_trip`, `strict_platform_env_rejects_unknown_key`, `strict_platform_env_rejects_empty_env_name` green | [covered] |
+| (11) AGENTS.md no-`Option` policy repo-wide wording + bans on sentinel-as-`None` and on fabricating defaults when no serde default exists | AGENTS.md "Core Engineering Contract" bullet updated | [covered] |

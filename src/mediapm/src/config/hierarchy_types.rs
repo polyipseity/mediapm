@@ -163,8 +163,10 @@ pub struct HierarchyNode {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<PlaylistItemRef>,
     /// Sanitization policy for this node.
+    ///
+    /// Optional at the boundary: `None` resolves to `SanitizeNamesConfig::Inherit`.
     #[serde(default)]
-    pub sanitize_names: SanitizeNamesConfig,
+    pub sanitize_names: Option<SanitizeNamesConfig>,
     /// Recursive children.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<HierarchyNode>,
@@ -658,8 +660,9 @@ fn flatten_hierarchy_nodes_inner(
 ) -> Result<(), String> {
     for node in nodes {
         let effective_sanitize = match &node.sanitize_names {
-            SanitizeNamesConfig::Inherit => parent_sanitize.unwrap_or(default_sanitize),
-            other => other,
+            None => parent_sanitize.unwrap_or(default_sanitize),
+            Some(SanitizeNamesConfig::Inherit) => parent_sanitize.unwrap_or(default_sanitize),
+            Some(other) => other,
         };
 
         let resolved_components = {
@@ -825,7 +828,7 @@ mod tests {
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Inherit,
+            sanitize_names: Some(SanitizeNamesConfig::Inherit),
             children: Vec::new(),
         }
     }
@@ -1133,6 +1136,44 @@ mod tests {
             matches!(err, MediaPmError::Workflow(ref msg) if msg.contains("clip1")),
             "expected Workflow error about clip1, got: {err}"
         );
+    }
+
+    #[test]
+    fn hierarchy_node_sanitize_names_absent_resolves_to_inherit() {
+        let node: HierarchyNode = serde_json::from_str(
+            r#"{"path": ["x"], "kind": "media", "media_id": "m1", "variant": "v1"}"#,
+        )
+        .unwrap();
+        assert_eq!(node.sanitize_names, None);
+
+        let mut out = Vec::new();
+        flatten_hierarchy_nodes_inner(&[node], &[], None, &SanitizeNamesConfig::Inherit, &mut out)
+            .unwrap();
+        assert_eq!(out[0].entry.sanitize_names, SanitizeNamesConfig::Inherit);
+    }
+
+    #[test]
+    fn hierarchy_node_sanitize_names_explicit_overrides() {
+        // Explicit non-Inherit value must survive flattening unchanged.
+        let node = HierarchyNode {
+            path: HierarchyPath::simple("x"),
+            kind: HierarchyNodeKind::Media,
+            id: None,
+            media_id: Some("m1".into()),
+            variant: Some("v1".into()),
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::M3u8,
+            ids: Vec::new(),
+            sanitize_names: Some(SanitizeNamesConfig::Disabled),
+            children: Vec::new(),
+        };
+        assert_eq!(node.sanitize_names, Some(SanitizeNamesConfig::Disabled));
+
+        let mut out = Vec::new();
+        flatten_hierarchy_nodes_inner(&[node], &[], None, &SanitizeNamesConfig::Inherit, &mut out)
+            .unwrap();
+        assert_eq!(out[0].entry.sanitize_names, SanitizeNamesConfig::Disabled);
     }
 }
 

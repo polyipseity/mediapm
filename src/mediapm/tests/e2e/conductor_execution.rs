@@ -239,7 +239,7 @@ async fn sync_populates_managed_files_from_conductor_state() -> Result<(), media
         rename_files: vec![],
         format: PlaylistFormat::M3u8,
         ids: vec![],
-        sanitize_names: SanitizeNamesConfig::Inherit,
+        sanitize_names: Some(SanitizeNamesConfig::Inherit),
         children: vec![],
     });
     save_mediapm_document(&paths.mediapm_ncl, &document)?;

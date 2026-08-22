@@ -83,7 +83,7 @@ pub(crate) fn build_hierarchy_preset_node(preset: MediaHierarchyPreset) -> Hiera
             variants: Vec::new(),
             format: PlaylistFormat::default(),
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::default(),
+            sanitize_names: Some(SanitizeNamesConfig::Inherit),
             children: vec![HierarchyNode {
                 id: Some(HIERARCHY_ARTIST_FOLDER_TEMPLATE.to_string()),
                 kind: HierarchyNodeKind::Folder,
@@ -94,7 +94,7 @@ pub(crate) fn build_hierarchy_preset_node(preset: MediaHierarchyPreset) -> Hiera
                 variants: Vec::new(),
                 format: PlaylistFormat::default(),
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::default(),
+                sanitize_names: Some(SanitizeNamesConfig::Inherit),
                 children: vec![HierarchyNode {
                     id: Some(HIERARCHY_ALBUM_FOLDER_TEMPLATE.to_string()),
                     kind: HierarchyNodeKind::Folder,
@@ -105,7 +105,7 @@ pub(crate) fn build_hierarchy_preset_node(preset: MediaHierarchyPreset) -> Hiera
                     variants: Vec::new(),
                     format: PlaylistFormat::default(),
                     ids: Vec::new(),
-                    sanitize_names: SanitizeNamesConfig::default(),
+                    sanitize_names: Some(SanitizeNamesConfig::Inherit),
                     children: vec![hierarchy_media_folder_node(None)],
                 }],
             }],
@@ -120,7 +120,7 @@ pub(crate) fn build_hierarchy_preset_node(preset: MediaHierarchyPreset) -> Hiera
             variants: Vec::new(),
             format: PlaylistFormat::default(),
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::default(),
+            sanitize_names: Some(SanitizeNamesConfig::Inherit),
             children: vec![HierarchyNode {
                 id: Some(HIERARCHY_YT_DLP_PLAYLIST_EXTRACTOR.to_string()),
                 kind: HierarchyNodeKind::Folder,
@@ -131,7 +131,7 @@ pub(crate) fn build_hierarchy_preset_node(preset: MediaHierarchyPreset) -> Hiera
                 variants: Vec::new(),
                 format: PlaylistFormat::default(),
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::default(),
+                sanitize_names: Some(SanitizeNamesConfig::Inherit),
                 children: vec![hierarchy_media_folder_node(None)],
             }],
         },
@@ -154,7 +154,7 @@ pub(crate) fn hierarchy_media_folder_node(media_id: Option<String>) -> Hierarchy
         variants: Vec::new(),
         format: PlaylistFormat::default(),
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::default(),
+        sanitize_names: Some(SanitizeNamesConfig::Inherit),
         children: vec![hierarchy_media_file_node(None)],
     }
 }
@@ -172,7 +172,7 @@ pub(crate) fn hierarchy_media_file_node(media_id: Option<String>) -> HierarchyNo
         variants: Vec::new(),
         format: PlaylistFormat::default(),
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::default(),
+        sanitize_names: Some(SanitizeNamesConfig::Inherit),
         children: Vec::new(),
     }
 }

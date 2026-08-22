@@ -622,7 +622,7 @@ fn configure_document_for_local_tool_chain(
         rename_files: Vec::new(),
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Inherit,
+        sanitize_names: Some(SanitizeNamesConfig::Inherit),
         children: vec![
             HierarchyNode {
                 path: HierarchyPath::from(
@@ -636,7 +636,7 @@ fn configure_document_for_local_tool_chain(
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::Inherit,
+                sanitize_names: Some(SanitizeNamesConfig::Inherit),
                 children: Vec::new(),
             },
             HierarchyNode {
@@ -651,7 +651,7 @@ fn configure_document_for_local_tool_chain(
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::Inherit,
+                sanitize_names: Some(SanitizeNamesConfig::Inherit),
                 children: Vec::new(),
             },
         ],
@@ -668,7 +668,7 @@ fn configure_document_for_local_tool_chain(
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Inherit,
+            sanitize_names: Some(SanitizeNamesConfig::Inherit),
             children: media_hierarchy_children,
         },
         HierarchyNode {
@@ -681,7 +681,7 @@ fn configure_document_for_local_tool_chain(
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Inherit,
+            sanitize_names: Some(SanitizeNamesConfig::Inherit),
             children: vec![HierarchyNode {
                 path: HierarchyPath::from("local-demo.m3u8"),
                 kind: HierarchyNodeKind::Playlist,
@@ -695,7 +695,7 @@ fn configure_document_for_local_tool_chain(
                     PlaylistItemRef::Shorthand(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
                     PlaylistItemRef::Shorthand(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
                 ],
-                sanitize_names: SanitizeNamesConfig::Inherit,
+                sanitize_names: Some(SanitizeNamesConfig::Inherit),
                 children: Vec::new(),
             }],
         },
