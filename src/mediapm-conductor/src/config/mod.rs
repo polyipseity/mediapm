@@ -770,4 +770,88 @@ mod tests {
         let json = serde_json::to_string(&spec).expect("serialize");
         assert!(json.contains("\"save\""), "save=Full should be present: {json}");
     }
+
+    // ── ConductorRuntimeConfig (resolved, no-Option) ─────────────────────
+
+    /// Documents that the resolved `ConductorRuntimeConfig` carries plain
+    /// values (not `Option`): defaults are `retry_impure = false` and all
+    /// platform env-var lists empty.
+    #[test]
+    fn conductor_runtime_config_default_has_no_option_fields() {
+        let cfg = ConductorRuntimeConfig::default();
+        assert!(!cfg.retry_impure);
+        assert!(cfg.environment.platform_inherited_env_vars.windows.is_empty());
+        assert!(cfg.environment.platform_inherited_env_vars.linux.is_empty());
+        assert!(cfg.environment.platform_inherited_env_vars.macos.is_empty());
+    }
+
+    /// Documents that a boundary `ConductorRuntimeConfigLatest` with
+    /// `retry_impure: None` resolves to `false` and an empty platform env
+    /// config through the `From` impl (no `Option` leaks into the resolved type).
+    #[test]
+    fn conductor_runtime_config_from_latest_none_retry_impure_false() {
+        let latest = super::versions::v_latest::ConductorRuntimeConfigLatest {
+            environment: super::versions::v_latest::RuntimePlatformEnvConfigLatest::default(),
+            retry_impure: None,
+        };
+        let cfg: ConductorRuntimeConfig = latest.into();
+        assert!(!cfg.retry_impure);
+        assert!(cfg.environment.platform_inherited_env_vars.windows.is_empty());
+        assert!(cfg.environment.platform_inherited_env_vars.linux.is_empty());
+        assert!(cfg.environment.platform_inherited_env_vars.macos.is_empty());
+    }
+
+    /// Documents that grouped-field merge across two documents keeps both
+    /// the scalar `retry_impure` flag and the nested platform env-var config:
+    /// one document sets `retry_impure = true`, the other sets
+    /// `platform_inherited_env_vars.macos = ["PATH"]`, and the merged result
+    /// carries both.
+    #[test]
+    fn conductor_merge_runtime_merges_grouped_fields() {
+        use std::path::PathBuf;
+
+        use super::documents::{SourceDocument, merge_documents};
+        use super::versions::v_latest::{
+            ConductorRuntimeConfigLatest, NICKEL_VERSION_LATEST, NickelEnvelopeLatest,
+            RuntimePlatformEnvConfigLatest,
+        };
+
+        let env_retry = NickelEnvelopeLatest {
+            version: NICKEL_VERSION_LATEST,
+            tools: BTreeMap::new(),
+            workflows: Vec::new(),
+            external_data: BTreeMap::new(),
+            runtime: ConductorRuntimeConfigLatest {
+                environment: RuntimePlatformEnvConfigLatest::default(),
+                retry_impure: Some(true),
+            },
+        };
+        let env_platform = NickelEnvelopeLatest {
+            version: NICKEL_VERSION_LATEST,
+            tools: BTreeMap::new(),
+            workflows: Vec::new(),
+            external_data: BTreeMap::new(),
+            runtime: ConductorRuntimeConfigLatest {
+                environment: RuntimePlatformEnvConfigLatest {
+                    platform_inherited_env_vars: PlatformInheritedEnvVars {
+                        macos: vec!["PATH".to_string()],
+                        ..Default::default()
+                    },
+                },
+                retry_impure: None,
+            },
+        };
+
+        let doc = merge_documents(&[
+            SourceDocument { path: PathBuf::from("a.ncl"), envelope: env_retry },
+            SourceDocument { path: PathBuf::from("b.ncl"), envelope: env_platform },
+        ])
+        .expect("merge succeeds");
+
+        assert!(doc.runtime.retry_impure, "retry_impure must survive merge");
+        assert!(
+            doc.runtime.environment.platform_inherited_env_vars.macos.contains(&"PATH".to_string()),
+            "platform env vars must survive merge"
+        );
+    }
 }

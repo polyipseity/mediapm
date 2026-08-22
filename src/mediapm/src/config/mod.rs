@@ -844,3 +844,64 @@ impl MediaPmState {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_boundary_resolves_none_paths_to_empty_not_fabricated() {
+        let latest = MediaRuntimeStorageLatest::default();
+        let resolved = MediaRuntimeStorage::from_boundary(
+            &latest,
+            &RuntimeBasePaths {
+                workspace_root: PathBuf::from("/w"),
+                mediapm_dir: PathBuf::from("/m"),
+            },
+        );
+
+        assert_eq!(resolved.paths.mediapm_dir, PathBuf::new());
+        assert_eq!(resolved.paths.hierarchy_root_dir, PathBuf::new());
+        assert_eq!(resolved.paths.mediapm_state_config, PathBuf::new());
+        assert_eq!(resolved.paths.conductor_config, PathBuf::new());
+        assert_eq!(resolved.paths.conductor_generated_config, PathBuf::new());
+        assert_eq!(resolved.paths.conductor_state_config, PathBuf::new());
+        assert_eq!(resolved.paths.conductor_schema_dir, PathBuf::new());
+        assert_eq!(resolved.paths.mediapm_schema_dir, PathBuf::new());
+        assert_eq!(resolved.paths.env_file, PathBuf::new());
+        assert_eq!(resolved.paths.env_generated_file, PathBuf::new());
+
+        assert!(!resolved.retry_impure);
+        assert_eq!(resolved.path_sanitization, SanitizeNamesConfig::default());
+    }
+
+    #[test]
+    fn from_boundary_resolves_none_scalars_to_defaults() {
+        let latest = MediaRuntimeStorageLatest::default();
+        let resolved = MediaRuntimeStorage::from_boundary(
+            &latest,
+            &RuntimeBasePaths {
+                workspace_root: PathBuf::from("/w"),
+                mediapm_dir: PathBuf::from("/m"),
+            },
+        );
+
+        assert_eq!(
+            resolved.materialization.materialization_preference_order,
+            defaults::default_materialization_preference_order()
+        );
+        assert_eq!(
+            resolved.verification.verify_on_read_sample_denominator,
+            defaults::default_verify_on_read_sample_denominator()
+        );
+        assert_eq!(
+            resolved.caching.reconstructed_cache_ttl_seconds,
+            defaults::default_reconstructed_cache_ttl_seconds()
+        );
+        assert_eq!(
+            resolved.lifecycle.instance_ttl_seconds,
+            defaults::default_instance_ttl_seconds()
+        );
+        assert_eq!(resolved.environment.profiler_enabled, defaults::default_profiler_enabled());
+    }
+}
