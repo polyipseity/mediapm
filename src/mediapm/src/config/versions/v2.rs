@@ -10,10 +10,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::super::{
-    MediaPmDocument, MediaRuntimeStorageLatest, ToolRequirement, hierarchy_types, source_types,
-};
+use super::super::{MediaPmDocument, ToolRequirement, hierarchy_types, source_types};
 use super::Migrate;
+use super::v_latest::MediaRuntimeStorageLatest;
 
 use serde_json::Value;
 

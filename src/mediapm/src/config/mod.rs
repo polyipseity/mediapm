@@ -43,6 +43,11 @@ pub use source_types::{
     MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate,
     MediaMetadataVariantBinding, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
 };
+pub use versions::v_latest::{
+    MediaRuntimeStorageLatest, RuntimeCachingConfigLatest, RuntimeEnvironmentConfigLatest,
+    RuntimeLifecycleConfigLatest, RuntimeMaterializationConfigLatest, RuntimePathsConfigLatest,
+    RuntimeVerificationConfigLatest,
+};
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -250,30 +255,6 @@ pub struct RuntimePathsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RuntimePathsConfigLatest {
-    #[serde(default)]
-    pub mediapm_dir: Option<String>,
-    #[serde(default)]
-    pub hierarchy_root_dir: Option<String>,
-    #[serde(default)]
-    pub mediapm_state_config: Option<String>,
-    #[serde(default)]
-    pub conductor_config: Option<String>,
-    #[serde(default)]
-    pub conductor_generated_config: Option<String>,
-    #[serde(default)]
-    pub conductor_state_config: Option<String>,
-    #[serde(default)]
-    pub conductor_schema_dir: Option<String>,
-    #[serde(default)]
-    pub mediapm_schema_dir: Option<String>,
-    #[serde(default)]
-    pub env_file: Option<String>,
-    #[serde(default)]
-    pub env_generated_file: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeMaterializationConfig {
     #[serde(
@@ -283,14 +264,6 @@ pub struct RuntimeMaterializationConfig {
     pub materialization_preference_order: Vec<MaterializationMethod>,
     #[serde(default = "defaults::default_verify_materialization")]
     pub verify_materialization: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RuntimeMaterializationConfigLatest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub materialization_preference_order: Option<Vec<MaterializationMethod>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verify_materialization: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -305,26 +278,10 @@ pub struct RuntimeVerificationConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RuntimeVerificationConfigLatest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verify_on_read: Option<Vec<VerifyStrategy>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verify_on_read_sample_denominator: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verify_on_read_stale_timeout_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeCachingConfig {
     #[serde(default = "defaults::default_reconstructed_cache_ttl_seconds")]
     pub reconstructed_cache_ttl_seconds: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RuntimeCachingConfigLatest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reconstructed_cache_ttl_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -335,26 +292,12 @@ pub struct RuntimeLifecycleConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RuntimeLifecycleConfigLatest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ttl_seconds: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeEnvironmentConfig {
     #[serde(default)]
     pub inherited_env_vars: BTreeMap<String, Vec<String>>,
     #[serde(default = "defaults::default_profiler_enabled")]
     pub profiler_enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RuntimeEnvironmentConfigLatest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherited_env_vars: Option<BTreeMap<String, Vec<String>>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profiler_enabled: Option<bool>,
 }
 
 /// Runtime storage and behavior overrides for mediapm document processing.
@@ -432,183 +375,6 @@ impl Default for MediaRuntimeStorage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct MediaRuntimeStorageLatest {
-    #[serde(default)]
-    pub paths: RuntimePathsConfigLatest,
-    #[serde(default)]
-    pub materialization: RuntimeMaterializationConfigLatest,
-    #[serde(default)]
-    pub verification: RuntimeVerificationConfigLatest,
-    #[serde(default)]
-    pub caching: RuntimeCachingConfigLatest,
-    #[serde(default)]
-    pub lifecycle: RuntimeLifecycleConfigLatest,
-    #[serde(default)]
-    pub environment: RuntimeEnvironmentConfigLatest,
-    #[serde(default)]
-    pub path_sanitization: Option<SanitizeNamesConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_impure: Option<bool>,
-    // Holding field for the boundary conversion (tools live at the document
-    // top level, not inside runtime); never serialized.
-    #[serde(default, skip_serializing)]
-    pub tools: BTreeMap<String, ToolRequirement>,
-}
-
-/// V1 wire shape for runtime storage overrides.
-///
-/// Flat record matching the V1 Nickel `MediaRuntimeStorageV1` contract. V1
-/// keeps its own shape; it bridges to [`MediaRuntimeStorageLatest`] (the V2
-/// boundary) via `From` impls — it is never reshaped to mirror V2's internal
-/// grouping.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct MediaRuntimeStorageV1 {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mediapm_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hierarchy_root_dir: Option<String>,
-    #[serde(default, skip)]
-    pub tools: BTreeMap<String, ToolRequirement>,
-    #[serde(
-        default = "defaults::default_materialization_preference_order",
-        deserialize_with = "deserialize_materialization_preference_order"
-    )]
-    pub materialization_preference_order: Vec<MaterializationMethod>,
-    #[serde(default = "defaults::default_verify_on_read")]
-    pub verify_on_read: Vec<VerifyStrategy>,
-    #[serde(default = "defaults::default_verify_on_read_sample_denominator")]
-    pub verify_on_read_sample_denominator: u64,
-    #[serde(default = "defaults::default_verify_on_read_stale_timeout_secs")]
-    pub verify_on_read_stale_timeout_secs: u64,
-    #[serde(default = "defaults::default_reconstructed_cache_ttl_seconds")]
-    pub reconstructed_cache_ttl_seconds: u64,
-    #[serde(default = "defaults::default_instance_ttl_seconds")]
-    pub instance_ttl_seconds: u64,
-    #[serde(default)]
-    pub inherited_env_vars: BTreeMap<String, Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_state_config: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conductor_config: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conductor_generated_config: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conductor_state_config: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conductor_schema_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub env_file: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub env_generated_file: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mediapm_schema_dir: Option<String>,
-    #[serde(default = "defaults::default_profiler_enabled")]
-    pub profiler_enabled: bool,
-    #[serde(default = "defaults::default_verify_materialization")]
-    pub verify_materialization: bool,
-    #[serde(default = "defaults::default_retry_impure")]
-    pub retry_impure: bool,
-    #[serde(default = "defaults::default_path_sanitization")]
-    pub path_sanitization: hierarchy_types::SanitizeNamesConfig,
-}
-
-impl From<MediaRuntimeStorageV1> for MediaRuntimeStorageLatest {
-    fn from(v1: MediaRuntimeStorageV1) -> Self {
-        MediaRuntimeStorageLatest {
-            paths: RuntimePathsConfigLatest {
-                mediapm_dir: v1.mediapm_dir,
-                hierarchy_root_dir: v1.hierarchy_root_dir,
-                mediapm_state_config: v1.media_state_config,
-                conductor_config: v1.conductor_config,
-                conductor_generated_config: v1.conductor_generated_config,
-                conductor_state_config: v1.conductor_state_config,
-                conductor_schema_dir: v1.conductor_schema_dir,
-                mediapm_schema_dir: v1.mediapm_schema_dir,
-                env_file: v1.env_file,
-                env_generated_file: v1.env_generated_file,
-            },
-            materialization: RuntimeMaterializationConfigLatest {
-                materialization_preference_order: Some(v1.materialization_preference_order),
-                verify_materialization: Some(v1.verify_materialization),
-            },
-            verification: RuntimeVerificationConfigLatest {
-                verify_on_read: Some(v1.verify_on_read),
-                verify_on_read_sample_denominator: Some(v1.verify_on_read_sample_denominator),
-                verify_on_read_stale_timeout_secs: Some(v1.verify_on_read_stale_timeout_secs),
-            },
-            caching: RuntimeCachingConfigLatest {
-                reconstructed_cache_ttl_seconds: Some(v1.reconstructed_cache_ttl_seconds),
-            },
-            lifecycle: RuntimeLifecycleConfigLatest {
-                instance_ttl_seconds: Some(v1.instance_ttl_seconds),
-            },
-            environment: RuntimeEnvironmentConfigLatest {
-                inherited_env_vars: Some(v1.inherited_env_vars),
-                profiler_enabled: Some(v1.profiler_enabled),
-            },
-            path_sanitization: Some(v1.path_sanitization),
-            retry_impure: Some(v1.retry_impure),
-            tools: v1.tools,
-        }
-    }
-}
-
-impl From<MediaRuntimeStorageLatest> for MediaRuntimeStorageV1 {
-    fn from(latest: MediaRuntimeStorageLatest) -> Self {
-        MediaRuntimeStorageV1 {
-            mediapm_dir: latest.paths.mediapm_dir,
-            hierarchy_root_dir: latest.paths.hierarchy_root_dir,
-            tools: latest.tools,
-            materialization_preference_order: latest
-                .materialization
-                .materialization_preference_order
-                .unwrap_or_else(defaults::default_materialization_preference_order),
-            verify_materialization: latest
-                .materialization
-                .verify_materialization
-                .unwrap_or_else(defaults::default_verify_materialization),
-            verify_on_read: latest
-                .verification
-                .verify_on_read
-                .unwrap_or_else(defaults::default_verify_on_read),
-            verify_on_read_sample_denominator: latest
-                .verification
-                .verify_on_read_sample_denominator
-                .unwrap_or_else(defaults::default_verify_on_read_sample_denominator),
-            verify_on_read_stale_timeout_secs: latest
-                .verification
-                .verify_on_read_stale_timeout_secs
-                .unwrap_or_else(defaults::default_verify_on_read_stale_timeout_secs),
-            reconstructed_cache_ttl_seconds: latest
-                .caching
-                .reconstructed_cache_ttl_seconds
-                .unwrap_or_else(defaults::default_reconstructed_cache_ttl_seconds),
-            instance_ttl_seconds: latest
-                .lifecycle
-                .instance_ttl_seconds
-                .unwrap_or_else(defaults::default_instance_ttl_seconds),
-            inherited_env_vars: latest.environment.inherited_env_vars.unwrap_or_default(),
-            media_state_config: latest.paths.mediapm_state_config,
-            conductor_config: latest.paths.conductor_config,
-            conductor_generated_config: latest.paths.conductor_generated_config,
-            conductor_state_config: latest.paths.conductor_state_config,
-            conductor_schema_dir: latest.paths.conductor_schema_dir,
-            env_file: latest.paths.env_file,
-            env_generated_file: latest.paths.env_generated_file,
-            mediapm_schema_dir: latest.paths.mediapm_schema_dir,
-            profiler_enabled: latest
-                .environment
-                .profiler_enabled
-                .unwrap_or_else(defaults::default_profiler_enabled),
-            retry_impure: latest.retry_impure.unwrap_or(false),
-            path_sanitization: latest.path_sanitization.unwrap_or(SanitizeNamesConfig::Inherit),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct RuntimeBasePaths {
     pub workspace_root: PathBuf,
@@ -618,128 +384,9 @@ pub struct RuntimeBasePaths {
 impl MediaRuntimeStorage {
     pub fn from_boundary(
         latest: &MediaRuntimeStorageLatest,
-        _base: &RuntimeBasePaths,
+        base: &RuntimeBasePaths,
     ) -> MediaRuntimeStorage {
-        // Unset boundary path values map to an empty PathBuf so the override
-        // machinery (pick_path/opt_path/pathbuf_to_opt) treats them as "no
-        // override" and the MediaPmPaths::from_root defaults win. Populating
-        // defaults here would redirect saves to a different path than the one
-        // MediaPmPaths exposes for reads.
-        MediaRuntimeStorage {
-            paths: RuntimePathsConfig {
-                mediapm_dir: latest
-                    .paths
-                    .mediapm_dir
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
-                hierarchy_root_dir: latest
-                    .paths
-                    .hierarchy_root_dir
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
-                mediapm_state_config: latest
-                    .paths
-                    .mediapm_state_config
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
-                conductor_config: latest
-                    .paths
-                    .conductor_config
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
-                conductor_generated_config: latest
-                    .paths
-                    .conductor_generated_config
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
-                conductor_state_config: latest
-                    .paths
-                    .conductor_state_config
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
-                conductor_schema_dir: latest
-                    .paths
-                    .conductor_schema_dir
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
-                mediapm_schema_dir: latest
-                    .paths
-                    .mediapm_schema_dir
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
-                env_file: latest.paths.env_file.clone().map(PathBuf::from).unwrap_or_default(),
-                env_generated_file: latest
-                    .paths
-                    .env_generated_file
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
-            },
-            materialization: RuntimeMaterializationConfig {
-                materialization_preference_order: latest
-                    .materialization
-                    .materialization_preference_order
-                    .clone()
-                    .unwrap_or_else(defaults::default_materialization_preference_order),
-                verify_materialization: latest
-                    .materialization
-                    .verify_materialization
-                    .unwrap_or_else(defaults::default_verify_materialization),
-            },
-            verification: RuntimeVerificationConfig {
-                verify_on_read: latest
-                    .verification
-                    .verify_on_read
-                    .clone()
-                    .unwrap_or_else(defaults::default_verify_on_read),
-                verify_on_read_sample_denominator: latest
-                    .verification
-                    .verify_on_read_sample_denominator
-                    .unwrap_or_else(defaults::default_verify_on_read_sample_denominator),
-                verify_on_read_stale_timeout_secs: latest
-                    .verification
-                    .verify_on_read_stale_timeout_secs
-                    .unwrap_or_else(defaults::default_verify_on_read_stale_timeout_secs),
-            },
-            caching: RuntimeCachingConfig {
-                reconstructed_cache_ttl_seconds: latest
-                    .caching
-                    .reconstructed_cache_ttl_seconds
-                    .unwrap_or_else(defaults::default_reconstructed_cache_ttl_seconds),
-            },
-            lifecycle: RuntimeLifecycleConfig {
-                instance_ttl_seconds: latest
-                    .lifecycle
-                    .instance_ttl_seconds
-                    .unwrap_or_else(defaults::default_instance_ttl_seconds),
-            },
-            environment: RuntimeEnvironmentConfig {
-                inherited_env_vars: latest
-                    .environment
-                    .inherited_env_vars
-                    .clone()
-                    .unwrap_or_default(),
-                profiler_enabled: latest
-                    .environment
-                    .profiler_enabled
-                    .unwrap_or_else(defaults::default_profiler_enabled),
-            },
-            path_sanitization: latest
-                .path_sanitization
-                .clone()
-                .unwrap_or(SanitizeNamesConfig::Inherit),
-            retry_impure: latest.retry_impure.unwrap_or(false),
-            tools: latest.tools.clone(),
-            cache_root_override: None,
-        }
+        versions::v_latest::resolve_runtime_storage(latest, base)
     }
 }
 

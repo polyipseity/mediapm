@@ -12,6 +12,7 @@ use crate::error::MediaPmError;
 
 mod v1;
 mod v2;
+pub mod v_latest;
 
 use super::MediaPmDocument;
 use v1::MediaPmDocumentEnvelopeV1;
