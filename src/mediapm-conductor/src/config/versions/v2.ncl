@@ -96,6 +96,7 @@ in
 let ConductorRuntimeConfigV2 = {
   retry_impure | Bool | optional,
   environment | RuntimePlatformEnvConfigV2 | optional,
+  platform_inherited_env_vars | PlatformInheritedEnvVarsV2 | optional,
 }
 in
 
@@ -340,10 +341,12 @@ let migrate_v1_to_v2_fn = fun data =>
           # ||| Platform keys are closed (S-A5): carry known platforms through
           # ||| and drop unknown keys the closed v2 contract would reject.
           {
-            platform_inherited_env_vars =
-              (if std.record.has_field "windows" rt.inherited_env_vars then { windows = rt.inherited_env_vars.windows } else {})
-              & (if std.record.has_field "linux" rt.inherited_env_vars then { linux = rt.inherited_env_vars.linux } else {})
-              & (if std.record.has_field "macos" rt.inherited_env_vars then { macos = rt.inherited_env_vars.macos } else {})
+            environment = {
+              platform_inherited_env_vars =
+                (if std.record.has_field "windows" rt.inherited_env_vars then { windows = rt.inherited_env_vars.windows } else {})
+                & (if std.record.has_field "linux" rt.inherited_env_vars then { linux = rt.inherited_env_vars.linux } else {})
+                & (if std.record.has_field "macos" rt.inherited_env_vars then { macos = rt.inherited_env_vars.macos } else {})
+            }
           }
         else
           {})

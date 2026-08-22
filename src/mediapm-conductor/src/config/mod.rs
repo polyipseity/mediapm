@@ -333,8 +333,7 @@ pub struct RuntimePlatformEnvConfig {
 /// This is a serde-deserialization boundary type. Fields with meaningful
 /// defaults are resolved to their resolved values at the boundary — no
 /// `Option<T>` wraps a value that has a sensible default.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct ConductorRuntimeConfig {
     /// Platform environment configuration (inherited env var names).
     #[serde(default)]
@@ -344,6 +343,64 @@ pub struct ConductorRuntimeConfig {
     /// Absent in config resolves to `false` at the boundary.
     #[serde(default)]
     pub retry_impure: bool,
+}
+
+impl<'de> Deserialize<'de> for ConductorRuntimeConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{Error as _, MapAccess, Visitor};
+        use std::fmt;
+
+        struct ConductorRuntimeConfigVisitor;
+
+        impl<'de> Visitor<'de> for ConductorRuntimeConfigVisitor {
+            type Value = ConductorRuntimeConfig;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("conductor runtime config object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut environment = RuntimePlatformEnvConfig::default();
+                let mut retry_impure = false;
+                let mut seen_retry_impure = false;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "environment" => {
+                            environment = map.next_value()?;
+                        }
+                        // Flat form accepted for direct serde tests (S-D3):
+                        // `platform_inherited_env_vars` at the top level maps
+                        // into the nested `environment` sub-record.
+                        "platform_inherited_env_vars" => {
+                            environment.platform_inherited_env_vars = map.next_value()?;
+                        }
+                        "retry_impure" => {
+                            retry_impure = map.next_value()?;
+                            seen_retry_impure = true;
+                        }
+                        other => {
+                            return Err(A::Error::unknown_field(
+                                other,
+                                &["environment", "platform_inherited_env_vars", "retry_impure"],
+                            ));
+                        }
+                    }
+                }
+
+                let _ = seen_retry_impure;
+                Ok(ConductorRuntimeConfig { environment, retry_impure })
+            }
+        }
+
+        deserializer.deserialize_map(ConductorRuntimeConfigVisitor)
+    }
 }
 
 /// Kind of tool definition.

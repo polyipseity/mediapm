@@ -451,7 +451,9 @@ pub struct MediaRuntimeStorageLatest {
     pub path_sanitization: Option<SanitizeNamesConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_impure: Option<bool>,
-    #[serde(default)]
+    // Holding field for the boundary conversion (tools live at the document
+    // top level, not inside runtime); never serialized.
+    #[serde(default, skip_serializing)]
     pub tools: BTreeMap<String, ToolRequirement>,
 }
 

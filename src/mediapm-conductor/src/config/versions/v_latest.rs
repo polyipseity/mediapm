@@ -248,8 +248,7 @@ pub(crate) struct RuntimePlatformEnvConfigLatest {
 }
 
 /// Runtime configuration for the conductor itself (not per-tool).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub(crate) struct ConductorRuntimeConfigLatest {
     /// Platform environment configuration (inherited env var names).
     #[serde(default)]
@@ -257,6 +256,61 @@ pub(crate) struct ConductorRuntimeConfigLatest {
     /// Whether impure tool calls may be retried automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) retry_impure: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{Error as _, MapAccess, Visitor};
+        use std::fmt;
+
+        struct ConductorRuntimeConfigLatestVisitor;
+
+        impl<'de> Visitor<'de> for ConductorRuntimeConfigLatestVisitor {
+            type Value = ConductorRuntimeConfigLatest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("conductor runtime config object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut environment = RuntimePlatformEnvConfigLatest::default();
+                let mut retry_impure = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "environment" => {
+                            environment = map.next_value()?;
+                        }
+                        // Flat form accepted for direct serde tests (S-D3):
+                        // `platform_inherited_env_vars` at the top level maps
+                        // into the nested `environment` sub-record.
+                        "platform_inherited_env_vars" => {
+                            environment.platform_inherited_env_vars = map.next_value()?;
+                        }
+                        "retry_impure" => {
+                            retry_impure = map.next_value()?;
+                        }
+                        other => {
+                            return Err(A::Error::unknown_field(
+                                other,
+                                &["environment", "platform_inherited_env_vars", "retry_impure"],
+                            ));
+                        }
+                    }
+                }
+
+                Ok(ConductorRuntimeConfigLatest { environment, retry_impure })
+            }
+        }
+
+        deserializer.deserialize_map(ConductorRuntimeConfigLatestVisitor)
+    }
 }
 
 /// Latest persisted tool kind (tagged by `kind` field).
