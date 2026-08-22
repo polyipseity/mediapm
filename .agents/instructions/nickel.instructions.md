@@ -23,6 +23,7 @@ applyTo: "**/*.ncl"
 - `mod.ncl` is the migration registry: exports `current_version`, `supported_versions` (array), `migrate_to` (function), and a `SupportedVersion` predicate contract.
 - **Strict version separation.** Each version file (`vN.ncl`) is self-contained: it defines exclusively its own `*VN` contract names and never references contracts from other versions. Never reuse a `*V1` name inside `v2.ncl` or vice versa, and never mix versions in one file. `mod.ncl` is the only place that imports multiple version files, and it acts purely as a registry/dispatcher — no contract definitions live there.
 - **Each version keeps its own envelope shape.** A version file (`vN.ncl`) defines its own `*VN` contract with the field layout that version actually used — do not reshape an older version's contract to mirror the latest version's internal grouping (e.g. do not push V2's sub-record grouping into `MediaRuntimeStorageV1`). Older versions bridge to the latest boundary type through the unified model, not by copying the latest shape.
+- **Version-specific types and their `From` bridges live INSIDE the version file** (`versions/v1.rs`, `versions/v_latest.rs`), never in the shared `config/mod.rs`. `config/mod.rs` holds ONLY the resolved (option-free) types and a thin `from_boundary` delegation. The active `*Latest` boundary family is version-specific and belongs in `versions/v_latest.rs`, not `config/mod.rs`.
 
 ## Contract patterns
 
