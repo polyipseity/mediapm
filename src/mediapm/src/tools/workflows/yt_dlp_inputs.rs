@@ -200,11 +200,15 @@ pub(crate) fn yt_dlp_variant_inputs(config: &YtDlpOutputVariantConfig) -> BTreeM
         inputs.insert("skip_download".to_string(), "true".to_string());
     }
 
+    // Every yt-dlp invocation needs the deno JS runtime for modern YouTube
+    // extraction (the JS-challenge solver); without it, sidecar-only variants
+    // (infojson/links/subtitles/thumbnails/description) fail with
+    // "Requested format is not available". ffmpeg_location is harmless to pass
+    // unconditionally and avoids per-kind special-casing.
+    inputs.insert("js_runtimes".to_string(), yt_dlp_managed_js_runtimes_selector());
+    inputs.insert("ffmpeg_location".to_string(), yt_dlp_managed_ffmpeg_location_selector());
+
     match config.kind {
-        YtDlpOutputKind::Primary => {
-            inputs.insert("ffmpeg_location".to_string(), yt_dlp_managed_ffmpeg_location_selector());
-            inputs.insert("js_runtimes".to_string(), yt_dlp_managed_js_runtimes_selector());
-        }
         YtDlpOutputKind::Chapters => {
             inputs.insert("split_chapters".to_string(), "true".to_string());
             inputs.insert("write_description".to_string(), "false".to_string());
@@ -251,6 +255,7 @@ pub(crate) fn yt_dlp_variant_inputs(config: &YtDlpOutputVariantConfig) -> BTreeM
             inputs.insert("write_description".to_string(), "false".to_string());
             inputs.insert("write_info_json".to_string(), "false".to_string());
         }
+        YtDlpOutputKind::Primary => {}
     }
 
     if !config.langs.is_empty() {
@@ -418,5 +423,87 @@ mod tests {
             !js_runtimes.contains("windows/deps/"),
             "js_runtimes must not double-prefix windows: {js_runtimes}"
         );
+    }
+
+    #[test]
+    fn yt_dlp_all_variant_inputs_include_js_runtimes() {
+        let variants = [
+            YtDlpOutputKind::Primary,
+            YtDlpOutputKind::Chapters,
+            YtDlpOutputKind::Subtitles,
+            YtDlpOutputKind::Thumbnails,
+            YtDlpOutputKind::Description,
+            YtDlpOutputKind::Infojson,
+            YtDlpOutputKind::Comment,
+            YtDlpOutputKind::Archive,
+            YtDlpOutputKind::Annotation,
+            YtDlpOutputKind::Links,
+        ];
+        for kind in variants {
+            let config = YtDlpOutputVariantConfig { kind, ..Default::default() };
+            let inputs = yt_dlp_variant_inputs(&config);
+            let js_runtimes = inputs
+                .get("js_runtimes")
+                .unwrap_or_else(|| panic!("js_runtimes must be set for {kind:?}"));
+            assert!(
+                js_runtimes.starts_with("deno:"),
+                "js_runtimes must start with deno: prefix for {kind:?}: {js_runtimes}"
+            );
+            assert!(
+                js_runtimes.contains("deps/deno/linux/deno"),
+                "js_runtimes must contain inlined deno path for {kind:?}: {js_runtimes}"
+            );
+            assert!(
+                !js_runtimes.contains("linux/deps/"),
+                "js_runtimes must not double-prefix linux for {kind:?}: {js_runtimes}"
+            );
+            assert!(
+                !js_runtimes.contains("macos/deps/"),
+                "js_runtimes must not double-prefix macos for {kind:?}: {js_runtimes}"
+            );
+            assert!(
+                !js_runtimes.contains("windows/deps/"),
+                "js_runtimes must not double-prefix windows for {kind:?}: {js_runtimes}"
+            );
+        }
+    }
+
+    #[test]
+    fn yt_dlp_all_variant_inputs_include_ffmpeg_location() {
+        let variants = [
+            YtDlpOutputKind::Primary,
+            YtDlpOutputKind::Chapters,
+            YtDlpOutputKind::Subtitles,
+            YtDlpOutputKind::Thumbnails,
+            YtDlpOutputKind::Description,
+            YtDlpOutputKind::Infojson,
+            YtDlpOutputKind::Comment,
+            YtDlpOutputKind::Archive,
+            YtDlpOutputKind::Annotation,
+            YtDlpOutputKind::Links,
+        ];
+        for kind in variants {
+            let config = YtDlpOutputVariantConfig { kind, ..Default::default() };
+            let inputs = yt_dlp_variant_inputs(&config);
+            let ffmpeg_loc = inputs
+                .get("ffmpeg_location")
+                .unwrap_or_else(|| panic!("ffmpeg_location must be set for {kind:?}"));
+            assert!(
+                !ffmpeg_loc.starts_with("linux/"),
+                "ffmpeg_location must not start with linux/ for {kind:?}: {ffmpeg_loc}"
+            );
+            assert!(
+                !ffmpeg_loc.starts_with("macos/"),
+                "ffmpeg_location must not start with macos/ for {kind:?}: {ffmpeg_loc}"
+            );
+            assert!(
+                !ffmpeg_loc.starts_with("windows/"),
+                "ffmpeg_location must not start with windows/ for {kind:?}: {ffmpeg_loc}"
+            );
+            assert!(
+                ffmpeg_loc.contains("deps/ffmpeg/"),
+                "ffmpeg_location must reference inlined ffmpeg for {kind:?}: {ffmpeg_loc}"
+            );
+        }
     }
 }
