@@ -22,6 +22,7 @@ applyTo: "**/*.ncl"
 - Version files export `validate_document_vN` and `envelope_contract_vN` — not plain `validate_document` at the version file level; unversioned aliases live in `mod.ncl`.
 - `mod.ncl` is the migration registry: exports `current_version`, `supported_versions` (array), `migrate_to` (function), and a `SupportedVersion` predicate contract.
 - **Strict version separation.** Each version file (`vN.ncl`) is self-contained: it defines exclusively its own `*VN` contract names and never references contracts from other versions. Never reuse a `*V1` name inside `v2.ncl` or vice versa, and never mix versions in one file. `mod.ncl` is the only place that imports multiple version files, and it acts purely as a registry/dispatcher — no contract definitions live there.
+- **Each version keeps its own envelope shape.** A version file (`vN.ncl`) defines its own `*VN` contract with the field layout that version actually used — do not reshape an older version's contract to mirror the latest version's internal grouping (e.g. do not push V2's sub-record grouping into `MediaRuntimeStorageV1`). Older versions bridge to the latest boundary type through the unified model, not by copying the latest shape.
 
 ## Contract patterns
 

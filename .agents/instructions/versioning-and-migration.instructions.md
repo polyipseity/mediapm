@@ -21,6 +21,16 @@ applyTo: "src/**/*.rs"
 - Place each wire-format version in a dedicated subdirectory or file per version (e.g., `versions/v1.rs`, `versions/v2.rs`).
 - Keep versioned envelope structs `pub(crate)` to avoid exposing wire internals in the public API surface.
 
+## Canonical versioning pattern (config documents)
+
+Every versioned config/state surface follows the same shape, regardless of transport (`.ncl` or `.json`):
+
+1. **Migrations live at the version boundary.** For `.ncl`, each `vN.ncl` owns the migration INTO that version (`v2.ncl` exports `migrate_v1_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`); `mod.ncl` only dispatches. For `.json`, migration code cannot be written in JSON, so it is written in Rust (in `versions/mod.rs` or `state/versions/`) — same dispatch shape.
+2. **Parse into a "latest" boundary type.** The boundary type is named `*Latest` and represents the ACTIVE version's wire shape (V2 here). It carries `Option` on user-optional fields. It is NOT a generic boundary for all versions.
+3. **Resolve defaults to an option-free resolved struct** (no `Option`) via `from_boundary`.
+
+**INVARIANT — each version envelope keeps its OWN shape.** Old versions are BRIDGED to the latest boundary through the unified model (`MediaPmDocument`), NEVER reshaped to mirror the latest version's internal grouping. A V1 envelope type (e.g. `MediaRuntimeStorageV1`) is a distinct flat wire shape that converts to/from `MediaRuntimeStorageLatest` via `From` impls. Do not replace a V1 envelope type with the grouped resolved type, and do not push V2's sub-record grouping down into V1's contract.
+
 ## Strict `versions/` boundary policy
 
 - Inside `versions/vX.rs`, do **not** import unversioned structs from outside `versions/`.
