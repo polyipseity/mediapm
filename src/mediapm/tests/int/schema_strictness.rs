@@ -36,11 +36,12 @@ const REALISTIC_V1_DOC: &str = r#"
     rsgain = { version_spec = "inherit" },
   },
   runtime = {
-    paths = { mediapm_dir = "/tmp/mp" },
-    materialization = { materialization_preference_order = ["hardlink", "symlink"] },
-    verification = { verify_on_read = ["always"] },
-    lifecycle = { instance_ttl_seconds = 604800 },
-    environment = { profiler_enabled = true, inherited_env_vars = { windows = ["PATH"], linux = ["PATH"] } },
+    mediapm_dir = "/tmp/mp",
+    materialization_preference_order = ["hardlink", "symlink"],
+    verify_on_read = ["always"],
+    instance_ttl_seconds = 604800,
+    profiler_enabled = true,
+    inherited_env_vars = { windows = ["PATH"], linux = ["PATH"] },
   },
 }
 "#;
@@ -516,10 +517,7 @@ fn parity_v1_ncl_evaluates_cleanly() {
     let hierarchy = obj["hierarchy"].as_array().expect("hierarchy must be an array");
     assert_eq!(hierarchy[0]["kind"], "folder");
     assert_eq!(hierarchy[0]["children"][0]["kind"], "media");
-    assert_eq!(
-        obj["runtime"]["materialization"]["materialization_preference_order"][0],
-        "hardlink"
-    );
+    assert_eq!(obj["runtime"]["materialization_preference_order"][0], "hardlink");
 }
 
 /// Regression: the pre-strictness loose `media` contract accepted arbitrary
