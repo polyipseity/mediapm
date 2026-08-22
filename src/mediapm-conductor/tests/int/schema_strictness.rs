@@ -599,7 +599,7 @@ fn regression_valid_conductor_docs_still_round_trip() {
     .expect("platform-runtime doc must still decode");
     assert!(platform_doc.runtime.retry_impure, "retry_impure preserved");
     assert_eq!(
-        platform_doc.runtime.platform_inherited_env_vars.macos,
+        platform_doc.runtime.environment.platform_inherited_env_vars.macos,
         vec!["PATH".to_string()],
         "platform env vars preserved"
     );

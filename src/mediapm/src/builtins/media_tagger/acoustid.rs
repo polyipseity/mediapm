@@ -51,14 +51,14 @@ pub(super) fn resolve_acoustid_api_key(override_value: Option<&str>) -> Option<S
 ///
 /// In `mediapm sync` executions, the internal media-tagger runs as a managed
 /// executable tool under conductor. In that mode, operators typically need to
-/// include `ACOUSTID_API_KEY` in `runtime.inherited_env_vars` so the tool
+/// include `ACOUSTID_API_KEY` in `runtime.environment.inherited_env_vars` so the tool
 /// subprocess can read it from environment.
 pub(super) fn require_acoustid_api_key_for_lookup(
     resolved_key: Option<String>,
 ) -> anyhow::Result<String> {
     let Some(api_key) = resolved_key else {
         bail!(
-            "AcoustID lookup requires a non-empty API key; set --acoustid-api-key or {ACOUSTID_API_KEY_ENV} (for mediapm sync workflows, ensure runtime.inherited_env_vars includes {ACOUSTID_API_KEY_ENV})"
+            "AcoustID lookup requires a non-empty API key; set --acoustid-api-key or {ACOUSTID_API_KEY_ENV} (for mediapm sync workflows, ensure runtime.environment.inherited_env_vars includes {ACOUSTID_API_KEY_ENV})"
         );
     };
 

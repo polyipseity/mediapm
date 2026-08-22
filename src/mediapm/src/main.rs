@@ -18,6 +18,12 @@ use clap_complete::Shell;
 use mediapm::MediaPmService;
 #[cfg(feature = "cli")]
 use mediapm::RecheckPolicy;
+#[cfg(feature = "cli")]
+use mediapm::config::{
+    MediaRuntimeStorageLatest, RuntimeBasePaths, RuntimeCachingConfigLatest,
+    RuntimeEnvironmentConfigLatest, RuntimeLifecycleConfigLatest,
+    RuntimeMaterializationConfigLatest, RuntimePathsConfigLatest, RuntimeVerificationConfigLatest,
+};
 use mediapm::output::{StatusIcon, print_hint, print_result, print_status_report, print_warning};
 #[cfg(feature = "cli")]
 use mediapm::{
@@ -59,37 +65,41 @@ async fn main_cli() -> anyhow::Result<()> {
         .init();
     let cli = Cli::parse();
 
-    let rt: MediaRuntimeStorage = MediaRuntimeStorage {
-        mediapm_dir: cli.mediapm_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
-        hierarchy_root_dir: cli
-            .hierarchy_root_dir
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
-        conductor_config: cli.conductor_config.as_ref().map(|p| p.to_string_lossy().to_string()),
-        conductor_generated_config: cli
-            .conductor_generated_config
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
-        conductor_state_config: cli
-            .conductor_state_config
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
-        env_file: cli.env_file.as_ref().map(|p| p.to_string_lossy().to_string()),
-        env_generated_file: cli
-            .env_generated_file
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
-        media_state_config: cli
-            .media_state_config
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
-        mediapm_schema_dir: cli
-            .mediapm_schema_dir
-            .as_ref()
-            .map(|p| Some(p.to_string_lossy().to_string())),
-        retry_impure: cli.retry_impure,
-        ..MediaRuntimeStorage::default()
+    let cli_mediapm_dir = cli.mediapm_dir.clone();
+    let latest = MediaRuntimeStorageLatest {
+        paths: RuntimePathsConfigLatest {
+            mediapm_dir: cli_mediapm_dir.clone().map(|p| p.to_string_lossy().to_string()),
+            hierarchy_root_dir: cli.hierarchy_root_dir.map(|p| p.to_string_lossy().to_string()),
+            mediapm_state_config: cli.media_state_config.map(|p| p.to_string_lossy().to_string()),
+            conductor_config: cli.conductor_config.map(|p| p.to_string_lossy().to_string()),
+            conductor_generated_config: cli
+                .conductor_generated_config
+                .map(|p| p.to_string_lossy().to_string()),
+            conductor_state_config: cli
+                .conductor_state_config
+                .map(|p| p.to_string_lossy().to_string()),
+            conductor_schema_dir: None,
+            mediapm_schema_dir: cli.mediapm_schema_dir.map(|p| p.to_string_lossy().to_string()),
+            env_file: cli.env_file.map(|p| p.to_string_lossy().to_string()),
+            env_generated_file: cli.env_generated_file.map(|p| p.to_string_lossy().to_string()),
+        },
+        materialization: RuntimeMaterializationConfigLatest::default(),
+        verification: RuntimeVerificationConfigLatest::default(),
+        caching: RuntimeCachingConfigLatest::default(),
+        lifecycle: RuntimeLifecycleConfigLatest::default(),
+        environment: RuntimeEnvironmentConfigLatest {
+            inherited_env_vars: None,
+            profiler_enabled: None,
+        },
+        path_sanitization: None,
+        retry_impure: Some(cli.retry_impure),
+        tools: std::collections::BTreeMap::new(),
     };
+    let base_paths = RuntimeBasePaths {
+        workspace_root: cli.root.clone(),
+        mediapm_dir: cli_mediapm_dir.clone().map_or_else(|| cli.root.join(".mediapm"), |p| p),
+    };
+    let rt: MediaRuntimeStorage = MediaRuntimeStorage::from_boundary(&latest, &base_paths);
     let _passthrough_rt = rt.clone();
 
     match cli.command {

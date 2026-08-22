@@ -6,7 +6,7 @@
 //! invalidate cached steps.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash, InMemoryCas};
@@ -24,8 +24,8 @@ use crate::conductor_bridge::sync::{
     apply_resolved_field_backfills, open_workspace_cas_store, reconcile_desired_tools,
 };
 use crate::config::{
-    MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStepTool, ToolRequirement,
-    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStepTool, RuntimeBasePaths,
+    ToolRequirement, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
     save_mediapm_state_document,
 };
 use crate::error::MediaPmError;
@@ -108,6 +108,12 @@ pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'stati
     metadata_cache: MetadataCache,
 }
 
+/// Converts a `PathBuf` into an `Option`, treating empty buffers as `None`
+/// (unset path override).
+fn pathbuf_to_opt(p: PathBuf) -> Option<PathBuf> {
+    if p.as_os_str().is_empty() { None } else { Some(p) }
+}
+
 #[allow(private_bounds)]
 impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + Sized + 'static>
     MediaPmService<Cas>
@@ -173,37 +179,18 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     pub fn resolve_effective_paths(&self) -> Result<MediaPmPaths, MediaPmError> {
         let merged = self.resolve_effective_runtime_storage()?;
         let overrides = MediaPmPathOverrides {
-            mediapm_dir: merged.mediapm_dir.as_ref().map(|d| Path::new(d).to_path_buf()),
-            hierarchy_root_dir: merged
-                .hierarchy_root_dir
-                .as_ref()
-                .map(|d| Path::new(d).to_path_buf()),
-            conductor_config: merged.conductor_config.as_ref().map(|d| Path::new(d).to_path_buf()),
-            conductor_generated_config: merged
-                .conductor_generated_config
-                .as_ref()
-                .map(|d| Path::new(d).to_path_buf()),
-            conductor_state_config: merged
-                .conductor_state_config
-                .as_ref()
-                .map(|d| Path::new(d).to_path_buf()),
-            conductor_schema_dir: merged
-                .conductor_schema_dir
-                .as_ref()
-                .map(|d| Path::new(d).to_path_buf()),
-            media_state_config: merged
-                .media_state_config
-                .as_ref()
-                .map(|d| Path::new(d).to_path_buf()),
-            env_file: merged.env_file.as_ref().map(|d| Path::new(d).to_path_buf()),
-            env_generated_file: merged
-                .env_generated_file
-                .as_ref()
-                .map(|d| Path::new(d).to_path_buf()),
-            mediapm_schema_dir: merged
-                .mediapm_schema_dir
-                .as_ref()
-                .map(|inner| inner.as_ref().map(|d| Path::new(d).to_path_buf())),
+            mediapm_dir: pathbuf_to_opt(merged.paths.mediapm_dir.clone()),
+            hierarchy_root_dir: pathbuf_to_opt(merged.paths.hierarchy_root_dir.clone()),
+            conductor_config: pathbuf_to_opt(merged.paths.conductor_config.clone()),
+            conductor_generated_config: pathbuf_to_opt(
+                merged.paths.conductor_generated_config.clone(),
+            ),
+            conductor_state_config: pathbuf_to_opt(merged.paths.conductor_state_config.clone()),
+            conductor_schema_dir: pathbuf_to_opt(merged.paths.conductor_schema_dir.clone()),
+            media_state_config: pathbuf_to_opt(merged.paths.mediapm_state_config.clone()),
+            env_file: pathbuf_to_opt(merged.paths.env_file.clone()),
+            env_generated_file: pathbuf_to_opt(merged.paths.env_generated_file.clone()),
+            mediapm_schema_dir: pathbuf_to_opt(merged.paths.mediapm_schema_dir.clone()).map(Some),
         };
         Ok(self.paths.with_overrides(&overrides))
     }
@@ -221,7 +208,14 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         // Tools now live at the document level (not inside runtime).
         // Populate runtime.tools so merge_runtime_storage sees them.
         doc.runtime.tools = doc.tools;
-        Ok(merge_runtime_storage(&doc.runtime, &self.runtime_storage_overrides))
+        // doc.runtime is the boundary (grouped, Option) representation;
+        // resolve it into the typed MediaRuntimeStorage before merging.
+        let base_paths = RuntimeBasePaths {
+            workspace_root: self.paths.root_dir.clone(),
+            mediapm_dir: effective_paths.runtime_root.clone(),
+        };
+        let resolved_doc_runtime = MediaRuntimeStorage::from_boundary(&doc.runtime, &base_paths);
+        Ok(merge_runtime_storage(&resolved_doc_runtime, &self.runtime_storage_overrides))
     }
 
     // -----------------------------------------------------------------------
@@ -861,7 +855,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             })
             .collect();
 
-        let inherited_env_vars = runtime_storage.inherited_env_vars.clone();
+        let inherited_env_vars = runtime_storage.environment.inherited_env_vars.clone();
 
         // Run the reconciliation.
         // Load current state before reconciliation (needed for skip logic).

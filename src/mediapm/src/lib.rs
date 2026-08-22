@@ -13,7 +13,7 @@
 
 pub mod builtins;
 pub(crate) mod conductor_bridge;
-mod config;
+pub mod config;
 /// Golden demo hierarchy layout contract (examples + tests).
 #[doc(hidden)]
 pub mod demo_hierarchy_spec;
@@ -36,7 +36,7 @@ pub(crate) mod tools;
 pub(crate) mod util;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use url::Url;
@@ -629,62 +629,95 @@ pub fn merge_runtime_storage(
     override_value: &MediaRuntimeStorage,
 ) -> MediaRuntimeStorage {
     let merged_inherited_env_vars = merge_platform_inherited_env_var_maps(
-        Some(&config_value.inherited_env_vars),
-        Some(&override_value.inherited_env_vars),
+        Some(&config_value.environment.inherited_env_vars),
+        Some(&override_value.environment.inherited_env_vars),
     );
 
     MediaRuntimeStorage {
-        mediapm_dir: override_value
-            .mediapm_dir
-            .clone()
-            .or_else(|| config_value.mediapm_dir.clone()),
-        hierarchy_root_dir: override_value
-            .hierarchy_root_dir
-            .clone()
-            .or_else(|| config_value.hierarchy_root_dir.clone()),
-        materialization_preference_order: override_value.materialization_preference_order.clone(),
+        paths: config::RuntimePathsConfig {
+            mediapm_dir: pick_path(
+                &override_value.paths.mediapm_dir,
+                &config_value.paths.mediapm_dir,
+            ),
+            hierarchy_root_dir: pick_path(
+                &override_value.paths.hierarchy_root_dir,
+                &config_value.paths.hierarchy_root_dir,
+            ),
+            mediapm_state_config: override_value.paths.mediapm_state_config.clone(),
+            conductor_config: pick_path(
+                &override_value.paths.conductor_config,
+                &config_value.paths.conductor_config,
+            ),
+            conductor_generated_config: pick_path(
+                &override_value.paths.conductor_generated_config,
+                &config_value.paths.conductor_generated_config,
+            ),
+            conductor_state_config: pick_path(
+                &override_value.paths.conductor_state_config,
+                &config_value.paths.conductor_state_config,
+            ),
+            conductor_schema_dir: pick_path(
+                &override_value.paths.conductor_schema_dir,
+                &config_value.paths.conductor_schema_dir,
+            ),
+            env_file: pick_path(&override_value.paths.env_file, &config_value.paths.env_file),
+            env_generated_file: pick_path(
+                &override_value.paths.env_generated_file,
+                &config_value.paths.env_generated_file,
+            ),
+            mediapm_schema_dir: pick_path(
+                &override_value.paths.mediapm_schema_dir,
+                &config_value.paths.mediapm_schema_dir,
+            ),
+        },
+        materialization: config::RuntimeMaterializationConfig {
+            materialization_preference_order: override_value
+                .materialization
+                .materialization_preference_order
+                .clone(),
+            verify_materialization: override_value.materialization.verify_materialization,
+        },
+        verification: config::RuntimeVerificationConfig {
+            verify_on_read: override_value.verification.verify_on_read.clone(),
+            verify_on_read_sample_denominator: override_value
+                .verification
+                .verify_on_read_sample_denominator,
+            verify_on_read_stale_timeout_secs: override_value
+                .verification
+                .verify_on_read_stale_timeout_secs,
+        },
+        caching: config::RuntimeCachingConfig {
+            reconstructed_cache_ttl_seconds: override_value.caching.reconstructed_cache_ttl_seconds,
+        },
+        lifecycle: config::RuntimeLifecycleConfig {
+            instance_ttl_seconds: override_value.lifecycle.instance_ttl_seconds,
+        },
+        environment: config::RuntimeEnvironmentConfig {
+            inherited_env_vars: merged_inherited_env_vars.unwrap_or_default(),
+            profiler_enabled: override_value.environment.profiler_enabled,
+        },
+        path_sanitization: override_value.path_sanitization.clone(),
+        retry_impure: override_value.retry_impure,
         tools: {
             let mut m = config_value.tools.clone();
             m.extend(override_value.tools.clone());
             m
         },
-        verify_on_read: override_value.verify_on_read.clone(),
-        verify_on_read_sample_denominator: override_value.verify_on_read_sample_denominator,
-        verify_on_read_stale_timeout_secs: override_value.verify_on_read_stale_timeout_secs,
-        reconstructed_cache_ttl_seconds: override_value.reconstructed_cache_ttl_seconds,
-        instance_ttl_seconds: override_value.instance_ttl_seconds,
-        inherited_env_vars: merged_inherited_env_vars.unwrap_or_default(),
-        media_state_config: override_value.media_state_config.clone(),
-        conductor_config: override_value
-            .conductor_config
-            .clone()
-            .or_else(|| config_value.conductor_config.clone()),
-        conductor_generated_config: override_value
-            .conductor_generated_config
-            .clone()
-            .or_else(|| config_value.conductor_generated_config.clone()),
-        conductor_state_config: override_value
-            .conductor_state_config
-            .clone()
-            .or_else(|| config_value.conductor_state_config.clone()),
-        conductor_schema_dir: override_value
-            .conductor_schema_dir
-            .clone()
-            .or_else(|| config_value.conductor_schema_dir.clone()),
-        env_file: override_value.env_file.clone().or_else(|| config_value.env_file.clone()),
-        env_generated_file: override_value
-            .env_generated_file
-            .clone()
-            .or_else(|| config_value.env_generated_file.clone()),
-        mediapm_schema_dir: override_value
-            .mediapm_schema_dir
-            .clone()
-            .or_else(|| config_value.mediapm_schema_dir.clone()),
-        profiler_enabled: override_value.profiler_enabled,
-        verify_materialization: override_value.verify_materialization,
-        retry_impure: override_value.retry_impure,
-        path_sanitization: override_value.path_sanitization.clone(),
         cache_root_override: override_value.cache_root_override.clone(),
+    }
+}
+
+/// Picks the override path when it is set, otherwise falls back to the
+/// config path.
+///
+/// `MediaRuntimeStorage` path fields are `PathBuf` (not `Option`), so an empty
+/// buffer is the "unset" sentinel: the override wins only when non-empty.
+#[must_use]
+fn pick_path(override_value: &PathBuf, config_value: &PathBuf) -> PathBuf {
+    if override_value.as_os_str().is_empty() {
+        config_value.clone()
+    } else {
+        override_value.clone()
     }
 }
 

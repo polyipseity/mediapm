@@ -311,6 +311,23 @@ where
     Ok(names)
 }
 
+/// Platform environment configuration for the conductor runtime.
+///
+/// Groups the platform-keyed inherited env var names under a single
+/// sub-record so the top-level [`ConductorRuntimeConfig`] stays flat for
+/// scalar flags while platform-specific data is namespaced.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimePlatformEnvConfig {
+    /// Platform-keyed inherited env var names.
+    ///
+    /// Keys are closed to `windows`/`linux`/`macos`; each value lists
+    /// environment variable *names* to inherit from the host process.  These
+    /// are resolved at `to_unified()` time against the current platform.
+    #[serde(default, skip_serializing_if = "PlatformInheritedEnvVars::is_empty")]
+    pub platform_inherited_env_vars: PlatformInheritedEnvVars,
+}
+
 /// Runtime configuration for the conductor itself (not per-tool).
 ///
 /// This is a serde-deserialization boundary type. Fields with meaningful
@@ -319,18 +336,14 @@ where
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConductorRuntimeConfig {
+    /// Platform environment configuration (inherited env var names).
+    #[serde(default)]
+    pub environment: RuntimePlatformEnvConfig,
     /// Whether impure tool calls may be retried automatically.
     ///
-    /// `None` (absent in config) resolves to `false` at the boundary.
+    /// Absent in config resolves to `false` at the boundary.
     #[serde(default)]
     pub retry_impure: bool,
-    /// Platform-keyed inherited env var names.
-    ///
-    /// Keys are closed to `windows`/`linux`/`macos`; each value lists
-    /// environment variable *names* to inherit from the host process.  These
-    /// are resolved at `to_unified()` time against the current platform.
-    #[serde(default, skip_serializing_if = "PlatformInheritedEnvVars::is_empty")]
-    pub platform_inherited_env_vars: PlatformInheritedEnvVars,
 }
 
 /// Kind of tool definition.

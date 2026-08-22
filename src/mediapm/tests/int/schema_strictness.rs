@@ -8,6 +8,7 @@
 
 use serde_json::{Value, json};
 
+use mediapm::config::MediaRuntimeStorageLatest;
 use mediapm::{
     MediaPmDocument, MediaRuntimeStorage, MediaStep, OutputVariantValue, ToolRegistryEntry,
     VerifyStrategy, apply_v1_contract, apply_v2_contract, evaluate_mod_ncl_expression,
@@ -35,12 +36,11 @@ const REALISTIC_V1_DOC: &str = r#"
     rsgain = { version_spec = "inherit" },
   },
   runtime = {
-    mediapm_dir = "/tmp/mp",
-    materialization_preference_order = ["hardlink", "symlink"],
-    verify_on_read = ["always"],
-    instance_ttl_seconds = 604800,
-    profiler_enabled = true,
-    inherited_env_vars = { windows = ["PATH"], linux = ["PATH"] },
+    paths = { mediapm_dir = "/tmp/mp" },
+    materialization = { materialization_preference_order = ["hardlink", "symlink"] },
+    verification = { verify_on_read = ["always"] },
+    lifecycle = { instance_ttl_seconds = 604800 },
+    environment = { profiler_enabled = true, inherited_env_vars = { windows = ["PATH"], linux = ["PATH"] } },
   },
 }
 "#;
@@ -84,12 +84,11 @@ const REALISTIC_V2_DOC: &str = r#"
     rsgain = { version_spec = "inherit" },
   },
   runtime = {
-    mediapm_dir = "/tmp/mp",
-    materialization_preference_order = ["hardlink", "symlink"],
-    verify_on_read = ["always"],
-    instance_ttl_seconds = 604800,
-    profiler_enabled = true,
-    inherited_env_vars = { windows = ["PATH"], linux = ["PATH"] },
+    paths = { mediapm_dir = "/tmp/mp" },
+    materialization = { materialization_preference_order = ["hardlink", "symlink"] },
+    verification = { verify_on_read = ["always"] },
+    lifecycle = { instance_ttl_seconds = 604800 },
+    environment = { profiler_enabled = true, inherited_env_vars = { windows = ["PATH"], linux = ["PATH"] } },
   },
 }
 "#;
@@ -440,7 +439,10 @@ fn parity_v2_ncl_evaluates_cleanly() {
     let hierarchy = obj["hierarchy"].as_array().expect("hierarchy must be an array");
     assert_eq!(hierarchy[0]["kind"], "folder");
     assert_eq!(hierarchy[0]["children"][0]["kind"], "media");
-    assert_eq!(obj["runtime"]["materialization_preference_order"][0], "hardlink");
+    assert_eq!(
+        obj["runtime"]["materialization"]["materialization_preference_order"][0],
+        "hardlink"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -514,7 +516,10 @@ fn parity_v1_ncl_evaluates_cleanly() {
     let hierarchy = obj["hierarchy"].as_array().expect("hierarchy must be an array");
     assert_eq!(hierarchy[0]["kind"], "folder");
     assert_eq!(hierarchy[0]["children"][0]["kind"], "media");
-    assert_eq!(obj["runtime"]["materialization_preference_order"][0], "hardlink");
+    assert_eq!(
+        obj["runtime"]["materialization"]["materialization_preference_order"][0],
+        "hardlink"
+    );
 }
 
 /// Regression: the pre-strictness loose `media` contract accepted arbitrary
@@ -864,7 +869,7 @@ fn strict_tool_registry_entry_rejects_unknown_field() {
 fn strict_media_runtime_rejects_unknown_field() {
     serde_reject::<MediaRuntimeStorage>(
         json!({
-            "verify_on_read": ["modified"],
+            "verification": { "verify_on_read": ["modified"] },
             "bogus_field": 1,
         }),
         "bogus_field",
@@ -897,7 +902,7 @@ fn strict_output_variants_rejects_free_form_value() {
 fn strict_verify_strategy_rejects_unknown_name() {
     serde_reject::<MediaRuntimeStorage>(
         json!({
-            "verify_on_read": ["bogus"],
+            "verification": { "verify_on_read": ["bogus"] },
         }),
         "bogus",
     );
@@ -910,7 +915,7 @@ fn strict_verify_strategy_rejects_unknown_name() {
 fn regression_verify_on_read_unknown_no_longer_ignored() {
     serde_reject::<MediaRuntimeStorage>(
         json!({
-            "verify_on_read": ["always", "bogus"],
+            "verification": { "verify_on_read": ["always", "bogus"] },
         }),
         "bogus",
     );
@@ -955,12 +960,12 @@ fn strict_output_variants_accepts_ytdlp_and_generic_shapes() {
 /// `snake_case` wire names.
 #[test]
 fn strict_verify_strategy_accepts_known_names() {
-    let rt: MediaRuntimeStorage = serde_json::from_value(json!({
-        "verify_on_read": ["always", "modified", "sample", "stale"],
+    let rt: MediaRuntimeStorageLatest = serde_json::from_value(json!({
+        "verification": { "verify_on_read": ["always", "modified", "sample", "stale"] },
     }))
     .expect("all CAS strategy names must decode");
     assert_eq!(
-        rt.verify_on_read,
+        *rt.verification.verify_on_read.as_ref().unwrap(),
         vec![
             VerifyStrategy::Always,
             VerifyStrategy::Modified,
@@ -969,7 +974,10 @@ fn strict_verify_strategy_accepts_known_names() {
         ]
     );
     let back = serde_json::to_value(&rt).expect("runtime storage must serialize");
-    assert_eq!(back["verify_on_read"], json!(["always", "modified", "sample", "stale"]));
+    assert_eq!(
+        back["verification"]["verify_on_read"],
+        json!(["always", "modified", "sample", "stale"])
+    );
 }
 
 /// S-E4: typed numeric fields reject fractional values at the serde boundary
@@ -978,7 +986,7 @@ fn strict_verify_strategy_accepts_known_names() {
 fn strict_runtime_rejects_fractional_denominator() {
     serde_reject::<MediaRuntimeStorage>(
         json!({
-            "verify_on_read_sample_denominator": 1.5,
+            "verification": { "verify_on_read_sample_denominator": 1.5 },
         }),
         "invalid type",
     );

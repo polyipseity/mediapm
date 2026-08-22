@@ -237,17 +237,26 @@ pub(crate) struct ToolRuntimeLatest {
     pub(crate) max_retries: usize,
 }
 
-/// Runtime configuration for the conductor itself (not per-tool).
+/// Platform environment configuration for the conductor runtime (boundary).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ConductorRuntimeConfigLatest {
-    /// Whether impure tool calls may be retried automatically.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) retry_impure: Option<bool>,
+pub(crate) struct RuntimePlatformEnvConfigLatest {
     /// Platform-keyed inherited env var names (typed; keys closed to
     /// windows/linux/macos, S-D3).
     #[serde(default, skip_serializing_if = "super::super::PlatformInheritedEnvVars::is_empty")]
     pub(crate) platform_inherited_env_vars: super::super::PlatformInheritedEnvVars,
+}
+
+/// Runtime configuration for the conductor itself (not per-tool).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConductorRuntimeConfigLatest {
+    /// Platform environment configuration (inherited env var names).
+    #[serde(default)]
+    pub(crate) environment: RuntimePlatformEnvConfigLatest,
+    /// Whether impure tool calls may be retried automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) retry_impure: Option<bool>,
 }
 
 /// Latest persisted tool kind (tagged by `kind` field).
@@ -679,7 +688,9 @@ impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig
         super::super::ConductorRuntimeConfig {
             // `None` (absent in config) resolves to `false` at the boundary.
             retry_impure: rt.retry_impure.unwrap_or(false),
-            platform_inherited_env_vars: rt.platform_inherited_env_vars,
+            environment: super::super::RuntimePlatformEnvConfig {
+                platform_inherited_env_vars: rt.environment.platform_inherited_env_vars,
+            },
         }
     }
 }
@@ -688,7 +699,9 @@ impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest
     fn from(rt: super::super::ConductorRuntimeConfig) -> Self {
         ConductorRuntimeConfigLatest {
             retry_impure: Some(rt.retry_impure),
-            platform_inherited_env_vars: rt.platform_inherited_env_vars,
+            environment: RuntimePlatformEnvConfigLatest {
+                platform_inherited_env_vars: rt.environment.platform_inherited_env_vars,
+            },
         }
     }
 }

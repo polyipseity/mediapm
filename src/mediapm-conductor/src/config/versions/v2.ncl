@@ -86,10 +86,16 @@ let PlatformInheritedEnvVarsV2 = {
 }
 in
 
+# ||| Conductor platform environment configuration (nested under `environment`).
+let RuntimePlatformEnvConfigV2 = {
+  platform_inherited_env_vars | PlatformInheritedEnvVarsV2 | optional,
+}
+in
+
 # ||| Runtime configuration for the conductor itself (not per-tool).
 let ConductorRuntimeConfigV2 = {
   retry_impure | Bool | optional,
-  platform_inherited_env_vars | PlatformInheritedEnvVarsV2 | optional,
+  environment | RuntimePlatformEnvConfigV2 | optional,
 }
 in
 

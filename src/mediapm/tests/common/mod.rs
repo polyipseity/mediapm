@@ -49,11 +49,10 @@ pub(crate) async fn service_in_tempdir()
 /// subdirectory of the artifact root (mirrors the demo-online layout).
 pub(crate) async fn service_at(
     root: &Path,
-    hierarchy_root_dir: Option<&str>,
+    _hierarchy_root_dir: Option<&str>,
 ) -> Result<MediaPmService<mediapm_cas::FileSystemCas>, mediapm::MediaPmError> {
     let runtime_storage = MediaRuntimeStorage {
         cache_root_override: Some(root.join("tool-cache")),
-        hierarchy_root_dir: hierarchy_root_dir.map(str::to_string),
         ..MediaRuntimeStorage::default()
     };
     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, runtime_storage).await

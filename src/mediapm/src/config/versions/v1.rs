@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::super::{
-    MediaPmDocument, MediaPmState, MediaRuntimeStorage, ToolRequirement, hierarchy_types,
+    MediaPmDocument, MediaPmState, MediaRuntimeStorageLatest, ToolRequirement, hierarchy_types,
     source_types,
 };
 use super::Migrate;
@@ -37,7 +37,7 @@ pub(super) struct MediaPmDocumentEnvelopeV1 {
     pub(super) tools: BTreeMap<String, ToolRequirement>,
     /// Runtime configuration overrides.
     #[serde(default)]
-    pub(super) runtime: MediaRuntimeStorage,
+    pub(super) runtime: MediaRuntimeStorageLatest,
     /// Legacy `state` payload accepted on V1 documents.
     ///
     /// Dropped when unifying into the runtime model; state is managed

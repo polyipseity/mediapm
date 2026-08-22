@@ -109,6 +109,11 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use mediapm::config::{
+    MediaRuntimeStorageLatest, RuntimeCachingConfigLatest, RuntimeEnvironmentConfigLatest,
+    RuntimeLifecycleConfigLatest, RuntimeMaterializationConfigLatest, RuntimePathsConfigLatest,
+    RuntimeVerificationConfigLatest,
+};
 use mediapm::demo_hierarchy_spec::{
     ONLINE_DEMO_YOUTUBE_URL, ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_valid_image_magic_bytes,
     online_demo_public_artifact_filename,
@@ -1253,72 +1258,86 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
 
     // Expose all runtime-storage fields with explicit default values so the
     // written mediapm.ncl documents every runtime knob by default.
-    document.runtime = MediaRuntimeStorage {
+    document.runtime = MediaRuntimeStorageLatest {
         // Runtime root for all managed state files.
         // Default: `.mediapm/` relative to the workspace root.
-        mediapm_dir: Some(".mediapm".to_string()),
-        // Materialized hierarchy root directory.
-        // Default: workspace root containing `mediapm.ncl`.
-        hierarchy_root_dir: Some("media".to_string()),
-        path_sanitization: SanitizeNamesConfig::default(),
-        // Ordered file-materialization method preference.
-        // Default when omitted: hardlink -> symlink -> reflink -> copy.
-        materialization_preference_order: DEMO_MATERIALIZATION_PREFERENCE_ORDER.to_vec(),
-        // User-owned conductor config path relative to workspace root.
-        // Default: `mediapm.conductor.ncl`.
-        conductor_config: Some("mediapm.conductor.ncl".to_string()),
-        // Machine-managed conductor config path relative to workspace root.
-        // Default: `mediapm.conductor.generated.ncl`.
-        conductor_generated_config: Some("mediapm.conductor.generated.ncl".to_string()),
-        // Volatile conductor state path relative to workspace root.
-        // Default: `.mediapm/state.conductor.json`.
-        conductor_state_config: Some(".mediapm/state.conductor.json".to_string()),
-        // Conductor schema export directory relative to workspace root.
-        // Default: `<mediapm_dir>/config/conductor`.
-        conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
-        // Explicit host default inherited env-var map.
-        // Runtime still merges this map case-insensitively with host defaults.
-        inherited_env_vars: {
-            let host_platform = std::env::consts::OS.to_ascii_lowercase();
-            let mut map = BTreeMap::new();
-            map.insert(host_platform, default_runtime_inherited_env_vars().into_keys().collect());
-            map
+        paths: RuntimePathsConfigLatest {
+            mediapm_dir: Some(".mediapm".to_string()),
+            // Materialized hierarchy root directory.
+            // Default: workspace root containing `mediapm.ncl`.
+            hierarchy_root_dir: Some("media".to_string()),
+            // User-owned conductor config path relative to workspace root.
+            // Default: `mediapm.conductor.ncl`.
+            conductor_config: Some("mediapm.conductor.ncl".to_string()),
+            // Machine-managed conductor config path relative to workspace root.
+            // Default: `mediapm.conductor.generated.ncl`.
+            conductor_generated_config: Some("mediapm.conductor.generated.ncl".to_string()),
+            // Volatile conductor state path relative to workspace root.
+            // Default: `.mediapm/state.conductor.json`.
+            conductor_state_config: Some(".mediapm/state.conductor.json".to_string()),
+            // Conductor schema export directory relative to workspace root.
+            // Default: `<mediapm_dir>/config/conductor`.
+            conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
+            // Machine-managed mediapm state path relative to workspace root.
+            // Default: `.mediapm/state.json` (JSON always-write).
+            mediapm_state_config: Some(".mediapm/state.json".to_string()),
+            // Dotenv credential source path relative to workspace root.
+            // Default: `.mediapm/.env`.
+            env_file: Some(".mediapm/.env".to_string()),
+            // Auto-generated dotenv path relative to workspace root.
+            // Default: `.mediapm/.env.generated`.
+            env_generated_file: Some(".mediapm/.env.generated".to_string()),
+            // Embedded schema export directory.
+            // Default: `<mediapm_dir>/config/mediapm`.
+            mediapm_schema_dir: Some(".mediapm/config/mediapm".to_string()),
         },
-        // Machine-managed mediapm state path relative to workspace root.
-        // Default: `.mediapm/state.json` (JSON always-write).
-        media_state_config: None,
-        // Dotenv credential source path relative to workspace root.
-        // Default: `.mediapm/.env`.
-        env_file: Some(".mediapm/.env".to_string()),
-        // Auto-generated dotenv path relative to workspace root.
-        // Default: `.mediapm/.env.generated`.
-        env_generated_file: Some(".mediapm/.env.generated".to_string()),
-        // Embedded schema export directory policy.
-        // `Some(Some(path))` keeps export enabled with an explicit default path.
-        mediapm_schema_dir: Some(Some(".mediapm/config/mediapm".to_string())),
-        // Enable conductor profiling so every sync run produces a per-step
-        // timing profile at `.mediapm/profile.json` for latency investigation.
-        profiler_enabled: true,
-        // CAS integrity trusted by default; set to Some(true) to verify each
-        // materialized output against its CAS record.
-        verify_materialization: false,
-        // Optional default runtime GC TTL in seconds.
-        // Not set: inherits conductor's built-in default.
-        instance_ttl_seconds: 3600,
-        // CAS integrity re-verification strategies on read.
-        // Default: ["modified", "sample"].
-        verify_on_read: vec![VerifyStrategy::Modified, VerifyStrategy::Sample],
-        // Sampling denominator for the "sample" verify-on-read strategy.
-        // Default: 100.
-        verify_on_read_sample_denominator: 100,
-        // Timeout in seconds for the "stale" verify-on-read strategy.
-        // Default: 604800 (7 days).
-        verify_on_read_stale_timeout_secs: 604_800,
-        // TTL in seconds for reconstructed bytes cache.
-        // Default: 3600 (1 hour).
-        reconstructed_cache_ttl_seconds: 3600,
-        retry_impure: false,
-        cache_root_override: None,
+        materialization: RuntimeMaterializationConfigLatest {
+            // Ordered file-materialization method preference.
+            // Default when omitted: hardlink -> symlink -> reflink -> copy.
+            materialization_preference_order: Some(DEMO_MATERIALIZATION_PREFERENCE_ORDER.to_vec()),
+            // CAS integrity trusted by default; set to Some(true) to verify each
+            // materialized output against its CAS record.
+            verify_materialization: Some(false),
+        },
+        verification: RuntimeVerificationConfigLatest {
+            // CAS integrity re-verification strategies on read.
+            // Default: ["modified", "sample"].
+            verify_on_read: Some(vec![VerifyStrategy::Modified, VerifyStrategy::Sample]),
+            // Sampling denominator for the "sample" verify-on-read strategy.
+            // Default: 100.
+            verify_on_read_sample_denominator: Some(100),
+            // Timeout in seconds for the "stale" verify-on-read strategy.
+            // Default: 604800 (7 days).
+            verify_on_read_stale_timeout_secs: Some(604_800),
+        },
+        caching: RuntimeCachingConfigLatest {
+            // TTL in seconds for reconstructed bytes cache.
+            // Default: 3600 (1 hour).
+            reconstructed_cache_ttl_seconds: Some(3600),
+        },
+        lifecycle: RuntimeLifecycleConfigLatest {
+            // Optional default runtime GC TTL in seconds.
+            // Not set: inherits conductor's built-in default.
+            instance_ttl_seconds: Some(3600),
+        },
+        environment: RuntimeEnvironmentConfigLatest {
+            // Explicit host default inherited env-var map.
+            // Runtime still merges this map case-insensitively with host defaults.
+            inherited_env_vars: Some({
+                let host_platform = std::env::consts::OS.to_ascii_lowercase();
+                let mut map = BTreeMap::new();
+                map.insert(
+                    host_platform,
+                    default_runtime_inherited_env_vars().into_keys().collect(),
+                );
+                map
+            }),
+            // Enable conductor profiling so every sync run produces a per-step
+            // timing profile at `.mediapm/profile.json` for latency investigation.
+            profiler_enabled: Some(true),
+        },
+        path_sanitization: None,
+        retry_impure: Some(false),
         tools: BTreeMap::new(),
     };
 

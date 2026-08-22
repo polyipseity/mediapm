@@ -270,11 +270,11 @@ impl MergeState {
             }
             _ => {}
         }
-        if !rt.platform_inherited_env_vars.is_empty() {
+        if !rt.environment.platform_inherited_env_vars.is_empty() {
             match self.runtime_platform_source.as_ref() {
                 Some(first_path)
-                    if self.merged.runtime.platform_inherited_env_vars
-                        != rt.platform_inherited_env_vars =>
+                    if self.merged.runtime.environment.platform_inherited_env_vars
+                        != rt.environment.platform_inherited_env_vars =>
                 {
                     self.conflicts.push(MergeConflict::ConflictingRuntime {
                         field: "platform_inherited_env_vars",
@@ -285,8 +285,8 @@ impl MergeState {
                 Some(_) => {}
                 None => {
                     self.runtime_platform_source = Some(source.path.clone());
-                    self.merged.runtime.platform_inherited_env_vars =
-                        rt.platform_inherited_env_vars.clone();
+                    self.merged.runtime.environment.platform_inherited_env_vars =
+                        rt.environment.platform_inherited_env_vars.clone();
                 }
             }
         }
@@ -413,8 +413,11 @@ impl NickelDocument {
                         } else {
                             "unknown"
                         };
-                        if let Some(platform_names) =
-                            self.runtime.platform_inherited_env_vars.env_names_for(current_platform)
+                        if let Some(platform_names) = self
+                            .runtime
+                            .environment
+                            .platform_inherited_env_vars
+                            .env_names_for(current_platform)
                         {
                             for name in platform_names {
                                 if let Ok(val) = std::env::var(name) {
@@ -1001,15 +1004,16 @@ mod tests {
     fn merge_documents_runtime_platform_explicit_beats_implicit() {
         let env1 = envelope();
         let mut env2 = envelope();
-        env2.runtime.platform_inherited_env_vars = super::super::PlatformInheritedEnvVars {
-            windows: Vec::new(),
-            linux: vec!["PATH".into()],
-            macos: Vec::new(),
-        };
+        env2.runtime.environment.platform_inherited_env_vars =
+            super::super::PlatformInheritedEnvVars {
+                windows: Vec::new(),
+                linux: vec!["PATH".into()],
+                macos: Vec::new(),
+            };
         let result =
             merge_documents(&[source("/dummy/a.ncl", env1), source("/dummy/b.ncl", env2)]).unwrap();
         assert_eq!(
-            result.runtime.platform_inherited_env_vars.env_names_for("linux"),
+            result.runtime.environment.platform_inherited_env_vars.env_names_for("linux"),
             Some(&vec!["PATH".to_string()])
         );
     }
@@ -1034,17 +1038,19 @@ mod tests {
     #[test]
     fn merge_documents_runtime_conflicting_platform_rejected() {
         let mut env1 = envelope();
-        env1.runtime.platform_inherited_env_vars = super::super::PlatformInheritedEnvVars {
-            windows: Vec::new(),
-            linux: vec!["PATH".into()],
-            macos: Vec::new(),
-        };
+        env1.runtime.environment.platform_inherited_env_vars =
+            super::super::PlatformInheritedEnvVars {
+                windows: Vec::new(),
+                linux: vec!["PATH".into()],
+                macos: Vec::new(),
+            };
         let mut env2 = envelope();
-        env2.runtime.platform_inherited_env_vars = super::super::PlatformInheritedEnvVars {
-            windows: Vec::new(),
-            linux: Vec::new(),
-            macos: vec!["HOME".into()],
-        };
+        env2.runtime.environment.platform_inherited_env_vars =
+            super::super::PlatformInheritedEnvVars {
+                windows: Vec::new(),
+                linux: Vec::new(),
+                macos: vec!["HOME".into()],
+            };
         let err = merge_documents(&[source("/dummy/a.ncl", env1), source("/dummy/b.ncl", env2)])
             .unwrap_err();
         let msg = format!("{err}");

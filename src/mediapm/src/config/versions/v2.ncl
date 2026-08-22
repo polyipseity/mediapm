@@ -220,39 +220,82 @@ let rec HierarchyNodeV2 = {
 }
 in
 
-# ||| Runtime storage (mirrors `MediaRuntimeStorage`).  Closed: no open `..`
-# tail.  `tools` and `cache_root_override` are `#[serde(skip)]` in Rust and
-# are intentionally absent here.
-let MediaRuntimeStorageV2 = {
+# ||| Runtime path configuration (mirrors
+# ||| `MediaRuntimeStorageLatest::paths`).  Closed: no open `..` tail.
+let RuntimePathsConfigV2 = {
   mediapm_dir | String | optional,
   hierarchy_root_dir | String | optional,
+  mediapm_state_config | String | optional,
+  conductor_config | String | optional,
+  conductor_generated_config | String | optional,
+  conductor_state_config | String | optional,
+  conductor_schema_dir | String | optional,
+  mediapm_schema_dir | String | optional,
+  env_file | String | optional,
+  env_generated_file | String | optional,
+}
+in
+
+# ||| Runtime materialization configuration (mirrors
+# ||| `MediaRuntimeStorageLatest::materialization`).  Closed: no open `..` tail.
+let RuntimeMaterializationConfigV2 = {
   materialization_preference_order
     | Array (EnumV2 ["hardlink", "symlink", "reflink", "copy"])
     | optional,
+  verify_materialization | Bool | optional,
+}
+in
+
+# ||| Runtime verification configuration (mirrors
+# ||| `MediaRuntimeStorageLatest::verification`).  Closed: no open `..` tail.
+let RuntimeVerificationConfigV2 = {
   verify_on_read
     | Array (EnumV2 ["always", "modified", "sample", "stale"])
     | optional,
   verify_on_read_sample_denominator | IntegerNumberV2 | optional,
   verify_on_read_stale_timeout_secs | IntegerNumberV2 | optional,
+}
+in
+
+# ||| Runtime caching configuration (mirrors
+# ||| `MediaRuntimeStorageLatest::caching`).  Closed: no open `..` tail.
+let RuntimeCachingConfigV2 = {
   reconstructed_cache_ttl_seconds | IntegerNumberV2 | optional,
+}
+in
+
+# ||| Runtime lifecycle configuration (mirrors
+# ||| `MediaRuntimeStorageLatest::lifecycle`).  Closed: no open `..` tail.
+let RuntimeLifecycleConfigV2 = {
   instance_ttl_seconds | IntegerNumberV2 | optional,
+}
+in
+
+# ||| Runtime environment configuration (mirrors
+# ||| `MediaRuntimeStorageLatest::environment`).  Closed: no open `..` tail.
+let RuntimeEnvironmentConfigV2 = {
   inherited_env_vars | {
     windows | Array NonEmptyStringV2 | optional,
     linux | Array NonEmptyStringV2 | optional,
     macos | Array NonEmptyStringV2 | optional,
   } | optional,
-  media_state_config | String | optional,
-  conductor_config | String | optional,
-  conductor_generated_config | String | optional,
-  conductor_state_config | String | optional,
-  conductor_schema_dir | String | optional,
-  env_file | String | optional,
-  env_generated_file | String | optional,
-  mediapm_schema_dir | String | optional,
-  profiler_enabled | Bool | default = false,
-  verify_materialization | Bool | default = false,
-  retry_impure | Bool | default = false,
-  path_sanitization | SanitizeNamesConfigV2 | default = "inherit",
+  profiler_enabled | Bool | optional,
+}
+in
+
+# ||| Runtime storage (mirrors `MediaRuntimeStorage`).  Closed: no open `..`
+# tail.  `tools` and `cache_root_override` are `#[serde(skip)]` in Rust and
+# are intentionally absent here.
+let MediaRuntimeStorageV2 = {
+  paths | RuntimePathsConfigV2 | default = {},
+  materialization | RuntimeMaterializationConfigV2 | default = {},
+  verification | RuntimeVerificationConfigV2 | default = {},
+  caching | RuntimeCachingConfigV2 | default = {},
+  lifecycle | RuntimeLifecycleConfigV2 | default = {},
+  environment | RuntimeEnvironmentConfigV2 | default = {},
+  path_sanitization | SanitizeNamesConfigV2 | optional,
+  retry_impure | Bool | optional,
+  tools | { _ : ToolRequirementV2 } | default = {},
 }
 in
 

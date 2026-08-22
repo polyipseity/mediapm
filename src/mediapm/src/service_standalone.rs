@@ -7,7 +7,7 @@
 //!
 //! [`MediaPmService`]: crate::service::MediaPmService
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::{
     MediaPmDocument, MediaPmState, MediaRuntimeStorage, MediaStepTool, load_mediapm_document,
@@ -53,6 +53,13 @@ pub(crate) fn ensure_and_load_mediapm_document(
     }
 }
 
+/// Converts a `PathBuf` override into an `Option<PathBuf>`, mapping empty
+/// paths to `None` (use computed default).
+#[must_use]
+fn opt_path(path: &PathBuf) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() { None } else { Some(path.clone()) }
+}
+
 /// Resolves effective paths for a given root, applying runtime storage
 /// overrides.
 ///
@@ -63,28 +70,27 @@ pub fn resolve_effective_paths_for_root(
     runtime_storage_overrides: &MediaRuntimeStorage,
 ) -> MediaPmPaths {
     let overrides = MediaPmPathOverrides {
-        mediapm_dir: runtime_storage_overrides.mediapm_dir.as_ref().map(Into::into),
-        hierarchy_root_dir: runtime_storage_overrides.hierarchy_root_dir.as_ref().map(Into::into),
-        conductor_config: runtime_storage_overrides.conductor_config.as_ref().map(Into::into),
-        conductor_generated_config: runtime_storage_overrides
-            .conductor_generated_config
-            .as_ref()
-            .map(Into::into),
-        conductor_state_config: runtime_storage_overrides
-            .conductor_state_config
-            .as_ref()
-            .map(Into::into),
-        conductor_schema_dir: runtime_storage_overrides
-            .conductor_schema_dir
-            .as_ref()
-            .map(Into::into),
-        media_state_config: runtime_storage_overrides.media_state_config.as_ref().map(Into::into),
-        env_file: runtime_storage_overrides.env_file.as_ref().map(Into::into),
-        env_generated_file: runtime_storage_overrides.env_generated_file.as_ref().map(Into::into),
-        mediapm_schema_dir: runtime_storage_overrides
+        mediapm_dir: opt_path(&runtime_storage_overrides.paths.mediapm_dir),
+        hierarchy_root_dir: opt_path(&runtime_storage_overrides.paths.hierarchy_root_dir),
+        conductor_config: opt_path(&runtime_storage_overrides.paths.conductor_config),
+        conductor_generated_config: opt_path(
+            &runtime_storage_overrides.paths.conductor_generated_config,
+        ),
+        conductor_state_config: opt_path(&runtime_storage_overrides.paths.conductor_state_config),
+        conductor_schema_dir: opt_path(&runtime_storage_overrides.paths.conductor_schema_dir),
+        media_state_config: opt_path(&runtime_storage_overrides.paths.mediapm_state_config),
+        env_file: opt_path(&runtime_storage_overrides.paths.env_file),
+        env_generated_file: opt_path(&runtime_storage_overrides.paths.env_generated_file),
+        mediapm_schema_dir: if runtime_storage_overrides
+            .paths
             .mediapm_schema_dir
-            .as_ref()
-            .map(|inner| inner.as_ref().map(Into::into)),
+            .as_os_str()
+            .is_empty()
+        {
+            None
+        } else {
+            Some(Some(runtime_storage_overrides.paths.mediapm_schema_dir.clone()))
+        },
     };
     MediaPmPaths::from_root(root_dir).with_overrides(&overrides)
 }
@@ -267,7 +273,7 @@ pub(crate) fn should_invalidate_instance(
 mod tests {
     use super::*;
     use crate::MediaStep;
-    use crate::config::MediaSourceSpec;
+    use crate::config::{MediaSourceSpec, RuntimePathsConfig};
     use std::collections::BTreeMap;
 
     /// Ensures `registered_builtin_ids` returns expected builtins.
@@ -335,7 +341,10 @@ mod tests {
     fn resolve_effective_paths_for_root_applies_overrides() {
         let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let overrides = MediaRuntimeStorage {
-            mediapm_dir: Some(".custom-mediapm".to_string()),
+            paths: RuntimePathsConfig {
+                mediapm_dir: ".custom-mediapm".into(),
+                ..RuntimePathsConfig::default()
+            },
             ..MediaRuntimeStorage::default()
         };
         let paths = resolve_effective_paths_for_root(dir.path(), &overrides);
