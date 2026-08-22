@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::super::{
-    MediaPmDocument, MediaPmState, MediaRuntimeStorageLatest, ToolRequirement, hierarchy_types,
-    source_types,
+    MediaPmDocument, MediaPmState, MediaRuntimeStorageLatest, MediaRuntimeStorageV1,
+    ToolRequirement, hierarchy_types, source_types,
 };
 use super::Migrate;
 
@@ -37,7 +37,7 @@ pub(super) struct MediaPmDocumentEnvelopeV1 {
     pub(super) tools: BTreeMap<String, ToolRequirement>,
     /// Runtime configuration overrides.
     #[serde(default)]
-    pub(super) runtime: MediaRuntimeStorageLatest,
+    pub(super) runtime: MediaRuntimeStorageV1,
     /// Legacy `state` payload accepted on V1 documents.
     ///
     /// Dropped when unifying into the runtime model; state is managed
@@ -57,7 +57,7 @@ impl From<MediaPmDocumentEnvelopeV1> for MediaPmDocument {
             media: envelope.media,
             hierarchy: envelope.hierarchy,
             tools: envelope.tools,
-            runtime: envelope.runtime,
+            runtime: MediaRuntimeStorageLatest::from(envelope.runtime),
             // The legacy `state` payload is dropped when unifying into the
             // runtime model: state is managed separately via `state.json`.
             state: None,
@@ -72,7 +72,7 @@ impl From<&MediaPmDocument> for MediaPmDocumentEnvelopeV1 {
             media: doc.media.clone(),
             hierarchy: doc.hierarchy.clone(),
             tools: doc.tools.clone(),
-            runtime: doc.runtime.clone(),
+            runtime: MediaRuntimeStorageV1::from(doc.runtime.clone()),
             state: None,
         }
     }
