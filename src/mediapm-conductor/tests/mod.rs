@@ -7,9 +7,8 @@ use std::collections::BTreeMap;
 
 use mediapm_cas::InMemoryCas;
 use mediapm_conductor::{
-    NickelDocument, RuntimeStoragePaths, SimpleConductor, ToolInputKind, ToolInputSpec,
-    ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
-    config::versions::encode_document,
+    Conductor, NickelDocument, RuntimeStoragePaths, ToolInputKind, ToolInputSpec, ToolKindSpec,
+    ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec, config::versions::encode_document,
 };
 
 mod e2e;
@@ -105,19 +104,18 @@ fn write_conductor_config(dir: &std::path::Path, doc: NickelDocument) {
         .expect("write config");
 }
 
-/// A test fixture that owns a tempdir + `InMemoryCas` + `SimpleConductor`.
+/// A test fixture that owns a tempdir + `InMemoryCas` + `Conductor`.
 ///
 /// The tempdir is cleaned up on drop.
 struct TestConductor {
     dir: tempfile::TempDir,
-    conductor: SimpleConductor<InMemoryCas>,
+    conductor: Conductor<InMemoryCas>,
 }
 
 impl TestConductor {
     fn new() -> Self {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let conductor =
-            SimpleConductor::new(RuntimeStoragePaths::new(dir.path()), InMemoryCas::new());
+        let conductor = Conductor::new(RuntimeStoragePaths::new(dir.path()), InMemoryCas::new());
         Self { dir, conductor }
     }
 
@@ -130,7 +128,7 @@ impl TestConductor {
         let runtime_tmp = mediapm_utils::temp::runtime_dir_for_workspace(dir.path());
         let mut paths = RuntimeStoragePaths::new(dir.path());
         paths.conductor_tmp_dir.clone_from(&runtime_tmp);
-        let conductor = SimpleConductor::new(paths, InMemoryCas::new());
+        let conductor = Conductor::new(paths, InMemoryCas::new());
         (Self { dir, conductor }, runtime_tmp)
     }
 
@@ -138,7 +136,7 @@ impl TestConductor {
         self.dir.path()
     }
 
-    fn conductor(&self) -> &SimpleConductor<InMemoryCas> {
+    fn conductor(&self) -> &Conductor<InMemoryCas> {
         &self.conductor
     }
 

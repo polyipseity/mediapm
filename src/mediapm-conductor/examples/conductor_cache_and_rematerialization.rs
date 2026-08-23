@@ -12,7 +12,7 @@ use std::fs;
 
 use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
-    NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor, WorkflowSpec,
+    Conductor, NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, WorkflowSpec,
     WorkflowStepSpec, config::versions::encode_document,
 };
 
@@ -112,7 +112,7 @@ async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
     write_text_file(&config_path, &encoded)?;
 
     let conductor =
-        SimpleConductor::new(RuntimeStoragePaths::new(root), FileSystemCas::open(&cas_root).await?);
+        Conductor::new(RuntimeStoragePaths::new(root), FileSystemCas::open(&cas_root).await?);
 
     let first_run = conductor.run_workflow("workflow_a", RunWorkflowOptions::default()).await?;
     println!("First run (workflow_a): {first_run:?}");

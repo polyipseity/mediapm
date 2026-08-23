@@ -185,7 +185,7 @@ pub(crate) fn load_or_default_conductor_state_document(
 
 /// Saves a conductor state document to disk.
 ///
-/// Conductor runtime state is persisted as JSON via [`SimpleConductor`]; this
+/// Conductor runtime state is persisted as JSON via [`Conductor`]; this
 /// legacy Nickel helper is retained as a no-op for standalone scaffolding.
 ///
 /// # Errors

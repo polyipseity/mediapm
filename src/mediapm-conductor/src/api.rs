@@ -2,7 +2,7 @@
 //!
 //! [`RuntimeStoragePaths`] centralizes file-system path resolution for a
 //! conductor runtime root.  [`ConductorApi`] is the main public trait,
-//! implemented by [`SimpleConductor`].
+//! implemented by [`Conductor`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

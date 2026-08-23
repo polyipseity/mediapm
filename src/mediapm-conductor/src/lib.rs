@@ -11,6 +11,7 @@
 pub mod api;
 pub mod cache;
 pub mod cache_user_level;
+pub mod conductor_impl;
 pub mod config;
 pub mod defaults;
 pub mod error;
@@ -20,7 +21,6 @@ pub mod instance_key;
 pub mod orchestration;
 pub mod provision;
 pub mod runtime_env;
-pub mod simple_conductor;
 pub mod state;
 pub mod tools;
 
@@ -36,6 +36,7 @@ pub use api::{
     ConductorApi, ManagedToolExecutableResolution, RunSummary, RunWorkflowOptions,
     RuntimeDiagnostics, RuntimeStoragePaths, resolve_managed_tool_executable_with_filesystem_cas,
 };
+pub use conductor_impl::Conductor;
 pub use config::documents::NickelDocument;
 pub use config::versions::{decode_document, encode_document};
 pub use config::{
@@ -52,7 +53,6 @@ pub use instance_key::{
     instance_key_resolved_value_bytes_for_literal_binding, instance_matches_stored_key,
     is_deterministic_binding_source, merge_step_input_bindings,
 };
-pub use simple_conductor::SimpleConductor;
 pub use state::ConductorState;
 pub use state::versions::{decode_state_json, encode_state_json};
 pub use state::{

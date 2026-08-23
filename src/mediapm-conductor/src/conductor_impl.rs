@@ -1,9 +1,9 @@
-//! Simplified facade over the conductor orchestration runtime.
+//! Facade over the conductor orchestration runtime.
 //!
-//! [`SimpleConductor`] is a concrete, minimal implementation of the conductor
-//! API. It owns a lazy [`ConductorActorClient`] through which all workflow
-//! operations are dispatched, and provides convenience stubs for tool/data
-//! management that are expected by the CLI layer.
+//! [`Conductor`] is the concrete implementation of the conductor API. It owns
+//! a lazy [`ConductorActorClient`] through which all workflow operations are
+//! dispatched, and provides convenience stubs for tool/data management that
+//! are expected by the CLI layer.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ use crate::state::ConductorState;
 ///
 /// Persists [`ConductorState`] across workflow runs so that subsequent
 /// runs can benefit from cached tool-call instances.
-pub struct SimpleConductor<C>
+pub struct Conductor<C>
 where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
 {
@@ -43,7 +43,7 @@ where
     state: std::sync::Mutex<ConductorState>,
 }
 
-impl<C> SimpleConductor<C>
+impl<C> Conductor<C>
 where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
 {
@@ -453,7 +453,7 @@ where
 // ConductorApi trait implementation
 // ---------------------------------------------------------------------------
 
-impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for SimpleConductor<C> {
+impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for Conductor<C> {
     fn run_workflow_with_options(
         &self,
         workflow_name: &str,
@@ -639,16 +639,16 @@ fn find_cas_binary() -> Option<PathBuf> {
     })
 }
 
-impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Drop for SimpleConductor<C> {
+impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Drop for Conductor<C> {
     /// Best-effort stop of the conductor actor on drop.
     ///
     /// Sends a fire-and-forget stop signal so the actor (and its linked step
     /// workers) begin shutting down even when the caller never awaited
-    /// [`SimpleConductor::shutdown`]. This cannot deterministically wait for
+    /// [`Conductor::shutdown`]. This cannot deterministically wait for
     /// teardown — blocking from inside an async runtime context is
     /// forbidden — so callers that need deterministic release (for example,
     /// tests reopening a filesystem CAS) must await
-    /// [`SimpleConductor::shutdown`] first.
+    /// [`Conductor::shutdown`] first.
     fn drop(&mut self) {
         if let Some(client) = self.actor_client.get() {
             client.stop();

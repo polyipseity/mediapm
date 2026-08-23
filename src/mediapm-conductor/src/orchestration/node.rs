@@ -316,7 +316,7 @@ where
 {
     let coordinator = WorkflowCoordinator::new(cas, conductor_tmp_dir);
     // Use anonymous spawn to avoid ractor global name registry conflicts
-    // when multiple SimpleConductor instances coexist (e.g. in tests).
+    // when multiple Conductor instances coexist (e.g. in tests).
     let (actor_ref, _handle) = ractor::spawn::<ConductorActor<C>>(coordinator)
         .await
         .map_err(|e| ConductorError::Internal(format!("failed to spawn conductor actor: {e}")))?;

@@ -14,7 +14,7 @@ use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
 use mediapm_conductor::tools::provider::ConfigVersionSpec;
-use mediapm_conductor::{RuntimeStoragePaths, SimpleConductor};
+use mediapm_conductor::{Conductor, RuntimeStoragePaths};
 use url::Url;
 
 use crate::conductor_bridge::documents::{
@@ -61,14 +61,14 @@ pub(crate) trait WorkspaceProvisioningCas:
     CasApi + CasMaintenanceApi + Send + Sync + Sized + 'static
 {
     async fn workspace_provisioning_cas(
-        conductor: &SimpleConductor<Self>,
+        conductor: &Conductor<Self>,
         effective_paths: &MediaPmPaths,
     ) -> Result<Arc<FileSystemCas>, MediaPmError>;
 }
 
 impl WorkspaceProvisioningCas for FileSystemCas {
     async fn workspace_provisioning_cas(
-        conductor: &SimpleConductor<Self>,
+        conductor: &Conductor<Self>,
         _effective_paths: &MediaPmPaths,
     ) -> Result<Arc<FileSystemCas>, MediaPmError> {
         Ok(Arc::clone(conductor.cas()))
@@ -77,7 +77,7 @@ impl WorkspaceProvisioningCas for FileSystemCas {
 
 impl WorkspaceProvisioningCas for InMemoryCas {
     async fn workspace_provisioning_cas(
-        _conductor: &SimpleConductor<Self>,
+        _conductor: &Conductor<Self>,
         effective_paths: &MediaPmPaths,
     ) -> Result<Arc<FileSystemCas>, MediaPmError> {
         open_workspace_cas_store(effective_paths).await
@@ -99,7 +99,7 @@ impl WorkspaceProvisioningCas for InMemoryCas {
 /// * `Cas` — The CAS backend. Must implement [`CasApi`] + [`CasMaintenanceApi`] + `Send + Sync + 'static`.
 pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> {
     /// Conductor instance bound to this service's workspace.
-    conductor: SimpleConductor<Cas>,
+    conductor: Conductor<Cas>,
     /// Resolved filesystem paths for this workspace.
     paths: MediaPmPaths,
     /// Runtime storage overrides passed at construction.
@@ -122,7 +122,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     ///
     /// Runtime storage overrides default to [`MediaRuntimeStorage::default()`].
     #[must_use]
-    pub fn new(conductor: SimpleConductor<Cas>, paths: MediaPmPaths) -> Self {
+    pub fn new(conductor: Conductor<Cas>, paths: MediaPmPaths) -> Self {
         let metadata_cache = MetadataCache::open(&paths.workspace_mediapm_cache_dir());
         Self {
             conductor,
@@ -135,7 +135,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// Creates a new service instance with explicit runtime storage overrides.
     #[must_use]
     pub fn new_with_runtime_storage_overrides(
-        conductor: SimpleConductor<Cas>,
+        conductor: Conductor<Cas>,
         paths: MediaPmPaths,
         runtime_storage_overrides: MediaRuntimeStorage,
     ) -> Self {
@@ -155,7 +155,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
 
     /// Returns a shared reference to the conductor.
     #[must_use]
-    pub fn conductor(&self) -> &SimpleConductor<Cas> {
+    pub fn conductor(&self) -> &Conductor<Cas> {
         &self.conductor
     }
 
@@ -950,7 +950,7 @@ impl MediaPmService<FileSystemCas> {
     /// Creates a new filesystem-backed service at the given workspace root.
     ///
     /// Opens the filesystem CAS at the computed runtime root, creates a
-    /// `SimpleConductor`, and initializes all paths.
+    /// `Conductor`, and initializes all paths.
     ///
     /// # Errors
     ///
@@ -1022,7 +1022,7 @@ impl MediaPmService<FileSystemCas> {
                 ],
                 effective_paths.conductor_state_config.clone(),
             );
-        let conductor = SimpleConductor::new(runtime_storage, cas);
+        let conductor = Conductor::new(runtime_storage, cas);
 
         Ok(Self::new_with_runtime_storage_overrides(
             conductor,
@@ -1254,7 +1254,7 @@ impl MediaPmService<InMemoryCas> {
             vec![paths.conductor_user_ncl.clone(), paths.conductor_generated_ncl.clone()],
             paths.conductor_state_config.clone(),
         );
-        let conductor = SimpleConductor::new(runtime_storage, cas);
+        let conductor = Conductor::new(runtime_storage, cas);
         Self::new(conductor, paths)
     }
 }

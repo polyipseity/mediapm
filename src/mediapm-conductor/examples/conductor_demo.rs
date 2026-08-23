@@ -2,7 +2,7 @@
 //!
 //! This example demonstrates a complete conductor run loop:
 //! - writes a config document via `encode_document`,
-//! - runs one workflow using `SimpleConductor`,
+//! - runs one workflow using `Conductor`,
 //! - runs it a second time to demonstrate cache reuse,
 //! - prints run summaries to stdout.
 
@@ -13,7 +13,7 @@ use std::fs;
 
 use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
-    NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor, WorkflowSpec,
+    Conductor, NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, WorkflowSpec,
     WorkflowStepSpec, config::versions::encode_document,
 };
 
@@ -62,7 +62,7 @@ async fn run_demo() -> ExampleResult<()> {
     write_text_file(&config_path, &encoded)?;
 
     let conductor =
-        SimpleConductor::new(RuntimeStoragePaths::new(root), FileSystemCas::open(&cas_root).await?);
+        Conductor::new(RuntimeStoragePaths::new(root), FileSystemCas::open(&cas_root).await?);
 
     println!("=== First run ===");
     let first_summary =

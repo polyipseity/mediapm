@@ -13,9 +13,9 @@ use mediapm_cas::{ConfiguredCas, FileSystemCas, Hash};
 use tokio::sync::OnceCell;
 
 use crate::api::{PathOverrides, RunWorkflowOptions, RuntimeStoragePaths};
+use crate::conductor_impl::Conductor;
 use crate::defaults;
 use crate::error::ConductorError;
-use crate::simple_conductor::SimpleConductor;
 use crate::state::ConductorState;
 use crate::state::versions::decode_state_json;
 
@@ -173,7 +173,7 @@ enum ToolCommand {
 }
 
 /// Global conductor runtime initialized once per process.
-static CONDUCTOR: OnceCell<SimpleConductor<ConfiguredCas>> = OnceCell::const_new();
+static CONDUCTOR: OnceCell<Conductor<ConfiguredCas>> = OnceCell::const_new();
 static CONDUCTOR_DIR_OVERRIDE: OnceCell<Option<PathBuf>> = OnceCell::const_new();
 static STORAGE_OVERRIDES: OnceCell<PathOverrides> = OnceCell::const_new();
 
@@ -259,7 +259,7 @@ async fn run(cli: Cli) -> Result<(), ConductorError> {
 // Command implementations
 // ---------------------------------------------------------------------------
 
-async fn ensure_conductor() -> Result<&'static SimpleConductor<ConfiguredCas>, ConductorError> {
+async fn ensure_conductor() -> Result<&'static Conductor<ConfiguredCas>, ConductorError> {
     CONDUCTOR
         .get_or_try_init(|| async {
             let root = crate::runtime_env::discover_project_root()?;
@@ -273,7 +273,7 @@ async fn ensure_conductor() -> Result<&'static SimpleConductor<ConfiguredCas>, C
             // Ensure runtime environment files exist.
             crate::runtime_env::ensure_runtime_env_files(&conductor_dir)?;
             crate::runtime_env::ensure_runtime_gitignore(&conductor_dir)?;
-            Ok(SimpleConductor::new(paths, cas))
+            Ok(Conductor::new(paths, cas))
         })
         .await
 }

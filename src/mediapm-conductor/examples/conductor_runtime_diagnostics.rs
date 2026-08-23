@@ -11,7 +11,7 @@ use std::fs;
 
 use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
-    NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor, WorkflowSpec,
+    Conductor, NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, WorkflowSpec,
     WorkflowStepSpec, config::versions::encode_document,
 };
 
@@ -91,7 +91,7 @@ async fn run_diagnostics_demo() -> ExampleResult<()> {
     write_text_file(&config_path, &encoded)?;
 
     let conductor =
-        SimpleConductor::new(RuntimeStoragePaths::new(root), FileSystemCas::open(&cas_root).await?);
+        Conductor::new(RuntimeStoragePaths::new(root), FileSystemCas::open(&cas_root).await?);
 
     let summary = conductor.run_workflow("diagnostics_demo", RunWorkflowOptions::default()).await?;
     println!("Run summary: {summary:?}");
