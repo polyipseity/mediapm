@@ -592,6 +592,7 @@ pub(crate) async fn reconcile_desired_tools(
         if let Ok(req) = serde_json::from_value::<ToolRequirement>(tool_value.clone()) {
             crate::tools::dependency::validate_dependency_keys(tool_id, &req.dependencies)?;
         }
+        crate::tools::dependency::validate_tool_requirement_fields(tool_id, tool_value)?;
     }
 
     // 1. Load or create generated document.

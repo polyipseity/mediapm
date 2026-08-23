@@ -83,3 +83,63 @@ async fn sync_rejects_dep_key_not_in_known_types() {
     assert!(msg.contains("ffmpeg"), "suggestion should mention 'ffmpeg': {msg}");
     assert!(msg.contains("deno"), "suggestion should mention 'deno': {msg}");
 }
+
+/// Sync rejects a non-ffmpeg tool that sets `max_input_slots` (a field that
+/// only applies to ffmpeg) with `MPM-E001`.
+#[tokio::test]
+async fn sync_rejects_slot_field_on_non_ffmpeg() {
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert(
+        "yt-dlp".to_string(),
+        ToolRequirement { max_input_slots: 8, ..ToolRequirement::default() },
+    );
+
+    let (mut service, _root, _cache_root) =
+        service_with_cache(runtime).await.expect("service creation");
+
+    let result = service.sync_tools().await;
+    let Err(err) = result else {
+        panic!("sync should fail with slot field on non-ffmpeg tool, but succeeded");
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("MPM-E001"), "error should contain MPM-E001 code, got: {msg}");
+    assert!(msg.contains("max_input_slots"), "error should mention the field: {msg}");
+    assert!(msg.contains("yt-dlp"), "error should mention the tool: {msg}");
+}
+
+/// Sync accepts ffmpeg setting `max_input_slots` / `max_output_slots`.
+#[tokio::test]
+async fn sync_accepts_slot_field_on_ffmpeg() {
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert(
+        "ffmpeg".to_string(),
+        ToolRequirement { max_input_slots: 8, max_output_slots: 2, ..ToolRequirement::default() },
+    );
+
+    let (mut service, _root, _cache_root) =
+        service_with_cache(runtime).await.expect("service creation");
+
+    let result = service.sync_tools().await;
+    assert!(result.is_ok(), "ffmpeg slot fields should be accepted: {:?}", result.err());
+}
+
+/// Sync accepts `recheck_seconds` on any tool — it is a global optional field,
+/// not a tool-specific slot field.
+#[tokio::test]
+async fn sync_accepts_recheck_seconds_on_any_tool() {
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert(
+        "yt-dlp".to_string(),
+        ToolRequirement { recheck_seconds: 30, ..ToolRequirement::default() },
+    );
+
+    let (mut service, _root, _cache_root) =
+        service_with_cache(runtime).await.expect("service creation");
+
+    let result = service.sync_tools().await;
+    assert!(
+        result.is_ok(),
+        "recheck_seconds on non-ffmpeg tool should be accepted: {:?}",
+        result.err()
+    );
+}

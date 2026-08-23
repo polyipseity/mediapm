@@ -408,15 +408,25 @@ pub struct ToolRequirement {
     #[serde(default, deserialize_with = "custom_deserializers::deserialize_u64_from_number")]
     pub recheck_seconds: u64,
     /// Max ffmpeg input slot count.
+    ///
+    /// Restricted to `ffmpeg`; other tools must not set this field. Omitted
+    /// from serialization when equal to the default so non-ffmpeg tool
+    /// requirements stay free of ffmpeg-only fields.
     #[serde(
         default = "defaults::default_ffmpeg_max_input_slots",
-        deserialize_with = "custom_deserializers::deserialize_u32_from_number"
+        deserialize_with = "custom_deserializers::deserialize_u32_from_number",
+        skip_serializing_if = "defaults::is_default_ffmpeg_max_input_slots"
     )]
     pub max_input_slots: u32,
     /// Max ffmpeg output slot count.
+    ///
+    /// Restricted to `ffmpeg`; other tools must not set this field. Omitted
+    /// from serialization when equal to the default so non-ffmpeg tool
+    /// requirements stay free of ffmpeg-only fields.
     #[serde(
         default = "defaults::default_ffmpeg_max_output_slots",
-        deserialize_with = "custom_deserializers::deserialize_u32_from_number"
+        deserialize_with = "custom_deserializers::deserialize_u32_from_number",
+        skip_serializing_if = "defaults::is_default_ffmpeg_max_output_slots"
     )]
     pub max_output_slots: u32,
 }

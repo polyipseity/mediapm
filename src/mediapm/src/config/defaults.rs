@@ -37,6 +37,25 @@ pub fn default_ffmpeg_max_output_slots() -> u32 {
     DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS
 }
 
+/// Serde `skip_serializing_if` predicate: true when the input-slot count
+/// equals its default, so the field is omitted from serialized output.
+///
+/// Slot fields only apply to `ffmpeg`; omitting them on serialization keeps
+/// non-ffmpeg tool requirements free of fields the schema restricts to
+/// ffmpeg, and lets presence-based validation distinguish "unset" from
+/// "explicitly default".
+#[must_use]
+pub fn is_default_ffmpeg_max_input_slots(value: &u32) -> bool {
+    *value == DEFAULT_FFMPEG_MAX_INPUT_SLOTS
+}
+
+/// Serde `skip_serializing_if` predicate: true when the output-slot count
+/// equals its default, so the field is omitted from serialized output.
+#[must_use]
+pub fn is_default_ffmpeg_max_output_slots(value: &u32) -> bool {
+    *value == DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS
+}
+
 /// Default runtime materialization fallback order.
 ///
 /// The order is intentionally deterministic so managed-file realization remains
