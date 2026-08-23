@@ -88,7 +88,9 @@ let ToolRequirementV1 = {
     | optional,
   dependencies | { _ : ConfigVersionSpecV1 } | default = {},
   recheck_seconds | IntegerNumberV1 | optional,
+  # ||| ffmpeg-only: setting this on a non-ffmpeg tool is rejected (MPM-E001).
   max_input_slots | IntegerNumberV1 | optional,
+  # ||| ffmpeg-only: setting this on a non-ffmpeg tool is rejected (MPM-E001).
   max_output_slots | IntegerNumberV1 | optional,
 }
 in
