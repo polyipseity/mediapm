@@ -41,7 +41,6 @@ use crate::conductor_bridge::sync::provision::{PreResolveOutcome, fetch_and_impo
 
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
 use crate::config::ToolRequirement;
-use crate::config::defaults;
 use crate::config::{MediaPmState, ToolRegistryEntry};
 use crate::error::MediaPmError;
 use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
@@ -993,12 +992,11 @@ pub(crate) async fn reconcile_desired_tools(
                     format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
                 };
 
-                // Determine ffmpeg slot limits (default for now; overrides
-                // from tool requirements can be wired later).
-                let ffmpeg_limits = resolve_ffmpeg_slot_limits(
-                    defaults::DEFAULT_FFMPEG_MAX_INPUT_SLOTS,
-                    defaults::DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS,
-                );
+                // Determine ffmpeg slot limits from the tool requirement.
+                // Non-ffmpeg tools never set these fields (validated earlier),
+                // so the default applies for them; ffmpeg honors its override.
+                let ffmpeg_limits =
+                    resolve_ffmpeg_slot_limits(tool_req.max_input_slots, tool_req.max_output_slots);
 
                 // Build proper spec and runtime.
                 let (spec, runtime) = build_tool_spec(
