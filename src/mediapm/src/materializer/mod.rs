@@ -19,7 +19,7 @@ use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::config::hierarchy_types::{
-    FlattenedHierarchyEntry, HierarchyEntryKind, collect_playlist_media_index,
+    FlattenedHierarchyEntry, HierarchyEntryKind, PlaylistItemRef, collect_playlist_media_index,
     expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
 };
 use crate::config::source_types::MediaSourceSpec;
@@ -811,36 +811,42 @@ async fn materialize_playlist_entry(
     relative_path: &str,
     shared: &SyncSharedState,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
-    // Build playlist entries from the flattened hierarchy.
+    // Build playlist entries from the media ids referenced by this playlist
+    // node. The references are carried on `entry.entry.ids` as
+    // `PlaylistItemRef` values whose `id` is a hierarchy id; the media index
+    // maps each hierarchy id to its flattened path components.
     let media_index = collect_playlist_media_index(&shared.flattened).map_err(|e| {
         MediaPmError::Workflow(format!("collecting playlist media index failed: {e}"))
     })?;
 
-    // Find media ids referenced by this playlist entry.
-    let playlist_media_ids = media_index.get(&entry.path_str()).cloned().unwrap_or_default();
-
     let mut rendered_entries = Vec::new();
 
-    for media_id in &playlist_media_ids {
-        // Find the flattened entry for this media id.
-        if let Some(media_entry) = shared.flattened.iter().find(|fe| {
-            fe.entry.media_id == *media_id
-                && matches!(
-                    fe.entry.kind,
-                    HierarchyEntryKind::Media | HierarchyEntryKind::MediaFolder
-                )
-        }) {
-            let media_relative_path = media_entry.path_str();
-            let resolved = resolve_playlist_target_relative_path(
-                relative_path,
-                &media_relative_path,
-                PlaylistEntryPathMode::Relative,
-            );
-            rendered_entries.push(RenderedPlaylistEntry {
-                id: media_id.clone(),
-                path: resolved.to_string_lossy().to_string(),
-            });
-        }
+    for item_ref in &entry.entry.ids {
+        // Resolve the referenced hierarchy id to its flattened path.
+        let (hierarchy_id, path_mode) = match item_ref {
+            PlaylistItemRef::Shorthand(id) => (id.as_str(), PlaylistEntryPathMode::Relative),
+            PlaylistItemRef::Object { id, path } => {
+                let mode = match path.as_deref() {
+                    Some("absolute") => PlaylistEntryPathMode::Absolute,
+                    _ => PlaylistEntryPathMode::Relative,
+                };
+                (id.as_str(), mode)
+            }
+        };
+
+        let Some(path_components) = media_index.get(hierarchy_id) else {
+            return Err(MediaPmError::Workflow(format!(
+                "playlist references unknown hierarchy id '{hierarchy_id}'"
+            )));
+        };
+
+        let media_relative_path = path_components.join("/");
+        let resolved =
+            resolve_playlist_target_relative_path(relative_path, &media_relative_path, path_mode);
+        rendered_entries.push(RenderedPlaylistEntry {
+            id: hierarchy_id.to_string(),
+            path: resolved.to_string_lossy().to_string(),
+        });
     }
 
     // Ensure parent directory exists.
