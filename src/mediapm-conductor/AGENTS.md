@@ -46,7 +46,7 @@ Key ecosystem (from `Cargo.toml`):
 
 ## CLI/API Parity Contract
 
-- Keep conductor CLI operations API-backed by default: command handlers in `src/mediapm-conductor/src/cli.rs` should call `ConductorApi` methods (through `SimpleConductor`) instead of duplicating orchestration logic.
+- Keep conductor CLI operations API-backed by default: command handlers in `src/mediapm-conductor/src/cli.rs` should call `ConductorApi` methods (through `Conductor`) instead of duplicating orchestration logic.
 - When adding or changing CLI commands, update `ConductorApi` and actor-client routing in the same change if behavior must be available programmatically.
 - CLI-only ergonomics (argument parsing, editor/environment precedence, output formatting) may differ, but validation and mutation semantics must match API paths.
 
@@ -909,7 +909,7 @@ All progress messages must fit within the terminal width; detected via `terminal
 | Area | Reference |
 | --- | --- |
 | **Public Trait** | `ConductorApi` |
-| **Implementation** | `SimpleConductor` |
+| **Implementation** | `Conductor` |
 | **Schemas** | 3-document (user `conductor.ncl`, machine `conductor.generated.ncl`, state `state.ncl`) |
 | **Execution** | Actor-based (ractor), step-stream batch dispatch, adaptive scheduling, `CasExistenceBitmap` cache probe |
 | **State model** | `src/mediapm-conductor/src/config/mod.rs`, `src/mediapm-conductor/src/state/mod.rs` |
@@ -1282,7 +1282,7 @@ Version bump required for: removing a field, renaming a field, changing a field 
 ```mermaid
 graph TD
     subgraph "Conductor Crate"
-        API[Public API<br/>ConductorApi, SimpleConductor]
+        API[Public API<br/>ConductorApi, Conductor]
         CLI[cli module]
         CONFIG[model::config<br/>Three-document schema]
         STATE[model::state<br/>OrchestrationState]

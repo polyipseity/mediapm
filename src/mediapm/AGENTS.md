@@ -114,7 +114,7 @@ Flag resolution: CLI arg > env var (`MEDIAPM_*`) > config > default.
 
 ## Conductor Integration
 
-MediaPM creates `SimpleConductor`, passes grouped runtime-storage paths so volatile writes go to `<mediapm_dir>/`:
+MediaPM creates `Conductor`, passes grouped runtime-storage paths so volatile writes go to `<mediapm_dir>/`:
 
 | Conductor path | MediaPM default |
 | --- | --- |

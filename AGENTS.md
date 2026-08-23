@@ -23,7 +23,7 @@
 Get up and running in minutes:
 
 - **CAS**: Create `InMemoryCas` or `FileSystemCas`, call `put(bytes)` → hash, `get(hash)` → bytes.
-- **Conductor**: Write `conductor.ncl` (Nickel workflow), create `SimpleConductor`, call `run_workflow("name")`.
+- **Conductor**: Write `conductor.ncl` (Nickel workflow), create `Conductor`, call `run_workflow("name")`.
 - **Builtins**: Use CLI (`mediapm-conductor-builtin-echo --arg message "hi" --arg output stdout`) or Rust API (`BTreeMap<String, String>` args + optional payload bytes).
 - **MediaPM**: Write `mediapm.ncl` (sources + hierarchy), create `MediaPmService`, call `sync_library()`.
 - **Project commands**: `cargo test -p <crate>` for selective testing; `cargo build-pkg <crate>` for focused builds; full validation via `cargo fmt-check`, `cargo clippy-all`, `cargo test-all`.
