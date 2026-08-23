@@ -76,6 +76,21 @@ pub(crate) fn known_dependency_type_for_tool(
     }
 }
 
+/// Returns the set of `ToolRequirement` field names that actually apply to the
+/// given tool.
+///
+/// Only `ffmpeg` applies the slot fields; all other tools must not set
+/// `max_input_slots` / `max_output_slots`. `recheck_seconds` is intentionally
+/// absent from every set — it is a global optional field that applies to all
+/// tools and is already optional and harmless.
+#[must_use]
+pub(crate) fn applicable_tool_requirement_fields(tool_id: &str) -> BTreeSet<&'static str> {
+    match tool_id {
+        "ffmpeg" => BTreeSet::from(["max_input_slots", "max_output_slots"]),
+        _ => BTreeSet::new(),
+    }
+}
+
 /// Find close matches for a dependency key against the given candidates.
 ///
 /// First checks a `_version` suffix heuristic (e.g., `ffmpeg_version` → `ffmpeg`),
@@ -151,6 +166,49 @@ pub(crate) fn validate_dependency_keys(
 fn sorted_join(set: &BTreeSet<String>) -> String {
     let v: Vec<&str> = set.iter().map(String::as_str).collect();
     v.join(", ")
+}
+
+/// The `ToolRequirement` fields whose presence is restricted to specific tools.
+///
+/// `recheck_seconds` is intentionally excluded — it is a global optional field
+/// that applies to every tool. Only the two slot fields are tool-specific.
+const RESTRICTED_TOOL_REQUIREMENT_FIELDS: &[&str] = &["max_input_slots", "max_output_slots"];
+
+/// Validate that a tool only sets `ToolRequirement` fields that apply to it.
+///
+/// Presence is detected from the raw `serde_json::Value` (the `tool_value`
+/// already available in the sync loop) because serde fills defaults, so the
+/// deserialized `ToolRequirement` cannot distinguish "field absent" from
+/// "field set to its default".
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::ConfigValidation`] with code `MPM-E001` if a present
+/// field is not in [`applicable_tool_requirement_fields`].
+pub(crate) fn validate_tool_requirement_fields(
+    tool_id: &str,
+    tool_value: &serde_json::Value,
+) -> Result<(), MediaPmError> {
+    let Some(obj) = tool_value.as_object() else {
+        return Ok(());
+    };
+    let applicable = applicable_tool_requirement_fields(tool_id);
+    for field in RESTRICTED_TOOL_REQUIREMENT_FIELDS {
+        if !obj.contains_key(*field) {
+            continue;
+        }
+        if applicable.contains(*field) {
+            continue;
+        }
+        return Err(MediaPmError::ConfigValidation {
+            code: "MPM-E001",
+            context: format!("tool \"{tool_id}\" sets unsupported field \"{field}\""),
+            detail: format!("\"{field}\" does not apply to \"{tool_id}\""),
+            suggestion: "only ffmpeg supports max_input_slots/max_output_slots; remove the field"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -283,5 +341,23 @@ mod tests {
             msg.contains("does not declare any dependencies"),
             "should say tool has no deps: {msg}"
         );
+    }
+
+    #[test]
+    fn applicable_tool_requirement_fields_ffmpeg_has_slots() {
+        let fields = applicable_tool_requirement_fields("ffmpeg");
+        assert_eq!(fields.len(), 2, "ffmpeg should apply exactly the slot fields");
+        assert!(fields.contains("max_input_slots"));
+        assert!(fields.contains("max_output_slots"));
+        // recheck_seconds is global-optional and never in any tool's set.
+        assert!(!fields.contains("recheck_seconds"));
+    }
+
+    #[test]
+    fn applicable_tool_requirement_fields_other_empty() {
+        for tool in ["yt-dlp", "deno", "rsgain", "sd", "media-tagger", "import"] {
+            let fields = applicable_tool_requirement_fields(tool);
+            assert!(fields.is_empty(), "{tool} should apply no slot fields");
+        }
     }
 }
