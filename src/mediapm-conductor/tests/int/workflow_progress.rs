@@ -104,26 +104,26 @@ fn idle_pc() -> ProgressOp {
 }
 
 /// Idle worker-slot prefix components after `succeeded`/`assigned` steps.
-fn idle_pc_count(succeeded: usize, assigned: usize) -> ProgressOp {
-    ProgressOp::SetPrefixComponents {
-        marker: String::new(),
-        tool_name: "idle".into(),
-        version: String::new(),
-        phase: String::new(),
-        count: succeeded.to_string(),
-        total: assigned.to_string(),
-    }
+///
+/// Worker-slot bars omit the `count/total` text (no real item+size progress),
+/// so this matches [`idle_pc`] exactly — the counts are tracked internally
+/// for the bar fill but never rendered.
+fn idle_pc_count(_succeeded: usize, _assigned: usize) -> ProgressOp {
+    idle_pc()
 }
 
 /// Dispatch prefix components for a step assigned to a worker slot.
-fn dispatch_pc(tool_name: &str, assigned: usize) -> ProgressOp {
+///
+/// Worker-slot bars omit the `count/total` text (no real item+size progress),
+/// so `assigned` is used only for the bar fill, not the rendered prefix.
+fn dispatch_pc(tool_name: &str, _assigned: usize) -> ProgressOp {
     ProgressOp::SetPrefixComponents {
         marker: String::new(),
         tool_name: tool_name.into(),
         version: String::new(),
         phase: String::new(),
-        count: assigned.to_string(),
-        total: assigned.to_string(),
+        count: String::new(),
+        total: String::new(),
     }
 }
 

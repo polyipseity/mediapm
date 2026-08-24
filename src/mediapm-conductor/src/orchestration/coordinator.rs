@@ -139,6 +139,77 @@ where
     supervisor: Option<ractor::ActorCell>,
 }
 
+// ---------------------------------------------------------------------------
+// Worker-slot progress mapping
+// ---------------------------------------------------------------------------
+
+/// Worker-slot progress state for a fixed conductor worker bar.
+///
+/// Each worker owns one reusable bar (never recreated). The bar's fill is
+/// driven by `set_total(assigned)` + `advance(1)` at the call sites; the
+/// prefix below only carries the status marker and the tool/step label.
+///
+/// | worker state | TrackStatus | marker | tool_name |
+/// | --- | --- | --- | --- |
+/// | idle (no step assigned / between steps) | Active | "" | "idle" |
+/// | active (executing) | Active | "" | "{wf}/{step} ({tool})" |
+/// | pending-retry | Warning | "W" | "idle" |
+/// | failed (final) | Failed | "F" | "idle" |
+/// | finalize (all available steps consumed) | Success | "" | "idle" |
+///
+/// Invariant: a worker is NEVER done (Success) while available steps remain.
+/// Failed and pending-retry states already surface their own `TrackStatus`
+/// (Failed/Warning) at the moment they occur, so finalize needs no separate
+/// warning variant — by the time a worker finalizes, any failure/retry has
+/// already been represented by those states. After each successfully consumed
+/// step the worker returns to idle (Active), not Success.
+///
+/// Prefix `count/total` is emitted only when both item count and size count
+/// are known (real progress); worker-slot bars lack that information, so all
+/// states leave the fields empty. Truncation never special-cases by bar kind.
+#[cfg(feature = "progress")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerSlotState {
+    Idle,
+    Active,
+    PendingRetry,
+    Failed,
+    #[expect(
+        dead_code,
+        reason = "finalize/Success state is documented for the worker-slot contract; the per-step success path returns to Idle in this phase"
+    )]
+    Succeeded,
+}
+
+/// Builds the [`PrefixComponents`] for a worker-slot bar in the given state.
+///
+/// `workflow_name`/`step_id`/`tool` are only used by the `Active` state to
+/// render the `{wf}/{step} ({tool})` dispatch label; other states ignore them.
+/// Prefix `count`/`total` are always empty (see [`WorkerSlotState`]).
+#[cfg(feature = "progress")]
+fn worker_slot_prefix(
+    state: WorkerSlotState,
+    workflow_name: &str,
+    step_id: &str,
+    tool: &str,
+) -> PrefixComponents {
+    let (marker, tool_name) = match state {
+        WorkerSlotState::Idle => (String::new(), "idle".to_string()),
+        WorkerSlotState::Active => (String::new(), format!("{workflow_name}/{step_id} ({tool})")),
+        WorkerSlotState::PendingRetry => ("W".to_string(), "idle".to_string()),
+        WorkerSlotState::Failed => ("F".to_string(), "idle".to_string()),
+        WorkerSlotState::Succeeded => (String::new(), "idle".to_string()),
+    };
+    PrefixComponents {
+        marker,
+        tool_name,
+        version: String::new(),
+        phase: String::new(),
+        count: String::new(),
+        total: String::new(),
+    }
+}
+
 impl<C> WorkflowCoordinator<C>
 where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
@@ -251,14 +322,12 @@ where
                 for _ in 0..pool_size {
                     let bar = pg.add_bar(0, "idle [wf]");
                     bar.set_style(BarStyle::WorkerSpinner);
-                    bar.set_prefix_components(PrefixComponents {
-                        marker: String::new(),
-                        tool_name: "idle".to_string(),
-                        version: String::new(),
-                        phase: String::new(),
-                        count: String::new(),
-                        total: String::new(),
-                    });
+                    bar.set_prefix_components(worker_slot_prefix(
+                        WorkerSlotState::Idle,
+                        "",
+                        "",
+                        "",
+                    ));
                     worker_bars.push(bar);
                 }
             }
@@ -329,14 +398,12 @@ where
                             worker_steps_assigned[worker_idx] += 1;
                             let bar = worker_bars[worker_idx].clone();
                             let assigned = worker_steps_assigned[worker_idx];
-                            bar.set_prefix_components(PrefixComponents {
-                                marker: String::new(),
-                                tool_name: format!("{workflow_name}/{step_id} ({})", step.tool),
-                                version: String::new(),
-                                phase: String::new(),
-                                count: assigned.to_string(),
-                                total: assigned.to_string(),
-                            });
+                            bar.set_prefix_components(worker_slot_prefix(
+                                WorkerSlotState::Active,
+                                &workflow_name,
+                                &step_id,
+                                &step.tool,
+                            ));
                             bar.set_total(assigned as u64);
                             bar
                         });
@@ -408,15 +475,12 @@ where
                             if let Some(ref bar) = step_bar {
                                 worker_steps_succeeded[worker_idx] += 1;
                                 let assigned = worker_steps_assigned[worker_idx];
-                                let succeeded = worker_steps_succeeded[worker_idx];
-                                bar.set_prefix_components(PrefixComponents {
-                                    marker: String::new(),
-                                    tool_name: "idle".to_string(),
-                                    version: String::new(),
-                                    phase: String::new(),
-                                    count: succeeded.to_string(),
-                                    total: assigned.to_string(),
-                                });
+                                bar.set_prefix_components(worker_slot_prefix(
+                                    WorkerSlotState::Idle,
+                                    "",
+                                    "",
+                                    "",
+                                ));
                                 bar.set_total(assigned as u64);
                                 bar.advance(1);
                                 bar.finish_success();
@@ -435,15 +499,12 @@ where
                                 if let Some(ref bar) = step_bar {
                                     worker_pending_retries[worker_idx] += 1;
                                     let assigned = worker_steps_assigned[worker_idx];
-                                    let succeeded = worker_steps_succeeded[worker_idx];
-                                    bar.set_prefix_components(PrefixComponents {
-                                        marker: "W".to_string(),
-                                        tool_name: "idle".to_string(),
-                                        version: String::new(),
-                                        phase: String::new(),
-                                        count: succeeded.to_string(),
-                                        total: assigned.to_string(),
-                                    });
+                                    bar.set_prefix_components(worker_slot_prefix(
+                                        WorkerSlotState::PendingRetry,
+                                        "",
+                                        "",
+                                        "",
+                                    ));
                                     bar.set_total(assigned as u64);
                                     bar.advance(1);
                                     bar.finish_warning();
@@ -456,15 +517,12 @@ where
                                 if let Some(ref bar) = step_bar {
                                     worker_failures[worker_idx] += 1;
                                     let assigned = worker_steps_assigned[worker_idx];
-                                    let succeeded = worker_steps_succeeded[worker_idx];
-                                    bar.set_prefix_components(PrefixComponents {
-                                        marker: "F".to_string(),
-                                        tool_name: "idle".to_string(),
-                                        version: String::new(),
-                                        phase: String::new(),
-                                        count: succeeded.to_string(),
-                                        total: assigned.to_string(),
-                                    });
+                                    bar.set_prefix_components(worker_slot_prefix(
+                                        WorkerSlotState::Failed,
+                                        "",
+                                        "",
+                                        "",
+                                    ));
                                     bar.set_total(assigned as u64);
                                     bar.advance(1);
                                     bar.finish_warning();
@@ -484,15 +542,12 @@ where
                                 if let Some(ref bar) = step_bar {
                                     worker_pending_retries[worker_idx] += 1;
                                     let assigned = worker_steps_assigned[worker_idx];
-                                    let succeeded = worker_steps_succeeded[worker_idx];
-                                    bar.set_prefix_components(PrefixComponents {
-                                        marker: "W".to_string(),
-                                        tool_name: "idle".to_string(),
-                                        version: String::new(),
-                                        phase: String::new(),
-                                        count: succeeded.to_string(),
-                                        total: assigned.to_string(),
-                                    });
+                                    bar.set_prefix_components(worker_slot_prefix(
+                                        WorkerSlotState::PendingRetry,
+                                        "",
+                                        "",
+                                        "",
+                                    ));
                                     bar.set_total(assigned as u64);
                                     bar.advance(1);
                                     bar.finish_warning();
@@ -505,15 +560,12 @@ where
                                 if let Some(ref bar) = step_bar {
                                     worker_failures[worker_idx] += 1;
                                     let assigned = worker_steps_assigned[worker_idx];
-                                    let succeeded = worker_steps_succeeded[worker_idx];
-                                    bar.set_prefix_components(PrefixComponents {
-                                        marker: "F".to_string(),
-                                        tool_name: "idle".to_string(),
-                                        version: String::new(),
-                                        phase: String::new(),
-                                        count: succeeded.to_string(),
-                                        total: assigned.to_string(),
-                                    });
+                                    bar.set_prefix_components(worker_slot_prefix(
+                                        WorkerSlotState::Failed,
+                                        "",
+                                        "",
+                                        "",
+                                    ));
                                     bar.set_total(assigned as u64);
                                     bar.advance(1);
                                     bar.finish_warning();
