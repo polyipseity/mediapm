@@ -427,7 +427,7 @@ where
                             }
                         }
                         Ok(Err(e)) => {
-                            if attempt <= step.max_retries as u32 && may_retry {
+                            if attempt as usize <= step.max_retries && may_retry {
                                 tracing::warn!(
                                     "step '{step_id}' failed (attempt {attempt}), retrying"
                                 );
@@ -476,7 +476,7 @@ where
                             }
                         }
                         Err(e) => {
-                            if attempt <= step.max_retries as u32 && may_retry {
+                            if attempt as usize <= step.max_retries && may_retry {
                                 tracing::warn!(
                                     "step '{step_id}' RPC failed (attempt {attempt}), retrying"
                                 );
