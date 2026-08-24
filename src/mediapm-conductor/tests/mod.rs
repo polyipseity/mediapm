@@ -45,6 +45,24 @@ fn echo_step(tool_id: &str, text: &str) -> WorkflowStepSpec {
     }
 }
 
+/// Creates a flaky@v1 `ToolSpec` (test-only builtin that fails its first N
+/// invocations then succeeds).
+#[cfg(any(test, feature = "progress"))]
+#[expect(dead_code, reason = "used by retry tests added in a later commit")]
+fn flaky_tool(name: &str) -> ToolSpec {
+    ToolSpec {
+        kind: ToolKindSpec::Builtin { builtin_id: "flaky@v1".to_string() },
+        name: name.into(),
+        inputs: BTreeMap::from([
+            ("failures".into(), ToolInputSpec { kind: ToolInputKind::String, required: false }),
+            ("key".into(), ToolInputSpec { kind: ToolInputKind::String, required: false }),
+        ]),
+        default_inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        runtime: ToolRuntime::default(),
+    }
+}
+
 /// Creates an input-less `WorkflowStepSpec` with explicit dependencies.
 fn bare_step(id: &str, tool: &str, depends_on: &[&str]) -> WorkflowStepSpec {
     WorkflowStepSpec {

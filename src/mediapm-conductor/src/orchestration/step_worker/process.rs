@@ -11,6 +11,16 @@ use tokio::time::timeout;
 use super::executable_timeout;
 use crate::error::ConductorError;
 
+/// Test-only builtin that fails its first `failures` invocations (keyed by
+/// `key`) then succeeds. Used to exercise retry-to-success paths.
+#[cfg(any(test, feature = "progress"))]
+const FLAKY_BUILTIN_ID: &str = "flaky@v1";
+
+/// Per-key attempt counter for [`FLAKY_BUILTIN_ID`].
+#[cfg(any(test, feature = "progress"))]
+static FLAKY_ATTEMPTS: std::sync::Mutex<std::collections::BTreeMap<String, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// Result of executing a tool process.
 #[derive(Debug, Clone, Default)]
 pub(super) struct ExecutionResult {
@@ -193,6 +203,28 @@ pub(super) async fn run_builtin<C: CasApi + Send + Sync>(
             let stdout = serde_json::to_vec(&result).map_err(|e| {
                 ConductorError::Workflow(format!("export serialization failed: {e}"))
             })?;
+            Ok(ExecutionResult { stdout, stderr: Vec::new(), exit_code: 0 })
+        }
+        #[cfg(any(test, feature = "progress"))]
+        n if n == FLAKY_BUILTIN_ID => {
+            let failures: usize = args.get("failures").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let key = args.get("key").cloned().unwrap_or_else(|| "default".to_string());
+            let attempt = {
+                let mut map = FLAKY_ATTEMPTS.lock().expect("flaky lock");
+                let entry = map.entry(key).or_insert(0);
+                *entry += 1;
+                *entry
+            };
+            if attempt <= failures {
+                return Err(ConductorError::Workflow(format!(
+                    "flaky builtin failed on attempt {attempt} of {failures}"
+                )));
+            }
+            let stdout = serde_json::to_vec(&mediapm_utils::StringMap::from([
+                ("stdout".to_string(), "ok".to_string()),
+                ("stderr".to_string(), String::new()),
+            ]))
+            .map_err(|e| ConductorError::Workflow(format!("flaky serialization failed: {e}")))?;
             Ok(ExecutionResult { stdout, stderr: Vec::new(), exit_code: 0 })
         }
         name => Err(ConductorError::Workflow(format!(

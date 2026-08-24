@@ -74,6 +74,14 @@ pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
         is_impure: true,
         summary: "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
     },
+    #[cfg(any(test, feature = "progress"))]
+    BuiltinRegistration {
+        id: "builtins.flaky@v1",
+        name: "flaky",
+        builtin_id: "flaky@v1",
+        is_impure: false,
+        summary: "test-only builtin that fails its first N invocations then succeeds",
+    },
 ];
 
 /// Returns the set of registered builtin tool IDs.
