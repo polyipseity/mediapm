@@ -56,6 +56,15 @@ Key ecosystem (from `Cargo.toml`):
 - The conductor **CLI binary** (`src/mediapm-conductor/src/cli.rs`) builds a `ProgressGroup`, wraps it in `Arc`, and passes it as `progress_group`.
 - `DownloadProgressSnapshot` and `ProgressCallback` from `mediapm-utils` are available in the library for download progress.
 
+### Rendered output format reference
+
+The conductor workflow screen (`[wf]` phase) reuses the shared `mediapm-utils`
+progress rendering. The ACTUAL rendered format (templates, braille spinner glyphs,
+ANSI colors, prefix/suffix shapes, child-above-overall ordering, worked
+examples) is documented in `.agents/instructions/progress-output.instructions.md`.
+Treat that file plus `src/mediapm-utils/tests/progress_output/*.rs` as the source
+of truth — never invent ASCII mocks when editing the workflow progress screen.
+
 ## Provider progress size tracking
 
 Provider progress size tracking uses the [`MultiItemBudget`](../../.agents/instructions/progress-budget.instructions.md)

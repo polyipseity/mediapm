@@ -77,3 +77,11 @@ When writing or modifying unit/integration tests for progress bar rendering
 exact `assert_eq!(term.contents(), concat!(...))` matching over substring
 assertions. See `.agents/instructions/rust-conventions.instructions.md`
 ("Terminal output matching") for the full rule and capture strategy.
+
+### Rendered output format reference
+
+The ACTUAL rendered format (templates, glyphs, colors, prefix/suffix shapes,
+child-above-overall ordering, worked examples) is documented in
+`.agents/instructions/progress-output.instructions.md`. Treat that file plus the
+`src/mediapm-utils/tests/progress_output/*.rs` suite as the source of truth for
+progress-bar output — never invent ASCII mocks when editing rendering code.
