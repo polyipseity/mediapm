@@ -918,3 +918,18 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the reposit
 | (e) Conductor `ConductorRuntimeConfig` grouped (`environment` sub-record holds `platform_inherited_env_vars`; top-level `retry_impure`); `ConductorRuntimeConfigLatest` boundary mirrors with `Option` | `regression_valid_conductor_docs_still_round_trip`, `strict_platform_env_rejects_unknown_key`, `strict_platform_env_rejects_empty_env_name` green | [covered] |
 | (f) V1 envelope keeps its own flat shape; bridged to V2 boundary, never reshaped: `MediaRuntimeStorageV1` is a flat wire type converting to/from `MediaRuntimeStorageLatest` via `From` impls; V2's sub-record grouping is NOT pushed into V1 | `cargo check -p mediapm --all-targets` clean; `v1.rs` `runtime` field is `MediaRuntimeStorageV1`; two `From` bridge impls present in `versions/v1.rs` | [covered] |
 | (11) AGENTS.md no-`Option` policy repo-wide wording + bans on sentinel-as-`None` and on fabricating defaults when no serde default exists | AGENTS.md "Core Engineering Contract" bullet updated | [covered] |
+
+### Conductor retry re-dispatch (R1-R3)
+
+| Spec item | Test(s) | Status |
+| --- | --- | --- |
+| `flaky@v1` test-only builtin fails first N invocations then succeeds (gated, not in production binaries) | `flaky_tool`/`flaky_step` helpers + `retry_then_succeed_progress_ops`, `retry_exhausted_progress_ops` (gated registration in `tools/mod.rs` + `process.rs` match arm) | [covered] |
+| Retry gating: `max_retries > 0` AND (`pure` OR `retry_impure`) | `no_retry_when_max_retries_zero`, `impure_no_retry_without_flag`, `retry_then_succeed_progress_ops` | [covered] |
+| Intermediate failure emits `[W]` pending-retry marker, reuses same worker slot (no flicker) | `regression_pending_retry_trends_to_zero`, `retry_exhausted_progress_ops`, `regression_worker_invariant_holds` | [covered] |
+| Final failure emits `[F]` marker, increments `failed_steps`, advances overall once | `retry_exhausted_progress_ops`, `no_retry_when_max_retries_zero`, `regression_worker_invariant_holds` | [covered] |
+| Overall bar advances exactly once per step final terminal (success or final failure) | `regression_overall_advances_only_on_final_terminal` | [covered] |
+| `retried_steps` counts steps that ultimately succeeded after >=1 retry | `retry_then_succeed_progress_ops` (asserts `retried_steps` via summary) | [covered] |
+| `RunSummary` gains `retried_steps: usize` field (plain, no `Option`) | `retry_then_succeed_progress_ops` (reads `summary.retried_steps`), compilation of `api.rs` + consumers | [covered] |
+| No flicker: fixed `pool_size` worker-slot grid, retries reuse slots | `regression_no_per_step_flicker` | [covered] |
+| Progress-bar code agnostic of retry (no retry-specific API/field/branch/marker in `mediapm-utils`) | `cargo test -p mediapm-utils` green + `src/mediapm-utils/src/progress.rs` unchanged for retry | [covered] |
+| mediapm-agnostic coordinator (no mediapm tool names in `coordinator.rs`) | workflow_progress tests use only `echo@v1`/`flaky@v1`/broken tools; grep confirms no mediapm tool names in `coordinator.rs` | [covered] |
