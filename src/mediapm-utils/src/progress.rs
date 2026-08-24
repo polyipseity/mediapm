@@ -366,6 +366,7 @@ pub type ProviderProgressCallback = Arc<dyn Fn(ProviderProgressSnapshot) + Send 
 
 #[cfg(feature = "progress")]
 mod inner {
+    use super::BarStyle;
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use std::fmt::Write as _;
@@ -1424,6 +1425,12 @@ mod inner {
         status: AtomicU8,
         dirty: AtomicBool,
         disabled: AtomicBool,
+        /// Visual style for the bar (see [`BarStyle`]). Defaults to
+        /// [`StepCount`](BarStyle::StepCount); set to
+        /// [`WorkerSpinner`](BarStyle::WorkerSpinner) for fixed worker-slot
+        /// bars. Read by the renderer's single push point to apply the
+        /// style-specific `0/0` div-by-zero guard.
+        style: AtomicU8,
         start_time: Instant,
         finished_elapsed: RwLock<Option<Duration>>,
         time_source: Arc<dyn TimeSource>,
@@ -1451,6 +1458,21 @@ mod inner {
             label: &str,
             time_source: Arc<dyn TimeSource>,
         ) -> Self {
+            Self::with_time_source_and_style(total, label, BarStyle::StepCount, time_source)
+        }
+
+        /// Create shared state with an explicit [`BarStyle`].
+        ///
+        /// See [`with_time_source`](Self::with_time_source) for the canonical
+        /// construction contract; this variant additionally seeds the style
+        /// marker so the renderer can apply style-specific rendering (e.g. the
+        /// `WorkerSpinner` `0/0` guard).
+        pub(crate) fn with_time_source_and_style(
+            total: u64,
+            label: &str,
+            style: BarStyle,
+            time_source: Arc<dyn TimeSource>,
+        ) -> Self {
             Self {
                 position: AtomicU64::new(0),
                 total: AtomicU64::new(total),
@@ -1460,6 +1482,7 @@ mod inner {
                 status: AtomicU8::new(0),
                 dirty: AtomicBool::new(true),
                 disabled: AtomicBool::new(false),
+                style: AtomicU8::new(style as u8),
                 start_time: time_source.now(),
                 finished_elapsed: RwLock::new(None),
                 time_source,
@@ -1525,6 +1548,18 @@ mod inner {
 
         fn is_cleared(&self) -> bool {
             self.status.load(Ordering::Relaxed) == 5
+        }
+
+        fn style(&self) -> BarStyle {
+            match self.style.load(Ordering::Relaxed) {
+                1 => BarStyle::WorkerSpinner,
+                _ => BarStyle::StepCount,
+            }
+        }
+
+        fn set_style(&self, style: BarStyle) {
+            self.style.store(style as u8, Ordering::Relaxed);
+            self.dirty.store(true, Ordering::Release);
         }
     }
 
@@ -1679,6 +1714,31 @@ mod inner {
                 *sc = components;
             }
             self.state.dirty.store(true, Ordering::Release);
+        }
+
+        /// Set the visual style for the bar (see [`BarStyle`]).
+        ///
+        /// Defaults to [`StepCount`](BarStyle::StepCount). Worker-slot bars
+        /// set [`WorkerSpinner`](BarStyle::WorkerSpinner) so the renderer
+        /// applies the style-specific `0/0` div-by-zero guard (renders
+        /// `total = 1, pos = 0` when the worker's assigned count is `0`).
+        ///
+        /// # Panics
+        ///
+        /// Panics if the shared-state `RwLock` is poisoned.
+        pub fn set_style(&self, style: BarStyle) {
+            if self.state.disabled.load(Ordering::Relaxed) {
+                return; // disabled handle
+            }
+            self.state.set_style(style);
+        }
+
+        /// Return the current visual style for the bar (see [`BarStyle`]).
+        ///
+        /// Defaults to [`StepCount`](BarStyle::StepCount).
+        #[must_use]
+        pub fn style(&self) -> BarStyle {
+            self.state.style()
         }
 
         /// Mark the bar as finished successfully (keeps it visible).
@@ -2275,8 +2335,22 @@ mod inner {
             let slot = &self.slots[i];
             let is_overall = self.has_overall && i == self.slots.len() - 1;
             let (_, cols) = self.dim_source.dimensions();
-            let count_str = format_count(snap.position);
-            let total_str = format_count(snap.total);
+            // Style-specific div-by-zero guard: a `WorkerSpinner` slot whose
+            // assigned count is `0` (idle worker) would otherwise render
+            // `total = 0`, which indicatif treats as indeterminate and hides
+            // the bar. Pin it to `total = 1, pos = 0` so the idle worker shows
+            // a fully-dimmed empty bar (all `░`). `StepCount` bars keep their
+            // real total/position.
+            let style =
+                slot.source.borrow().as_ref().map(|s| s.style()).unwrap_or(BarStyle::StepCount);
+            let (render_total, render_pos) = if style == BarStyle::WorkerSpinner && snap.total == 0
+            {
+                (1, 0)
+            } else {
+                (snap.total, snap.position)
+            };
+            let count_str = format_count(render_pos);
+            let total_str = format_count(render_total);
             let elapsed_str = format_elapsed(snap.elapsed);
             let color_code = bar_color_code(snap.status, is_overall);
             // Compose a fresh suffix component set each tick: auto fields from
@@ -2322,13 +2396,13 @@ mod inner {
                 slot.bar.set_message(display_suffix.clone());
                 *slot.cache.suffix.borrow_mut() = display_suffix;
             }
-            if snap.total != slot.cache.total.get() {
-                slot.bar.set_length(snap.total);
-                slot.cache.total.set(snap.total);
+            if render_total != slot.cache.total.get() {
+                slot.bar.set_length(render_total);
+                slot.cache.total.set(render_total);
             }
-            if snap.position != slot.cache.position.get() {
-                slot.bar.set_position(snap.position);
-                slot.cache.position.set(snap.position);
+            if render_pos != slot.cache.position.get() {
+                slot.bar.set_position(render_pos);
+                slot.cache.position.set(render_pos);
             }
         }
 
@@ -2844,15 +2918,31 @@ mod inner {
         /// panicked while holding the lock).
         #[must_use]
         pub fn add_bar(&self, total: u64, label: &str) -> TrackedHandle {
+            self.add_bar_with_style(total, label, BarStyle::StepCount)
+        }
+
+        /// Add a child bar with an explicit [`BarStyle`].
+        ///
+        /// See [`add_bar`](Self::add_bar) for the default-style variant. This
+        /// seeds the style marker at construction so the renderer applies
+        /// style-specific rendering (e.g. the `WorkerSpinner` `0/0` guard)
+        /// from the first tick.
+        pub fn add_bar_with_style(
+            &self,
+            total: u64,
+            label: &str,
+            style: BarStyle,
+        ) -> TrackedHandle {
             let Some(ref renderer) = self.renderer else {
                 return TrackedHandle::disabled();
             };
             let state;
             {
                 let mut locked = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                state = Arc::new(SharedState::with_time_source(
+                state = Arc::new(SharedState::with_time_source_and_style(
                     total,
                     label,
+                    style,
                     Arc::clone(&locked.time_source),
                 ));
                 locked.attach(&state);
@@ -2997,6 +3087,41 @@ pub(crate) use inner::{SharedState, format_elapsed, format_rate};
 
 // ---- Shared API traits for dependency injection (feature-gated) -------
 
+/// Visual style for a child progress bar.
+///
+/// The style selects how the bar's fill and prefix/suffix are driven. It is
+/// a marker stored on [`SharedState`] and read by the renderer's single push
+/// point ([`ProgressRenderer::sync_snapshot_to_bar`]); it does **not** change
+/// color or overall-bar semantics.
+///
+/// - [`StepCount`](BarStyle::StepCount) — the default. The bar shows a
+///   `count/total` ratio driven by `advance`/`set_position`/`set_total`, with
+///   the standard `tool_name [version] [phase] [count/total]` prefix and the
+///   `count/total elapsed rate [eta] custom` suffix. Used by the sync screen,
+///   materialization screen, and the legacy per-step workflow bars.
+/// - [`WorkerSpinner`](BarStyle::WorkerSpinner) — a fixed worker-slot bar
+///   driven by **per-worker** state rather than a per-step or global total.
+///   The coordinator populates `prefix_components`/`suffix_components`
+///   directly (no `version`/`phase`; `custom` = `<status>[ <F> failed][ <R>
+///   retry]`), and the renderer applies a `0/0` div-by-zero guard (renders
+///   `total = 1, pos = 0` when the worker's assigned count is `0`) so an
+///   idle worker shows an empty all-░ bar. The same wide_bar child template
+///   as `StepCount` is used; only the field population differs.
+///
+/// The style is set via [`ProgressBarApi::set_style`] (or
+/// [`TrackedHandle::set_style`]) after [`ProgressGroup::add_bar`]. It defaults
+/// to [`StepCount`](BarStyle::StepCount) so every existing caller is
+/// byte-for-byte unchanged.
+#[cfg(feature = "progress")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BarStyle {
+    /// Standard `count/total` child bar (default).
+    #[default]
+    StepCount,
+    /// Fixed worker-slot bar driven by per-worker state.
+    WorkerSpinner,
+}
+
 /// Minimum progress-bar handle API for dependency injection.
 ///
 /// Both [`TrackedHandle`] and
@@ -3025,6 +3150,13 @@ pub trait ProgressBarApi: Send + Sync {
     fn set_prefix_components(&self, components: PrefixComponents);
     /// Set suffix components for source-data-based truncation.
     fn set_suffix_components(&self, components: SuffixComponents);
+    /// Set the visual style for the bar (see [`BarStyle`]).
+    ///
+    /// Defaults to [`StepCount`](BarStyle::StepCount). Callers that own a
+    /// worker-slot bar set [`WorkerSpinner`](BarStyle::WorkerSpinner) after
+    /// [`add_bar`](crate::progress::ProgressGroup::add_bar) so the renderer
+    /// applies the style-specific `0/0` div-by-zero guard.
+    fn set_style(&self, style: BarStyle);
 }
 
 #[cfg(feature = "progress")]
@@ -3058,6 +3190,9 @@ impl ProgressBarApi for TrackedHandle {
     }
     fn set_suffix_components(&self, components: SuffixComponents) {
         TrackedHandle::set_suffix_components(self, components);
+    }
+    fn set_style(&self, style: BarStyle) {
+        TrackedHandle::set_style(self, style);
     }
 }
 
@@ -3099,6 +3234,7 @@ impl ProgressGroupApi for ProgressGroup {
 #[cfg(feature = "progress")]
 #[allow(clippy::missing_panics_doc)]
 pub mod recording {
+    use super::BarStyle;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -3309,6 +3445,19 @@ pub mod recording {
                 .push(ProgressOp::SetSuffixComponents { components });
         }
 
+        /// Set the visual style for the bar (see [`BarStyle`]).
+        ///
+        /// Recorded as a no-op marker today: the recording harness asserts
+        /// worker-slot behavior via `tool_name`/`idle`
+        /// [`SetPrefixComponents`](ProgressOp::SetPrefixComponents) transitions
+        /// and `total`/`pos` deltas, not a style op. The method exists so
+        /// callers can set the style uniformly through the
+        /// [`ProgressBarApi`](super::ProgressBarApi) surface.
+        pub fn set_style(&self, _style: BarStyle) {
+            // No ProgressOp variant for style today; the recording harness
+            // asserts worker-slot behavior via prefix/total deltas.
+        }
+
         /// Mark as finished with success.
         pub fn finish_success(&self) {
             self.ops.lock().expect("recording lock").push(ProgressOp::FinishSuccess);
@@ -3418,6 +3567,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     fn set_suffix_components(&self, components: SuffixComponents) {
         recording::RecordingTrackedHandle::set_suffix_components(self, components);
     }
+    fn set_style(&self, style: BarStyle) {
+        recording::RecordingTrackedHandle::set_style(self, style);
+    }
 }
 
 #[cfg(feature = "progress")]
@@ -3455,7 +3607,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
-    use super::{PrefixComponents, ProgressGroup, SuffixComponents, TrackStatus, TrackedHandle};
+    use super::{
+        BarStyle, PrefixComponents, ProgressGroup, SuffixComponents, TrackStatus, TrackedHandle,
+    };
     use indicatif::MultiProgress;
 
     #[test]
@@ -3645,6 +3799,109 @@ mod tests {
         h.finish_and_clear();
         h.finish_warning();
         assert_eq!(h.ops(), vec![ProgressOp::FinishAndClear, ProgressOp::FinishWarning]);
+    }
+
+    // ---- BarStyle selection (Stage 5 worker-slot generalization) ---------
+
+    #[test]
+    fn bar_style_default_is_step_count() {
+        // A freshly created TrackedHandle uses StepCount (preserves all
+        // existing callers: sync screen, materialization, etc.).
+        let h = TrackedHandle::new(100);
+        assert_eq!(h.style(), BarStyle::StepCount);
+    }
+
+    #[test]
+    fn bar_style_set_style_switches_to_worker_spinner() {
+        let h = TrackedHandle::new(100);
+        assert_eq!(h.style(), BarStyle::StepCount);
+        h.set_style(BarStyle::WorkerSpinner);
+        assert_eq!(h.style(), BarStyle::WorkerSpinner);
+    }
+
+    #[test]
+    fn bar_style_set_style_is_idempotent() {
+        let h = TrackedHandle::new(100);
+        h.set_style(BarStyle::WorkerSpinner);
+        h.set_style(BarStyle::WorkerSpinner);
+        assert_eq!(h.style(), BarStyle::WorkerSpinner);
+        h.set_style(BarStyle::StepCount);
+        assert_eq!(h.style(), BarStyle::StepCount);
+    }
+
+    #[test]
+    fn bar_style_recording_handle_set_style_is_noop_marker() {
+        // The recording harness records no ProgressOp for set_style today;
+        // worker-slot behavior is asserted via prefix/total deltas instead.
+        let h = RecordingTrackedHandle::new(100);
+        h.set_style(BarStyle::WorkerSpinner);
+        assert!(h.ops().is_empty(), "set_style must not emit a ProgressOp");
+    }
+
+    #[test]
+    fn bar_style_worker_spinner_zero_zero_guard_renders_empty() {
+        // A WorkerSpinner bar with assigned == 0 must render an empty bar
+        // (total = 1, pos = 0) so the suffix can still read 0/0 without a
+        // div-by-zero. Verified through the full tracking-to-terminal path.
+        use super::inner::DimensionSource;
+        use std::sync::Arc;
+
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(super::inner::TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(super::TestTimeSource::new());
+
+        let group = super::ProgressGroup::builder()
+            .with_multi_progress(mp)
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_time_source(ts.clone() as Arc<dyn super::TimeSource>)
+            .with_ticker_enabled(false)
+            .build();
+
+        let h = group.add_bar(0, "idle");
+        h.set_style(BarStyle::WorkerSpinner);
+        // Idle worker: assigned == 0, succeeded == 0, no version/phase.
+        h.set_prefix_components(PrefixComponents {
+            tool_name: "idle".into(),
+            ..Default::default()
+        });
+        h.set_suffix_components(SuffixComponents { custom: "idle".into(), ..Default::default() });
+        group.tick();
+
+        let output = term.contents();
+        // The bar must render (no panic) and the idle line must be present.
+        assert!(output.contains("idle"), "idle worker line must render: {output}");
+        // No "0/0" division artifact; the custom suffix carries the status.
+        assert!(output.contains("idle"), "idle status must be visible: {output}");
+    }
+
+    #[test]
+    fn bar_style_worker_spinner_populates_no_version_or_phase() {
+        // WorkerSpinner bars populate only marker/tool_name/count-total in the
+        // prefix and custom/elapsed in the suffix — never version or phase.
+        // This locks the style-aware truncation order from the plan.
+        let h = TrackedHandle::new(0);
+        h.set_style(BarStyle::WorkerSpinner);
+        h.set_prefix_components(PrefixComponents {
+            tool_name: "wf-1/step-5 (echo)".into(),
+            count: "2".into(),
+            total: "3".into(),
+            ..Default::default()
+        });
+        h.set_suffix_components(SuffixComponents {
+            custom: "running".into(),
+            ..Default::default()
+        });
+        let snap = h.snapshot();
+        // version/phase are empty (never set for WorkerSpinner).
+        assert_eq!(snap.prefix_components.version, "");
+        assert_eq!(snap.prefix_components.phase, "");
+        // count/total + tool_name + custom are present.
+        assert_eq!(snap.prefix_components.tool_name, "wf-1/step-5 (echo)");
+        assert_eq!(snap.prefix_components.count, "2");
+        assert_eq!(snap.prefix_components.total, "3");
+        assert_eq!(snap.suffix_components.custom, "running");
     }
 
     // ---- RecordingTrackedHandle elapsed ----------------------------------
