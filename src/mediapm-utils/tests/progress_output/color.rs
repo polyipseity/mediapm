@@ -10,8 +10,8 @@ fn color_active_child_text() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠹                          child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠹                    child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -28,8 +28,8 @@ fn color_failed_bracket_text() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠏                [F] child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -47,8 +47,8 @@ fn color_abandoned_bracket_text() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠏                [F] child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -66,8 +66,8 @@ fn color_success_text() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                          child █████████████████████  5/5 0s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠏                    child ████████████████████████████████  5/5 0s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -85,8 +85,8 @@ fn color_finished_text() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                          child █████████████████████  5/5 0s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠏                    child ████████████████████████████████  5/5 0s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -103,8 +103,8 @@ fn color_no_success_brackets() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                          child █████████████████████  0/5 0s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠏                    child ████████████████████████████████  0/5 0s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -125,8 +125,8 @@ fn exact_color_active_child_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠹                          child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠹                    child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -144,8 +144,8 @@ fn exact_color_failed_child_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠏                [F] child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -163,8 +163,8 @@ fn exact_color_abandoned_child_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [F] child ░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠏                [F] child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }
@@ -183,8 +183,8 @@ fn exact_color_success_child_with_overall() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                          child █████████████████████  5/5 0s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
+            "⠏                    child ████████████████████████████████  5/5 0s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         )
     );
 }

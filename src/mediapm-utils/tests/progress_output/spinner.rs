@@ -343,7 +343,7 @@ fn spinner_advances_without_dirty() {
             "\n",
             "\n",
             "\n",
-            "⠸                           test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠸                     test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         ),
         "tick 1 shows 0/10",
     );
@@ -353,7 +353,7 @@ fn spinner_advances_without_dirty() {
             "\n",
             "\n",
             "\n",
-            "⠼                           test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠼                     test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         ),
         "tick 2 shows 0/10",
     );
@@ -363,7 +363,7 @@ fn spinner_advances_without_dirty() {
             "\n",
             "\n",
             "\n",
-            "⠴                           test ░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠴                     test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         ),
         "tick 3 shows 0/10",
     );
@@ -424,7 +424,7 @@ fn spinner_active_among_finished() {
     assert_eq!(lines[2], finished_line, "finished bar must stay frozen");
     // Active bar shows progress.
     assert_eq!(
-        lines[3], "⠦                        working ████░░░░░░░░░░░░░░░░░  2/10 0s 0/d",
+        lines[3], "⠦                  working ██████░░░░░░░░░░░░░░░░░░░░░░░░░░  2/10 0s 0/d",
         "active bar shows 2/10: {}",
         lines[3],
     );
@@ -456,7 +456,7 @@ fn regression_spinner_dirty_independence() {
             "\n",
             "\n",
             "\n",
-            "⠼                           test ██████████░░░░░░░░░░░  5/10 0s 0/d",
+            "⠼                     test ████████████████░░░░░░░░░░░░░░░░  5/10 0s 0/d",
         ),
         "tick 1: 5/10",
     );
@@ -466,7 +466,7 @@ fn regression_spinner_dirty_independence() {
             "\n",
             "\n",
             "\n",
-            "⠴                           test ██████████░░░░░░░░░░░  5/10 0s 0/d",
+            "⠴                     test ████████████████░░░░░░░░░░░░░░░░  5/10 0s 0/d",
         ),
         "tick 2: 5/10",
     );
@@ -476,7 +476,7 @@ fn regression_spinner_dirty_independence() {
             "\n",
             "\n",
             "\n",
-            "⠦                           test ██████████░░░░░░░░░░░  5/10 0s 0/d",
+            "⠦                     test ████████████████░░░░░░░░░░░░░░░░  5/10 0s 0/d",
         ),
         "tick 3: 5/10",
     );
@@ -486,7 +486,7 @@ fn regression_spinner_dirty_independence() {
             "\n",
             "\n",
             "\n",
-            "⠧                           test ██████████░░░░░░░░░░░  5/10 0s 0/d",
+            "⠧                     test ████████████████░░░░░░░░░░░░░░░░  5/10 0s 0/d",
         ),
         "tick 4: 5/10",
     );

@@ -42,8 +42,8 @@ fn resolve_label_long_keeps_phase_tag() {
         concat!(
             "\n",
             "\n",
-            "⠹     ffmpeg autobuil [res]  0/100 0s 0/d\n",
-            "⠹                   overall  0/1 0s 0/d",
+            "⠹ ffmpeg autobuil [res]  0/100 0s 0/d\n",
+            "⠹            overall  0/1 0s 0/d",
         ),
         "W=40: version truncated, [res] phase preserved",
     );
@@ -67,8 +67,8 @@ fn resolve_label_multiword_no_bracket_keeps_whole_label() {
         concat!(
             "\n",
             "\n",
-            "⠹             syncing tools  0/100 0s 0/d\n",
-            "⠹                   overall  0/1 0s 0/d",
+            "⠹      syncing tools  0/100 0s 0/d\n",
+            "⠹            overall  0/1 0s 0/d",
         ),
         "W=40: multi-word label kept whole",
     );

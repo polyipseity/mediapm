@@ -20,8 +20,8 @@ fn two_lines_exact_abandoned_child() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [F] child ████████████░░░░░░░░░  3/5 1s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠏                [F] child ███████████████████░░░░░░░░░░░░░  3/5 1s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -42,8 +42,8 @@ fn two_lines_exact_error_child() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                      [F] child ████████████░░░░░░░░░  3/5 1s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
+            "⠏                [F] child ███████████████████░░░░░░░░░░░░░  3/5 1s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -64,8 +64,8 @@ fn two_lines_exact_success_child() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                          child █████████████████████  5/5 1s\n",
-            "⠸                        overall ░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d"
+            "⠏                    child ████████████████████████████████  5/5 1s\n",
+            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d",
         )
     );
 }
@@ -92,8 +92,8 @@ fn two_lines_exact_both_finished() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                          child █████████████████████  5/5 1s\n",
-            "⠏                        overall █████████████████████  3/3 1s",
+            "⠏                    child ████████████████████████████████  5/5 1s\n",
+            "⠏                  overall ████████████████████████████████  3/3 1s",
         )
     );
 }
@@ -115,8 +115,8 @@ fn two_lines_exact_overall_abandoned() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                          child █████████████████████  5/5 1s\n",
-            "⠏                    [F] overall ░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
+            "⠏                    child ████████████████████████████████  5/5 1s\n",
+            "⠏              [F] overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
         )
     );
 }
@@ -138,8 +138,8 @@ fn two_lines_exact_overall_error() {
     assert_eq!(
         term.contents(),
         concat!(
-            "⠏                          child █████████████████████  5/5 1s\n",
-            "⠏                    [F] overall ░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
+            "⠏                    child ████████████████████████████████  5/5 1s\n",
+            "⠏              [F] overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
         )
     );
 }
