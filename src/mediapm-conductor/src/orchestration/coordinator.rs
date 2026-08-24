@@ -209,6 +209,7 @@ where
             let mut executed_steps = 0usize;
             let mut cached_steps = 0usize;
             let mut failed_steps = 0usize;
+            let mut retried_steps = 0usize;
 
             // Compose the conductor-owned workflow progress screen: one overall
             // bar plus a fixed grid of `pool_size` worker-slot spinner bars
@@ -242,6 +243,8 @@ where
             let mut worker_steps_succeeded: Vec<usize> = vec![0; pool_size];
             #[cfg(feature = "progress")]
             let mut worker_failures: Vec<usize> = vec![0; pool_size];
+            #[cfg(feature = "progress")]
+            let mut worker_pending_retries: Vec<usize> = vec![0; pool_size];
 
             #[cfg(feature = "progress")]
             if let Some(ref pg) = options.progress_group {
@@ -263,10 +266,22 @@ where
             let mut step_outputs: StepOutputs = BTreeMap::new();
             let state_snapshot = Arc::new(state.clone());
 
-            for level in &levels {
-                let mut handles = Vec::new();
+            // Process dispatch batches level by level.  The initial batches
+            // come from the topological sort (attempt = 1).  When a step fails
+            // but is still eligible for retry, it is appended to a new
+            // single-step batch processed after the current batch's await
+            // completes — retries reuse the same worker slot and never grow the
+            // fixed bar grid.
+            let mut pending_levels: VecDeque<Vec<(String, u32)>> = levels
+                .into_iter()
+                .map(|lvl| lvl.into_iter().map(|id| (id, 1u32)).collect())
+                .collect();
 
-                for step_id in level {
+            while let Some(level) = pending_levels.pop_front() {
+                let mut handles = Vec::new();
+                let mut level_steps: Vec<(String, u32, WorkflowStepSpec)> = Vec::new();
+
+                for (step_id, attempt) in level {
                     let step =
                         workflow.steps.iter().find(|s| s.id == *step_id).ok_or_else(|| {
                             ConductorError::Internal(format!(
@@ -346,16 +361,29 @@ where
                         }
                     });
 
-                    handles.push((step_id.clone(), worker_idx, handle, step_bar));
+                    handles.push((step_id.clone(), worker_idx, handle, step_bar, attempt));
+                    level_steps.push((step_id, attempt, step.clone()));
                 }
 
-                for (step_id, worker_idx, handle, step_bar) in handles {
+                let mut retry_batch: Vec<(String, u32)> = Vec::new();
+
+                for ((step_id, worker_idx, handle, step_bar, attempt), (_sid, _att, step)) in
+                    handles.into_iter().zip(level_steps)
+                {
+                    let may_retry = step.max_retries > 0
+                        && match find_tool_by_name(&unified.tools, &step.tool) {
+                            Some(t) => !t.is_impure || options.retry_impure,
+                            None => false,
+                        };
                     match handle.await {
                         Ok(Ok(bundle)) => {
                             if bundle.cache_hit {
                                 cached_steps += 1;
                             } else {
                                 executed_steps += 1;
+                            }
+                            if attempt > 1 {
+                                retried_steps += 1;
                             }
                             for (name, record) in &bundle.instance.outputs {
                                 step_outputs
@@ -399,56 +427,108 @@ where
                             }
                         }
                         Ok(Err(e)) => {
-                            failed_steps += 1;
-                            tracing::error!("step '{step_id}' failed: {e}");
-                            #[cfg(feature = "progress")]
-                            if let Some(ref bar) = step_bar {
-                                worker_failures[worker_idx] += 1;
-                                let assigned = worker_steps_assigned[worker_idx];
-                                let succeeded = worker_steps_succeeded[worker_idx];
-                                bar.set_prefix_components(PrefixComponents {
-                                    marker: "F".to_string(),
-                                    tool_name: "idle".to_string(),
-                                    version: String::new(),
-                                    phase: String::new(),
-                                    count: succeeded.to_string(),
-                                    total: assigned.to_string(),
-                                });
-                                bar.set_total(assigned as u64);
-                                bar.advance(1);
-                                bar.finish_warning();
-                            }
-                            #[cfg(feature = "progress")]
-                            if let Some(ref ob) = overall_bar {
-                                ob.advance(1);
+                            if attempt <= step.max_retries as u32 && may_retry {
+                                tracing::warn!(
+                                    "step '{step_id}' failed (attempt {attempt}), retrying"
+                                );
+                                #[cfg(feature = "progress")]
+                                if let Some(ref bar) = step_bar {
+                                    worker_pending_retries[worker_idx] += 1;
+                                    let assigned = worker_steps_assigned[worker_idx];
+                                    let succeeded = worker_steps_succeeded[worker_idx];
+                                    bar.set_prefix_components(PrefixComponents {
+                                        marker: "W".to_string(),
+                                        tool_name: "idle".to_string(),
+                                        version: String::new(),
+                                        phase: String::new(),
+                                        count: succeeded.to_string(),
+                                        total: assigned.to_string(),
+                                    });
+                                    bar.set_total(assigned as u64);
+                                    bar.advance(1);
+                                    bar.finish_warning();
+                                }
+                                retry_batch.push((step_id.clone(), attempt + 1));
+                            } else {
+                                failed_steps += 1;
+                                tracing::error!("step '{step_id}' failed: {e}");
+                                #[cfg(feature = "progress")]
+                                if let Some(ref bar) = step_bar {
+                                    worker_failures[worker_idx] += 1;
+                                    let assigned = worker_steps_assigned[worker_idx];
+                                    let succeeded = worker_steps_succeeded[worker_idx];
+                                    bar.set_prefix_components(PrefixComponents {
+                                        marker: "F".to_string(),
+                                        tool_name: "idle".to_string(),
+                                        version: String::new(),
+                                        phase: String::new(),
+                                        count: succeeded.to_string(),
+                                        total: assigned.to_string(),
+                                    });
+                                    bar.set_total(assigned as u64);
+                                    bar.advance(1);
+                                    bar.finish_warning();
+                                }
+                                #[cfg(feature = "progress")]
+                                if let Some(ref ob) = overall_bar {
+                                    ob.advance(1);
+                                }
                             }
                         }
                         Err(e) => {
-                            failed_steps += 1;
-                            tracing::error!("step '{step_id}' RPC failed: {e}");
-                            #[cfg(feature = "progress")]
-                            if let Some(ref bar) = step_bar {
-                                worker_failures[worker_idx] += 1;
-                                let assigned = worker_steps_assigned[worker_idx];
-                                let succeeded = worker_steps_succeeded[worker_idx];
-                                bar.set_prefix_components(PrefixComponents {
-                                    marker: "F".to_string(),
-                                    tool_name: "idle".to_string(),
-                                    version: String::new(),
-                                    phase: String::new(),
-                                    count: succeeded.to_string(),
-                                    total: assigned.to_string(),
-                                });
-                                bar.set_total(assigned as u64);
-                                bar.advance(1);
-                                bar.finish_warning();
-                            }
-                            #[cfg(feature = "progress")]
-                            if let Some(ref ob) = overall_bar {
-                                ob.advance(1);
+                            if attempt <= step.max_retries as u32 && may_retry {
+                                tracing::warn!(
+                                    "step '{step_id}' RPC failed (attempt {attempt}), retrying"
+                                );
+                                #[cfg(feature = "progress")]
+                                if let Some(ref bar) = step_bar {
+                                    worker_pending_retries[worker_idx] += 1;
+                                    let assigned = worker_steps_assigned[worker_idx];
+                                    let succeeded = worker_steps_succeeded[worker_idx];
+                                    bar.set_prefix_components(PrefixComponents {
+                                        marker: "W".to_string(),
+                                        tool_name: "idle".to_string(),
+                                        version: String::new(),
+                                        phase: String::new(),
+                                        count: succeeded.to_string(),
+                                        total: assigned.to_string(),
+                                    });
+                                    bar.set_total(assigned as u64);
+                                    bar.advance(1);
+                                    bar.finish_warning();
+                                }
+                                retry_batch.push((step_id.clone(), attempt + 1));
+                            } else {
+                                failed_steps += 1;
+                                tracing::error!("step '{step_id}' RPC failed: {e}");
+                                #[cfg(feature = "progress")]
+                                if let Some(ref bar) = step_bar {
+                                    worker_failures[worker_idx] += 1;
+                                    let assigned = worker_steps_assigned[worker_idx];
+                                    let succeeded = worker_steps_succeeded[worker_idx];
+                                    bar.set_prefix_components(PrefixComponents {
+                                        marker: "F".to_string(),
+                                        tool_name: "idle".to_string(),
+                                        version: String::new(),
+                                        phase: String::new(),
+                                        count: succeeded.to_string(),
+                                        total: assigned.to_string(),
+                                    });
+                                    bar.set_total(assigned as u64);
+                                    bar.advance(1);
+                                    bar.finish_warning();
+                                }
+                                #[cfg(feature = "progress")]
+                                if let Some(ref ob) = overall_bar {
+                                    ob.advance(1);
+                                }
                             }
                         }
                     }
+                }
+
+                if !retry_batch.is_empty() {
+                    pending_levels.push_back(retry_batch);
                 }
             }
 
@@ -465,7 +545,13 @@ where
                 }
             }
 
-            Ok(RunSummary { total_steps, executed_steps, cached_steps, failed_steps })
+            Ok(RunSummary {
+                total_steps,
+                executed_steps,
+                cached_steps,
+                failed_steps,
+                retried_steps,
+            })
         }
         .await;
 

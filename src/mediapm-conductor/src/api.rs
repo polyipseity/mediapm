@@ -159,6 +159,8 @@ pub struct RunSummary {
     pub cached_steps: usize,
     /// Number of steps that failed.
     pub failed_steps: usize,
+    /// Number of steps that succeeded only after one or more retries.
+    pub retried_steps: usize,
 }
 
 // ---------------------------------------------------------------------------
