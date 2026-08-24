@@ -10,12 +10,16 @@ mod support;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::sync::Arc;
 
 use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
     Conductor, NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, WorkflowSpec,
     WorkflowStepSpec, config::versions::encode_document,
 };
+
+#[cfg(feature = "progress")]
+use mediapm_utils::progress::ProgressGroup;
 
 use support::{ExampleResult, echo_tool, write_text_file};
 
@@ -66,16 +70,35 @@ async fn run_demo() -> ExampleResult<()> {
 
     println!("=== First run ===");
     let first_summary =
-        conductor.run_workflow("demo_workflow", RunWorkflowOptions::default()).await?;
+        conductor.run_workflow("demo_workflow", run_options_with_progress()).await?;
     println!("First run summary: {first_summary:?}");
 
     println!("=== Second run (cache reuse) ===");
     let second_summary =
-        conductor.run_workflow("demo_workflow", RunWorkflowOptions::default()).await?;
+        conductor.run_workflow("demo_workflow", run_options_with_progress()).await?;
     println!("Second run summary: {second_summary:?}");
 
     println!("Done.");
     Ok(())
+}
+
+/// Build run options that own a workflow progress screen: a fixed overall
+/// bar (pinned at the bottom slot) plus one worker-slot spinner bar per
+/// worker, created by the caller via `ProgressGroup::builder().with_overall()`.
+#[cfg(feature = "progress")]
+fn run_options_with_progress() -> RunWorkflowOptions {
+    let (group, overall) = ProgressGroup::builder().with_overall("workflow steps", 1).build();
+    RunWorkflowOptions {
+        progress_group: Some(Arc::new(group)),
+        overall_bar: Some(Arc::new(overall)),
+        ..RunWorkflowOptions::default()
+    }
+}
+
+/// Without the `progress` feature there is no progress screen; use defaults.
+#[cfg(not(feature = "progress"))]
+fn run_options_with_progress() -> RunWorkflowOptions {
+    RunWorkflowOptions::default()
 }
 
 #[tokio::main]

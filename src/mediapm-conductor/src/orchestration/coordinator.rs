@@ -16,7 +16,7 @@ use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use mediapm_utils::Timestamp;
 
 #[cfg(feature = "progress")]
-use mediapm_utils::progress::{PrefixComponents, ProgressBarApi};
+use mediapm_utils::progress::{BarStyle, PrefixComponents, ProgressBarApi};
 
 use crate::config::WorkflowStepSpec;
 use crate::error::ConductorError;
@@ -211,12 +211,12 @@ where
             let mut failed_steps = 0usize;
 
             // Compose the conductor-owned workflow progress screen: one overall
-            // bar plus one bar per worker slot.  The overall bar is pinned at
-            // the bottom slot by the caller via `with_overall()` — the
-            // coordinator receives it through `options.overall_bar` and uses it
-            // directly.  Worker bars are pre-created (one per pool member) and
-            // consumed on first dispatch; subsequent dispatches to the same
-            // worker create a fresh bar.
+            // bar plus a fixed grid of `pool_size` worker-slot spinner bars
+            // (one per worker).  The overall bar is pinned at the bottom slot
+            // by the caller via `with_overall()` and used directly.  Worker
+            // bars are pre-created once (one per pool member) and reused for
+            // every dispatch to that worker — the slot is fixed, so the bar
+            // count never grows and there is no flicker.
             #[cfg(feature = "progress")]
             let overall_bar: Option<Arc<dyn ProgressBarApi>> = options.overall_bar.clone();
 
@@ -227,25 +227,36 @@ where
                 ob.set_total(total_steps as u64);
             }
 
-            // Pre-create one progress bar per worker slot.  Each bar starts
-            // in the idle state and is consumed when the worker is first
-            // dispatched a step.  Subsequent dispatches to the same worker
-            // create a fresh bar (the idle bar was already consumed).
+            // Pre-create one fixed worker-slot bar per pool member.  Each bar
+            // starts idle and is reused (never recreated) on every dispatch to
+            // that worker.  Per-worker counters track assigned/succeeded/
+            // failed step counts so the slot can render an honest
+            // `succeeded/assigned` ratio when it returns to idle.
             #[cfg(feature = "progress")]
-            let mut worker_bars: Vec<Option<Arc<dyn ProgressBarApi>>> = Vec::new();
+            let pool_size = self.workers.len();
+            #[cfg(feature = "progress")]
+            let mut worker_bars: Vec<Arc<dyn ProgressBarApi>> = Vec::with_capacity(pool_size);
+            #[cfg(feature = "progress")]
+            let mut worker_steps_assigned: Vec<usize> = vec![0; pool_size];
+            #[cfg(feature = "progress")]
+            let mut worker_steps_succeeded: Vec<usize> = vec![0; pool_size];
+            #[cfg(feature = "progress")]
+            let mut worker_failures: Vec<usize> = vec![0; pool_size];
+
             #[cfg(feature = "progress")]
             if let Some(ref pg) = options.progress_group {
-                for i in 0..self.workers.len() {
-                    let bar = pg.add_bar(total_steps as u64, "idle [wf]");
+                for _ in 0..pool_size {
+                    let bar = pg.add_bar(0, "idle [wf]");
+                    bar.set_style(BarStyle::WorkerSpinner);
                     bar.set_prefix_components(PrefixComponents {
                         marker: String::new(),
-                        tool_name: format!("worker-{i}"),
+                        tool_name: "idle".to_string(),
                         version: String::new(),
-                        phase: "wf".to_string(),
+                        phase: String::new(),
                         count: String::new(),
                         total: String::new(),
                     });
-                    worker_bars.push(Some(bar));
+                    worker_bars.push(bar);
                 }
             }
 
@@ -294,39 +305,25 @@ where
                     let worker_idx = handles.len() % self.workers.len().max(1);
                     let worker = self.workers[worker_idx].clone();
 
-                    // Create or update the worker's progress bar before
-                    // dispatch so it appears immediately.  The first dispatch
-                    // to a worker consumes the pre-created idle bar (updating
-                    // its label); subsequent dispatches create a fresh bar.
+                    // Update the fixed worker-slot bar before dispatch so it
+                    // appears immediately.  The slot is reused (never
+                    // recreated), so the bar count stays fixed at `pool_size`.
                     #[cfg(feature = "progress")]
                     let step_bar: Option<Arc<dyn ProgressBarApi>> =
-                        options.progress_group.as_ref().map(|pg| {
-                            if worker_idx < worker_bars.len() && worker_bars[worker_idx].is_some() {
-                                // First dispatch: consume the idle bar.
-                                let bar = worker_bars[worker_idx].take().unwrap();
-                                bar.set_prefix_components(PrefixComponents {
-                                    marker: String::new(),
-                                    tool_name: step_id.clone(),
-                                    version: String::new(),
-                                    phase: "wf".to_string(),
-                                    count: (handles.len() + 1).to_string(),
-                                    total: total_steps.to_string(),
-                                });
-                                bar.set_total(1);
-                                bar
-                            } else {
-                                // Subsequent dispatch: fresh bar.
-                                let bar = pg.add_bar(1, &format!("{step_id} [wf]"));
-                                bar.set_prefix_components(PrefixComponents {
-                                    marker: String::new(),
-                                    tool_name: step_id.clone(),
-                                    version: String::new(),
-                                    phase: "wf".to_string(),
-                                    count: (handles.len() + 1).to_string(),
-                                    total: total_steps.to_string(),
-                                });
-                                bar
-                            }
+                        options.progress_group.as_ref().map(|_pg| {
+                            worker_steps_assigned[worker_idx] += 1;
+                            let bar = worker_bars[worker_idx].clone();
+                            let assigned = worker_steps_assigned[worker_idx];
+                            bar.set_prefix_components(PrefixComponents {
+                                marker: String::new(),
+                                tool_name: format!("{workflow_name}/{step_id} ({})", step.tool),
+                                version: String::new(),
+                                phase: String::new(),
+                                count: assigned.to_string(),
+                                total: assigned.to_string(),
+                            });
+                            bar.set_total(assigned as u64);
+                            bar
                         });
                     #[cfg(not(feature = "progress"))]
                     let step_bar: Option<Arc<dyn ProgressBarApi>> = None;
@@ -352,7 +349,7 @@ where
                     handles.push((step_id.clone(), worker_idx, handle, step_bar));
                 }
 
-                for (step_id, _worker_idx, handle, step_bar) in handles {
+                for (step_id, worker_idx, handle, step_bar) in handles {
                     match handle.await {
                         Ok(Ok(bundle)) => {
                             if bundle.cache_hit {
@@ -381,8 +378,24 @@ where
                             aux.last_referenced_at = Timestamp::now();
                             #[cfg(feature = "progress")]
                             if let Some(ref bar) = step_bar {
+                                worker_steps_succeeded[worker_idx] += 1;
+                                let assigned = worker_steps_assigned[worker_idx];
+                                let succeeded = worker_steps_succeeded[worker_idx];
+                                bar.set_prefix_components(PrefixComponents {
+                                    marker: String::new(),
+                                    tool_name: "idle".to_string(),
+                                    version: String::new(),
+                                    phase: String::new(),
+                                    count: succeeded.to_string(),
+                                    total: assigned.to_string(),
+                                });
+                                bar.set_total(assigned as u64);
                                 bar.advance(1);
                                 bar.finish_success();
+                            }
+                            #[cfg(feature = "progress")]
+                            if let Some(ref ob) = overall_bar {
+                                ob.advance(1);
                             }
                         }
                         Ok(Err(e)) => {
@@ -390,8 +403,24 @@ where
                             tracing::error!("step '{step_id}' failed: {e}");
                             #[cfg(feature = "progress")]
                             if let Some(ref bar) = step_bar {
+                                worker_failures[worker_idx] += 1;
+                                let assigned = worker_steps_assigned[worker_idx];
+                                let succeeded = worker_steps_succeeded[worker_idx];
+                                bar.set_prefix_components(PrefixComponents {
+                                    marker: "F".to_string(),
+                                    tool_name: "idle".to_string(),
+                                    version: String::new(),
+                                    phase: String::new(),
+                                    count: succeeded.to_string(),
+                                    total: assigned.to_string(),
+                                });
+                                bar.set_total(assigned as u64);
                                 bar.advance(1);
                                 bar.finish_warning();
+                            }
+                            #[cfg(feature = "progress")]
+                            if let Some(ref ob) = overall_bar {
+                                ob.advance(1);
                             }
                         }
                         Err(e) => {
@@ -399,8 +428,24 @@ where
                             tracing::error!("step '{step_id}' RPC failed: {e}");
                             #[cfg(feature = "progress")]
                             if let Some(ref bar) = step_bar {
+                                worker_failures[worker_idx] += 1;
+                                let assigned = worker_steps_assigned[worker_idx];
+                                let succeeded = worker_steps_succeeded[worker_idx];
+                                bar.set_prefix_components(PrefixComponents {
+                                    marker: "F".to_string(),
+                                    tool_name: "idle".to_string(),
+                                    version: String::new(),
+                                    phase: String::new(),
+                                    count: succeeded.to_string(),
+                                    total: assigned.to_string(),
+                                });
+                                bar.set_total(assigned as u64);
                                 bar.advance(1);
                                 bar.finish_warning();
+                            }
+                            #[cfg(feature = "progress")]
+                            if let Some(ref ob) = overall_bar {
+                                ob.advance(1);
                             }
                         }
                     }
@@ -413,7 +458,6 @@ where
             // caller, so the bar must not claim unconditional success.
             #[cfg(feature = "progress")]
             if let Some(ref bar) = overall_bar {
-                bar.set_position(total_steps as u64);
                 if failed_steps > 0 {
                     bar.finish_warning();
                 } else {
