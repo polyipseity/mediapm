@@ -48,7 +48,6 @@ fn echo_step(tool_id: &str, text: &str) -> WorkflowStepSpec {
 /// Creates a flaky@v1 `ToolSpec` (test-only builtin that fails its first N
 /// invocations then succeeds).
 #[cfg(any(test, feature = "progress"))]
-#[expect(dead_code, reason = "used by retry tests added in a later commit")]
 fn flaky_tool(name: &str) -> ToolSpec {
     ToolSpec {
         kind: ToolKindSpec::Builtin { builtin_id: "flaky@v1".to_string() },

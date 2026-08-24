@@ -54,6 +54,30 @@ fn step_depends(id: &str, tool: &str, text: &str, depends_on: &[&str]) -> Workfl
     }
 }
 
+/// Creates a flaky@v1 `WorkflowStepSpec` (test-only builtin that fails its
+/// first `failures` invocations then succeeds). `max_retries` controls how
+/// many times the coordinator may re-dispatch the step after a failure.
+#[cfg(any(test, feature = "progress"))]
+fn flaky_step(
+    id: &str,
+    tool: &str,
+    failures: usize,
+    max_retries: usize,
+    key: &str,
+) -> WorkflowStepSpec {
+    WorkflowStepSpec {
+        id: id.into(),
+        tool: tool.into(),
+        inputs: BTreeMap::from([
+            ("failures".into(), failures.to_string()),
+            ("key".into(), key.into()),
+        ]),
+        outputs: BTreeMap::new(),
+        max_retries,
+        depends_on: Vec::new(),
+    }
+}
+
 /// Creates a `ToolSpec` with a `builtin_id` that is not registered in the
 /// step worker — the worker will return an error during dispatch.
 fn broken_tool(name: &str) -> mediapm_conductor::ToolSpec {
@@ -101,6 +125,55 @@ fn dispatch_pc(tool_name: &str, assigned: usize) -> ProgressOp {
         count: assigned.to_string(),
         total: assigned.to_string(),
     }
+}
+
+/// Counts dispatch operations (prefix components whose tool name contains a
+/// `/`, i.e. a `workflow/step (tool)` dispatch label).
+fn count_dispatches(ops: &[ProgressOp]) -> usize {
+    ops.iter()
+        .filter(|op| matches!(op, ProgressOp::SetPrefixComponents { tool_name, .. } if tool_name.contains('/')))
+        .count()
+}
+
+/// Counts pending-retry markers (`"W"`).
+fn count_markers_w(ops: &[ProgressOp]) -> usize {
+    ops.iter()
+        .filter(|op| matches!(op, ProgressOp::SetPrefixComponents { marker, .. } if marker == "W"))
+        .count()
+}
+
+/// Counts final-failure markers (`"F"`).
+fn count_markers_f(ops: &[ProgressOp]) -> usize {
+    ops.iter()
+        .filter(|op| matches!(op, ProgressOp::SetPrefixComponents { marker, .. } if marker == "F"))
+        .count()
+}
+
+/// Counts all `advance` operations (step bars + overall bar).
+fn count_advances(ops: &[ProgressOp]) -> usize {
+    ops.iter().filter(|op| matches!(op, ProgressOp::Advance { .. })).count()
+}
+
+/// Runs `workflow_name` with a recording progress group and custom options.
+async fn run_with_progress_opts(
+    tc: &TestConductor,
+    workflow_name: &str,
+    extra: RunWorkflowOptions,
+) -> (RecordingProgressTracker, mediapm_conductor::RunSummary) {
+    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow [wf]", 1);
+    let summary = tc
+        .conductor()
+        .run_workflow(
+            workflow_name,
+            RunWorkflowOptions {
+                progress_group: Some(Arc::new(tracker.clone())),
+                overall_bar: Some(Arc::new(overall)),
+                ..extra
+            },
+        )
+        .await
+        .expect("workflow");
+    (tracker, summary)
 }
 
 /// Runs `workflow_name` with a recording progress group and returns the
@@ -303,63 +376,6 @@ async fn three_step_same_level_progress_ops() {
     );
 }
 
-/// A step referencing a tool with an unregistered `builtin_id` fails during
-/// execution — the step bar receives `finish_warning` and the overall bar
-/// also receives `finish_warning` (`failed_steps > 0`).
-#[tokio::test]
-async fn step_failure_emits_finish_warning() {
-    fix_worker_pool_size();
-    let tc = TestConductor::new();
-    tc.write_config(doc_with_workflows(
-        BTreeMap::from([("broken".into(), broken_tool("broken"))]),
-        vec![WorkflowSpec {
-            name: "default".into(),
-            display_name: None,
-            description: None,
-            impure: false,
-            steps: vec![step("s1", "broken", "")],
-        }],
-    ));
-
-    let (tracker, summary) = run_with_progress(&tc, "default").await;
-    assert_eq!(summary.total_steps, 1);
-    assert_eq!(summary.executed_steps, 0);
-    assert_eq!(summary.failed_steps, 1);
-
-    assert_eq!(
-        tracker.ops(),
-        vec![
-            // Overall bar created by with_overall(), total set by coordinator.
-            ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
-            ProgressOp::SetTotal { total: 1 },
-            // Per-worker idle bars (2 workers).
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
-            idle_pc(),
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
-            idle_pc(),
-            // Dispatch s1 to worker-0 (consume idle bar).
-            dispatch_pc("default/s1 (broken)", 1),
-            ProgressOp::SetTotal { total: 1 },
-            // Step fails — marker "F", count 0, advance + finish_warning.
-            ProgressOp::SetPrefixComponents {
-                marker: "F".into(),
-                tool_name: "idle".into(),
-                version: String::new(),
-                phase: String::new(),
-                count: "0".into(),
-                total: "1".into(),
-            },
-            ProgressOp::SetTotal { total: 1 },
-            ProgressOp::Advance { delta: 1 },
-            ProgressOp::FinishWarning,
-            // Overall bar advances once per terminal step.
-            ProgressOp::Advance { delta: 1 },
-            // Overall bar finished with warning (failed_steps > 0).
-            ProgressOp::FinishWarning,
-        ],
-    );
-}
-
 /// When `progress_group` is `None`, no progress ops are recorded and the
 /// workflow still succeeds.
 #[tokio::test]
@@ -484,81 +500,154 @@ async fn regression_no_per_step_flicker() {
     assert_eq!(step_bars, 0, "no per-step AddBar (no flicker)");
 }
 
-/// Regression: the overall bar advances exactly once per terminal step
-/// (2 advances per step: step bar + overall bar) and never uses `SetPosition`.
-#[tokio::test]
-async fn regression_overall_advances_once_per_step() {
-    fix_worker_pool_size();
-    let tc = TestConductor::new();
-    tc.write_config(doc_with_workflows(
-        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
-        vec![WorkflowSpec {
-            name: "default".into(),
-            display_name: None,
-            description: None,
-            impure: false,
-            steps: vec![step("s1", "echo@v1", "a"), step("s2", "echo@v1", "b")],
-        }],
-    ));
-
-    let (tracker, summary) = run_with_progress(&tc, "default").await;
-    let n = summary.total_steps;
-    assert_eq!(n, 2);
-
-    let ops = tracker.ops();
-    let advances = ops.iter().filter(|op| matches!(op, ProgressOp::Advance { .. })).count();
-    assert_eq!(advances, 2 * n, "overall advances once per step (2 per step total)");
-
-    let positions = ops.iter().filter(|op| matches!(op, ProgressOp::SetPosition { .. })).count();
-    assert_eq!(positions, 0, "no SetPosition ops on the overall bar");
-}
-
-/// Regression: every step is dispatched exactly once (dispatch count equals
-/// total steps) and each dispatch terminates exactly once.
+/// Regression: a step that exhausts its retries is dispatched exactly
+/// `max_retries + 1` times (once per attempt), emits a pending-retry marker
+/// (`"W"`) for each non-final attempt, and a final-failure marker (`"F"`)
+/// only on the last attempt. The overall bar advances exactly once (on the
+/// terminal step).
 #[tokio::test]
 async fn regression_worker_invariant_holds() {
     fix_worker_pool_size();
     let tc = TestConductor::new();
     tc.write_config(doc_with_workflows(
-        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+        BTreeMap::from([("broken".into(), broken_tool("broken"))]),
         vec![WorkflowSpec {
             name: "default".into(),
             display_name: None,
             description: None,
             impure: false,
-            steps: vec![
-                step("s1", "echo@v1", "a"),
-                step("s2", "echo@v1", "b"),
-                step("s3", "echo@v1", "c"),
-            ],
+            steps: vec![WorkflowStepSpec { max_retries: 2, ..step("s1", "broken", "") }],
         }],
     ));
 
     let (tracker, summary) = run_with_progress(&tc, "default").await;
-    let n = summary.total_steps;
-    assert_eq!(n, 3);
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.executed_steps, 0);
+    assert_eq!(summary.failed_steps, 1);
 
     let ops = tracker.ops();
-    let dispatches = ops
-        .iter()
-        .filter(|op| {
-            matches!(op, ProgressOp::SetPrefixComponents { tool_name, .. } if tool_name.contains('/'))
-        })
-        .count();
-    assert_eq!(dispatches, n, "each step dispatched exactly once");
-
-    // Each terminal step emits exactly one Advance on its own bar; the overall
-    // bar also advances once per step, so total Advances == 2 * n. Counting
-    // Advances avoids double-counting the overall bar's final FinishSuccess.
-    let advances = ops.iter().filter(|op| matches!(op, ProgressOp::Advance { .. })).count();
-    assert_eq!(advances, 2 * n, "each dispatch terminates exactly once");
+    assert_eq!(count_dispatches(&ops), 3, "step dispatched once per attempt (max_retries + 1)");
+    assert_eq!(count_markers_w(&ops), 2, "pending-retry marker per non-final attempt");
+    assert_eq!(count_markers_f(&ops), 1, "final-failure marker on last attempt");
+    assert_eq!(count_advances(&ops), 4, "3 step-bar advances + 1 overall advance");
 }
 
-/// Regression: no pending-retry marker (`"W"`) is ever emitted — retries are
-/// disabled (`max_retries` always 0), so only `""` (idle) or `"F"` (failure)
-/// markers appear.
+/// Regression: a step that retries then succeeds emits a pending-retry marker
+/// on the failed attempt but never a final-failure marker, and the overall bar
+/// advances exactly once (on the terminal success).
 #[tokio::test]
-async fn regression_no_pending_retry_marker() {
+async fn regression_overall_advances_only_on_final_terminal() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("flaky@v1".into(), crate::flaky_tool("flaky@v1"))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![flaky_step("s1", "flaky@v1", 1, 1, "overall_terminal")],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.executed_steps, 1);
+    assert_eq!(summary.failed_steps, 0);
+
+    let ops = tracker.ops();
+    assert!(count_markers_w(&ops) >= 1, "pending-retry marker on failed attempt");
+    assert_eq!(count_markers_f(&ops), 0, "no final-failure marker on success");
+    assert_eq!(count_advances(&ops), 3, "2 step-bar advances + 1 overall advance");
+}
+
+/// Regression: after a retry succeeds, no pending-retry marker lingers — the
+/// step terminates cleanly (success, no final-failure marker).
+#[tokio::test]
+async fn regression_pending_retry_trends_to_zero() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("flaky@v1".into(), crate::flaky_tool("flaky@v1"))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![flaky_step("s1", "flaky@v1", 1, 1, "pending_zero")],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.executed_steps, 1);
+    assert_eq!(summary.failed_steps, 0);
+
+    let ops = tracker.ops();
+    assert!(count_markers_w(&ops) >= 1, "pending-retry marker on failed attempt");
+    assert_eq!(count_markers_f(&ops), 0, "no final-failure marker after success");
+}
+
+/// A flaky step that fails once then succeeds is dispatched twice (initial +
+/// one retry) and terminates as a success.
+#[tokio::test]
+async fn retry_then_succeed_progress_ops() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("flaky@v1".into(), crate::flaky_tool("flaky@v1"))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![flaky_step("s1", "flaky@v1", 1, 1, "retry_ok")],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.executed_steps, 1);
+    assert_eq!(summary.failed_steps, 0);
+
+    let ops = tracker.ops();
+    assert!(count_markers_w(&ops) >= 1, "pending-retry marker on failed attempt");
+    assert_eq!(count_markers_f(&ops), 0, "no final-failure marker on success");
+    assert_eq!(count_dispatches(&ops), 2, "dispatched initial + one retry");
+}
+
+/// A broken step with `max_retries: 2` is dispatched three times (initial +
+/// two retries) and terminates as a failure with no success.
+#[tokio::test]
+async fn retry_exhausted_progress_ops() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("broken".into(), broken_tool("broken"))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![WorkflowStepSpec { max_retries: 2, ..step("s1", "broken", "") }],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.executed_steps, 0);
+    assert_eq!(summary.failed_steps, 1);
+
+    let ops = tracker.ops();
+    assert_eq!(count_dispatches(&ops), 3, "dispatched initial + two retries");
+    assert_eq!(count_markers_w(&ops), 2, "pending-retry marker per non-final attempt");
+    assert_eq!(count_markers_f(&ops), 1, "final-failure marker on last attempt");
+}
+
+/// A broken step with `max_retries: 0` is dispatched exactly once and fails
+/// with a final-failure marker (no pending-retry marker).
+#[tokio::test]
+async fn no_retry_when_max_retries_zero() {
     fix_worker_pool_size();
     let tc = TestConductor::new();
     tc.write_config(doc_with_workflows(
@@ -573,11 +662,50 @@ async fn regression_no_pending_retry_marker() {
     ));
 
     let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.executed_steps, 0);
     assert_eq!(summary.failed_steps, 1);
 
-    let pending_retry = tracker
-        .ops()
-        .iter()
-        .any(|op| matches!(op, ProgressOp::SetPrefixComponents { marker, .. } if marker == "W"));
-    assert!(!pending_retry, "no pending-retry marker emitted");
+    let ops = tracker.ops();
+    assert_eq!(count_dispatches(&ops), 1, "no retry when max_retries is 0");
+    assert_eq!(count_markers_w(&ops), 0, "no pending-retry marker");
+    assert_eq!(count_markers_f(&ops), 1, "final-failure marker on the only attempt");
+}
+
+/// An impure broken step with `max_retries: 2` is NOT retried when
+/// `retry_impure` is false (the default) — it fails on the first attempt.
+#[tokio::test]
+async fn impure_no_retry_without_flag() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    let impure_broken = {
+        let mut t = broken_tool("broken");
+        t.runtime = ToolRuntime { impure: true, max_retries: 2, ..Default::default() };
+        t
+    };
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("broken".into(), impure_broken)]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: true,
+            steps: vec![WorkflowStepSpec { max_retries: 2, ..step("s1", "broken", "") }],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress_opts(
+        &tc,
+        "default",
+        RunWorkflowOptions { retry_impure: false, ..Default::default() },
+    )
+    .await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.executed_steps, 0);
+    assert_eq!(summary.failed_steps, 1);
+
+    let ops = tracker.ops();
+    assert_eq!(count_dispatches(&ops), 1, "impure step not retried without flag");
+    assert_eq!(count_markers_w(&ops), 0, "no pending-retry marker");
+    assert_eq!(count_markers_f(&ops), 1, "final-failure marker on the only attempt");
 }
