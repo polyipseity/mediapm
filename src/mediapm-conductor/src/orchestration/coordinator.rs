@@ -16,7 +16,10 @@ use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use mediapm_utils::Timestamp;
 
 #[cfg(feature = "progress")]
-use mediapm_utils::progress::{BarStyle, PrefixComponents, ProgressBarApi};
+use mediapm_utils::progress::{BarStyle, ProgressBarApi};
+
+#[cfg(feature = "progress")]
+use super::progress_labels::WorkerBarLabel;
 
 use crate::config::WorkflowStepSpec;
 use crate::error::ConductorError;
@@ -149,13 +152,13 @@ where
 /// driven by `set_total(assigned)` + `advance(1)` at the call sites; the
 /// prefix below only carries the status marker and the tool/step label.
 ///
-/// | worker state | TrackStatus | marker | tool_name |
+/// | worker state | `TrackStatus` | marker | `tool_name` |
 /// | --- | --- | --- | --- |
-/// | idle (no step assigned / between steps) | Active | "" | "idle" |
-/// | active (executing) | Active | "" | "{wf}/{step} ({tool})" |
-/// | pending-retry | Warning | "W" | "idle" |
-/// | failed (final) | Failed | "F" | "idle" |
-/// | finalize (all available steps consumed) | Success | "" | "idle" |
+/// | idle (no step assigned / between steps) | `Active` | empty | `"idle"` |
+/// | active (executing) | `Active` | empty | `"{wf}/{step} ({tool})"` |
+/// | pending-retry | `Warning` | `"W"` | `"idle"` |
+/// | failed (final) | `Failed` | `"F"` | `"idle"` |
+/// | finalize (all available steps consumed) | `Success` | empty | `"idle"` |
 ///
 /// Invariant: a worker is NEVER done (Success) while available steps remain.
 /// Failed and pending-retry states already surface their own `TrackStatus`
@@ -181,32 +184,35 @@ enum WorkerSlotState {
     Succeeded,
 }
 
-/// Builds the [`PrefixComponents`] for a worker-slot bar in the given state.
+/// Builds the [`WorkerBarLabel`] for a worker-slot bar in the given state.
 ///
 /// `workflow_name`/`step_id`/`tool` are only used by the `Active` state to
-/// render the `{wf}/{step} ({tool})` dispatch label; other states ignore them.
-/// Prefix `count`/`total` are always empty (see [`WorkerSlotState`]).
+/// render the `{wf}/{step} ({tool})` dispatch label; other states ignore
+/// them. A worker bar carries no workflow phase and no progress tally, so
+/// those fields are absent by construction (see [`WorkerSlotState`]).
 #[cfg(feature = "progress")]
-fn worker_slot_prefix(
+fn worker_slot_label(
     state: WorkerSlotState,
     workflow_name: &str,
     step_id: &str,
     tool: &str,
-) -> PrefixComponents {
-    let (marker, tool_name) = match state {
-        WorkerSlotState::Idle => (String::new(), "idle".to_string()),
-        WorkerSlotState::Active => (String::new(), format!("{workflow_name}/{step_id} ({tool})")),
-        WorkerSlotState::PendingRetry => ("W".to_string(), "idle".to_string()),
-        WorkerSlotState::Failed => ("F".to_string(), "idle".to_string()),
-        WorkerSlotState::Succeeded => (String::new(), "idle".to_string()),
+) -> WorkerBarLabel {
+    let (marker, tool_name, activity) = match state {
+        WorkerSlotState::Active => {
+            (String::new(), format!("{workflow_name}/{step_id} ({tool})"), "active".to_string())
+        }
+        WorkerSlotState::PendingRetry => ("W".to_string(), "idle".to_string(), "idle".to_string()),
+        WorkerSlotState::Failed => ("F".to_string(), "idle".to_string(), "idle".to_string()),
+        WorkerSlotState::Idle | WorkerSlotState::Succeeded => {
+            (String::new(), "idle".to_string(), "idle".to_string())
+        }
     };
-    PrefixComponents {
-        marker,
-        tool_name,
-        version: String::new(),
-        phase: String::new(),
-        count: String::new(),
-        total: String::new(),
+    WorkerBarLabel {
+        status_marker: marker,
+        workflow_id: String::new(),
+        step_id: String::new(),
+        tool: tool_name,
+        activity,
     }
 }
 
@@ -322,12 +328,12 @@ where
                 for _ in 0..pool_size {
                     let bar = pg.add_bar(0, "idle [wf]");
                     bar.set_style(BarStyle::WorkerSpinner);
-                    bar.set_prefix_components(worker_slot_prefix(
+                    bar.set_truncation(Arc::new(worker_slot_label(
                         WorkerSlotState::Idle,
                         "",
                         "",
                         "",
-                    ));
+                    )));
                     worker_bars.push(bar);
                 }
             }
@@ -394,19 +400,21 @@ where
                     // recreated), so the bar count stays fixed at `pool_size`.
                     #[cfg(feature = "progress")]
                     let step_bar: Option<Arc<dyn ProgressBarApi>> =
-                        options.progress_group.as_ref().map(|_pg| {
+                        if options.progress_group.is_some() {
                             worker_steps_assigned[worker_idx] += 1;
                             let bar = worker_bars[worker_idx].clone();
                             let assigned = worker_steps_assigned[worker_idx];
-                            bar.set_prefix_components(worker_slot_prefix(
+                            bar.set_truncation(Arc::new(worker_slot_label(
                                 WorkerSlotState::Active,
-                                &workflow_name,
+                                workflow_name,
                                 &step_id,
                                 &step.tool,
-                            ));
+                            )));
                             bar.set_total(assigned as u64);
-                            bar
-                        });
+                            Some(bar)
+                        } else {
+                            None
+                        };
                     #[cfg(not(feature = "progress"))]
                     let step_bar: Option<Arc<dyn ProgressBarApi>> = None;
                     let handle = tokio::spawn(async move {
@@ -475,12 +483,12 @@ where
                             if let Some(ref bar) = step_bar {
                                 worker_steps_succeeded[worker_idx] += 1;
                                 let assigned = worker_steps_assigned[worker_idx];
-                                bar.set_prefix_components(worker_slot_prefix(
+                                bar.set_truncation(Arc::new(worker_slot_label(
                                     WorkerSlotState::Idle,
                                     "",
                                     "",
                                     "",
-                                ));
+                                )));
                                 bar.set_total(assigned as u64);
                                 bar.advance(1);
                                 bar.finish_success();
@@ -499,12 +507,12 @@ where
                                 if let Some(ref bar) = step_bar {
                                     worker_pending_retries[worker_idx] += 1;
                                     let assigned = worker_steps_assigned[worker_idx];
-                                    bar.set_prefix_components(worker_slot_prefix(
+                                    bar.set_truncation(Arc::new(worker_slot_label(
                                         WorkerSlotState::PendingRetry,
                                         "",
                                         "",
                                         "",
-                                    ));
+                                    )));
                                     bar.set_total(assigned as u64);
                                     bar.advance(1);
                                     bar.finish_warning();
@@ -517,12 +525,12 @@ where
                                 if let Some(ref bar) = step_bar {
                                     worker_failures[worker_idx] += 1;
                                     let assigned = worker_steps_assigned[worker_idx];
-                                    bar.set_prefix_components(worker_slot_prefix(
+                                    bar.set_truncation(Arc::new(worker_slot_label(
                                         WorkerSlotState::Failed,
                                         "",
                                         "",
                                         "",
-                                    ));
+                                    )));
                                     bar.set_total(assigned as u64);
                                     bar.advance(1);
                                     bar.finish_warning();
@@ -542,12 +550,12 @@ where
                                 if let Some(ref bar) = step_bar {
                                     worker_pending_retries[worker_idx] += 1;
                                     let assigned = worker_steps_assigned[worker_idx];
-                                    bar.set_prefix_components(worker_slot_prefix(
+                                    bar.set_truncation(Arc::new(worker_slot_label(
                                         WorkerSlotState::PendingRetry,
                                         "",
                                         "",
                                         "",
-                                    ));
+                                    )));
                                     bar.set_total(assigned as u64);
                                     bar.advance(1);
                                     bar.finish_warning();
@@ -560,12 +568,12 @@ where
                                 if let Some(ref bar) = step_bar {
                                     worker_failures[worker_idx] += 1;
                                     let assigned = worker_steps_assigned[worker_idx];
-                                    bar.set_prefix_components(worker_slot_prefix(
+                                    bar.set_truncation(Arc::new(worker_slot_label(
                                         WorkerSlotState::Failed,
                                         "",
                                         "",
                                         "",
-                                    ));
+                                    )));
                                     bar.set_total(assigned as u64);
                                     bar.advance(1);
                                     bar.finish_warning();

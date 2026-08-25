@@ -493,7 +493,7 @@ fn pre_roll_fires_on_join_and_clear_before_ticker() {
         newline_count > 0,
         "finalize must trigger pre_roll (rows=10), got {newline_count}:\n{moves}",
     );
-    assert!(moves.contains("Up(10)"), "finalize pre_roll must move cursor up 10 rows:\n{moves}",);
+    assert!(moves.contains("Up(10)"), "finalize pre_roll must move cursor up 10 rows:\n{moves}");
 }
 
 #[test]
@@ -700,4 +700,51 @@ fn suffix_truncation_order_unchanged_after_merge() {
         " \x1b[33m9/9\x1b[0m",
         "merged count/total atomic at end",
     );
+}
+
+// ---- Phase 4: client-defined truncation contract ----------------------
+
+/// Dummy truncation that ignores the width budget and returns fixed
+/// strings. Proves the renderer *calls* the trait at the single push
+/// point and uses its output verbatim (the client owns the layout).
+struct FixedTruncation {
+    prefix: &'static str,
+    suffix: &'static str,
+}
+
+impl crate::progress::BarLabelTruncation for FixedTruncation {
+    fn truncate_prefix(&self, _max_width: usize) -> String {
+        self.prefix.to_string()
+    }
+    fn truncate_suffix(&self, _max_width: usize) -> String {
+        self.suffix.to_string()
+    }
+}
+
+#[test]
+fn set_truncation_replaces_builtin_rendering() {
+    // When a bar has client truncation installed, the terminal output must
+    // contain the client's strings and NOT the built-in component render.
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let mp = MultiProgress::with_draw_target(target);
+    let group = ProgressGroup::builder()
+        .with_multi_progress(mp)
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
+    let bar = group.add_bar(100, "test");
+
+    bar.set_truncation(Arc::new(FixedTruncation {
+        prefix: "CLIENT-PREFIX",
+        suffix: "CLIENT-SUFFIX",
+    }));
+    bar.set_position(20);
+    bar.set_total(200);
+
+    group.tick();
+    let content = term.contents();
+    assert!(content.contains("CLIENT-PREFIX"), "client prefix must appear in output: {content:?}");
+    assert!(content.contains("CLIENT-SUFFIX"), "client suffix must appear in output: {content:?}");
+    assert!(!content.contains("20/200"), "built-in component render must be bypassed: {content:?}");
 }

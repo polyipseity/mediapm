@@ -72,6 +72,13 @@ mod traits;
 #[cfg(feature = "progress")]
 pub use traits::{BarStyle, ProgressBarApi, ProgressGroupApi};
 
+// ---- Client-defined truncation contract (feature-gated) --------------
+
+#[cfg(feature = "progress")]
+mod truncation;
+#[cfg(feature = "progress")]
+pub use truncation::BarLabelTruncation;
+
 // ---- Recording types for test assertions (feature-gated) ---------------
 
 /// Recording progress operations for test assertions.
@@ -136,6 +143,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     }
     fn set_suffix_components(&self, components: SuffixComponents) {
         recording::RecordingTrackedHandle::set_suffix_components(self, components);
+    }
+    fn set_truncation(&self, truncation: Arc<dyn BarLabelTruncation>) {
+        recording::RecordingTrackedHandle::set_truncation(self, &truncation);
     }
     fn set_style(&self, style: BarStyle) {
         recording::RecordingTrackedHandle::set_style(self, style);

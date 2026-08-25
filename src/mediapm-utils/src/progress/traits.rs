@@ -6,6 +6,7 @@
 //! [`ProgressGroup`] and [`recording::RecordingProgressTracker`] implement
 //! [`ProgressGroupApi`].
 
+use crate::progress::BarLabelTruncation;
 use crate::progress::inner::{
     PrefixComponents, ProgressGroup, SuffixComponents, TrackSnapshot, TrackedHandle,
 };
@@ -26,10 +27,10 @@ use std::sync::Arc;
 /// - [`WorkerSpinner`](BarStyle::WorkerSpinner) — a fixed worker-slot bar
 ///   driven by **per-worker** state rather than a per-step or global total.
 ///   The coordinator populates `prefix_components`/`suffix_components`
-///   directly (no `version`/`phase`; `custom` = `<status>[ <F> failed][ <R>
+///   directly (no `version`/`phase`; `custom` = `` `<status>` `` `[ <F> failed][ <R>
 ///   retry]`), and the renderer applies a `0/0` div-by-zero guard (renders
 ///   `total = 1, pos = 0` when the worker's assigned count is `0`) so an
-///   idle worker shows an empty all-░ bar. The same wide_bar child template
+///   idle worker shows an empty all-░ bar. The same `wide_bar` child template
 ///   as `StepCount` is used; only the field population differs.
 ///
 /// The style is set via [`ProgressBarApi::set_style`] (or
@@ -74,6 +75,14 @@ pub trait ProgressBarApi: Send + Sync {
     fn set_prefix_components(&self, components: PrefixComponents);
     /// Set suffix components for source-data-based truncation.
     fn set_suffix_components(&self, components: SuffixComponents);
+    /// Install client-supplied truncation logic (see [`BarLabelTruncation`]).
+    ///
+    /// When set, the renderer's single push point calls the trait directly
+    /// to obtain the final prefix/suffix display strings, instead of the
+    /// built-in component rendering. The client owns the field layout and
+    /// truncation order. When unset, the built-in rendering remains the
+    /// fallback.
+    fn set_truncation(&self, truncation: Arc<dyn BarLabelTruncation>);
     /// Set the visual style for the bar (see [`BarStyle`]).
     ///
     /// Defaults to [`StepCount`](BarStyle::StepCount). Callers that own a
@@ -114,6 +123,9 @@ impl ProgressBarApi for TrackedHandle {
     }
     fn set_suffix_components(&self, components: SuffixComponents) {
         TrackedHandle::set_suffix_components(self, components);
+    }
+    fn set_truncation(&self, truncation: Arc<dyn BarLabelTruncation>) {
+        TrackedHandle::set_truncation(self, truncation);
     }
     fn set_style(&self, style: BarStyle) {
         TrackedHandle::set_style(self, style);

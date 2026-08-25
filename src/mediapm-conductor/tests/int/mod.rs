@@ -37,3 +37,8 @@ mod runtime_tmp_lifecycle;
 /// Workflow progress screen `[wf]`: overall bar + per-step bars with
 /// `SetPrefixComponents`, `Advance`, and `FinishSuccess`/`FinishWarning`.
 mod workflow_progress;
+
+/// Client-defined bar-label truncation: worker bars drop progress tally,
+/// step bars keep version under width pressure.
+#[cfg(feature = "progress")]
+mod progress_labels;

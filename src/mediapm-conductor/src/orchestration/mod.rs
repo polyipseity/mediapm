@@ -7,5 +7,7 @@
 pub(crate) mod config;
 pub(crate) mod coordinator;
 pub(crate) mod node;
+#[cfg(feature = "progress")]
+pub mod progress_labels;
 pub(crate) mod protocol;
 pub(crate) mod step_worker;

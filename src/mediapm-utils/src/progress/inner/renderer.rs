@@ -43,6 +43,12 @@ pub(crate) struct SharedState {
     label: RwLock<String>,
     prefix_components: RwLock<PrefixComponents>,
     suffix_components: RwLock<SuffixComponents>,
+    /// Client-supplied truncation logic. When `Some`, the renderer calls
+    /// it directly at the single push point to obtain the final
+    /// prefix/suffix display strings. When `None`, the renderer falls
+    /// back to its built-in component rendering. mediapm-utils owns no
+    /// field layout — the client does.
+    truncation: RwLock<Option<Arc<dyn crate::progress::BarLabelTruncation>>>,
     status: AtomicU8,
     dirty: AtomicBool,
     disabled: AtomicBool,
@@ -100,6 +106,7 @@ impl SharedState {
             label: RwLock::new(label.to_string()),
             prefix_components: RwLock::new(prefix_components_from_str(label)),
             suffix_components: RwLock::new(SuffixComponents::default()),
+            truncation: RwLock::new(None),
             status: AtomicU8::new(0),
             dirty: AtomicBool::new(true),
             disabled: AtomicBool::new(false),
@@ -326,6 +333,28 @@ impl TrackedHandle {
             let mut sc =
                 self.state.suffix_components.write().expect("shared_state suffix_components lock");
             *sc = components;
+        }
+        self.state.dirty.store(true, Ordering::Release);
+    }
+
+    /// Install client-supplied truncation logic.
+    ///
+    /// Once set, the renderer's single push point calls
+    /// [`BarLabelTruncation::truncate_prefix`] /
+    /// [`BarLabelTruncation::truncate_suffix`] to obtain the final
+    /// display strings directly, instead of the built-in component
+    /// rendering. The client owns the field layout and order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared-state `RwLock` is poisoned.
+    pub fn set_truncation(&self, truncation: Arc<dyn crate::progress::BarLabelTruncation>) {
+        if self.state.disabled.load(Ordering::Relaxed) {
+            return; // disabled handle
+        }
+        {
+            let mut t = self.state.truncation.write().expect("shared_state truncation lock");
+            *t = Some(truncation);
         }
         self.state.dirty.store(true, Ordering::Release);
     }
@@ -944,7 +973,7 @@ impl ProgressRenderer {
         // the bar. Pin it to `total = 1, pos = 0` so the idle worker shows
         // a fully-dimmed empty bar (all `░`). `StepCount` bars keep their
         // real total/position.
-        let style = slot.source.borrow().as_ref().map(|s| s.style()).unwrap_or(BarStyle::StepCount);
+        let style = slot.source.borrow().as_ref().map_or(BarStyle::StepCount, |s| s.style());
         let (render_total, render_pos) = if style == BarStyle::WorkerSpinner && snap.total == 0 {
             (1, 0)
         } else {
@@ -977,18 +1006,36 @@ impl ProgressRenderer {
             TrackStatus::Failed | TrackStatus::Warning => 13,
             _ => 4,
         };
-        let truncated_prefix = semantic_truncate_prefix(
-            &snap.prefix_components,
-            max_prefix_width(cols).saturating_sub(ansi_overhead),
-        );
-        let new_prefix = render_prefix_components(&truncated_prefix, snap.status);
+        // Client-defined truncation takes precedence when installed. The
+        // renderer only *calls* the trait; it owns no field layout. The
+        // `None` branch keeps the built-in component rendering as the
+        // fallback so existing callers and tests stay green.
+        let truncation = slot
+            .source
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.truncation.read().expect("shared_state truncation lock").clone());
+        let new_prefix = if let Some(t) = truncation.as_ref() {
+            t.truncate_prefix(max_prefix_width(cols).saturating_sub(ansi_overhead))
+        } else {
+            let truncated_prefix = semantic_truncate_prefix(
+                &snap.prefix_components,
+                max_prefix_width(cols).saturating_sub(ansi_overhead),
+            );
+            render_prefix_components(&truncated_prefix, snap.status)
+        };
         if new_prefix != *slot.cache.prefix.borrow() {
             slot.bar.set_prefix(new_prefix.clone());
             *slot.cache.prefix.borrow_mut() = new_prefix;
         }
-        // Build display suffix: truncate the fresh component set, then render.
-        let truncated_suffix = semantic_truncate_suffix(&fresh_suffix, max_suffix_width(cols));
-        let display_suffix = render_suffix_components(&truncated_suffix, color_code);
+        // Build display suffix: client truncation when installed, else
+        // truncate the fresh component set then render.
+        let display_suffix = if let Some(t) = truncation.as_ref() {
+            t.truncate_suffix(max_suffix_width(cols))
+        } else {
+            let truncated_suffix = semantic_truncate_suffix(&fresh_suffix, max_suffix_width(cols));
+            render_suffix_components(&truncated_suffix, color_code)
+        };
         if display_suffix != *slot.cache.suffix.borrow() {
             slot.bar.set_message(display_suffix.clone());
             *slot.cache.suffix.borrow_mut() = display_suffix;

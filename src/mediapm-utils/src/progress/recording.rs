@@ -58,6 +58,15 @@ pub enum ProgressOp {
         /// Full suffix component set.
         components: crate::progress::SuffixComponents,
     },
+    /// `set_truncation(truncation)` was called. Records the rendered
+    /// prefix/suffix produced by the installed [`BarLabelTruncation`]
+    /// implementation at the recorder's configured width.
+    SetTruncation {
+        /// Rendered prefix string (full width, no truncation applied).
+        prefix: String,
+        /// Rendered suffix string (full width, no truncation applied).
+        suffix: String,
+    },
     /// `finish_success()` was called.
     FinishSuccess,
     /// `finish_error()` was called.
@@ -217,6 +226,16 @@ impl RecordingTrackedHandle {
             .lock()
             .expect("recording lock")
             .push(ProgressOp::SetSuffixComponents { components });
+    }
+
+    /// Install a client-defined truncation implementation.
+    ///
+    /// Records the rendered prefix/suffix at a fixed recorder width so
+    /// tests can assert the exact label content the coordinator produced.
+    pub fn set_truncation(&self, truncation: &Arc<dyn crate::progress::BarLabelTruncation>) {
+        let prefix = truncation.truncate_prefix(usize::MAX);
+        let suffix = truncation.truncate_suffix(usize::MAX);
+        self.ops.lock().expect("recording lock").push(ProgressOp::SetTruncation { prefix, suffix });
     }
 
     /// Set the visual style for the bar (see [`BarStyle`]).

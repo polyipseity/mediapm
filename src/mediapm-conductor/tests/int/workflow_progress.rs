@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::{TestConductor, doc_with_workflows, echo_tool};
 use mediapm_conductor::api::RunWorkflowOptions;
 use mediapm_conductor::{ToolKindSpec, ToolRuntime, WorkflowSpec, WorkflowStepSpec};
+use mediapm_utils::progress::BarLabelTruncation;
 use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
 // ---------------------------------------------------------------------------
@@ -93,17 +94,18 @@ fn broken_tool(name: &str) -> mediapm_conductor::ToolSpec {
 
 /// Idle worker-slot prefix components (no step assigned yet).
 fn idle_pc() -> ProgressOp {
-    ProgressOp::SetPrefixComponents {
-        marker: String::new(),
-        tool_name: "idle".into(),
-        version: String::new(),
-        phase: String::new(),
-        count: String::new(),
-        total: String::new(),
-    }
+    use mediapm_conductor::orchestration::progress_labels::WorkerBarLabel;
+    let label = WorkerBarLabel {
+        status_marker: String::new(),
+        workflow_id: String::new(),
+        step_id: String::new(),
+        tool: "idle".into(),
+        activity: "idle".into(),
+    };
+    ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
 }
 
-/// Idle worker-slot prefix components after `succeeded`/`assigned` steps.
+/// Idle worker-slot label after `succeeded`/`assigned` steps.
 ///
 /// Worker-slot bars omit the `count/total` text (no real item+size progress),
 /// so this matches [`idle_pc`] exactly — the counts are tracked internally
@@ -112,40 +114,41 @@ fn idle_pc_count(_succeeded: usize, _assigned: usize) -> ProgressOp {
     idle_pc()
 }
 
-/// Dispatch prefix components for a step assigned to a worker slot.
+/// Dispatch label for a step assigned to a worker slot.
 ///
 /// Worker-slot bars omit the `count/total` text (no real item+size progress),
 /// so `assigned` is used only for the bar fill, not the rendered prefix.
 fn dispatch_pc(tool_name: &str, _assigned: usize) -> ProgressOp {
-    ProgressOp::SetPrefixComponents {
-        marker: String::new(),
-        tool_name: tool_name.into(),
-        version: String::new(),
-        phase: String::new(),
-        count: String::new(),
-        total: String::new(),
-    }
+    use mediapm_conductor::orchestration::progress_labels::WorkerBarLabel;
+    let label = WorkerBarLabel {
+        status_marker: String::new(),
+        workflow_id: String::new(),
+        step_id: String::new(),
+        tool: tool_name.into(),
+        activity: "active".into(),
+    };
+    ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
 }
 
-/// Counts dispatch operations (prefix components whose tool name contains a
+/// Counts dispatch operations (truncation prefixes whose tool name contains a
 /// `/`, i.e. a `workflow/step (tool)` dispatch label).
 fn count_dispatches(ops: &[ProgressOp]) -> usize {
     ops.iter()
-        .filter(|op| matches!(op, ProgressOp::SetPrefixComponents { tool_name, .. } if tool_name.contains('/')))
+        .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains('/')))
         .count()
 }
 
 /// Counts pending-retry markers (`"W"`).
 fn count_markers_w(ops: &[ProgressOp]) -> usize {
     ops.iter()
-        .filter(|op| matches!(op, ProgressOp::SetPrefixComponents { marker, .. } if marker == "W"))
+        .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains('W')))
         .count()
 }
 
 /// Counts final-failure markers (`"F"`).
 fn count_markers_f(ops: &[ProgressOp]) -> usize {
     ops.iter()
-        .filter(|op| matches!(op, ProgressOp::SetPrefixComponents { marker, .. } if marker == "F"))
+        .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains('F')))
         .count()
 }
 
