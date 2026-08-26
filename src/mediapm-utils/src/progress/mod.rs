@@ -57,7 +57,7 @@ mod inner;
 pub use inner::{
     DebugSlotState, DebugTickSnapshot, DimensionSource, HasOverall, NoOverall, PrefixComponents,
     ProgressDebugSink, ProgressGroup, ProgressGroupBuilder, ProgressRenderer, RealTerminalSource,
-    RealTimeSource, SuffixComponents, TestDimensionSource, TestTimeSource, TimeSource,
+    RealTimeSource, StatusCount, SuffixComponents, TestDimensionSource, TestTimeSource, TimeSource,
     TrackSnapshot, TrackStatus, TrackedHandle,
 };
 

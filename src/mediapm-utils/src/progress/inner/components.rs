@@ -11,6 +11,35 @@ use serde::Serialize;
 
 use super::TrackStatus;
 
+/// A single status word with an optional count.
+///
+/// `count: None` renders the bare word (qualitative, e.g. `skipped`).
+/// `count: Some(n)` with `n > 0` renders `n word` (quantitative).
+/// `count: Some(0)` is dropped entirely (the status did not occur).
+pub struct StatusCount {
+    /// The status word to render (e.g. `skipped`, `cached`).
+    pub word: &'static str,
+    /// Optional count. `None` renders the bare word; `Some(0)` is dropped.
+    pub count: Option<u32>,
+}
+
+/// Render a list of statuses as a comma-joined string with no parentheses.
+///
+/// Qualitative entries (`count: None`) render as the bare word.
+/// Quantitative entries (`count: Some(n)`, `n > 0`) render as `n word`.
+/// Zero-count entries are omitted. Empty input yields an empty string.
+pub fn format_status_list(statuses: &[StatusCount]) -> String {
+    let parts: Vec<String> = statuses
+        .iter()
+        .filter_map(|s| match s.count {
+            None => Some(s.word.to_string()),
+            Some(0) => None,
+            Some(n) => Some(format!("{n} {}", s.word)),
+        })
+        .collect();
+    parts.join(", ")
+}
+
 // ---- style constants --------------------------------------------------
 
 /// Format a duration compactly: `0s`, `3s`, `42s`, `1m35s`, `12m4s`, `2h15m`, `1d8h`, `30d`.
@@ -186,22 +215,11 @@ pub(crate) fn format_count(n: u64) -> String {
     }
 }
 
-const CHILD_BAR_TEMPLATE: &str =
-    "{spinner:.green} {prefix:>24.24} {wide_bar:.yellow/dim} {msg:<20.45}";
-
-const OVERALL_BAR_TEMPLATE: &str =
-    "{spinner:.green} {prefix:>24.24} {wide_bar:.magenta/dim} {msg:<20.45}";
-
 const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>18.18} {msg:<10.30}";
 
 const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>18.18} {msg:<10.30}";
 
-const DONE_BAR_TEMPLATE: &str =
-    "{spinner:.white/.dim} {prefix:>24.24} {wide_bar:.green/dim} {msg:<20.45}";
-
 const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.white/.dim} {prefix:>18.18} {msg:<10.30}";
-
-const FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>24.24} {wide_bar:.red/dim} {msg:<20.45}";
 
 const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>18.18} {msg:<10.30}";
 
@@ -340,6 +358,42 @@ pub struct SuffixComponents {
     pub eta: Option<String>,
     /// Custom suffix text appended after the auto-computed RHS.
     pub custom: String,
+}
+
+impl SuffixComponents {
+    /// Merge user-set components over auto-derived ticker fields.
+    ///
+    /// This is the single source of truth for the suffix merge used by both
+    /// the draw path ([`crate::progress::inner::ProgressRenderer::sync_snapshot_to_bar`])
+    /// and the layout estimator ([`crate::progress::inner::ProgressRenderer::recompute_layout`]).
+    /// Keeping one implementation guarantees the width estimate matches what
+    /// actually draws — otherwise a wider user-set `rate`/`eta`/`custom` would
+    /// overflow the reserved `suffix_w` and get truncated away at draw time.
+    ///
+    /// Stored non-empty fields override the auto-derived ones; stored
+    /// `rate`/`eta` override when `Some`; empty fields auto-fill from the
+    /// ticker-derived `auto` set.
+    pub(crate) fn merge(auto: &SuffixComponents, stored: &SuffixComponents) -> SuffixComponents {
+        SuffixComponents {
+            count: if stored.count.is_empty() { auto.count.clone() } else { stored.count.clone() },
+            total: if stored.total.is_empty() { auto.total.clone() } else { stored.total.clone() },
+            elapsed: if stored.elapsed.is_empty() {
+                auto.elapsed.clone()
+            } else {
+                stored.elapsed.clone()
+            },
+            rate: stored.rate.clone().or_else(|| auto.rate.clone()),
+            eta: stored.eta.clone().or_else(|| auto.eta.clone()),
+            custom: stored.custom.clone(),
+        }
+    }
+
+    /// Build a `SuffixComponents` whose `custom` field is a comma-joined
+    /// status list (no parentheses). All other fields default to empty.
+    #[must_use]
+    pub fn status_list(statuses: &[StatusCount]) -> Self {
+        SuffixComponents { custom: format_status_list(statuses), ..Default::default() }
+    }
 }
 
 /// Parse an `add_bar` label into [`PrefixComponents`].
@@ -498,19 +552,35 @@ pub(crate) fn strip_ansi(s: &str) -> String {
 }
 
 /// Number of visible characters in `s` (after stripping ANSI SGR codes).
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn visible_width(s: &str) -> usize {
     strip_ansi(s).chars().count()
 }
 
-/// Maximum visible width for the prefix field based on terminal width.
-pub(crate) const fn max_prefix_width(cols: u16) -> usize {
-    if cols >= 60 { 30 } else { 25 }
+/// Minimum reserved prefix width (decreasable floor). Bars never shrink
+/// below this, so short prefixes still leave room for the bar to start.
+pub(crate) const MIN_PREFIX_WIDTH: usize = 12;
+/// Maximum reserved prefix width (hard ceiling). Beyond this, prefixes are
+/// truncated by `semantic_truncate_prefix`.
+pub(crate) const MAX_PREFIX_WIDTH: usize = 40;
+/// Minimum reserved suffix width (decreasable floor).
+pub(crate) const MIN_SUFFIX_WIDTH: usize = 12;
+/// Maximum reserved suffix width (hard ceiling).
+pub(crate) const MAX_SUFFIX_WIDTH: usize = 50;
+
+/// Maximum visible width for the prefix field.
+///
+/// The dynamic `prefix_w`/`suffix_w` cells in [`ProgressRenderer`] hold the
+/// actual per-frame width (clamped between the `MIN_*` floor and `MAX_*`
+/// ceiling); this constant is the hard ceiling used when clamping. The
+/// `cols` argument is intentionally unused — alignment is driven by the
+/// measured max across visible bars, not by terminal width.
+pub(crate) const fn max_prefix_width(_cols: u16) -> usize {
+    MAX_PREFIX_WIDTH
 }
 
-/// Maximum visible width for the suffix field based on terminal width.
-pub(crate) const fn max_suffix_width(cols: u16) -> usize {
-    if cols >= 60 { 55 } else { 40 }
+/// Maximum visible width for the suffix field. See [`max_prefix_width`].
+pub(crate) const fn max_suffix_width(_cols: u16) -> usize {
+    MAX_SUFFIX_WIDTH
 }
 
 /// Progressively truncate prefix [`PrefixComponents`] so the rendered
@@ -692,31 +762,26 @@ pub(crate) fn semantic_truncate_suffix(
     out
 }
 
-fn child_bar_style() -> ProgressStyle {
-    ProgressStyle::with_template(CHILD_BAR_TEMPLATE)
-        .expect("invalid child bar template")
-        .progress_chars("█░")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-}
-
-fn overall_bar_style() -> ProgressStyle {
-    ProgressStyle::with_template(OVERALL_BAR_TEMPLATE)
-        .expect("invalid overall bar template")
-        .progress_chars("█░")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-}
-
 fn compact_overall_bar_style() -> ProgressStyle {
     ProgressStyle::with_template(COMPACT_OVERALL_BAR_TEMPLATE)
         .expect("invalid compact overall bar template")
         .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 }
 
-pub(crate) fn apply_overall_bar_style(pb: &ProgressBar, width: u16) {
-    if width < 60 {
+pub(crate) fn apply_overall_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
+    if prefix_w == 0 {
+        // Compact path: no wide_bar — prefix/suffix are rendered inline.
         pb.set_style(compact_overall_bar_style());
     } else {
-        pb.set_style(overall_bar_style());
+        let tpl = format!(
+            "{{spinner:.green}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.magenta/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
+        );
+        pb.set_style(
+            ProgressStyle::with_template(&tpl)
+                .expect("valid dynamic overall template")
+                .progress_chars("█░")
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
     }
 }
 
@@ -727,31 +792,25 @@ fn compact_bar_style() -> ProgressStyle {
         .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 }
 
-pub(crate) fn apply_bar_style(pb: &ProgressBar, width: u16) {
-    if width < 60 {
+pub(crate) fn apply_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
+    if prefix_w == 0 {
         pb.set_style(compact_bar_style());
     } else {
-        pb.set_style(child_bar_style());
+        let tpl = format!(
+            "{{spinner:.green}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.yellow/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
+        );
+        pb.set_style(
+            ProgressStyle::with_template(&tpl)
+                .expect("valid dynamic child template")
+                .progress_chars("█░")
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
     }
-}
-
-fn done_bar_style() -> ProgressStyle {
-    ProgressStyle::with_template(DONE_BAR_TEMPLATE)
-        .expect("invalid done bar template")
-        .progress_chars("█░")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 }
 
 fn compact_done_bar_style() -> ProgressStyle {
     ProgressStyle::with_template(COMPACT_DONE_BAR_TEMPLATE)
         .expect("invalid compact done bar template")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-}
-
-fn failed_bar_style() -> ProgressStyle {
-    ProgressStyle::with_template(FAILED_BAR_TEMPLATE)
-        .expect("invalid failed bar template")
-        .progress_chars("█░")
         .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 }
 
@@ -761,22 +820,90 @@ fn compact_failed_bar_style() -> ProgressStyle {
         .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 }
 
-pub(crate) fn apply_done_bar_style(pb: &ProgressBar, width: u16) {
-    if width < 60 {
+pub(crate) fn apply_done_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
+    if prefix_w == 0 {
         pb.set_style(compact_done_bar_style());
     } else {
-        pb.set_style(done_bar_style());
+        let tpl = format!(
+            "{{spinner:.white/.dim}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.green/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
+        );
+        pb.set_style(
+            ProgressStyle::with_template(&tpl)
+                .expect("valid dynamic done template")
+                .progress_chars("█░")
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
     }
 }
 
-pub(crate) fn apply_failed_bar_style(pb: &ProgressBar, width: u16) {
-    if width < 60 {
+pub(crate) fn apply_failed_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
+    if prefix_w == 0 {
         pb.set_style(compact_failed_bar_style());
     } else {
-        pb.set_style(failed_bar_style());
+        let tpl = format!(
+            "{{spinner:.red}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.red/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
+        );
+        pb.set_style(
+            ProgressStyle::with_template(&tpl)
+                .expect("valid dynamic failed template")
+                .progress_chars("█░")
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
     }
 }
 
 pub(crate) fn blank_bar_style() -> ProgressStyle {
     ProgressStyle::with_template("{wide_msg}").expect("invalid blank bar template")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_list_qualitative_no_count() {
+        let out = format_status_list(&[StatusCount { word: "skipped", count: None }]);
+        assert_eq!(out, "skipped");
+    }
+
+    #[test]
+    fn status_list_counted_shows_number() {
+        let out = format_status_list(&[StatusCount { word: "cached", count: Some(2) }]);
+        assert_eq!(out, "2 cached");
+    }
+
+    #[test]
+    fn status_list_drops_zero_count() {
+        let out = format_status_list(&[StatusCount { word: "cached", count: Some(0) }]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn status_list_joins_commas() {
+        let out = format_status_list(&[
+            StatusCount { word: "cached", count: Some(1) },
+            StatusCount { word: "failed", count: Some(2) },
+        ]);
+        assert_eq!(out, "1 cached, 2 failed");
+    }
+
+    #[test]
+    fn status_list_mixed_qualitative_and_counted() {
+        let out = format_status_list(&[
+            StatusCount { word: "skipped", count: None },
+            StatusCount { word: "retried", count: Some(3) },
+        ]);
+        assert_eq!(out, "skipped, 3 retried");
+    }
+
+    #[test]
+    fn suffix_components_status_list_sets_custom_only() {
+        let s = SuffixComponents::status_list(&[StatusCount { word: "cached", count: Some(1) }]);
+        assert_eq!(s.custom, "1 cached");
+        assert!(s.count.is_empty());
+        assert!(s.total.is_empty());
+        assert!(s.elapsed.is_empty());
+        assert!(s.rate.is_none());
+        assert!(s.eta.is_none());
+    }
 }

@@ -9,12 +9,13 @@ use std::time::{Duration, Instant};
 use indicatif::{MultiProgress, ProgressBar, TermLike};
 
 use super::{
-    BufferGuard, DebugSlotState, DebugTickSnapshot, DimensionSource, MAX_SLOTS, PrefixComponents,
-    ProgressDebugSink, RealTimeSource, SuffixComponents, TimeSource, apply_bar_style,
-    apply_done_bar_style, apply_failed_bar_style, apply_overall_bar_style, bar_color_code,
-    blank_bar_style, format_count, format_elapsed, format_eta, format_rate, max_prefix_width,
-    max_suffix_width, prefix_components_from_str, render_prefix_components,
-    render_suffix_components, semantic_truncate_prefix, semantic_truncate_suffix,
+    BufferGuard, DebugSlotState, DebugTickSnapshot, DimensionSource, MAX_SLOTS, MIN_PREFIX_WIDTH,
+    MIN_SUFFIX_WIDTH, PrefixComponents, ProgressDebugSink, RealTimeSource, SuffixComponents,
+    TimeSource, apply_bar_style, apply_done_bar_style, apply_failed_bar_style,
+    apply_overall_bar_style, bar_color_code, blank_bar_style, format_count, format_elapsed,
+    format_eta, format_rate, max_prefix_width, max_suffix_width, prefix_components_from_str,
+    render_prefix_components, render_suffix_components, semantic_truncate_prefix,
+    semantic_truncate_suffix, visible_width,
 };
 use crate::progress::BarStyle;
 
@@ -500,6 +501,15 @@ pub struct ProgressRenderer {
 
     /// Optional JSONL debug sink — emits bar-state snapshots on every tick.
     debug_sink: Option<ProgressDebugSink>,
+
+    /// Current uniform prefix width applied to every visible bar this frame.
+    /// Recomputed each tick from the max measured prefix across bound slots,
+    /// clamped between [`MIN_PREFIX_WIDTH`] and [`max_prefix_width`].
+    prefix_w: Cell<usize>,
+    /// Current uniform suffix width applied to every visible bar this frame.
+    /// See [`Self::prefix_w`] — same contract with [`MIN_SUFFIX_WIDTH`] /
+    /// [`max_suffix_width`].
+    suffix_w: Cell<usize>,
 }
 
 /// EMA-smoothed rate tracking for a render slot.
@@ -585,6 +595,8 @@ impl ProgressRenderer {
             pre_rolled: AtomicBool::new(false),
             pre_roll_term,
             debug_sink,
+            prefix_w: Cell::new(MIN_PREFIX_WIDTH),
+            suffix_w: Cell::new(MIN_SUFFIX_WIDTH),
         }
     }
 
@@ -616,8 +628,7 @@ impl ProgressRenderer {
             Arc::new(SharedState::with_time_source(total, label, Arc::clone(&time_source)));
         let inner = ProgressBar::new(total);
         let overall_bar = mp.add(inner);
-        let (_, cols) = dim_source.dimensions();
-        apply_overall_bar_style(&overall_bar, cols);
+        apply_overall_bar_style(&overall_bar, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH);
         overall_bar.set_prefix(label.to_string());
         slots.push(RenderedSlot {
             bar: overall_bar,
@@ -641,6 +652,8 @@ impl ProgressRenderer {
                 pre_rolled: AtomicBool::new(false),
                 pre_roll_term,
                 debug_sink,
+                prefix_w: Cell::new(MIN_PREFIX_WIDTH),
+                suffix_w: Cell::new(MIN_SUFFIX_WIDTH),
             },
             overall_state,
         )
@@ -652,14 +665,15 @@ impl ProgressRenderer {
         let slot = &self.slots[i];
         if let Some(ref source) = *slot.source.borrow() {
             let snap = source.snapshot();
-            let (_, cols) = self.dim_source.dimensions();
             let is_overall = self.has_overall && i == self.slots.len() - 1;
+            let prefix_w = self.prefix_w.get();
+            let suffix_w = self.suffix_w.get();
             if is_overall {
-                apply_overall_bar_style(&slot.bar, cols);
+                apply_overall_bar_style(&slot.bar, prefix_w, suffix_w);
             } else if snap.status == TrackStatus::Failed {
-                apply_failed_bar_style(&slot.bar, cols);
+                apply_failed_bar_style(&slot.bar, prefix_w, suffix_w);
             } else if snap.status != TrackStatus::Active {
-                apply_done_bar_style(&slot.bar, cols);
+                apply_done_bar_style(&slot.bar, prefix_w, suffix_w);
             } else {
                 // Slot recycling may leave the indicatif bar with
                 // Status::DoneVisible from the previous phase.  Reset
@@ -667,7 +681,7 @@ impl ProgressRenderer {
                 if slot.bar.is_finished() {
                     slot.bar.reset();
                 }
-                apply_bar_style(&slot.bar, cols);
+                apply_bar_style(&slot.bar, prefix_w, suffix_w);
             }
             let rate_str: Option<String> = if snap.status == TrackStatus::Active {
                 if self.slots_timing[i].rate > 0.0 {
@@ -724,6 +738,7 @@ impl ProgressRenderer {
             self.slots_timing[bottom] = SlotTiming::new(&*self.time_source);
             self.slots[bottom].cache = SlotCache::new();
             self.sync_slot(bottom);
+            self.recompute_layout();
             return;
         }
 
@@ -748,6 +763,7 @@ impl ProgressRenderer {
                 self.slots_timing[bottom] = SlotTiming::new(&*self.time_source);
                 self.slots[bottom].cache = SlotCache::new();
                 self.sync_slot(bottom);
+                self.recompute_layout();
                 return;
             }
         }
@@ -774,11 +790,128 @@ impl ProgressRenderer {
     /// loop, then exactly one draw is released at the end.  This ensures
     /// the 50 ms daemon ticker is the sole draw authority and eliminates
     /// flicker from burst writes.
+    /// Recompute the uniform `prefix_w`/`suffix_w` applied to every visible
+    /// bar this frame.
+    ///
+    /// Measures the rendered prefix/suffix width of each bound slot (via
+    /// [`SharedState::snapshot`]), takes the max across all bound slots, and
+    /// clamps it into `[MIN_PREFIX_WIDTH, max_prefix_width(cols)]` (prefix)
+    /// and `[MIN_SUFFIX_WIDTH, max_suffix_width(cols)]` (suffix). The result
+    /// is stored in the `prefix_w`/`suffix_w` cells and every bound slot is
+    /// re-synced so all bars share the same alignment width — short labels
+    /// no longer waste space and long labels no longer overflow the bar.
+    fn recompute_layout(&self) {
+        let cols = self.dim_source.dimensions().1;
+        let mut max_prefix = 0usize;
+        let mut max_suffix = 0usize;
+        for (i, slot) in self.slots.iter().enumerate() {
+            if let Some(ref source) = *slot.source.borrow() {
+                let snap = source.snapshot();
+                // `snap.prefix` is rendered WITH its leading `\x1b[0m`
+                // escape (see `snapshot`), and indicatif counts those
+                // escape bytes as visible characters in the
+                // `{prefix:N.N}` template field. So the template field
+                // width must be the *visible* label width PLUS the per-status
+                // ANSI overhead (4 for normal, 13 for failed/warning). The
+                // suffix side measures `render_suffix_components(&full_suffix,
+                // "")` (no color) which is already ANSI-free, so it stays
+                // `visible_width`. `sync_snapshot_to_bar` subtracts the same
+                // per-status `ansi_overhead` to recover the visible budget
+                // for `semantic_truncate_prefix`, keeping both sides in the
+                // same coordinate system.
+                let status_overhead: usize = match snap.status {
+                    TrackStatus::Failed | TrackStatus::Warning => 13,
+                    _ => 4,
+                };
+                max_prefix = max_prefix.max(visible_width(snap.prefix.as_str()) + status_overhead);
+                // Measure the full rendered suffix (auto fields + custom),
+                // not just the stored custom text — the rendered RHS also
+                // carries count/total/elapsed/rate/eta which consume the
+                // width budget. Replicate the rate/eta computation from the
+                // tick loop so the estimate matches what will actually draw.
+                let count_str = format_count(snap.position);
+                let total_str = format_count(snap.total);
+                let elapsed_str = format_elapsed(snap.elapsed);
+                let rate_str: Option<String> = if snap.status == TrackStatus::Active {
+                    // Prospective rate: replicate the tick-loop EMA update
+                    // read-only so the measured width matches what will draw.
+                    let mut rate = self.slots_timing[i].rate;
+                    if snap.position != self.slots_timing[i].prev_position {
+                        let now = self.time_source.now();
+                        let dt =
+                            now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
+                        if dt > 0.001 {
+                            #[allow(clippy::cast_precision_loss)]
+                            let current =
+                                (snap.position - self.slots_timing[i].prev_position) as f64 / dt;
+                            rate = rate * 0.9 + current * 0.1;
+                        }
+                    }
+                    Some(format_rate(rate))
+                } else {
+                    None
+                };
+                // Reserve eta width for any in-progress bar.  At measure
+                // time `slots_timing[i].rate` may still be 0 (the bar was
+                // just attached and has not ticked yet), but the draw path
+                // computes eta whenever rate > 0 — which it will be once
+                // the bar progresses.  Under-reserving here would let the
+                // later wider draw overflow `suffix_w` and truncate the
+                // custom suffix.  Use a nominal rate floor so the budget
+                // covers the eta segment that will appear on the next tick.
+                let eta_str = if snap.status == TrackStatus::Active && snap.total > snap.position {
+                    let rate = if self.slots_timing[i].rate > 0.0 {
+                        self.slots_timing[i].rate
+                    } else {
+                        1.0
+                    };
+                    #[allow(clippy::cast_precision_loss)]
+                    let remaining = (snap.total - snap.position) as f64 / rate;
+                    Some(format_eta(remaining))
+                } else {
+                    None
+                };
+                // Measure the MERGED suffix (auto fields + user-set
+                // overrides), not just the auto-derived fields.  A wider
+                // user-set `rate`/`eta`/`custom` must widen `suffix_w` or
+                // it would overflow at draw and get truncated away.
+                let auto_suffix = SuffixComponents {
+                    count: count_str,
+                    total: total_str,
+                    elapsed: elapsed_str,
+                    rate: rate_str,
+                    eta: eta_str,
+                    custom: snap.suffix.clone(),
+                };
+                let full_suffix = SuffixComponents::merge(&auto_suffix, &snap.suffix_components);
+                let rendered = render_suffix_components(&full_suffix, "");
+                max_suffix = max_suffix.max(visible_width(rendered.as_str()));
+            }
+        }
+        let prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, max_prefix_width(cols));
+        let suffix_w = max_suffix.clamp(MIN_SUFFIX_WIDTH, max_suffix_width(cols));
+        self.prefix_w.set(prefix_w);
+        self.suffix_w.set(suffix_w);
+        for (i, slot) in self.slots.iter().enumerate() {
+            if slot.source.borrow().is_some() {
+                self.sync_slot(i);
+            }
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "tick orchestrates many progress-bar state updates that are clearer inline"
     )]
+    /// Advance all progress bars by one frame.
+    ///
+    /// Recomputes the uniform alignment width, then redraws every visible
+    /// bar from its tracked source state.
     pub fn tick(&mut self) {
+        // Step 0: Recompute the uniform alignment width from the current
+        // set of visible bars before drawing.
+        self.recompute_layout();
+
         // Step 1: Enable buffering — all property-setter draws become
         // no-ops through BufferedTerm.
         if let Some(ref flag) = self.buffer_enabled {
@@ -966,7 +1099,6 @@ impl ProgressRenderer {
     ) {
         let slot = &self.slots[i];
         let is_overall = self.has_overall && i == self.slots.len() - 1;
-        let (_, cols) = self.dim_source.dimensions();
         // Style-specific div-by-zero guard: a `WorkerSpinner` slot whose
         // assigned count is `0` (idle worker) would otherwise render
         // `total = 0`, which indicatif treats as indeterminate and hides
@@ -986,16 +1118,17 @@ impl ProgressRenderer {
         // Compose a fresh suffix component set each tick: auto fields from
         // snapshot + ticker timing, user-set fields from stored components.
         // Stored non-empty fields override the auto-derived ones; stored
-        // rate/eta override when Some; empty fields auto-fill.
-        let stored = &snap.suffix_components;
-        let fresh_suffix = SuffixComponents {
-            count: if stored.count.is_empty() { count_str } else { stored.count.clone() },
-            total: if stored.total.is_empty() { total_str } else { stored.total.clone() },
-            elapsed: if stored.elapsed.is_empty() { elapsed_str } else { stored.elapsed.clone() },
-            rate: stored.rate.clone().or_else(|| rate_str.map(str::to_owned)),
-            eta: stored.eta.clone().or_else(|| eta_str.map(str::to_owned)),
-            custom: stored.custom.clone(),
+        // rate/eta override when Some; empty fields auto-fill.  Use the
+        // shared merge helper so the draw path matches the layout estimate.
+        let auto_suffix = SuffixComponents {
+            count: count_str,
+            total: total_str,
+            elapsed: elapsed_str,
+            rate: rate_str.map(str::to_owned),
+            eta: eta_str.map(str::to_owned),
+            custom: String::new(),
         };
+        let fresh_suffix = SuffixComponents::merge(&auto_suffix, &snap.suffix_components);
 
         // Truncate prefix to fit template width, accounting for ANSI
         // escapes added by render_prefix_components (which indicatif counts
@@ -1016,11 +1149,11 @@ impl ProgressRenderer {
             .as_ref()
             .and_then(|s| s.truncation.read().expect("shared_state truncation lock").clone());
         let new_prefix = if let Some(t) = truncation.as_ref() {
-            t.truncate_prefix(max_prefix_width(cols).saturating_sub(ansi_overhead))
+            t.truncate_prefix(self.prefix_w.get().saturating_sub(ansi_overhead))
         } else {
             let truncated_prefix = semantic_truncate_prefix(
                 &snap.prefix_components,
-                max_prefix_width(cols).saturating_sub(ansi_overhead),
+                self.prefix_w.get().saturating_sub(ansi_overhead),
             );
             render_prefix_components(&truncated_prefix, snap.status)
         };
@@ -1031,9 +1164,9 @@ impl ProgressRenderer {
         // Build display suffix: client truncation when installed, else
         // truncate the fresh component set then render.
         let display_suffix = if let Some(t) = truncation.as_ref() {
-            t.truncate_suffix(max_suffix_width(cols))
+            t.truncate_suffix(self.suffix_w.get())
         } else {
-            let truncated_suffix = semantic_truncate_suffix(&fresh_suffix, max_suffix_width(cols));
+            let truncated_suffix = semantic_truncate_suffix(&fresh_suffix, self.suffix_w.get());
             render_suffix_components(&truncated_suffix, color_code)
         };
         if display_suffix != *slot.cache.suffix.borrow() {
@@ -1057,13 +1190,14 @@ impl ProgressRenderer {
     /// forces a final render.
     fn finish_slot(&self, i: usize, status: TrackStatus) {
         let slot = &self.slots[i];
-        let (_, cols) = self.dim_source.dimensions();
+        let prefix_w = self.prefix_w.get();
+        let suffix_w = self.suffix_w.get();
         if self.has_overall && i == self.slots.len() - 1 {
-            apply_overall_bar_style(&slot.bar, cols);
+            apply_overall_bar_style(&slot.bar, prefix_w, suffix_w);
         } else if status == TrackStatus::Failed {
-            apply_failed_bar_style(&slot.bar, cols);
+            apply_failed_bar_style(&slot.bar, prefix_w, suffix_w);
         } else {
-            apply_done_bar_style(&slot.bar, cols);
+            apply_done_bar_style(&slot.bar, prefix_w, suffix_w);
         }
         match status {
             TrackStatus::Failed | TrackStatus::Warning => slot.bar.abandon(),
@@ -1224,5 +1358,65 @@ impl ProgressRenderer {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::progress::TestDimensionSource;
+    use crate::progress::TestTimeSource;
+    use crate::progress::inner::components::MAX_PREFIX_WIDTH;
+    use crate::progress::inner::components::MAX_SUFFIX_WIDTH;
+    use indicatif::MultiProgress;
+    use indicatif::ProgressDrawTarget;
+    use std::sync::Arc;
+
+    #[test]
+    fn recompute_layout_uniform_widths() {
+        // Two bars with different prefix widths must converge to a single
+        // uniform prefix_w equal to the max measured width (clamped to the
+        // [MIN_PREFIX_WIDTH, MAX_PREFIX_WIDTH] band), and suffix_w must stay
+        // within its own band.  This guards the dynamic cross-bar alignment.
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let mp = MultiProgress::with_draw_target(target);
+        let dims = Arc::new(TestDimensionSource::new((10, 80)));
+        let ts = Arc::new(TestTimeSource::new());
+
+        let mut renderer =
+            ProgressRenderer::from_mp(mp, 4, dims, None, ts as Arc<dyn TimeSource>, None, None);
+
+        // Short label ("a") and a 20-char label ("aaaaaaaaaaaaaaaaaaaa").
+        let short =
+            Arc::new(SharedState::with_time_source(100, "a", Arc::clone(&renderer.time_source)));
+        let long = Arc::new(SharedState::with_time_source(
+            100,
+            "aaaaaaaaaaaaaaaaaaaa",
+            Arc::clone(&renderer.time_source),
+        ));
+        renderer.attach(&short);
+        renderer.attach(&long);
+
+        renderer.recompute_layout();
+
+        // The long label is 20 visible columns, but `snap.prefix` is rendered
+        // WITH its leading `\x1b[0m` status escape (4 bytes) and indicatif
+        // counts those escape bytes as visible characters in the
+        // `{prefix:N.N}` field. So the uniform `prefix_w` must reserve
+        // 20 + 4 = 24 columns to fit it without truncation.
+        assert_eq!(
+            renderer.prefix_w.get(),
+            24,
+            "prefix_w must equal max measured width + status ANSI overhead"
+        );
+        assert!(
+            (MIN_PREFIX_WIDTH..=MAX_PREFIX_WIDTH).contains(&renderer.prefix_w.get()),
+            "prefix_w must stay within [MIN_PREFIX_WIDTH, MAX_PREFIX_WIDTH]"
+        );
+        assert!(
+            (MIN_SUFFIX_WIDTH..=MAX_SUFFIX_WIDTH).contains(&renderer.suffix_w.get()),
+            "suffix_w must stay within [MIN_SUFFIX_WIDTH, MAX_SUFFIX_WIDTH]"
+        );
     }
 }

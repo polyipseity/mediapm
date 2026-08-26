@@ -446,7 +446,7 @@ fn pre_roll_with_existing_content_scrolls_it_away() {
     let spinner_len = bar_line.chars().next().unwrap().len_utf8();
     let body = &bar_line[spinner_len..];
     assert_eq!(
-        body, "                     work ████████████████████████████████  100/100 0s",
+        body, "         work ████████████████████████████████████████████████████  100/100 0s",
         "bar body after spinner must match exactly",
     );
 }

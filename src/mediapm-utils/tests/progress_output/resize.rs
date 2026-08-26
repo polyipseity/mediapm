@@ -92,8 +92,8 @@ fn resize_exact_height_shrink_removes_slots() {
             "\n",
             "\n",
             "\n",
-            "⠹                    fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
-            "⠹                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
+            "⠹        fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
+            "⠹      overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d"
         ),
         "H=6 output",
     );
@@ -107,8 +107,8 @@ fn resize_exact_height_shrink_removes_slots() {
         concat!(
             "\n",
             "\n",
-            "⠸                    fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
-            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
+            "⠸        fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
+            "⠸      overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d"
         ),
         "H=4 output",
     );
@@ -510,8 +510,8 @@ fn resize_exact_width_wide_to_narrow() {
         concat!(
             "\n",
             "\n",
-            "⠸                     test ████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 1s 30/m 10s\n",
-            "⠹                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 1s 0/d",
+            "⠸         test ████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 1s 30/m\n",
+            "⠹      overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 1s 0/d"
         ),
         "W=120 output",
     );
@@ -524,8 +524,8 @@ fn resize_exact_width_wide_to_narrow() {
         concat!(
             "\n",
             "\n",
-            "⠼               test  5/10 2s 30/m 10s\n",
-            "⠸            overall  0/5 2s 0/d",
+            "⠼         test ███████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 2s 30/m 10s\n",
+            "⠸      overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d"
         ),
         "W=40 output",
     );
@@ -545,14 +545,14 @@ fn resize_exact_narrow_uses_compact_template() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    // At W=40, compact template has no {wide_bar}. The msg may wrap.
+    // At W=40 the full template is used (compact mode is reserved for
+    // sub-60-column widths). 2 blank lines + child bar + overall bar fill
+    // H=4. The child bar shows the bar chars, count/total, elapsed, and rate.
     assert!(lines.len() >= 3, "at least 3 lines at W=40 (got {})", lines.len());
     assert!(lines.iter().any(|l| l.contains("test")), "child visible");
-    // At W=40, compact template wraps msg across lines. 2 blank lines + child
-    // bar + wrapped continuation fill H=4 — the overall bar is off-screen.
     assert!(lines.iter().any(|l| l.contains("5/10")), "count/total visible");
-    // Compact template omits bar chars
-    assert!(lines.iter().all(|l| !l.contains('█')), "no bar chars in compact mode");
+    assert!(lines.iter().any(|l| l.contains("30/m")), "rate visible");
+    assert!(lines.iter().any(|l| l.contains('█')), "bar chars present in full template");
 }
 
 /// Exact output: height grow from H=4 to H=6 shows more blank slots.
@@ -573,8 +573,8 @@ fn resize_exact_height_grow_adds_slots() {
         concat!(
             "\n",
             "\n",
-            "⠹                    fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
-            "⠹                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d",
+            "⠹        fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
+            "⠹      overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d"
         ),
         "H=4 output",
     );
@@ -589,10 +589,10 @@ fn resize_exact_height_grow_adds_slots() {
         concat!(
             "\n",
             "\n",
-            "⠸                    fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
+            "⠸        fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
             "\n",
             "\n",
-            "⠸                  overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
+            "⠸      overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d"
         ),
         "H=6 output",
     );
