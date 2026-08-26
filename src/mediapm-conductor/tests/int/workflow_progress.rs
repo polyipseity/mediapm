@@ -12,6 +12,7 @@ use crate::{TestConductor, doc_with_workflows, echo_tool};
 use mediapm_conductor::api::RunWorkflowOptions;
 use mediapm_conductor::{ToolKindSpec, ToolRuntime, WorkflowSpec, WorkflowStepSpec};
 use mediapm_utils::progress::BarLabelTruncation;
+use mediapm_utils::progress::SuffixComponents;
 use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
 // ---------------------------------------------------------------------------
@@ -243,7 +244,10 @@ async fn single_step_success_progress_ops() {
             ProgressOp::FinishSuccess,
             // Overall bar advances once per terminal step.
             ProgressOp::Advance { delta: 1 },
-            // Overall bar finished.
+            // Overall bar finished with a status-list suffix.
+            ProgressOp::SetSuffixComponents {
+                components: SuffixComponents { custom: String::new(), ..Default::default() },
+            },
             ProgressOp::FinishSuccess,
         ],
     );
@@ -300,7 +304,10 @@ async fn two_step_same_level_success_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // Overall bar finished.
+            // Overall bar finished with a status-list suffix.
+            ProgressOp::SetSuffixComponents {
+                components: SuffixComponents { custom: String::new(), ..Default::default() },
+            },
             ProgressOp::FinishSuccess,
         ],
     );
@@ -373,7 +380,10 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // Overall bar finished.
+            // Overall bar finished with a status-list suffix.
+            ProgressOp::SetSuffixComponents {
+                components: SuffixComponents { custom: String::new(), ..Default::default() },
+            },
             ProgressOp::FinishSuccess,
         ],
     );
@@ -457,7 +467,10 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // Overall bar finished.
+            // Overall bar finished with a status-list suffix.
+            ProgressOp::SetSuffixComponents {
+                components: SuffixComponents { custom: String::new(), ..Default::default() },
+            },
             ProgressOp::FinishSuccess,
         ],
     );
@@ -711,4 +724,72 @@ async fn impure_no_retry_without_flag() {
     assert_eq!(count_dispatches(&ops), 1, "impure step not retried without flag");
     assert_eq!(count_markers_w(&ops), 0, "no pending-retry marker");
     assert_eq!(count_markers_f(&ops), 1, "final-failure marker on the only attempt");
+}
+
+/// The overall workflow bar's suffix is a comma-joined status list of
+/// `cached`/`failed`/`retried` counts. When a step fails, the rendered
+/// suffix contains the `failed` word; when all steps succeed, the `failed`
+/// word is absent (zero-count entries are dropped).
+#[tokio::test]
+async fn overall_bar_suffix_status_list() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("broken".into(), broken_tool("broken"))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![step("s1", "broken", "")],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.failed_steps, 1);
+
+    // Find the overall bar's final SetSuffixComponents op.
+    let suffix = tracker
+        .ops()
+        .iter()
+        .rev()
+        .find_map(|op| match op {
+            ProgressOp::SetSuffixComponents { components } => Some(components.custom.clone()),
+            _ => None,
+        })
+        .expect("overall bar sets a status-list suffix");
+    assert!(suffix.contains("failed"), "failed step appears in status list: {suffix:?}");
+    assert!(!suffix.contains("cached"), "zero-count cached dropped: {suffix:?}");
+    assert!(!suffix.contains("retried"), "zero-count retried dropped: {suffix:?}");
+}
+
+/// When all steps succeed, the overall bar's status-list suffix contains no
+/// `failed` word (the zero-count entry is dropped) and no `cached`/`retried`
+/// words either.
+#[tokio::test]
+async fn overall_bar_suffix_no_failed_on_success() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+        vec![crate::echo_workflow("default", "echo@v1", "hello")],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.failed_steps, 0);
+
+    let suffix = tracker
+        .ops()
+        .iter()
+        .rev()
+        .find_map(|op| match op {
+            ProgressOp::SetSuffixComponents { components } => Some(components.custom.clone()),
+            _ => None,
+        })
+        .expect("overall bar sets a status-list suffix");
+    assert!(!suffix.contains("failed"), "no failed word on success: {suffix:?}");
+    assert!(!suffix.contains("cached"), "zero-count cached dropped: {suffix:?}");
+    assert!(!suffix.contains("retried"), "zero-count retried dropped: {suffix:?}");
 }

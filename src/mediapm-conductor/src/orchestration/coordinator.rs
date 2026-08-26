@@ -598,6 +598,23 @@ where
             // caller, so the bar must not claim unconditional success.
             #[cfg(feature = "progress")]
             if let Some(ref bar) = overall_bar {
+                #[allow(clippy::cast_possible_truncation)]
+                bar.set_suffix_components(mediapm_utils::progress::SuffixComponents::status_list(
+                    &[
+                        mediapm_utils::progress::StatusCount {
+                            word: "cached",
+                            count: Some(cached_steps as u32),
+                        },
+                        mediapm_utils::progress::StatusCount {
+                            word: "failed",
+                            count: Some(failed_steps as u32),
+                        },
+                        mediapm_utils::progress::StatusCount {
+                            word: "retried",
+                            count: Some(retried_steps as u32),
+                        },
+                    ],
+                ));
                 if failed_steps > 0 {
                     bar.finish_warning();
                 } else {
