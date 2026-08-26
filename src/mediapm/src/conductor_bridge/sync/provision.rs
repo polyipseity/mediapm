@@ -17,7 +17,9 @@ use mediapm_conductor::tools::provider::{
     MAX_LOOKAHEAD, ResolvedSource, ResolvedToolFetch, SourceProducer, fetch_tool_sources,
     process_tool_sources,
 };
-use mediapm_utils::progress::{PrefixComponents, ProviderProgressCallback, SuffixComponents};
+use mediapm_utils::progress::{
+    PrefixComponents, ProviderProgressCallback, StatusCount, SuffixComponents,
+};
 use tokio::sync::Semaphore;
 
 use crate::error::MediaPmError;
@@ -147,9 +149,10 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 ///
 /// The resolve bar shows `metadata_fetch_count` items (one per metadata lookup,
 /// e.g., ffmpeg has 2: btbn tag + evermeet version). When all metadata lookups
-/// were cache hits, the bar shows `"cached (N)"` where N = `metadata_fetch_count`.
-/// When the tool is already up-to-date (Skip), the bar shows `"skipped cached (N)"`
-/// if cached or `"skipped"` otherwise. Fetch bar shows
+/// were cache hits, the bar shows `"N cached"` where N = `metadata_fetch_count`
+/// (e.g. `2 cached`). When the tool is already up-to-date (Skip), the bar shows
+/// `"skipped cached"` (with the count when cached, e.g. `2 skipped cached`) or
+/// `"skipped"` otherwise. Fetch bar shows
 /// `sources.len()` items (one per source).  Process bar shows the sum
 /// of per-source items: archive sources contribute 2 items (decompress +
 /// compress), binary/launcher sources contribute 1 item (import).  Phase 2
@@ -215,7 +218,11 @@ pub(super) async fn fetch_and_import_tool_payload(
         PreResolveOutcome::Resolved(f, metadata) => {
             if metadata.metadata_cached {
                 resolve_bar.set_suffix_components(SuffixComponents {
-                    custom: format!("cached ({})", metadata.metadata_fetch_count),
+                    custom: SuffixComponents::status_list(&[StatusCount {
+                        word: "cached",
+                        count: Some(metadata.metadata_fetch_count),
+                    }])
+                    .custom,
                     ..Default::default()
                 });
             }
@@ -236,12 +243,20 @@ pub(super) async fn fetch_and_import_tool_payload(
             resolve_bar.set_position(bar_total.into());
             if metadata_cached {
                 resolve_bar.set_suffix_components(SuffixComponents {
-                    custom: format!("skipped cached ({metadata_fetch_count})"),
+                    custom: SuffixComponents::status_list(&[StatusCount {
+                        word: "skipped cached",
+                        count: Some(metadata_fetch_count),
+                    }])
+                    .custom,
                     ..Default::default()
                 });
             } else {
                 resolve_bar.set_suffix_components(SuffixComponents {
-                    custom: "skipped".into(),
+                    custom: SuffixComponents::status_list(&[StatusCount {
+                        word: "skipped",
+                        count: None,
+                    }])
+                    .custom,
                     ..Default::default()
                 });
             }
@@ -296,8 +311,13 @@ pub(super) async fn fetch_and_import_tool_payload(
     };
     // Set fetch bar RHS message if some sources were cache-served.
     if downloaded.cached_count > 0 {
+        #[allow(clippy::cast_possible_truncation)]
         fetch_bar.set_suffix_components(SuffixComponents {
-            custom: format!("cached ({})", downloaded.cached_count),
+            custom: SuffixComponents::status_list(&[StatusCount {
+                word: "cached",
+                count: Some(downloaded.cached_count as u32),
+            }])
+            .custom,
             ..Default::default()
         });
     }
@@ -740,9 +760,9 @@ mod tests {
         assert!(
             ops.iter().any(|op| matches!(
                 op,
-                ProgressOp::SetSuffixComponents { components } if components.custom == "cached (1)"
+                ProgressOp::SetSuffixComponents { components } if components.custom == "1 cached"
             )),
-            "expected SetSuffixComponents(custom=cached (1)) in ops\ngot: {ops:#?}",
+            "expected SetSuffixComponents(custom=1 cached) in ops\ngot: {ops:#?}",
         );
     }
 
@@ -829,9 +849,9 @@ mod tests {
             ops.iter().any(|op| matches!(
                 op,
                 ProgressOp::SetSuffixComponents { components }
-                    if components.custom == "skipped cached (1)"
+                    if components.custom == "1 skipped cached"
             )),
-            "expected SetSuffixComponents(custom=skipped cached (1)) in ops\ngot: {ops:#?}",
+            "expected SetSuffixComponents(custom=1 skipped cached) in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.contains(&ProgressOp::FinishSuccess),
@@ -1018,9 +1038,9 @@ mod tests {
         assert!(
             ops.iter().any(|op| matches!(
                 op,
-                ProgressOp::SetSuffixComponents { components } if components.custom == "cached (2)"
+                ProgressOp::SetSuffixComponents { components } if components.custom == "2 cached"
             )),
-            "expected SetSuffixComponents(custom=cached (2)) in ops\ngot: {ops:#?}",
+            "expected SetSuffixComponents(custom=2 cached) in ops\ngot: {ops:#?}",
         );
         // Also verify bare "cached" (without count) never appears.
         assert!(
@@ -1086,9 +1106,9 @@ mod tests {
             ops.iter().any(|op| matches!(
                 op,
                 ProgressOp::SetSuffixComponents { components }
-                    if components.custom == "skipped cached (2)"
+                    if components.custom == "2 skipped cached"
             )),
-            "expected SetSuffixComponents(custom=skipped cached (2)) in ops\ngot: {ops:#?}",
+            "expected SetSuffixComponents(custom=2 skipped cached) in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.contains(&ProgressOp::FinishSuccess),
