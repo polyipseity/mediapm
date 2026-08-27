@@ -4,7 +4,7 @@
 //! `mediapm` flow:
 //! 1. decode input audio and compute Chromaprint fingerprint,
 //! 2. resolve MBIDs through AcoustID,
-//! 3. fetch rich recording/release payloads through `musicbrainz_rs`,
+//! 3. fetch recording/release payloads through `musicbrainz_rs`,
 //! 4. map metadata into `FFmetadata` key/value pairs,
 //! 5. persist one `FFmetadata` document for downstream apply stages.
 //!
@@ -355,8 +355,8 @@ mod tests {
         assert_eq!(selected[0].url, "https://example.test/front-a.jpg");
     }
 
-    /// Protects Picard-compatible default embedding policy by ensuring non-front
-    /// image-only payloads do not get embedded when front-only mode is enabled.
+    /// Keeps the Picard-compatible default embedding policy: non-front
+    /// image-only payloads are not embedded when front-only mode is enabled.
     #[test]
     fn select_cover_art_for_tag_embedding_returns_empty_without_front_images() {
         let entries = vec![SelectedCoverArt {
@@ -683,7 +683,7 @@ pub struct InternalMediaTaggerOptions {
     pub strict_identification: bool,
     /// Whether to emit extended `Picard`-compatible tags from available payloads.
     pub write_all_tags: bool,
-    /// Whether to enrich metadata with `Picard`-compatible `coverart_*` tags.
+    /// Whether to add `Picard`-compatible `coverart_*` tags to metadata.
     pub write_all_images: bool,
     /// Whether cover-art images should be embedded into saved tags.
     pub save_images_to_tags: bool,

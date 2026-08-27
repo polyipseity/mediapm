@@ -25,7 +25,7 @@ pub enum StatusIcon {
     NoChange,
     /// Completed but with non-fatal degradation.
     Warning,
-    /// Operation errored (handled gracefully, not a panic).
+    /// Operation errored (handled as a reported error, not a panic).
     Error,
 }
 

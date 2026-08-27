@@ -774,8 +774,8 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     // Sync
     // -----------------------------------------------------------------------
 
-    /// Refreshes the runtime configuration by loading dotenv files, ensuring
-    /// runtime env files exist, and exporting schemas.
+    /// Refreshes the runtime configuration by loading dotenv files, creating
+    /// runtime env files, and exporting schemas.
     ///
     /// # Errors
     ///
