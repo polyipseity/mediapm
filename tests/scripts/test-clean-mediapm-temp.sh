@@ -6,7 +6,7 @@
 #      three mediapm-* prefixed dirs in dry-run and real-run and never
 #      touches non-mediapm control dirs.
 #   2. Static: the janitor source must contain no migration-era workspace
-#      globs (cli-add-hierarchy / examples/artifacts / stale stamped) — the
+#      globs (cli-add-hierarchy / examples/artifacts / stale stamped): the
 #      janitor scope is the temp-root three prefixes ONLY.
 #
 # POSIX sh (driven by the `mediapm-tests` crate via `cargo test-all`; also
