@@ -249,7 +249,7 @@ fn render_dotenv_quoted_value(value: &str) -> String {
 ///
 /// For each tool runtime entry, iterates content-map keys. Always emits a
 /// `_DIR` env var pointing to the OS directory. When the key is a binary
-/// entry (has a filename part), additionally emits the non-`_DIR` binary
+/// entry (has a filename part), it also emits the non-`_DIR` binary
 /// env var. A dedup set prevents duplicate `_DIR` entries for the same
 /// tool+OS.
 ///

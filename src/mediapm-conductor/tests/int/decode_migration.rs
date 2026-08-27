@@ -9,7 +9,7 @@
 //! bind field names in their own scope, so a field `x = x` creates a
 //! self-reference (not a reference to the let-bound `x`). Therefore all
 //! let-bound variables exported by a record must use names distinct from the
-//! record field keys. The parser additionally does not elaborate shorthand
+//! record field keys. The parser also does not elaborate shorthand
 //! `{ x, }` to `{ x = x }`, but that is a secondary concern — even explicit
 //! `{ x = x }` fails in a `rec` record.
 
