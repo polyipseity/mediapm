@@ -182,7 +182,7 @@ and informational — they never participate in skip/update decisions.
 `state.json` is written unconditionally via `std::fs::write` after every sync
 pass. No byte-level change detection is applied. This is intentional:
 
-- `state.json` serves as the runtime audit trail, recording every sync
+- `state.json` is the runtime audit trail, recording every sync
   invocation's observed metadata (canonical version, deploy timestamp, fetch
   hash).
 - A change in `canonical_version` (e.g., a rotating autobuild tag) that

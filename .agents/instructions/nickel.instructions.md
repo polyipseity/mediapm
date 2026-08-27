@@ -83,5 +83,5 @@ All Nickel schema work (existing, new, and schema-related code) in this reposito
 
 - Schema version files: `src/<crate>/src/config/versions/`.
 - Per-version files: `v1.ncl`, `v2.ncl`, etc.
-- Registry: `mod.ncl` serves as migration registry.
+- Registry: `mod.ncl` is the migration registry.
 - Top-level config: `conductor.ncl`, `mediapm.ncl` at workspace/user config root.
