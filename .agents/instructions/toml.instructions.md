@@ -8,7 +8,7 @@ applyTo: "**/*.toml"
 
 ## General formatting
 
-- Use `#` for line comments only. Prefer section-header comments over inline.
+- Use `#` for line comments only.
 - Multi-line arrays use standard bracketed style with trailing commas.
 - Multi-line tables use `[section]` headers with indented key-value pairs.
 
@@ -30,7 +30,6 @@ applyTo: "**/*.toml"
 - Hooks defined as inline tables: `{ id = "...", ... }`.
 - Use `exclude` patterns as regex strings.
 - `stages` arrays for lifecycle scoping.
-- Comment each hook selection with rationale.
 
 ## .cargo/config.toml
 

@@ -6,11 +6,7 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, README.md, .agents/**/*.md, .opencode/**/
 
 # Markdown and Customization Authoring
 
-## Scope and intent
-
-- Use this instruction for human-facing docs and agent customization markdown: `AGENTS.md`, `.instructions.md`, `.prompt.md`, skill docs, mirrored OpenCode prompts, and markdown under `.github/`.
-- Keep root `AGENTS.md` durable and repo-wide. Move file-type details into focused instruction files instead of turning `AGENTS.md` into a mini wiki.
-- This repository is a sparse template. If a downstream file is not present yet, describe it as optional or future-facing rather than as an existing fact.
+Covers human-facing docs and agent customization markdown: `AGENTS.md`, `.instructions.md`, `.prompt.md`, skill docs, mirrored OpenCode prompts, and markdown under `.github/`. Keep root `AGENTS.md` durable and repo-wide; move file-type details into focused instruction files. If a downstream file is not present yet, describe it as optional or future-facing, not as an existing fact.
 
 ## Repo-specific markdown behavior
 
@@ -23,10 +19,9 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, README.md, .agents/**/*.md, .opencode/**/
 
 ## Writing style
 
-- Keep content scannable, task-oriented, and specific to this repository.
-- Prefer short sections, bullets, and explicit file references wrapped in backticks.
-- Use "link, don't embed": point to canonical files such as `.github/workflows/ci.yml`, `.commitlintrc.mjs`, `opencode.json`, or `.vscode/settings.json` instead of duplicating long policy blocks.
-- When documenting commands, reflect the commands that actually exist in the repo. If the template has not been initialized yet, say so plainly.
+- Keep content scannable, task-oriented, specific to this repository.
+- Prefer short sections, bullets, and explicit file references in backticks.
+- "Link, don't embed": point to canonical files (`.github/workflows/ci.yml`, `.commitlintrc.mjs`, `opencode.json`, `.vscode/settings.json`) instead of duplicating policy blocks.
 
 ## Detection-first customization updates
 
@@ -44,8 +39,8 @@ Every `.instructions.md` and `.prompt.md` file must keep valid YAML frontmatter 
 
 ## Safe editing patterns
 
-- Do not add `.github/copilot-instructions.md`; root `AGENTS.md` is the workspace-wide source of truth here.
-- If project plan docs are intentionally retired, migrate normative rules into active instruction files in the same change and remove stale references so docs never point to deleted policy sources.
-- If temporary repo memory notes are created while drafting, merge their durable content into instruction files and remove those notes in the same workflow.
-- Prefer relative file references that remain valid when the repo is cloned to a different path.
-- When mentioning future manifests, task files, or tool configs, distinguish between "present now" and "expected after initialization."
+- Do not add `.github/copilot-instructions.md`; root `AGENTS.md` is the workspace-wide source of truth.
+- When retiring plan docs, migrate normative rules into active instruction files in the same change and remove stale references.
+- Merge temporary repo-memory notes into instruction files and delete them in the same workflow.
+- Prefer relative file references valid after cloning to a different path.
+- Distinguish "present now" from "expected after initialization" when mentioning future manifests or configs.

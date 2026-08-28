@@ -6,11 +6,6 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/provision.rs"
 
 # Tool sync 3-phase provisioning pipeline
 
-## Purpose
-
-- Fetch tool payloads for all platforms, extract to CAS, build content maps and OS-conditional command selectors.
-- Provide accurate progress reporting through the mediapm progress bar API.
-
 ## 3-phase pipeline
 
 `fetch_and_import_tool_payload()` runs three phases sequentially, preceded
@@ -18,51 +13,32 @@ by a pre-resolve step:
 
 ### Pre-resolve: `PreResolveOutcome`
 
-The caller resolves the tool fetch before calling
-`fetch_and_import_tool_payload()` and passes the outcome as
-`PreResolveOutcome`:
+The caller resolves the tool fetch before calling `fetch_and_import_tool_payload()` and passes the outcome:
 
-- **`Resolved(fetch, metadata)`** — normal provisioning path, where `metadata` is a `ResolvedToolMetadata` carrying `human_readable_version`, `canonical_version`, `metadata_cached` (bool: all version/tag lookups were cache hits), `metadata_fetch_count` (u32: number of metadata lookups, e.g., ffmpeg has 2: btbn tag + evermeet version), and the three `resolved_*` provenance fields (all `Option<String>` — `None` when the provider has no value).
-- **`Skip { name, version, metadata_cached, metadata_fetch_count, resolved_tag, resolved_version, resolved_vcs_hash }`** — tool is already provisioned at the given canonical version. Only the resolve bar is shown, then the function returns `Ok(None)` immediately. `metadata_cached` controls whether the message shows `"skipped cached (N)"` vs `"skipped"` (where `N` = `metadata_fetch_count`). The `resolved_*` fields (all `Option<String>`) carry fresh provider provenance so the coordinator can backfill skipped entries.
+- **`Resolved(fetch, metadata)`** — normal path. `metadata` is a `ResolvedToolMetadata` carrying `human_readable_version`, `canonical_version`, `metadata_cached` (bool: all lookups were cache hits), `metadata_fetch_count` (u32: lookup count, e.g. ffmpeg = 2), and the three `resolved_*` provenance fields (all `Option<String>` — `None` when the provider has no value).
+- **`Skip { name, version, metadata_cached, metadata_fetch_count, resolved_tag, resolved_version, resolved_vcs_hash }`** — already provisioned at the canonical version. Only the resolve bar shows, then the function returns `Ok(None)`. `metadata_cached` toggles `"skipped cached (N)"` vs `"skipped"` (N = `metadata_fetch_count`); the `resolved_*` fields carry fresh provenance for coordinator backfill.
 
-This separation keeps the function single-responsibility: it renders a
-resolve bar for every tool (avoiding a bare `pb.advance(1)` with no
-per-tool visual feedback).
+This keeps the function single-responsibility: it renders a resolve bar for every tool (avoiding a bare `pb.advance(1)` with no per-tool feedback).
 
 ### Phase 1: Resolve
 
-- Receives the resolved `ResolvedToolFetch` from the `PreResolveOutcome::Resolved` variant.
-- No longer calls `provider::resolve_tool_fetch()` internally — that is done by the caller.
-- Progress: resolve bar shows `metadata_fetch_count` items (one per metadata
-  lookup, e.g., ffmpeg shows 2). The bar total is `metadata_fetch_count`;
-  when `metadata_fetch_count` is 0 (no cache lookups performed), the bar is
-  indeterminate (total is 0).
-- When `metadata_cached` is true, the bar shows `"cached (N)"` where `N` =
-  `metadata_fetch_count`.
+- Receives the resolved `ResolvedToolFetch` from `PreResolveOutcome::Resolved` (the caller does the resolve, not this function).
+- Resolve bar shows `metadata_fetch_count` items (total 0 = indeterminate when no lookups). When `metadata_cached`, the bar shows `"cached (N)"`.
 
 ### Phase 1b: HEAD prefetch
 
-- Sends HEAD requests to populate `expected_size` on each `Fetch`-producer source.
-- Failures are silently ignored (Content-Length fallback applies).
-- **Evermeet and getrelease URLs are skipped** — they return dynamic builds (HEAD Content-Length wouldn't match GET response).
-- Timeout: 10 seconds per HEAD request.
+- Sends HEAD requests to populate `expected_size` on each `Fetch`-producer source; failures are silently ignored (Content-Length fallback).
+- **Evermeet and getrelease URLs are skipped** (dynamic builds). Timeout: 10s per HEAD.
 
 ### Phase 2: Fetch
 
-- Delegates to `mediapm_conductor::tools::provider::fetch_tool_sources(fetch, cache, progress)`.
-- Downloads bytes for each source (or generates launcher scripts).
-- Progress: per-source bar showing `items.current/items.total` and `bytes.current/bytes.total`.
-- Bar created on-demand (only appears when phase runs).
-- **Cached sources**: when `DownloadedSources.cached_count > 0`, the fetch bar
-  shows `"cached (N)"` via `set_suffix_components(SuffixComponents { custom: ... })` before finishing.
+- Delegates to `mediapm_conductor::tools::provider::fetch_tool_sources(fetch, cache, progress)`; downloads bytes or generates launcher scripts.
+- Per-source bar shows `items.current/items.total` and `bytes.current/bytes.total`, created on-demand. When `DownloadedSources.cached_count > 0`, the fetch bar shows `"cached (N)"` via `set_suffix_components(SuffixComponents { custom: ... })` before finishing.
 
 ### Phase 3: Process
 
-- Delegates to `mediapm_conductor::tools::provider::process_tool_sources(downloaded, cas, progress)`.
-- Extracts archives (ZIP, tgz), re-packs to uncompressed ZIP, imports files to CAS with `./{os}/` key prefixes.
-- Builds OS-conditional command-selector template.
-- Progress: per-source bar showing items and bytes.
-- Bar created on-demand.
+- Delegates to `mediapm_conductor::tools::provider::process_tool_sources(downloaded, cas, progress)`; extracts archives (ZIP, tgz), re-packs to uncompressed ZIP, imports to CAS with `./{os}/` key prefixes, builds the OS-conditional command-selector template.
+- Per-source bar shows items and bytes, created on-demand.
 
 ## `FetchedToolPayload` fields
 
@@ -84,23 +60,8 @@ per-tool visual feedback).
 
 ## Key invariants
 
-- **Tool id contract**: provisioning at the mediapm layer is keyed by the
-  mediapm tool id (plain logical id). The conductor layer receives the
-  **mediapm conductor tool id** — the generated-doc `tools` map key
-  (`{name}@{content_map_hash}`, e.g. `yt-dlp@blake3:abc`, or bare `{name}` when
-  the content map is empty) — as the provision-cache key. The provision cache
-  (`mediapm-conductor` code) must use the conductor tool id only, never the
-  plain mediapm tool id; payloads land at
-  `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/` and the
-  `.env.generated` paths mirror that layout.
+- **Tool id contract**: provisioning at the mediapm layer is keyed by the mediapm tool id (plain logical id). The conductor layer receives the **mediapm conductor tool id** — the generated-doc `tools` map key (`{name}@{content_map_hash}`, e.g. `yt-dlp@blake3:abc`, or bare `{name}` when the content map is empty) — as the provision-cache key. The provision cache (`mediapm-conductor` code) must use the conductor tool id only, never the plain mediapm tool id; payloads land at `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/` and the `.env.generated` paths mirror that layout.
 - Progress bar values are relayed directly from conductor's `ProviderProgressCallback` — the bridge does not interpret item or byte counts.
 - All progress bars are `group.add_bar()` — they are owned by the calling coordinator's progress group.
 - The metadata cache must NOT have `touch()` called — its TTL (1 day) is anchored to creation time, not last use.
-- `set_suffix_components(SuffixComponents { custom: "skipped" })` or
-  `set_suffix_components(SuffixComponents { custom: "skipped cached (N)" })` (where `N` =
-  `metadata_fetch_count`) is called on the resolve bar before
-  `finish_success()`, depending on `metadata_cached`.
-  `set_suffix_components(SuffixComponents { custom: "cached (N)" })`
-  (where `N` = `downloaded.cached_count`) is called on the fetch bar before
-  `finish_success()`. Both work because the daemon ticker still syncs `SharedState` to
-  the indicatif bar until the bar is removed from `MultiProgress`.
+- `set_suffix_components(SuffixComponents { custom: "skipped" })` or `set_suffix_components(SuffixComponents { custom: "skipped cached (N)" })` (where `N` = `metadata_fetch_count`) is called on the resolve bar before `finish_success()`, depending on `metadata_cached`. `set_suffix_components(SuffixComponents { custom: "cached (N)" })` (where `N` = `downloaded.cached_count`) is called on the fetch bar before `finish_success()`. Both work because the daemon ticker still syncs `SharedState` to the indicatif bar until the bar is removed from `MultiProgress`.

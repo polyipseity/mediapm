@@ -6,10 +6,7 @@ applyTo: "src/mediapm/src/paths.rs"
 
 # Paths layout
 
-## Purpose
-
-- Centralize filesystem path layout for all mediapm state, config, and cache directories.
-- Ensure consistent path defaults and override resolution across CLI and library entry points.
+Centralizes filesystem path layout for all mediapm state, config, and cache directories, with consistent defaults and override resolution across CLI and library entry points.
 
 ## `MediaPmPaths` fields
 
@@ -39,10 +36,10 @@ applyTo: "src/mediapm/src/paths.rs"
 
 Override fields come from `MediaRuntimeStorage` in `mediapm.ncl`:
 
-- `mediapm_dir`: relative paths resolve against the `mediapm.ncl` parent directory; absolute paths used as-is.
+- `mediapm_dir`: relative paths resolve against the `mediapm.ncl` parent; absolute used as-is.
 - `hierarchy_root_dir`: resolves relative to `mediapm.ncl` parent.
 - Conductor config paths (`conductor_config`, `conductor_generated_config`, `conductor_state_config`, `conductor_schema_dir`): resolve relative to `mediapm.ncl` parent.
-- `mediapm_schema_dir`: `None` → use computed default; `Some(None)` → disable export; `Some(Some(path))` → resolve relative to `mediapm.ncl` parent.
+- `mediapm_schema_dir`: `None` → computed default; `Some(None)` → disable export; `Some(Some(path))` → resolve relative to `mediapm.ncl` parent.
 
 ## Cache subdirectory layout
 
@@ -56,6 +53,6 @@ Override fields come from `MediaRuntimeStorage` in `mediapm.ncl`:
 ## Key invariants
 
 - `tools_dir` always lives under `runtime_root`, never under workspace root directly.
-- `conductor_tmp_dir` and `mediapm_tmp_dir` use OS temp dir with a workspace-hashded `mediapm-runtime-{16hex}` name, not `runtime_root` (see `temp-directory-spec.instructions.md`).
-- Per-step conductor sandboxes live under `{conductor_tmp_dir}/sandbox/` and are removed after each `run_workflow` completes (see `temp-directory-spec.instructions.md`).
+- `conductor_tmp_dir` and `mediapm_tmp_dir` use OS temp dir with a workspace-hashed `mediapm-runtime-{16hex}` name, not `runtime_root` (see `temp-directory-spec.instructions.md`).
+- Per-step conductor sandboxes live under `{conductor_tmp_dir}/sandbox/` and are removed after each `run_workflow` (see `temp-directory-spec.instructions.md`).
 - Schema export is optional — `schema_export_dir: None` disables it.

@@ -46,9 +46,7 @@ cargo clippy-all
 
 ## When to run what
 
-1. **During dev iteration**: `cargo test -p mediapm -- <specific_test>` for
-   tight feedback loop
-2. **Before staging**: `cargo test -p mediapm` for the affected crate
-3. **Before push**: `cargo test --no-fail-fast` + `cargo fmt-check` +
-   `cargo clippy-all`
-4. **End-to-end**: both demo examples (sequential)
+- **During dev iteration**: `cargo test -p mediapm -- <specific_test>` for tight feedback.
+- **Before staging**: `cargo test -p mediapm` for the affected crate.
+- **Before push**: `cargo test --no-fail-fast` + `cargo fmt-check` + `cargo clippy-all`.
+- **End-to-end**: both demo examples (sequential).

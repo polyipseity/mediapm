@@ -6,11 +6,6 @@ applyTo: "src/mediapm/src/tools/provider/**/*.rs"
 
 # Provider dispatch
 
-## Purpose
-
-- Define per-OS source descriptors for each managed tool (where to download binaries from).
-- Route tool names to the appropriate per-tool source module via `resolve_tool_fetch()`.
-
 ## `resolve_tool_fetch(tool_id, metadata_cache)` dispatch
 
 Routes tool names (case-insensitive) to per-tool `sources()` functions:
@@ -35,7 +30,7 @@ The `MetadataCacheTracker` type wraps `(&Cache, domain: &str)` and automatically
 counts every `lookup_bytes` call. `resolve_tool_fetch` uses this to auto-derive
 `metadata_fetch_count` (a field on `ResolvedToolMetadata`) instead of
 maintaining a manually-updated per-tool constant. When a resolver is added or
-removed, the count adjusts automatically — no manual update needed.
+removed, the count adjusts automatically.
 
 ## `resolve_latest_github_tag(owner, repo, metadata_cache)`
 

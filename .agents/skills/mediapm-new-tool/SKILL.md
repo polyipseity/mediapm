@@ -5,29 +5,15 @@ name: "mediapm-new-tool"
 
 # Adding a new managed tool
 
-This skill guides you through the complete workflow for adding a new managed
-tool to the mediapm workspace.
+Complete workflow for adding a new managed tool to the mediapm workspace.
 
 ## 1. Spec first
 
-Document the contract in `src/mediapm/AGENTS.md`:
-
-- Tool identity, version sources (GitHub releases, custom URLs, etc.)
-- Companion dependencies (ffmpeg, deno) if any, and their role flags via `dependency_types()` (same-step, cross-step, or both)
-- Output variants for media source integration
-- Any tool-specific configuration keys
+Document the contract in `src/mediapm/AGENTS.md`: tool identity, version sources (GitHub releases, custom URLs, etc.), companion dependencies (ffmpeg, deno) and their role flags via `dependency_types()` (same-step, cross-step, or both), output variants for media source integration, and any tool-specific configuration keys.
 
 ## 2. Write provider tests
 
-Create tests in `src/mediapm/src/tools/provider/<tool_name>.rs` or add to the
-existing test module:
-
-- Test `resolve_tool_fetch()` returns the expected fetch for sample version
-  selectors
-- Test canonical version resolution
-- Test source URL construction
-
-Run: `cargo test -p mediapm -- provider::<tool_name>`
+Create tests in `src/mediapm/src/tools/provider/<tool_name>.rs` (or add to the existing test module): `resolve_tool_fetch()` returns the expected fetch for sample version selectors, canonical version resolution, source URL construction. Run: `cargo test -p mediapm -- provider::<tool_name>`
 
 ## 3. Implement provider
 
@@ -43,40 +29,19 @@ Create `src/mediapm/src/tools/provider/<tool_name>.rs`:
 // - build_<tool_name>_sources(version) -> Vec<ToolSource>
 ```
 
-Register in `src/mediapm/src/tools/provider/mod.rs`:
-
-- Add `mod <tool_name>;`
-- Add to `resolve_tool_fetch()` dispatch: match on tool name, call
-  `<tool_name>::resolve_tool_fetch()`
+Register in `src/mediapm/src/tools/provider/mod.rs`: add `mod <tool_name>;` and a `resolve_tool_fetch()` dispatch arm matching the tool name.
 
 ## 4. Write preset tests
 
-Create or extend tests in `src/mediapm/src/tools/preset/<tool_name>.rs` or
-`src/mediapm/src/tools/workflows/<tool_name>.rs`:
-
-- Test `apply_preset()` output for the new tool's preset spec
-- Test workflow step synthesis if applicable
+Create or extend tests in `src/mediapm/src/tools/preset/<tool_name>.rs` or `src/mediapm/src/tools/workflows/<tool_name>.rs`: `apply_preset()` output for the new tool's preset spec, workflow step synthesis if applicable.
 
 ## 5. Implement preset
 
-Create `src/mediapm/src/tools/preset/<tool_name>.rs` or
-`src/mediapm/src/tools/workflows/<tool_name>.rs`:
-
-- Define preset spec builder function
-- Define workflow step synthesis (if tool participates in a workflow)
-
-Register in `src/mediapm/src/tools/preset/mod.rs`:
-
-- Add module declaration
-- Add to `apply_preset()` dispatch
+Create `src/mediapm/src/tools/preset/<tool_name>.rs` or `src/mediapm/src/tools/workflows/<tool_name>.rs`: define the preset spec builder and workflow step synthesis (if the tool participates in a workflow). Register in `src/mediapm/src/tools/preset/mod.rs`: add the module declaration and an `apply_preset()` dispatch arm.
 
 ## 6. Integration tests
 
-Write end-to-end tests in `src/mediapm/tests/`:
-
-- Test tool requirement parsing from `mediapm.ncl`
-- Test full reconcile cycle (mock provider responses)
-- Test materialization of tool payloads
+Write end-to-end tests in `src/mediapm/tests/`: tool requirement parsing from `mediapm.ncl`, full reconcile cycle (mock provider responses), materialization of tool payloads.
 
 ## 7. Run full verification
 

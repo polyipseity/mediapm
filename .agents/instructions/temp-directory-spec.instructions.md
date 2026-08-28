@@ -6,7 +6,7 @@ applyTo: "src/**/*.rs, scripts/**"
 
 # Temp directory spec
 
-Canonical source of truth for all mediapm-owned temporary directories under the OS temp dir (`std::env::temp_dir()`): naming contract, lifecycle ownership, janitor scripts, the regression gate, and authoring rules. Example-specific wiring (env overrides, `IsolatedExampleRoots`) lives in `example-temp-isolation.instructions.md`; path layout lives in `paths-layout.instructions.md`.
+Naming contract, lifecycle ownership, janitor scripts, the regression gate, and authoring rules for all mediapm-owned temporary directories under the OS temp dir (`std::env::temp_dir()`). Example-specific wiring (env overrides, `IsolatedExampleRoots`) lives in `example-temp-isolation.instructions.md`; path layout lives in `paths-layout.instructions.md`.
 
 ## Naming contract
 
@@ -69,9 +69,3 @@ RAII `TempDir` owners must be bound to a local for the full scope that needs the
 ## Env overrides
 
 `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` / `MEDIAPM_EXAMPLE_CACHE_ROOT` remain example-layer-only (see `example-temp-isolation.instructions.md`). The user-level OS cache is not managed temp and is never cleaned by the janitor.
-
-## Related instructions
-
-- `example-temp-isolation.instructions.md` — example/test wiring: env overrides, `IsolatedExampleRoots`, parallelism constraints.
-- `paths-layout.instructions.md` — path resolution rows for `conductor_tmp_dir` / `mediapm_tmp_dir`.
-- `scripts-and-permissions.instructions.md` — script placement, line endings, permissions.

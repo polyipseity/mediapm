@@ -1,5 +1,5 @@
 ---
-description: "Use when editing Rust source, tests, or introducing new APIs. Covers Rust conventions, test expectations, docstring depth requirements, and CLI output styling rules."
+description: "Rust conventions, test expectations, docstring depth, and CLI output styling."
 name: "Rust Conventions"
 applyTo: "src/**/*.rs, tests/**/*.rs"
 ---
@@ -8,7 +8,7 @@ applyTo: "src/**/*.rs, tests/**/*.rs"
 
 ## Testing scope and expectations
 
-Treat tests as executable specification that documents and enforces the system's behavior contracts. Every test asserts a concrete invariant about how the code behaves under specific conditions, not just that it runs without crashing. The test suite is organized around four core categories of invariants that must hold across the workspace: planner determinism (re-running the same inputs produces identical plans), sync idempotency (re-running sync produces the same results), sidecar/object integrity (metadata and content-addressed objects remain consistent after operations), and GC safety (garbage collection does not remove reachable data and correctly removes unreachable data).
+Treat tests as executable specifications that assert concrete invariants about behavior under specific conditions, not just that code runs without crashing. The suite is organized around four invariant categories that must hold across the workspace: planner determinism (same inputs → identical plans), sync idempotency (re-running sync → same results), sidecar/object integrity (metadata and CAS objects stay consistent after operations), and GC safety (GC removes only unreachable data).
 
 ### Invariant categories
 
@@ -22,13 +22,13 @@ Treat tests as executable specification that documents and enforces the system's
 
 ### Integration test layout
 
-For workspace-crate integration tests under `src/*/tests/`, prefer one CAS-style harness layout: a top-level `tests/mod.rs` file for wiring and re-exports, with scenario modules grouped under `tests/e2e/` (end-to-end workflow validation), `tests/int/` (integration between two or more components), and `tests/prop/` (property-based tests for determinism and idempotency). This layout keeps test organization predictable across all crates in the workspace.
+For workspace-crate integration tests under `src/*/tests/`, prefer one CAS-style harness layout: a top-level `tests/mod.rs` file for wiring and re-exports, with scenario modules grouped under `tests/e2e/` (end-to-end workflow validation), `tests/int/` (integration between two or more components), and `tests/prop/` (property-based tests for determinism and idempotency).
 
 ### Demo examples
 
-`mediapm_demo` and `mediapm_demo_online` validate the full pipeline end-to-end with real tool invocations. Run `mediapm_demo` before push — never during incremental development. `mediapm_demo` uses stream-copy (`codec_copy = "true"`) for fast local fixture execution, avoiding re-encode-heavy transforms. The online demo's full-sync path is human-gated to explicit `cargo run --example` runs (three-level run model in "CI auto-detection in demos" below). During development, prefer selective `cargo test -p <crate>` calls for fast iteration.
+`mediapm_demo` and `mediapm_demo_online` validate the full pipeline end-to-end with real tool invocations. Run `mediapm_demo` before push — never during incremental development. `mediapm_demo` uses stream-copy (`codec_copy = "true"`) for fast local fixture execution. The online demo's full-sync path is human-gated to explicit `cargo run --example` runs (three-level run model in "CI auto-detection in demos" below). During development, prefer selective `cargo test -p <crate>` calls.
 
-Do not run demos during routine development. Demos are intentionally time-consuming and require external tools: `mediapm_demo` needs ffmpeg, rsgain, and media-tagger with full media transcoding; `mediapm_demo_online` needs yt-dlp, ffmpeg, media-tagger, and active network access. Use selective unit and integration tests during iteration to keep cycles fast while validating behavior changes.
+Demos need external tools: `mediapm_demo` needs ffmpeg, rsgain, and media-tagger; `mediapm_demo_online` needs yt-dlp, ffmpeg, media-tagger, and network access. Use selective unit/integration tests during iteration.
 
 ### Per-crate coverage scope
 
@@ -36,11 +36,11 @@ Each crate has defined coverage responsibilities. `mediapm-cas` tests cover stor
 
 ### Advanced correctness coverage
 
-Add property tests via `proptest` for determinism and idempotency-sensitive logic such as planning, keying, and merge functions — these catch edge cases that example-based tests miss. Add concurrency-permutation tests via `loom` for lock/atomic-sensitive components when race safety is a core invariant. Add deterministic golden or snapshot assertions where rendered planning output or state projections must remain stable across refactors.
+Add property tests via `proptest` for determinism/idempotency-sensitive logic (planning, keying, merge). Add concurrency-permutation tests via `loom` for lock/atomic-sensitive components when race safety is a core invariant. Add deterministic golden/snapshot assertions where rendered planning output or state projections must stay stable across refactors.
 
 ### Performance validation
 
-Performance claims must be backed by an evidence-first loop: profile to identify the hotspot, hypothesize an optimization, implement it, benchmark to measure the effect, and revert optimizations that do not produce measured wins. Benchmark hot paths such as hashing throughput, reconstruction depth impact, orchestration overhead, and materialization throughput when making performance claims about those areas.
+Back performance claims with an evidence-first loop: profile the hotspot, hypothesize an optimization, implement it, benchmark the effect, and revert optimizations without measured wins. Benchmark hot paths (hashing throughput, reconstruction depth, orchestration overhead, materialization throughput) when claiming performance there.
 
 ### CI auto-detection in demos
 
@@ -62,11 +62,11 @@ When running full-sync demos, verify the following success indicators: all manag
 
 ### Structure and assertions
 
-Use explicit arrange/act/assert structure throughout each test body. The three sections should be visibly separated: first set up the test fixtures and inputs, then invoke the code under test exactly once, then assert on the observable outcomes. Make assertions specific and diagnostic — prefer `assert_eq!(actual, expected)` with a descriptive failure message over vague boolean assertions like `assert!(result.is_ok())`. When asserting error cases, match on the specific error variant and verify the error message or context contains the expected information.
+Use explicit arrange/act/assert structure. Set up fixtures and inputs, invoke the code under test exactly once, then assert observable outcomes. Prefer `assert_eq!(actual, expected)` with a descriptive failure message over vague boolean assertions like `assert!(result.is_ok())`. For error cases, match the specific error variant and verify the message or context contains the expected information.
 
 ### Platform safety
 
-Keep tests platform-safe by normalizing path separators when asserting path strings. Use `std::path::MAIN_SEPARATOR` or utility functions that convert paths to a canonical representation so assertions pass on both Unix (forward slash) and Windows (backslash). Avoid hardcoding path separators in test assertions. When comparing generated paths against expected values, convert both sides to a canonical form before comparing rather than using raw string equality.
+Keep tests platform-safe by normalizing path separators when asserting path strings. Use `std::path::MAIN_SEPARATOR` or utility functions that convert paths to a canonical representation so assertions pass on both Unix (forward slash) and Windows (backslash). When comparing generated paths against expected values, convert both sides to a canonical form before comparing rather than using raw string equality.
 
 ### Determinism and ordering
 
@@ -105,7 +105,7 @@ must appear **literally** in the test source code via `concat!(...)` — never
 read from an external file, environment variable, or runtime-constructed
 string.
 
-**Why.** An exact-string assertion is self-documenting — the expected output appears inline in the test body, so a human reader immediately sees what the rendered output should look like without running the test or cross-referencing snapshot files. It also replaces chains of ad-hoc `lines()[i].contains(...)` calls that are tedious to write and ugly to read, collapsing multiple fragile assertions into a single clean `assert_eq!`. Furthermore, it catches every class of rendering defect with that single failing assertion: missing blank lines, extra phantom lines, wrong bar ordering, stale position/total values, wrong bar-fill characters, missing status brackets, wrong elapsed times, and truncated or wrapped output. A substring assertion such as `assert!(lines[0].contains("3/5"))` only checks one dimension — the bar could be on the wrong line with wrong neighbors and the test still passes silently. Over time, multiple ad-hoc substring assertions accumulate and still fail to detect structural regressions (e.g. slot order corruption, blank-line leaks after finalize, overall-bar displacement).
+**Why.** An exact-string assertion is self-documenting: the expected output appears inline, so a reader sees the rendered shape without running the test or opening a snapshot file. It collapses fragile `lines()[i].contains(...)` chains into one `assert_eq!` that catches every class of rendering defect at once — missing blank lines, wrong bar ordering, stale position/total, wrong fill characters, missing brackets, wrong elapsed times, truncated or wrapped output. A substring assertion like `assert!(lines[0].contains("3/5"))` checks one dimension; the bar could be on the wrong line with wrong neighbors and still pass.
 
 **Exception.** Substring or count-only assertions are acceptable when:
 
@@ -134,13 +134,7 @@ functionally identical.
 This avoids manual arithmetic of `█` fill characters and bar-template width
 computation.
 
-**Inline expected output in source code.** The expected terminal output must
-be written **literally** in the test body using `concat!(...)`. Do not read
-expected output from external snapshot files, golden files, environment
-variables, or runtime-constructed strings. An inline `concat!(...)` is
-self-documenting — the reader sees the exact expected content without opening
-a second file, and test failures show the mismatch directly in the assertion
-line without indirection.
+**Inline expected output in source code.** Write the expected output literally in the test body via `concat!(...)`. Do not read it from external snapshot files, golden files, environment variables, or runtime-constructed strings — an inline `concat!(...)` is self-documenting and shows mismatches directly in the assertion line.
 
 **Conventions.** Use `H=24, W=40` from `common::mk()` as the default terminal
 size unless the test specifically targets narrow/wide/short/tall behavior.
@@ -158,7 +152,7 @@ overhead before suspecting a rendering refactor.
 
 ### Atomic test updates
 
-Update existing tests or add new tests in the same commit as a behavior change. Never change behavior without corresponding test updates — silent behavior changes are a quality regression. Update CLI and reporting documentation if command output contracts change. This applies to all behavior changes regardless of apparent triviality: renaming a CLI flag, changing a default value, altering error message wording, or modifying output field order all deserve test updates.
+Update or add tests in the same commit as a behavior change. Never change behavior without test updates — silent behavior changes are a quality regression. Update CLI and reporting docs if command output contracts change. This covers all behavior changes, however trivial: renaming a CLI flag, changing a default, altering error wording, or reordering output fields.
 
 ### Demo update policy
 
@@ -178,7 +172,7 @@ For conductor regex capture behavior changes, assert `file_regex` exact-one matc
 
 ### Sidecar synchronization
 
-Keep `verify` and `gc` expectations synchronized with sidecar model updates. When the sidecar data model changes, update both the verification logic and the garbage collection logic in the same commit. The sidecar model is the authoritative description of what data is reachable — verification confirms that reachable data matches the sidecar description, and GC removes data that the sidecar model does not reference. These two operations must always agree on the definition of reachability.
+Keep `verify` and `gc` in sync with sidecar model updates. When the sidecar data model changes, update both verification and GC logic in the same commit. The sidecar model is the authoritative description of reachable data: verification confirms reachable data matches it, and GC removes data it does not reference. The two must agree on reachability.
 
 ### State document and migration coverage
 
@@ -188,7 +182,7 @@ When changing state document schemas or adding migration paths, add tests that v
 
 ### Module-level docs
 
-Add `//!` module docs at the top of every Rust module file explaining why the module exists and its role in the crate. Describe what abstractions the module provides, what other modules it collaborates with, and any architectural invariants that span the module's contents.
+Add `//!` module docs at the top of every Rust module file: why the module exists, its role in the crate, the abstractions it provides, the modules it collaborates with, and any architectural invariants spanning its contents.
 
 ### Item-level docs
 
@@ -208,7 +202,7 @@ In tests, add concise doc comments or inline comments stating the user-level gua
 
 ### Strictness policy
 
-Treat missing docs on touched private helpers as quality regressions. Do not accept placeholder docs that merely restate the item name — for example, `/// Runs optimize` on an `optimize` function without explaining what optimization it performs or under what conditions. If a file has many undocumented internals, continue documenting until no obvious top-level helper, constant, or type remains undocumented. For touched files, prefer "document-everything in that file" completion over only documenting the exact changed lines.
+Treat missing docs on touched private helpers as quality regressions. Do not accept placeholder docs that restate the item name — e.g. `/// Runs optimize` with no explanation of what optimization runs or when. For touched files, document every obvious top-level helper, constant, and type rather than only the changed lines.
 
 ### Documentation review checklist
 

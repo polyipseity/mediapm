@@ -6,10 +6,7 @@ applyTo: "src/mediapm/src/error.rs"
 
 # Error taxonomy
 
-## Purpose
-
-- Centralize crate-level error variants so all submodules share one consistent error contract.
-- Preserve operation + path context for I/O and document errors.
+Centralizes crate-level error variants so submodules share one contract, preserving operation + path context for I/O and document errors.
 
 ## `MediaPmError` variants
 
@@ -24,12 +21,12 @@ applyTo: "src/mediapm/src/error.rs"
 
 ## Context preservation rules
 
-- `Io` errors always carry a human-readable `operation` label and the `path` involved.
-- `ConductorDocument` errors similarly carry `operation`, `path`, and a `detail` string.
-- When mapping from conductor errors, prefer `Conductor` variant via `?` or `map_err`; if additional context is needed, wrap in `Workflow`.
+- `Io` errors always carry a human-readable `operation` label and the `path`.
+- `ConductorDocument` errors carry `operation`, `path`, and a `detail` string.
+- Map conductor errors via the `Conductor` variant (`?` or `map_err`); wrap in `Workflow` only when extra context is needed.
 
 ## Error propagation
 
-- Provisioning failures: non-critical failures produce warnings in `ToolSyncReport`; critical failures (document load/save, CAS import) propagate as `Err`.
-- Use `MediaPmError::Io` for `std::fs::create_dir_all`, `std::fs::read`, `std::fs::write` calls with descriptive operation labels.
+- Provisioning failures: non-critical produce warnings in `ToolSyncReport`; critical (document load/save, CAS import) propagate as `Err`.
+- Use `MediaPmError::Io` for `std::fs::create_dir_all`/`read`/`write` with descriptive operation labels.
 - Use `MediaPmError::ConductorDocument` for NCL `decode_document`/`encode_document` failures.

@@ -1,14 +1,12 @@
 ---
-description: "Use when editing the MultiItemBudget per-item progress tracking system in mediapm-utils and the provider pipeline. Covers MultiItemBudget type, ItemBudget, extraction-helper callback protocol, and phase-loop mapping."
+description: "Use when editing MultiItemBudget per-item progress tracking in mediapm-utils and the provider pipeline: type, ItemBudget, extraction-helper callback protocol, phase-loop mapping."
 name: "Progress Budget and MultiItemBudget"
 applyTo: "src/mediapm-utils/src/progress.rs, src/mediapm-conductor/src/tools/provider/mod.rs"
 ---
 
 # Progress budget (`MultiItemBudget`) architecture
 
-## Purpose
-
-`MultiItemBudget` is the primary mechanism for tracking byte-level progress across all three provider phases (Resolve, Fetch, and Process). Each tracked entity (a tool source, a metadata URL) gets its own `ItemBudget` — progress is the aggregate of all items. `ByteBudget` (the legacy single-position type) still exists in the library but is no longer used in the provider pipeline.
+`MultiItemBudget` tracks byte-level progress across the three provider phases (Resolve, Fetch, Process). Each tracked entity (a tool source, a metadata URL) gets its own `ItemBudget`; progress is the aggregate of all items. `ByteBudget` (the legacy single-position type) still exists but is unused in the provider pipeline.
 
 ## Core type
 
@@ -116,7 +114,7 @@ for (idx, source) in sources:
     })
 ```
 
-Key: `fetch_bytes_from_candidates` receives `&MultiItemBudget` + `item_idx` + `progress_cb`. During download it calls `budget.set_total` + `budget.advance` per HTTP chunk and fires the progress callback with the aggregate after each chunk. For cached sources the advance is a single step; for launcher sources it is immediate. The end-of-source callback in the outer loop provides additional coverage for cached/launcher sources where no per-chunk callbacks fire.
+`fetch_bytes_from_candidates` receives `&MultiItemBudget` + `item_idx` + `progress_cb`; during download it calls `budget.set_total` + `budget.advance` per chunk and fires the aggregate callback after each. Cached/launcher sources advance in one step, covered by the end-of-source callback.
 
 #### Fetch phase progress granularity
 
@@ -126,13 +124,13 @@ The progress callback fires after **every chunk** yielded by `reqwest::Response:
 - **HTTP/2**: ~16 KB (default DATA frame size)
 - **HTTP/1.1 chunked TE**: varies by server (typically 4–16 KB)
 
-This is a deliberate design choice (Option 1). The tradeoff is:
+Per-chunk firing is deliberate. The tradeoff:
 
-- **Download performance unaffected** — hyper's TCP/TLS read buffer is independent of the chunk size reported to the application. There is no syscall overhead difference; the bytes are already buffered in-kernel or in hyper's internal buffers before `bytes_stream()` yields them.
+- **Download performance unaffected** — hyper's TCP/TLS read buffer is independent of the chunk size reported to the application; the bytes are already buffered before `bytes_stream()` yields them.
 - **Progress granularity is fine (per-chunk)** — the daemon ticker (50 ms) consolidates intermediate dirty-flag updates into at most 20 Hz draws, so the rendered bar never flickers despite high callback volume.
 - **Explicit chunk buffering was considered and rejected** — accumulating chunks to a minimum byte threshold (Option 3) would reduce callback count but add local state and flush logic for zero observable benefit, since the ticker already prevents rendering overhead.
 
-No explicit `DOWNLOAD_CHUNK_SIZE` constant is introduced. The chunk size is left to `reqwest`/`hyper` defaults. If hyper ever changes its default buffer size, progress granularity shifts proportionally — the visual result remains smooth because the daemon ticker governs draw frequency, not chunk size.
+No `DOWNLOAD_CHUNK_SIZE` constant is introduced; chunk size follows `reqwest`/`hyper` defaults. If hyper changes its default buffer, progress stays smooth because the daemon ticker governs draw frequency, not chunk size.
 
 ### Counting mechanism accuracy guarantees
 
@@ -155,8 +153,7 @@ invariants:
   - **Compress packing**: file sizes accumulate as decompressed bytes written.
     ZIP metadata overhead (~KB) excluded from total — negligible vs payload
     sizes.
-- **Fidelity over precision**: tracking prioritizes smooth visual updates over
-  byte-exact accuracy. All paths guarantee monotonicity and eventual completion.
+- **Fidelity over precision**: smooth visual updates matter more than byte-exact accuracy; all paths stay monotonic and complete.
 
 ### Process phase loop (`process_tool_sources`)
 
@@ -222,7 +219,7 @@ The `items` field reports `(completed_items, total_items)` in fetch and process 
 
 ## ByteBudget (legacy)
 
-`ByteBudget` still exists in `mediapm-utils/src/progress.rs` as a single-position `(pos, total)` tracker with `advance`, `set_pos`, `adjust`, and `reconcile` methods. It is NOT used in the provider pipeline. All provider progress now goes through `MultiItemBudget`. `ByteBudget` remains available for other use cases that need a simple atomic byte counter.
+`ByteBudget` still exists in `mediapm-utils/src/progress.rs` as a single-position `(pos, total)` tracker with `advance`, `set_pos`, `adjust`, and `reconcile` methods. It is unused in the provider pipeline but available for other callers needing a simple atomic byte counter.
 
 ## CountingReader (Cell-based, no atomics)
 
@@ -248,7 +245,7 @@ All process-phase progress now uses a single chunk threshold: `SUB_ENTRY_CHUNK =
 | tar.xz extraction | `CountingReader` gate | `SUB_ENTRY_CHUNK` |
 | Pack (compress) | Chunked read + write | `SUB_ENTRY_CHUNK` |
 
-This ensures consistent ~64 KB callback granularity across all archive formats and phases, providing smooth ~20 Hz progress updates without excessive callback overhead.
+This keeps callback granularity consistent at ~64 KB across all archive formats and phases.
 
 ## Screens outside the provider pipeline
 

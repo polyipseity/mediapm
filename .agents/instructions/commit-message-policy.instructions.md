@@ -6,21 +6,10 @@ applyTo: "**"
 
 # Commit Message Policy
 
-## Required format
+- Headers follow Conventional Commits: `type(scope): subject`. Scope is mandatory.
+- Do not start headers with crate-prefix forms (`mediapm:`, `conductor:`, `cas:`, or similar `<crate-or-tool>:`). Crate/tool identity belongs in the scope.
 
-- Commit headers must follow Conventional Commits shape: `type(scope): subject`.
-- Scope is mandatory for normal project commits.
-
-## Forbidden crate-prefix headers
-
-- Do not start commit headers with crate-prefix forms such as:
-  - `mediapm: ...`
-  - `conductor: ...`
-  - `cas: ...`
-  - or similar `<crate-or-tool>:` headers.
-- Crate/tool identity belongs in the Conventional Commit scope, not as the header prefix.
-
-## Examples
+Examples:
 
 - ✅ `feat(mediapm): align demo-online sidecar hierarchy`
 - ✅ `fix(conductor): reject invalid content_map traversal keys`

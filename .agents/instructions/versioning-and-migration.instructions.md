@@ -6,67 +6,56 @@ applyTo: "src/**/*.rs"
 
 # Struct Versioning and Migration Protocol
 
-## Scope
-
-- Apply this guidance when introducing versioned data structures, wire formats, or state migrations anywhere in `src/`.
-- Keep wire/transport concerns versioned and isolated from functional core state.
-- Model migrations as composable optics where practical:
-  - `Lens` for deterministic field transforms,
-  - `Prism` for enum/optional branch transforms,
-  - `Traversal` for repeated/nested collection transforms.
-
 ## Required structure
 
 - Keep the version-agnostic source of truth in a central, unversioned struct (e.g., `DeltaState`).
-- Place each wire-format version in a dedicated subdirectory or file per version (e.g., `versions/v1.rs`, `versions/v2.rs`).
-- Keep versioned envelope structs `pub(crate)` to avoid exposing wire internals in the public API surface.
+- Place each wire-format version in a dedicated file per version (`versions/v1.rs`, `versions/v2.rs`).
+- Keep versioned envelope structs `pub(crate)` to avoid exposing wire internals.
 
 ## Canonical versioning pattern (config documents)
 
 Every versioned config/state surface follows the same shape, regardless of transport (`.ncl` or `.json`):
 
-1. **Migrations live at the version boundary.** For `.ncl`, each `vN.ncl` owns the migration INTO that version (`v2.ncl` exports `migrate_v1_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`); `mod.ncl` only dispatches. For `.json`, migration code cannot be written in JSON, so it is written in Rust (in `versions/mod.rs` or `state/versions/`) — same dispatch shape.
-2. **Parse into a "latest" boundary type.** The boundary type is named `*Latest` and represents the ACTIVE version's wire shape (V2 here). It carries `Option` on user-optional fields. It is NOT a generic boundary for all versions.
+1. **Migrations live at the version boundary.** For `.ncl`, each `vN.ncl` owns the migration INTO that version (`v2.ncl` exports `migrate_v1_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`); `mod.ncl` only dispatches. For `.json`, migration code is written in Rust (`versions/mod.rs` or `state/versions/`) — same dispatch shape.
+2. **Parse into a "latest" boundary type** named `*Latest` representing the ACTIVE version's wire shape; it carries `Option` on user-optional fields, not a generic all-versions boundary.
 3. **Resolve defaults to an option-free resolved struct** (no `Option`) via `from_boundary`.
 
-**INVARIANT — each version envelope keeps its OWN shape.** Old versions are BRIDGED to the latest boundary through the unified model (`MediaPmDocument`), NEVER reshaped to mirror the latest version's internal grouping. A V1 envelope type (e.g. `MediaRuntimeStorageV1`) is a distinct flat wire shape that converts to/from `MediaRuntimeStorageLatest` via `From` impls. Do not replace a V1 envelope type with the grouped resolved type, and do not push V2's sub-record grouping down into V1's contract.
+**INVARIANT — each version envelope keeps its OWN shape.** Old versions are BRIDGED to the latest boundary through the unified model (`MediaPmDocument`), NEVER reshaped to mirror the latest version's grouping. A V1 envelope type (e.g. `MediaRuntimeStorageV1`) is a distinct flat wire shape converting to/from `MediaRuntimeStorageLatest` via `From` impls. Do not replace a V1 envelope type with the grouped resolved type, and do not push V2's sub-record grouping into V1's contract.
 
-**File placement — version-specific types and their `From` bridges live INSIDE the version file** (`versions/v1.rs`, `versions/v_latest.rs`), never in the shared `config/mod.rs`. `config/mod.rs` holds ONLY the resolved (option-free) types and a thin `from_boundary` delegation. The active `*Latest` boundary family is version-specific and belongs in `versions/v_latest.rs`, not `config/mod.rs`.
+**File placement — version-specific types and their `From` bridges live INSIDE the version file** (`versions/v1.rs`, `versions/v_latest.rs`), never in shared `config/mod.rs`. `config/mod.rs` holds only the resolved (option-free) types and a thin `from_boundary` delegation; the active `*Latest` family belongs in `versions/v_latest.rs`.
 
 ## Strict `versions/` boundary policy
 
 - Inside `versions/vX.rs`, do **not** import unversioned structs from outside `versions/`.
-- A `versions/vX.rs` file may reference only the immediately previous version module (for example `v3` may reference `v2`), and only for version-to-version isomorphism/migration.
+- A `versions/vX.rs` file may reference only the immediately previous version module (e.g. `v3` → `v2`), and only for version-to-version isomorphism/migration.
 - Implement latest-version ↔ unversioned-struct isomorphism in `versions/mod.rs`, not in individual `vX.rs` files.
-- Files outside `versions/` must interact with versioned symbols through `versions/mod.rs` only; do not import `versions::vX` directly.
-- In `versions/mod.rs`, do not directly re-export `versions::vX` structs/types as public API. Expose unversioned wrapper functions/constants instead.
-- Files outside `versions/` should keep their own unversioned runtime data structures and call into `versions/mod.rs` only when encoding/decoding persisted or wire versioned formats.
-- When a feature area has an aggregate module (for example `index/mod.rs`), prefer exposing unversioned facade APIs there so sibling modules (for example `index/db.rs`, `index/graph.rs`) do not import `versions` paths directly.
-- In non-`versions/` modules for that feature area, avoid version-tag fields and explicit version checks; keep version parsing/validation confined to `versions/` code.
-- Keep an explicit module-level `DO NOT REMOVE` policy docstring in each file under `versions/` so these invariants remain visible during future edits.
+- Files outside `versions/` interact with versioned symbols through `versions/mod.rs` only; do not import `versions::vX` directly.
+- In `versions/mod.rs`, do not re-export `versions::vX` structs as public API; expose unversioned wrapper functions/constants.
+- Files outside `versions/` keep their own unversioned runtime data structures and call into `versions/mod.rs` only when encoding/decoding persisted or wire versioned formats.
+- Prefer unversioned facade APIs in aggregate modules (e.g. `index/mod.rs`) so siblings (e.g. `index/db.rs`) do not import `versions` paths directly.
+- In non-`versions/` modules, avoid version-tag fields and explicit version checks; keep version parsing/validation confined to `versions/` code.
+- Keep a module-level `DO NOT REMOVE` policy docstring in each `versions/` file.
 
 ## Required optic bridges
 
-- Every wire-format version should expose a version-local optic bridge in `vX.rs` (e.g., `IsoPrime<RcBrand, VersionEnvelope, VersionLocalState>`).
+- Every wire-format version exposes a version-local optic bridge in `vX.rs` (e.g., `IsoPrime<RcBrand, VersionEnvelope, VersionLocalState>`).
 - Bridge latest version-local state to unversioned runtime state in `versions/mod.rs`.
-- Prefer optic composition over manual `From`/`Into`, `to_state`, or `from_state` conversions for version envelopes.
+- Prefer optic composition over manual `From`/`Into`/`to_state`/`from_state` for envelopes.
 - Implement envelope migration by optic composition through the version-agnostic state (`old_iso.view` then `new_iso.review`).
-- Keep migration ladders sequential (`vN -> vN+1`) with explicit provenance in comments/docs/tests so schema evolution remains auditable.
-- For lossless migrations, add round-trip checks where feasible; for lossy migrations, document one-way guarantees and preserved complement data.
+- Keep migration ladders sequential (`vN -> vN+1`) with explicit provenance in comments/tests.
+- For lossless migrations, add round-trip checks; for lossy migrations, document one-way guarantees and preserved complement data.
 
 ## Hash and checksum safety
 
-- Delegate multihash parsing/serialization to `rust-multihash` through `Hash` helpers; do not manually parse varint code/size.
-- Keep checksum scope tied to logical envelope fields and document exactly which fields are covered.
+- Delegate multihash parsing/serialization to `rust-multihash` via `Hash` helpers; do not manually parse varint code/size.
+- Keep checksum scope tied to logical envelope fields; document exactly which fields are covered.
 
 ## Schema versioning
 
 - Preserve original reference semantics (e.g., `original_variant_hash`).
-- Keep lineage references valid (`from_variant_hash` and `to_variant_hash` exist in `variants`).
-- Keep schema version explicit (`schema_version`) and migrations sequential.
-- Record migration provenance for each applied schema hop.
+- Keep lineage references valid (`from_variant_hash`/`to_variant_hash` exist in `variants`).
+- Keep schema version explicit (`schema_version`) and migrations sequential; record provenance per applied hop.
 
 ## Unicode normalization boundary
 
-- Do not apply Unicode NFD normalization in versioned structs or envelope fields.
-- NFD normalization is reserved for mediapm internal filepath handling.
+- Do not apply Unicode NFD normalization in versioned structs or envelope fields; NFD is reserved for mediapm internal filepath handling.

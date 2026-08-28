@@ -30,7 +30,6 @@ argument-hint: Optional extras (e.g., ticket=ABC-123). To skip committing, pass 
      - Footer (BREAKING CHANGE / Refs / Ticket), including `${input:extra}` if provided
    - **If the commit is rejected by commitlint due to line length or other formatting, rewrap and retry until the commit passes.**
    - Prefer tooling-enforced rules. If unsure, default to Conventional Commits. **Strictly enforce commit header and body line length (72 chars max) as required by commitlint.**
-   - Do not show the proposed commit message to the user for confirmation before creating the commit. Proceed automatically to creating the commit using best-effort defaults and available context.
 
 3. **Create the commit**
    - If `${input:commitNow}` is `no`, skip this step and only present the message.
@@ -65,7 +64,6 @@ argument-hint: Optional extras (e.g., ticket=ABC-123). To skip committing, pass 
 
 ## Rules
 
-- Never ask for confirmation or clarification. Always proceed automatically using best-effort defaults and available context.
 - Only run the two approved shell commands. Do not run `git add`, `git reset`, or otherwise change the index.
 - If Command 1 is denied, still propose a best-effort commit message using available context.
 

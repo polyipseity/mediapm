@@ -1,5 +1,5 @@
 ---
-description: "Use when editing state persistence in src/mediapm/src/config/mod.rs, config/versions/, and src/mediapm/src/state/. Covers MediaPmState fields, ToolRegistryEntry, ManagedFileRecord, schema version dispatch, JSON I/O, and migration rules."
+description: "Use when editing state persistence in src/mediapm/src/config/mod.rs, config/versions/, and src/mediapm/src/state/. Covers MediaPmState, ToolRegistryEntry, ManagedFileRecord, version dispatch, JSON I/O, migration rules."
 name: "State Persistence"
 applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs, src/mediapm/src/state/**/*.rs"
 ---
@@ -8,17 +8,14 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 
 ## Format reality
 
-- `state.json` is machine-managed and stored as **JSON with pretty-printing and always-write semantics** — it is not a Nickel document, even though legacy versions of this file were `.ncl`.
+- `state.json` is machine-managed **JSON with pretty-printing and always-write semantics** — not a Nickel document, though legacy versions were `.ncl`.
 - `mediapm.ncl` is the user-owned Nickel intent document; `conductor.generated.ncl` is the machine-managed Nickel runtime document. Only `state.json` is JSON.
 - Legacy `state.ncl` files are auto-migrated on load and then deleted (`load_mediapm_state_document` in `nickel_io.rs` is JSON-first, falls back to the legacy Nickel file, and removes it after a successful load). Never write new `.ncl` state files.
 
-## Purpose
+State persisted in `state.json` under `<runtime_root>/` tracks managed file records, tool fetch/deploy metadata, and media workflow step state, with version dispatch for migration from legacy `.ncl` formats.
 
-- Model machine-managed state persisted in `state.json` under `<runtime_root>/`.
-- Track managed file records, tool fetch/deploy metadata, and media workflow step state.
-- Support schema version dispatch for forward/backward migration from legacy `.ncl` formats.
-- **No `MigrateState` trait** — migration helpers are plain functions in `state/versions/v1.rs` (no trait dispatch). This avoids trait overhead for a single-migration-path design.
-- **File organization**: public API lives in `state/ser.rs` (thin delegation), V1 wire types and migration in `state/versions/v1.rs`, V2 wire types in `state/versions/v2.rs`, version dispatch utilities in `state/versions/mod.rs`.
+- **No `MigrateState` trait** — migration helpers are plain functions in `state/versions/v1.rs` (no trait dispatch), avoiding trait overhead for a single migration path.
+- **File organization**: public API in `state/ser.rs` (thin delegation), V1 wire types and migration in `state/versions/v1.rs`, V2 wire types in `state/versions/v2.rs`, version dispatch utilities in `state/versions/mod.rs`.
 
 ## `MediaPmState` fields (v3)
 
@@ -180,17 +177,12 @@ and informational — they never participate in skip/update decisions.
 ## State write policy
 
 `state.json` is written unconditionally via `std::fs::write` after every sync
-pass. No byte-level change detection is applied. This is intentional:
-
-- `state.json` is the runtime audit trail, recording every sync
-  invocation's observed metadata (canonical version, deploy timestamp, fetch
-  hash).
-- A change in `canonical_version` (e.g., a rotating autobuild tag) that
-  produces identical binary payloads is still a meaningful state change — the
-  tool's upstream label advanced, and `state.json` records that.
-- The companion document `conductor.generated.ncl` absorbs the
-  artifact-stability concern via its own change-detected write policy
-  (`write_bytes_if_changed`).
+pass. No byte-level change detection is applied: it is the runtime audit trail
+recording each sync's observed metadata (canonical version, deploy timestamp,
+fetch hash), and a rotating autobuild tag that yields identical payloads is
+still a meaningful state change. `conductor.generated.ncl` absorbs
+artifact-stability via its own change-detected write policy
+(`write_bytes_if_changed`).
 
 **Invariant:** `state.json` content changes are not errors. A diff showing only
 `canonical_version`, `deployed_at`, or `resolved_*` changes with unchanged

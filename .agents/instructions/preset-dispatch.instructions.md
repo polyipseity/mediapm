@@ -6,10 +6,7 @@ applyTo: "src/mediapm/src/tools/preset/**/*.rs, src/mediapm/src/tools/workflows/
 
 # Preset dispatch
 
-## Purpose
-
-- Route tool names to per-tool spec builders via `apply_preset()`.
-- Construct `ToolSpec` (command template, inputs/outputs, content_map) and `ToolRuntime` (impure flag, concurrency, retry).
+Routes tool names to per-tool spec builders via `apply_preset()`, constructing `ToolSpec` (command template, inputs/outputs, content_map) and `ToolRuntime` (impure flag, concurrency, retry).
 
 ## `apply_preset(tool_name, content_map, os_exec_paths, slot_limits)` dispatch
 
@@ -30,14 +27,11 @@ Each preset builds:
 - `inputs`: declared input keys with types and defaults.
 - `outputs`: declared output variants with capture kind and file patterns.
 - `content_map`: sandbox-relative path → CAS hash entries from provisioning.
-- `runtime`: impure flag (impure for tools with side-effects), concurrency limits, retry policy.
+- `runtime`: impure flag (impure for side-effecting tools), concurrency limits, retry policy.
 
 ## Workflow step synthesis (`tools/workflows/`)
 
-Per-tool `build_<tool>_spec()` functions wrap presets to produce final `(ToolSpec, ToolRuntime)`:
-
-- Apply preset → add ffmpeg slot limits → set inherited env vars → return.
-- Each workflow module also defines step-specific constants (input keys, output variant definitions).
+Per-tool `build_<tool>_spec()` wraps presets to produce final `(ToolSpec, ToolRuntime)`: apply preset → add ffmpeg slot limits → set inherited env vars → return. Each workflow module also defines step-specific constants (input keys, output variant definitions).
 
 ## Sandbox artifacts folder convention
 
@@ -49,21 +43,9 @@ Per-tool `build_<tool>_spec()` functions wrap presets to produce final `(ToolSpe
 
 ## Per-preset dependency type registry
 
-Each preset module with dependencies should provide a `dependency_types()`
-function returning `BTreeMap<&'static str, DependencyTypes>`. This maps
-companion tool IDs to their role flags (`SAME_STEP`, `CROSS_STEP`, or a
-`combine()` of both). There is no default role; every edge is classified
-explicitly.
+Each preset module with dependencies provides a `dependency_types()` function returning `BTreeMap<&'static str, DependencyTypes>`, mapping companion tool IDs to role flags (`SAME_STEP`, `CROSS_STEP`, or a `combine()` of both). No default role — every edge is classified explicitly. `known_dependency_type()` in `src/mediapm/src/tools/dependency.rs` resolves a dependency's role flags without user config.
 
-The function is used by `known_dependency_type()` in
-`src/mediapm/src/tools/dependency.rs` to resolve a dependency's role flags
-without involving user config.
-
-Edges are **direct-only and non-transitive**: a dependency's own dependencies
-never propagate to the requirer (neither version segments nor payload
-inlining).
-
-Currently classified edges:
+Edges are **direct-only and non-transitive**: a dependency's own dependencies never propagate to the requirer (neither version segments nor payload inlining).
 
 | Requirer       | Dependency | Type         |
 | -------------- | ---------- | ------------ |
@@ -77,6 +59,6 @@ Currently classified edges:
 
 - Unknown tool name → **panics** with `"unknown managed tool: {tool_name}"` (programming error, not user error).
 - `apply_preset` is called only after successful provisioning — content_map and os_exec_paths are always populated for known managed tools.
-- `runtime.impure` must be `true` for tools with side effects (yt-dlp: network fetches, media-tagger: network lookups).
+- `runtime.impure` must be `true` for side-effecting tools (yt-dlp: network fetches, media-tagger: network lookups).
 - Concurrency defaults: 1 active concurrent call; retry: 1 outer retry for network-dependent tools.
 - `DependencyTypes` is defined in `src/mediapm/src/tools/dependency.rs` (internal, no serde derives, not user-configurable).

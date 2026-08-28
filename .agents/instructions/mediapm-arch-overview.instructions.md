@@ -8,7 +8,7 @@ applyTo: "src/**/*.rs"
 
 ## Cross-crate engineering principles
 
-- **Pure core, imperative shell.** Keep planning, diffing, and key derivation pure and deterministic. Confine side effects (filesystem, process, network) to explicit boundary modules.
+- **Pure core, imperative shell.** Keep planning, diffing, and key derivation pure and deterministic; confine side effects (filesystem, process, network) to explicit boundary modules.
 - **Incremental by default.** Prefer incremental updates over full rebuilds. Use explicit content-addressed cache keys throughout.
 - **Async I/O with runtime adapters.** Default to Tokio. Use `async-trait` where useful.
 - **Actor concurrency.** Use `ractor` with typed messages for orchestration and stateful actors.
@@ -31,4 +31,4 @@ Managed tool payloads are downloaded for all supported OSes regardless of the ho
 
 ## Cross-references
 
-See per-crate `AGENTS.md` for detailed invariants, edge cases, and behavioral contracts. See `.agents/instructions/mediapm-architecture.instructions.md` for the materialization contract and crate-boundary invariants.
+Per-crate `AGENTS.md` holds detailed invariants and contracts. `.agents/instructions/mediapm-architecture.instructions.md` holds the materialization contract and crate-boundary invariants.

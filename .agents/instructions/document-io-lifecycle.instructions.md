@@ -6,24 +6,20 @@ applyTo: "src/mediapm/src/conductor_bridge/documents.rs, src/mediapm/src/conduct
 
 # Document I/O and lifecycle
 
-## Purpose
-
-- Manage the four-document model: `mediapm.ncl` (user intent), `conductor.generated.ncl` (machine-generated tool defs), `state.ncl` (mediapm machine state), `state.conductor.ncl` (conductor runtime state).
-- Register builtin tool definitions and apply lifecycle transitions.
+Four-document model: `mediapm.ncl` (user intent), `conductor.generated.ncl` (machine-generated tool defs), `state.ncl` (mediapm machine state), `state.conductor.ncl` (conductor runtime state).
 
 ## Document load/save
 
 ### `load_conductor_document(path, label)`
 
-- If file exists: read bytes → `decode_document()`.
-- If file doesn't exist: return default empty `NickelDocument`.
-- Errors: `MediaPmError::Io` for filesystem read failure, `MediaPmError::ConductorDocument` for decode failure with operation + path + detail context.
+- File exists: read bytes → `decode_document()`.
+- Missing: return default empty `NickelDocument`.
+- Errors: `MediaPmError::Io` (read), `MediaPmError::ConductorDocument` (decode, with operation + path + detail).
 
 ### `save_conductor_document(path, document, label)`
 
-- `encode_document()` → bytes → `write_bytes_if_changed()`.
-- `write_bytes_if_changed` only writes to disk when content differs (avoids filesystem churn and unnecessary nix-daemon rebuilds).
-- Errors: `MediaPmError::ConductorDocument` for encode failure, `MediaPmError::Io` for write failure.
+- `encode_document()` → bytes → `write_bytes_if_changed()` (writes only when content differs, avoiding filesystem churn and nix-daemon rebuilds).
+- Errors: `MediaPmError::ConductorDocument` (encode), `MediaPmError::Io` (write).
 
 ### Document lifecycle helpers
 
@@ -38,36 +34,29 @@ applyTo: "src/mediapm/src/conductor_bridge/documents.rs, src/mediapm/src/conduct
 
 ### `register_missing_builtin_tools(generated_doc)`
 
-- Ensures all builtin tool definitions (`echo`, `fs`, `import`, `export`, `archive`) exist in the generated document.
-- Idempotent: skips tools that already exist.
-- Builtins are registered with `kind`, `name`, `version` only (strict schema).
+- Ensures all builtin tool defs (`echo`, `fs`, `import`, `export`, `archive`) exist in the generated document.
+- Idempotent: skips existing tools. Builtins registered with `kind`, `name`, `version` only (strict schema).
 
 ### `apply_builtin_runtime_defaults(generated_doc)`
 
-- Sets default runtime values for builtin tools (impure flag, etc.).
-- Only applies when the tool exists but the field is unset.
+- Sets default runtime values (impure flag, etc.) only when the tool exists but the field is unset.
 
 ### `list_tools(paths)`
 
 - Parses tool keys (`"{name}@{hash}"` or `"{name}"`) into `ConductorToolRow { name, version, managed }`.
-- Used by `mediapm tool list` CLI command.
+- Used by `mediapm tool list`.
 
 ## Lifecycle helpers (`lifecycle.rs`)
 
 | Function                                          | Purpose                                                                 |
 | ------------------------------------------------- | ----------------------------------------------------------------------- |
-| `is_builtin_source_ingest_requirement(tool_name)` | Returns true for builtin `import` (special content-ingestion handling)  |
+| `is_builtin_source_ingest_requirement(tool_name)` | True for builtin `import` (special content-ingestion handling)          |
 | `is_hash_in_tool_content_maps(hash, doc)`         | Checks if a hash is still referenced by any tool content map            |
 | `lock_registry_version(cas, tool_id, identity)`   | Stores a deterministic CAS marker `registry-locks/{tool_id}/{identity}` |
 
 ## Key invariants
 
-- `write_bytes_if_changed` is the gate for all NCL document saves — the coordinator
-  only writes when encoded bytes differ from the existing file. This prevents
-  filesystem and git churn when tool payloads are identical across sync runs. State
-  JSON files do not use this gate (see state-persistence spec).
-- Builtin tools are always re-registered on every sync (idempotent `insert` semantics).
+- `write_bytes_if_changed` gates all NCL saves — the coordinator writes only when encoded bytes differ, preventing filesystem/git churn when payloads are identical across syncs. State JSON does not use this gate (see state-persistence spec).
+- Builtin tools are re-registered every sync (idempotent `insert`).
 - `list_tools` key parsing uses `rfind('@')` to handle tool names containing `@`.
-- Conductor NCL files are artifact-manifest documents: their content only changes when
-  binary payload hashes change. Metadata-only updates (version tag rotations without
-  payload change) are absorbed by `state.json`, not by NCL files.
+- Conductor NCL files are artifact manifests: content changes only when binary payload hashes change. Metadata-only updates (version tag rotations without payload change) go to `state.json`, not NCL.

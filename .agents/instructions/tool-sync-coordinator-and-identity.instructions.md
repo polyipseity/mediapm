@@ -21,7 +21,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
    - `Some(path)` → use the provided path as the cache root
      A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
-4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool*id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_suffix_components(SuffixComponents { custom: "skipped" })` and returns `Ok(None)` immediately. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are also candidates for `resolved*\*`backfill — see "Resolved-field population and skip backfill" below. When a skipped tool's runtime is reconstructed under its conductor tool id, the coordinator uses the canonical`find_active_tool_spec()` helper (both skip paths — the version-matched skip and the fetch-level skip — plus any external consumer such as the demo examples). See "Active tool spec resolution" below.
+4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_suffix_components(SuffixComponents { custom: "skipped" })` and returns `Ok(None)`. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are candidates for `resolved_*` backfill (see below). When a skipped tool's runtime is reconstructed under its conductor tool id, the coordinator uses `find_active_tool_spec()` (both skip paths plus external consumers like the demo examples — see "Active tool spec resolution").
 5. **Active-tool tracking (pruning)** — the active set for filesystem pruning is
    the set of **mediapm conductor tool ids** collected in `tool_runtimes` (every
    tool inserted by the provisioning loop, keyed by its generated-doc key —
@@ -67,12 +67,7 @@ The sync coordinator persists two distinct documents with different write polici
   bytes are identical. This is the artifact manifest — it only changes when deployable
   artifacts change.
 
-**Rationale:** Canonical version tags (e.g., daily autobuild timestamps from BtbN) can
-change without producing different binaries. An unconditional conductor-file write
-would create git noise for every upstream tag rotation. The dual strategy gives:
-
-- Zero git churn in the conductor file when payloads are stable.
-- A complete sync history in state.json for debugging and audit.
+**Rationale:** Canonical version tags (e.g., daily autobuild timestamps from BtbN) can change without producing different binaries. An unconditional conductor-file write would create git noise for every upstream tag rotation. The dual strategy gives zero git churn in the conductor file when payloads are stable, and a complete sync history in state.json for debugging and audit.
 
 ### `ToolSyncReport` fields
 
@@ -118,9 +113,8 @@ would create git noise for every upstream tag rotation. The dual strategy gives:
   version), the coordinator pushes a full `ToolRegistryEntry` into
   `report.tool_records` — not only into `report.resolved_field_backfills`. The
   `managed_tools` registry is the authoritative record of what is provisioned; a
-  tool that is present in `conductor.generated.ncl` (active spec, non-empty
-  `content_map`) but absent from `managed_tools` is **illegal state** and must
-  never be produced. `apply_resolved_field_backfills` only updates existing
+  tool present in `conductor.generated.ncl` (active spec, non-empty `content_map`)
+  but absent from `managed_tools` is illegal state. `apply_resolved_field_backfills` only updates existing
   `managed_tools` entries, so a skipped tool that is never recorded would be
   unrecoverable by backfill. The skip-path entry carries a real `content_map_hash`
   (blake3 of the active generated-doc spec's content map via `find_active_tool_spec`)

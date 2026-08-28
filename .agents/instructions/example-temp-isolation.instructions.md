@@ -6,9 +6,7 @@ applyTo: "src/mediapm/examples/**/*.rs,src/mediapm/tests/**/*.rs,src/mediapm/src
 
 # Test and example temp file model
 
-## Purpose
-
-mediapm tests and examples can create multi-gigabyte trees (CAS stores, tool downloads, conductor sandboxes, materialized hierarchy). This document is the canonical model for where those directories live, how they are isolated from production paths, and how they are torn down. Role prefixes and helpers live in `mediapm_utils::temp` (`src/mediapm-utils/src/temp.rs`); example env wiring lives in `mediapm::example_isolation` (`src/mediapm/src/example_isolation.rs`). Explicit (Level 3) `cargo run --example` runs resolve the real OS user-level cache and are not hermetic — that is intentional (persistence across runs); only embedded tests isolate via `MEDIAPM_EXAMPLE_CACHE_ROOT`.
+Role prefixes and helpers live in `mediapm_utils::temp` (`src/mediapm-utils/src/temp.rs`); example env wiring in `mediapm::example_isolation` (`src/mediapm/src/example_isolation.rs`). Explicit (Level 3) `cargo run --example` runs resolve the real OS user-level cache and are not hermetic (persistence across runs); only embedded tests isolate via `MEDIAPM_EXAMPLE_CACHE_ROOT`.
 
 ## Role prefixes (all under `$TMPDIR`)
 
@@ -42,7 +40,7 @@ Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code
 | **Integration-test workspace** | `$TMPDIR/mediapm-artifact-*` | `tests/int/*`, `tests/e2e/*` via `artifact_dir()` | Yes — RAII drop removes tree when test process exits normally |
 | **Manual debug trees** | ad-hoc fixed paths | local debugging | No — not auto-cleaned; use `scripts/clean-mediapm-temp.sh` / `scripts/clean-mediapm-temp.ps1` |
 
-Canonical artifact roots are documentation and manual-demo targets. Examples-as-tests must never write there concurrently.
+Canonical artifact roots are documentation and manual-demo targets; examples-as-tests must never write there concurrently.
 
 ## Env overrides
 
@@ -51,7 +49,7 @@ Canonical artifact roots are documentation and manual-demo targets. Examples-as-
 | `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` | `example_isolation::ARTIFACT_ROOT_ENV` | Example `artifact_root()` helpers | Workspace / artifact root the example mutates |
 | `MEDIAPM_EXAMPLE_CACHE_ROOT` | `example_isolation::CACHE_ROOT_ENV` | `example_runtime_storage()` → `cache_root_override` | User-level tool download cache for sync/provisioning; defaults to the real user-level cache `<os-cache>/mediapm/cache` (`example_isolation::user_level_cache_root()`) when unset; `example_isolation::uses_isolated_cache_root()` reports whether the isolated override is active |
 
-`main()` must honor these when set and fall back to canonical paths when unset so `cargo run --example` behavior is unchanged.
+`main()` must honor these when set and fall back to canonical paths when unset.
 
 ## Lifecycle: examples-as-tests
 
@@ -83,7 +81,7 @@ Rules:
 - Bind `TempDir` to a local variable for the full test scope — do not leak paths without a cleanup owner.
 - Pass `cache_root_override` whenever the test calls `sync_tools`, provisioning, or full `sync_library`.
 - Drop exclusive CAS handles before reopening the same store path (see `StoreLocked` pattern in `rust-conventions.instructions.md`).
-- Process-global env vars: hold the example env lock (`example_isolation::lock_process_env()`) for the mutation scope, or keep an `IsolatedExampleRoots` guard alive; restore env before the lock/guard is released. Restore-early remains a good practice.
+- Process-global env vars: hold the example env lock (`example_isolation::lock_process_env()`) for the mutation scope, or keep an `IsolatedExampleRoots` guard alive; restore env before the lock/guard is released.
 
 Prefixed tempdirs clean on normal process exit. Killed nextest workers (timeout, SIGKILL) may leave `$TMPDIR/mediapm-*` trees — run the janitor (`scripts/clean-mediapm-temp.sh` on POSIX, `scripts/clean-mediapm-temp.ps1` on Windows) periodically.
 

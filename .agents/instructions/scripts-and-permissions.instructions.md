@@ -6,13 +6,9 @@ applyTo: "scripts/**"
 
 # Scripts and Executable Permissions
 
-## Scope and template state
-
-- Keep repo-level helper scripts in `scripts/`; the directory contains `build.rs` and `cargo-bin/`.
-- Do not scatter contributor-facing or CI-facing automation across random folders when `scripts/` is the intended home.
-
 ## Placement and naming
 
+- Keep repo-level helper scripts in `scripts/`; the directory contains `build.rs` and `cargo-bin/`. Do not scatter contributor-facing or CI-facing automation across random folders when `scripts/` is the intended home.
 - Name scripts for the task they perform (`bootstrap`, `check`, `release`, etc.) and keep each script narrowly focused.
 - Production scripts live in `scripts/`; their self-tests live in `tests/scripts/` (root `tests/` crate, package `mediapm-tests`) — do not place test scripts inside `scripts/`. The line-ending and permission policies below apply wherever scripts live.
 - Cross-platform helper scripts ship as `.sh` + `.ps1` twins with identical CLI and output (e.g. `run-all-tests`, `clean-mediapm-temp`); each platform runs its native script.

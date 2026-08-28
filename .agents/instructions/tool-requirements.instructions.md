@@ -6,12 +6,6 @@ applyTo: "src/mediapm/src/config/mod.rs"
 
 # Tool requirements
 
-## Purpose
-
-- Model how users declare managed tool version requirements in `mediapm.ncl` under `tools.<id>`.
-- Provide dependency declarations via a flat `BTreeMap<String, ConfigVersionSpec>`
-  for cross-tool companion resolution.
-
 ## `ToolRequirement` fields
 
 | Field              | Type                                  | Default                     | Purpose                                                                            |
@@ -55,10 +49,6 @@ provision time or provisioning errors.
 
 ## Normalization rules
 
-- `ToolRequirement` entries are kept during normalization if `version_spec`
-  is set (any variant). Old `version`/`tag` fields no longer exist — the
-  single `version_spec` field is authoritative.
-- `dependencies` entries with `ConfigVersionSpec::Inherit` are treated as
-  "use global default" — they are not removed but resolved at provision time.
-- Normalization runs in `MediaPmDocument::normalize()` and
-  `MediaPmState::normalize()`.
+- `ToolRequirement` entries are kept during normalization if `version_spec` is set (any variant). Old `version`/`tag` fields no longer exist — the single `version_spec` field is authoritative.
+- `dependencies` entries with `ConfigVersionSpec::Inherit` are treated as "use global default" — they are not removed but resolved at provision time.
+- Normalization runs in `MediaPmDocument::normalize()` and `MediaPmState::normalize()`.
