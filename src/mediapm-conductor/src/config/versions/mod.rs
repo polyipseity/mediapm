@@ -100,7 +100,7 @@ pub fn decode_document(bytes: &[u8]) -> Result<crate::config::NickelDocument, Co
 ///
 /// This preserves field presence (which fields were explicitly written in the
 /// source document) for callers that must distinguish explicit from implicit
-/// values — notably multi-document merging.  Presence-preserving fields:
+/// values, notably multi-document merging.  Presence-preserving fields:
 /// `external_data` descriptions, workflow `display_name`/`description`, and
 /// `external_data.save` (absent = implicit `Saved`).
 ///

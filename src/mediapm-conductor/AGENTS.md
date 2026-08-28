@@ -1,19 +1,11 @@
 # Conductor Crate Instructions
 
-> **Conductor** is the deterministic workflow engine. Steps defined in Nickel config are
-> planned via topological sort, dispatched to workers, and outputs captured to CAS.
-> Pure workflows are deterministic; impure ones may vary on retries. Uses a three-document
-> config model (user/machine/state) with fail-fast validation, actor-based orchestration,
-> and template-expanded step inputs.
-
-This file defines crate-local guidance for `src/mediapm-conductor/`.
-Follow this together with the workspace root `AGENTS.md` and relevant `.agents/instructions/*.instructions.md` files.
+Crate-local guidance for `src/mediapm-conductor/`. Conductor is the deterministic workflow engine: Nickel-defined steps are topologically planned, dispatched to workers, and captured to CAS. Pure workflows are deterministic; impure ones may vary on retries. Follow with root `AGENTS.md` and relevant `.agents/instructions/*.instructions.md`.
 
 ## Scope
 
 - Applies to all files under `src/mediapm-conductor/`.
-- Treat this file as the primary implementation policy for conductor behavior, with root `AGENTS.md` as the workspace-wide baseline.
-- If rules conflict, prefer root `AGENTS.md` for global policy and this file for conductor-specific design/behavior details.
+- Root `AGENTS.md` is the workspace-wide baseline; this file owns conductor-specific design and behavior. On conflict, root `AGENTS.md` wins for global policy.
 
 ## Orchestration contract
 
@@ -121,11 +113,6 @@ Document contract:
 - Conflicts must fail fast with explicit workflow errors.
 - End-user automation for setup operations (for example add-tool/import-tool and add-external-data/import-data flows) must mutate only `conductor.generated.ncl`.
 - Once setup is recorded through machine-document automation, do not require duplicate tool declarations in `conductor.ncl` just to make workflows runnable.
-
-Dual-file ownership model summary:
-
-- `conductor.ncl` is human-owned intent and workflow/tool declarations.
-- `conductor.generated.ncl` is machine-owned operational state such as content maps and machine-derived runtime metadata.
 - Conductor embeds Nickel evaluation in-process (`nickel-lang-core`) and does not delegate schema evaluation to an out-of-process secondary interpreter.
 
 ## Document invariants
@@ -139,8 +126,6 @@ enforced at both encoding (via `encode_document()` calling
 `validate_external_data_invariant()`) and decoding
 (`decode_document()`/`compile_configuration_source()`). Failures produce a
 `ConductorError::Workflow` listing all missing hashes.
-
-## Cache Architecture (Separation of Concerns)
 
 ## Cache Architecture (Three-Tier)
 
@@ -193,7 +178,7 @@ enforced at both encoding (via `encode_document()` calling
 
 ## Conductor Builtin Tool Strategy
 
-This repository follows the design principle that conductor builtins are the "connective tissue" for bootstrapping and cross-platform consistency. The official baseline set is:
+Conductor builtins bootstrap and provide cross-platform consistency. The official baseline set is:
 
 - `echo` (reference pure pass-through runtime contract)
 - `fs` (rooted filesystem staging operations: ensure_dir, write_text, copy)
@@ -225,76 +210,35 @@ The `os_exec_paths` map (OS label → relative executable path) replaces the old
 When editing tool/config schema behavior, preserve these invariants:
 
 1. Tool name is immutable identity and must include version in name (example: `compose@v1`).
-
 2. Tool-level `version` field is not used.
-
 3. Builtin tool definitions in persisted config are strict: only `kind`, `name`, and `version` are allowed.
-
 4. Executable tool definitions may declare `inputs`, `command`, `env_vars`, `success_codes`, and explicit `outputs`.
-
 5. Workflow step `inputs` are always tool-call input data (for both executable and builtin tools).
-
-6. For executable tools, workflow step inputs must reference declared executable tool inputs; missing required inputs are errors unless `tools.<tool>.runtime.input_defaults` provides the input. Tool-level defaults under `tools.<tool>.inputs.<input>.default` are unsupported.
-
+6. For executable tools, step inputs must reference declared executable tool inputs; missing required inputs are errors unless `tools.<tool>.runtime.input_defaults` provides the input. Tool-level defaults under `tools.<tool>.inputs.<input>.default` are unsupported.
 7. For builtin tools, step inputs are pass-through bindings and builtin crates enforce their own strict argument/input contracts.
-
-8. Workflow-step input bindings are typed call-site values: scalar `string` or `string_list` (list-of-strings). Both forms support `${...}` interpolation with expression forms `${external_data.<hash>}` and `${step_output.<step_id>.<output_name>}`; list bindings apply interpolation per item. Input-binding interpolation is text-oriented and does not support materialization directives such as `:file(...)` or `:folder(...)`; unsupported `${...}` expressions are invalid.
-
+8. Workflow-step input bindings are typed call-site values: scalar `string` or `string_list`. Both support `${...}` interpolation (`${external_data.<hash>}`, `${step_output.<step_id>.<output_name>}`); list bindings interpolate per item. Interpolation is text-oriented and does not support `:file(...)`/`:folder(...)`; unsupported `${...}` forms are invalid.
 9. `${step_output.<step_id>.<output_name>}` references define the workflow DAG implicitly; there is no explicit `depends_on` field.
-
-10. Tool execution is kind-tagged directly on each tool (`kind = "executable"` or `kind = "builtin"`) rather than nested under `tool.process`.
-
+10. Tool execution is kind-tagged directly on each tool (`kind = "executable"` or `kind = "builtin"`), not nested under `tool.process`.
 11. Step-level `process` overrides are not part of the workflow-step contract.
-
 12. Outputs are explicit and capture-based (`stdout`/`stderr`/`process_code`/`file`/`folder`) at the tool definition.
-
-13. Step `outputs` configure per-output persistence policy (`save`, `force_full`) only and can only target declared tool outputs.
-
-14. `tools.<tool>.runtime.content_map` is executable-only and sandbox-relative: keys ending with `/` or `\\` mean destination directories whose mapped CAS bytes must be ZIP payloads to unpack there; keys without a trailing slash/backslash mean destination files whose mapped bytes are written directly; `./` (or `.\\`) is valid and means sandbox-root unpack;
-    separate content-map entries must not overwrite the same target file path; every referenced hash must be rooted in top-level `external_data`; absolute and escaping paths are invalid.
-
-15. `tools.<tool>.runtime.description` is optional human-facing metadata only;
-    it must not affect instance identity, scheduler behavior, or cache keys.
-
-16. Workflow `name` and `description` are optional human-facing metadata only;
-    workflow identity remains the workflow map key and runtime behavior/cache keys must not depend on those fields.
-
-17. Cache rematerialization checks are scoped to outputs actually referenced by `${step_output...}` workflow-step inputs; missing unreferenced outputs do not force rerun for otherwise cache-hit instances.
-
-18. Keep step-output references minimal so independent steps can remain in parallelizable topological levels.
-
-19. Builtin `import`/`export` path semantics for `kind=file|folder` are: `path_mode` defaults to `relative` and resolves `path` against the outermost config directory, `relative` paths must not escape that root, and `path_mode=absolute` requires an explicit absolute `path`.
-
+13. Step `outputs` configure per-output persistence policy (`save`, `force_full`) only and target only declared tool outputs.
+14. `tools.<tool>.runtime.content_map` is executable-only and sandbox-relative: keys ending with `/` or `\\` are destination directories whose mapped CAS bytes must be ZIP payloads to unpack there; keys without a trailing slash/backslash are destination files written directly; `./` (or `.\\`) means sandbox-root unpack; separate entries must not overwrite the same target file path; every referenced hash must be rooted in top-level `external_data`; absolute and escaping paths are invalid.
+15. `tools.<tool>.runtime.description` is optional human-facing metadata only; it must not affect instance identity, scheduler behavior, or cache keys.
+16. Workflow `name` and `description` are optional human-facing metadata only; workflow identity remains the workflow map key and runtime behavior/cache keys must not depend on those fields.
+17. Cache rematerialization checks are scoped to outputs referenced by `${step_output...}` step inputs; missing unreferenced outputs do not force rerun for otherwise cache-hit instances.
+18. Keep step-output references minimal so independent steps stay in parallelizable topological levels.
+19. Builtin `import`/`export` `kind=file|folder` path semantics: `path_mode` defaults to `relative` (resolves `path` against the outermost config directory, must not escape that root); `path_mode=absolute` requires an explicit absolute `path`.
 20. Orchestration-state snapshots must include explicit top-level `version`.
+21. `ToolCallInstance.metadata` is persistence-normalized: executable metadata stays `ToolSpec`-shape, builtin metadata persists only `kind`/`name`/`version`; `impure_timestamp` belongs at instance top-level, not inside metadata. Decode must reject extra builtin metadata fields.
+22. `ToolCallInstance.inputs` persist CAS hash references (no inline `plain_content` payload, no separate `source_hash` provenance field).
+23. Duplicate equivalent tool-call instances merged under one instance key persist the effective merged output `persistence` across all callers (`save`: logical AND, `force_full`: logical OR).
+24. Any human-facing orchestration-state JSON output (CLI `state`, demo artifacts) must render the persisted wire-envelope shape so builtin metadata stays strict (`kind`/`name`/`version`) and does not leak runtime-only optional fields.
+25. If a cached `${step_output...}` payload fails CAS integrity, conductor auto-recovers only for pure workflows (warn, drop affected instances, delete the corrupt hash, retry once). Impure workflows fail without auto-retry unless `retry_impure` is enabled, which applies the same cache-invalidation and retry logic to both. Configure via `RunWorkflowOptions.retry_impure` (API), `runtime.retry_impure` (conductor.ncl), or `--retry-impure` (CLI).
+26. `tools.<tool>.runtime.max_retries` controls the per-tool outer retry budget after the initial failed call. Valid values: `-1` (use runtime default) or non-negative integers; unified execution normalizes `-1` to the current default retry policy.
+27. Newly captured output references must initialize persistence from the resolved output specification policy before equivalent-call merge logic; do not seed new output entries with unconditional saved defaults.
+28. A pure step hitting a `CorruptObject` CAS error (delta chain race with concurrent GC) invalidates the tool content cache entry and retries; impure steps fail without cache invalidation or auto-retry unless `retry_impure` is enabled.
 
-21. `ToolCallInstance.metadata` is persistence-normalized: executable metadata remains `ToolSpec`-shape, while builtin metadata persists only `kind`/`name`/`version`; `impure_timestamp` belongs at instance top-level, not inside metadata. Decode must reject extra builtin metadata fields.
-
-22. `ToolCallInstance.inputs` persist CAS hash references (no inline `plain_content` payload and no separate `source_hash` provenance field).
-
-23. For duplicate equivalent tool-call instances merged under one instance key, persisted output `persistence` must be the effective merged policy across all callers (`save`: logical AND, `force_full`: logical OR).
-
-    Merge rationale:
-
-    - `save` remains enabled unless every equivalent caller opts out,
-    - `force_full` remains enabled if any equivalent caller requires full-data persistence.
-
-24. Any human-facing orchestration-state JSON output (for example CLI `state` output or demo artifacts) must render the persisted wire-envelope shape so builtin metadata stays strict (`kind`/`name`/`version`) and does not leak runtime-only optional fields.
-
-25. If a cached referenced `${step_output...}` payload fails CAS integrity
-
-    checks, conductor may auto-recover only for pure workflows by warning, dropping affected cached instances, deleting the corrupt hash, and retrying the workflow once. Impure workflows fail without auto-retry unless `retry_impure` is enabled. When `retry_impure` is `true`, conductor applies the same cache-invalidation and retry logic to both pure and impure steps. Configure `retry_impure` via `RunWorkflowOptions.retry_impure` (API), `runtime.retry_impure` (conductor.ncl), or `--retry-impure` (CLI).
-
-26. `tools.<tool>.runtime.max_retries` controls per-tool outer retry budget
-
-    after the initial failed call. Valid values are `-1` (use runtime default) or non-negative integers. Runtime unified execution normalizes `-1` to the current default retry policy.
-
-27. Newly captured output references must initialize persistence from the resolved output specification policy before equivalent-call merge logic is applied; do not seed new output entries with unconditional saved defaults.
-
-28. When a pure workflow step encounters a `CorruptObject` CAS error (delta chain race with concurrent GC), conductor invalidates the tool content cache entry for the step's tool and retries. This lets the retry re-fetch and re-extract clean content from CAS. Impure workflows fail without cache invalidation or auto-retry unless `retry_impure` is enabled, which extends the same recovery behavior to impure steps.
-
-Instance-key rationale to preserve:
-
-- Equivalent-call dedup identity excludes tool content-map payload details and excludes merged persistence flags so metadata/content-map churn does not invalidate logically equivalent historical executions.
+Instance-key rationale: equivalent-call dedup identity excludes tool content-map payload details and merged persistence flags, so metadata/content-map churn does not invalidate logically equivalent historical executions.
 
 ## Reverse-diff optimization intent
 
@@ -441,7 +385,7 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 - **Payload root**: `<entry>/payload/` is the extraction root for all `tool_content_map` entries. File entries are written at their relative key paths; directory entries (keys with a trailing `/` or `\\`) are unpacked from ZIP payloads. `./` (or `.\\`) means the ZIP is unpacked directly into `payload/`.
 
-- **Bundled tool content**: bundle dependency payload bytes into one managed tool record only for mediapm **same-step companion** dependencies (for example `yt-dlp` companions such as `ffmpeg`/`deno`). A dependency may carry both roles; its payload bytes are then inlined for the same-step role and kept in its own record for the cross-step role. Inlined same-step bytes land under the reserved `deps/<mediapm_tool_id>/` prefix in the requester's content map and are direct-only/non-transitive (a dep's own `deps/` entries are never re-inlined). For mediapm **cross-step** dependencies (for example media-workflow steps selecting a separate dependency tool id), keep payload bytes in the dependency tool's own `tool_content_map`; do not inline those bytes into the requesting step tool. In all cases, do not model runtime lookups by pointing one tool at another tool's cache entry directory; each step reads only its own `payload/` tree as runtime source of truth.
+- **Bundled tool content**: inline dependency payload bytes into one managed tool record only for mediapm **same-step companion** dependencies (e.g. `yt-dlp`'s `ffmpeg`/`deno`). A dependency may carry both roles: inline for the same-step role, keep in its own record for the cross-step role. Inlined same-step bytes land under the reserved `deps/<mediapm_tool_id>/` prefix in the requester's content map and are direct-only/non-transitive (a dep's own `deps/` entries are never re-inlined). For **cross-step** dependencies, keep payload bytes in the dependency tool's own `tool_content_map`; never inline them into the requesting step tool. Never point one tool's runtime lookup at another tool's cache entry directory — each step reads only its own `payload/` tree.
 
 - **TTL**: cache entries expire after 24 hours of non-use. Last-used time is refreshed on every cache hit. `ProvisionCache::prune_expired` is called best-effort at the start of each `ProvisionCache::materialize` call; prune errors are logged and ignored.
 
@@ -473,13 +417,12 @@ If schema shape changes, update together:
 
 Examples live under `src/mediapm-conductor/examples/`.
 
-- `demo.rs` may generate persistent inspectable artifacts under `.artifacts/demo/`.
-- `demo.rs` should clear `.artifacts/demo/` before each run so generated examples remain deterministic and easy to inspect.
-- `demo.rs` should exercise all official builtins (`echo`, `fs`, `import`, `export`, `archive`) at least once.
-- `demo.rs` should keep generated `conductor.ncl` newcomer-friendly by including explicit default grouped runtime storage values as schema fields (not comments): `conductor_dir = .conductor`, `conductor_state_config = .conductor/state.ncl`, `cas_store_dir = .conductor/store/`.
-- When demonstrating filesystem flows in `demo.rs`, prefer compact pipelines that keep builtin `import` at the beginning and builtin `export` at the end, while minimizing intermediate filesystem-oriented steps.
-- `demo.rs` should persist orchestration state snapshots to a file under `examples/artifacts/demo/` and print only the file path (not full state JSON payloads) to stdout.
-- Non-demo examples should prefer ephemeral behavior unless persistence is essential to the teaching goal.
+- `demo.rs` generates inspectable artifacts under `.artifacts/demo/` and clears that dir before each run for deterministic, easy-to-inspect output.
+- `demo.rs` exercises all official builtins (`echo`, `fs`, `import`, `export`, `archive`) at least once.
+- `demo.rs` keeps generated `conductor.ncl` newcomer-friendly: emit explicit default grouped runtime storage as schema fields (not comments) — `conductor_dir = .conductor`, `conductor_state_config = .conductor/state.ncl`, `cas_store_dir = .conductor/store/`.
+- For filesystem flows, prefer compact pipelines with `import` first and `export` last, minimizing intermediate filesystem steps.
+- `demo.rs` persists orchestration state snapshots to `examples/artifacts/demo/` and prints only the file path, never full state JSON.
+- Non-demo examples stay ephemeral unless persistence is essential to the teaching goal.
 - Keep example tool definitions consistent with current schema invariants.
 
 ## Validation Workflow
@@ -523,10 +466,9 @@ For touched Rust code in this crate:
 - Prefer explicit errors over silent coercion.
 - When conflicts are possible, fail with actionable messages including field or tool names.
 
-## Detailed specification cross-reference
+## Specification source
 
-- The monolithic `crate-specifications.md` and `elaboration-pass-edge-cases.md` have been deleted. All specification and edge-case content is now inlined above. See each crate's `AGENTS.md` for the authoritative source of invariants and edge cases.
-- Keep this conductor-local guide as the authoritative source for orchestration/config/tool invariants.
+This conductor-local guide is the authoritative source for orchestration/config/tool invariants. See each crate's `AGENTS.md` for its own invariants and edge cases.
 
 ---
 
@@ -534,21 +476,15 @@ For touched Rust code in this crate:
 
 ### ensure_runtime_env_files
 
-Creates `.env` and `.env.generated` templates in the conductor runtime root.
-Write-if-absent: existing files are never overwritten.
-
-- `.env` — user-authored environment variables with documented examples.
-- `.env.generated` — machine-managed runtime variables header.
+Creates `.env` and `.env.generated` templates in the conductor runtime root (write-if-absent; existing files are never overwritten). `.env` holds user-authored variables with documented examples; `.env.generated` holds the machine-managed header.
 
 ### ensure_runtime_gitignore
 
-Creates a `.gitignore` in the conductor runtime root with entries for `/.env`
-and `/.env.generated`. Write-if-absent: preserves existing `.gitignore`.
+Creates a `.gitignore` in the conductor runtime root with entries for `/.env` and `/.env.generated` (write-if-absent; preserves existing `.gitignore`).
 
 ### extend_runtime_gitignore
 
-Appends entries to the conductor runtime root `.gitignore`. Skips entries
-already present in the file (simple string-contains dedup).
+Appends entries to the conductor runtime root `.gitignore`, skipping entries already present (string-contains dedup).
 
 ### RUNTIME_DOTENV_GENERATED_HEADER
 
@@ -556,24 +492,11 @@ Canonical `# @generated` header constant used by `write_generated_dotenv()`.
 
 ### write_generated_dotenv
 
-Overwrites `.env.generated` with the canonical header and tool binary path
-entries derived from tool runtimes' content maps. Takes `conductor_dir` (to
-derive file path), `tools_base_dir` (the root for path values), and
-`tool_runtimes` (resolved tool runtime configurations).
-
-The `tool_runtimes` keys are **mediapm conductor tool ids** (the generated-doc
-`tools` map keys, `{name}@{hash}` when the content map is non-empty, bare
-`{name}` when empty). Env var names derive from the stripped plain mediapm
-tool id (hash-free); env var values point at
-`<tools_base_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`,
-mirroring the provision-cache layout. Never key this function's path
-generation by the plain mediapm tool id — the provision cache deploys under
-the conductor tool id.
+Overwrites `.env.generated` with the canonical header and tool binary path entries derived from tool runtimes' content maps. Takes `conductor_dir` (derive file path), `tools_base_dir` (root for path values), and `tool_runtimes` (resolved tool runtime configurations). The `tool_runtimes` keys are **mediapm conductor tool ids** (generated-doc `tools` map keys, `{name}@{hash}` when the content map is non-empty, bare `{name}` when empty). Env var names derive from the stripped plain mediapm tool id (hash-free); env var values point at `<tools_base_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`, mirroring the provision-cache layout. Never key path generation by the plain mediapm tool id — the provision cache deploys under the conductor tool id.
 
 ### CLI startup
 
-`ensure_conductor()` in `cli.rs` calls both `ensure_runtime_env_files()` and
-`ensure_runtime_gitignore()` during initialization.
+`ensure_conductor()` in `cli.rs` calls both `ensure_runtime_env_files()` and `ensure_runtime_gitignore()` during initialization.
 
 ## A. Cross-Crate Data Flow (Conductor Context)
 
@@ -952,86 +875,43 @@ All progress messages must fit within the terminal width; detected via `terminal
 - Connection timeout during `import` → depends on tool timeout config
 - Partial download (`import` completes but content truncated) → CAS hash mismatch
 
-**Current behavior**: `import` tool failures propagate as step errors. Conductor's error recovery applies: pure workflows may auto-recover once (warn + drop + retry), impure workflows fail immediately.
-
-**Recommendations**:
-
-- Document that `import` failures are step errors; CAS integrity verification catches truncation on `put()`.
-- For transient network errors, `import` tool should retry internally (configurable retry count).
-- Conductor does NOT retry steps that fail due to `import` errors beyond the standard per-tool retry budget.
+**Current behavior**: `import` tool failures propagate as step errors. Conductor's error recovery applies: pure workflows may auto-recover once (warn + drop + retry), impure workflows fail immediately. CAS integrity verification catches truncation on `put()`. Conductor does NOT retry steps that fail due to `import` errors beyond the standard per-tool retry budget.
 
 ### N.2 Workflow DAG Cycle Detection (§2.2)
 
 **Issue**: Workflow steps reference `${step_output.<step_id>...}` from other steps, forming a DAG. No explicit cycle detection.
 
-**Current behavior**: The dependency-stream builder computes topological order. A cycle causes the topological sort to fail (no valid ordering) → workflow fails at dispatch time, not at execution time.
-
-**Recommendations**:
-
-- Document that workflow DAG cycles are detected at graph-build time (not execution time).
-- Error message must include the cycle path for debugging.
-- Add test: "circular step reference → graph build error".
+**Current behavior**: The dependency-stream builder computes topological order. A cycle causes the topological sort to fail (no valid ordering) → workflow fails at dispatch time, not at execution time. The error message must include the cycle path.
 
 ### N.3 Missing External Data During Execution (§2.3)
 
 **Issue**: A step references `${external_data.<hash>}` where `<hash>` does not exist in CAS.
 
-**Current behavior**: Input resolution (Pass 1) fails at step execution time — the hash reference cannot be resolved. No auto-recovery for pure workflows because this is a missing-data error, not an integrity failure.
-
-**Recommendations**:
-
-- Document that missing external data references fail at step execution time (not workflow load time).
-- Distinguish from CAS integrity failures: missing data is a configuration error; integrity failure is a storage error.
-- Pure workflows auto-recover from integrity failures (warn + drop + retry) but NOT from missing data.
+**Current behavior**: Input resolution (Pass 1) fails at step execution time — the hash reference cannot be resolved. This is a missing-data (configuration) error, not an integrity failure, so pure workflows do NOT auto-recover (they only recover from integrity failures).
 
 ### N.4 Document Merging Conflict Resolution (§2.4)
 
 **Issue**: `conductor.ncl` and `conductor.generated.ncl` may define conflicting values for the same field. The merge semantics for different field types (scalar, record, array) differ.
 
-**Current behavior**: Nickel merging semantics apply: non-mergeable conflicts (scalar vs. scalar, different types) fail fast. Machine document takes priority for mergeable fields (records are deep-merged, arrays are concatenated). The exact merge behavior for each field is defined by Nickel's `&` operator.
-
-**Recommendations**:
-
-- Document that merge conflicts follow Nickel's `&` operator semantics (not custom merge logic).
-- Non-mergeable conflicts (same scalar field with different values) fail with explicit error pointing to both documents.
-- Machine document wins for all mergeable fields. There is no per-field priority configuration.
+**Current behavior**: Nickel merging semantics apply: non-mergeable conflicts (scalar vs. scalar, different types) fail fast with an explicit error pointing to both documents. Machine document takes priority for mergeable fields (records deep-merged, arrays concatenated) via Nickel's `&` operator. There is no per-field priority configuration.
 
 ### N.5 Actor Panic or Message Loss (§2.5)
 
 **Issue**: Actor-based orchestration uses `ractor` for supervision. An actor panic or message loss during workflow execution could leave the system in an inconsistent state.
 
-**Current behavior**: `ractor` supervisors restart crashed actors. In-flight messages may be lost on crash. The state-store actor holds the authoritative `OrchestrationState` in memory; on restart, it reloads from the last CAS state blob. Running steps that complete during the restart window may have their outputs lost (no record of completion).
-
-**Recommendations**:
-
-- Document that `ractor` supervision restarts crashed actors with state reloaded from CAS.
-- Running steps at time of crash may need re-execution (no in-flight recovery).
-- State-store actor persistence: state is flushed to CAS on every `commit_run()` call. Crash between commits may lose the most recent in-memory changes.
-- Add test: "coordinator crash → state reload from CAS, running steps re-executed on next run".
+**Current behavior**: `ractor` supervisors restart crashed actors. In-flight messages may be lost on crash. The state-store actor holds the authoritative `OrchestrationState` in memory; on restart, it reloads from the last CAS state blob. Running steps that complete during the restart window may have their outputs lost (no record of completion). State is flushed to CAS on every `commit_run()` call; a crash between commits may lose the most recent in-memory changes.
 
 ### N.6 Version Marker Absence (§2.6)
 
 **Issue**: All three config documents must carry explicit `version` markers. A document without a version marker produces a decode error.
 
-**Current behavior**: Documents without `version` fail deserialization. There is no default version assumption. Migration bridges only handle N → N+1 transitions; a document with version 0 or missing version produces an explicit error.
-
-**Recommendations**:
-
-- Document that all three config documents MUST have top-level `version: u32` (currently version 1 or 2 depending on schema).
-- Error message: `"Config document <path> missing required 'version' field"`
-- Add test: "missing version → error on load".
+**Current behavior**: Documents without `version` fail deserialization. There is no default version assumption. Migration bridges only handle N → N+1 transitions; a document with version 0 or missing version produces an explicit error: `"Config document <path> missing required 'version' field"`.
 
 ### N.7 Conductor Pulsebar Terminal-Width Contract (§2.7)
 
 **Issue**: The progress display must respect terminal width to avoid garbled output.
 
-**Current behavior**: Pulsebar rendering uses `terminal_size` crate to detect width; defaults to 80 cols. Step names are truncated with `...` suffix and `+N more` counter when exceeding available width.
-
-**Recommendations**:
-
-- Document that progress messages truncate gracefully to fit terminal width.
-- Verify that all progress format strings (overall bar, worker lines) respect the width limit.
-- The 75 ms settle delay ensures final state is rendered before `MultiProgress` is dropped.
+**Current behavior**: Pulsebar rendering uses `terminal_size` crate to detect width; defaults to 80 cols. Step names are truncated with `...` suffix and `+N more` counter when exceeding available width. The 75 ms settle delay ensures final state is rendered before `MultiProgress` is dropped.
 
 ### N.8 Instance GC Edge Cases (§2.8)
 
@@ -1063,26 +943,13 @@ Three race scenarios in the tool content cache:
 
 **Issue**: `tools.<tool>.runtime.max_concurrency` controls per-tool concurrency limits. Steps dispatched beyond this limit must wait.
 
-**Current behavior**: The coordinator uses a per-tool `Semaphore` (tokio). Before dispatching a step, the semaphore is acquired (async wait). On step completion, the permit is released. Steps waiting on the semaphore do not block the actor — they yield to other ready steps from different tools.
-
-**Recommendations**:
-
-- Document that `max_concurrency` is enforced via per-tool `Semaphore`.
-- Default concurrency is unbounded (no semaphore) when `max_concurrency` is not set.
-- The semaphore is shared across all workflows in the same `execute_workflows` call. Cross-workflow steps for the same tool compete for the same permits.
+**Current behavior**: The coordinator uses a per-tool `Semaphore` (tokio). Before dispatching a step, the semaphore is acquired (async wait). On step completion, the permit is released. Steps waiting on the semaphore do not block the actor — they yield to other ready steps from different tools. Default concurrency is unbounded (no semaphore) when `max_concurrency` is not set. The semaphore is shared across all workflows in the same `execute_workflows` call; cross-workflow steps for the same tool compete for the same permits.
 
 ### N.11 Tool Max Retries Enforcement (§2.11)
 
 **Issue**: `tools.<tool>.runtime.max_retries` controls the outer retry budget for failed steps.
 
-**Current behavior**: The coordinator wraps step execution in a retry loop: `attempt = 0..=max_retries`. On each attempt, the step is dispatched to a worker. If the worker returns an error and `attempt < max_retries`, the step is re-dispatched after a delay. If all retries are exhausted, the step fails permanently and the workflow enters error state.
-
-**Recommendations**:
-
-- Document that `max_retries` is per-tool, not per-step, and applies across all workflows.
-- Retry delay uses exponential backoff with jitter (not configurable per tool).
-- A retry counter is maintained per-instance-key, not per-step-id. If the same instance key appears in multiple workflows, retries are shared.
-- Default retry count is 0 (no retries) when not configured.
+**Current behavior**: The coordinator wraps step execution in a retry loop: `attempt = 0..=max_retries`. On each attempt, the step is dispatched to a worker. If the worker returns an error and `attempt < max_retries`, the step is re-dispatched after a delay. If all retries are exhausted, the step fails permanently and the workflow enters error state. `max_retries` is per-tool (not per-step) and applies across all workflows; retry delay uses exponential backoff with jitter (not configurable per tool); the retry counter is maintained per-instance-key (shared if the same instance key appears in multiple workflows); default is 0 (no retries) when not configured.
 
 ### N.12 Tool Identity Preservation During Workflow Re-Synthesis (§4.22)
 

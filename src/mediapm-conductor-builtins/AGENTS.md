@@ -1,16 +1,8 @@
 # Conductor Builtins Crate Instructions
 
-> **Conductor-Builtins** provides five standard tools (`echo`, `fs`, `archive`, `import`, `export`)
-> sharing a common CLI/API contract: `BTreeMap<String, String>` args, fail-fast validation,
-> deterministic payloads for pure tools, clean side effects for impure ones.
+Crate-local guidance for `src/mediapm-conductor-builtins/`. Follow workspace-wide policy in `AGENTS.md` and focused instruction files in `.agents/instructions/`.
 
-This file defines crate-local guidance for `src/mediapm-conductor-builtins/`.
-Follow this together with workspace-wide policy in `AGENTS.md` and focused instruction files in `.agents/instructions/`.
-
-## Scope
-
-- Applies to all files under `src/mediapm-conductor-builtins/`.
-- Sub-crates under this directory each ship their own `AGENTS.md` for builtin-specific details.
+The crate provides five standard tools (`echo`, `fs`, `archive`, `import`, `export`) sharing one CLI/API contract: `BTreeMap<String, String>` args, fail-fast validation, deterministic payloads for pure tools, side effects for impure ones. Each sub-crate ships its own `AGENTS.md` for builtin-specific details.
 
 ## Conventions
 
@@ -53,7 +45,6 @@ State Persistence (state.ncl)
 | Invariant | Builtins Behavior |
 | --- | --- |
 | Content Identity | Pure builtins (echo, archive) produce deterministic payloads |
-| Constraint Correctness | N/A (read-only, no constraints) |
 | Reconstructability | Output bytes persist; pure outputs are deterministic |
 | Atomicity | File operations succeed or rollback (no orphaned state) |
 | Determinism | Pure (echo, archive) deterministic; impure (fs, import, export) side-effect-driven |
@@ -63,57 +54,30 @@ State Persistence (state.ncl)
 
 ## C. Integration Boundaries — Conductor↔Builtins
 
-**Entry Point**: Conductor discovers builtins at compile time via `registered_builtin_ids()` → `["import@v1", "fs@v1", ...]`.
+Conductor discovers builtins at compile time via `registered_builtin_ids()` → `["import@v1", "fs@v1", ...]`.
 
-**Operations**:
+- CLI: builtin binary receives `--arg KEY VALUE` pairs.
+- API: builtin library receives `BTreeMap<String, String>` params + optional binary payload.
+- Pure builtins return deterministic payloads; impure signal via side effects.
 
-1. CLI invocation: Builtin binary receives `--arg KEY VALUE` pairs.
-2. API invocation: Builtin library receives `BTreeMap<String, String>` params + optional binary payload.
-3. Result handling: Pure builtins return deterministic payloads; impure signal via side effects.
+Ownership: Conductor owns tool lifecycle, input binding, and output capture. Builtins own implementation, error semantics, and validation.
 
-**Ownership**:
-
-- Conductor owns: Tool lifecycle, input binding resolution, output capture.
-- Builtins own: Implementation logic, error semantics, validation rules.
-
-**Contract**:
-
-- CLI and API inputs/outputs must be identical (parity).
-- Fail-fast validation: undeclared keys rejected immediately.
-- No encoding of failures in success payloads (exit codes or `Result` errors only).
+Contract: CLI and API inputs/outputs are identical (parity); undeclared keys are rejected immediately; failures use ordinary Rust error types, never fake success payloads.
 
 ---
 
-## D. Conductor-Builtins Specification (9 Sections)
+## D. Conductor-Builtins Specification
 
-### D1. Shared Builtin Framework
+### D1. Shared Framework, CLI, API, and Validation
 
-Each builtin follows a common pattern: parameter validation → execution → output. Pure builtins produce deterministic output; impure builtins perform side effects.
+Each builtin follows: parameter validation → execution → output. Pure builtins produce deterministic output; impure builtins perform side effects.
 
-### D2. CLI Convention Contract
+- CLI: `--arg KEY VALUE` keyed pairs (all strings). Optional one default key for positional convenience, but explicit keyed form always supported.
+- API: `BTreeMap<String, String>` args + optional raw payload bytes (`&[u8]`).
+- Pure builtin success: deterministic bytes or `BTreeMap<String, String>`. Impure builtin success: side effects primary, no forced string-only payload.
+- Validate all inputs before any side effects. Reject undeclared keys, missing required keys, and invalid combinations immediately.
 
-- `--arg KEY VALUE` keyed pairs (all arguments are strings).
-- Optional one default key for positional convenience, but explicit keyed form always supported.
-- Fail fast on undeclared keys, missing required keys, and invalid combinations.
-
-### D3. API Input/Output Contract
-
-- Input: `BTreeMap<String, String>` args + optional raw payload bytes (`&[u8]`).
-- Output: deterministic bytes or `BTreeMap<String, String>` for pure builtins; impure builtins communicate success via side effects.
-- Failures use ordinary Rust error types — never encode failures as fake success payloads.
-
-### D4. Validation & Error Semantics
-
-- Validate all inputs before any side effects.
-- Reject undeclared keys, missing required keys, and invalid combinations immediately.
-- CLI failures use Rust error types; no fake success payloads.
-
-### D5. Success Payload Format Rules
-
-- Pure builtin success: deterministic bytes or `BTreeMap<String, String>`.
-- Impure builtin success: side-effect primary; no forced string-only payload.
-
-### D6. Builtin Specifications (5 Builtins)
+### D2. Builtin Specifications (5 Builtins)
 
 | Builtin | Kind | Purity | Key Parameters |
 | --- | --- | --- | --- |
@@ -123,103 +87,46 @@ Each builtin follows a common pattern: parameter validation → execution → ou
 | import | File/directory/glob/URL → CAS | Impure | `source`, `dest` |
 | export | CAS → file/directory/glob/URL | Impure | `cas_hash`, `dest` |
 
-### D7. Testing Patterns
+### D3. Testing Patterns
 
 - Parametrized tests across all builtins for CLI/API parity.
 - Edge-case tests per builtin (empty input, invalid args, boundary conditions).
 - Impure builtin tests: verify side effects + cleanup on failure.
 - Pure builtin tests: deterministic output assertion.
 
-### D8. Integration Boundaries
-
-Builtins communicate with Conductor via stdio (CLI) or direct library calls (API). No shared state. No circular dependencies.
-
-### D9. Documentation Requirements
+### D4. Documentation Requirements
 
 Each builtin must document: CLI args, API signature, purity, error conditions, and at least one usage example.
 
 ---
 
-## E. Performance Characteristics (Builtins)
-
-Builtins are lightweight wrappers: parameter parsing → operation → output. No async runtime overhead for synchronous builtins. Archive and import/export performance is bounded by I/O throughput and compression ratio.
-
----
-
-## F. Key References
-
-| Reference | Details |
-| --- | --- |
-| Framework | CLI contract (`--arg`), API contract (`BTreeMap`) |
-| 5 Tools | echo, fs, archive, import, export |
-| Purity | Pure (echo, archive) vs. impure (fs, import, export) |
-| Validation | Fail-fast; undeclared keys rejected immediately |
-
----
-
-## G. Part 3: Builtins Edge Cases
-
-Content below is sourced from the deleted `elaboration-pass-edge-cases.md` (Part 3: Builtins Edge Cases), now inlined here.
+## G. Builtins edge cases
 
 ### 3.1 Path Traversal & Symlink Loops (fs builtin)
 
-**Issue**: `fs` builtin sandbox enforcement must reject path traversal (`..`) and symlink loops.
+`fs` sandbox enforcement rejects path traversal (`..`) and enforces sandbox-relative keys, but symlink loops within the sandbox are unaddressed — a recursive walk that follows a symlink to its parent loops forever.
 
-**Current Spec**: Path validation rejects `..`; sandbox-relative key sandbox enforced.
-
-**Gap**: Symlink loops within sandbox not addressed.
-
-**Risk**: Infinite loop on recursive directory operations (walk follows symlink pointing to parent).
-
-**Recommendations**:
-
-- Reject symlinks in sandbox mode during traversal (or follow with depth limit).
+- Reject symlinks in sandbox mode during traversal (or follow with a depth limit).
 - Add test: "symlink loop → error, not infinite loop".
 
 ### 3.2 Windows Reserved Names (fs builtin)
 
-**Issue**: Windows reserved filenames (CON, PRN, AUX, NUL, COM1–COM9, LPT1–LPT9) are valid on Unix but cause errors on Windows.
-
-**Current Spec**: No Windows-specific path validation.
-
-**Gap**: Cross-platform behavior differs silently.
-
-**Risk**: Config works on Linux, fails on Windows with cryptic error.
-
-**Recommendations**:
+Windows reserved filenames (CON, PRN, AUX, NUL, COM1–COM9, LPT1–LPT9) are valid on Unix but fail on Windows. With no Windows-specific path validation, a config that works on Linux fails on Windows with a cryptic error.
 
 - Detect and reject Windows reserved names on all platforms (consistent fail-fast).
 - Add test: "reserved Windows filenames rejected on all platforms".
 
 ### 3.3 Import from URL Timeout (import builtin)
 
-**Issue**: `import` from URL has no configurable timeout.
-
-**Scenario**: Import from slow server hangs indefinitely.
-
-**Current Spec**: "Import: file/folder/URL/CAS ingestion; impure".
-
-**Gap**: No timeout parameter.
-
-**Risk**: Workflow hangs forever; user must kill process.
-
-**Recommendations**:
+`import` from URL has no configurable timeout, so a slow server hangs the workflow indefinitely.
 
 - Add `timeout_secs` param (default 300).
-- Enforce timeout at HTTP client level.
+- Enforce timeout at the HTTP client level.
 - Add test: "slow URL → timeout error".
 
 ### 3.4 Archive Extraction Zip Bomb (archive builtin)
 
-**Issue**: Archive extraction can produce decompression bombs (tiny zip → huge output).
-
-**Current Spec**: "archive: ZIP pack/unpack/repack/transform; pure" — no limits.
-
-**Gap**: No decompression size limit.
-
-**Risk**: OOM or disk fill from malicious/crafted archive.
-
-**Recommendations**:
+Archive extraction has no decompression size limit, so a tiny zip can exhaust memory or disk.
 
 - Add `max_decompressed_size` param (default 1 GB).
 - Track running decompressed bytes; abort on exceed.
@@ -227,13 +134,7 @@ Content below is sourced from the deleted `elaboration-pass-edge-cases.md` (Part
 
 ### 3.4.1 Archive Transform Action Edge Cases (archive builtin)
 
-**Issue**: `archive` builtin `transform` action performs regex-based replacement on zip entries.
-
-**Current Spec**: No parameter details for transform.
-
-**Gap**: Transform parameters and edge-case behavior not documented.
-
-**Recommendations**:
+The `transform` action performs regex-based replacement on zip entries, but its parameters and edge-case behavior are undocumented.
 
 - Transforms run sequentially in numbered order — each operates on the output of the previous.
 - Validate numbered key contiguity (`find_0`, `find_1`, ...) at parse time; fail fast.
@@ -244,15 +145,7 @@ Content below is sourced from the deleted `elaboration-pass-edge-cases.md` (Part
 
 ### 3.5 Export to Full Disk (export builtin)
 
-**Issue**: `export` builtin (materialize payload to disk) does not handle disk-full failure.
-
-**Current Spec**: "Impure: payload materialization".
-
-**Gap**: No size check or cleanup on failure.
-
-**Risk**: Partial file orphaned; disk space wasted.
-
-**Recommendations**:
+`export` (materialize payload to disk) does not handle disk-full failure, so a partial file is orphaned and disk space wasted.
 
 - Pre-flight check: verify destination has enough free space (payload size + buffer).
 - Atomic write: stage to temp file, then move (not incremental write).
@@ -261,42 +154,23 @@ Content below is sourced from the deleted `elaboration-pass-edge-cases.md` (Part
 
 ### 3.6 CLI vs API Parity: Argument Parsing Differences
 
-**Issue**: Specification states "CLI and API inputs/outputs must be identical (parity)" but does not detail parsing differences.
-
-**Current Spec**: "Fail-fast validation: undeclared keys rejected immediately".
-
-**Gap**: No parity testing strategy.
-
-**Risk**: CLI works, API fails (or vice versa) on same input.
-
-**Recommendations**:
+The spec states "CLI and API inputs/outputs must be identical (parity)" but does not detail parsing differences, so CLI may work while API fails on the same input.
 
 - Explicit parsing rules: CLI parser unquotes; API passes strings as-is.
 - Add test: "same args → CLI and API produce identical output" (parametrized over all builtins).
 
 ## H. Additional Builtins Specifications
 
-### H.1 Decision Rationale
+### H.2 Performance: Builtin Invocation Overhead
 
-#### Why Fail-Fast Validation?
-
-Builtins run inside Conductor workflows — invalid input must be rejected before any side effects occur. Undeclared `--arg` keys, missing required keys, and invalid combinations are all rejected before I/O. This ensures predictable, auditable behavior: a validation error means nothing was started, so retry is safe.
-
-### H.2 Performance: Builtin Invocation Overhead (§8.6)
-
-Builtins provide both CLI (spawned process) and library API (in-process). Conductor uses library API for performance. CLI is available for external tools or manual invocation. Benchmark: API invocation overhead is ~µs; CLI spawn is ~ms.
+Builtins provide both CLI (spawned process) and library API (in-process). Conductor uses the library API for performance; CLI is for external tools or manual invocation. API invocation overhead is ~µs; CLI spawn is ~ms.
 
 ### H.3 Testing Requirements
 
 **Path Safety and Security** — Add `tests/e2e/path_safety_and_security.rs`:
 
-- [ ] Symlink escape (`../../etc`) → rejected
-- [ ] Symlink loop → depth limit prevents hang
-- [ ] Windows reserved names (CON, PRN) → rejected
 - [ ] Special characters (`:`, `*`, `?`) → rejected or escaped
-- [ ] ZIP bomb (10GB from 1MB) → size limit prevents extraction
 - [ ] Archive symlink escape → symlinks rejected in extracted files
-- [ ] CLI vs API with same args → identical output (parametrized over all builtins)
 
 ### H.4 Troubleshooting
 
@@ -328,16 +202,12 @@ Builtins provide both CLI (spawned process) and library API (in-process). Conduc
 - [ ] Write integration tests (CLI + API parity)
 - [ ] Document argument names, types, and examples
 
-### H.6 Extension Points
-
-- **New builtin tools**: Follow the checklist above. Create crate, implement API, register in `registered_builtin_ids()`.
-
 ### H.7 Ambiguities Resolved
 
 #### Fail-Fast Validation Scope (§7.1)
 
-Validation errors are raised **before any processing or side effects** (interpretation (a)). Validation is a separate pass before execution. A validation error means nothing was started — retry is always safe. Test: "validation error → zero output, zero side effects."
+Validation errors are raised before any processing or side effects. Validation is a separate pass before execution. A validation error means nothing was started — retry is always safe. Test: "validation error → zero output, zero side effects."
 
 #### Deterministic Payload: System State (§7.2)
 
-Deterministic payload means byte-for-byte identical output for identical input. This includes file metadata (timestamps, permissions, ownership) — all metadata must be deterministic or omitted. Archive timestamps should be set to a fixed value (epoch or input mtime).
+Deterministic payload means byte-for-byte identical output for identical input, including file metadata (timestamps, permissions, ownership) — all metadata must be deterministic or omitted. Archive timestamps should be set to a fixed value (epoch or input mtime).

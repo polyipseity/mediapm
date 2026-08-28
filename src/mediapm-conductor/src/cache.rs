@@ -175,19 +175,16 @@ async fn open_domain_setup(
 /// interfere with [`Cache::prune_expired_entries`] cooldown tracking.
 ///
 /// Takes the CAS store and domain map directly instead of a full [`Cache`]:
-/// the background prune task captures owned clones of these, so it never
-/// keeps a `Cache` alive past its owning scope. A lingering `Cache` clone
-/// would run its [`Drop`](Drop) index flush at runtime teardown — after the
-/// owning `TempDir` already removed the directory — and `write_index_file`'s
-/// `create_dir_all` would recreate it as an orphan containing only index
-/// files (no `store/`), leaking one directory per cache instance under
-/// `$TMPDIR`. The [`Drop`](Drop) root-exists guard is the primary invariant
-/// against this leak; the capture pattern here is a secondary defense that
-/// avoids running the flush at teardown in the first place.
+/// the background prune task captures owned clones, so it never keeps a
+/// `Cache` alive past its owning scope. A lingering `Cache` clone would run
+/// its [`Drop`](Drop) index flush at teardown — after the owning `TempDir`
+/// already removed the directory — and `write_index_file`'s `create_dir_all`
+/// would recreate it as an index-only orphan under `$TMPDIR`. The [`Drop`]
+/// root-exists guard is the primary defense; this capture pattern avoids the
+/// flush at teardown entirely.
 ///
-/// Synchronous filesystem I/O (index write, hash-refererence scan) is
-/// offloaded to [`tokio::task::spawn_blocking`] to avoid blocking the
-/// async runtime.
+/// Synchronous filesystem I/O is offloaded to [`tokio::task::spawn_blocking`]
+/// to avoid blocking the async runtime.
 async fn prune_expired_inner_core(
     cas: &FileSystemCas,
     domains: &BTreeMap<String, DomainState>,
@@ -875,7 +872,7 @@ mod tests {
     const _: () = assert!(PRUNE_INTERVAL_SECONDS >= 60 * 60);
     const _: () = assert!(TOUCH_PERSIST_INTERVAL_SECONDS >= 60);
 
-    /// Protects shared-cache behavior by ensuring key-based round trips return
+    /// Protects shared-cache behavior: key-based round trips return
     /// the original payload bytes.
     #[tokio::test]
     async fn cache_round_trips_bytes_by_logical_key() {

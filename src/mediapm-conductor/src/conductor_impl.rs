@@ -1,9 +1,6 @@
 //! Facade over the conductor orchestration runtime.
 //!
-//! [`Conductor`] is the concrete implementation of the conductor API. It owns
-//! a lazy [`ConductorActorClient`] through which all workflow operations are
-//! dispatched, and provides convenience stubs for tool/data management that
-//! are expected by the CLI layer.
+//! [`Conductor`] is the concrete implementation of the conductor API.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,11 +21,8 @@ use crate::state::ConductorState;
 
 /// Concrete facade over the conductor orchestration runtime.
 ///
-/// Wraps a lazily initialized [`ConductorActorClient`] (which itself manages a
-/// [`WorkflowCoordinator`] actor) and exposes all CLI-required operations.
-///
-/// Persists [`ConductorState`] across workflow runs so that subsequent
-/// runs can benefit from cached tool-call instances.
+/// Wraps a lazily initialized [`ConductorActorClient`] and persists
+/// [`ConductorState`] across runs so repeated deterministic workflows hit the cache.
 pub struct Conductor<C>
 where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
@@ -83,14 +77,10 @@ where
         &self.storage_paths
     }
 
-    // -----------------------------------------------------------------------
-    // CLI-facing convenience methods (may be simplified further)
-    // -----------------------------------------------------------------------
-
     /// Runs a workflow and returns a summary.
     ///
-    /// Persists the orchestration state across runs so that repeated
-    /// deterministic workflows hit the cache on subsequent calls.
+    /// Persists the orchestration state across runs so repeated deterministic
+    /// workflows hit the cache on subsequent calls.
     ///
     /// # Errors
     ///
@@ -147,8 +137,7 @@ where
     ///
     /// # Errors
     ///
-    /// Delegates to the conductor actor; returns an error when the actor is
-    /// unreachable.
+    /// Returns an error when the actor is unreachable.
     pub async fn get_runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
         let client = self.ensure_actor_client().await?;
         client.runtime_diagnostics().await

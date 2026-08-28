@@ -1,8 +1,6 @@
 # `provider/` — Tool provider source descriptors
 
-Three-phase provisioning pipeline: **resolve → fetch → process**.
-Each file defines per-OS source descriptors consumed by
-`provider::mod::resolve_tool_fetch()`.
+Three-phase provisioning pipeline: **resolve → fetch → process**. Each file defines per-OS source descriptors consumed by `provider::mod::resolve_tool_fetch()`.
 
 Phases:
 
@@ -67,9 +65,6 @@ The byte-level progress tracking system across all three phases guarantees:
     are written. ZIP metadata overhead (~KB) is not included in the total, causing
     a small undercount vs final ZIP file size — negligible for payloads in the
     MB–GB range.
-- **Fidelity over precision**: progress tracking prioritizes smooth visual updates
-  and monotonic progress over byte-exact accuracy. All counting paths guarantee
-  monotonicity and eventual completion.
 
 ### Progress size tracking (MultiItemBudget)
 

@@ -240,8 +240,8 @@ pub async fn decode_state_json_with_cas<C: CasApi>(
     }
 }
 
-/// Encodes an orchestration state as pretty JSON, ensuring the version marker
-/// matches the latest schema.
+/// Encodes an orchestration state as pretty JSON with the latest-schema
+/// version marker.
 ///
 /// # Errors
 ///

@@ -19,15 +19,9 @@ use crate::provision::Metadata;
 use crate::provision::helpers::sanitize_tool_id;
 use crate::provision::{METADATA_FILE_NAME, ProvisionCache};
 
-// ---------------------------------------------------------------------------
-// Runtime storage paths
-// ---------------------------------------------------------------------------
-
 /// Resolved filesystem paths for one conductor runtime directory.
 ///
-/// These paths are derived from a `conductor_dir` root with a consistent
-/// subdirectory layout.  Use [`RuntimeStoragePaths::default_for`] to create a
-/// set for a given root.
+/// Derived from a `conductor_dir` root with a consistent subdirectory layout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeStoragePaths {
     /// Root runtime directory (e.g. `~/.conductor/`).
@@ -144,10 +138,6 @@ pub struct PathOverrides {
     pub state_file: Option<PathBuf>,
 }
 
-// ---------------------------------------------------------------------------
-// Run summary
-// ---------------------------------------------------------------------------
-
 /// Aggregated counters for one workflow run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RunSummary {
@@ -163,10 +153,6 @@ pub struct RunSummary {
     pub retried_steps: usize,
 }
 
-// ---------------------------------------------------------------------------
-// Runtime diagnostics
-// ---------------------------------------------------------------------------
-
 /// Scheduler + worker diagnostics snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RuntimeDiagnostics {
@@ -180,14 +166,7 @@ pub struct RuntimeDiagnostics {
     pub failed_steps: usize,
 }
 
-// ---------------------------------------------------------------------------
-// ConductorApi trait
-// ---------------------------------------------------------------------------
-
 /// Public API surface for the conductor runtime.
-///
-/// Implementations may be backed by an in-process coordinator or an actor
-/// client.
 pub trait ConductorApi<C: CasApi>: Send + Sync {
     /// Runs a workflow by name with the given options.
     fn run_workflow_with_options(
@@ -229,9 +208,8 @@ pub struct RunWorkflowOptions {
     ///
     /// The caller creates this via `ProgressGroup::builder().with_overall()`
     /// and passes it here. The coordinator uses it directly instead of
-    /// creating a child bar, ensuring the overall bar is pinned at the
-    /// bottom slot. When `None`, the conductor does not display a workflow
-    /// progress screen.
+    /// creating a child bar, so the overall bar stays in the bottom slot.
+    /// When `None`, the conductor does not display a workflow progress screen.
     #[cfg(feature = "progress")]
     pub overall_bar: Option<Arc<dyn ProgressBarApi>>,
 }
@@ -248,10 +226,6 @@ impl std::fmt::Debug for RunWorkflowOptions {
         dbg.finish()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Managed tool resolution
-// ---------------------------------------------------------------------------
 
 /// Result of resolving a managed tool's executable from the filesystem CAS.
 #[derive(Debug)]

@@ -1,8 +1,7 @@
 //! Garbage collection orchestration for conductor.
 //!
-//! Conductor GC is a three-phase process covering state-instance pruning, CAS
-//! orphan reclamation, and CAS metadata maintenance.  It is **distinct** from
-//! CAS-internal GC — callers run both as appropriate.
+//! Conductor GC covers state-instance pruning, CAS orphan reclamation, and CAS
+//! metadata maintenance. It is distinct from CAS-internal GC.
 
 use std::collections::BTreeSet;
 
@@ -27,16 +26,13 @@ pub struct ConductorGcReport {
 /// Runs full conductor garbage collection: instance pruning, CAS orphan
 /// deletion, and CAS maintenance.
 ///
-/// This is the one-stop function called by background GC loops and CLI.
-///
 /// # Phases
 ///
-/// 1. **Instance GC** — evict stale tool-call instances from
-///    [`ConductorState`] using the TTL grace period.
-/// 2. **Root-set / orphan reclamation** — collect all referenced CAS hashes
-///    from surviving instances and the unified config, list all CAS hashes,
-///    delete the orphans.
-/// 3. **CAS maintenance** — delegate to [`run_cas_gc_sweep`] for constraint
+/// 1. Instance GC — evict stale tool-call instances from [`ConductorState`]
+///    using the TTL grace period.
+/// 2. Root-set / orphan reclamation — collect referenced CAS hashes from
+///    surviving instances and the unified config, then delete orphans.
+/// 3. CAS maintenance — delegate to [`run_cas_gc_sweep`] for constraint
 ///    pruning and WAL consumption.
 ///
 /// # Errors
@@ -99,8 +95,7 @@ where
 
 /// Runs full CAS maintenance: optimize, prune constraints.
 ///
-/// This is the one-stop function called by background GC loops and CLI. It
-/// does **not** touch instance GC or orphan reclamation — callers should run
+/// Does not touch instance GC or orphan reclamation; callers run
 /// [`run_conductor_gc`] for the full cycle.
 ///
 /// # Errors

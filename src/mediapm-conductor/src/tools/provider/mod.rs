@@ -579,7 +579,7 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 /// The [`fire_progress`] helper function is the single push point for all
 /// progress snapshots. It aggregates the budget state and dispatches it
 /// through the provider's progress callback. Both the fetch and process
-/// phases use this shared helper, ensuring consistent snapshot semantics.
+/// phases use this shared helper, so snapshot semantics stay consistent.
 ///
 /// - **ZIP extraction**: each entry's `compressed_size()` from the ZIP
 ///   central directory is used as the position weight, so progress tracks
@@ -1595,7 +1595,7 @@ mod tests {
     }
 
     /// Simple deterministic pseudo-random buffer for creating hard-to-compress
-    /// data, ensuring compressed size stays close to uncompressed size during
+    /// data, so compressed size stays close to uncompressed size during
     /// sub-entry progress tests.
     #[expect(
         clippy::cast_possible_truncation,
