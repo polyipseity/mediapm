@@ -56,26 +56,16 @@ impl FileSystemCas {
     /// verify strategies, spawning a background WAL consumer with the
     /// given interval between cycles.
     ///
-    /// The background consumer starts after a 500 ms initial delay so
-    /// that fast setup flows (e.g., tests) can complete before the first
-    /// maintenance cycle races against them. After each consumer run, it
-    /// sleeps for `bg_interval` before re-running.
-    ///
-    /// # WAL consumer policy
-    ///
-    /// The consumer runs via a deferred background task, **not**
-    /// synchronously during open. This ensures the store is immediately
-    /// readable after construction. See [`CasStore::new`] for the
-    /// rationale.
+    /// The consumer starts after a 500 ms initial delay so fast setup flows
+    /// (e.g. tests) finish before the first maintenance cycle races them.
+    /// It runs as a deferred background task, not synchronously during open,
+    /// so the store is readable immediately after construction.
     ///
     /// # Errors
     ///
     /// Returns [`CasError::LockContention`] if the directory is already
-    /// locked by another [`FileSystemCas`] instance (same or different
-    /// process). Share the [`Arc<FileSystemCas>`] between consumers instead
-    /// of opening multiple instances.
-    ///
-    /// Delegates to WAL creation, blob store creation, and metadata rebuild.
+    /// locked by another [`FileSystemCas`] instance. Share the
+    /// [`Arc<FileSystemCas>`] between consumers instead of opening multiple.
     pub async fn open_with_strategies_and_interval(
         dir: &Path,
         verify_strategies: Vec<VerifyTriggerStrategy>,

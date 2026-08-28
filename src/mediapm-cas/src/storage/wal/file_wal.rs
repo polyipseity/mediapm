@@ -1,28 +1,12 @@
 //! File-based journal and checkpoint implementation.
 //!
-//! ## File locations
-//!
-//! - `<cas_dir>/checkpoint` — checkpoint file (last consumed position)
-//! - `<cas_dir>/journal/active.seg` — active segment (append-only)
-//! - `<cas_dir>/journal/<first:020x>-<last:020x>.seg` — sealed segments
-//!
-//! ## Segment lifecycle
-//!
-//! 1. Active segment is created on first write. Entries are appended.
-//! 2. When active exceeds `max_segment_size`, it is **sealed**: the file
-//!    is renamed to `<first_pos>-<last_pos>.seg` and a new active is
-//!    created.
-//! 3. On `trim(up_to)`, sealed segments whose `last_pos ≤ up_to` are
-//!    physically deleted.
-//!
-//! ## Startup recovery
-//!
-//! On creation, the journal:
-//! 1. Reads the checkpoint file (or starts at ZERO if absent).
-//! 2. Scans `<cas_dir>/journal/` for all segment files.
-//! 3. Reads each segment to determine position ranges and rebuild the
-//!    in-memory pending state for all entries from the checkpoint forward.
-//! 4. Resumes appending to the active segment (or creates one).
+//! Files: `<cas_dir>/checkpoint` (last consumed position),
+//! `<cas_dir>/journal/active.seg` (active segment), and
+//! `<cas_dir>/journal/<first:020x>-<last:020x>.seg` (sealed segments). The
+//! active segment is sealed to a named file once it exceeds `max_segment_size`;
+//! `trim(up_to)` deletes sealed segments whose `last_pos ≤ up_to`. On startup
+//! the journal reads the checkpoint, scans segments, rebuilds pending state
+//! from the checkpoint forward, and resumes appending.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -37,10 +21,6 @@ use crate::hash::Hash;
 
 use super::versions as format;
 use super::{PendingState, Wal, WalEntry, WalPosition};
-
-// ---------------------------------------------------------------------------
-// Checkpoint
-// ---------------------------------------------------------------------------
 
 /// Manages the checkpoint file.
 struct Checkpoint {
@@ -77,10 +57,6 @@ impl Checkpoint {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Sealed segment metadata
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 struct SealedSegment {
     first_pos: WalPosition,
@@ -103,10 +79,6 @@ fn parse_sealed_filename(name: &str) -> Option<(WalPosition, WalPosition)> {
 fn sealed_filename(first: WalPosition, last: WalPosition) -> String {
     format!("{:020x}-{:020x}.seg", first.as_u64(), last.as_u64())
 }
-
-// ---------------------------------------------------------------------------
-// Active segment
-// ---------------------------------------------------------------------------
 
 /// Writable segment for new journal entries.
 struct ActiveSegment {
@@ -199,10 +171,6 @@ impl ActiveSegment {
         Ok(SealedSegment { first_pos: self.first_pos, last_pos, path: dst })
     }
 }
-
-// ---------------------------------------------------------------------------
-// FileWal
-// ---------------------------------------------------------------------------
 
 /// A [`Wal`] implementation backed by files on disk.
 ///
@@ -816,10 +784,6 @@ impl Clone for FileWal {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1130,10 +1094,6 @@ mod tests {
             .unwrap();
         assert_eq!(journal.committed_position().await, pos);
     }
-
-    // -----------------------------------------------------------------------
-    // Segment dedup tests
-    // -----------------------------------------------------------------------
 
     /// Helper: create a valid sealed segment file with one entry at `first`.
     async fn create_dedup_segment(jd: &std::path::Path, first: u64, last: u64) -> PathBuf {

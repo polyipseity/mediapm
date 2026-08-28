@@ -1,9 +1,6 @@
 # CAS Agent Guide
 
-> `mediapm-cas` — content-addressable blob store with delta-compression hints.
-> `put(bytes)` → hash; `get(hash)` → bytes; `put_stream(reader)` → hash; `get_to_writer(hash, writer)` → ().
-> Deduplicates identical content via Blake3-256. Foundation for deterministic workflows
-> used by Conductor and MediaPM.
+`mediapm-cas` — content-addressable blob store with delta-compression hints. `put(bytes)` → hash; `get(hash)` → bytes; `put_stream(reader)` → hash; `get_to_writer(hash, writer)` → (). Deduplicates identical content via Blake3-256; foundation for Conductor and MediaPM deterministic workflows.
 
 ## 1. Hash
 
@@ -51,8 +48,7 @@ No standalone `exists()` method — use `stat()` or `get()`. Both return `NotFou
 
 Write-through vs write-back is compile-time configured via `B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE`: write-through materializes Blob + Metadata synchronously (immediate visibility); write-back defers to the WAL consumer. Only `Hash::from_content(b"")` produces `Hash::empty()` — normal non-empty content never collides with it.
 
-**get**: Three-layer lookup (Metadata → Blob → WAL fallback) via `ComposedReadView`.
-Delta reconstruction is transparent. Delegates to `get_to_writer` internally, buffering into memory. Returns `CasError::NotFound` if absent.
+**get**: Three-layer lookup (Metadata → Blob → WAL fallback) via `ComposedReadView`. Delta reconstruction is transparent. Delegates to `get_to_writer` internally, buffering into memory. Returns `CasError::NotFound` if absent.
 
 **stat**: Returns `ObjectMeta { len, encoding }`. Encoding is informational only (Full or Delta { base_hash }). Callers must NOT make decisions based on encoding.
 
@@ -76,8 +72,7 @@ pub enum CasError {
 }
 ```
 
-Returned when a delta chain exceeds `MAX_DELTA_CHAIN_DEPTH = 5`.
-The `get()` method no longer returns `TooLarge` — it delegates to `get_to_writer()` internally.
+Returned only when a delta chain exceeds `MAX_DELTA_CHAIN_DEPTH = 5`. `get()` delegates to `get_to_writer()` internally, so it never returns `TooLarge`.
 
 ### 2.3 ConstraintApi — delta-compression hints
 
@@ -337,7 +332,7 @@ Three-layer lookup for get/stat, plus streaming path.
 
 **get_to_writer**: Streaming path. For Full objects, reads blob directly to writer via `BlobStore::read_to_writer` (chunked copy). For Delta objects, reconstructs in memory then writes. Object-safe (`&mut (dyn AsyncWrite + Send + Unpin)`).
 
-**Delta chain depth enforcement**: Delta chain resolution enforces `MAX_DELTA_CHAIN_DEPTH = 5`; beyond that, `TooLarge` is returned to prevent unbounded recursion. The `get()` method no longer enforces inline-size limits — all sizes resolve via `get_to_writer()` internally.
+**Delta chain depth enforcement**: Delta chain resolution enforces `MAX_DELTA_CHAIN_DEPTH = 5`; beyond that, `TooLarge` is returned to prevent unbounded recursion. `get()` resolves all sizes via `get_to_writer()` internally.
 
 **Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent callers wait for shared result.
 
@@ -408,12 +403,7 @@ All three CAS traits (`CasApi`, `CasMaintenanceApi`, `ConstraintApi`) are implem
 
 ### 8.1 Content identity
 
-- Same bytes → same hash. Deterministic. `Hash::empty()` (`blake3(b"")`) is a well-known sentinel; only empty content produces it.
-
-### 8.2 Empty-content sentinel
-
-- `Hash::empty()` = `blake3(b"")` — always present, indelible.
-- All operations use normal code paths, except `delete(empty)` which is a no-op (never appended to WAL).
+- Same bytes → same hash. Deterministic. `Hash::empty()` (`blake3(b"")`) is a well-known sentinel; only empty content produces it. It is always present and indelible; all operations use normal code paths except `delete(empty)`, which is a no-op (never appended to WAL).
 
 ### 8.3 Crash safety
 
@@ -434,9 +424,9 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 
 ### 8.6 Object size limits
 
-- **WAL_INLINE_LIMIT** (1 MiB): Controls whether `put()` inlines data in the WAL or writes to an external blob immediately. `get()` delegates to `get_to_writer()` internally and handles all sizes transparently.
+- **WAL_INLINE_LIMIT** (1 MiB): Controls whether `put()` inlines data in the WAL or writes to an external blob immediately.
 - **DELTA_THRESHOLD** (16 MiB): Objects above this size are never delta-compressed (stored as Full only).
-- **TooLarge error**: Now only returned when a delta chain exceeds `MAX_DELTA_CHAIN_DEPTH = 5`. Contains `hash`, `size`, and `limit` fields for diagnostics.
+- **TooLarge error**: Returned only when a delta chain exceeds `MAX_DELTA_CHAIN_DEPTH = 5`. Contains `hash`, `size`, and `limit` fields for diagnostics.
 
 ### 8.7 Constraint invariants
 

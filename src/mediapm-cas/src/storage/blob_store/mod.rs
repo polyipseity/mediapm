@@ -21,10 +21,6 @@ use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-// ---------------------------------------------------------------------------
-// BlobStore trait
-// ---------------------------------------------------------------------------
-
 /// Content-addressed blob storage.
 ///
 /// Provides read/write/delete for data indexed by content hash.
@@ -133,10 +129,6 @@ pub trait BlobStore: Send + Sync {
         self.write(hash, encoding, Bytes::from(buf)).await?;
         Ok((hash, len))
     }
-
-    // -----------------------------------------------------------------------
-    // Auxiliary-file API
-    // -----------------------------------------------------------------------
 
     /// Write an auxiliary file into the same fan-out directory tree as `hash`.
     ///

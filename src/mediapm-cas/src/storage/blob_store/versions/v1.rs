@@ -2,30 +2,14 @@
 //!
 //! V1 uses a hash-derived fan-out tree rooted at `<root>/v1/blake3/ab/cd/<hex>`.
 //! Full blobs are stored at the leaf path; delta blobs use a `.diff` suffix.
-//!
-//! ## DO NOT REMOVE: versions policy guard
-//!
-//! - This file must never import unversioned structs from outside `versions/`.
-//! - A `vX` module may reference only the most recent previous version module,
-//!   and only for version-to-version isomorphism.
-//! - Latest-version bridging to unversioned runtime structs is owned by
-//!   `versions/mod.rs`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::hash::Hash;
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 /// The path version segment used in blob storage directory layout.
 pub(crate) const BLOB_PATH_VERSION: &str = "v1";
-
-// ---------------------------------------------------------------------------
-// Path derivation
-// ---------------------------------------------------------------------------
 
 /// Derive the full-blob path for a hash using the V1 layout.
 pub(crate) fn hash_to_path(root: &Path, hash: &Hash) -> PathBuf {

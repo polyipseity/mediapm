@@ -17,10 +17,6 @@ use crate::hash::Hash;
 use crate::storage::file_system::FileSystemCas;
 use crate::storage::in_memory::InMemoryCas;
 
-// ---------------------------------------------------------------------------
-// CasIntegrityConfig
-// ---------------------------------------------------------------------------
-
 /// Configuration for CAS integrity verification.
 ///
 /// Default is no verification (empty strategy list).
@@ -39,10 +35,6 @@ impl CasIntegrityConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CasStorageLocator
-// ---------------------------------------------------------------------------
-
 /// Resolved storage location for a CAS backend.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CasStorageLocator {
@@ -51,10 +43,6 @@ pub enum CasStorageLocator {
     /// File-system-backed store at the given path.
     FileSystem { path: PathBuf },
 }
-
-// ---------------------------------------------------------------------------
-// CasLocatorParseOptions
-// ---------------------------------------------------------------------------
 
 /// Options for parsing CAS locator strings.
 ///
@@ -71,10 +59,6 @@ impl Default for CasLocatorParseOptions {
         Self { allow_plain_filesystem_path: true }
     }
 }
-
-// ---------------------------------------------------------------------------
-// CasConfig
-// ---------------------------------------------------------------------------
 
 /// A single CAS configuration object.
 ///
@@ -149,10 +133,6 @@ impl CasConfig {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// ConfiguredCas
-// ---------------------------------------------------------------------------
 
 /// Enum over all configured CAS backends.
 ///

@@ -1,22 +1,12 @@
 //! Versioned binary wire formats for journal and checkpoint artifacts.
 //!
 //! The long-lived functional core is [`Journal`](super::super::wal::Journal).
-//! Each wire version owns:
-//! - its exact byte layout,
-//! - parse/validate/encode behavior,
-//! - direct `From` conversions to/from version-specific state types.
-//!
-//! ## DO NOT REMOVE: versions policy guard
-//!
-//! - `vX.rs` files must never import unversioned structs outside `versions/`.
-//! - A `vX` file may only reference the most recent previous version, and only
-//!   for version-to-version migration.
-//! - This `mod.rs` is the only place where latest version state is bridged to
-//!   unversioned runtime state.
-//! - Files outside `versions/` must interact with versioned envelopes only
-//!   through this `mod.rs`, never through direct `versions::vX` imports.
-//! - Do not directly re-export `versions::vX` structs/types from this module.
-//!   Expose unversioned APIs here and keep versioned internals encapsulated.
+//! Each wire version owns its exact byte layout, parse/validate/encode
+//! behavior, and `From` conversions to/from version-specific state types.
+//! `vX.rs` files must never import unversioned structs outside `versions/`,
+//! may reference only the most recent previous version (for migration), and
+//! this `mod.rs` is the only place where latest version state is bridged to
+//! unversioned runtime state.
 
 pub(crate) mod v1;
 pub(crate) mod v2;
@@ -26,10 +16,6 @@ use crate::error::CasError;
 use super::{WalEntry, WalPosition};
 
 use std::iter;
-
-// ---------------------------------------------------------------------------
-// Re-exported constants
-// ---------------------------------------------------------------------------
 
 /// Header size for all on-disk artifacts: 6-byte magic + 2-byte version.
 pub(crate) const HEADER_LEN: usize = 8;
@@ -42,15 +28,7 @@ pub(crate) const JOURNAL_VERSION: u16 = v2::JOURNAL_VERSION;
 /// Maximum supported journal segment format version.
 pub(crate) const MAX_JOURNAL_VERSION: u16 = v2::MAX_JOURNAL_VERSION;
 
-// ---------------------------------------------------------------------------
-// Re-exported header helpers
-// ---------------------------------------------------------------------------
-
 pub(crate) use v1::{decode_header, encode_header};
-
-// ---------------------------------------------------------------------------
-// Entry encode/decode (bridge between unversioned WalEntry and V2 types)
-// ---------------------------------------------------------------------------
 
 /// Encode a journal entry at the given position.
 pub(crate) fn encode_entry(entry: &WalEntry, pos: WalPosition) -> Vec<u8> {
@@ -105,10 +83,6 @@ pub(crate) fn decode_entries_streaming(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Checkpoint encode/decode
-// ---------------------------------------------------------------------------
-
 /// Encode a checkpoint file for the given position.
 pub(crate) fn encode_checkpoint(pos: WalPosition) -> Vec<u8> {
     v1::CheckpointV1::encode(pos.as_u64())
@@ -119,10 +93,6 @@ pub(crate) fn decode_checkpoint(buf: &[u8]) -> Result<WalPosition, CasError> {
     let pos_u64 = v1::CheckpointV1::decode(buf)?;
     Ok(WalPosition::from_u64(pos_u64))
 }
-
-// ---------------------------------------------------------------------------
-// Bridge conversions between versioned and unversioned entry types
-// ---------------------------------------------------------------------------
 
 fn entry_to_v2(entry: &WalEntry) -> v2::WalEntryV2 {
     match entry {

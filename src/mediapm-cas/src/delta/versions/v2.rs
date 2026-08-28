@@ -8,11 +8,6 @@
 //!
 //! Hash encoding/decoding is delegated to `rust-multihash` through
 //! [`crate::Hash`] helpers. No manual varint parsing is performed here.
-//!
-//! ## DO NOT REMOVE: versions policy guard
-//!
-//! See `versions/mod.rs` for the canonical versions policy. This file must not
-//! import unversioned structs from outside `versions/`.
 
 use zerocopy::little_endian::U64 as Le64;
 use zerocopy::{FromBytes, Immutable, KnownLayout};

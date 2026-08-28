@@ -1,10 +1,8 @@
 //! Public CAS traits and types.
 //!
-//! # Architecture
-//!
 //! - [`CasApi`] — core contract (`put`/`get`/`stat`/`delete`/`flush`) plus
-//!   streaming variants `put_stream`/`get_to_writer`.
-//!   No `exists`, no `info` — TOCTOU discouraged.
+//!   streaming variants `put_stream`/`get_to_writer`. No `exists`, no `info`
+//!   — TOCTOU discouraged.
 //! - [`ConstraintApi`] — separate trait for constraint hints.
 //! - [`CasMaintenanceApi`] — maintenance operations (GC, optimization, etc.).
 
@@ -14,10 +12,6 @@ use std::collections::BTreeSet;
 
 use crate::error::CasError;
 use crate::hash::Hash;
-
-// ---------------------------------------------------------------------------
-// ObjectMeta and ObjectEncoding
-// ---------------------------------------------------------------------------
 
 /// Metadata about a stored object, returned by [`CasApi::stat`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -37,10 +31,6 @@ pub enum ObjectEncoding {
     Delta { base_hash: Hash },
 }
 
-// ---------------------------------------------------------------------------
-// VerifyTriggerStrategy
-// ---------------------------------------------------------------------------
-
 /// Strategy for triggering CAS integrity verification on read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyTriggerStrategy {
@@ -53,10 +43,6 @@ pub enum VerifyTriggerStrategy {
     /// Verify only if the cache entry is older than a threshold.
     Stale { timeout: std::time::Duration },
 }
-
-// ---------------------------------------------------------------------------
-// CasApi — minimal public contract
-// ---------------------------------------------------------------------------
 
 /// Minimal public CAS contract with intuitive postcondition guarantees.
 ///
@@ -128,10 +114,6 @@ pub trait CasApi: Send + Sync {
         Ok(0)
     }
 
-    // -----------------------------------------------------------------------
-    // Streaming variants
-    // -----------------------------------------------------------------------
-
     /// Read from an async reader, store contents, return hash.
     ///
     /// Default impl buffers the reader then calls [`put`](Self::put).
@@ -158,10 +140,6 @@ pub trait CasApi: Send + Sync {
         writer: W,
     ) -> Result<(), CasError>;
 }
-
-// ---------------------------------------------------------------------------
-// ConstraintApi — delta-compression hints
-// ---------------------------------------------------------------------------
 
 /// Manages compression-hint constraints (target → base hashes).
 ///
@@ -192,10 +170,6 @@ pub struct ConstraintPatch {
     pub clear: bool,
 }
 
-// ---------------------------------------------------------------------------
-// CasMaintenanceApi — background / maintenance operations
-// ---------------------------------------------------------------------------
-
 /// Maintenance operations (GC, optimization, index repair).
 ///
 /// These are infrequent, potentially expensive operations. They are exposed
@@ -213,10 +187,6 @@ pub trait CasMaintenanceApi: Send + Sync {
     /// List all hashes currently in the store (best-effort).
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError>;
 }
-
-// ---------------------------------------------------------------------------
-// Report types
-// ---------------------------------------------------------------------------
 
 /// Result of [`CasMaintenanceApi::run_maintenance_cycle`].
 #[derive(Debug, Clone, Default)]

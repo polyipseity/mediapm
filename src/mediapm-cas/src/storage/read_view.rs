@@ -36,10 +36,6 @@ use super::wal::{PendingState, Wal};
 /// [`CasError::TooLarge`]. Prevents unbounded recursive resolution.
 const MAX_DELTA_CHAIN_DEPTH: usize = 5;
 
-// ---------------------------------------------------------------------------
-// ReadView trait
-// ---------------------------------------------------------------------------
-
 /// Fast read path backed by materialized storage + mandatory WAL fallback.
 #[async_trait]
 pub(crate) trait ReadView: Send + Sync {
@@ -68,20 +64,12 @@ pub(crate) trait ReadView: Send + Sync {
 #[doc(inline)]
 pub use crate::api::ObjectMeta;
 
-// ---------------------------------------------------------------------------
-// ComposedReadView
-// ---------------------------------------------------------------------------
-
 /// A read-through view backed by Metadata + Blob + WAL fallback.
 ///
-/// Implements a three-layer lookup:
-/// 1. `MetadataStore` for metadata (encoding, size).
-/// 2. `BlobStore` for payload bytes.
-/// 3. `Wal` fallback for entries not yet materialized.
-///
-/// In-flight reads are deduplicated: if two tasks call `get` on the same
-/// hash simultaneously, only one performs the lookup while the other waits
-/// for the shared result (see [`PendingOps`]).
+/// Implements a three-layer lookup (MetadataStore for metadata, BlobStore for
+/// payload bytes, Wal for not-yet-materialized entries). In-flight reads are
+/// deduplicated: concurrent `get` calls on the same hash share one lookup
+/// (see [`PendingOps`]).
 pub(crate) struct ComposedReadView<M: MetadataStore, J: Wal, B: BlobStore> {
     pending: PendingOps,
     metadata: M,
@@ -400,10 +388,6 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared delta-chain resolution
-// ---------------------------------------------------------------------------
-
 /// Given a metadata entry, read full bytes — either directly (Full) or by
 /// resolving the delta chain (Delta).
 ///
@@ -639,10 +623,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Full-blob orphan recovery via ReadView trait
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn get_recovers_orphan_full_blob() {
         let view = make_view();
@@ -673,11 +653,6 @@ mod tests {
         view.get_to_writer(&hash, &mut buf).await.unwrap();
         assert_eq!(&Bytes::from(buf)[..], b"unit-orphan-stream");
     }
-
-    // -----------------------------------------------------------------------
-    // Delta-blob orphan recovery — read is correctly separated from
-    // read_delta so delta-encoded blobs never shadow full-blob recovery.
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn get_recovers_orphan_delta_blob() {
@@ -714,10 +689,6 @@ mod tests {
         assert_eq!(&Bytes::from(buf)[..], b"delta-stream");
     }
 
-    // -----------------------------------------------------------------------
-    // Negative path — missing objects are not recovered
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn missing_hash_not_recovered() {
         let view = make_view();
@@ -743,15 +714,10 @@ mod tests {
         assert_not_found(result);
     }
 
-    // -----------------------------------------------------------------------
-    // Orphan recovery does not affect normal paths
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
-    async fn normal_path_unaffected() {
+    async fn orphan_recovery_does_not_affect_normal_paths() {
         let view = make_view();
         let hash = put_full(&view, b"normal-unit-path").await;
-
         let retrieved = view.get(&hash).await.unwrap();
         assert_eq!(&retrieved[..], b"normal-unit-path");
     }

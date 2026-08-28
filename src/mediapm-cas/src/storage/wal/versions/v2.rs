@@ -4,14 +4,6 @@
 //! objects whose payload is stored externally (immediately materialized to
 //! the blob store). `PutLarge` stores only `hash` + `content_len` with no
 //! inline data.
-//!
-//! ## DO NOT REMOVE: versions policy guard
-//!
-//! - This file must never import unversioned structs from outside `versions/`.
-//! - A `vX` module may reference only the most recent previous version module
-//!   for version-to-version migration.
-//! - Latest-version bridging to unversioned runtime structs is owned by
-//!   `versions/mod.rs`.
 
 use std::collections::BTreeSet;
 
@@ -19,10 +11,6 @@ use bytes::Bytes;
 
 use crate::error::CasError;
 use crate::hash::Hash;
-
-// ---------------------------------------------------------------------------
-// Version-specific types
-// ---------------------------------------------------------------------------
 
 /// V2 journal entry — adds `PutLarge` variant vs. V1.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,10 +25,6 @@ pub(crate) enum WalEntryV2 {
     Constraint { target: Hash, bases: BTreeSet<Hash> },
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 /// Magic prefix for journal segment files (same as V1).
 pub(crate) const JOURNAL_MAGIC: [u8; 6] = *b"CASJNL";
 /// Current journal segment format version.
@@ -49,10 +33,6 @@ pub(crate) const JOURNAL_VERSION: u16 = 2;
 /// Maximum supported journal segment format version.
 pub(crate) const MAX_JOURNAL_VERSION: u16 = 2;
 
-// ---------------------------------------------------------------------------
-// Entry encoding / decoding
-// ---------------------------------------------------------------------------
-//
 // Each entry:
 //   [pos: 8-byte LE u64]
 //   [hash: 32 bytes]

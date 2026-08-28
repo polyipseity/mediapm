@@ -1,23 +1,5 @@
 //! Composed CAS store — the primary handle tying together WAL, read
 //! view, Metadata, Blob, and background engine.
-//!
-//! # Architecture
-//!
-//! ```text
-//! +--------------------------------------------------+
-//! |                   CasStore                        |
-//! |  +----------+  +-----------+  +---------------+   |
-//! |  | Wal      |  | ReadView  |  | Metadata      |   |
-//! |  | (WAL)    |  | (meta +   |  | (metadata +   |   |
-//! |  |          |  |  blob +   |  |  constraints) |   |
-//! |  |          |  |  wal)     |  |               |   |
-//! |  +----------+  +-----------+  +---------------+   |
-//! |  | Blob     |  | BgEngine  |  |               |   |
-//! |  | (payload)|  |(consumer+ |  |               |   |
-//! |  |          |  | maint)    |  |               |   |
-//! |  +----------+  +-----------+  +---------------+   |
-//! +--------------------------------------------------+
-//! ```
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -64,26 +46,16 @@ impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> Clone for C
 }
 
 impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> CasStore<J, M, B> {
-    /// Create a new composed store.  `start_pos` tells the background
-    /// engine which WAL position to begin consuming from (e.g., the
-    /// last checkpoint on restart).
+    /// Create a new composed store. `start_pos` tells the background engine
+    /// which WAL position to begin consuming from (e.g. the last checkpoint
+    /// on restart). `cache_ttl` controls the reconstructed-bytes cache
+    /// lifetime; boundary callers should pass [`crate::defaults::CACHE_TTL`]
+    /// unless they need a custom value.
     ///
-    /// `cache_ttl` controls the reconstructed-bytes cache lifetime.
-    /// Boundary callers should pass [`crate::defaults::CACHE_TTL`] unless
-    /// they need a custom value.
-    ///
-    /// # WAL consumer policy (IMPORTANT)
-    ///
-    /// The WAL consumer must **never** be run synchronously during
-    /// construction or open. Adding an implicit `run_wal_consumer()` call
-    /// here blocks the caller on replaying potentially gigabytes of WAL
-    /// entries, making the store unusable for reads until the entire WAL
-    /// is drained. This defeats the purpose of write-ahead logging: the
-    /// store should be immediately readable after construction.
-    ///
-    /// The correct design is either:
-    /// - Deferred background task (see [`super::file_system::FileSystemCas::open_with_strategies_and_interval`]), or
-    /// - Explicit `flush()` by the caller.
+    /// The WAL consumer must **never** run synchronously during construction
+    /// or open — that would block the caller on replaying potentially
+    /// gigabytes of WAL, making the store unreadable until drained. Use a
+    /// deferred background task or an explicit `flush()` by the caller.
     pub fn new(wal: J, metadata: M, blob: B, start_pos: WalPosition, cache_ttl: Duration) -> Self
     where
         J: 'static,
@@ -145,10 +117,6 @@ impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> CasStore<J,
         self.bg_engine.run_wal_consumer().await
     }
 }
-
-// ---------------------------------------------------------------------------
-// CasApi impl
-// ---------------------------------------------------------------------------
 
 #[async_trait]
 impl<J: Wal, M: MetadataStore, B: BlobStore> CasApi for CasStore<J, M, B> {
@@ -243,10 +211,6 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasStore<J, M, B> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ConstraintApi impl
-// ---------------------------------------------------------------------------
-
 #[async_trait]
 impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B> {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
@@ -324,10 +288,6 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
     }
 }
 
-// ---------------------------------------------------------------------------
-// CasMaintenanceApi impl
-// ---------------------------------------------------------------------------
-
 #[async_trait]
 impl<J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for CasStore<J, M, B> {
     async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
@@ -351,13 +311,8 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for CasStore<J, M
     }
 }
 
-// ---------------------------------------------------------------------------
-// Blanket impls for Deref-to-CasStore wrappers
-//
 // InMemoryCas and FileSystemCas wrap CasStore<...> with Deref and
 // automatically implement all CAS traits through these blanket impls.
-// ---------------------------------------------------------------------------
-
 #[async_trait]
 impl<T, J: Wal, M: MetadataStore, B: BlobStore> CasApi for T
 where

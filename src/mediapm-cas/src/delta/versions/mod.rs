@@ -1,23 +1,13 @@
 //! Versioned binary wire-format envelopes for CAS delta objects.
 //!
 //! The long-lived functional core is [`crate::delta::object::DeltaState`].
-//! Each wire version owns:
-//! - its exact byte layout,
-//! - parse/validate/encode behavior,
-//! - direct `From` conversions to/from version-specific state types.
-//!
-//! ## DO NOT REMOVE: versions policy guard
-//!
-//! - `vX.rs` files must never import unversioned structs outside `versions/`.
-//! - A `vX` file may only reference the most recent previous version, and only
-//!   for version-to-version migration.
-//! - This `mod.rs` is the only place where latest version state is bridged to
-//!   unversioned runtime state.
-//! - Files outside `delta/versions/` and `index/versions/` must interact with
-//!   versioned envelopes only through each folder's `versions/mod.rs`, never
-//!   through direct `versions::vX` imports.
-//! - Do not directly re-export `versions::vX` structs/types from this module.
-//!   Expose unversioned APIs here and keep versioned internals encapsulated.
+//! Each wire version owns its exact byte layout, parse/validate/encode
+//! behavior, and `From` conversions to/from version-specific state types.
+//! `vX.rs` files must never import unversioned structs outside `versions/`,
+//! may reference only the most recent previous version (for migration), and
+//! this `mod.rs` is the only place where latest version state is bridged to
+//! unversioned runtime state. Files outside `delta/versions/` interact with
+//! envelopes only through this module, never direct `versions::vX` imports.
 
 use crate::delta::object::DeltaState;
 use crate::{CasError, HashParseError};

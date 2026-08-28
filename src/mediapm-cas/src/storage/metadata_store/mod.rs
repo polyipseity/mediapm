@@ -22,10 +22,6 @@ use crate::hash::Hash;
 
 use super::wal::Wal;
 
-// ---------------------------------------------------------------------------
-// MetadataEntry
-// ---------------------------------------------------------------------------
-
 /// Metadata for a stored object (payload info only).
 ///
 /// Constraint data is stored separately — see [`MetadataStore::get_constraint`].
@@ -44,10 +40,6 @@ impl MetadataEntry {
         ObjectMeta { len: self.len, encoding: self.encoding }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Index trait
-// ---------------------------------------------------------------------------
 
 /// Unified metadata store — payload metadata + constraint hints.
 ///
@@ -80,9 +72,7 @@ pub trait MetadataStore: Send + Sync {
         self.len().await == 0
     }
 
-    // -----------------------------------------------------------------------
     // Constraint operations
-    // -----------------------------------------------------------------------
 
     /// Record bases for `target` (replaces existing bases, independent of
     /// object metadata).

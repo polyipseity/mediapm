@@ -1,21 +1,9 @@
 //! On-disk object encoding helpers for CAS entries.
 //!
-//! Full objects are stored as raw bytes with no headers.
-//! Delta objects are stored in `.diff` files through versioned envelopes under
-//! `delta/versions/`.
-//!
-//! ## Functional Core / Imperative Shell
-//!
-//! This module keeps a version-agnostic functional core [`DeltaState`] and
-//! stores it in [`StoredObject`].
-//!
-//! ## DO NOT REMOVE: external versions boundary guard
-//!
-//! See `delta/versions/mod.rs` for the canonical versions boundary policy. This file
-//! must consume versioned envelope behavior only through `delta::versions`
-//! entry points, never via `delta::versions::vX` imports.
-//!
-//! All wire-format logic is delegated to `delta/versions/`.
+//! Full objects are raw bytes with no headers. Delta objects are stored in
+//! `.diff` files through versioned envelopes under `delta/versions/`. This
+//! module keeps a version-agnostic functional core [`DeltaState`] in
+//! [`StoredObject`] and delegates all wire-format logic to `delta::versions`.
 
 use crate::delta::versions::{decode_delta_state, encode_delta_state};
 use crate::{CasError, Hash};

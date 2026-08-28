@@ -1,17 +1,11 @@
 //! Background engine — WAL consumer + maintenance orchestrator.
 //!
-//! Drives two background tasks:
-//!
-//! - **WAL consumer** — drains pending WAL entries into the [`BlobStore`] and
-//!   [`MetadataStore`], then trims them from the WAL.
-//! - **Maintenance** — combined GC + Optimizer: prunes constraint metadata to
-//!   approach effective constraints (intersection of stored bases with live
-//!   hashes) and evaluates delta-compression opportunities.
-//!
-//! GC never deletes objects — objects are only removed by explicit `delete()`
-//! operations materialized by the WAL consumer. GC prunes constraint metadata
-//! entries so orphaned bases (for deleted objects) are removed individually,
-//! not all-or-nothing.
+//! Drives two background tasks: the WAL consumer drains pending WAL entries
+//! into the [`BlobStore`] and [`MetadataStore`], then trims them; maintenance
+//! runs combined GC + optimizer, pruning constraint metadata toward effective
+//! constraints (stored bases ∩ live hashes) and evaluating delta-compression
+//! opportunities. GC never deletes objects — only explicit `delete()` does —
+//! it just prunes orphaned constraint bases individually.
 
 use std::collections::HashSet;
 use std::sync::Arc;

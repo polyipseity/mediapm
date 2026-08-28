@@ -1,14 +1,9 @@
 //! Verify-on-read strategy evaluation for CAS blob stores.
 //!
-//! Provides [`VerifyEvaluator`] which manages per-strategy state (mtime
-//! tracking for Modified, timestamps for Stale, counter for Sample) and
-//! exposes a single entry point for deciding whether to verify a blob's
-//! content hash on read.
-//!
-//! # Strategy semantics
-//!
-//! Strategies are evaluated with **OR** semantics: if any strategy
-//! triggers, the evaluator returns `true`.
+//! [`VerifyEvaluator`] tracks per-strategy state (mtime for Modified,
+//! timestamps for Stale, a counter for Sample) and decides whether to verify
+//! a blob's content hash on read. Strategies use **OR** semantics: any
+//! triggering strategy returns `true`.
 //!
 //! | Strategy  | Trigger condition |
 //! |-----------|-------------------|
@@ -28,16 +23,11 @@ use crate::hash::Hash;
 
 /// Evaluates verify-on-read strategies with OR semantics.
 ///
-/// If any enabled strategy triggers verification, [`should_verify`] returns
-/// `true`. After a successful verification (or a write), call
-/// [`record_verification`] to update tracking state so subsequent reads can
-/// make accurate decisions.
-///
-/// ## State lifetime
-///
-/// All per-hash state is ephemeral (in-memory). On process restart, every
-/// hash is unknown to the evaluator — the first read of each hash will
-/// conservatively trigger verification for `Modified` and `Stale`.
+/// If any enabled strategy triggers, [`should_verify`] returns `true`. Call
+/// [`record_verification`] after a successful verification or write to update
+/// tracking state. All per-hash state is ephemeral (in-memory); on restart
+/// every hash is unknown, so the first read of each hash conservatively
+/// triggers `Modified` and `Stale`.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "verify strategy flags are intentionally independent booleans"

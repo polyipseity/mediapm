@@ -23,10 +23,6 @@ use std::collections::BTreeSet;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-// ---------------------------------------------------------------------------
-// Position, Entry, PendingState
-// ---------------------------------------------------------------------------
-
 /// Unique position in the WAL.
 ///
 /// Opaque token — implementation-defined. For [`InMemoryWal`] this is
@@ -88,10 +84,6 @@ pub enum PendingState {
     /// A `Delete` tombstone exists; the object should be considered deleted.
     Tombstone,
 }
-
-// ---------------------------------------------------------------------------
-// Wal trait
-// ---------------------------------------------------------------------------
 
 /// Crash-safe operation log.
 #[async_trait]

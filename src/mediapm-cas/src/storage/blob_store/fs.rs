@@ -21,27 +21,10 @@ use crate::verify::VerifyEvaluator;
 
 /// Filesystem-backed [`BlobStore`] with hash-derived directory layout.
 ///
-/// ## Storage layout
-///
-/// ```text
-/// <root>/
-///   v1/
-///     blake3/
-///       ab/
-///         cd/
-///           <remaining>         # full blob
-///           <remaining>.diff    # delta envelope
-/// ```
-///
-/// ## Atomicity
-///
-/// Writes use a temporary file and [`std::fs::rename`] for crash-safe commits.
-/// Reads verify the content hash matches the stored hash (integrity check).
-///
-/// ## Concurrency
-///
-/// All methods are safe for concurrent access. Directory creation uses
-/// `create_dir_all` underneath.
+/// Blobs live at `<root>/v1/blake3/ab/cd/<remaining>` (full) or with a
+/// `.diff` suffix (delta envelope). Writes use a temp file + rename for
+/// crash-safe commits; reads verify the content hash matches the stored
+/// hash. All methods are safe for concurrent access.
 #[derive(Clone, Debug)]
 pub struct FileSystemBlobStore {
     root: PathBuf,

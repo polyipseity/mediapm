@@ -3,14 +3,6 @@
 //! V1 is the initial journal format. Each journal segment carries an 8-byte
 //! header (`CASJNL` + version 1), followed by len-prefixed entries. The
 //! checkpoint file carries a `CASCKP` header + last position + integrity hash.
-//!
-//! ## DO NOT REMOVE: versions policy guard
-//!
-//! - This file must never import unversioned structs from outside `versions/`.
-//! - A `vX` module may reference only the most recent previous version module,
-//!   and only for version-to-version isomorphism/migration.
-//! - Latest-version bridging to unversioned runtime structs is owned by
-//!   `versions/mod.rs`.
 
 use std::collections::BTreeSet;
 
@@ -18,10 +10,6 @@ use bytes::Bytes;
 
 use crate::error::CasError;
 use crate::hash::Hash;
-
-// ---------------------------------------------------------------------------
-// Version-specific types
-// ---------------------------------------------------------------------------
 
 /// V1 journal entry — mirrors [`WalEntry`] but is self-contained within
 /// `versions/`.
@@ -42,10 +30,6 @@ pub(crate) struct CheckpointV1 {
     pub(crate) last_position: u64,
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 /// Magic prefix for journal segment files.
 #[expect(dead_code)]
 pub(crate) const JOURNAL_MAGIC: [u8; 6] = *b"CASJNL";
@@ -58,10 +42,6 @@ pub(crate) const CHECKPOINT_MAGIC: [u8; 6] = *b"CASCKP";
 /// Maximum supported journal segment format version.
 pub(crate) const MAX_JOURNAL_VERSION: u16 = 1;
 
-// ---------------------------------------------------------------------------
-// Entry encoding / decoding
-// ---------------------------------------------------------------------------
-//
 // Each entry:
 //   [pos: 8-byte LE u64]
 //   [hash: 32 bytes]
@@ -211,10 +191,6 @@ impl WalEntryV1 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Checkpoint encoding / decoding (version 1)
-// ---------------------------------------------------------------------------
-//
 // Checkpoint file layout:
 //   [header: 8 bytes (magic "CASCKP" + version)]
 //   [last_position: 8-byte LE u64]
@@ -262,10 +238,6 @@ impl CheckpointV1 {
         Ok(pos)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Header helpers
-// ---------------------------------------------------------------------------
 
 /// Encode an 8-byte header: 6-byte magic + 2-byte LE version.
 pub(crate) fn encode_header(magic: [u8; 6], version: u16) -> [u8; 8] {
