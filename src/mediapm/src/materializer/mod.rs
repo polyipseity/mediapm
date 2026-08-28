@@ -46,10 +46,6 @@ use self::resolve::{
 };
 use self::zip::extract_zip_member_bytes;
 
-// ---------------------------------------------------------------------------
-// Internal resolve types (shared with resolve.rs)
-// ---------------------------------------------------------------------------
-
 /// Per-workflow required step output names (`step_id -> output_name[]`).
 pub(super) type RequiredStepOutputNames = BTreeMap<String, BTreeSet<String>>;
 
@@ -86,10 +82,6 @@ pub(super) struct VariantSourceBytes {
 }
 use self::zip::{compile_hierarchy_folder_rename_rules, extract_zip_folder_variant_bytes};
 
-// ---------------------------------------------------------------------------
-// Report type
-// ---------------------------------------------------------------------------
-
 /// Summary of one `sync_hierarchy` invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MaterializeReport {
@@ -104,10 +96,6 @@ pub struct MaterializeReport {
     /// Non-fatal notices collected during materialization.
     pub notices: Vec<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
 
 /// The result of preparing one flattened hierarchy entry.
 struct PreparedHierarchyEntryResult {
@@ -131,19 +119,11 @@ struct SyncSharedState {
     verify_materialization: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Worker count
-// ---------------------------------------------------------------------------
-
 /// Returns the number of concurrent hierarchy-worker tasks.
 fn hierarchy_worker_count() -> usize {
     let count = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
     count.clamp(1, 1024)
 }
-
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
 
 /// Synchronises all hierarchy entries from CAS content to the filesystem
 /// hierarchy root.
@@ -196,7 +176,6 @@ pub async fn sync_hierarchy(
         verify_materialization,
     });
 
-    // --- Concurrent materialization ---
     let worker_count = hierarchy_worker_count();
     let semaphore = Arc::new(Semaphore::new(worker_count));
 
@@ -316,7 +295,6 @@ pub async fn sync_hierarchy(
         state.managed_files.remove(&stale);
     }
 
-    // --- Stale path cleanup ---
     let stale_result = remove_stale_paths(hierarchy_root, &flattened, &desired_managed_paths)?;
     report.removed_paths = stale_result.0;
     report.removed_empty_dirs = stale_result.1;
@@ -331,10 +309,6 @@ pub async fn sync_hierarchy(
 
     Ok(report)
 }
-
-// ---------------------------------------------------------------------------
-// Prepare one hierarchy entry
-// ---------------------------------------------------------------------------
 
 /// Materialises one flattened hierarchy entry from CAS content to the
 /// filesystem hierarchy root.
@@ -545,10 +519,6 @@ async fn prepare_hierarchy_entry(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Media entry materialization
-// ---------------------------------------------------------------------------
 
 /// Materialises one file entry from CAS directly to the target path.
 async fn materialize_file_entry(
@@ -798,10 +768,6 @@ async fn materialize_media_folder_entry(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Playlist entry materialization
-// ---------------------------------------------------------------------------
-
 /// Generates a playlist file from the media entries referenced by a playlist
 /// hierarchy node.
 async fn materialize_playlist_entry(
@@ -873,10 +839,6 @@ async fn materialize_playlist_entry(
         media_variant_updates: BTreeMap::new(),
     })
 }
-
-// ---------------------------------------------------------------------------
-// Stale-path cleanup
-// ---------------------------------------------------------------------------
 
 /// Workspace-root entries that must survive stale hierarchy scans when
 /// `hierarchy_root_dir` defaults to the mediapm config directory.
@@ -1044,10 +1006,6 @@ fn is_directory_empty(path: &Path) -> Result<bool, MediaPmError> {
     Ok(true)
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Checks if a byte slice is a ZIP archive (local file header or EOCD signature).
 fn is_zip_content(data: &[u8]) -> bool {
     data.len() >= 2 && data[0] == 0x50 && data[1] == 0x4B
@@ -1118,10 +1076,6 @@ impl SyncSharedState {
         warn!("{}", message.into());
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

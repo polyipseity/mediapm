@@ -11,10 +11,6 @@ use crate::error::MediaPmError;
 
 use super::versions;
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 /// Decodes one [`Value`] (from JSON deserialization) into a
 /// [`MediaPmState`], handling version dispatch.
 ///

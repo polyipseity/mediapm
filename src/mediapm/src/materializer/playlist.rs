@@ -8,10 +8,6 @@ use std::path::{Path, PathBuf};
 
 use crate::config::hierarchy_types::PlaylistFormat;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 /// One rendered playlist entry.
 #[derive(Debug, Clone)]
 pub(super) struct RenderedPlaylistEntry {
@@ -30,10 +26,6 @@ pub(super) enum PlaylistEntryPathMode {
     #[allow(dead_code)]
     Absolute,
 }
-
-// ---------------------------------------------------------------------------
-// Playlist generation
-// ---------------------------------------------------------------------------
 
 /// Generates playlist file bytes in the requested format.
 pub(super) fn generate_playlist_bytes(
@@ -92,10 +84,6 @@ pub(super) fn resolve_playlist_target_relative_path(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Format label
-// ---------------------------------------------------------------------------
-
 /// Returns a human-readable label for one playlist format.
 #[must_use]
 #[allow(dead_code)]
@@ -108,10 +96,6 @@ pub(super) fn playlist_format_label(format: PlaylistFormat) -> &'static str {
         PlaylistFormat::Asx => "ASX",
     }
 }
-
-// ---------------------------------------------------------------------------
-// XML escaping
-// ---------------------------------------------------------------------------
 
 /// Escapes special XML characters in a string.
 fn escape_xml(s: &str) -> String {
@@ -129,10 +113,6 @@ fn escape_xml(s: &str) -> String {
     result
 }
 
-// ---------------------------------------------------------------------------
-// M3U8 / M3U rendering
-// ---------------------------------------------------------------------------
-
 fn render_m3u8(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from("#EXTM3U\n");
     for entry in entries {
@@ -140,10 +120,6 @@ fn render_m3u8(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     }
     output.into_bytes()
 }
-
-// ---------------------------------------------------------------------------
-// PLS rendering
-// ---------------------------------------------------------------------------
 
 fn render_pls(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from("[playlist]\n");
@@ -157,10 +133,6 @@ fn render_pls(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     output.push_str("Version=2\n");
     output.into_bytes()
 }
-
-// ---------------------------------------------------------------------------
-// XSPF rendering
-// ---------------------------------------------------------------------------
 
 fn render_xspf(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from(
@@ -183,10 +155,6 @@ fn render_xspf(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     output.into_bytes()
 }
 
-// ---------------------------------------------------------------------------
-// WPL rendering
-// ---------------------------------------------------------------------------
-
 fn render_wpl(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from(
         "<?wpl version=\"1.0\"?>\n\
@@ -207,10 +175,6 @@ fn render_wpl(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     );
     output.into_bytes()
 }
-
-// ---------------------------------------------------------------------------
-// ASX rendering
-// ---------------------------------------------------------------------------
 
 fn render_asx(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from("<asx version=\"3.0\">\n");

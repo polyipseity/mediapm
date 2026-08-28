@@ -18,10 +18,6 @@ use super::MediaPmDocument;
 use v1::MediaPmDocumentEnvelopeV1;
 use v2::MediaPmDocumentEnvelopeV2;
 
-// ---------------------------------------------------------------------------
-// Migrate trait
-// ---------------------------------------------------------------------------
-
 /// Version-aware migration contract for config document types.
 ///
 /// Types that implement `Migrate` for a particular schema version can
@@ -37,10 +33,6 @@ pub trait Migrate: Sized {
     /// this version.
     fn encode(&self) -> Result<Value, MediaPmError>;
 }
-
-// ---------------------------------------------------------------------------
-// Version dispatch
-// ---------------------------------------------------------------------------
 
 /// Decodes one mediapm document JSON value into the runtime model by
 /// inspecting the top-level `version` marker.
@@ -63,10 +55,6 @@ pub fn encode_mediapm_document_value(doc: &MediaPmDocument) -> Result<Value, Med
     // Encode to the latest (V2) wire format.
     MediaPmDocumentEnvelopeV2::from(doc).encode()
 }
-
-// ---------------------------------------------------------------------------
-// Version field extraction
-// ---------------------------------------------------------------------------
 
 /// Extracts the numeric `version` field from one JSON value.
 ///
@@ -91,10 +79,6 @@ pub fn extract_version_field(value: &Value) -> Result<u64, MediaPmError> {
         }
     })
 }
-
-// ---------------------------------------------------------------------------
-// Registry surface (mirrors `mod.ncl`)
-// ---------------------------------------------------------------------------
 
 /// Numeric schema versions supported by the mediapm registry (mirrors
 /// `mod.ncl`'s `SupportedVersion` / `supported_versions`).
@@ -136,10 +120,6 @@ pub fn migrate_to(requested_version: u32, document: Value) -> Result<Value, Medi
         ))),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Nickel schema validation helpers (used by integration tests)
-// ---------------------------------------------------------------------------
 
 /// Writes one versioned schema file, its sibling version modules, and a
 /// `document | v{version}.<contract_name>` wrapper into a fresh temp

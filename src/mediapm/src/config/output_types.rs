@@ -9,10 +9,6 @@ use serde_json::Value;
 
 use super::source_types::MediaStep;
 
-// ---------------------------------------------------------------------------
-// Shared output behavior
-// ---------------------------------------------------------------------------
-
 /// Output persistence policy for one output variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -43,10 +39,6 @@ fn is_default_save(save: &OutputSaveConfig) -> bool {
 fn is_zero_idx(idx: &u32) -> bool {
     *idx == 0
 }
-
-// ---------------------------------------------------------------------------
-// Generic variant config (used by import, ffmpeg, rsgain, media-tagger)
-// ---------------------------------------------------------------------------
 
 /// Output capture kind for one variant's artifact type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,10 +72,6 @@ pub struct GenericOutputVariantConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub extension: String,
 }
-
-// ---------------------------------------------------------------------------
-// yt-dlp specific variant config
-// ---------------------------------------------------------------------------
 
 /// yt-dlp output variant kind identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,10 +143,6 @@ impl Default for YtDlpOutputVariantConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Typed output variant value
-// ---------------------------------------------------------------------------
-
 /// Typed output variant value stored on [`MediaStep`].
 ///
 /// The untagged decode tries yt-dlp-specific decoding first (matching the
@@ -203,10 +187,6 @@ impl From<&YtDlpOutputVariantConfig> for OutputVariantPolicyConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Resolved variant flow
-// ---------------------------------------------------------------------------
-
 /// Resolved per-step input/output variant mapping.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,10 +196,6 @@ pub struct ResolvedStepVariantFlow {
     /// Output variant name produced by one generated step.
     pub output: String,
 }
-
-// ---------------------------------------------------------------------------
-// Default capture kind helpers
-// ---------------------------------------------------------------------------
 
 /// Returns the default [`OutputCaptureKind`] for a generic output kind label.
 #[must_use]
@@ -243,10 +219,6 @@ pub fn default_yt_dlp_capture_kind_for_kind(kind: YtDlpOutputKind) -> OutputCapt
         _ => OutputCaptureKind::File,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Decode functions
-// ---------------------------------------------------------------------------
 
 /// Decodes one output variant config value for the given tool.
 ///

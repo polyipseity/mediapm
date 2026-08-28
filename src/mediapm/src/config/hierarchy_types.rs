@@ -11,10 +11,6 @@ use serde_json::Value;
 
 use crate::error::MediaPmError;
 
-// ---------------------------------------------------------------------------
-// Sanitization config
-// ---------------------------------------------------------------------------
-
 /// Filename sanitization policy for hierarchy entries.
 ///
 /// Control how reserved filename characters (`<`, `>`, `:`, `"`, `/`, `\\`,
@@ -35,10 +31,6 @@ pub enum SanitizeNamesConfig {
     Custom(BTreeMap<char, char>),
 }
 
-// ---------------------------------------------------------------------------
-// Hierarchy node kind
-// ---------------------------------------------------------------------------
-
 /// Kind of one hierarchy node declaration.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,10 +46,6 @@ pub enum HierarchyNodeKind {
     /// Playlist definition.
     Playlist,
 }
-
-// ---------------------------------------------------------------------------
-// Playlist types
-// ---------------------------------------------------------------------------
 
 /// Supported playlist serialization formats.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,10 +101,6 @@ pub enum PlaylistEntryPathMode {
     Absolute,
 }
 
-// ---------------------------------------------------------------------------
-// Rename rules
-// ---------------------------------------------------------------------------
-
 /// One regex rename rule for hierarchy folder members.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,10 +110,6 @@ pub struct HierarchyFolderRenameRule {
     /// Replacement template string.
     pub replacement: String,
 }
-
-// ---------------------------------------------------------------------------
-// Hierarchy node
-// ---------------------------------------------------------------------------
 
 /// One node in the ordered hierarchy declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,10 +151,6 @@ pub struct HierarchyNode {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<HierarchyNode>,
 }
-
-// ---------------------------------------------------------------------------
-// Flattened hierarchy entry (runtime form)
-// ---------------------------------------------------------------------------
 
 /// Runtime hierarchy entry kind (post-flattening).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,10 +200,6 @@ impl FlattenedHierarchyEntry {
         self.path_components.join("/")
     }
 }
-
-// ---------------------------------------------------------------------------
-// HierarchyPath (serde-aware path type)
-// ---------------------------------------------------------------------------
 
 /// A path composed of one or more components (path segments).
 ///
@@ -340,10 +312,6 @@ impl<'de> Deserialize<'de> for HierarchyPath {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Custom serde helpers for hierarchy fields
-// ---------------------------------------------------------------------------
-
 /// Deserializes hierarchy field values using array-of-nodes semantics.
 #[allow(dead_code)]
 pub fn deserialize_hierarchy_node_list<'de, D>(
@@ -368,10 +336,6 @@ where
     let encoded = nest_hierarchy_value(hierarchy).map_err(serde::ser::Error::custom)?;
     encoded.serialize(serializer)
 }
-
-// ---------------------------------------------------------------------------
-// Wire types for variant selector serde
-// ---------------------------------------------------------------------------
 
 /// Wire representation for one variant selector entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -483,10 +447,6 @@ where
     encoded.serialize(serializer)
 }
 
-// ---------------------------------------------------------------------------
-// Expand variant selectors
-// ---------------------------------------------------------------------------
-
 /// Resolves selector entries against available variant names.
 ///
 /// - literal selectors match exact variant names;
@@ -555,10 +515,6 @@ pub fn expand_variant_selectors(
 }
 
 use std::collections::BTreeSet;
-
-// ---------------------------------------------------------------------------
-// Flatten/nest hierarchy
-// ---------------------------------------------------------------------------
 
 /// Decodes one hierarchy JSON value into ordered node declarations.
 ///
@@ -980,8 +936,6 @@ mod tests {
         );
     }
 
-    // ── expand_variant_selectors ─────────────────────────────────────────
-
     #[test]
     fn literal_selector_matches_exact_variant() {
         let selectors = vec!["1080p".to_string()];
@@ -1057,8 +1011,6 @@ mod tests {
         // literal 720p is deduped.
         assert_eq!(result, vec!["1080p", "720p"]);
     }
-
-    // ── collect_playlist_media_index ──────────────────────────────────────
 
     fn media_entry(path: &str, hierarchy_id: &str, media_id: &str) -> FlattenedHierarchyEntry {
         FlattenedHierarchyEntry {
@@ -1176,8 +1128,6 @@ mod tests {
         assert_eq!(out[0].entry.sanitize_names, SanitizeNamesConfig::Disabled);
     }
 }
-
-// ── Property-based tests (proptest) ───────────────────────────────
 
 #[cfg(feature = "proptest")]
 #[cfg(test)]

@@ -56,10 +56,6 @@ use mediapm_conductor::tools::provider::ConfigVersionSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// ---------------------------------------------------------------------------
-// Materialization method
-// ---------------------------------------------------------------------------
-
 // Constants for default materialization methods used in the preferences list.
 #[allow(dead_code)]
 pub const MATERIALIZE_HARDLINK: &str = "hardlink";
@@ -125,10 +121,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Materialization preference order
-// ---------------------------------------------------------------------------
-
 /// Deserializes the materialization preference order.
 pub fn deserialize_materialization_preference_order<'de, D>(
     deserializer: D,
@@ -181,10 +173,6 @@ where
     Ok(methods)
 }
 
-// ---------------------------------------------------------------------------
-// Platform inherited env vars
-// ---------------------------------------------------------------------------
-
 /// Platform-grouped inherited environment variable configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -203,10 +191,6 @@ pub struct PlatformInheritedEnvVars {
     pub windows: Vec<String>,
 }
 
-// ---------------------------------------------------------------------------
-// VerifyStrategy
-// ---------------------------------------------------------------------------
-
 /// Verify-on-read trigger strategy name (S-E3).
 ///
 /// Mirrors the [`mediapm_cas::VerifyTriggerStrategy`] variant set: `always`,
@@ -224,10 +208,6 @@ pub enum VerifyStrategy {
     /// Verify when the recorded artifact is older than the stale timeout.
     Stale,
 }
-
-// ---------------------------------------------------------------------------
-// MediaRuntimeStorage
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -390,10 +370,6 @@ impl MediaRuntimeStorage {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ToolRequirement
-// ---------------------------------------------------------------------------
-
 /// Managed tool version and dependency requirements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -451,10 +427,6 @@ impl ToolRequirement {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MediaPmDocument (top-level config)
-// ---------------------------------------------------------------------------
-
 /// Top-level mediapm document deserialized from `mediapm.ncl`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -499,8 +471,6 @@ impl Default for MediaPmDocument {
 impl MediaPmDocument {
     /// Normalizes string fields (trimming whitespace).
     pub fn normalize(&mut self) {
-        // Version is already a concrete u32, no trimming needed.
-        // Trimming media source titles, descriptions, etc.
         for source in self.media.values_mut() {
             let trimmed = source.description.trim().to_string();
             source.description = trimmed;
@@ -515,10 +485,6 @@ impl MediaPmDocument {
         });
     }
 }
-
-// ---------------------------------------------------------------------------
-// MediaPmState (persisted machine state)
-// ---------------------------------------------------------------------------
 
 /// Per-media-source workflow step state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

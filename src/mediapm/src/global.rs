@@ -162,10 +162,6 @@ pub async fn global_tool_cache_status(
 }
 
 /// Status of the global tool cache.
-///
-/// Fields match the PLAN.md specification: each path is a resolved
-/// `PathBuf` so callers can inspect existence/readiness via
-/// `.is_dir()` / `.is_file()` themselves.
 #[derive(Debug, Clone)]
 pub struct GlobalToolCacheStatus {
     /// Root cache directory (`<root>/cache`).

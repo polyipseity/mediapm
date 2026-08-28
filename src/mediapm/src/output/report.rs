@@ -12,10 +12,6 @@ use std::time::Duration;
 
 use console::style;
 
-// ---------------------------------------------------------------------------
-// StatusIcon
-// ---------------------------------------------------------------------------
-
 /// Semantic status indicator used as the first visual element of a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusIcon {
@@ -53,10 +49,6 @@ impl StatusIcon {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Top-level result
-// ---------------------------------------------------------------------------
 
 /// Print one result line to **stdout**.
 ///
@@ -101,10 +93,6 @@ pub fn print_result(
     println!("{line}");
 }
 
-// ---------------------------------------------------------------------------
-// Ancillary output
-// ---------------------------------------------------------------------------
-
 /// Print a non-fatal warning line to **stderr**.
 pub fn print_warning(msg: impl std::fmt::Display) {
     eprintln!("  {} {}", style("\u{0394}").yellow(), msg);
@@ -135,10 +123,6 @@ pub fn print_status_report(entries: &[(&str, &dyn std::fmt::Display)]) {
 pub fn print_error(msg: impl std::fmt::Display) {
     eprintln!("{} {}", style("\u{2717}").red().bold(), msg);
 }
-
-// ---------------------------------------------------------------------------
-// Duration formatting
-// ---------------------------------------------------------------------------
 
 fn format_duration(d: Duration) -> String {
     let secs = d.as_secs();

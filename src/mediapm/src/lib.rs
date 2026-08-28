@@ -157,10 +157,6 @@ pub enum MediaHierarchyPreset {
     YtDlpChannel,
 }
 
-// ---------------------------------------------------------------------------
-// Utility functions
-// ---------------------------------------------------------------------------
-
 /// Loads runtime dotenv files for a resolved set of mediapm paths.
 ///
 /// Reads `env_file` first (user-provided) then `env_generated_file` second

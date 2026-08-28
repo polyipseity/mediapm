@@ -251,8 +251,6 @@ fn glob_pattern_to_regex(pattern: &str) -> Result<Regex, String> {
     Regex::new(&regex).map_err(|error| format!("invalid glob pattern '{pattern}': {error}"))
 }
 
-// --- Content-check helpers (shared by e2e tests and live demo examples) ---
-
 /// Asserts that `bytes` starts with the WebVTT magic `WEBVTT` (ASCII) followed by a newline.
 #[must_use]
 pub fn assert_starts_with_webvtt(bytes: &[u8]) -> Result<(), String> {

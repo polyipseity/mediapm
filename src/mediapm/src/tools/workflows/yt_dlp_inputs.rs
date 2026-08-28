@@ -278,8 +278,6 @@ pub(crate) fn yt_dlp_variant_inputs(config: &YtDlpOutputVariantConfig) -> BTreeM
 mod tests {
     use super::*;
 
-    // ── Selector exact-output regression tests ────────────────────────────
-
     #[test]
     fn ffmpeg_selector_resolves_to_sandbox_relative_deps_path() {
         let selector = yt_dlp_managed_ffmpeg_location_selector();
@@ -372,8 +370,6 @@ mod tests {
             "selector must not start with deno:OS (double-prefix bug): {selector}"
         );
     }
-
-    // ── Variant-inputs integration regression tests ───────────────────────
 
     #[test]
     fn yt_dlp_primary_variant_inputs_ffmpeg_location_has_no_double_prefix() {

@@ -494,10 +494,6 @@ mod tests {
         assert!(err.to_string().contains("must be NFD-normalized"));
     }
 
-    // -----------------------------------------------------------------------
-    // Read-only marking and removal
-    // -----------------------------------------------------------------------
-
     #[test]
     fn readonly_file() {
         let dir = mediapm_utils::temp::artifact_dir().unwrap();

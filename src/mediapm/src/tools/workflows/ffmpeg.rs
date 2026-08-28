@@ -185,10 +185,6 @@ pub(crate) fn synthesize_ffmpeg_step(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Shared constants
-// ---------------------------------------------------------------------------
-
 /// Prefix for indexed ffmpeg content inputs.
 const INPUT_FFMPEG_CONTENT_PREFIX: &str = "input_content_";
 /// Prefix for indexed ffmpeg output-path option inputs.
@@ -220,10 +216,6 @@ const FFMPEG_STATIC_DEFAULTS: &[(&str, &str)] = &[
     ("start_at_zero", "true"),
     ("copy_ts", "false"),
 ];
-
-// ---------------------------------------------------------------------------
-// Token specs
-// ---------------------------------------------------------------------------
 
 /// Map from option input name to `TokenSpec` for ffmpeg.
 const FFMPEG_TOKEN_SPECS: &[(&str, super::spec::TokenSpec)] = &[
@@ -287,10 +279,6 @@ const FFMPEG_TOKEN_SPECS: &[(&str, super::spec::TokenSpec)] = &[
     ("video_quality", super::spec::TokenSpec::Pair("-q:v")),
     ("vn", super::spec::TokenSpec::Bool("-vn")),
 ];
-
-// ---------------------------------------------------------------------------
-// Option input names
-// ---------------------------------------------------------------------------
 
 /// Ordered ffmpeg option input names for CLI token generation.
 const FFMPEG_OPTION_INPUTS: &[&str] = &[
@@ -383,10 +371,6 @@ const FFMPEG_OPTION_INPUTS: &[&str] = &[
     "watermark_position",
 ];
 
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
-
 /// Returns indexed ffmpeg input-content field name.
 #[must_use]
 pub(crate) fn ffmpeg_input_content_name(index: usize) -> String {
@@ -458,10 +442,6 @@ pub(crate) fn ffmpeg_output_file_regex(index: usize) -> String {
     format!(r"^output-{index}(?:[.][^/\\]+)?$")
 }
 
-// ---------------------------------------------------------------------------
-// Cover-art and container helpers
-// ---------------------------------------------------------------------------
-
 /// Builds ffmpeg cover-art map/disposition templates for managed media-tagger apply workflows.
 #[must_use]
 fn ffmpeg_cover_art_tokens(max_input_slots: usize, max_output_slots: usize) -> Vec<String> {
@@ -494,10 +474,6 @@ fn ffmpeg_container_any_of_condition(containers: &[&str]) -> String {
         .collect::<Vec<_>>()
         .join(" || ")
 }
-
-// ---------------------------------------------------------------------------
-// Spec builder functions
-// ---------------------------------------------------------------------------
 
 /// Builds the ffmpeg executable command vector.
 #[must_use]
@@ -742,10 +718,6 @@ fn build_ffmpeg_default_input_defaults(
     defaults
 }
 
-// ---------------------------------------------------------------------------
-// Public spec builder
-// ---------------------------------------------------------------------------
-
 /// Builds the full [`mediapm_conductor::ToolSpec`] and [`mediapm_conductor::ToolRuntime`] for ffmpeg.
 #[must_use]
 pub(crate) fn build_ffmpeg_spec(
@@ -773,10 +745,6 @@ pub(crate) fn build_ffmpeg_spec(
         0,     // max_retries
     )
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

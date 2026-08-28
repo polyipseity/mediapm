@@ -21,8 +21,6 @@ use crate::tools::workflows::MANAGED_WORKFLOW_PREFIX;
 
 use super::util::write_bytes_if_changed;
 
-// ── Namespace validation ─────────────────────────────────────────────────
-
 /// Validates that a user-owned conductor document does not collide with the
 /// mediapm-managed namespaces (two-file model, condition 2).
 ///
@@ -88,8 +86,6 @@ pub(crate) fn load_conductor_user_document(
     Ok(Some(document))
 }
 
-// ── Document load/save ───────────────────────────────────────────────────
-
 /// Loads a conductor NCL document from disk, returning default if missing.
 fn load_conductor_document(
     path: &std::path::Path,
@@ -142,8 +138,6 @@ pub(crate) fn save_conductor_generated_document(
     save_conductor_document(&paths.conductor_generated_ncl, document, "conductor generated NCL")
 }
 
-// ── Tool enumeration ─────────────────────────────────────────────────────
-
 /// One row of tool metadata for `mediapm tool list` output.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -181,8 +175,6 @@ pub(crate) fn list_tools(paths: &MediaPmPaths) -> Result<Vec<ConductorToolRow>, 
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(rows)
 }
-
-// ── Builtin registration ─────────────────────────────────────────────────
 
 /// Registers missing builtin tool definitions into the generated document.
 pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {

@@ -434,10 +434,6 @@ fn step_option_json_list(step: &MediaStep, key: &str) -> Option<String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Spec-generation helpers — rsgain managed-tool definition
-// ---------------------------------------------------------------------------
-
 /// Internal rsgain-only input selecting sandbox materialization extension.
 const INPUT_RSGAIN_INPUT_EXTENSION: &str = "input_extension";
 /// File extensions supported by rsgain command template materialization.
@@ -542,10 +538,6 @@ const RSGAIN_OPTION_INPUTS: &[&str] = &[
     "dynamic_range_histogram_bins",
 ];
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 #[must_use]
 fn rsgain_input_file_path(extension: &str) -> String {
     format!("inputs/input.{extension}")
@@ -555,10 +547,6 @@ fn rsgain_input_file_path(extension: &str) -> String {
 fn rsgain_output_file_regex() -> String {
     format!("^input[.](?:{})$", SUPPORTED_RSGAIN_INPUT_EXTENSIONS.join("|"))
 }
-
-// ---------------------------------------------------------------------------
-// Spec builders
-// ---------------------------------------------------------------------------
 
 #[must_use]
 fn build_rsgain_command(command_path: &str) -> Vec<String> {

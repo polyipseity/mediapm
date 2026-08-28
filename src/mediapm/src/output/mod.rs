@@ -9,8 +9,6 @@
 pub mod progress;
 pub mod report;
 
-// No imports needed at this level — submodules handle their own.
-
 pub use progress::{
     DimensionSource, ProgressBarApi, ProgressGroup, ProgressGroupApi, TestDimensionSource,
     TestTimeSource, TrackedHandle,
@@ -24,11 +22,7 @@ use crate::SyncSummary;
 
 /// Print a sync summary line with status icon and duration tracking.
 ///
-/// This is the original public API kept for backward compatibility. It
-/// computes duration from an optional start time, constructs the field
-/// list from [`SyncSummary`], and calls [`print_result`].
-///
-/// Pass `elapsed` = `None` to omit the duration suffix.
+/// Constructs the field list from [`SyncSummary`] and calls [`print_result`].
 pub fn print_sync_summary(summary: &SyncSummary) {
     let icon = if summary.executed_instances > 0 || summary.materialized_paths > 0 {
         StatusIcon::Success

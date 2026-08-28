@@ -26,10 +26,6 @@ use super::{
     RequiredStepOutputNames, RequiredStepZipMembers, StepOutputHashes, VariantSourceBytes,
 };
 
-// ---------------------------------------------------------------------------
-// Hierarchy / variant enumeration
-// ---------------------------------------------------------------------------
-
 /// Resolves the [`MediaSourceSpec`] for one hierarchy entry's media id.
 pub(super) fn resolve_hierarchy_source<'a>(
     document: &'a MediaPmDocument,
@@ -59,10 +55,6 @@ pub(super) fn collect_media_source_available_variants(
     }
     variants
 }
-
-// ---------------------------------------------------------------------------
-// Variant hash / bytes resolution
-// ---------------------------------------------------------------------------
 
 async fn cas_hash_is_readable(cas: &FileSystemCas, hash: Hash) -> bool {
     cas.get(hash).await.is_ok()

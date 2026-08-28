@@ -30,8 +30,6 @@ pub(crate) enum TokenSpec {
     None,
 }
 
-// ── Unpack helpers ───────────────────────────────────────────────────────
-
 /// Builds one unpack conditional token gated on non-empty scalar presence.
 #[must_use]
 pub(crate) fn unpack_if_truthy(input_name: &str, rendered_argument: &str) -> String {
@@ -72,8 +70,6 @@ pub(crate) fn bool_value_pair_tokens(input_name: &str, flag: &str, value: &str) 
     vec![unpack_if_equals(input_name, "true", flag), unpack_if_equals(input_name, "true", value)]
 }
 
-// ── Option-token resolution ──────────────────────────────────────────────
-
 /// Resolves option templates for one logical tool option input.
 #[must_use]
 pub(crate) fn option_tokens_for_input(
@@ -107,15 +103,11 @@ pub(crate) fn command_option_tokens_for_tool(
         .collect()
 }
 
-// ── Template literal escaping ────────────────────────────────────────────
-
 /// Escapes a literal string value for use inside conductor NCL templates.
 #[must_use]
 pub(crate) fn escape_template_literal(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%")
 }
-
-// ── Sandbox path normalization ───────────────────────────────────────────
 
 /// Resolves a sandbox-relative path from a tool command's `content_map` entry.
 #[must_use]
@@ -128,8 +120,6 @@ pub(crate) fn resolve_sandbox_path(content_map_key: &str) -> String {
 pub(crate) fn strip_sandbox_prefix(path: &str) -> &str {
     path.strip_prefix("inputs/").unwrap_or(path)
 }
-
-// ── Spec-build helpers ───────────────────────────────────────────────────
 
 /// Builds a full [`ToolSpec`] and [`ToolRuntime`] from per-tool parts.
 ///

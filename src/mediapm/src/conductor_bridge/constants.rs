@@ -4,8 +4,6 @@
 //! modules to avoid defining the same string literal in multiple places.
 //! The canonical definitions live here; all consumers import from this module.
 
-// ── Reserved input keys ──────────────────────────────────────────────────
-
 /// Reserved list-input name injected right after executable token.
 pub(crate) const INPUT_LEADING_ARGS: &str = "leading_args";
 /// Reserved list-input name injected after all generated operation arguments.
@@ -20,8 +18,6 @@ pub(crate) const INPUT_SD_PATTERN: &str = "pattern";
 pub(crate) const INPUT_SD_REPLACEMENT: &str = "replacement";
 /// Scalar URL input used by download tools.
 pub(crate) const INPUT_SOURCE_URL: &str = "source_url";
-
-// ── Output capture names ─────────────────────────────────────────────────
 
 /// Output capture name exposing one tool's primary file content payload.
 pub(crate) const OUTPUT_CONTENT: &str = "content";
@@ -47,8 +43,6 @@ pub(crate) const OUTPUT_YT_DLP_CHAPTER_ARTIFACTS: &str = "yt_dlp_chapter_artifac
 pub(crate) const OUTPUT_YT_DLP_PLAYLIST_DESCRIPTION_FILE: &str = "yt_dlp_playlist_description_file";
 /// yt-dlp playlist-infojson file output.
 pub(crate) const OUTPUT_YT_DLP_PLAYLIST_INFOJSON_FILE: &str = "yt_dlp_playlist_infojson_file";
-
-// ── Conductor logical tool IDs ───────────────────────────────────────────
 
 /// Canonical tool id prefix for mediapm managed tools.
 pub(crate) const MEDIAPM_TOOL_ID_PREFIX: &str = "mediapm.tools";
@@ -91,8 +85,6 @@ pub(crate) const TOOL_MEDIA_TAGGER: &str = "media-tagger";
 )]
 pub(crate) const TOOL_SD: &str = "sd";
 
-// ── Slot limits ──────────────────────────────────────────────────────────
-
 /// Default maximum number of indexed ffmpeg content input slots.
 #[expect(
     dead_code,
@@ -101,8 +93,6 @@ pub(crate) const TOOL_SD: &str = "sd";
 pub(crate) const DEFAULT_FFMPEG_MAX_INPUT_SLOTS: usize = 16;
 /// Default maximum number of indexed ffmpeg output slots.
 pub(crate) const DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS: usize = 4;
-
-// ── Config key names used in NCL templates ───────────────────────────────
 
 /// Config key for the generated conductor document tools section.
 #[expect(

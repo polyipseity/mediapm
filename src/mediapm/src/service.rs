@@ -84,10 +84,6 @@ impl WorkspaceProvisioningCas for InMemoryCas {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Service struct
-// ---------------------------------------------------------------------------
-
 /// Composes CAS + Conductor into the media-facing API and CLI scaffold.
 ///
 /// Type parameter `Cas` selects the content-addressed store backend.
@@ -143,10 +139,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         Self { conductor, paths, runtime_storage_overrides, metadata_cache }
     }
 
-    // -----------------------------------------------------------------------
-    // Getters
-    // -----------------------------------------------------------------------
-
     /// Returns a shared reference to the paths layout.
     #[must_use]
     pub fn paths(&self) -> &MediaPmPaths {
@@ -164,10 +156,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     pub fn runtime_storage_overrides(&self) -> &MediaRuntimeStorage {
         &self.runtime_storage_overrides
     }
-
-    // -----------------------------------------------------------------------
-    // Path and runtime helpers
-    // -----------------------------------------------------------------------
 
     /// Resolves effective paths by applying runtime storage overrides on top
     /// of the base paths.
@@ -217,10 +205,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         let resolved_doc_runtime = MediaRuntimeStorage::from_boundary(&doc.runtime, &base_paths);
         Ok(merge_runtime_storage(&resolved_doc_runtime, &self.runtime_storage_overrides))
     }
-
-    // -----------------------------------------------------------------------
-    // Tool-sync helpers
-    // -----------------------------------------------------------------------
 
     /// Checks whether a logical tool for the given media id requires a sync.
     ///
@@ -354,10 +338,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         }
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // Source management
-    // -----------------------------------------------------------------------
 
     /// Adds one online media source and saves the document.
     ///
@@ -544,10 +524,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         Ok(resolved_media_id)
     }
 
-    // -----------------------------------------------------------------------
-    // Hierarchy management
-    // -----------------------------------------------------------------------
-
     /// Adds a hierarchy preset node at the given position and saves the
     /// document.
     ///
@@ -647,10 +623,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         Ok(removed)
     }
 
-    // -----------------------------------------------------------------------
-    // Tool management
-    // -----------------------------------------------------------------------
-
     /// Lists registered tools from the conductor generated document.
     ///
     /// # Errors
@@ -717,10 +689,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Invalidation
-    // -----------------------------------------------------------------------
-
     /// Invalidates tool-call instances for a given media step.
     ///
     /// Clears variant hashes and optionally impure timestamps for the targeted
@@ -769,10 +737,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             warnings: Vec::new(),
         })
     }
-
-    // -----------------------------------------------------------------------
-    // Sync
-    // -----------------------------------------------------------------------
 
     /// Refreshes the runtime configuration by loading dotenv files, creating
     /// runtime env files, and exporting schemas.
@@ -923,10 +887,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         })
     }
 
-    // -----------------------------------------------------------------------
-    // Source processing
-    // -----------------------------------------------------------------------
-
     /// Validates and normalizes a source URI, returning a [`MediaPackage`].
     ///
     /// # Errors
@@ -941,10 +901,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         Ok(MediaPackage { media_id, source_uri: normalized, permanent: false })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Filesystem convenience constructors
-// ---------------------------------------------------------------------------
 
 impl MediaPmService<FileSystemCas> {
     /// Creates a new filesystem-backed service at the given workspace root.
@@ -1236,10 +1192,6 @@ impl MediaPmService<FileSystemCas> {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// In-memory convenience constructors
-// ---------------------------------------------------------------------------
 
 impl MediaPmService<InMemoryCas> {
     /// Creates a new in-memory service at a temporary root.

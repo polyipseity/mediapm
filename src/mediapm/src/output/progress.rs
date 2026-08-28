@@ -20,8 +20,6 @@ mod tests {
 
     use super::*;
 
-    // --- Helpers ---
-
     fn mk_elapsed() -> (MultiProgress, InMemoryTerm, Arc<TestTimeSource>) {
         let term = InMemoryTerm::new(24, 80);
         let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
@@ -34,8 +32,6 @@ mod tests {
         let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
         (MultiProgress::with_draw_target(target), term)
     }
-
-    // ── Progress elapsed / duration tests ──
 
     #[test]
     fn consumer_child_bar_elapsed_starts_at_zero() {
@@ -122,8 +118,6 @@ mod tests {
             "elapsed must stay at 0 after finish_error, got:\n{contents}"
         );
     }
-
-    // ── Terminal resize reactivity tests ──
 
     #[test]
     fn sync_hierarchy_height_change() {

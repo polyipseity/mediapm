@@ -466,10 +466,6 @@ async fn main_cli() -> anyhow::Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CLI argument types
-// ---------------------------------------------------------------------------
-
 /// `mediapm` orchestration CLI.
 #[derive(Debug, Parser)]
 #[command(author, version, about = "mediapm orchestration CLI")]
@@ -481,11 +477,6 @@ struct Cli {
     #[arg(long, env = "MEDIAPM_DIR")]
     mediapm_dir: Option<PathBuf>,
     /// Override for `runtime.hierarchy_root_dir`.
-    ///
-    /// Intentionally exposed even though PLAN.md's global CLI-flag table
-    /// omits it — consistency with the other path-override flags makes
-    /// automation scripts simpler (every path can be set via `--<name>` /
-    /// `MEDIAPM_<NAME>`).
     #[arg(long, env = "MEDIAPM_HIERARCHY_ROOT_DIR")]
     hierarchy_root_dir: Option<PathBuf>,
     /// Override for `runtime.conductor_config`.
@@ -975,10 +966,6 @@ struct SyncArgs {
     no_progress: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Builds default yt-dlp processing steps with optional MBID overrides.
 #[must_use]
 fn default_yt_dlp_steps(
@@ -1197,10 +1184,6 @@ fn passthrough_requests_help_or_version(args: &[String]) -> bool {
             || arg.split_once('=').is_some_and(|(flag, _)| matches!(flag, "--help" | "--version"))
     })
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

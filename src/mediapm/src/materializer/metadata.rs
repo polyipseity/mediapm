@@ -23,10 +23,6 @@ use crate::tools::workflows::{FfmpegSlotLimits, resolve_media_variant_output_bin
 
 use super::zip::extract_zip_member_bytes;
 
-// ---------------------------------------------------------------------------
-// Lookup context
-// ---------------------------------------------------------------------------
-
 /// Per-workflow step output hash table (`step_id -> output_name -> CAS hash`).
 pub(super) type StepOutputHashes = BTreeMap<String, BTreeMap<String, Hash>>;
 
@@ -63,10 +59,6 @@ impl MaterializationLookupContext {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Metadata value resolution
-// ---------------------------------------------------------------------------
 
 /// Resolves one [`MediaMetadataValue`] to a concrete string.
 #[allow(dead_code)]
@@ -380,10 +372,6 @@ fn extract_metadata_key_from_media_bytes_via_ffprobe(
     let json = try_fetch_local_source_metadata_with_ffprobe(&probe_path, "ffprobe")?;
     Ok(extract_metadata_key_from_json(&json, metadata_key))
 }
-
-// ---------------------------------------------------------------------------
-// JSON metadata extraction helpers
-// ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
 fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option<String> {

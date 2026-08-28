@@ -675,7 +675,6 @@ pub(crate) async fn reconcile_desired_tools(
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
-        // --- Spec-based skip: if desired spec is already satisfied, skip. ---
         if tool_req.version_spec != ConfigVersionSpec::Latest
             && tool_req.version_spec != ConfigVersionSpec::Inherit
             && let Some(entry) = state.managed_tools.iter().find(|e| e.tool_id == *tool_id)
@@ -719,7 +718,6 @@ pub(crate) async fn reconcile_desired_tools(
                 }
             }
         }
-        // --- End spec-based skip ---
 
         // Initialized in the Ok(fetch) arm before the skip check;
         // used in the Ok(None) payload branch below. String::new() is
@@ -754,7 +752,6 @@ pub(crate) async fn reconcile_desired_tools(
                 resolved_version_value.clone_from(&metadata.resolved_version);
                 resolved_vcs_hash_value.clone_from(&metadata.resolved_vcs_hash);
 
-                // --- Post-resolve validation: verify resolved result matches desired spec ---
                 match &tool_req.version_spec {
                     ConfigVersionSpec::Exact(fields) => {
                         if let Some(hash) = &fields.vcs_hash {
@@ -792,7 +789,6 @@ pub(crate) async fn reconcile_desired_tools(
                         )));
                     }
                 }
-                // --- End post-resolve validation ---
 
                 // Compute expected composite canonical_version for skip check.
                 // For tools with same-step dependencies, include dep versions in composite.
@@ -1157,7 +1153,6 @@ pub(crate) async fn reconcile_desired_tools(
         g.join();
     }
 
-    // ── Generated-doc purity (condition 3) ───────────────────────────────
     // The generated document is a pure machine artifact: drop any tool
     // entries mediapm did not produce this sync (hand-added manual entries).
     // Retain everything the provisioning pipeline manages — explicit tools
@@ -1187,7 +1182,6 @@ pub(crate) async fn reconcile_desired_tools(
     });
     pruned_tools += tools_before_rewrite - generated_doc.tools.len();
 
-    // ── external_data: independent post-processing ──────────────────────
     // Rebuild external_data from scratch by scanning all tool specs'
     // content_maps. Hashes not referenced by any tool are automatically
     // excluded — no separate cleanup needed.
@@ -2091,10 +2085,6 @@ mod tests {
         assert_eq!(external_data_one.len(), 1, "external_data should have 1 entry");
     }
 
-    // ---------------------------------------------------------------------------
-    // Phase 6 — resolve_dep_version_spec
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn resolve_dep_version_spec_inherit_resolves() {
         let mut globals: BTreeMap<String, ToolRequirement> = BTreeMap::new();
@@ -2197,9 +2187,6 @@ mod tests {
         assert!(msg.contains("inherit"), "should mention inherit");
     }
 
-    // Phase 7 — composite_canonical_version tests
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn composite_canonical_version_no_deps() {
         assert_eq!(composite_canonical_version("v1", &[]), "v1");
@@ -2219,9 +2206,6 @@ mod tests {
             "yt-dlp-v2;deno:deno-v2.0;ffmpeg:ffmpeg-v7.1"
         );
     }
-
-    // Phase 7 — build_provisioning_entries tests
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn build_provisioning_entries_empty() {
@@ -2349,9 +2333,6 @@ mod tests {
         assert_eq!(entries.iter().filter(|e| e.tool_id == "ffmpeg").count(), 2);
     }
 
-    // Phase 7 — collect_same_step_dep_ids tests
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn collect_same_step_dep_ids_empty_deps() {
         let req = ToolRequirement::default();
@@ -2403,9 +2384,6 @@ mod tests {
         assert_eq!(ids, vec!["ffmpeg"]);
     }
 
-    // Phase 0 — compute_composite_canonical_version tests
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn compute_composite_canonical_version_no_deps() {
         let req = ToolRequirement::default();
@@ -2413,9 +2391,6 @@ mod tests {
         let result = compute_composite_canonical_version("v1.0", "ffmpeg", &req, &live_state);
         assert_eq!(result, "v1.0");
     }
-
-    // Phase 1 — own_version_segment (non-transitive composites)
-    // -------------------------------------------------------------------------
 
     #[test]
     fn own_version_segment_bare_passthrough() {
@@ -2566,9 +2541,6 @@ mod tests {
             "Latest dep specs must find active entry and include its version in composite"
         );
     }
-
-    // Phase 2 — inline_same_step_deps / strip_inlined_deps_keys tests
-    // -------------------------------------------------------------------------
 
     #[test]
     fn inline_same_step_deps_empty_deps() {
@@ -2725,9 +2697,6 @@ mod tests {
         assert!(strip_inlined_deps_keys(&map).is_empty());
     }
 
-    // Phase 7 — index_managed_tools tests
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn index_managed_tools_empty() {
         let map = index_managed_tools(&[]);
@@ -2780,9 +2749,6 @@ mod tests {
         assert_eq!(map["ffmpeg"].len(), 2);
     }
 
-    // Phase 7 — Inactive tool regression tests
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn regression_inactive_index_managed_tools() {
         // An entry with empty content_map_hash is still indexed (the inactive
@@ -2832,9 +2798,6 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert_eq!(map["ffmpeg"].len(), 2);
     }
-
-    // Phase 3 — resolved-field skip backfill merge
-    // ---------------------------------------------------------------------------
 
     fn backfill_entry(
         tool_id: &str,

@@ -1,6 +1,6 @@
 # `mediapm` Crate Guidance
 
-Media orchestration facade composing `mediapm-cas` and `mediapm-conductor` into a unified library and CLI for media library sync, managed-tool provisioning, and hierarchy materialization.
+Media orchestration facade over `mediapm-cas` and `mediapm-conductor`: media library sync, managed-tool provisioning, and hierarchy materialization.
 
 ## Module Architecture
 
@@ -70,7 +70,7 @@ builtins/                  — Native tool implementations
 | `MediaRuntimeStorage` | `config/mod.rs` | Runtime path overrides (config, CLI, env) |
 | `MediaPmPaths` | `paths.rs` | Resolved canonical path bundle for one workspace root |
 | `MediaPmGlobalPaths` | `global.rs` | User-level cache (`<os-cache>/mediapm/cache/`) |
-| `MediaPmError` | `error.rs` | Error taxonomy (5 variants) |
+| `MediaPmError` | `error.rs` | Error taxonomy (6 variants) |
 | `HierarchyNode` | `config/hierarchy_types.rs` | Ordered node-array hierarchy with recursive children |
 
 ## Config Document Model
@@ -129,51 +129,27 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
 ## Managed Tool Provisioning
 
-6 managed tools: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`. See `.agents/instructions/provider-dispatch.instructions.md` for per-OS source descriptors and URL resolution. See `.agents/instructions/preset-dispatch.instructions.md` for preset spec builders and tool defaults. See `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` for the provisioning pipeline and paths.
-
-**Provisioning paths**: see `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` for the provisioning pipeline, paths, and `FetchedToolPayload` shape (`content_map`, `os_exec_paths`).
-
-**URL resolution**: See `.agents/instructions/provider-dispatch.instructions.md` for URL resolution (`resolve_latest_github_tag`), per-tool URL templating, and metadata cache usage.
-
-**Tool defaults**: see `.agents/instructions/preset-dispatch.instructions.md` for per-tool spec builders and default settings.
+6 managed tools: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`. See `.agents/instructions/provider-dispatch.instructions.md` (per-OS source descriptors, URL resolution, `resolve_latest_github_tag`), `.agents/instructions/preset-dispatch.instructions.md` (preset spec builders, defaults), and `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` (provisioning pipeline, paths, `FetchedToolPayload` shape) for details.
 
 **User-level cache**: `<os-cache-dir>/mediapm/cache/` (7-day eviction) — shared download cache distinct from workspace tool cache.
 
 **Companion dep path contract**: Inlined companion dep content map keys follow `deps/{mediapm_tool_id}/{os}/{filename}` (e.g. `deps/ffmpeg/macos/ffmpeg`). The OS directory component is already embedded in the key structure. OS-conditional selectors for these paths MUST NOT use `build_os_conditional_selector` (which prepends `{os}/`) — use `build_raw_os_conditional_selector` instead. Using the wrong helper produces double-prefixed paths like `macos/deps/ffmpeg/macos/ffmpeg` that break runtime path resolution. See `mediapm-conductor::tools::helpers` module docs for the two selector flavors.
 
-### Media Metadata Caching
+### Media metadata caching
 
-Two metadata caches are enabled by default for media processing:
+Two caches are enabled by default, both workspace-scoped under `<runtime>/cache/` in separate subdirectories:
 
-- **ffprobe metadata cache** (`metadata_cache.rs`): `MediaPmService` owns a `MetadataCache` opened at `paths.workspace_mediapm_cache_dir()` (`<runtime>/cache/mediapm/metadata.cache.json`). Every `add_local_source_*` call consults the cache keyed by `ffprobe:{path}` (access-time TTL = 1 day, `METADATA_CACHE_ENTRY_TTL_SECONDS`); the probe runs only on a miss. The cache is pruned of expired entries at open and flushed (atomically) on drop. On a hit, the cached `LocalSourceMetadata` is returned without invoking ffprobe.
+- **ffprobe cache** (`metadata_cache.rs`): `MediaPmService` owns a `MetadataCache` at `paths.workspace_mediapm_cache_dir()` (`<runtime>/cache/mediapm/metadata.cache.json`). Each `add_local_source_*` call consults it keyed by `ffprobe:{path}` (TTL = 1 day, `METADATA_CACHE_ENTRY_TTL_SECONDS`); the probe runs only on a miss. Expired entries are pruned at open and flushed atomically on drop.
+- **media-tagger HTTP cache**: the media-tagger step synthesizes a `cache_dir` input defaulting to `paths.workspace_media_tagger_cache_dir()` (`<runtime>/cache/media_tagger`), threaded through `synthesize_media_tagger_step` → `build_media_tagger_metadata_inputs` as the `cache_dir` step option (overridable via `options.cache_dir`). `MediaTaggerHttpCache` honors a non-empty `cache_dir`; empty disables caching. `cache_expiry_seconds` defaults to `86400`.
 
-- **media-tagger HTTP cache**: the media-tagger workflow step synthesizes a `cache_dir` step input defaulting to `paths.workspace_media_tagger_cache_dir()` (`<runtime>/cache/media_tagger`). This is threaded through `synthesize_media_tagger_step` → `build_media_tagger_metadata_inputs` and injected as the `cache_dir` step option (overridable per-step via `options.cache_dir`). The builtin `MediaTaggerHttpCache` honors a non-empty `cache_dir`; an empty value disables caching. `cache_expiry_seconds` defaults to `86400`.
+### Global tool cache CLI
 
-Both caches are workspace-scoped (under `<runtime>/cache/`) and kept in separate subdirectories so domains do not collide.
+`mediapm global tool-cache` inspects and prunes the user-level tool cache (`<os-cache-dir>/mediapm/cache/`), distinct from the workspace metadata caches. Implemented in `src/mediapm/src/global.rs`, it reuses the `mediapm-conductor` `Cache` engine directly (no background loop).
 
-### Global Tool Cache CLI
+- **`status`** — Opens the cache without the 24-hour prune loop (`Cache::open_without_background`) and reports the summed `entry_count` across the `tools` (7-day TTL) and `tool_metadata` (1-day TTL) domains, plus `tool_cache_dir`, `store_dir`, and `index` paths.
+- **`prune`** — Opens without the loop, then runs `Cache::prune_expired_immediate`, bypassing the `PRUNE_INTERVAL_SECONDS` cooldown across both domains, reporting `removed_entries` and `removed_payloads`. Unreferenced CAS payload blobs are physically deleted; still-referenced entries are retained.
 
-The `mediapm global tool-cache` subcommand inspects and prunes the **user-level**
-tool cache (`<os-cache-dir>/mediapm/cache/`), distinct from the workspace
-metadata caches above. It is implemented in `src/mediapm/src/global.rs` and
-reuses the `mediapm-conductor` `Cache` engine directly (no background loop).
-
-- **`mediapm global tool-cache status`** — Opens the cache **without** starting
-  the 24-hour background prune loop (`Cache::open_without_background`) and
-  reports the real summed `entry_count` across the `tools` (7-day TTL) and
-  `tool_metadata` (1-day TTL) domains, plus the resolved `tool_cache_dir`,
-  `store_dir`, and `index` paths. A short-lived CLI must not spawn a lingering
-  background thread, so the prune loop is intentionally omitted here.
-- **`mediapm global tool-cache prune`** — Opens the cache without the background
-  loop, then performs an **immediate** prune (`Cache::prune_expired_immediate`)
-  that bypasses the automatic `PRUNE_INTERVAL_SECONDS` cooldown across both
-  domains, reporting `removed_entries` and `removed_payloads`. Unreferenced CAS
-  payload blobs are physically deleted; entries still referenced by any domain
-  index are retained.
-
-Both commands accept an optional `--cache-root <dir>` override (resolved via
-`MediaPmGlobalPaths::from_tool_cache_dir`) for hermetic operation; when omitted
-they use the default resolved user-level cache root.
+Both accept `--cache-root <dir>` (resolved via `MediaPmGlobalPaths::from_tool_cache_dir`); omitted uses the default user-level root.
 
 ### Adding a New Managed Tool
 
@@ -216,16 +192,14 @@ Follow this spec-first, test-first workflow:
    - Preset produces valid `ToolSpec` with non-empty command/inputs/outputs
    - Workflow step synthesizes correct command-line tokens
 
-### Canonical Version Tracking
+### Canonical version tracking
 
-Every `ToolRegistryEntry` always has a `canonical_version` (non-optional `String`). The semantic kind (VCS hash vs version) is fixed per tool at code-writing time:
+Every `ToolRegistryEntry` has a non-optional `canonical_version` (`String`). The semantic kind (VCS hash vs version) is fixed per tool at code-writing time:
 
-- **Builtin tools** (media-tagger): use `MEDIAPM_GIT_HASH` (compile-time constant from `build.rs`).
-- **GitHub-release tools** (yt-dlp, ffmpeg, deno, rsgain, sd): use the resolved tag name verbatim as the canonical version.
+- **Builtin tools** (media-tagger): `MEDIAPM_GIT_HASH` (compile-time constant from `build.rs`).
+- **GitHub-release tools** (yt-dlp, ffmpeg, deno, rsgain, sd): the resolved tag name verbatim.
 
-Skip logic: when `reconcile_desired_tools` resolves a tool and finds the same `canonical_version` in `state.managed_tools` with a non-empty `content_map_hash`, the provisioning pipeline is skipped for that tool.
-
-The `Ok(None)` branch (no payload fetched) still populates `canonical_version` from the resolved value. The migration path: `canonical_version` defaults to `""` via `#[serde(default)]` for backward-compat with old state files.
+Skip logic: when `reconcile_desired_tools` finds the same `canonical_version` in `state.managed_tools` with a non-empty `content_map_hash`, provisioning is skipped for that tool. The `Ok(None)` branch still populates `canonical_version` from the resolved value. `canonical_version` defaults to `""` via `#[serde(default)]` for backward-compat with old state files.
 
 ## Cache Architecture (Three-Tier)
 
@@ -235,10 +209,6 @@ See `.agents/instructions/cache-and-http.instructions.md` for the three-tier cac
 
 Direct CAS→output-path writes; no staging commit. Materialized paths marked read-only after sync. Link fallback order configurable in `runtime.materialization_preference_order` (default: hardlink → symlink → reflink → copy). NFD filenames enforced; reserved path chars rejected. ZIP extraction under `<mediapm_dir>/tmp/`.
 
-## Metadata Cache
-
-`metadata_cache.rs` — single JSON file at `<runtime_root>/cache/mediapm/`. BLAKE3-hex keys, 86400s TTL, timer-based batch flush (~300s cooldown). Graceful degradation on I/O/serialization errors.
-
 ## CAS Integrity Verification
 
 Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sample { denominator: 100 }` (default), `Stale { timeout: 604800s }` (default). Gated by `MediaRuntimeStorage.verify_on_read` (typed `Vec<VerifyStrategy>`, snake_case wire names `always`/`modified`/`sample`/`stale`; unknown names rejected at the serde boundary) plus `verify_on_read_sample_denominator` and `verify_on_read_stale_timeout_secs` fields.
@@ -246,10 +216,10 @@ Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sampl
 ## Cross-Crate Invariants
 
 - **Content identity**: BLAKE3-256 multihash; `Hash::composite(&[Hash])` for deterministic composite hashing.
-- **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence, runtime env files (`.env`, `.env.generated`), and gitignore. MediaPM delegates gitignore creation to conductor's `extend_runtime_gitignore()` at service construction time, and generated dotenv writing to `write_generated_dotenv()` during tool sync. `write_generated_dotenv()` receives conductor-keyed tool runtimes (`tool_runtimes` keys are mediapm conductor tool ids, e.g. `yt-dlp@blake3:abc`) and emits payload paths `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`; env var names derive from the stripped plain mediapm tool id (hash-free).
+- **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence, runtime env files (`.env`, `.env.generated`), and gitignore. MediaPM delegates gitignore creation to `extend_runtime_gitignore()` at construction and dotenv writing to `write_generated_dotenv()` during tool sync. The latter receives conductor-keyed tool runtimes (`tool_runtimes` keys are mediapm conductor tool ids, e.g. `yt-dlp@blake3:abc`) and emits payload paths `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`; env var names derive from the stripped plain mediapm tool id (hash-free).
 - **MediaPM → CAS**: Materialization reads from CAS; all outputs read-only after commit. Hash mismatch → no fallback.
-- **NCL→Rust sync**: Typed envelope pattern — `deny_unknown_fields` on envelope, `#[serde(flatten)]` inner. Custom deserializers for Nickel f64→u64. All user-facing config fields must be non-Option in domain types; absent config keys are resolved to explicit defaults at the serde boundary, so downstream code never handles `Option`. Follow the schema strictness policy (S1–S13 in `.agents/instructions/nickel.instructions.md`) and the regression requirements R1–R6 (`.agents/instructions/sdd-tdd-workflow.instructions.md`): every config/state/envelope boundary type carries `deny_unknown_fields`, no catch-all `Value`/`Dyn` shapes, unknown enum names fail fast, exported JSON schemas are strict, and every persisted Nickel schema has a parity test (the `schema_sync.rs` pattern).
-- **Config versioning pattern**: each version envelope keeps its OWN shape. V1 config types (e.g. `MediaRuntimeStorageV1`) are flat wire shapes that bridge to the active V2 boundary type `MediaRuntimeStorageLatest` via `From` impls; they are never reshaped to mirror V2's sub-record grouping. Migrations are owned by the target version file (`v1.ncl`/`v2.ncl`); `mod.ncl` only dispatches. Version-specific types and their `From` bridges live INSIDE the version file (`versions/v1.rs`, `versions/v_latest.rs`), never in the shared `config/mod.rs`; `config/mod.rs` holds ONLY the resolved (option-free) types and a thin `from_boundary` delegation, and the active `*Latest` boundary family belongs in `versions/v_latest.rs`. See `.agents/instructions/versioning-and-migration.instructions.md` ("Canonical versioning pattern").
+- **NCL→Rust sync**: Typed envelope — `deny_unknown_fields` on envelope, `#[serde(flatten)]` inner, custom deserializers for Nickel f64→u64. All user-facing config fields are non-Option in domain types; absent keys resolve to explicit defaults at the serde boundary, so downstream code never handles `Option`. Follow the schema strictness policy (S1–S13) and regression requirements R1–R6: every config/state/envelope boundary type carries `deny_unknown_fields`, no catch-all `Value`/`Dyn` shapes, unknown enum names fail fast, exported JSON schemas are strict, and every persisted Nickel schema has a parity test (`schema_sync.rs`).
+- **Config versioning pattern**: each version envelope keeps its own shape. V1 types (e.g. `MediaRuntimeStorageV1`) are flat wire shapes bridging to the active V2 boundary `MediaRuntimeStorageLatest` via `From` impls; they are never reshaped to mirror V2's sub-record grouping. Migrations live in the target version file (`v1.ncl`/`v2.ncl`); `mod.ncl` only dispatches. Version-specific types and their `From` bridges live inside the version file (`versions/v1.rs`, `versions/v_latest.rs`), never in `config/mod.rs`, which holds only resolved (option-free) types and a thin `from_boundary` delegation. See `.agents/instructions/versioning-and-migration.instructions.md`.
 - **Lock→CAS referential integrity**: Prune must not remove hashes referenced by lock records.
 
 ## Testing & Validation
@@ -264,9 +234,9 @@ Post-change: demo examples:
 
 - `cargo run --package mediapm --example mediapm_demo`
 - `cargo run --package mediapm --example mediapm_demo_online` — full-sync online path (network + external tools), human-gated
-- All cache-using examples (`mediapm_demo`, `mediapm_demo_online`, `mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`) reuse the real user-level tool download cache (`<os-cache-dir>/mediapm/cache`, via `example_isolation::user_level_cache_root()`) at explicit `cargo run --example`, so downloaded tools persist across runs and are shared with regular mediapm syncs; embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT`.
+- Cache-using examples (`mediapm_demo`, `mediapm_demo_online`, `mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`) reuse the real user-level tool download cache (`<os-cache-dir>/mediapm/cache`, via `example_isolation::user_level_cache_root()`) at explicit `cargo run --example`, so downloaded tools persist across runs; embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT`.
 
-The online demo's embedded test (`main_is_exercised`) runs reduced (config-only) mode deterministically in the test harness (skips in CI), so the pre-push gate exercises only reduced mode — no network. Its full-sync path runs only on the explicit `cargo run --package mediapm --example mediapm_demo_online` above. That explicit run uses the real user-level tool download cache, persisting downloaded tools across runs.
+The online demo's embedded test (`main_is_exercised`) runs reduced (config-only) mode deterministically in the test harness (skips in CI), so the pre-push gate exercises only reduced mode — no network. Its full-sync path runs only on the explicit `cargo run --package mediapm --example mediapm_demo_online` above.
 
 Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all`.
 

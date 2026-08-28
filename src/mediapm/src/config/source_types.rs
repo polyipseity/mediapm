@@ -8,10 +8,6 @@ use std::collections::BTreeMap;
 use super::hierarchy_types::{deserialize_variant_selector_list, serialize_variant_selector_list};
 use super::output_types::OutputVariantValue;
 
-// ---------------------------------------------------------------------------
-// Metadata value types
-// ---------------------------------------------------------------------------
-
 /// One media metadata value source declared under `media.<id>.metadata`.
 ///
 /// Supports three forms:
@@ -68,10 +64,6 @@ pub struct MediaMetadataRegexTransform {
     /// Replacement template applied when `pattern` matches.
     pub replacement: String,
 }
-
-// ---------------------------------------------------------------------------
-// Media source, step, and tool types
-// ---------------------------------------------------------------------------
 
 /// Source registry entry for one media item.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -168,10 +160,6 @@ impl MediaStepTool {
         tool_name.eq_ignore_ascii_case("import")
     }
 }
-
-// ---------------------------------------------------------------------------
-// Step option accessors
-// ---------------------------------------------------------------------------
 
 /// One transform input-option binding value.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

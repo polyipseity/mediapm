@@ -14,10 +14,6 @@ use zip::ZipArchive;
 use crate::config::hierarchy_types::HierarchyFolderRenameRule;
 use crate::error::MediaPmError;
 
-// ---------------------------------------------------------------------------
-// Compiled rename rule
-// ---------------------------------------------------------------------------
-
 /// A compiled folder rename rule with a cached [`Regex`].
 #[derive(Debug, Clone)]
 pub(super) struct CompiledFolderRenameRule {
@@ -30,10 +26,6 @@ pub(super) struct CompiledFolderRenameRule {
     #[allow(dead_code)]
     pub(super) regex: Regex,
 }
-
-// ---------------------------------------------------------------------------
-// ZIP extraction
-// ---------------------------------------------------------------------------
 
 /// Extracts all file entries from a ZIP archive stored in `data`, normalising
 /// entry paths and applying the given rename rules to the path components.
@@ -90,10 +82,6 @@ pub(super) fn extract_zip_folder_variant_bytes(
     Ok(files)
 }
 
-// ---------------------------------------------------------------------------
-// Rename rule compilation
-// ---------------------------------------------------------------------------
-
 /// Compiles a slice of [`HierarchyFolderRenameRule`] into
 /// [`CompiledFolderRenameRule`] instances.
 ///
@@ -117,10 +105,6 @@ pub(super) fn compile_hierarchy_folder_rename_rules(
 
     Ok(compiled)
 }
-
-// ---------------------------------------------------------------------------
-// Binding reference parsing
-// ---------------------------------------------------------------------------
 
 /// Parsed `${step_output...}` binding reference metadata.
 pub(super) struct StepOutputReference<'a> {
@@ -248,10 +232,6 @@ fn extract_zip_member_bytes_by_suffix(zip_bytes: &[u8], suffix: &str) -> Result<
 
     Err(format!("ZIP member suffix '{suffix}' not found in archive"))
 }
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
 
 /// Normalises a ZIP entry path: strips `./` prefix and leading `/`, and
 /// collapses consecutive slashes.

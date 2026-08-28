@@ -43,10 +43,6 @@ use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 pub(crate) use variant_binding::resolve_media_variant_output_binding_with_limits;
 
-// ---------------------------------------------------------------------------
-// Shared constants
-// ---------------------------------------------------------------------------
-
 /// Prefix for managed workflow names synthesized by mediapm.
 pub(crate) const MANAGED_WORKFLOW_PREFIX: &str = "mediapm.media.";
 
@@ -66,10 +62,6 @@ pub(crate) const INPUT_IMPORT_KIND: &str = "kind";
 pub(crate) const INPUT_IMPORT_HASH: &str = "hash";
 /// Value for import kind: CAS hash pointer.
 pub(crate) const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
 /// Converts a mediapm [`OutputSaveConfig`] to a conductor [`OutputSaveMode`].
 #[must_use]
@@ -239,10 +231,6 @@ pub(crate) fn variant_is_folder_capture(config: &OutputVariantValue) -> bool {
 pub(crate) fn qualify_step_id(source_id: &str, suffix: &str) -> String {
     format!("{source_id}.{suffix}")
 }
-
-// ---------------------------------------------------------------------------
-// Synthesis orchestration
-// ---------------------------------------------------------------------------
 
 /// Resolves ffmpeg slot limits from the mediapm document's ffmpeg tool
 /// requirement, falling back to config defaults when ffmpeg is not declared.
@@ -738,10 +726,6 @@ mod tests {
     use mediapm_conductor::{ToolKindSpec, ToolSpec};
     use serde_json::{Value, json};
 
-    // ---------------------------------------------------------------------
-    // Fixtures
-    // ---------------------------------------------------------------------
-
     const ZERO_HASH: &str =
         "blake3:0000000000000000000000000000000000000000000000000000000000000000";
     const ONE_HASH: &str =
@@ -856,10 +840,6 @@ mod tests {
             Path::new(""),
         )
     }
-
-    // ---------------------------------------------------------------------
-    // Workflow-plan synthesis
-    // ---------------------------------------------------------------------
 
     #[test]
     fn plan_builds_exactly_one_workflow_per_media() {
@@ -1033,10 +1013,6 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
-    // Output-policy mapping
-    // ---------------------------------------------------------------------
-
     #[test]
     fn step_output_variant_policy_maps_to_workflow_output_policy() {
         let document = media_document(
@@ -1111,10 +1087,6 @@ mod tests {
         assert!(!step.outputs.contains_key("primary"));
     }
 
-    // ---------------------------------------------------------------------
-    // Step-option bindings
-    // ---------------------------------------------------------------------
-
     #[test]
     fn step_option_bindings_keep_non_option_args_values_scalar() {
         let step = media_step(
@@ -1154,10 +1126,6 @@ mod tests {
 
         assert!(!bindings.contains_key("uri"));
     }
-
-    // ---------------------------------------------------------------------
-    // Variant-binding resolution
-    // ---------------------------------------------------------------------
 
     #[test]
     fn variant_binding_resolves_non_latest_variant_name_when_still_unique() {
@@ -1282,10 +1250,6 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
-    // yt-dlp sidecar variants
-    // ---------------------------------------------------------------------
-
     #[test]
     fn yt_dlp_description_binding_uses_file_capture_without_zip_member() {
         let document = media_document(
@@ -1382,10 +1346,6 @@ mod tests {
         assert_eq!(step.inputs.get("write_description").map(String::as_str), Some("false"));
         assert_eq!(step.inputs.get("write_info_json").map(String::as_str), Some("false"));
     }
-
-    // ---------------------------------------------------------------------
-    // Scoped subtitle variants
-    // ---------------------------------------------------------------------
 
     #[test]
     fn scoped_input_variant_requires_exact_producer_without_folder_fallback() {

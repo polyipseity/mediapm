@@ -16,10 +16,6 @@ use crate::error::MediaPmError;
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 use std::collections::BTreeMap;
 
-// ---------------------------------------------------------------------------
-// Registered builtins
-// ---------------------------------------------------------------------------
-
 /// Returns the set of builtin tool ids known to the conductor bridge.
 #[must_use]
 pub fn registered_builtin_ids() -> Vec<String> {
@@ -31,10 +27,6 @@ pub fn registered_builtin_ids() -> Vec<String> {
         "archive@v1".to_string(),
     ]
 }
-
-// ---------------------------------------------------------------------------
-// Document helpers
-// ---------------------------------------------------------------------------
 
 /// Ensures the mediapm document exists, loading it from disk or creating a
 /// default.
@@ -101,10 +93,6 @@ pub(crate) fn load_runtime_dotenv_for_root(root_dir: &Path) {
     let paths = MediaPmPaths::from_root(root_dir);
     crate::load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
 }
-
-// ---------------------------------------------------------------------------
-// Invalidation helpers
-// ----------------------------------------------------------------------------
 
 /// Describes a rule for invalidating tool call instances.
 #[allow(dead_code)]
@@ -264,10 +252,6 @@ pub(crate) fn should_invalidate_instance(
 
     false
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

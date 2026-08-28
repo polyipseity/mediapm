@@ -7,8 +7,6 @@ use std::collections::BTreeMap;
 
 use mediapm_conductor::ToolSpec;
 
-// ── Template literal escaping ────────────────────────────────────────────
-
 /// Escapes a literal string value for use inside conductor NCL templates.
 #[must_use]
 pub(super) fn escape_template_literal(value: &str) -> String {
@@ -16,8 +14,6 @@ pub(super) fn escape_template_literal(value: &str) -> String {
     // doubling it, and escape `\` and `"`.
     value.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%")
 }
-
-// ── Validation ───────────────────────────────────────────────────────────
 
 /// Validates a built tool command template for correctness.
 ///
@@ -28,8 +24,6 @@ pub(super) fn escape_template_literal(value: &str) -> String {
 pub(crate) fn validate_tool_command(_tool_spec: &ToolSpec, _command_template: &str) {
     // Stub: passes all validation.
 }
-
-// ── Platform-conditional path extraction ─────────────────────────────────
 
 /// Extracts platform-conditional paths from a Nickel conditional expression.
 ///
@@ -64,8 +58,6 @@ pub(super) fn extract_platform_conditional_paths(source: &str) -> BTreeMap<Strin
 
     result
 }
-
-// ── Sandbox path normalization ───────────────────────────────────────────
 
 /// Resolves a sandbox-relative path from a tool command's `content_map` entry.
 #[must_use]

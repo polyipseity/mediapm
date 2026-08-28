@@ -12,10 +12,6 @@ use serde_json::Value;
 use crate::config::{ManagedFileRecord, ManagedWorkflowStepState, MediaPmState};
 use crate::error::MediaPmError;
 
-// ---------------------------------------------------------------------------
-// V1 wire envelopes
-// ---------------------------------------------------------------------------
-
 /// V1 state envelope wrapper (old Nickel-sourced format with `state` key).
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -98,10 +94,6 @@ pub(super) struct MediaPmImpureTimestampV1 {
     /// Seconds since Unix epoch.
     pub(super) utc_epoch_seconds: u64,
 }
-
-// ---------------------------------------------------------------------------
-// V1 → current migration
-// ---------------------------------------------------------------------------
 
 /// Converts a V1 JSON value (any known V1 shape) into [`MediaPmState`].
 ///

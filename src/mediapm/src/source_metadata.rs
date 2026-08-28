@@ -15,10 +15,6 @@ use crate::metadata_cache::MetadataCache;
 use crate::paths::MediaPmPaths;
 use crate::util::first_non_empty_json_string;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 /// Metadata extracted from an online source.
 #[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -55,10 +51,6 @@ pub(crate) struct LocalSourceMetadata {
     /// Human-readable description (may be empty).
     pub description: String,
 }
-
-// ---------------------------------------------------------------------------
-// Online source metadata
-// ---------------------------------------------------------------------------
 
 /// Fetches metadata for an online source URI using `yt-dlp`.
 ///
@@ -135,10 +127,6 @@ pub(crate) fn resolve_online_source_metadata_for_add(
         warning,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Local source metadata
-// ---------------------------------------------------------------------------
 
 /// Fetches metadata for a local file using `ffprobe`.
 ///
@@ -268,19 +256,11 @@ fn fetch_local_source_metadata_with_probe(
     Ok(metadata)
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Resolves the conductor CAS store root path.
 #[must_use]
 pub(crate) fn resolve_conductor_cas_root(paths: &MediaPmPaths) -> std::path::PathBuf {
     paths.runtime_root.join("store")
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -393,8 +373,6 @@ mod tests {
         assert!(resolved.warning.is_none());
     }
 
-    // ── Online source metadata edge cases ─────────────────────────────────
-
     #[test]
     fn empty_json_object_returns_defaults() {
         let input = json!({});
@@ -442,8 +420,6 @@ mod tests {
         let metadata = parse_online_source_metadata(&input);
         assert_eq!(metadata.title, "Actual Title");
     }
-
-    // ── Local source metadata edge cases ──────────────────────────────────
 
     #[test]
     fn ffprobe_json_without_format_tags_returns_defaults() {
@@ -495,8 +471,6 @@ mod tests {
         assert_eq!(probe_calls, 1, "second fetch must hit the cache, not probe");
         assert_eq!(second.title, metadata.title);
     }
-
-    // ── resolve_online_source_metadata_for_add edge cases ─────────────────
 
     #[test]
     fn resolve_with_warning_passes_through() {

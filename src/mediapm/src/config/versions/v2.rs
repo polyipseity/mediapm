@@ -16,10 +16,6 @@ use super::v_latest::MediaRuntimeStorageLatest;
 
 use serde_json::Value;
 
-// ---------------------------------------------------------------------------
-// V2 wire envelopes
-// ---------------------------------------------------------------------------
-
 /// V2 deserialization envelope for `mediapm.ncl`.
 ///
 /// Deliberately omits the legacy `state` payload: state is managed separately
@@ -42,10 +38,6 @@ pub(super) struct MediaPmDocumentEnvelopeV2 {
     #[serde(default)]
     pub(super) runtime: MediaRuntimeStorageLatest,
 }
-
-// ---------------------------------------------------------------------------
-// FromWire impls (V2 wire ↔ runtime model)
-// ---------------------------------------------------------------------------
 
 impl From<MediaPmDocumentEnvelopeV2> for MediaPmDocument {
     fn from(envelope: MediaPmDocumentEnvelopeV2) -> Self {
@@ -71,10 +63,6 @@ impl From<&MediaPmDocument> for MediaPmDocumentEnvelopeV2 {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Migrate implementation
-// ---------------------------------------------------------------------------
 
 pub(super) fn mediapm_document_v2_iso() -> &'static str {
     "mediapm_document_v2_iso"

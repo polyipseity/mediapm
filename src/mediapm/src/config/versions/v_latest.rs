@@ -16,10 +16,6 @@ use super::super::{
     ToolRequirement, VerifyStrategy, defaults,
 };
 
-// ---------------------------------------------------------------------------
-// Boundary (latest) runtime storage sub-records
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RuntimePathsConfigLatest {
     #[serde(default)]
@@ -106,10 +102,6 @@ pub struct MediaRuntimeStorageLatest {
     #[serde(default, skip_serializing)]
     pub tools: BTreeMap<String, ToolRequirement>,
 }
-
-// ---------------------------------------------------------------------------
-// Boundary resolver
-// ---------------------------------------------------------------------------
 
 /// Resolves a boundary [`MediaRuntimeStorageLatest`] into the resolved
 /// [`MediaRuntimeStorage`] model.

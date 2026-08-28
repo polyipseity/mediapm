@@ -58,10 +58,6 @@ pub(crate) fn from_v3_json_value(value: Value) -> Result<MediaPmState, MediaPmEr
     })
 }
 
-// ---------------------------------------------------------------------------
-// V2→V3 bridge types
-// ---------------------------------------------------------------------------
-
 /// V2-compatible wire format for reading old state files (used by V3 bridge only).
 ///
 /// Old V2 state files store `content_map_hash` as `Option<String>` and do NOT
@@ -168,9 +164,6 @@ mod tests {
     use crate::config::{ManagedFileRecord, MediaPmState, ToolRegistryEntry};
 
     use super::*;
-
-    // Phase 7 — v2→v3 bridge tests
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn v3_roundtrip_preserves_all_fields() {
@@ -387,9 +380,6 @@ mod tests {
         assert!(result.is_err(), "v3 reader should reject v2 BTreeMap format for managed_tools");
     }
 
-    // Phase 10 — dedup_managed_tools tests
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn dedup_managed_tools_no_duplicates() {
         let entries = vec![ToolRegistryEntry {
@@ -490,9 +480,6 @@ mod tests {
         let result = dedup_managed_tools(entries);
         assert_eq!(result.len(), 2);
     }
-
-    // Phase 6 — sort by decreasing deploy_time tests
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn sort_managed_tools_by_deploy_time() {

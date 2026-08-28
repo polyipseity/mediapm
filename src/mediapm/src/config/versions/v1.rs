@@ -21,10 +21,6 @@ use super::v_latest::{
 
 use serde_json::Value;
 
-// ---------------------------------------------------------------------------
-// V1 wire envelopes
-// ---------------------------------------------------------------------------
-
 /// V1 deserialization envelope for `mediapm.ncl`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,10 +46,6 @@ pub(super) struct MediaPmDocumentEnvelopeV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) state: Option<MediaPmState>,
 }
-
-// ---------------------------------------------------------------------------
-// FromWire impls (V1 wire → runtime model)
-// ---------------------------------------------------------------------------
 
 impl From<MediaPmDocumentEnvelopeV1> for MediaPmDocument {
     fn from(envelope: MediaPmDocumentEnvelopeV1) -> Self {
@@ -83,10 +75,6 @@ impl From<&MediaPmDocument> for MediaPmDocumentEnvelopeV1 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Migrate implementation
-// ---------------------------------------------------------------------------
-
 pub(super) fn mediapm_document_v1_iso() -> &'static str {
     "mediapm_document_v1_iso"
 }
@@ -112,10 +100,6 @@ impl Migrate for MediaPmDocumentEnvelopeV1 {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// V1 runtime storage wire shape + bridges
-// ---------------------------------------------------------------------------
 
 /// V1 wire shape for runtime storage overrides.
 ///

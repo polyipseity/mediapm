@@ -12,16 +12,8 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 /// Default TTL for cached metadata entries (1 day in seconds).
 const METADATA_CACHE_ENTRY_TTL_SECONDS: u64 = 86_400;
-
-// ---------------------------------------------------------------------------
-// Cache entry
-// ---------------------------------------------------------------------------
 
 /// One entry in the metadata cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,10 +24,6 @@ struct MetadataCacheEntry {
     #[serde(rename = "lastAccessUnixSeconds")]
     last_access_unix_seconds: u64,
 }
-
-// ---------------------------------------------------------------------------
-// MetadataCache
-// ---------------------------------------------------------------------------
 
 /// A persistent metadata cache backed by a JSON file on disk.
 ///
@@ -170,10 +158,6 @@ impl Drop for MetadataCache {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Returns the current Unix epoch seconds.
 fn unix_seconds_now() -> u64 {
     mediapm_utils::Timestamp::now().as_unix_secs()
@@ -184,10 +168,6 @@ fn load_cache_file(path: &Path) -> Result<BTreeMap<String, MetadataCacheEntry>, 
     let content = fs::read_to_string(path)?;
     serde_json::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

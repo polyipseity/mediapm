@@ -11,10 +11,6 @@ use crate::config::hierarchy_types::{
 use crate::error::MediaPmError;
 use crate::{AddInsertPosition, MediaHierarchyPreset};
 
-// ---------------------------------------------------------------------------
-// Template constants
-// ---------------------------------------------------------------------------
-
 /// Media root template key for local-file hierarchy presets.
 pub(crate) const HIERARCHY_MEDIA_ROOT_TEMPLATE: &str = "media_root";
 /// Media root template key for yt-dlp hierarchy presets.
@@ -63,10 +59,6 @@ pub(crate) fn hierarchy_preset_sort_id(preset: MediaHierarchyPreset) -> &'static
 pub(crate) fn compare_hierarchy_ids(a: &str, b: &str) -> std::cmp::Ordering {
     a.cmp(b)
 }
-
-// ---------------------------------------------------------------------------
-// Node building
-// ---------------------------------------------------------------------------
 
 /// Builds a hierarchy preset node for the given preset kind.
 #[must_use]
@@ -177,10 +169,6 @@ pub(crate) fn hierarchy_media_file_node(media_id: Option<String>) -> HierarchyNo
     }
 }
 
-// ---------------------------------------------------------------------------
-// Local and yt-dlp hierarchy children helpers
-// ---------------------------------------------------------------------------
-
 /// Builds the default children for a local-file media hierarchy entry.
 #[must_use]
 pub(crate) fn local_hierarchy_media_children() -> Vec<HierarchyNode> {
@@ -193,10 +181,6 @@ pub(crate) fn local_hierarchy_media_children() -> Vec<HierarchyNode> {
 pub(crate) fn yt_dlp_hierarchy_media_children() -> Vec<HierarchyNode> {
     vec![hierarchy_media_folder_node(None)]
 }
-
-// ---------------------------------------------------------------------------
-// Insertion
-// ---------------------------------------------------------------------------
 
 /// Inserts a hierarchy preset node into an existing hierarchy.
 ///
@@ -244,10 +228,6 @@ pub(crate) fn insert_hierarchy_preset_node(
     hierarchy.insert(insert_index, node);
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Removal
-// ---------------------------------------------------------------------------
 
 /// Removes hierarchy nodes matching a predicate, returning the count removed.
 fn remove_hierarchy_nodes_by<F>(hierarchy: &mut Vec<HierarchyNode>, predicate: &F) -> usize
@@ -339,10 +319,6 @@ pub(crate) fn default_hierarchy_folder_root_for_preset(
         MediaHierarchyPreset::YtDlpChannel => "{02 YouTube}",
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
