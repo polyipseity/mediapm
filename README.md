@@ -8,11 +8,7 @@
 | --- | --- |
 | `src/mediapm-cas/` (`mediapm-cas`) | Content-addressed storage — identity types, hash codec, async API |
 | `src/mediapm-conductor/` (`mediapm-conductor`) | Declarative workflow orchestration — state model, persistence merge |
-| `src/mediapm-conductor-builtins/echo/` | Echo builtin |
-| `src/mediapm-conductor-builtins/fs/` | Filesystem staging builtin |
-| `src/mediapm-conductor-builtins/import/` | Source-ingest builtin (`file`/`folder`/`fetch`) |
-| `src/mediapm-conductor-builtins/export/` | Filesystem materialization builtin (`file`/`folder`) |
-| `src/mediapm-conductor-builtins/archive/` | Archive transform builtin (ZIP) |
+| `src/mediapm-conductor-builtins/{echo,fs,import,export,archive}/` | Builtin tools (echo, filesystem staging, source ingest, materialization, ZIP transform) |
 | `src/mediapm/` (`mediapm`) | Media API + CLI — composes CAS and Conductor |
 | `scripts/cargo-bin/` | Repository tooling helper binary |
 
@@ -21,33 +17,25 @@
 Run with `cargo run -p mediapm --`:
 
 ```sh
-# Sync media library and managed tools
 cargo run -p mediapm -- sync
 cargo run -p mediapm -- sync --check-tag-updates
 
-# Tool management
 cargo run -p mediapm -- tools sync
 cargo run -p mediapm -- tools sync --no-check-tag-updates
 cargo run -p mediapm -- tools list
 
-# Global state
 cargo run -p mediapm -- global path
 cargo run -p mediapm -- global tool-cache status
 cargo run -p mediapm -- global tool-cache prune
 
-# Media sources
 cargo run -p mediapm -- media add https://example.com/video.mkv
 cargo run -p mediapm -- media add-local ./path/to/local/file.mkv
 
-# Pass-through to sub-CLIs
 cargo run -p mediapm -- cas ...
 cargo run -p mediapm -- conductor ...
 ```
 
-Tag-update policy:
-
-- `mediapm sync` does **not** check remote updates for tag-only selectors by default.
-- `mediapm tools sync` **does** check remote updates for tag-only selectors by default.
+Tag-update policy: `mediapm sync` does **not** check remote updates for tag-only selectors by default; `mediapm tools sync` **does**.
 
 ## Configuration
 
@@ -61,33 +49,21 @@ See `src/mediapm/examples/` for annotated bootstrapping and tool-addition exampl
 
 ## Development
 
-**Targeted (recommended during development):**
-
 ```sh
 cargo test-pkg <crate>     # test one crate (e.g. mediapm, mediapm-cas)
 cargo clippy-pkg <crate>   # lint one crate
 cargo build-pkg <crate>    # build one crate
-```
-
-**Full workspace (pre-push):**
-
-```sh
 cargo fmt-check   # check formatting
 cargo clippy-all  # lint entire workspace
 cargo test-all    # test entire workspace
 ```
 
-**Online integration gate (requires network and external providers):**
+Online integration gate (network + external providers):
 
 ```sh
 MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=300 cargo run -p mediapm --example mediapm_demo_online
 ```
 
-Inspect generated artifacts under `src/mediapm/examples/artifacts/demo-online/`.
+Artifacts land under `src/mediapm/examples/artifacts/demo-online/`. The full-sync path runs only on that explicit `cargo run`; the embedded `main_is_exercised` test runs reduced config-only mode (deterministic, no network, skipped in CI). The explicit run persists downloaded tools in the real user-level cache (`<os-cache-dir>/mediapm/cache`); embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT` tempdirs.
 
-`mediapm_demo_online`'s full-sync path (network + external tools) runs only on the explicit `cargo run -p mediapm --example mediapm_demo_online` above. Its embedded `main_is_exercised` test runs reduced config-only mode in the test harness instead — deterministic, no network, skipped in CI. The explicit run persists downloaded tools in the real user-level tool download cache (`<os-cache-dir>/mediapm/cache`), shared with regular mediapm syncs; embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT` tempdirs.
-
-Integration tests across workspace crates share one harness shape:
-
-- top-level `tests/mod.rs` entrypoint,
-- grouped modules under `tests/e2e/`, `tests/int/`, and `tests/prop/`.
+Integration tests across workspace crates share one harness: top-level `tests/mod.rs` entrypoint, grouped modules under `tests/e2e/`, `tests/int/`, `tests/prop/`.
