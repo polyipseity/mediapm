@@ -37,7 +37,7 @@ pub enum TrackStatus {
 /// Shared mutable state for a tracked progress handle.
 ///
 /// Interior mutability via atomics for numeric fields and [`RwLock`] for
-/// string fields.  [`Send`] + [`Sync`] when wrapped in [`Arc`].
+/// string fields. [`Send`] + [`Sync`] when wrapped in [`Arc`].
 pub(crate) struct SharedState {
     position: AtomicU64,
     total: AtomicU64,
@@ -72,15 +72,14 @@ impl SharedState {
     /// Create shared state, parsing `label` into [`PrefixComponents`]
     /// at construction time.
     ///
-    /// This is the **single canonical construction path** for prefix
-    /// data: the `add_bar`/`with_overall` label is parsed once here via
-    /// [`prefix_components_from_str`], so even bars whose label was
-    /// never touched by [`set_prefix_components`] carry structured
-    /// components (tool name, version, phase, count/total) for
-    /// [`semantic_truncate_prefix`] to truncate field-by-field. The
-    /// legacy `set_prefix(String)` API that re-parsed at mutation time
-    /// has been removed — this construction-time parse plus
-    /// [`set_prefix_components`] is the only prefix mechanism.
+    /// The **single canonical construction path** for prefix data: the
+    /// `add_bar`/`with_overall` label is parsed once here via
+    /// [`prefix_components_from_str`], so even bars whose label was never
+    /// touched by [`set_prefix_components`] carry structured components
+    /// (tool name, version, phase, count/total) for [`semantic_truncate_prefix`]
+    /// to truncate field-by-field. The legacy `set_prefix(String)` API has
+    /// been removed — this construction-time parse plus [`set_prefix_components`]
+    /// is the only prefix mechanism.
     pub(crate) fn with_time_source(
         total: u64,
         label: &str,
@@ -222,16 +221,12 @@ pub struct TrackSnapshot {
 /// state — all clones share state and advancing any one of them updates
 /// the shared state that both clones reference.
 ///
-/// To create a no-op handle, use [`TrackedHandle::disabled`].
-/// All mutating methods on a disabled handle are zero-cost and do nothing.
+/// To create a no-op handle, use [`TrackedHandle::disabled`]. All mutating
+/// methods on a disabled handle are zero-cost and do nothing.
 ///
-/// # Separation of concerns
-///
-/// [`TrackedHandle`] manages **tracking state only** (`Arc<SharedState>`).
-/// The display bar is managed separately by [`ProgressRenderer`], which
-/// reads tracking state from the same `Arc<SharedState>` — mutating
-/// methods update state once and the renderer picks up changes
-/// asynchronously.
+/// [`TrackedHandle`] manages **tracking state only** (`Arc<SharedState>`);
+/// the display bar is managed separately by [`ProgressRenderer`], which
+/// reads the same `Arc<SharedState>` and picks up changes asynchronously.
 #[derive(Clone)]
 pub struct TrackedHandle {
     pub(crate) state: Arc<SharedState>,
@@ -292,12 +287,12 @@ impl TrackedHandle {
 
     /// Set prefix components directly (source-data API).
     ///
-    /// This is the **single runtime prefix mutation API**. The initial
-    /// value always comes from parsing the `add_bar`/`with_overall`
-    /// label at construction (see [`SharedState::with_time_source`]);
-    /// this method overrides those parsed components with fully
-    /// structured source data. The legacy `set_prefix(String)` API has
-    /// been removed — there is no string mutation path left.
+    /// The **single runtime prefix mutation API**. The initial value always
+    /// comes from parsing the `add_bar`/`with_overall` label at construction
+    /// (see [`SharedState::with_time_source`]); this method overrides those
+    /// parsed components with fully structured source data. The legacy
+    /// `set_prefix(String)` API has been removed — there is no string mutation
+    /// path left.
     ///
     /// # Panics
     ///
@@ -313,15 +308,15 @@ impl TrackedHandle {
 
     /// Set suffix components directly (source-data API).
     ///
-    /// This is the **single suffix mutation API** — the legacy
-    /// `set_suffix(String)` API has been removed, and the suffix always
-    /// flows through this structured path.
+    /// The **single suffix mutation API** — the legacy `set_suffix(String)`
+    /// API has been removed, and the suffix always flows through this
+    /// structured path.
     ///
-    /// Merge semantics (applied at [`sync_snapshot_to_bar`] time):
-    /// user-set fields override the auto-derived fields composed from
-    /// ticker data; empty user fields fall back to fresh ticker data,
-    /// so callers may set just the fields they care about (typically
-    /// `custom`) and leave the rest defaulted.
+    /// Merge semantics (applied at [`sync_snapshot_to_bar`] time): user-set
+    /// fields override the auto-derived fields composed from ticker data;
+    /// empty user fields fall back to fresh ticker data, so callers may set
+    /// just the fields they care about (typically `custom`) and leave the
+    /// rest defaulted.
     ///
     /// # Panics
     ///
@@ -342,9 +337,9 @@ impl TrackedHandle {
     ///
     /// Once set, the renderer's single push point calls
     /// [`BarLabelTruncation::truncate_prefix`] /
-    /// [`BarLabelTruncation::truncate_suffix`] to obtain the final
-    /// display strings directly, instead of the built-in component
-    /// rendering. The client owns the field layout and order.
+    /// [`BarLabelTruncation::truncate_suffix`] to obtain the final display
+    /// strings directly, instead of the built-in component rendering. The
+    /// client owns the field layout and order.
     ///
     /// # Panics
     ///
@@ -362,10 +357,10 @@ impl TrackedHandle {
 
     /// Set the visual style for the bar (see [`BarStyle`]).
     ///
-    /// Defaults to [`StepCount`](BarStyle::StepCount). Worker-slot bars
-    /// set [`WorkerSpinner`](BarStyle::WorkerSpinner) so the renderer
-    /// applies the style-specific `0/0` div-by-zero guard (renders
-    /// `total = 1, pos = 0` when the worker's assigned count is `0`).
+    /// Defaults to [`StepCount`](BarStyle::StepCount). Worker-slot bars set
+    /// [`WorkerSpinner`](BarStyle::WorkerSpinner) so the renderer applies the
+    /// style-specific `0/0` div-by-zero guard (renders `total = 1, pos = 0`
+    /// when the worker's assigned count is `0`).
     ///
     /// # Panics
     ///
@@ -442,27 +437,25 @@ struct RenderedSlot {
     cache: SlotCache,
 }
 
-/// Manages a fixed-size grid of [`ProgressBar`] slots in
-/// [`MultiProgress`] with shift-based allocation and automatic
-/// recycling of finished slots.
+/// Manages a fixed-size grid of [`ProgressBar`] slots in [`MultiProgress`]
+/// with shift-based allocation and automatic recycling of finished slots.
 ///
 /// All slots are pre-allocated at construction so the draw height never
 /// changes — eliminating the root cause of terminal ghosting.
 ///
 /// # Allocation strategy
 ///
-/// 1. [`attach`](Self::attach) places new children into the **bottom** of
-///    the active band (just above the overall bar if one exists) and
-///    shifts all existing active children up by one slot.  This preserves
-///    chronological order top-to-bottom (first-created child at the top
-///    of the active band, last-created adjacent to the overall bar).
+/// 1. [`attach`](Self::attach) places new children into the **bottom** of the
+///    active band (just above the overall bar if one exists) and shifts all
+///    existing active children up by one slot, preserving chronological order
+///    top-to-bottom.
 /// 2. When all slots are occupied by active handles, finished slots are
 ///    recycled (scanning from the bottom upward).
-/// 3. When no finished slot can be recycled, the new handle is pushed
-///    into [`orphaned_states`](Self::orphaned_states) — it is tracked but
-///    has no render slot until the terminal grows.
-/// 4. Finished bars stay visible — their slots are only recycled when
-///    new handles need display space.
+/// 3. When no finished slot can be recycled, the new handle is pushed into
+///    [`orphaned_states`](Self::orphaned_states) — tracked but with no render
+///    slot until the terminal grows.
+/// 4. Finished bars stay visible — their slots are only recycled when new
+///    handles need display space.
 pub struct ProgressRenderer {
     inner: MultiProgress,
     slots: Vec<RenderedSlot>,
@@ -1080,16 +1073,16 @@ impl ProgressRenderer {
         }
     }
 
-    /// Apply a snapshot's position/length/suffix/prefix to the
-    /// indicatif bar at slot `i`.  **This is the single authoritative
-    /// push point for `SharedState` → indicatif.** All code paths that
-    /// reflect `SharedState` (position, total, suffix, prefix) on the
-    /// terminal bar must call through here — both the daemon ticker
-    /// and [`finalize`](Self::finalize) do.
+    /// Apply a snapshot's position/length/suffix/prefix to the indicatif bar
+    /// at slot `i`. **This is the single authoritative push point for
+    /// `SharedState` → indicatif.** All code paths that reflect `SharedState`
+    /// (position, total, suffix, prefix) on the terminal bar must call
+    /// through here — both the daemon ticker and [`finalize`](Self::finalize)
+    /// do.
     ///
     /// Does **not** change the bar's style — callers manage style
-    /// independently via [`finish_slot`](Self::finish_slot) or
-    /// explicit `set_style` calls during attach/resize.
+    /// independently via [`finish_slot`](Self::finish_slot) or explicit
+    /// `set_style` calls during attach/resize.
     fn sync_snapshot_to_bar(
         &self,
         i: usize,
@@ -1208,23 +1201,23 @@ impl ProgressRenderer {
 
     /// Reserve the full terminal height before the first indicatif draw.
     ///
-    /// Writes `rows` newlines to bypass [`BufferedTerm`] so they go
-    /// directly to the terminal, then moves cursor back up `rows` lines.
-    /// This reserves the entire terminal screen for progress bar content,
+    /// Writes `rows` newlines to bypass [`BufferedTerm`] so they go directly
+    /// to the terminal, then moves the cursor back up `rows` lines. This
+    /// reserves the entire terminal screen for progress bar content,
     /// preventing intervening stderr content from being overwritten during
     /// bar draws.
     ///
-    /// One-shot: only the first call writes; subsequent calls are no-ops.
-    /// In test mode (`pre_roll_term` is `None`) this is always a no-op.
+    /// One-shot: only the first call writes; subsequent calls are no-ops. In
+    /// test mode (`pre_roll_term` is `None`) this is always a no-op.
     ///
     /// # Scroll guarantee
     ///
     /// Moves the cursor to the absolute bottom of the terminal *before*
-    /// writing blank lines.  This ensures every blank `write_line` triggers
-    /// a scroll — newlines from a cursor partway down the screen would
-    /// only fill remaining rows below it, leaving visible content above
-    /// exposed.  After the blank lines the cursor returns to the top so
-    /// indicatif can overwrite the now-empty visible area.
+    /// writing blank lines, so every blank `write_line` triggers a scroll —
+    /// newlines from a cursor partway down the screen would only fill the
+    /// remaining rows below it, leaving visible content above exposed. After
+    /// the blank lines the cursor returns to the top so indicatif can
+    /// overwrite the now-empty visible area.
     fn pre_roll_if_needed(&self) {
         let Some(ref term) = self.pre_roll_term else {
             return;

@@ -1,14 +1,13 @@
 //! Shared builtin descriptor and CLI helpers for conductor builtin crates.
 //!
-//! The [`describe`] and [`describe_json_compact`] helpers are always
-//! available.  [`BuiltinCliArgs`] and [`parse_string_pairs`] require the `cli`
-//! feature.
+//! [`describe`] and [`describe_json_compact`] are always available;
+//! [`BuiltinCliArgs`] and [`parse_string_pairs`] require the `cli` feature.
 
 use crate::StringMap;
 
-/// Returns one deterministic descriptor map for a builtin crate.
+/// Returns a deterministic descriptor map for a builtin crate.
 ///
-/// The returned map always contains `tool_id`, `tool_name`, `tool_version`,
+/// The map always contains `tool_id`, `tool_name`, `tool_version`,
 /// `is_impure`, and `summary` keys.
 #[must_use]
 pub fn describe(
@@ -29,10 +28,8 @@ pub fn describe(
 
 /// Returns a deterministic descriptor JSON string without serde dependencies.
 ///
-/// The JSON is hand-formatted with 2-space indentation.  This matches the
-/// output that [`serde_json::to_string_pretty`](https://docs.rs/serde_json)
-/// would produce for the same key-value pairs, avoiding an extra dependency
-/// for builtin crates that only need static description output.
+/// The JSON is hand-formatted with 2-space indentation, matching what
+/// `serde_json::to_string_pretty` would produce for the same pairs.
 #[must_use]
 pub fn describe_json_compact(
     tool_id: &str,
@@ -79,20 +76,12 @@ pub fn describe_json_compact_meta(meta: &BuiltinMeta) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
 // CLI-specific helpers (behind `cli` feature)
-// ---------------------------------------------------------------------------
 
 /// Standard clap-based CLI accepted by every builtin crate.
 ///
-/// Fields:
-/// - `--describe`: prints descriptor JSON and exits,
-/// - `--root-dir` (default `.`): optional execution root override,
-/// - `--arg KEY VALUE`: repeated argument key-value pairs,
-/// - `--input KEY VALUE`: repeated input key-value pairs.
-///
-/// Binary targets should parse with `BuiltinCliArgs::parse()` then
-/// pass to the crate's `run_cli_command`.
+/// Fields: `--describe` (print descriptor JSON and exit), `--root-dir`
+/// (default `.`), `--arg KEY VALUE`, and `--input KEY VALUE`.
 #[cfg(feature = "cli")]
 #[derive(Debug, Clone, PartialEq, Eq, clap::Parser)]
 pub struct BuiltinCliArgs {
@@ -123,11 +112,9 @@ pub struct BuiltinCliArgs {
     pub inputs: Vec<String>,
 }
 
-/// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a
-/// map.
+/// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
 ///
-/// The helper rejects empty keys and incomplete pairs so builtin execution
-/// only sees normalized map-shaped input.
+/// Rejects empty keys and incomplete pairs.
 ///
 /// # Errors
 ///
@@ -156,20 +143,11 @@ pub fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, St
     Ok(map)
 }
 
-// ---------------------------------------------------------------------------
 // Macro: builtin_main_single_writer!
-// ---------------------------------------------------------------------------
 
-/// Expands to a full `main()` function for builtin CLI binaries.
-///
-/// Suitable for archive, export, fs, and import (not echo, which is special).
-///
-/// # Arguments
-///
-/// * `$crate_id` — the crate identifier (e.g. `mediapm_conductor_builtin_archive`).
-///
-/// The expanded code includes `use clap::Parser;` so callers do not need to
-/// pre-import it.
+/// Expands to a full `main()` for builtin CLI binaries (archive, export, fs,
+/// import — not echo, which is special). The expanded code includes
+/// `use clap::Parser;`, so callers need not pre-import it.
 #[macro_export]
 macro_rules! builtin_main_single_writer {
     ($crate_id:ident) => {
@@ -182,14 +160,12 @@ macro_rules! builtin_main_single_writer {
     };
 }
 
-// ---------------------------------------------------------------------------
 // Helper: validate_only_known_keys
-// ---------------------------------------------------------------------------
 
 /// Checks that every key in `params` appears in `known`.
 ///
-/// Returns `Err` with a descriptive message using `context` as the subject
-/// (e.g. `"fs op 'copy'"`) when an unknown key is found.
+/// Returns `Err` with a message using `context` as the subject (e.g.
+/// `"fs op 'copy'"`) when an unknown key is found.
 ///
 /// # Errors
 ///
@@ -208,9 +184,7 @@ pub fn validate_only_known_keys<K: AsRef<str> + Ord, V>(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Helpers: contract validation
-// ---------------------------------------------------------------------------
 
 /// Returns a required param value from a [`StringMap`], or an error.
 ///

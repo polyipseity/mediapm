@@ -7,16 +7,12 @@ use indicatif::TermLike;
 
 // ---- BufferedTerm: suppress terminal writes from property setters ----
 
-/// Wraps [`console::Term`] to suppress terminal writes when
-/// `buffer_enabled` is `true`.  Used by [`ProgressRenderer`] to ensure
-/// the 50 ms daemon ticker is the sole draw authority — property setters
-/// (called from [`sync_snapshot_to_bar`]) never write to the terminal
-/// directly.
-///
-/// When buffering is active, all write/clear/move operations are no-ops.
-/// [`width`](Self::width) and [`height`](Self::height) always delegate to
-/// the inner terminal (needed for correct layout in
-/// `draw_to_term`).
+/// Wraps [`console::Term`] to suppress terminal writes when `buffer_enabled` is
+/// `true`. Used by [`ProgressRenderer`] so the 50 ms daemon ticker is the sole
+/// draw authority — property setters (called from [`sync_snapshot_to_bar`])
+/// never write to the terminal directly. When buffering is active, all
+/// write/clear/move operations are no-ops; [`width`](Self::width) and
+/// [`height`](Self::height) always delegate to the inner terminal.
 #[derive(Debug)]
 pub(crate) struct BufferedTerm {
     pub(crate) inner: console::Term,

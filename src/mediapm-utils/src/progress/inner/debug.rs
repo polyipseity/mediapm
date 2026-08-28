@@ -11,10 +11,9 @@ use super::ProgressDebugSink;
 
 /// RAII guard that temporarily disables buffering and restores it on drop.
 ///
-/// On creation, stores `false` (buffer OFF — next draw goes to terminal).
-/// On drop, stores `true` (buffer ON — subsequent writes suppressed).
-/// When `flag` is `None` (test mode with user-provided `MultiProgress`),
-/// both operations are no-ops.
+/// On creation stores `false` (buffer OFF — next draw goes to terminal); on
+/// drop stores `true` (buffer ON — subsequent writes suppressed). When `flag`
+/// is `None` (test mode with user-provided `MultiProgress`), both are no-ops.
 #[derive(Debug)]
 pub(crate) struct BufferGuard {
     flag: Option<Arc<AtomicBool>>,
@@ -56,8 +55,8 @@ impl DimensionSource for RealTerminalSource {
 
 /// Injectable dimensions for testing.
 ///
-/// Use [`set`](TestDimensionSource::set) to change dimensions mid-test
-/// so resize reactivity can be exercised without a real terminal.
+/// Use [`set`](TestDimensionSource::set) to change dimensions mid-test so
+/// resize reactivity can be exercised without a real terminal.
 #[allow(dead_code)]
 pub struct TestDimensionSource {
     dims: Mutex<(u16, u16)>,

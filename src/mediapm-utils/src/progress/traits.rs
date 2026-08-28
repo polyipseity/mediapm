@@ -14,16 +14,15 @@ use std::sync::Arc;
 
 /// Visual style for a child progress bar.
 ///
-/// The style selects how the bar's fill and prefix/suffix are driven. It is
-/// a marker stored on [`SharedState`] and read by the renderer's single push
+/// A marker stored on [`SharedState`] and read by the renderer's single push
 /// point ([`ProgressRenderer::sync_snapshot_to_bar`]); it does **not** change
 /// color or overall-bar semantics.
 ///
-/// - [`StepCount`](BarStyle::StepCount) — the default. The bar shows a
-///   `count/total` ratio driven by `advance`/`set_position`/`set_total`, with
-///   the standard `tool_name [version] [phase] [count/total]` prefix and the
-///   `count/total elapsed rate [eta] custom` suffix. Used by the sync screen,
-///   materialization screen, and the legacy per-step workflow bars.
+/// - [`StepCount`](BarStyle::StepCount) — the default. Shows a `count/total`
+///   ratio driven by `advance`/`set_position`/`set_total`, with the standard
+///   `tool_name [version] [phase] [count/total]` prefix and the
+///   `count/total elapsed rate [eta] custom` suffix. Used by the sync,
+///   materialization, and legacy per-step workflow screens.
 /// - [`WorkerSpinner`](BarStyle::WorkerSpinner) — a fixed worker-slot bar
 ///   driven by **per-worker** state rather than a per-step or global total.
 ///   The coordinator populates `prefix_components`/`suffix_components`
@@ -33,10 +32,8 @@ use std::sync::Arc;
 ///   idle worker shows an empty all-░ bar. The same `wide_bar` child template
 ///   as `StepCount` is used; only the field population differs.
 ///
-/// The style is set via [`ProgressBarApi::set_style`] (or
-/// [`TrackedHandle::set_style`]) after [`ProgressGroup::add_bar`]. It defaults
-/// to [`StepCount`](BarStyle::StepCount) so every existing caller is
-/// byte-for-byte unchanged.
+/// Set via [`ProgressBarApi::set_style`] (or [`TrackedHandle::set_style`]) after
+/// [`ProgressGroup::add_bar`]. Defaults to [`StepCount`](BarStyle::StepCount).
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BarStyle {

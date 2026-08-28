@@ -4,11 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// Monotonic Unix-epoch timestamp with nanosecond precision.
+/// Unix-epoch timestamp with nanosecond precision.
 ///
-/// Used for impure-operation planning, deployment records, and cache-key
-/// derivation across mediapm crates. Values are nanoseconds since the Unix
-/// epoch; construction from the system clock saturates instead of wrapping.
+/// Values are nanoseconds since the Unix epoch; construction from the system
+/// clock saturates instead of wrapping.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -17,9 +16,8 @@ pub struct Timestamp(u64);
 impl Timestamp {
     /// Returns a `Timestamp` for the current system time.
     ///
-    /// Falls back to `UNIX_EPOCH` when the system clock is set before the
-    /// epoch (extremely unlikely in practice), and saturates at
-    /// `u64::MAX` nanoseconds.
+    /// Falls back to `UNIX_EPOCH` if the clock is before the epoch, and
+    /// saturates at `u64::MAX` nanoseconds.
     #[must_use]
     pub fn now() -> Self {
         let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
@@ -38,8 +36,7 @@ impl Timestamp {
         Self(nanos)
     }
 
-    /// Returns the timestamp as whole Unix seconds since the epoch
-    /// (nanoseconds truncated).
+    /// Returns the timestamp as whole Unix seconds since the epoch.
     #[must_use]
     pub fn as_unix_secs(self) -> u64 {
         self.0 / 1_000_000_000

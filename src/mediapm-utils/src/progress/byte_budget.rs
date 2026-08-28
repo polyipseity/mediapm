@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Thread-safe progress size tracker.
 ///
 /// Tracks `(position, total)` where `position ≤ total` at all times. Both
-/// fields use [`AtomicU64`] internally, making this type [`Send`] + [`Sync`]
-/// without external locking. Safe to read from one thread (progress bar
-/// renderer) while writing from another (download worker).
+/// fields use [`AtomicU64`], so this type is [`Send`] + [`Sync`] without
+/// external locking — safe to read from the renderer thread while the download
+/// worker writes.
 ///
 /// # Invariants (hard-fail with `assert!`)
 ///
@@ -52,7 +52,7 @@ impl ByteBudget {
     ///
     /// # Panics
     ///
-    /// Panics (hard `assert!`) if `pos + amount > total`.
+    /// Panics if `pos + amount > total`.
     pub fn advance(&self, amount: u64) {
         let mut old = self.pos.load(Ordering::Acquire);
         loop {
@@ -72,7 +72,7 @@ impl ByteBudget {
     ///
     /// # Panics
     ///
-    /// Panics (hard `assert!`) if `pos > total` or `pos < current position`.
+    /// Panics if `pos > total` or `pos < current position`.
     pub fn set_pos(&self, pos: u64) {
         let total = self.total.load(Ordering::Acquire);
         assert!(pos <= total, "ByteBudget::set_pos({pos}) > total {total}");
@@ -84,11 +84,11 @@ impl ByteBudget {
     /// Adjust total by `delta` (may be positive or negative).
     ///
     /// Uses a `compare_exchange_weak` loop for thread safety. Saturating
-    /// arithmetic is used for extreme values near `u64::MAX`/`u64::MIN`.
+    /// arithmetic handles extreme values near `u64::MAX`/`u64::MIN`.
     ///
     /// # Panics
     ///
-    /// Panics (hard `assert!`) if `pos > new_total` after adjustment.
+    /// Panics if `pos > new_total` after adjustment.
     pub fn adjust(&self, delta: i64) {
         let mut old = self.total.load(Ordering::Acquire);
         loop {
@@ -117,7 +117,7 @@ impl ByteBudget {
     ///
     /// # Panics
     ///
-    /// Panics (hard `assert!`) if the resulting total < current position.
+    /// Panics if the resulting total < current position.
     pub fn reconcile(&self, estimate: u64, actual: u64) {
         match actual.cmp(&estimate) {
             std::cmp::Ordering::Greater => {

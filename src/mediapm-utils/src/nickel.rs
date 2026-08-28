@@ -1,20 +1,12 @@
 //! Deterministic Nickel source rendering for serializable Rust types.
 //!
-//! This module converts a `serde::Serialize` value into syntactically valid
-//! Nickel source.  Field names that collide with Nickel reserved keywords are
-//! automatically quoted with double quotes to prevent parse errors.
+//! Converts a `serde::Serialize` value into syntactically valid Nickel source.
+//! Field names that collide with Nickel reserved keywords are automatically
+//! quoted. Output is deterministic (sorted map keys), and `description`
+//! fields render as Nickel multiline string literals (`m%%"..."%%`).
 //!
-//! # Design
-//!
-//! - Pure string formatting — no `nickel-lang-core` dependency.
-//! - Output is deterministic (sorted map keys).
-//! - `description` fields are rendered as Nickel multiline string literals
-//!   (`m%%"..."%%`).
-//!
-//! # Feature gate
-//!
-//! This module requires the `nickel` feature on `mediapm-utils`, which enables
-//! the `serde` and `serde_json` optional dependencies.
+//! Requires the `nickel` feature, which enables the `serde` and `serde_json`
+//! optional dependencies.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -33,8 +25,8 @@ fn is_nickel_keyword(s: &str) -> bool {
 /// Returns whether `key` can be emitted as a bare Nickel identifier.
 ///
 /// A bare identifier must start with a letter (after optional leading
-/// underscores), contain only alphanumeric ASCII, underscore, hyphen, or
-/// single-quote characters, and must not be a reserved Nickel keyword.
+/// underscores) and contain only alphanumeric ASCII, underscore, hyphen, or
+/// single-quote characters, and must not be a reserved keyword.
 fn is_bare_nickel_identifier(key: &str) -> bool {
     if is_nickel_keyword(key) {
         return false;
@@ -59,8 +51,7 @@ fn is_bare_nickel_identifier(key: &str) -> bool {
 
 /// Renders one field name in Nickel record syntax.
 ///
-/// Non-bare identifiers (empty, starting with non-alpha, or matching a Nickel
-/// keyword) are emitted as quoted strings via `serde_json`.
+/// Non-bare identifiers are emitted as quoted strings via `serde_json`.
 fn render_field_name(name: &str) -> String {
     if is_bare_nickel_identifier(name) {
         name.to_string()
@@ -71,8 +62,8 @@ fn render_field_name(name: &str) -> String {
 
 /// Renders `text` as a Nickel multiline string literal using 2-percent delimiters.
 ///
-/// Uses `m%%"..."%%` so content that contains the 1-percent closing sequence
-/// `"%` is still safe.  Literal `%{` interpolation markers are escaped to `%%{`.
+/// Uses `m%%"..."%%` so content containing the 1-percent closing sequence
+/// `"%` stays safe. Literal `%{` interpolation markers are escaped to `%%{`.
 fn render_nickel_multiline_string(text: &str) -> String {
     let escaped = text.replace("%{", "%%{");
     format!("m%%\"\n{escaped}\n\"%%")
@@ -128,12 +119,12 @@ fn render_nickel_value(value: &Value, indent: usize) -> String {
 /// Renders one serializable Rust structure as Nickel source.
 ///
 /// The value is serialized to `serde_json::Value` first, then rendered as
-/// deterministic Nickel source syntax.  The output includes a trailing newline.
+/// deterministic Nickel source. The output includes a trailing newline.
 ///
 /// # Errors
 ///
-/// Returns an error message when `serde_json::to_value` fails (typically a
-/// programming error such as a non-string map key).
+/// Returns an error when `serde_json::to_value` fails (typically a non-string
+/// map key).
 pub fn render_document_as_nickel<T>(document: &T, document_kind: &str) -> Result<Vec<u8>, String>
 where
     T: Serialize,

@@ -294,12 +294,10 @@ pub(crate) fn render_suffix_components(parts: &SuffixComponents, color_code: &st
 /// [`TrackStatus::Warning`] — when non-empty. The marker brackets are
 /// visible characters that participate in truncation.
 ///
-/// This struct is the prefix's structured single mechanism: initial
-/// values come from parsing the `add_bar`/`with_overall` label at
-/// construction, and [`TrackedHandle::set_prefix_components`] is the
-/// only runtime mutation API. The removal order above is a normative
-/// spec, verified verbatim by the `semantic_truncate_prefix_*` unit
-/// suites.
+/// Initial values come from parsing the `add_bar`/`with_overall` label at
+/// construction; [`TrackedHandle::set_prefix_components`] is the only
+/// runtime mutation API. The removal order above is a normative spec,
+/// verified verbatim by the `semantic_truncate_prefix_*` unit suites.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PrefixComponents {
     /// Status marker (`F` failed, `W` warning), empty when no marker.
@@ -336,14 +334,12 @@ pub struct PrefixComponents {
 /// Render rule: `eta` is rendered only when `rate` is present
 /// (eta-only-when-rate guard).
 ///
-/// This struct is the suffix's structured single mechanism:
-/// [`TrackedHandle::set_suffix_components`] is the only mutation API
-/// (the legacy `set_suffix(String)` is removed), and user-set fields
-/// override the auto-derived ticker fields at sync time with empty
-/// fields auto-filled. The removal order above is a normative spec,
-/// verified verbatim by the `semantic_truncate_suffix_*` unit suites
-/// and preserved unchanged through the user-override merge (the merge
-/// guard tests assert truncation order still holds after merging).
+/// [`TrackedHandle::set_suffix_components`] is the only mutation API (the
+/// legacy `set_suffix(String)` is removed); user-set fields override the
+/// auto-derived ticker fields at sync time with empty fields auto-filled.
+/// The removal order above is a normative spec, verified verbatim by the
+/// `semantic_truncate_suffix_*` unit suites and preserved unchanged through
+/// the user-override merge.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SuffixComponents {
     /// Count (numerator), rendered with `total` as `{count}/{total}`.
@@ -363,12 +359,13 @@ pub struct SuffixComponents {
 impl SuffixComponents {
     /// Merge user-set components over auto-derived ticker fields.
     ///
-    /// This is the single source of truth for the suffix merge used by both
-    /// the draw path ([`crate::progress::inner::ProgressRenderer::sync_snapshot_to_bar`])
-    /// and the layout estimator ([`crate::progress::inner::ProgressRenderer::recompute_layout`]).
-    /// Keeping one implementation guarantees the width estimate matches what
-    /// actually draws — otherwise a wider user-set `rate`/`eta`/`custom` would
-    /// overflow the reserved `suffix_w` and get truncated away at draw time.
+    /// Single implementation shared by the draw path
+    /// ([`crate::progress::inner::ProgressRenderer::sync_snapshot_to_bar`])
+    /// and the layout estimator
+    /// ([`crate::progress::inner::ProgressRenderer::recompute_layout`]) so the
+    /// width estimate matches what actually draws — otherwise a wider
+    /// user-set `rate`/`eta`/`custom` would overflow the reserved `suffix_w`
+    /// and get truncated away at draw time.
     ///
     /// Stored non-empty fields override the auto-derived ones; stored
     /// `rate`/`eta` override when `Some`; empty fields auto-fill from the

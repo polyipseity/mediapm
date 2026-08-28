@@ -1,12 +1,8 @@
 //! Prefixed temporary directories for mediapm tests, examples, and runtime sandboxes.
 //!
-//! Every mediapm-owned temp path under `$TMPDIR` uses a single tracked prefix `mediapm-`
-//! followed by a role suffix (`mediapm-artifact-{unique}`, `mediapm-cache-{unique}`,
-//! `mediapm-runtime-{16hex}`), so `scripts/clean-mediapm-temp.sh` (POSIX) or
+//! Every mediapm-owned temp path under `$TMPDIR` uses the single prefix `mediapm-`
+//! followed by a role suffix, so `scripts/clean-mediapm-temp.sh` (POSIX) or
 //! `scripts/clean-mediapm-temp.ps1` (Windows) can remove orphans with one `mediapm-*` glob.
-//! See `.agents/instructions/temp-directory-spec.instructions.md` for the canonical spec
-//! (naming contract, janitor contract, regression gates, authoring rules) and
-//! `.agents/instructions/example-temp-isolation.instructions.md` for example/test wiring.
 
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -17,8 +13,7 @@ use std::time::Duration;
 
 /// Single prefix for every mediapm-owned temp root (`mediapm-{role}-{unique}`).
 ///
-/// The janitor globs (`mediapm-*`) and `is_managed_path` are derived from this
-/// constant; no other prefix is tracked.
+/// The janitor globs and `is_managed_path` derive from this constant.
 pub const MEDIAPM_TEMP_PREFIX: &str = "mediapm-";
 
 /// Creates a unique artifact workspace directory under `$TMPDIR`.

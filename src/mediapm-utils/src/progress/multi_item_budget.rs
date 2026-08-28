@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Thread-safe collection of per-item progress budgets.
 ///
 /// Each item tracks `(position, total)` as a pair of [`AtomicU64`] values.
-/// The aggregate progress is the sum of all items' positions and totals.
+/// Aggregate progress is the sum of all items' positions and totals.
 ///
 /// # Invariants (hard-fail with `assert!`)
 ///
@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// - `pos` never decreases per item.
 /// - `total` is set once per item (at construction via [`add_item`](Self::add_item)
 ///   or dynamically via [`set_total`](Self::set_total)).
-/// - Items with `total == 0` are considered indeterminate — counted in
+/// - Items with `total == 0` are indeterminate — counted in
 ///   [`item_count`](Self::item_count) but contribute 0 bytes to aggregate totals.
 #[derive(Debug)]
 pub struct MultiItemBudget {
@@ -54,7 +54,7 @@ impl MultiItemBudget {
     ///
     /// # Panics
     ///
-    /// Panics if `item_idx` is out of bounds, or if `total < current position`.
+    /// Panics if `item_idx` is out of bounds or `total < current position`.
     pub fn set_total(&self, item_idx: usize, total: u64) {
         let item = &self.items[item_idx];
         let pos = item.pos.load(Ordering::Acquire);
@@ -71,7 +71,7 @@ impl MultiItemBudget {
     ///
     /// # Panics
     ///
-    /// Panics if `item_idx` is out of bounds, or if `pos + amount > total`.
+    /// Panics if `item_idx` is out of bounds or `pos + amount > total`.
     pub fn advance(&self, item_idx: usize, amount: u64) {
         let item = &self.items[item_idx];
         let mut old = item.pos.load(Ordering::Acquire);

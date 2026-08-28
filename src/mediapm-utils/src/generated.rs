@@ -2,17 +2,15 @@
 //!
 //! Every document that mediapm (or standalone mediapm-conductor) rewrites
 //! programmatically is stamped with the same banner so users can identify
-//! machine-owned artifacts at a glance and know that manual edits are
-//! overwritten on the next write. The banner is a sequence of `#` comment
-//! lines, which Nickel's evaluator ignores, so prepending it never affects
-//! document decoding and `encode → decode → encode` stays byte-stable.
+//! machine-owned artifacts and know that manual edits are overwritten on the
+//! next write. The banner is `#` comment lines, which Nickel's evaluator
+//! ignores, so prepending it never affects decoding.
 
 /// The banner prepended to every machine-generated configuration document.
 ///
 /// Written as `#` comment lines so it is inert for the Nickel evaluator.
 /// Keep this constant single-sourced: every encode path delegates to
-/// [`prepend_banner`], which uses it verbatim, so the stamped text is
-/// identical across all consumers.
+/// [`prepend_banner`], which uses it verbatim.
 pub const GENERATED_FILE_BANNER: &str = "\
 # ===========================================================================
 # GENERATED FILE - DO NOT EDIT
@@ -28,9 +26,8 @@ pub const GENERATED_FILE_BANNER: &str = "\
 
 /// Prepends the shared generated-file banner to `bytes`.
 ///
-/// Idempotent: when `bytes` already starts with [`GENERATED_FILE_BANNER`],
-/// it is returned unchanged, so re-stamping an already-bannered document
-/// does not duplicate the banner.
+/// Idempotent: when `bytes` already starts with [`GENERATED_FILE_BANNER`], it
+/// is returned unchanged.
 #[must_use]
 pub fn prepend_banner(bytes: &[u8]) -> Vec<u8> {
     if bytes.starts_with(GENERATED_FILE_BANNER.as_bytes()) {

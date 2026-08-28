@@ -13,7 +13,7 @@ pub enum PathMode {
     Absolute,
 }
 
-/// Parses and validates path-mode selector from string-map params.
+/// Parses and validates the path-mode selector from string-map params.
 ///
 /// Defaults to `Relative` when no `path_mode` key is present.
 ///
@@ -32,14 +32,14 @@ pub fn parse_path_mode(params: &StringMap, context: &str) -> Result<PathMode, St
 
 /// Resolves one path against root + path-mode semantics.
 ///
-/// In relative mode, the candidate is normalized (parent-dir traversal
-/// rejected) and joined with the absolute root. In absolute mode, the
-/// candidate must already be absolute.
+/// In relative mode the candidate is normalized (parent-dir traversal
+/// rejected) and joined with the absolute root; in absolute mode it must
+/// already be absolute.
 ///
 /// # Errors
 ///
-/// Returns an error when path-mode validation fails, path resolution fails,
-/// or a relative path escapes the root directory.
+/// Returns an error when path-mode validation fails, resolution fails, or a
+/// relative path escapes the root directory.
 pub fn resolve_path_for_root(
     root_dir: &Path,
     context: &str,
@@ -72,8 +72,8 @@ pub fn resolve_path_for_root(
 
 /// Resolves one root directory into an absolute filesystem path.
 ///
-/// Returns the root as-is if it is already absolute; otherwise joins it with
-/// the process current working directory.
+/// Returns the root as-is if already absolute; otherwise joins it with the
+/// process current working directory.
 ///
 /// # Errors
 ///
@@ -132,9 +132,7 @@ mod tests {
     };
     use crate::StringMap;
 
-    // -----------------------------------------------------------------------
     // parse_path_mode tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn parse_path_mode_defaults_to_relative() {
@@ -170,9 +168,7 @@ mod tests {
         assert!(err.contains("my_ctx"), "error should include context: {err}");
     }
 
-    // -----------------------------------------------------------------------
     // normalize_relative_path tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn normalize_relative_path_accepts_simple() {
@@ -230,9 +226,7 @@ mod tests {
         assert_eq!(result.to_string_lossy(), "a/b/c.txt");
     }
 
-    // -----------------------------------------------------------------------
     // absolute_root tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn absolute_root_keeps_absolute() {
@@ -248,9 +242,7 @@ mod tests {
         assert!(result.is_absolute(), "resolved root should be absolute: {result:?}");
     }
 
-    // -----------------------------------------------------------------------
     // resolve_path_for_root tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn relative_mode_rejects_absolute_path() {

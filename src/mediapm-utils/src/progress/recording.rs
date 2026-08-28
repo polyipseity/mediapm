@@ -52,15 +52,14 @@ pub enum ProgressOp {
         /// Total (denominator) component.
         total: String,
     },
-    /// `set_suffix_components(components)` was called. Records the full
-    /// structured set, matching what the caller passed.
+    /// `set_suffix_components(components)` was called.
     SetSuffixComponents {
         /// Full suffix component set.
         components: crate::progress::SuffixComponents,
     },
     /// `set_truncation(truncation)` was called. Records the rendered
-    /// prefix/suffix produced by the installed [`BarLabelTruncation`]
-    /// implementation at the recorder's configured width.
+    /// prefix/suffix from the installed [`BarLabelTruncation`] at the
+    /// recorder's configured width.
     SetTruncation {
         /// Rendered prefix string (full width, no truncation applied).
         prefix: String,

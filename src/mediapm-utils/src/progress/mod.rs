@@ -1,36 +1,8 @@
 //! Shared progress bar and download-progress types for mediapm CLIs.
 //!
 //! Crate consumers that want graphical progress bars enable the `progress`
-//! feature (which pulls in `indicatif`).  The conductor library itself avoids
-//! this dependency — it receives progress via [`ProgressCallback`] closures.
-//!
-//! # Architecture
-//!
-//! Progress tracking and rendering are separated into independent layers:
-//!
-//! | Layer | Types | Dependencies |
-//! |---|---|---|
-//! | **Tracking** (unlimited) | [`TrackedHandle`] | None (pure state) |
-//! | **Rendering** (terminal-limited) | [`ProgressGroup`] | `indicatif` (behind feature) |
-//! | **Recording** (testing) | [`recording::RecordingTrackedHandle`], [`recording::RecordingProgressTracker`] | None behind feature |
-//! | **Debug** | [`ProgressDebugSink`] | `serde_json` (behind feature) |
-//!
-//! # Types across feature boundaries
-//!
-//! | Type / fn | Available without `progress` | Available with `progress` |
-//! |---|---|---|
-//! | [`DownloadProgressSnapshot`] | ✅ | ✅ |
-//! | [`ProgressCallback`] | ✅ | ✅ |
-//! | [`TrackedHandle`] | ❌ | ✅ |
-//! | [`ProgressGroup`] | ❌ | ✅ |
-//! | [`ProgressRenderer`] | ❌ | ✅ |
-//! | (no global toggle) | — | — |
-//! | [`recording::RecordingProgressTracker`] | ❌ | ✅ |
-//! | [`recording::RecordingTrackedHandle`] | ❌ | ✅ |
-//! | [`recording::ProgressOp`] | ❌ | ✅ |
-//! | [`ProgressDebugSink`] | ❌ | ✅ |
-//! | [`DebugSlotState`] | ❌ | ✅ |
-//! | [`DebugTickSnapshot`] | ❌ | ✅ |
+//! feature (which pulls in `indicatif`). The conductor library avoids this
+//! dependency — it receives progress via [`ProgressCallback`] closures.
 
 mod byte_budget;
 mod download;
@@ -46,9 +18,7 @@ pub use multi_item_budget::MultiItemBudget;
 #[cfg(feature = "progress")]
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
 // Graphical progress bar types (only with `progress` feature)
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "progress")]
 mod inner;
@@ -65,33 +35,32 @@ pub use inner::{
 #[allow(unused_imports)]
 pub(crate) use inner::{SharedState, format_elapsed, format_rate};
 
-// ---- Shared API traits for dependency injection (feature-gated) -------
+// Shared API traits for dependency injection (feature-gated)
 
 #[cfg(feature = "progress")]
 mod traits;
 #[cfg(feature = "progress")]
 pub use traits::{BarStyle, ProgressBarApi, ProgressGroupApi};
 
-// ---- Client-defined truncation contract (feature-gated) --------------
+// Client-defined truncation contract (feature-gated)
 
 #[cfg(feature = "progress")]
 mod truncation;
 #[cfg(feature = "progress")]
 pub use truncation::BarLabelTruncation;
 
-// ---- Recording types for test assertions (feature-gated) ---------------
+// Recording types for test assertions (feature-gated)
 
 /// Recording progress operations for test assertions.
 ///
-/// This module provides [`RecordingProgressTracker`] and
-/// [`RecordingTrackedHandle`] that record all operations into a shared
-/// operation log without any visual output. Use
+/// Provides [`RecordingProgressTracker`] and [`RecordingTrackedHandle`], which
+/// record all operations into a shared log without any visual output.
 #[cfg(feature = "progress")]
 pub mod recording;
 #[cfg(feature = "progress")]
 pub use recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
 
-// ---- Trait impls for recording types -------------------------------------
+// Trait impls for recording types
 
 #[cfg(feature = "progress")]
 impl ProgressBarApi for recording::RecordingTrackedHandle {
@@ -162,7 +131,7 @@ impl ProgressGroupApi for recording::RecordingProgressTracker {
     }
 }
 
-// ---- Tests ---------------------------------------------------------------
+// Tests
 
 #[cfg(test)]
 #[cfg(feature = "progress")]

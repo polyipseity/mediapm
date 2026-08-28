@@ -18,11 +18,9 @@ use crate::progress::BarStyle;
 
 /// A vertical stack of progress bars.
 ///
-/// Bars are drawn in a fixed-height grid determined by the terminal height
-/// at construction time.  The draw height never changes, which eliminates
-/// ghosting from bar-count changes.
-///
-/// To create a no-op group, use [`ProgressGroup::disabled`].
+/// Bars are drawn in a fixed-height grid determined by the terminal height at
+/// construction time, which eliminates ghosting from bar-count changes. To
+/// create a no-op group, use [`ProgressGroup::disabled`].
 pub struct ProgressGroup {
     /// `None` when progress is disabled.
     renderer: Option<Arc<Mutex<ProgressRenderer>>>,
@@ -35,30 +33,18 @@ pub struct ProgressGroup {
 // ---- ProgressGroupBuilder -------------------------------------------------
 
 /// Marker type indicating the builder has no overall bar yet.
-///
-/// [`ProgressGroupBuilder<NoOverall>`] does not expose [`build()`](ProgressGroupBuilder::build)
-/// — call [`with_overall()`](ProgressGroupBuilder::with_overall) first to transition
-/// to [`HasOverall`].
 pub struct NoOverall;
 
 /// Marker type indicating the builder has an overall bar configured.
-///
-/// [`ProgressGroupBuilder<HasOverall>`] exposes [`build()`](ProgressGroupBuilder::build)
-/// which returns both the group and the overall bar handle.
 pub struct HasOverall;
 
 /// Builder for [`ProgressGroup`] with compile-time overall-bar enforcement.
 ///
 /// The phantom type parameter `S` tracks whether an overall bar has been
-/// configured:
-///
-/// - [`ProgressGroupBuilder<NoOverall>`] — `build()` is **not available**.
-///   Call [`with_overall()`](Self::with_overall) to transition to `HasOverall`.
-/// - [`ProgressGroupBuilder<HasOverall>`] — `build()` returns
-///   `(ProgressGroup, TrackedHandle)`.
-///
-/// This makes it impossible to construct a `ProgressGroup` without an
-/// overall bar — the compiler rejects any attempt.
+/// configured: [`ProgressGroupBuilder<NoOverall>`] has no `build()` (call
+/// [`with_overall()`](Self::with_overall) first); [`ProgressGroupBuilder<HasOverall>`]
+/// exposes `build()` returning `(ProgressGroup, TrackedHandle)`. This makes it
+/// impossible to construct a `ProgressGroup` without an overall bar.
 ///
 /// # Defaults
 ///
@@ -69,15 +55,6 @@ pub struct HasOverall;
 /// | `overall` | `None` (no overall bar) |
 /// | `capacity` | `None` (derived from terminal height via `dim_source`) |
 /// | `dynamic_height` | `true` |
-///
-/// # Examples
-///
-/// ```ignore
-/// // Type-safe: compiler requires with_overall() before build().
-/// let (group, overall) = ProgressGroup::builder()
-///     .with_overall("sync", 10)
-///     .build();
-/// ```
 pub struct ProgressGroupBuilder<S = NoOverall> {
     mp: Option<MultiProgress>,
     dim_source: Arc<dyn DimensionSource>,
@@ -150,8 +127,8 @@ macro_rules! impl_builder_config {
 
             /// Use an injectable term for pre-roll capture (for test assertions).
             ///
-            /// When called, pre-roll newlines are written to `term` instead of
-            /// `console::Term::stderr()`.  The user must also pass a compatible
+            /// Pre-roll newlines are written to `term` instead of
+            /// `console::Term::stderr()`. The user must also pass a compatible
             /// [`MultiProgress`] created from the same term via
             /// `ProgressDrawTarget::term_like`.
             #[must_use]
@@ -168,7 +145,7 @@ macro_rules! impl_builder_config {
             }
 
             /// Disable or enable the background render ticker thread (default:
-            /// enabled).  Disable in tests for deterministic progress bar output.
+            /// enabled). Disable in tests for deterministic progress bar output.
             #[must_use]
             pub fn with_ticker_enabled(mut self, enabled: bool) -> Self {
                 self.ticker_enabled = enabled;
@@ -184,10 +161,9 @@ impl_builder_config!(HasOverall);
 impl ProgressGroupBuilder<NoOverall> {
     /// Build a group without an overall bar.
     ///
-    /// Use this when no overall aggregate bar is needed (e.g., the
-    /// standalone conductor CLI). For workflow/materialization progress
-    /// screens that require an overall bar, call [`with_overall()`](Self::with_overall)
-    /// first to transition to [`HasOverall`], then use [`build()`](ProgressGroupBuilder::build).
+    /// Use when no overall aggregate bar is needed (e.g., the standalone
+    /// conductor CLI). For screens that require an overall bar, call
+    /// [`with_overall()`](Self::with_overall) first, then `build()`.
     ///
     /// # Panics
     ///
