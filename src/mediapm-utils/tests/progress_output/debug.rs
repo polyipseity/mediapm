@@ -159,3 +159,67 @@ fn progress_debug_env_auto_creates_file() {
     // Clean up.
     let _ = std::fs::remove_file(&expected_path);
 }
+
+#[test]
+fn progress_debug_append_across_groups() {
+    // Two sequential `ProgressGroup::builder().build()` calls in the same
+    // process must both contribute lines to the same debug file. The sink must
+    // APPEND (not truncate) so the earlier group's ticks survive.
+    let unique_suffix = format!(
+        "{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    );
+    let debug_path = format!("progress-debug-append-{unique_suffix}.jsonl");
+    // SAFETY: single-threaded test — no concurrent env access.
+    unsafe {
+        std::env::set_var("MEDIAPM_PROGRESS_DEBUG", &debug_path);
+    }
+
+    let expected_path = std::path::PathBuf::from(&debug_path);
+    let _ = std::fs::remove_file(&expected_path);
+
+    // First group: writes its ticks to the file.
+    {
+        let (mp, _term) = mk();
+        let group = ProgressGroup::builder().with_multi_progress(mp).build();
+        for _ in 0..5 {
+            group.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(group);
+    }
+
+    // Second group: must APPEND, not truncate, so the first group's lines
+    // remain. Keep the env var set so build() re-detects the same path.
+    {
+        let (mp, _term) = mk();
+        let group = ProgressGroup::builder().with_multi_progress(mp).build();
+        for _ in 0..5 {
+            group.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(group);
+    }
+
+    // SAFETY: single-threaded test — no concurrent env access.
+    unsafe {
+        std::env::remove_var("MEDIAPM_PROGRESS_DEBUG");
+    }
+
+    let contents = std::fs::read_to_string(&expected_path).unwrap();
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+
+    // Both groups contributed ticks; the file must hold more than a single
+    // group's worth (truncation would leave only the second group's lines).
+    assert!(
+        lines.len() >= 6,
+        "expected ≥6 JSONL lines from two sequential groups (append), got {}: {contents}",
+        lines.len()
+    );
+    for (i, line) in lines.iter().enumerate() {
+        assert!(line.contains(r#""type":"tick""#), "line {i} missing type field: {line}");
+    }
+
+    // Clean up.
+    let _ = std::fs::remove_file(&expected_path);
+}

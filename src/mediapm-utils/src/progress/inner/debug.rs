@@ -166,10 +166,22 @@ pub(crate) fn detect_progress_debug_env() -> Option<ProgressDebugSink> {
     let val = std::env::var("MEDIAPM_PROGRESS_DEBUG").ok()?;
     let writer: Box<dyn Write + Send> = if val == "auto" || val.is_empty() {
         let path = std::path::PathBuf::from(format!("progress-debug-{}.jsonl", std::process::id()));
-        Box::new(std::fs::File::create(&path).expect("failed to create progress debug file"))
+        Box::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .expect("failed to create progress debug file"),
+        )
     } else {
         let path = std::path::PathBuf::from(&val);
-        Box::new(std::fs::File::create(&path).expect("failed to create progress debug file"))
+        Box::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .expect("failed to create progress debug file"),
+        )
     };
     Some(ProgressDebugSink::new(writer))
 }
