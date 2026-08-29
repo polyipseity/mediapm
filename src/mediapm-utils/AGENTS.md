@@ -31,6 +31,8 @@ When set, progress bar renderers emit one JSONL line per tick (every ~50ms) with
 
 Stderr output is intentionally not supported — debug output must not compete with terminal rendering. Monitor live with `tail -f <file>`. The JSONL format is documented in `ProgressDebugSink`; each record includes `"type": "tick"`. All field names use `snake_case`.
 
+The sink **appends** to the target file (it never truncates). When a process builds several `ProgressGroup`s in sequence (e.g. the `mediapm_demo_online` example builds a tool-sync group, then a workflow group, then a materialize group), every group's ticks accumulate into the same JSONL stream as consecutive segments, each segment restarting its `tick` counter at `0`. This makes the *entire* run capturable from a single file.
+
 ## Optional `progress` feature
 
 - When enabled, pulls in `indicatif` + `console` and provides `ProgressGroup`, `ProgressHandle`, `format_bytes`, `format_count`.
