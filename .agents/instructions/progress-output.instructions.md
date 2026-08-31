@@ -40,21 +40,57 @@ Where `{pw}` = `prefix_w`, `{sw}` = `suffix_w` (numeric, from the cell values). 
 
 All styles: `tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")`, `progress_chars("█░")`.
 
-## bar_color_code
+## Coloring reference
 
-| Status | is_overall | Color code |
+All color is applied via ANSI SGR escapes (`\x1b[{code}m`). The `console` crate provides the escape generation; `bar_color_code` returns the raw numeric code as a `&str` for `format!` interpolation.
+
+### Bar fill and spinner colors
+
+Applied by the `apply_*_bar_style` functions in `components.rs`. Each function sets the spinner color, the bar fill color, and the dim suffix color.
+
+| State | Spinner | Bar fill | Applied by |
+|---|---|---|---|
+| Active overall | green | magenta/dim | `apply_overall_bar_style` |
+| Active child | green | yellow/dim | `apply_bar_style` |
+| Success/Warning finished | white/dim | green/dim | `apply_done_bar_style` |
+| Failed | red | red/dim | `apply_failed_bar_style` |
+
+### Prefix marker colors
+
+Rendered by `render_prefix_components`. The marker (`[F]` or `[W]`) is wrapped in ANSI color before the rest of the prefix.
+
+| Marker | Color | ANSI code |
 |---|---|---|
-| `Failed` | any | `"31"` (red) |
-| `Active` | `true` | `"35"` (magenta) |
-| `Active` | `false` | `"33"` (yellow) |
-| `Warning` | any | `"33"` (yellow) |
-| `Success` | any | `"32"` (green) |
+| `[F]` (Failed) | red bold | `\x1b[31m` |
+| `[W]` (Warning) | yellow bold | `\x1b[33m` |
+| No marker | uncolored | — |
 
-Used by `render_suffix_components` to color the `count/total` segment.
+### Suffix count/total color
+
+`render_suffix_components` wraps the `count/total` segment in `\x1b[{code}m` using `bar_color_code(status, is_overall)`. The color matches the bar's semantic status, not the bar's visual style.
+
+### `bar_color_code` lookup
+
+| Status | is_overall | Color code | Effective color |
+|---|---|---|---|
+| `Failed` | any | `31` | red |
+| `Active` | `true` | `35` | magenta |
+| `Active` | `false` | `33` | yellow |
+| `Warning` | any | `33` | yellow |
+| `Success` | any | `32` | green |
+
+### ANSI overhead in truncation
+
+`sync_snapshot_to_bar` subtracts an ANSI overhead from `prefix_w` before calling `semantic_truncate_prefix`. This accounts for the escape sequences that will be inserted around the prefix content.
+
+- **13 bytes** for `Failed`/`Warning` (reset + color escape around marker)
+- **4 bytes** for other states (reset only)
+
+See the [truncation ordering](#prefix-truncation-order) section below for how this interacts with component removal.
 
 ## Truncation dispatch
 
-`sync_snapshot_to_bar` (in `renderer.rs`) is the single push point from `SharedState` → indicatif. ANSI overhead for prefix truncation: **13 bytes** for `Failed`/`Warning` (reset + color escape), **4 bytes** for other states. It calls `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` and `semantic_truncate_suffix(&components, suffix_w)`. Client-defined truncation (via `ProgressBarApi::truncate_prefix` trait) takes precedence when installed; the renderer only calls the trait.
+`sync_snapshot_to_bar` (in `renderer.rs`) is the single push point from `SharedState` → indicatif. It subtracts the ANSI overhead (see [coloring reference](#ansi-overhead-in-truncation)) from `prefix_w`, then calls `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` and `semantic_truncate_suffix(&components, suffix_w)`. Client-defined truncation (via `ProgressBarApi::truncate_prefix` trait) takes precedence when installed; the renderer only calls the trait.
 
 ## Prefix truncation order
 
@@ -109,6 +145,60 @@ Phase: `[wf]`. Per-step child bars with tool name. Worker-slot bars show states:
 
 Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-file sub-bar inside `media_folder` extraction). Per-entry child bars with `[stg]` → `[vrf]` → `[cmt]` phase transitions.
 
+## Post-finish result messages
+
+After progress bars finish, the CLI prints structured result lines via primitives in `src/mediapm/src/output/report.rs`. These appear below the finalized progress bar output.
+
+### Output primitives
+
+| Primitive | Stream | Format | Styling |
+|---|---|---|---|
+| `print_result(icon, op, fields, duration)` | stdout | `{icon} {bold_op}    {k}={v}  {k}={v}  in {duration}` | icon: styled per StatusIcon; op: bold |
+| `print_warning(msg)` | stderr | `Δ {msg}` | Δ yellow |
+| `print_hint(msg)` | stderr | `→ {msg}` | → cyan bold |
+| `print_heading(heading)` | stderr | `{heading}` + dim underline | heading bold, underline dim |
+| `print_error(msg)` | stderr | `✗ {msg}` | ✗ red bold |
+
+### StatusIcon glyphs
+
+| Variant | Glyph | Style |
+|---|---|---|
+| `Success` | `✓` | green bold |
+| `NoChange` | `–` | dim |
+| `Warning` | `Δ` | yellow bold |
+| `Error` | `✗` | red bold |
+
+### Per-screen summary formats
+
+**Screen A — `mediapm sync`** (via `print_sync_summary` in `output/mod.rs`):
+
+```text
+✓ sync complete    executed=3  cached=2  materialized=1  removed=1
+  Δ warning message
+```
+
+- Icon: `✓` (green bold) when `executed > 0 || materialized > 0`; `–` (dim) otherwise.
+- Fields: `executed` always shown; `cached`, `materialized`, `removed`, `removed_empty`, `added_tools`, `updated_tools` shown only when >0.
+- Warnings: one `print_warning` line per warning.
+
+**Screen A — `mediapm tool sync`** (via `print_result` + `ToolsSyncSummary`):
+
+```text
+✓ tools synced    added=2  updated=1  pruned=0  removed=0
+  Δ warning message
+```
+
+- Fields: `added`, `updated`, `pruned`, `removed` (all always shown).
+- Warnings: one `print_warning` line per warning.
+
+**Screen B — workflow** (via `RunSummary`):
+
+`RunSummary` is `#[derive(Debug)]` and printed via `{summary:?}`. The coordinator's overall bar suffix already shows `cached=N  failed=N  retried=N` before finish. There is no `print_result` call for workflow runs — the summary is conveyed through the progress bar's final state (success/warning) and the `RunSummary` struct returned to the caller.
+
+**Screen C — materialization** (folded into sync summary):
+
+Materialization results are folded into `SyncSummary.materialized_paths` and printed as part of the Screen A sync summary. No separate materialization summary line exists.
+
 ## Worked examples (Production, W=80)
 
 Children render above the overall bar: child bars first, overall bar last.
@@ -149,6 +239,28 @@ Children render above the overall bar: child bars first, overall bar last.
 - Per-entry bar transitions `[stg]` → `[vrf]` → `[cmt]`.
 - `[wrt]` per-file sub-bars appear inside `media_folder` entries.
 
+### Screen A — tool-sync post-finish
+
+After all bars finish, the CLI prints:
+
+```text
+✓ sync complete    executed=3  cached=2  materialized=1  removed=1
+  Δ some warning message
+```
+
+- `✓` is green bold; `sync complete` is bold.
+- Fields separated by two spaces; `executed` always shown, others only when >0.
+- Each warning on its own indented line with yellow `Δ`.
+
+### Screen A — tool sync post-finish
+
+```text
+✓ tools synced    added=2  updated=1  pruned=0  removed=0
+```
+
+- All four fields always shown.
+- No duration tracked for tool sync.
+
 ## Debug JSONL
 
 `MEDIAPM_PROGRESS_DEBUG=1` env var enables JSONL tick output to stderr. Each line is a JSON object with fields: `type` (`"tick"`), `tick` (monotonic counter), `elapsed_secs` (f64), `bars` (array of per-slot state: `slot`, `bound`, `label`, `prefix`, `position`, `total`, `status`, `elapsed_secs`, `rate_bytes_per_sec`, `eta_secs`, `suffix`, `dirty`).
@@ -165,3 +277,10 @@ These test files use `assert_eq!(term.contents(), concat!(...))` and ARE the rea
 
 - `src/mediapm-utils/tests/progress_output/*.rs` (terminal.rs, consumer.rs, transition.rs, progress_group.rs, spinner.rs, regression.rs, single_bar.rs, resolve_label.rs)
 - `src/mediapm/src/output/progress.rs`
+
+## Related files
+
+- `src/mediapm/src/output/report.rs` — post-finish result primitives (`print_result`, `print_warning`, `print_hint`, `print_heading`, `print_error`, `StatusIcon`)
+- `src/mediapm/src/output/mod.rs` — `print_sync_summary` (Screen A sync summary)
+- `src/mediapm-conductor/src/api.rs` — `RunSummary` struct (Screen B)
+- `src/mediapm/src/lib.rs` — `SyncSummary`, `ToolsSyncSummary` struct definitions
