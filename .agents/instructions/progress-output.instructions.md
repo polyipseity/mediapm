@@ -1,7 +1,7 @@
 ---
 description: "Use when editing progress-bar rendering code in mediapm-utils or any consumer (conductor workflow screen, mediapm tool-sync, materialization). Records the ACTUAL rendered output format so agents never guess or invent ASCII mocks."
 name: "Progress Bar Rendered Output Format"
-applyTo: "src/mediapm-utils/src/progress.rs, src/mediapm-utils/src/progress/inner/**/*.rs, src/mediapm-conductor/src/orchestration/coordinator.rs, src/mediapm/src/output/progress.rs, src/mediapm/src/conductor_bridge/sync/**/*.rs"
+applyTo: "src/mediapm-utils/src/progress.rs, src/mediapm-utils/src/progress/inner/**/*.rs, src/mediapm-utils/src/progress/truncation.rs, src/mediapm-conductor/src/orchestration/progress_labels.rs, src/mediapm-conductor/src/orchestration/coordinator.rs, src/mediapm/src/materializer/progress_labels.rs, src/mediapm/src/materializer/mod.rs, src/mediapm/src/output/progress.rs, src/mediapm/src/conductor_bridge/sync/**/*.rs"
 ---
 
 # Progress bar rendered output format
@@ -81,20 +81,143 @@ Rendered by `render_prefix_components`. The marker (`[F]` or `[W]`) is wrapped i
 
 ### ANSI overhead in truncation
 
-`sync_snapshot_to_bar` subtracts an ANSI overhead from `prefix_w` before calling `semantic_truncate_prefix`. This accounts for the escape sequences that will be inserted around the prefix content.
+`sync_snapshot_to_bar` subtracts an ANSI overhead from `prefix_w` before calling either the client-truncation trait or the built-in `semantic_truncate_prefix`/`render_prefix_components` path.
 
-- **13 bytes** for `Failed`/`Warning` (reset + color escape around marker)
-- **4 bytes** for other states (reset only)
+- **Client-truncated bars** (when `BarLabelTruncation` is installed via `set_truncation`): always **4 bytes** — client strings carry no colored markers; only the ANSI reset is needed. The renderer prepends `\x1b[0m` to the client-truncated prefix string.
+- **Built-in bars** (`PrefixComponents` path): **13 bytes** for `Failed`/`Warning` (reset + color escape around marker); **4 bytes** for all other states.
 
-See the [truncation ordering](#prefix-truncation-order) section below for how this interacts with component removal.
+`recompute_layout` uses the same overhead logic to compute the available prefix width before layout.
 
 ## Truncation dispatch
 
-`sync_snapshot_to_bar` (in `renderer.rs`) is the single push point from `SharedState` → indicatif. It subtracts the ANSI overhead (see [coloring reference](#ansi-overhead-in-truncation)) from `prefix_w`, then calls `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` and `semantic_truncate_suffix(&components, suffix_w)`. Client-defined truncation (via `ProgressBarApi::truncate_prefix` trait) takes precedence when installed; the renderer only calls the trait.
+`sync_snapshot_to_bar` (in `renderer.rs`) is the single push point from `SharedState` → indicatif. It determines whether client-defined truncation (`BarLabelTruncation` via `set_truncation`) or built-in truncation (`PrefixComponents` via `set_prefix_components`) applies:
 
-## Prefix truncation order
+- **Client-truncated bars**: `ansi_overhead = 4`. Calls `truncation.truncate_prefix(prefix_w - 4)` then prepends `\x1b[0m` to the result.
+- **Built-in bars**: `ansi_overhead` is 13 for `Failed`/`Warning`, 4 otherwise. Calls `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` then `render_prefix_components` to wrap the prefix in colored markers.
 
-Removal order (least-important first), verified verbatim by `semantic_truncate_prefix_*` unit suites:
+`recompute_layout` checks for installed client truncation to apply the same overhead rule for width budgeting.
+
+## Three bar-label structs
+
+All three structs implement [`BarLabelTruncation`] (defined in `src/mediapm-utils/src/progress/truncation.rs`) and are rendered via the client-truncation path in `sync_snapshot_to_bar`. The renderer prepends `\x1b[0m` (4-byte ANSI reset) to all client-truncated prefixes; no colored markers are embedded in the truncated string.
+
+Truncation uses `truncate_ordered` (shared from `mediapm_utils::progress`). This function drops **trailing** parts first: the **first** element in the parts list is kept **longest**; the **last** element is dropped **first** under width pressure.
+
+### Struct 1: `StepBarLabel` (conductor per-step bars)
+
+**File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
+
+Carries real-progress fields: version, completed/total, phase, workflow/step identity.
+
+| Field | Meaning | Example |
+|-------|---------|---------|
+| `version` | Tool version | `"7.1"` |
+| `completed` / `total` | Progress tally | `"2"` / `"5"` |
+| `phase` | Workflow phase tag | `"wf"` |
+| `status_marker` | Terminal state marker | `""` / `"F"` / `"W"` |
+| `workflow_id` | Workflow name | `"default"` |
+| `step_id` | Step identifier | `"s3"` |
+| `tool` | Conductor tool name | `"ffmpeg"` |
+
+**Prefix parts order** (first = kept longest under truncation):
+
+| Pos | Part | Rendered | Mode | Reasoning |
+|-----|------|----------|------|-----------|
+| 1 | `version` | `[7.1]` | Progressive | Version is least-important context; shrunk chars first |
+| 2 | `count/total` | `2/5` | Atomic | Removed together; bare count never shown |
+| 3 | `phase` | `[wf]` | Atomic | Removed entirely |
+| 4 | `status_marker` | `[F]`/`[W]` | Atomic | Removed before tool identity |
+| 5 | `workflow_id` | `default` | Progressive | Workflow name shrunk char-by-char |
+| 6 | `step_id` | `s3` | Progressive | Step id shrunk char-by-char |
+| 7 | `tool` | `(ffmpeg)` | Progressive | Tool name in parens; most important identity |
+| 8 | fallback | — | Hard truncate | Characters beyond budget are cut |
+
+**Prefix render shape:** `[version] count/total [phase] [marker] workflow_id step_id (tool)`
+
+**Suffix parts order** (first = kept longest under truncation):
+
+| Pos | Part | Mode |
+|-----|------|------|
+| 1 | `custom` | Progressive |
+| 2 | `eta` | Atomic |
+| 3 | `rate` | Atomic |
+| 4 | `elapsed` | Atomic |
+| 5 | `count/total` | Atomic |
+| 6 | fallback | Hard truncate |
+
+`eta` renders only when `rate` is present (eta-only-when-rate guard). `count` and `total` are stored separately but rendered and trimmed as one unit — a bare count or bare total is never shown.
+
+### Struct 2: `WorkerBarLabel` (conductor worker-slot bars)
+
+**File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
+
+Carries activity flag only — no workflow phase, no progress tally.
+
+| Field | Meaning | Example |
+|-------|---------|---------|
+| `status_marker` | Terminal state marker | `""` / `"F"` / `"W"` |
+| `workflow_id` | Workflow name | `"default"` |
+| `step_id` | Step identifier | `"s5"` |
+| `tool` | Conductor tool name | `"echo"` |
+| `activity` | Current activity | `"active"` / `"idle"` |
+
+**Prefix parts order** (first = kept longest under truncation):
+
+| Pos | Part | Rendered | Mode | Reasoning |
+|-----|------|----------|------|-----------|
+| 1 | `workflow_id` | `default` | Progressive | Workflow name is least-important; shrunk first |
+| 2 | `step_id` | `s5` | Progressive | Step id shrunk char-by-char |
+| 3 | `tool` | `(echo)` | Progressive | Tool name in parens |
+| 4 | `activity` | `[active]`/`[idle]` | Atomic | Removed as unit |
+| 5 | `status_marker` | `[F]`/`[W]` | Atomic | Removed |
+| 6 | fallback | — | Hard truncate | Characters beyond budget are cut |
+
+**Prefix render shape:** `workflow_id step_id (tool) [activity] [marker]`
+
+**Suffix parts order:** Same as `StepBarLabel` (custom → eta → rate → elapsed → fallback).
+
+### Struct 3: `MaterializationBarLabel` (mediapm materialization bars)
+
+**File**: `src/mediapm/src/materializer/progress_labels.rs`
+
+Carries file-path identity and phase. No version, no count/total, no workflow/step.
+
+| Field | Meaning | Example |
+|-------|---------|---------|
+| `status_marker` | Terminal state marker | `""` / `"F"` |
+| `entry_path` | Directory portion of hierarchy path | `"Music/Artist/Album"` |
+| `entry_name` | Basename of hierarchy entry | `"song.mkv"` |
+| `file_name` | Extracted file basename (sub-bars only) | `"cover.jpg"` |
+| `phase` | Materialization phase tag | `"stg"` / `"vrf"` / `"cmt"` / `"wrt"` / `"mat"` |
+
+**Prefix parts order** (first = kept longest under truncation):
+
+| Pos | Part | Rendered | Mode | Reasoning |
+|-----|------|----------|------|-----------|
+| 1 | `entry_name` | `song.mkv` | Progressive | Basename kept longest — most important identity |
+| 2 | `file_name` | `cover.jpg` | Progressive | Sub-bar extracted filename; only on per-file write sub-bars |
+| 3 | `status_marker` | `[F]`/`[W]` | Atomic | Removed |
+| 4 | `phase` | `[stg]`/`[vrf]`/`[cmt]`/`[wrt]`/`[mat]` | Atomic | Removed entirely |
+| 5 | `entry_path` | `Music/Artist/Album` | Progressive | Directory path dropped first — losing leading segments is least harmful |
+| 6 | fallback | — | Hard truncate | Characters beyond budget are cut |
+
+**Prefix render shape:** `entry_name [phase] [marker] entry_path` (with optional `file_name` between `entry_name` and `marker`).
+
+**Suffix:** None (materialization bars do not set suffix components).
+
+### Why three structs instead of one
+
+Each screen carries different semantic fields:
+
+- **Step bars** need progress tallies (`completed`/`total`) and version — materialization and worker bars have neither.
+- **Worker bars** need activity flags but no progress tally or phase.
+- **Materialization bars** need path/name decomposition but no workflow identity, no version, no count/total.
+
+A single generic struct would either carry unused fields (polluting the API) or require `Option` wrappers everywhere. Three focused structs give each screen its own field names and its own truncation order with zero overhead.
+
+### Legacy built-in `PrefixComponents` truncation order
+
+The built-in `semantic_truncate_prefix` path (used when no `BarLabelTruncation` is installed) still follows this removal order:
 
 | Step | Component | Mode |
 |---|---|---|
@@ -105,20 +228,7 @@ Removal order (least-important first), verified verbatim by `semantic_truncate_p
 | 5 | `tool_name` | Progressive |
 | 6 | fallback | Hard truncate whatever remains |
 
-`count` and `total` are stored separately but rendered and trimmed as one unit — a bare count or bare total is never shown.
-
-## Suffix truncation order
-
-| Step | Component | Mode |
-|---|---|---|
-| 1 | `custom` | Progressive |
-| 2 | `eta` | Atomic |
-| 3 | `rate` | Atomic |
-| 4 | `elapsed` | Atomic |
-| 5 | `count`/`total` | Atomic (removed together) |
-| 6 | fallback | Hard truncate |
-
-`eta` renders only when `rate` is present (eta-only-when-rate guard).
+`count` and `total` are stored separately but rendered and trimmed as one unit — a bare count or bare total is never shown. The built-in path is still used by Screen A (tool-sync) bars which do not install `BarLabelTruncation`.
 
 ## Test-only vs production output
 
@@ -139,11 +249,24 @@ Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases a
 
 ### Screen B: Workflow (`src/mediapm-conductor/src/orchestration/`)
 
-Phase: `[wf]`. Per-step child bars with tool name. Worker-slot bars show states: idle (`Active`, tool_name `"idle"`), active (`Active`, tool_name `"wf/step (tool)"`), pending-retry (`Warning`, marker `[W]`), failed (`Failed`, marker `[F]`), finalize (`Success`, tool_name `"idle"`). Worker labels are mediapm-agnostic — `tool` is the conductor step's own `ToolSpec.name`, never a managed-tool name.
+Phase: `[wf]`. Per-step child bars use `StepBarLabel` for client-defined truncation. Worker-slot bars use `WorkerBarLabel` with separate `workflow_id`/`step_id`/`tool` fields.
+
+Worker-slot states (`worker_slot_label` in `coordinator.rs`):
+
+| State | `workflow_id` | `step_id` | `tool` | `activity` | `status_marker` |
+|-------|---------------|-----------|--------|------------|------------------|
+| Active | workflow name | step id | conductor tool name | `active` | (empty) |
+| PendingRetry | (empty) | (empty) | `idle` | `idle` | `W` |
+| Failed | (empty) | (empty) | `idle` | `idle` | `F` |
+| Idle / Succeeded | (empty) | (empty) | `idle` | `idle` | (empty) |
+
+Worker labels are mediapm-agnostic — `tool` is the conductor step's own `ToolSpec.name`, never a managed-tool name.
 
 ### Screen C: Materialization (`src/mediapm/src/materializer/`)
 
-Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-file sub-bar inside `media_folder` extraction). Per-entry child bars with `[stg]` → `[vrf]` → `[cmt]` phase transitions.
+Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`. Under width pressure, the directory path is truncated first while the basename is preserved.
+
+Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-file sub-bar inside `media_folder` extraction). Per-entry child bars with `[stg]` → `[vrf]` → `[cmt]` phase transitions. No suffix components are set.
 
 ## Post-finish result messages
 
@@ -219,25 +342,28 @@ Children render above the overall bar: child bars first, overall bar last.
 ### Screen B — workflow, mid-run (3 workers, pool_size=3)
 
 ```text
-⠙                  default/s5 (echo@v1) 1/2 running
-⠙                  default/s6 (import) 0/1 running
-⠙                           idle 1/1 idle
+⠙                  default s5 (echo@v1) [active] 1/2 running
+⠙                  default s6 (import) [active] 0/1 running
+⠙                          (idle) [idle] 1/1 idle
 ⠹                       workflow 4/12 0s 211/s 0s
 ```
 
-- Worker label format: `workflow_id/step_id (tool_name)`.
-- Idle worker shows full empty bar (pinned total=1, pos=0).
+- Worker label format: `workflow_id step_id (tool) [activity]` — each field is a separate truncatable part.
+- Active workers show `workflow_id`, `step_id`, `(tool)`, `[active]`.
+- Idle worker shows `(idle) [idle]` with full empty bar (pinned total=1, pos=0).
 
 ### Screen C — materialization (media entry mid-commit)
 
 ```text
-⠋                      media [stg] 2/5
-⠙                   commit [cmt] 128/256
-⠹                materialize 3/8 0s 12/s 0s
+⠋                      song.mkv [stg] 2/5
+⠙                   song.mkv [cmt] 128/256
+⠹             materializing [mat] 3/8 0s 12/s 0s
 ```
 
+- Per-entry bar prefix: `entry_name [phase]` — basename is kept longest under truncation.
 - Per-entry bar transitions `[stg]` → `[vrf]` → `[cmt]`.
-- `[wrt]` per-file sub-bars appear inside `media_folder` entries.
+- Overall bar: `materializing [mat]`.
+- `[wrt]` per-file sub-bars appear inside `media_folder` entries with `file_name` set.
 
 ### Screen A — tool-sync post-finish
 
