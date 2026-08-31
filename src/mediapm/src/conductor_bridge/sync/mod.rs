@@ -1149,9 +1149,14 @@ pub(crate) async fn reconcile_desired_tools(
     } else {
         pb.finish_warning();
     }
-    if let Some(g) = owned_group {
+    if let Some(ref g) = owned_group {
         g.join();
     }
+
+    // [prn] Bar: document rewrite + filesystem prune.
+    // Total = 2 (document rewrite, filesystem prune). Simple counter, no
+    // MultiItemBudget — these are atomic operations, not byte-level.
+    let prn_bar = owned_group.as_ref().map(|g| g.add_bar(2, "pruning [prn]"));
 
     // The generated document is a pure machine artifact: drop any tool
     // entries mediapm did not produce this sync (hand-added manual entries).
@@ -1220,6 +1225,10 @@ pub(crate) async fn reconcile_desired_tools(
     // 5. Save generated document.
     save_conductor_generated_document(paths, &generated_doc)?;
 
+    if let Some(ref bar) = prn_bar {
+        bar.advance(1);
+    }
+
     // 6. Prune filesystem tool directories not in the active set. The
     //    provision cache keys directories by the sanitized conductor tool
     //    id (`tools_dir/<sanitize_tool_id(conductor_tool_id)>/payload/`),
@@ -1228,6 +1237,11 @@ pub(crate) async fn reconcile_desired_tools(
     //    provisioned directory.
     let active_conductor_ids: HashSet<String> = tool_runtimes.keys().cloned().collect();
     retain_only_tool_dirs(paths.tools_dir.clone(), active_conductor_ids).await?;
+
+    if let Some(ref bar) = prn_bar {
+        bar.advance(1);
+        bar.finish_success();
+    }
 
     report.pruned_tools = pruned_tools;
 
@@ -1295,7 +1309,7 @@ mod tests {
         assert_eq!(
             finish_successes.len(),
             1,
-            "expected exactly one FinishSuccess op, got {finish_successes:?}",
+            "expected exactly one FinishSuccess op (overall bar only; no owned group means no [prn] bar), got {finish_successes:?}",
         );
         assert!(
             matches!(&finish_successes[0], ProgressOp::FinishSuccess),
