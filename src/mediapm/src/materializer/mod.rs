@@ -6,7 +6,8 @@
 pub(crate) mod commit;
 pub(crate) mod file_ops;
 mod metadata;
-mod playlist;
+pub(crate) mod playlist;
+mod progress_labels;
 mod resolve;
 mod zip;
 
@@ -18,6 +19,7 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
+use self::progress_labels::{MaterializationBarLabel, split_entry_path};
 use crate::config::hierarchy_types::{
     FlattenedHierarchyEntry, HierarchyEntryKind, PlaylistItemRef, collect_playlist_media_index,
     expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
@@ -25,7 +27,7 @@ use crate::config::hierarchy_types::{
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
-use crate::output::progress::{PrefixComponents, ProgressBarApi, ProgressGroup, ProgressGroupApi};
+use crate::output::progress::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
 use crate::paths::MediaPmPaths;
 use crate::tools::workflows::{
     resolve_ffmpeg_slot_limits, resolve_media_variant_output_binding_with_limits,
@@ -185,23 +187,19 @@ pub async fn sync_hierarchy(
         if let Some(bar) = overall_bar {
             // Caller owns the overall bar — set the real entry count.
             bar.set_total(flattened.len() as u64);
-            bar.set_prefix_components(PrefixComponents {
-                tool_name: "materializing".to_string(),
+            bar.set_truncation(Arc::new(MaterializationBarLabel {
                 phase: "mat".to_string(),
-                count: "0".to_string(),
-                total: flattened.len().to_string(),
-                ..PrefixComponents::default()
-            });
+                entry_name: "materializing".to_string(),
+                ..Default::default()
+            }));
             (None, bar)
         } else if let Some(ref pg) = progress_group {
             let bar = pg.add_bar(flattened.len() as u64, "materializing [mat]");
-            bar.set_prefix_components(PrefixComponents {
-                tool_name: "materializing".to_string(),
+            bar.set_truncation(Arc::new(MaterializationBarLabel {
                 phase: "mat".to_string(),
-                count: "0".to_string(),
-                total: flattened.len().to_string(),
-                ..PrefixComponents::default()
-            });
+                entry_name: "materializing".to_string(),
+                ..Default::default()
+            }));
             (None, bar)
         } else {
             let g = ProgressGroup::builder().dynamic_height(true).build();
@@ -333,15 +331,15 @@ async fn prepare_hierarchy_entry(
 
     // Per-entry phase bar: stage → verify → commit. Owned by mediapm (not the
     // conductor), so it carries the `[stg]`/`[vrf]`/`[cmt]` phase tags.
+    let (ep, en) = split_entry_path(&relative_path);
     let entry_bar: Option<Arc<dyn ProgressBarApi>> = progress_group.clone().map(|pg| {
         let bar = pg.add_bar(3, &format!("{relative_path} [stg]"));
-        bar.set_prefix_components(PrefixComponents {
-            tool_name: relative_path.clone(),
+        bar.set_truncation(Arc::new(MaterializationBarLabel {
+            entry_path: ep.to_string(),
+            entry_name: en.to_string(),
             phase: "stg".to_string(),
-            count: "0".to_string(),
-            total: "3".to_string(),
-            ..PrefixComponents::default()
-        });
+            ..Default::default()
+        }));
         bar
     });
 
@@ -368,25 +366,23 @@ async fn prepare_hierarchy_entry(
             let effective_variant = variant_selector.first().cloned().unwrap_or(variant_name);
 
             if let Some(ref bar) = entry_bar {
-                bar.set_prefix_components(PrefixComponents {
-                    tool_name: relative_path.clone(),
+                bar.set_truncation(Arc::new(MaterializationBarLabel {
+                    entry_path: ep.to_string(),
+                    entry_name: en.to_string(),
                     phase: "vrf".to_string(),
-                    count: "1".to_string(),
-                    total: "3".to_string(),
-                    ..PrefixComponents::default()
-                });
+                    ..Default::default()
+                }));
             }
             let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
 
             if let Some(hash) = hash {
                 if let Some(ref bar) = entry_bar {
-                    bar.set_prefix_components(PrefixComponents {
-                        tool_name: relative_path.clone(),
+                    bar.set_truncation(Arc::new(MaterializationBarLabel {
+                        entry_path: ep.to_string(),
+                        entry_name: en.to_string(),
                         phase: "cmt".to_string(),
-                        count: "2".to_string(),
-                        total: "3".to_string(),
-                        ..PrefixComponents::default()
-                    });
+                        ..Default::default()
+                    }));
                 }
 
                 // Check if this variant has a zip_member binding (e.g., subtitles_en
@@ -666,15 +662,16 @@ async fn materialize_media_folder_entry(
                     "media '{media_id}' variant '{variant_name}': ZIP archive contained zero extractable files"
                 ));
             }
+            let (sub_ep, sub_en) = split_entry_path(relative_path);
             let file_bar = progress_group.clone().map(|pg| {
                 let sub = pg.add_bar(extracted.len() as u64, &format!("{variant_name} [wrt]"));
-                sub.set_prefix_components(PrefixComponents {
-                    tool_name: format!("{relative_path}/{variant_name}"),
+                sub.set_truncation(Arc::new(MaterializationBarLabel {
+                    entry_path: sub_ep.to_string(),
+                    entry_name: sub_en.to_string(),
+                    file_name: variant_name.clone(),
                     phase: "wrt".to_string(),
-                    count: "0".to_string(),
-                    total: extracted.len().to_string(),
-                    ..PrefixComponents::default()
-                });
+                    ..Default::default()
+                }));
                 sub
             });
             for (file_rel_path, content) in extracted {
@@ -1293,7 +1290,7 @@ mod tests {
         assert!(result.is_ok(), "sync_hierarchy should succeed: {result:?}");
         let ops = recording.ops();
         // Exact op sequence: overall `[mat]` bar (AddBar from with_overall,
-        // then SetTotal + SetPrefixComponents from sync_hierarchy) → per-entry
+        // then SetTotal + SetTruncation from sync_hierarchy) → per-entry
         // `[stg]`/`[vrf]` phases → `Advance(1)` + `FinishWarning` (skipped, no
         // CAS content) → overall `Advance(1)` + `FinishSuccess`.
         assert_eq!(
@@ -1302,32 +1299,20 @@ mod tests {
                 // Overall bar created by with_overall(), total set by sync_hierarchy.
                 ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() },
                 ProgressOp::SetTotal { total: 1 },
-                ProgressOp::SetPrefixComponents {
-                    marker: String::new(),
-                    tool_name: "materializing".into(),
-                    version: String::new(),
-                    phase: "mat".into(),
-                    count: "0".into(),
-                    total: "1".into(),
+                ProgressOp::SetTruncation {
+                    prefix: "materializing [mat]".into(),
+                    suffix: String::new(),
                 },
                 // Per-entry bar: staging.
                 ProgressOp::AddBar { total: 3, label: "test_file [stg]".into() },
-                ProgressOp::SetPrefixComponents {
-                    marker: String::new(),
-                    tool_name: "test_file".into(),
-                    version: String::new(),
-                    phase: "stg".into(),
-                    count: "0".into(),
-                    total: "3".into(),
+                ProgressOp::SetTruncation {
+                    prefix: "test_file [stg]".into(),
+                    suffix: String::new(),
                 },
                 // Per-entry bar: verify phase (set before hash resolution).
-                ProgressOp::SetPrefixComponents {
-                    marker: String::new(),
-                    tool_name: "test_file".into(),
-                    version: String::new(),
-                    phase: "vrf".into(),
-                    count: "1".into(),
-                    total: "3".into(),
+                ProgressOp::SetTruncation {
+                    prefix: "test_file [vrf]".into(),
+                    suffix: String::new(),
                 },
                 // Skipped: advance(1) on entry_bar + FinishWarning.
                 ProgressOp::Advance { delta: 1 },

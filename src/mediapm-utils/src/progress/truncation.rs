@@ -25,3 +25,32 @@ pub trait BarLabelTruncation: Send + Sync {
     /// columns.
     fn truncate_suffix(&self, max_width: usize) -> String;
 }
+
+/// Join `parts` with a single space, dropping trailing parts until the
+/// joined string fits `max_width` visible columns. When the first part
+/// alone exceeds the budget, it is hard-truncated to fit. A chars-based
+/// safety-net truncation is applied as a final fallback.
+///
+/// This is the shared truncation primitive used by all three bar-label
+/// structs (`StepBarLabel`, `WorkerBarLabel`, `MaterializationBarLabel`).
+#[cfg(feature = "progress")]
+pub fn truncate_ordered(parts: &[String], max_width: usize) -> String {
+    let mut kept: Vec<&String> = Vec::new();
+    let mut width = 0usize;
+    for part in parts {
+        let add = if kept.is_empty() { part.len() } else { part.len() + 1 };
+        if width + add > max_width && !kept.is_empty() {
+            break;
+        }
+        // Hard-truncate the first part if it alone exceeds the budget.
+        if kept.is_empty() && add > max_width {
+            kept.push(part);
+            break;
+        }
+        width += add;
+        kept.push(part);
+    }
+    let result: String = kept.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+    // Safety-net: chars().take handles non-ASCII edge cases.
+    if result.len() > max_width { result.chars().take(max_width).collect() } else { result }
+}
