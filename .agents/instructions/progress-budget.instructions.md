@@ -155,6 +155,27 @@ invariants:
     sizes.
 - **Fidelity over precision**: smooth visual updates matter more than byte-exact accuracy; all paths stay monotonic and complete.
 
+### Prune phase (document rewrite + filesystem prune)
+
+The prune phase wraps the wholesale document rewrite and filesystem directory
+prune that runs after the provisioning loop completes. It uses a simple counter
+bar (total = 2), not a `MultiItemBudget` — these are atomic operations, not
+byte-level.
+
+```text
+// After provisioning loop join():
+prn_bar = group.add_bar(2, "[prn]")
+
+// 1. Document rewrite: retain tool specs, rebuild external_data,
+//    create tools dir, materialize payloads, write .env.generated,
+//    save generated document.
+prn_bar.inc(1)
+
+// 2. Filesystem prune: retain_only_tool_dirs.
+prn_bar.inc(1)
+prn_bar.finish_success()
+```
+
 ### Process phase loop (`process_tool_sources`)
 
 Archive sources use **2 budget items** (decompress + compress); binary/launcher sources use **1 item** (CAS import).

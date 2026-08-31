@@ -1,129 +1,166 @@
 ---
 description: "Use when editing progress-bar rendering code in mediapm-utils or any consumer (conductor workflow screen, mediapm tool-sync, materialization). Records the ACTUAL rendered output format so agents never guess or invent ASCII mocks."
 name: "Progress Bar Rendered Output Format"
-applyTo: "src/mediapm-utils/src/progress.rs, src/mediapm-conductor/src/orchestration/coordinator.rs, src/mediapm/src/output/progress.rs, src/mediapm/src/conductor_bridge/sync/**/*.rs"
+applyTo: "src/mediapm-utils/src/progress.rs, src/mediapm-utils/src/progress/inner/**/*.rs, src/mediapm-conductor/src/orchestration/coordinator.rs, src/mediapm/src/output/progress.rs, src/mediapm/src/conductor_bridge/sync/**/*.rs"
 ---
 
 # Progress bar rendered output format
 
-This file is the **authoritative reference** for what the progress bars actually
-look like on a terminal. Any agent editing progress code MUST read this before
-changing templates, glyphs, colors, prefix/suffix shapes, or ordering. Do NOT
-invent ASCII mocks — the real format is captured from the `progress_output`
-test suite below.
+This file is the authoritative reference for what progress bars actually look like on a terminal. Any agent editing progress code MUST read this before changing templates, glyphs, colors, prefix/suffix shapes, or ordering. Do NOT invent ASCII mocks.
 
-Source of truth: `src/mediapm-utils/src/progress.rs` templates
-(`CHILD_BAR_TEMPLATE` ~line 803, `OVERALL_BAR_TEMPLATE` ~line 806) +
-`render_prefix_components` (~line 1035) + `render_suffix_components` (~line 870)
+## Source of truth
 
-- `bar_color_code` (~line 830), verified by
-`src/mediapm-utils/tests/progress_output/*.rs` and
-`src/mediapm/src/output/progress.rs` using
-`assert_eq!(term.contents(), concat!(...))`.
+- `src/mediapm-utils/src/progress/inner/components.rs` — templates, styles, truncation functions (`semantic_truncate_prefix`, `semantic_truncate_suffix`, `render_prefix_components`, `render_suffix_components`)
+- `src/mediapm-utils/src/progress/inner/renderer.rs` — layout (`recompute_layout`), single push point (`sync_snapshot_to_bar`), pre-roll, resize handling, debug sink
+- Verified by `src/mediapm-utils/tests/progress_output/*.rs` using exact `assert_eq!(term.contents(), concat!(...))`
 
-## Production templates (verbatim)
+## Width constants
 
 ```text
-CHILD_BAR_TEMPLATE       = "{spinner:.green} {prefix:>30.30} {wide_bar:.yellow/dim} {msg:<25.55}"
-OVERALL_BAR_TEMPLATE      = "{spinner:.green} {prefix:>30.30} {wide_bar:.magenta/dim} {msg:<25.55}"
-COMPACT_BAR_TEMPLATE      = "{spinner:.green} {prefix:>25.25} {msg:<12.40}"          // width < 60
-COMPACT_OVERALL_BAR_TEMPLATE = "{spinner:.green} {prefix:>25.25} {msg:<12.40}"      // width < 60
-DONE_BAR_TEMPLATE         = "{spinner:.white/.dim} {prefix:>30.30} {wide_bar:.green/dim} {msg:<25.55}"
-FAILED_BAR_TEMPLATE       = "{spinner:.red} {prefix:>30.30} {wide_bar:.red/dim} {msg:<25.55}"
+MIN_PREFIX_WIDTH = 12      (decreaseable floor — bars never shrink below this)
+MAX_PREFIX_WIDTH = 40      (hard ceiling — prefixes truncate beyond this)
+MIN_SUFFIX_WIDTH = 12
+MAX_SUFFIX_WIDTH = 50
 ```
 
-The compact variants drop the `{wide_bar}` field entirely (used when terminal
-width is below 60 columns). `DONE_*` and `FAILED_*` are the finished-state
-templates applied via `apply_done_bar_style` / `apply_failed_bar_style`.
+`max_prefix_width(cols)` and `max_suffix_width(cols)` are `const fn` that return the constant ceilings; the `cols` parameter is intentionally unused. Clamping in `recompute_layout`: `prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, max_prefix_width(cols))`, `suffix_w = max_suffix.clamp(MIN_SUFFIX_WIDTH, max_suffix_width(cols))`.
 
-## Glyphs (NOT `▶`/`●`/`████`)
+## Production templates
 
-- **Spinner:** braille cycle `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` (10 frames). Frame 0 = `⠋`, frame 1 =
-  `⠙`, … wraps. Driven by the ~50ms daemon ticker; each `bar.tick()` advances
-  one frame. (Note: the first *tick* shows frame 1 `⠙`, not frame 0 `⠋`.)
-- **Bar fill:** `progress_chars("█░")` → filled `█`, empty `░`. NOT `=` or `#`.
-- **ANSI colors (real stderr only):** spinner green (`\x1b[32m`); child
-  `wide_bar` yellow/dim (`\x1b[33m` + dim); overall `wide_bar` magenta/dim
-  (`\x1b[35m` + dim); `count/total` in `bar_color_code` color (overall=35,
-  child=33, failed=31, success=32); marker `[F]` red, `[W]` yellow. The
-  `InMemoryTerm` tests compare against strings that may omit the SGR bytes, but
-  REAL stderr output includes them.
+Templates are **dynamic `format!` strings** built inside `apply_*_bar_style` functions using live `prefix_w`/`suffix_w` values. There are NO static `CHILD_BAR_TEMPLATE`/`OVERALL_BAR_TEMPLATE` constants.
 
-## Prefix shape (`render_prefix_components`, starts with `\x1b[0m`)
+| Function | Template pattern | Wide bar style |
+|---|---|---|
+| `apply_overall_bar_style` | `{spinner:.green} {prefix:>{pw}.{pw}} {wide_bar:0.magenta/dim} {msg:<{sw}.{sw}}` | magenta/dim |
+| `apply_bar_style` | `{spinner:.green} {prefix:>{pw}.{pw}} {wide_bar:0.yellow/dim} {msg:<{sw}.{sw}}` | yellow/dim |
+| `apply_done_bar_style` | `{spinner:.white/.dim} {prefix:>{pw}.{pw}} {wide_bar:0.green/dim} {msg:<{sw}.{sw}}` | green/dim |
+| `apply_failed_bar_style` | `{spinner:.red} {prefix:>{pw}.{pw}} {wide_bar:0.red/dim} {msg:<{sw}.{sw}}` | red/dim |
+
+Where `{pw}` = `prefix_w`, `{sw}` = `suffix_w` (numeric, from the cell values). `prefix_w` is always ≥ 12 (clamped by `MIN_PREFIX_WIDTH`), so the dynamic template path is the only reachable path.
+
+All styles: `tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")`, `progress_chars("█░")`.
+
+## bar_color_code
+
+| Status | is_overall | Color code |
+|---|---|---|
+| `Failed` | any | `"31"` (red) |
+| `Active` | `true` | `"35"` (magenta) |
+| `Active` | `false` | `"33"` (yellow) |
+| `Warning` | any | `"33"` (yellow) |
+| `Success` | any | `"32"` (green) |
+
+Used by `render_suffix_components` to color the `count/total` segment.
+
+## Truncation dispatch
+
+`sync_snapshot_to_bar` (in `renderer.rs`) is the single push point from `SharedState` → indicatif. ANSI overhead for prefix truncation: **13 bytes** for `Failed`/`Warning` (reset + color escape), **4 bytes** for other states. It calls `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` and `semantic_truncate_suffix(&components, suffix_w)`. Client-defined truncation (via `ProgressBarApi::truncate_prefix` trait) takes precedence when installed; the renderer only calls the trait.
+
+## Prefix truncation order
+
+Removal order (least-important first), verified verbatim by `semantic_truncate_prefix_*` unit suites:
+
+| Step | Component | Mode |
+|---|---|---|
+| 1 | `version` | Progressive (shrink chars one at a time) |
+| 2 | `count`/`total` | Atomic (removed together, never partial) |
+| 3 | `phase` | Atomic |
+| 4 | `marker` | Atomic (`[F]`/`[W]` removed before tool_name) |
+| 5 | `tool_name` | Progressive |
+| 6 | fallback | Hard truncate whatever remains |
+
+`count` and `total` are stored separately but rendered and trimmed as one unit — a bare count or bare total is never shown.
+
+## Suffix truncation order
+
+| Step | Component | Mode |
+|---|---|---|
+| 1 | `custom` | Progressive |
+| 2 | `eta` | Atomic |
+| 3 | `rate` | Atomic |
+| 4 | `elapsed` | Atomic |
+| 5 | `count`/`total` | Atomic (removed together) |
+| 6 | fallback | Hard truncate |
+
+`eta` renders only when `rate` is present (eta-only-when-rate guard).
+
+## Test-only vs production output
+
+- **Raw `ProgressBar` tests** use the test-only `{elapsed_precise}` template, producing `[00:00:00]` format (bracketed, HH:MM:SS).
+- **`ProgressGroup` tests** use the production renderer, producing `0s` / `42s` / `1m35s` format via `format_elapsed` (compact, no brackets).
+- Worked examples below are labeled accordingly.
+
+## Per-screen specs
+
+### Screen A: Tool-sync (`src/mediapm/src/conductor_bridge/sync/`)
+
+Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases are shortened from longer names (`resolve` → `res`, `fetch` → `fch`, `process` → `pro`, `prune` → `prn`).
+
+- **Resolve bar** shows `cached (N)` message via `SuffixComponents::custom`.
+- **Skip bar** shows `skipped cached (N)` (when cached) vs `skipped` (when not cached).
+- Overall bar uses `apply_overall_bar_style` (magenta); child bars use `apply_bar_style` (yellow).
+
+### Screen B: Workflow (`src/mediapm-conductor/src/orchestration/`)
+
+Phase: `[wf]`. Per-step child bars with tool name. Worker-slot bars show states: idle (`Active`, tool_name `"idle"`), active (`Active`, tool_name `"wf/step (tool)"`), pending-retry (`Warning`, marker `[W]`), failed (`Failed`, marker `[F]`), finalize (`Success`, tool_name `"idle"`). Worker labels are mediapm-agnostic — `tool` is the conductor step's own `ToolSpec.name`, never a managed-tool name.
+
+### Screen C: Materialization (`src/mediapm/src/materializer/`)
+
+Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-file sub-bar inside `media_folder` extraction). Per-entry child bars with `[stg]` → `[vrf]` → `[cmt]` phase transitions.
+
+## Worked examples (Production, W=80)
+
+Children render above the overall bar: child bars first, overall bar last.
+
+### Screen A — tool-sync, mid-resolve (3 tools, ffmpeg resolving)
 
 ```text
-[{marker}] <tool_name>[ <version>][ [<phase>]][ <count>/<total>]
+⠋                   ffmpeg@7.1 [res] 0/100 0s 42.5/d
+⠙                  yt-dlp@2025.1 [fch] 45/82 3s 14.2 MiB/s 4s
+⠹                        [prn] cached (1)
+⠹                 syncing tools 3/12 0s 211/s 0s
 ```
 
-- `marker`: `F` (failed, red `[F]`), `W` (warning, yellow `[W]`), else empty.
-- `tool_name`: always present (right-aligned to 30 in the template).
-- `version`: e.g. `@7.1`. `phase`: e.g. `res`/`fch`/`pro`/`wf`. `count/total`:
-  e.g. `3/12`.
+- 4th line (overall, last): magenta spinner + magenta/dim bar.
+- Lines 1-3: child bars, yellow spinner + yellow/dim bar.
+- `[prn]` prune bar shows `cached (1)` custom suffix.
 
-## Suffix / `{msg}` shape (`render_suffix_components`)
+### Screen B — workflow, mid-run (3 workers, pool_size=3)
 
 ```text
-[ \x1b[{color}m{count}/{total}\x1b[0m][ {elapsed}][ {rate}[ {eta}]][ {custom}]
+⠙                  default/s5 (echo@v1) 1/2 running
+⠙                  default/s6 (import) 0/1 running
+⠙                           idle 1/1 idle
+⠹                       workflow 4/12 0s 211/s 0s
 ```
 
-- `count/total` colored (omitted if both empty).
-- `elapsed`: e.g. `0s`, `0:00:05`.
-- `rate`: e.g. `0/d`, `12.3 MiB/s` (eta shown only when rate present).
-- `custom`: e.g. `cached (2)`, `skipped`, `idle`.
+- Worker label format: `workflow_id/step_id (tool_name)`.
+- Idle worker shows full empty bar (pinned total=1, pos=0).
 
-## Ordering in `term.contents()`
-
-Children render **above** the overall bar: child bars first, overall bar last.
-
-## Spacing law (W ≥ 60)
-
-`spaces_before_label = 1 (template) + (30 − label_len)`. Bar width at W=80 is
-exactly **21** chars of `█`/`░` (filled = round(pos·21/total)).
-
-## Worked example — sync screen (`syncing tools N/M`)
+### Screen C — materialization (media entry mid-commit)
 
 ```text
-⠹                        overall ░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d
-⠹                          tool1 ░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d
-⠹     ffmpeg autobuil [res]  0/100 0s 0/d          (W=40 compact: version truncated, [res] kept)
-⠹             syncing tools  0/100 0s 0/d          (W=40 compact: multi-word label whole)
+⠋                      media [stg] 2/5
+⠙                   commit [cmt] 128/256
+⠹                materialize 3/8 0s 12/s 0s
 ```
 
-The overall bar is magenta; child bars are yellow. Note the right-aligned
-30-char prefix and the `count/total elapsed rate` suffix — the canonical shape.
+- Per-entry bar transitions `[stg]` → `[vrf]` → `[cmt]`.
+- `[wrt]` per-file sub-bars appear inside `media_folder` entries.
 
-## Worked example — conductor workflow screen (`[wf]`)
+## Debug JSONL
 
-Worker-slot child bars use the **same wide_bar child template** as other child
-bars (`{spinner:.green} {prefix:>30.30} {wide_bar:.yellow/dim} {msg:<25.55}`),
-driven by per-worker state (`total = assigned`, `pos = succeeded`). The overall
-bar uses the sync template (`{spinner:.green} {prefix:>30.30}
-{wide_bar:.magenta/dim} {msg:<25.55}`). Child bars render above the overall bar.
+`MEDIAPM_PROGRESS_DEBUG=1` env var enables JSONL tick output to stderr. Each line is a JSON object with fields: `type` (`"tick"`), `tick` (monotonic counter), `elapsed_secs` (f64), `bars` (array of per-slot state: `slot`, `bound`, `label`, `prefix`, `position`, `total`, `status`, `elapsed_secs`, `rate_bytes_per_sec`, `eta_secs`, `suffix`, `dirty`).
 
-Live screen, mid-run (pool_size = 3, 12 global steps, 4 done overall), W=80:
+## Pre-roll, gap conversion, finalize
 
-```text
-⠙             wf-1/step-5 (echo) ██████████████░░░░░░░░  2/3 running
-⠙             wf-1/step-6 (import) ██████████░░░░░░░░░░░░░  1/2 running
-⠙                           idle █████████████████████  1/1 idle
-⠹                 workflow steps ███████░░░░░░░░░░░░░░  4/12 0s 211/s 0s
-```
-
-- Worker labels are mediapm-agnostic: `workflow_id/step_id (tool)` where
-  `tool` is the conductor step's own `tool` field (e.g. `echo`, `fs`,
-  `import`) — never a mediapm managed-tool name.
-- Each worker bar fills the line (21-char `wide_bar` + `succeeded/assigned`
-  suffix), matching the overall bar's density.
-- Overall bar: magenta spinner + 21-char `wide_bar` partially `█`-filled to
-  4/12, suffix `4/12 0s 211/s 0s`. Template identical to the sync
-  `syncing tools` overall bar.
+- **Pre-roll**: On first draw, writes blank lines to scroll existing terminal content into scrollback, then repositions cursor. Only fires when `pre_roll_term` is `Some` (not in test mode).
+- **Gap conversion**: Child bars that are inactive or finished show a fully-dimmed empty bar (`total=1, pos=0`). The `WorkerSpinner` style pins idle workers to this state.
+- **Finalize**: `group.join()` returns after all bars finish; the renderer removes blank reserved slots and triggers a final draw so only finished bars persist in scrollback.
 
 ## Authoritative tests
 
-These test files use `assert_eq!(term.contents(), concat!(...))` and ARE the
-real format — change them only when the format intentionally changes:
+These test files use `assert_eq!(term.contents(), concat!(...))` and ARE the real format:
 
-- `src/mediapm-utils/tests/progress_output/*.rs` (terminal.rs, consumer.rs,
-  transition.rs, progress_group.rs, spinner.rs, regression.rs, single_bar.rs,
-  resolve_label.rs)
+- `src/mediapm-utils/tests/progress_output/*.rs` (terminal.rs, consumer.rs, transition.rs, progress_group.rs, spinner.rs, regression.rs, single_bar.rs, resolve_label.rs)
 - `src/mediapm/src/output/progress.rs`

@@ -279,19 +279,9 @@ The active template is chosen automatically via `apply_bar_style()` which checks
 {prefix:>12.12} [{elapsed_precise}] {wide_bar:.green/dim} {pos}/{len} {msg}
 ```
 
-**Narrow terminal (< 60 cols) — compact fallback:**
-
-```text
-{spinner:.green} {prefix} [{elapsed_precise}] {pos}/{len} {msg}
-```
-
 ### Styling rules
 
 The spinner glyph is green. The prefix is bold and right-aligned to 12 characters. The elapsed timer is cyan. For child bars, the bar fill is cyan on blue. For the overall bar, the bar fill is green on dim. The ETA display is dim. Progress characters use `█` for fill and `░` for empty.
-
-### Narrow terminal fallback
-
-On terminals narrower than 60 columns, a compact fallback template is used without the bar fill: `{spinner:.green} {prefix} [{elapsed_precise}] {pos}/{len} {msg}`.
 
 ### Custom RHS message
 
