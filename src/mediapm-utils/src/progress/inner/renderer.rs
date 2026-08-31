@@ -811,9 +811,23 @@ impl ProgressRenderer {
                 // per-status `ansi_overhead` to recover the visible budget
                 // for `semantic_truncate_prefix`, keeping both sides in the
                 // same coordinate system.
-                let status_overhead: usize = match snap.status {
-                    TrackStatus::Failed | TrackStatus::Warning => 13,
-                    _ => 4,
+                // Client-truncated bars only carry the 4-byte `\x1b[0m`
+                // reset, never the per-status marker bytes (13).  The
+                // built-in path adds those extra bytes, but when a client
+                // truncation is installed we use the client path instead.
+                // The `snap.prefix` is always the built-in rendered prefix;
+                // to size the layout correctly we check for client
+                // truncation and use the matching overhead.
+                let has_client_truncation = slot.source.borrow().as_ref().is_some_and(|s| {
+                    s.truncation.read().expect("shared_state truncation lock").is_some()
+                });
+                let status_overhead: usize = if has_client_truncation {
+                    4
+                } else {
+                    match snap.status {
+                        TrackStatus::Failed | TrackStatus::Warning => 13,
+                        _ => 4,
+                    }
                 };
                 max_prefix = max_prefix.max(visible_width(snap.prefix.as_str()) + status_overhead);
                 // Measure the full rendered suffix (auto fields + custom),
@@ -1141,7 +1155,12 @@ impl ProgressRenderer {
             .as_ref()
             .and_then(|s| s.truncation.read().expect("shared_state truncation lock").clone());
         let new_prefix = if let Some(t) = truncation.as_ref() {
-            t.truncate_prefix(self.prefix_w.get().saturating_sub(ansi_overhead))
+            // Client-truncated bars only add the 4-byte `\x1b[0m` reset;
+            // the 13-byte overhead for failed/warning status markers is
+            // only used by the built-in component rendering.
+            let client_overhead: usize = 4;
+            let raw = t.truncate_prefix(self.prefix_w.get().saturating_sub(client_overhead));
+            format!("\x1b[0m{raw}")
         } else {
             let truncated_prefix = semantic_truncate_prefix(
                 &snap.prefix_components,
