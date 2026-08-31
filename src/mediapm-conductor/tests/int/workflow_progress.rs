@@ -117,25 +117,26 @@ fn idle_pc_count(_succeeded: usize, _assigned: usize) -> ProgressOp {
 
 /// Dispatch label for a step assigned to a worker slot.
 ///
-/// Worker-slot bars omit the `count/total` text (no real item+size progress),
-/// so `assigned` is used only for the bar fill, not the rendered prefix.
-fn dispatch_pc(tool_name: &str, _assigned: usize) -> ProgressOp {
+/// After the Phase 2 fix, `workflow_id`, `step_id`, and `tool` are populated
+/// as separate fields so the client-side truncation order can drop trailing
+/// parts independently.
+fn dispatch_pc(workflow_id: &str, step_id: &str, tool: &str, _assigned: usize) -> ProgressOp {
     use mediapm_conductor::orchestration::progress_labels::WorkerBarLabel;
     let label = WorkerBarLabel {
         status_marker: String::new(),
-        workflow_id: String::new(),
-        step_id: String::new(),
-        tool: tool_name.into(),
+        workflow_id: workflow_id.into(),
+        step_id: step_id.into(),
+        tool: tool.into(),
         activity: "active".into(),
     };
     ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
 }
 
-/// Counts dispatch operations (truncation prefixes whose tool name contains a
-/// `/`, i.e. a `workflow/step (tool)` dispatch label).
+/// Counts dispatch operations (truncation prefixes whose activity marker
+/// contains `[active]`).
 fn count_dispatches(ops: &[ProgressOp]) -> usize {
     ops.iter()
-        .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains('/')))
+        .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains("[active]")))
         .count()
 }
 
@@ -235,7 +236,7 @@ async fn single_step_success_progress_ops() {
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
             // Dispatch s1 to worker-0 (consume idle bar).
-            dispatch_pc("default/s1 (echo@v1)", 1),
+            dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // Step completes — idle count1/total1, advance, finish success.
             idle_pc_count(1, 1),
@@ -287,10 +288,10 @@ async fn two_step_same_level_success_progress_ops() {
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
             // Dispatch s1 to worker-0 (consume idle bar).
-            dispatch_pc("default/s1 (echo@v1)", 1),
+            dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // Dispatch s2 to worker-1 (consume idle bar).
-            dispatch_pc("default/s2 (echo@v1)", 1),
+            dispatch_pc("default", "s2", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // Step 1 completes.
             idle_pc_count(1, 1),
@@ -353,13 +354,13 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
             // Dispatch s1 to worker-0 (assigned 1).
-            dispatch_pc("default/s1 (echo@v1)", 1),
+            dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // Dispatch s2 to worker-1 (assigned 1).
-            dispatch_pc("default/s2 (echo@v1)", 1),
+            dispatch_pc("default", "s2", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // Dispatch s3 to worker-0 (assigned 2).
-            dispatch_pc("default/s3 (echo@v1)", 2),
+            dispatch_pc("default", "s3", "echo@v1", 2),
             ProgressOp::SetTotal { total: 2 },
             // Step 1 completes (worker-0: succeeded 1 / assigned 2 — s3 already
             // dispatched on the same slot before s1 terminated).
@@ -450,7 +451,7 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
             // Level 0: dispatch s1 to worker-0 (assigned 1).
-            dispatch_pc("default/s1 (echo@v1)", 1),
+            dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // Level 0 await — step 1 completes.
             idle_pc_count(1, 1),
@@ -459,7 +460,7 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
             // Level 1: dispatch s2 to worker-0 (assigned 2).
-            dispatch_pc("default/s2 (echo@v1)", 2),
+            dispatch_pc("default", "s2", "echo@v1", 2),
             ProgressOp::SetTotal { total: 2 },
             // Level 1 await — step 2 completes.
             idle_pc_count(2, 2),
