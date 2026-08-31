@@ -98,6 +98,7 @@ Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases a
 
 - **Resolve bar** shows `cached (N)` message via `SuffixComponents::custom`.
 - **Skip bar** shows `skipped cached (N)` (when cached) vs `skipped` (when not cached).
+- **Prune bar** (`[prn]`) uses the `tools.len()` call before the `retain` block to count prune candidates and sets the total to that count. Zero-bar guard: `[prn]` bar is not created when there are no candidates. The bar advances once per document-rewrite removal, then once more for filesystem prune.
 - Overall bar uses `apply_overall_bar_style` (magenta); child bars use `apply_bar_style` (yellow).
 
 ### Screen B: Workflow (`src/mediapm-conductor/src/orchestration/`)
@@ -117,13 +118,13 @@ Children render above the overall bar: child bars first, overall bar last.
 ```text
 ⠋                   ffmpeg@7.1 [res] 0/100 0s 42.5/d
 ⠙                  yt-dlp@2025.1 [fch] 45/82 3s 14.2 MiB/s 4s
-⠹                        [prn] cached (1)
+⠹                         [prn] 0/1
 ⠹                 syncing tools 3/12 0s 211/s 0s
 ```
 
 - 4th line (overall, last): magenta spinner + magenta/dim bar.
 - Lines 1-3: child bars, yellow spinner + yellow/dim bar.
-- `[prn]` prune bar shows `cached (1)` custom suffix.
+- `[prn]` prune bar shows `N/M` count (M = prune candidates from `tools.len()` before `retain`; N = items removed so far + filesystem prune step).
 
 ### Screen B — workflow, mid-run (3 workers, pool_size=3)
 

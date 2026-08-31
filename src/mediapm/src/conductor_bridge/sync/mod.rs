@@ -1153,11 +1153,6 @@ pub(crate) async fn reconcile_desired_tools(
         g.join();
     }
 
-    // [prn] Bar: document rewrite + filesystem prune.
-    // Total = 2 (document rewrite, filesystem prune). Simple counter, no
-    // MultiItemBudget — these are atomic operations, not byte-level.
-    let prn_bar = owned_group.as_ref().map(|g| g.add_bar(2, "pruning [prn]"));
-
     // The generated document is a pure machine artifact: drop any tool
     // entries mediapm did not produce this sync (hand-added manual entries).
     // Retain everything the provisioning pipeline manages — explicit tools
@@ -1171,6 +1166,31 @@ pub(crate) async fn reconcile_desired_tools(
         entries.iter().map(|entry| entry.tool_id.as_str()).collect();
     let builtin_names: HashSet<&str> =
         mediapm_conductor::tools::ALL_BUILTINS.iter().map(|builtin| builtin.name).collect();
+
+    // [prn] Bar: count prune candidates (document rewrite + filesystem prune).
+    // Total = number of entries the `retain` closure will remove, so the bar
+    // shows actual prune progress rather than a fixed step count.
+    let prune_candidates = generated_doc
+        .tools
+        .keys()
+        .filter(|key| {
+            let bare = key.split('@').next().unwrap_or(key.as_str());
+            if builtin_names.contains(bare) {
+                return false;
+            }
+            if !provisioned_names.contains(bare) {
+                return true;
+            }
+            // Will be removed by retain if content_map is empty
+            generated_doc.tools[*key].runtime.content_map.is_empty()
+        })
+        .count();
+    let prn_bar = if prune_candidates > 0 {
+        owned_group.as_ref().map(|g| g.add_bar(prune_candidates as u64, "pruning [prn]"))
+    } else {
+        None
+    };
+
     let tools_before_rewrite = generated_doc.tools.len();
     generated_doc.tools.retain(|key, spec| {
         let bare = key.split('@').next().unwrap_or(key.as_str());
@@ -1185,7 +1205,11 @@ pub(crate) async fn reconcile_desired_tools(
         // active `{name}@{hash}` entry.
         !spec.runtime.content_map.is_empty()
     });
-    pruned_tools += tools_before_rewrite - generated_doc.tools.len();
+    let actual_pruned = tools_before_rewrite - generated_doc.tools.len();
+    pruned_tools += actual_pruned;
+    if let Some(ref bar) = prn_bar {
+        bar.advance(actual_pruned as u64);
+    }
 
     // Rebuild external_data from scratch by scanning all tool specs'
     // content_maps. Hashes not referenced by any tool are automatically
@@ -1224,10 +1248,6 @@ pub(crate) async fn reconcile_desired_tools(
 
     // 5. Save generated document.
     save_conductor_generated_document(paths, &generated_doc)?;
-
-    if let Some(ref bar) = prn_bar {
-        bar.advance(1);
-    }
 
     // 6. Prune filesystem tool directories not in the active set. The
     //    provision cache keys directories by the sanitized conductor tool
