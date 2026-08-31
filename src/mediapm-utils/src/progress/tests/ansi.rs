@@ -56,25 +56,11 @@ fn visible_width_ansi_only() {
 }
 
 #[test]
-fn max_prefix_width_wide() {
-    assert_eq!(super::super::inner::max_prefix_width(80), 40);
-    assert_eq!(super::super::inner::max_prefix_width(60), 40);
+fn max_prefix_width_returns_constant() {
+    assert_eq!(super::super::inner::max_prefix_width(), 40);
 }
 
 #[test]
-fn max_prefix_width_compact() {
-    assert_eq!(super::super::inner::max_prefix_width(59), 40);
-    assert_eq!(super::super::inner::max_prefix_width(40), 40);
-}
-
-#[test]
-fn max_suffix_width_wide() {
-    assert_eq!(super::super::inner::max_suffix_width(80), 50);
-    assert_eq!(super::super::inner::max_suffix_width(60), 50);
-}
-
-#[test]
-fn max_suffix_width_compact() {
-    assert_eq!(super::super::inner::max_suffix_width(59), 50);
-    assert_eq!(super::super::inner::max_suffix_width(40), 50);
+fn max_suffix_width_returns_constant() {
+    assert_eq!(super::super::inner::max_suffix_width(), 50);
 }

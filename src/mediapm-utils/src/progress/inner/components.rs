@@ -215,14 +215,6 @@ pub(crate) fn format_count(n: u64) -> String {
     }
 }
 
-const COMPACT_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>18.18} {msg:<10.30}";
-
-const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{spinner:.green} {prefix:>18.18} {msg:<10.30}";
-
-const COMPACT_DONE_BAR_TEMPLATE: &str = "{spinner:.white/.dim} {prefix:>18.18} {msg:<10.30}";
-
-const COMPACT_FAILED_BAR_TEMPLATE: &str = "{spinner:.red} {prefix:>18.18} {msg:<10.30}";
-
 /// Maximum number of pre-allocated slot bars (safety cap).
 pub(crate) const MAX_SLOTS: usize = 256;
 
@@ -568,15 +560,14 @@ pub(crate) const MAX_SUFFIX_WIDTH: usize = 50;
 ///
 /// The dynamic `prefix_w`/`suffix_w` cells in [`ProgressRenderer`] hold the
 /// actual per-frame width (clamped between the `MIN_*` floor and `MAX_*`
-/// ceiling); this constant is the hard ceiling used when clamping. The
-/// `cols` argument is intentionally unused — alignment is driven by the
-/// measured max across visible bars, not by terminal width.
-pub(crate) const fn max_prefix_width(_cols: u16) -> usize {
+/// ceiling); this constant is the hard ceiling used when clamping. Alignment
+/// is driven by the measured max across visible bars, not by terminal width.
+pub(crate) const fn max_prefix_width() -> usize {
     MAX_PREFIX_WIDTH
 }
 
 /// Maximum visible width for the suffix field. See [`max_prefix_width`].
-pub(crate) const fn max_suffix_width(_cols: u16) -> usize {
+pub(crate) const fn max_suffix_width() -> usize {
     MAX_SUFFIX_WIDTH
 }
 
@@ -759,94 +750,52 @@ pub(crate) fn semantic_truncate_suffix(
     out
 }
 
-fn compact_overall_bar_style() -> ProgressStyle {
-    ProgressStyle::with_template(COMPACT_OVERALL_BAR_TEMPLATE)
-        .expect("invalid compact overall bar template")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-}
-
 pub(crate) fn apply_overall_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
-    if prefix_w == 0 {
-        // Compact path: no wide_bar — prefix/suffix are rendered inline.
-        pb.set_style(compact_overall_bar_style());
-    } else {
-        let tpl = format!(
-            "{{spinner:.green}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.magenta/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
-        );
-        pb.set_style(
-            ProgressStyle::with_template(&tpl)
-                .expect("valid dynamic overall template")
-                .progress_chars("█░")
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-    }
-}
-
-fn compact_bar_style() -> ProgressStyle {
-    ProgressStyle::with_template(COMPACT_BAR_TEMPLATE)
-        .expect("invalid compact bar template")
-        .progress_chars("█░")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    let tpl = format!(
+        "{{spinner:.green}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.magenta/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
+    );
+    pb.set_style(
+        ProgressStyle::with_template(&tpl)
+            .expect("valid dynamic overall template")
+            .progress_chars("█░")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
 }
 
 pub(crate) fn apply_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
-    if prefix_w == 0 {
-        pb.set_style(compact_bar_style());
-    } else {
-        let tpl = format!(
-            "{{spinner:.green}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.yellow/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
-        );
-        pb.set_style(
-            ProgressStyle::with_template(&tpl)
-                .expect("valid dynamic child template")
-                .progress_chars("█░")
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-    }
-}
-
-fn compact_done_bar_style() -> ProgressStyle {
-    ProgressStyle::with_template(COMPACT_DONE_BAR_TEMPLATE)
-        .expect("invalid compact done bar template")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-}
-
-fn compact_failed_bar_style() -> ProgressStyle {
-    ProgressStyle::with_template(COMPACT_FAILED_BAR_TEMPLATE)
-        .expect("invalid compact failed bar template")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    let tpl = format!(
+        "{{spinner:.green}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.yellow/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
+    );
+    pb.set_style(
+        ProgressStyle::with_template(&tpl)
+            .expect("valid dynamic child template")
+            .progress_chars("█░")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
 }
 
 pub(crate) fn apply_done_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
-    if prefix_w == 0 {
-        pb.set_style(compact_done_bar_style());
-    } else {
-        let tpl = format!(
-            "{{spinner:.white/.dim}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.green/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
-        );
-        pb.set_style(
-            ProgressStyle::with_template(&tpl)
-                .expect("valid dynamic done template")
-                .progress_chars("█░")
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-    }
+    let tpl = format!(
+        "{{spinner:.white/.dim}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.green/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
+    );
+    pb.set_style(
+        ProgressStyle::with_template(&tpl)
+            .expect("valid dynamic done template")
+            .progress_chars("█░")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
 }
 
 pub(crate) fn apply_failed_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
-    if prefix_w == 0 {
-        pb.set_style(compact_failed_bar_style());
-    } else {
-        let tpl = format!(
-            "{{spinner:.red}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.red/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
-        );
-        pb.set_style(
-            ProgressStyle::with_template(&tpl)
-                .expect("valid dynamic failed template")
-                .progress_chars("█░")
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-    }
+    let tpl = format!(
+        "{{spinner:.red}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.red/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
+    );
+    pb.set_style(
+        ProgressStyle::with_template(&tpl)
+            .expect("valid dynamic failed template")
+            .progress_chars("█░")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
 }
 
 pub(crate) fn blank_bar_style() -> ProgressStyle {

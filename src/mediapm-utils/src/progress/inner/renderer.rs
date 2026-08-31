@@ -788,13 +788,12 @@ impl ProgressRenderer {
     ///
     /// Measures the rendered prefix/suffix width of each bound slot (via
     /// [`SharedState::snapshot`]), takes the max across all bound slots, and
-    /// clamps it into `[MIN_PREFIX_WIDTH, max_prefix_width(cols)]` (prefix)
-    /// and `[MIN_SUFFIX_WIDTH, max_suffix_width(cols)]` (suffix). The result
+    /// clamps it into `[MIN_PREFIX_WIDTH, max_prefix_width()]` (prefix)
+    /// and `[MIN_SUFFIX_WIDTH, max_suffix_width()]` (suffix). The result
     /// is stored in the `prefix_w`/`suffix_w` cells and every bound slot is
     /// re-synced so all bars share the same alignment width — short labels
     /// no longer waste space and long labels no longer overflow the bar.
     fn recompute_layout(&self) {
-        let cols = self.dim_source.dimensions().1;
         let mut max_prefix = 0usize;
         let mut max_suffix = 0usize;
         for (i, slot) in self.slots.iter().enumerate() {
@@ -881,8 +880,8 @@ impl ProgressRenderer {
                 max_suffix = max_suffix.max(visible_width(rendered.as_str()));
             }
         }
-        let prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, max_prefix_width(cols));
-        let suffix_w = max_suffix.clamp(MIN_SUFFIX_WIDTH, max_suffix_width(cols));
+        let prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, max_prefix_width());
+        let suffix_w = max_suffix.clamp(MIN_SUFFIX_WIDTH, max_suffix_width());
         self.prefix_w.set(prefix_w);
         self.suffix_w.set(suffix_w);
         for (i, slot) in self.slots.iter().enumerate() {

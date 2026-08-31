@@ -531,9 +531,9 @@ fn resize_exact_width_wide_to_narrow() {
     );
 }
 
-/// Narrow terminal (W=40): verify compact template usage (no bar chars).
+/// Narrow terminal (W=40): verify wide template usage (compact mode removed).
 #[test]
-fn resize_exact_narrow_uses_compact_template() {
+fn resize_exact_narrow_uses_wide_template() {
     let dims = Arc::new(TestDimensionSource::new((4, 40)));
     let (mp, term, ts) = mk_with_size_and_ts(4, 40);
     let (group, _overall) =
@@ -545,14 +545,14 @@ fn resize_exact_narrow_uses_compact_template() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    // At W=40 the full template is used (compact mode is reserved for
-    // sub-60-column widths). 2 blank lines + child bar + overall bar fill
-    // H=4. The child bar shows the bar chars, count/total, elapsed, and rate.
+    // At W=40 the wide template is always used (compact mode removed).
+    // 2 blank lines + child bar + overall bar fill H=4. The child bar shows
+    // the bar chars, count/total, elapsed, and rate.
     assert!(lines.len() >= 3, "at least 3 lines at W=40 (got {})", lines.len());
     assert!(lines.iter().any(|l| l.contains("test")), "child visible");
     assert!(lines.iter().any(|l| l.contains("5/10")), "count/total visible");
     assert!(lines.iter().any(|l| l.contains("30/m")), "rate visible");
-    assert!(lines.iter().any(|l| l.contains('█')), "bar chars present in full template");
+    assert!(lines.iter().any(|l| l.contains('█')), "bar chars present in wide template");
 }
 
 /// Exact output: height grow from H=4 to H=6 shows more blank slots.

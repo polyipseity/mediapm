@@ -200,7 +200,7 @@ fn progress_group_no_overall_different_capacities() {
 }
 
 #[test]
-fn progress_group_compact_template_below_60_width() {
+fn progress_group_wide_template_at_80_width() {
     // Terminal W=80 so the full template fits.
     // (InMemoryTerm width doesn't affect production style selection, which
     // reads from console::Term::stderr() — the real terminal.)
