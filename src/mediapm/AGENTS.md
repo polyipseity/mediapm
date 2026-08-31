@@ -209,6 +209,8 @@ See `.agents/instructions/cache-and-http.instructions.md` for the three-tier cac
 
 Direct CAS→output-path writes; no staging commit. Materialized paths marked read-only after sync. Link fallback order configurable in `runtime.materialization_preference_order` (default: hardlink → symlink → reflink → copy). NFD filenames enforced; reserved path chars rejected. ZIP extraction under `<mediapm_dir>/tmp/`.
 
+The rendered materialization progress screen (`[mat]`/`[stg]`/`[vrf]`/`[cmt]` phases) is documented in `.agents/instructions/progress-output.instructions.md` (Screen C).
+
 ## CAS Integrity Verification
 
 Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sample { denominator: 100 }` (default), `Stale { timeout: 604800s }` (default). Gated by `MediaRuntimeStorage.verify_on_read` (typed `Vec<VerifyStrategy>`, snake_case wire names `always`/`modified`/`sample`/`stale`; unknown names rejected at the serde boundary) plus `verify_on_read_sample_denominator` and `verify_on_read_stale_timeout_secs` fields.
