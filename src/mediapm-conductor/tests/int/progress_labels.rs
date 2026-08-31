@@ -78,3 +78,48 @@ fn step_label_truncate_keeps_version_over_tool() {
     assert!(tight.contains("[9.9.9]"), "version dropped before tool: {tight:?}");
     assert!(!tight.contains("a-very-long-tool-name"), "tool name should drop first: {tight:?}");
 }
+
+#[test]
+fn worker_label_very_long_tool_name_hard_truncates() {
+    // When the first (tool) part alone exceeds max_width, it must be
+    // hard-truncated to fit rather than producing an empty prefix.
+    let label = WorkerBarLabel {
+        status_marker: String::new(),
+        workflow_id: String::new(),
+        step_id: String::new(),
+        tool: "a-very-long-tool-name-that-exceeds-the-maximum-width-limit".into(),
+        activity: "active".into(),
+    };
+    let tight = label.truncate_prefix(15);
+    assert!(!tight.is_empty(), "prefix must not be empty: {tight:?}");
+    assert!(tight.len() <= 15, "prefix must fit: {:?} (len={})", tight, tight.len());
+    assert!(
+        tight.starts_with("(a-very-long-t"),
+        "prefix should start with truncated first part: {tight:?}"
+    );
+}
+
+#[test]
+fn step_label_very_long_tool_name_hard_truncates() {
+    // The step prefix order is version → completed/total → phase → marker
+    // → workflow → step → tool.  When tool is the first part AND exceeds
+    // max_width (e.g. when version/completed/phase are all empty), it must
+    // be hard-truncated.
+    let label = StepBarLabel {
+        status_marker: String::new(),
+        workflow_id: String::new(),
+        step_id: String::new(),
+        tool: "extremely-long-tool-name-that-exceeds-the-maximum-width-limit".into(),
+        version: String::new(),
+        phase: String::new(),
+        completed: String::new(),
+        total: String::new(),
+    };
+    let tight = label.truncate_prefix(20);
+    assert!(!tight.is_empty(), "prefix must not be empty: {tight:?}");
+    assert!(tight.len() <= 20, "prefix must fit: {:?} (len={})", tight, tight.len());
+    assert!(
+        tight.starts_with("(extremely-long-tool"),
+        "prefix should start with truncated first part: {tight:?}"
+    );
+}

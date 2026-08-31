@@ -160,7 +160,8 @@ impl BarLabelTruncation for WorkerBarLabel {
 }
 
 /// Join `parts` with a single space, dropping trailing parts until the
-/// joined string fits `max_width` visible columns. Never splits a part.
+/// joined string fits `max_width` visible columns. When the first part
+/// alone exceeds the budget, it is hard-truncated to fit.
 #[cfg(feature = "progress")]
 fn truncate_ordered(parts: &[String], max_width: usize) -> String {
     let mut kept: Vec<&String> = Vec::new();
@@ -170,8 +171,15 @@ fn truncate_ordered(parts: &[String], max_width: usize) -> String {
         if width + add > max_width && !kept.is_empty() {
             break;
         }
+        // Hard-truncate the first part if it alone exceeds the budget.
+        if kept.is_empty() && add > max_width {
+            kept.push(part);
+            break;
+        }
         width += add;
         kept.push(part);
     }
-    kept.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ")
+    let result: String = kept.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+    // Safety-net: chars().take handles non-ASCII edge cases.
+    if result.len() > max_width { result.chars().take(max_width).collect() } else { result }
 }
