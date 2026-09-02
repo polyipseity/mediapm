@@ -92,10 +92,18 @@ Rendered by `render_prefix_components`. The marker (`[F]` or `[W]`) is wrapped i
 
 `sync_snapshot_to_bar` (in `renderer.rs`) is the single push point from `SharedState` → indicatif. It determines whether client-defined truncation (`BarLabelTruncation` via `set_truncation`) or built-in truncation (`PrefixComponents` via `set_prefix_components`) applies:
 
-- **Client-truncated bars**: `ansi_overhead = 4`. Calls `truncation.truncate_prefix(prefix_w - 4)` then prepends `\x1b[0m` to the result.
+- **Client-truncated bars**: `ansi_overhead = 4`. Calls `truncation.truncate_prefix(prefix_w - 4)` then prepends `\x1b[0m` to the result. Suffix path: calls `truncation.truncate_suffix(suffix_w, &fresh_suffix)` where `fresh_suffix` is the merged `SuffixComponents` (auto-derived + user-set fields).
 - **Built-in bars**: `ansi_overhead` is 13 for `Failed`/`Warning`, 4 otherwise. Calls `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` then `render_prefix_components` to wrap the prefix in colored markers.
 
-`recompute_layout` checks for installed client truncation to apply the same overhead rule for width budgeting.
+`recompute_layout` checks for installed client truncation to apply the same overhead rule for width budgeting. It also passes `&full_suffix` (the same merged components) to client truncation for width budgeting.
+
+## Buffer ordering and style dedup
+
+The tick loop and attach operation are designed to minimize visible flicker:
+
+- **Buffer-first tick**: `tick()` enables buffering (`flag.store(true)`) BEFORE calling `recompute_layout()`. This ensures all `set_style` calls from `recompute_layout` → `sync_slot` → `apply_*_bar_style` are suppressed through `BufferedTerm` until the `BufferGuard` drop releases them atomically.
+- **Buffered attach**: `attach()` wraps its entire body in a `BufferGuard` so slot shifts, sync_slot, and recompute_layout during bar attachment are buffered and appear atomically.
+- **Style dedup**: `sync_slot` caches `(prefix_w, suffix_w, is_overall, status_code)` in `SlotCache` and only calls `apply_*_bar_style` when any component of this tuple changes. This eliminates redundant style writes when bar dimensions and status are stable across ticks.
 
 ## Three bar-label structs
 
