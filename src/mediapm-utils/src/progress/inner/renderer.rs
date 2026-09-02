@@ -890,8 +890,27 @@ impl ProgressRenderer {
                     custom: snap.suffix.clone(),
                 };
                 let full_suffix = SuffixComponents::merge(&auto_suffix, &snap.suffix_components);
-                let rendered = render_suffix_components(&full_suffix, "");
-                max_suffix = max_suffix.max(visible_width(rendered.as_str()));
+                let suffix_width = if has_client_truncation {
+                    // Client-truncated bars: call the client's suffix
+                    // truncation with a generous budget to measure the
+                    // actual width of the final output string.
+                    if let Some(ref source) = *slot.source.borrow() {
+                        if let Some(ref t) =
+                            *source.truncation.read().expect("shared_state truncation lock")
+                        {
+                            let rendered = t.truncate_suffix(max_suffix_width(), &full_suffix);
+                            visible_width(rendered.as_str())
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    }
+                } else {
+                    let rendered = render_suffix_components(&full_suffix, "");
+                    visible_width(rendered.as_str())
+                };
+                max_suffix = max_suffix.max(suffix_width);
             }
         }
         let prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, max_prefix_width());
@@ -1175,7 +1194,11 @@ impl ProgressRenderer {
         // Build display suffix: client truncation when installed, else
         // truncate the fresh component set then render.
         let display_suffix = if let Some(t) = truncation.as_ref() {
-            t.truncate_suffix(self.suffix_w.get())
+            // Client-truncated bars: pass the full merged suffix component
+            // set so the client can render auto-derived fields alongside its
+            // own fields.  The client also computes suffix width using these
+            // same components.
+            t.truncate_suffix(self.suffix_w.get(), &fresh_suffix)
         } else {
             let truncated_suffix = semantic_truncate_suffix(&fresh_suffix, self.suffix_w.get());
             render_suffix_components(&truncated_suffix, color_code)

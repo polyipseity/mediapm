@@ -10,20 +10,32 @@
 //! falls back to its built-in component rendering so existing callers keep
 //! working unchanged.
 
+use crate::progress::SuffixComponents;
+
 /// Client-supplied truncation for a tracked bar's prefix and suffix.
 ///
 /// Implementors receive the maximum visible width budget and return the
 /// final display string (already colored/escaped as the client sees fit).
 /// mediapm-utils never inspects the field layout — it only invokes these
 /// two methods at the single render push point.
+///
+/// `truncate_suffix`(Self::truncate_suffix) receives the merged
+/// [`SuffixComponents`] so the client can render auto-derived fields
+/// (count/total, elapsed, rate, eta) alongside its own fields.  The
+/// width budget is the visible-char budget after subtracting ANSI
+/// overhead (4 bytes for the leading `\x1b[0m` reset the renderer
+/// prepends).
 #[cfg(feature = "progress")]
 pub trait BarLabelTruncation: Send + Sync {
     /// Return the rendered prefix string fitting within `max_width` visible
     /// columns.
     fn truncate_prefix(&self, max_width: usize) -> String;
     /// Return the rendered suffix string fitting within `max_width` visible
-    /// columns.
-    fn truncate_suffix(&self, max_width: usize) -> String;
+    /// columns.  The `suffix` parameter carries the full merged suffix
+    /// component set (auto-derived count/total/elapsed/rate/eta plus the
+    /// user-set custom text) so the client can render auto-fields
+    /// alongside its own fields.
+    fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String;
 }
 
 /// Join `parts` with a single space, dropping trailing parts until the

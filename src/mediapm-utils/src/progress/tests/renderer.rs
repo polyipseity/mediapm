@@ -716,7 +716,11 @@ impl crate::progress::BarLabelTruncation for FixedTruncation {
     fn truncate_prefix(&self, _max_width: usize) -> String {
         self.prefix.to_string()
     }
-    fn truncate_suffix(&self, _max_width: usize) -> String {
+    fn truncate_suffix(
+        &self,
+        _max_width: usize,
+        _suffix: &crate::progress::SuffixComponents,
+    ) -> String {
         self.suffix.to_string()
     }
 }

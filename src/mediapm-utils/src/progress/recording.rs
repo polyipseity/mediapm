@@ -233,7 +233,8 @@ impl RecordingTrackedHandle {
     /// tests can assert the exact label content the coordinator produced.
     pub fn set_truncation(&self, truncation: &Arc<dyn crate::progress::BarLabelTruncation>) {
         let prefix = truncation.truncate_prefix(usize::MAX);
-        let suffix = truncation.truncate_suffix(usize::MAX);
+        let suffix =
+            truncation.truncate_suffix(usize::MAX, &crate::progress::SuffixComponents::default());
         self.ops.lock().expect("recording lock").push(ProgressOp::SetTruncation { prefix, suffix });
     }
 

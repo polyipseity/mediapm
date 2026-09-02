@@ -8,7 +8,7 @@
 //! `activity` flag (`` `active` ``/`` `idle` ``) and never a workflow phase or progress
 //! tally.
 
-use mediapm_utils::progress::{BarLabelTruncation, truncate_ordered};
+use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents, truncate_ordered};
 
 /// Truncation order for a per-step (real-progress) bar.
 ///
@@ -56,22 +56,22 @@ impl StepBarLabel {
         parts
     }
 
-    fn suffix_parts(&self, eta: &str, rate: &str, elapsed: &str, custom: &str) -> Vec<String> {
+    fn suffix_parts(&self, suffix: &SuffixComponents) -> Vec<String> {
         let mut parts = Vec::new();
-        if !custom.is_empty() {
-            parts.push(custom.to_string());
-        }
-        if !eta.is_empty() {
-            parts.push(format!("eta {eta}"));
-        }
-        if !rate.is_empty() {
-            parts.push(format!("rate {rate}"));
-        }
-        if !elapsed.is_empty() {
-            parts.push(elapsed.to_string());
-        }
         if !self.completed.is_empty() && !self.total.is_empty() {
             parts.push(format!("{}/{}", self.completed, self.total));
+        }
+        if !suffix.elapsed.is_empty() {
+            parts.push(suffix.elapsed.clone());
+        }
+        if let Some(ref rate) = suffix.rate {
+            parts.push(rate.clone());
+        }
+        if let Some(ref eta) = suffix.eta {
+            parts.push(eta.clone());
+        }
+        if !suffix.custom.is_empty() {
+            parts.push(suffix.custom.clone());
         }
         parts
     }
@@ -84,8 +84,8 @@ impl BarLabelTruncation for StepBarLabel {
         truncate_ordered(&parts, max_width)
     }
 
-    fn truncate_suffix(&self, max_width: usize) -> String {
-        let parts = self.suffix_parts("", "", "", "");
+    fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
+        let parts = self.suffix_parts(suffix);
         truncate_ordered(&parts, max_width)
     }
 }
@@ -128,19 +128,19 @@ impl WorkerBarLabel {
         parts
     }
 
-    fn suffix_parts(eta: &str, rate: &str, elapsed: &str, custom: &str) -> Vec<String> {
+    fn suffix_parts(suffix: &SuffixComponents) -> Vec<String> {
         let mut parts = Vec::new();
-        if !custom.is_empty() {
-            parts.push(custom.to_string());
+        if !suffix.elapsed.is_empty() {
+            parts.push(suffix.elapsed.clone());
         }
-        if !eta.is_empty() {
-            parts.push(format!("eta {eta}"));
+        if let Some(ref rate) = suffix.rate {
+            parts.push(rate.clone());
         }
-        if !rate.is_empty() {
-            parts.push(format!("rate {rate}"));
+        if let Some(ref eta) = suffix.eta {
+            parts.push(eta.clone());
         }
-        if !elapsed.is_empty() {
-            parts.push(elapsed.to_string());
+        if !suffix.custom.is_empty() {
+            parts.push(suffix.custom.clone());
         }
         parts
     }
@@ -153,8 +153,8 @@ impl BarLabelTruncation for WorkerBarLabel {
         truncate_ordered(&parts, max_width)
     }
 
-    fn truncate_suffix(&self, max_width: usize) -> String {
-        let parts = Self::suffix_parts("", "", "", "");
+    fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
+        let parts = Self::suffix_parts(suffix);
         truncate_ordered(&parts, max_width)
     }
 }

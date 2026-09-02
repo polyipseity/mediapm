@@ -5,7 +5,7 @@
 //! order independently of the conductor's [`StepBarLabel`] and
 //! [`WorkerBarLabel`].
 
-use mediapm_utils::progress::{BarLabelTruncation, truncate_ordered};
+use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents, truncate_ordered};
 
 /// Truncation order for a materialization bar.
 ///
@@ -62,7 +62,7 @@ impl BarLabelTruncation for MaterializationBarLabel {
         truncate_ordered(&parts, max_width)
     }
 
-    fn truncate_suffix(&self, _max_width: usize) -> String {
+    fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
         // Materialization bars have no suffix components.
         String::new()
     }
