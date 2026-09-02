@@ -34,6 +34,19 @@ pub enum TrackStatus {
     Warning,
 }
 
+impl TrackStatus {
+    /// Compact numeric encoding for dedup comparison (Active=0, Success=1,
+    /// Failed=2, Warning=3).
+    fn code(self) -> u8 {
+        match self {
+            Self::Active => 0,
+            Self::Success => 1,
+            Self::Failed => 2,
+            Self::Warning => 3,
+        }
+    }
+}
+
 /// Shared mutable state for a tracked progress handle.
 ///
 /// Interior mutability via atomics for numeric fields and [`RwLock`] for
@@ -529,6 +542,14 @@ struct SlotCache {
     suffix: RefCell<String>,
     /// Last prefix sent to `set_prefix`.
     prefix: RefCell<String>,
+    /// Cached prefix_w at last set_style call (style dedup).
+    style_prefix_w: Cell<usize>,
+    /// Cached suffix_w at last set_style call (style dedup).
+    style_suffix_w: Cell<usize>,
+    /// Cached is_overall flag at last set_style call (style dedup).
+    style_is_overall: Cell<bool>,
+    /// Last status code at last set_style call (style dedup).
+    style_status_code: Cell<u8>,
 }
 
 impl SlotCache {
@@ -538,6 +559,10 @@ impl SlotCache {
             total: Cell::new(u64::MAX),
             suffix: RefCell::new(String::new()),
             prefix: RefCell::new(String::new()),
+            style_prefix_w: Cell::new(usize::MAX),
+            style_suffix_w: Cell::new(usize::MAX),
+            style_is_overall: Cell::new(false),
+            style_status_code: Cell::new(u8::MAX),
         }
     }
 }
@@ -661,20 +686,33 @@ impl ProgressRenderer {
             let is_overall = self.has_overall && i == self.slots.len() - 1;
             let prefix_w = self.prefix_w.get();
             let suffix_w = self.suffix_w.get();
-            if is_overall {
-                apply_overall_bar_style(&slot.bar, prefix_w, suffix_w);
-            } else if snap.status == TrackStatus::Failed {
-                apply_failed_bar_style(&slot.bar, prefix_w, suffix_w);
-            } else if snap.status != TrackStatus::Active {
-                apply_done_bar_style(&slot.bar, prefix_w, suffix_w);
-            } else {
-                // Slot recycling may leave the indicatif bar with
-                // Status::DoneVisible from the previous phase.  Reset
-                // it to InProgress so the spinner cycles again.
-                if slot.bar.is_finished() {
-                    slot.bar.reset();
+            let status_code = snap.status.code();
+
+            // Style dedup: only call set_style when dimensions or status changed.
+            let style_changed = prefix_w != slot.cache.style_prefix_w.get()
+                || suffix_w != slot.cache.style_suffix_w.get()
+                || is_overall != slot.cache.style_is_overall.get()
+                || status_code != slot.cache.style_status_code.get();
+            if style_changed {
+                if is_overall {
+                    apply_overall_bar_style(&slot.bar, prefix_w, suffix_w);
+                } else if snap.status == TrackStatus::Failed {
+                    apply_failed_bar_style(&slot.bar, prefix_w, suffix_w);
+                } else if snap.status != TrackStatus::Active {
+                    apply_done_bar_style(&slot.bar, prefix_w, suffix_w);
+                } else {
+                    // Slot recycling may leave the indicatif bar with
+                    // Status::DoneVisible from the previous phase.  Reset
+                    // it to InProgress so the spinner cycles again.
+                    if slot.bar.is_finished() {
+                        slot.bar.reset();
+                    }
+                    apply_bar_style(&slot.bar, prefix_w, suffix_w);
                 }
-                apply_bar_style(&slot.bar, prefix_w, suffix_w);
+                slot.cache.style_prefix_w.set(prefix_w);
+                slot.cache.style_suffix_w.set(suffix_w);
+                slot.cache.style_is_overall.set(is_overall);
+                slot.cache.style_status_code.set(status_code);
             }
             let rate_str: Option<String> = if snap.status == TrackStatus::Active {
                 if self.slots_timing[i].rate > 0.0 {
@@ -708,6 +746,9 @@ impl ProgressRenderer {
     /// pushed to [`orphaned_states`] — it remains tracked but has no
     /// render slot until the terminal grows back.
     pub(crate) fn attach(&mut self, state: &Arc<SharedState>) {
+        // Buffer all draws during attach — slot shifts + sync_slot + recompute_layout
+        // produce many intermediate state changes that should appear atomically.
+        let _attach_guard = BufferGuard::new(self.buffer_enabled.as_ref());
         let child_cap = self.slots.len() - usize::from(self.has_overall);
         let bottom = child_cap.saturating_sub(1);
 
@@ -933,15 +974,15 @@ impl ProgressRenderer {
     /// Recomputes the uniform alignment width, then redraws every visible
     /// bar from its tracked source state.
     pub fn tick(&mut self) {
-        // Step 0: Recompute the uniform alignment width from the current
-        // set of visible bars before drawing.
-        self.recompute_layout();
-
-        // Step 1: Enable buffering — all property-setter draws become
-        // no-ops through BufferedTerm.
+        // Step 0: Enable buffering BEFORE recomputing layout so all
+        // style changes from recompute_layout → sync_slot → apply_*_bar_style
+        // are suppressed until the BufferGuard draw release.
         if let Some(ref flag) = self.buffer_enabled {
             flag.store(true, Ordering::Release);
         }
+
+        // Step 1: Recompute uniform alignment width (styles now buffered).
+        self.recompute_layout();
 
         // Step 2: Existing update logic with dirty tracking.
         let resized = self.maybe_adjust_for_resize();
