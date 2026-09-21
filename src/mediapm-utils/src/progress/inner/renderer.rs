@@ -1144,6 +1144,100 @@ impl ProgressRenderer {
         }
     }
 
+    /// Execute a frame: suppress writes, run `mutate`, advance spinners,
+    /// draw once, then unsuppress. Guarantees exactly one terminal write.
+    ///
+    /// `mutate` is called while the write gate is suppressed, so any
+    /// state changes it makes are accumulated without intermediate draws.
+    /// After `mutate` returns, spinners are advanced and a single draw
+    /// is triggered by opening the gate (indicatif draws on the next bar
+    /// operation while the gate is open).
+    #[expect(dead_code, reason = "C5 will wire run_frame into tick() and ProgressGroup::tick()")]
+    pub(crate) fn run_frame(&mut self, mutate: impl FnOnce(&mut Self)) {
+        // Step 1: Suppress writes.
+        self.gate.suppress();
+
+        // Step 2: Recompute layout (styles buffered).
+        self.recompute_layout();
+
+        // Step 3: Resize handling.
+        let resized = self.maybe_adjust_for_resize();
+        if resized {
+            for slot in &self.slots {
+                if let Some(ref source) = *slot.source.borrow() {
+                    source.dirty.store(true, Ordering::Release);
+                }
+            }
+        }
+
+        // Step 4: Run caller's mutation (state changes, still suppressed).
+        mutate(self);
+
+        // Step 5: Sync all dirty slots to bars (still suppressed).
+        for (i, slot) in self.slots.iter().enumerate() {
+            if let Some(ref source) = *slot.source.borrow() {
+                let dirty = resized || source.dirty.swap(false, Ordering::AcqRel);
+                if !dirty {
+                    continue;
+                }
+                let snap = source.snapshot();
+
+                let rate_str: Option<String> = if snap.status == TrackStatus::Active {
+                    if snap.position != self.slots_timing[i].prev_position {
+                        let now = self.time_source.now();
+                        let dt =
+                            now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
+                        if dt > 0.001 {
+                            #[allow(clippy::cast_precision_loss)]
+                            let current =
+                                (snap.position.saturating_sub(self.slots_timing[i].prev_position))
+                                    as f64
+                                    / dt;
+                            self.slots_timing[i].rate =
+                                self.slots_timing[i].rate * 0.9 + current * 0.1;
+                            self.slots_timing[i].prev_position = snap.position;
+                            self.slots_timing[i].prev_instant = now;
+                        }
+                    }
+                    Some(format_rate(self.slots_timing[i].rate))
+                } else {
+                    None
+                };
+
+                let eta_str = if snap.status == TrackStatus::Active
+                    && snap.total > snap.position
+                    && self.slots_timing[i].rate > 0.0
+                {
+                    #[allow(clippy::cast_precision_loss)]
+                    let remaining = (snap.total - snap.position) as f64 / self.slots_timing[i].rate;
+                    Some(format_eta(remaining))
+                } else {
+                    None
+                };
+
+                self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), eta_str.as_deref());
+                if snap.status != TrackStatus::Active && !source.is_finished() {
+                    self.finish_slot(i, snap.status);
+                }
+            }
+        }
+
+        // Step 6: Pre-roll (bypasses buffer).
+        self.pre_roll_if_needed();
+
+        // Step 7: Advance spinners and draw once.
+        // Open the gate — indicatif draws on the next bar operation.
+        let _guard = self.gate.open();
+        for slot in &self.slots {
+            if let Some(ref source) = *slot.source.borrow()
+                && !source.is_finished()
+            {
+                slot.bar.tick();
+            }
+        }
+        // _guard drops → gate re-suppressed.
+    }
+
     /// Apply a snapshot's position/length/suffix/prefix to the indicatif bar
     /// at slot `i`. **This is the single authoritative push point for
     /// `SharedState` → indicatif.** All code paths that reflect `SharedState`
