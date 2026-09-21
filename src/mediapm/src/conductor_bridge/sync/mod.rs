@@ -331,15 +331,40 @@ fn build_provisioning_entries(
         }
     }
 
-    // Dep entries first (provision deps before dependents), then explicit
-    // Dedup consecutive entries with same (tool_id, version_spec)
+    // Dep entries first (provision deps before dependents), then explicit.
+    // Keyed dedup: dep entries have precedence over explicit entries
+    // (dep version specs are resolved via resolve_dep_version_spec).
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     let mut all_entries: Vec<ProvisionEntry> = dep_entries;
     all_entries.extend(explicit_entries.into_values());
-    all_entries.dedup_by(|a, b| {
-        a.tool_id == b.tool_id && a.tool_requirement.version_spec == b.tool_requirement.version_spec
-    });
+    let mut deduped: Vec<ProvisionEntry> = Vec::with_capacity(all_entries.len());
+    for entry in all_entries {
+        // Key by (tool_id, serialized version_spec) for deterministic dedup.
+        let key = format!(
+            "{}:{}",
+            entry.tool_id,
+            serde_json::to_string(&entry.tool_requirement.version_spec).unwrap_or_default()
+        );
+        match seen.get(&key) {
+            Some(&idx) => {
+                // Dep entries come first in the vec; if the existing entry is
+                // a dep and this is explicit, skip the explicit one.
+                if matches!(entry.kind, EntryKind::Explicit)
+                    && matches!(deduped[idx].kind, EntryKind::Dep { .. })
+                {
+                    continue;
+                }
+                // Otherwise replace (dep replaces dep, explicit replaces explicit)
+                deduped[idx] = entry;
+            }
+            None => {
+                seen.insert(key, deduped.len());
+                deduped.push(entry);
+            }
+        }
+    }
 
-    Ok(all_entries)
+    Ok(deduped)
 }
 
 /// Build composite `canonical_version` from bare version and same-step dep
