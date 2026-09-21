@@ -500,6 +500,9 @@ pub struct ProgressRenderer {
     /// performed?  Used to push intervening stderr content into scrollback
     /// before indicatif's first draw.
     pre_rolled: AtomicBool,
+    /// Nesting guard: `true` while inside [`run_frame`].  Panics in debug
+    /// builds if `run_frame` or `tick` is called re-entrantly.
+    in_frame: Cell<bool>,
 
     /// Terminal to write pre-roll newlines to.  `None` in test mode
     /// (user-provided `MultiProgress` via `with_multi_progress`).
@@ -611,6 +614,7 @@ impl ProgressRenderer {
             slots_timing,
             gate,
             pre_rolled: AtomicBool::new(false),
+            in_frame: Cell::new(false),
             pre_roll_term,
             debug_sink,
             prefix_w: Cell::new(MIN_PREFIX_WIDTH),
@@ -668,6 +672,7 @@ impl ProgressRenderer {
                 slots_timing,
                 gate,
                 pre_rolled: AtomicBool::new(false),
+                in_frame: Cell::new(false),
                 pre_roll_term,
                 debug_sink,
                 prefix_w: Cell::new(MIN_PREFIX_WIDTH),
@@ -1066,6 +1071,10 @@ impl ProgressRenderer {
     /// is triggered by opening the gate (indicatif draws on the next bar
     /// operation while the gate is open).
     pub(crate) fn run_frame(&mut self, mutate: impl FnOnce(&mut Self)) {
+        // Nesting guard: panic in debug builds if called re-entrantly.
+        debug_assert!(!self.in_frame.get(), "run_frame called while already in a frame");
+        self.in_frame.set(true);
+
         // Step 1: Suppress writes.
         self.gate.suppress();
 
@@ -1154,6 +1163,7 @@ impl ProgressRenderer {
             }
         }
         // _guard drops → gate re-suppressed.
+        self.in_frame.set(false);
     }
 
     /// Apply a snapshot's position/length/suffix/prefix to the indicatif bar

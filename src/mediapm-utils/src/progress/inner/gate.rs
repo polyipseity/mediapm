@@ -145,6 +145,9 @@ impl WriteGate {
 
     /// Suppress all terminal writes (re-enable buffering).
     ///
+    /// Idempotent — safe to call when already suppressed (e.g. on
+    /// re-entry after a previous `open`).  The nesting guard lives in
+    /// [`ProgressRenderer::run_frame`] via the `in_frame` cell.
     pub(crate) fn suppress(&self) {
         self.flag.store(true, Ordering::Release);
     }
@@ -153,7 +156,7 @@ impl WriteGate {
     ///
     /// Used by `debug_assert!` in `paint()` to verify the caller is
     /// inside a frame window.
-    #[expect(dead_code, reason = "used by debug_assert in paint() after C4")]
+    #[allow(dead_code, reason = "used by debug_assert in suppress() and paint assertions")]
     pub(crate) fn is_suppressed(&self) -> bool {
         self.flag.load(Ordering::Acquire)
     }
