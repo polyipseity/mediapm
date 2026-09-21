@@ -338,15 +338,15 @@ fn spinner_advances_without_dirty() {
 
     // All must show 0/10 (no progress made).
     assert_eq!(
-        t1, "\n\n\n⠸         test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+        t1, "\n\n\n⠸     test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         "tick 1 shows 0/10",
     );
     assert_eq!(
-        t2, "\n\n\n⠼         test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+        t2, "\n\n\n⠼     test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         "tick 2 shows 0/10",
     );
     assert_eq!(
-        t3, "\n\n\n⠴         test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+        t3, "\n\n\n⠴     test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
         "tick 3 shows 0/10",
     );
 
@@ -402,11 +402,11 @@ fn spinner_active_among_finished() {
     let lines: Vec<&str> = contents.lines().collect();
 
     // Finished bar must stay frozen (captured after layout stabilized).
-    let finished_line = "⠏         done █████████████████████████████████████████████████  0/3 0s";
+    let finished_line = "⠏        done ██████████████████████████████████████████████████  0/3 0s";
     assert_eq!(lines[2], finished_line, "finished bar must stay frozen");
     // Active bar shows progress.
     assert_eq!(
-        lines[3], "⠦      working █████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/10 0s 0/d",
+        lines[3], "⠦     working ██████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/10 0s 0/d",
         "active bar shows 2/10: {}",
         lines[3],
     );
@@ -431,19 +431,19 @@ fn regression_spinner_dirty_independence() {
 
     // All ticks show 5/10 (stable position).
     assert_eq!(
-        t1, "\n\n\n⠼         test ████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
+        t1, "\n\n\n⠼     test ██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
         "tick 1: 5/10",
     );
     assert_eq!(
-        t2, "\n\n\n⠴         test ████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
+        t2, "\n\n\n⠴     test ██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
         "tick 2: 5/10",
     );
     assert_eq!(
-        t3, "\n\n\n⠦         test ████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
+        t3, "\n\n\n⠦     test ██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
         "tick 3: 5/10",
     );
     assert_eq!(
-        t4, "\n\n\n⠧         test ████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
+        t4, "\n\n\n⠧     test ██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
         "tick 4: 5/10",
     );
 

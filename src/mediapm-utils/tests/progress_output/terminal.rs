@@ -324,7 +324,7 @@ fn terminal_exact_h2_no_overall_two_children() {
     group.tick();
     assert_eq!(
         term.contents(),
-        "⠹        alpha ░░░░░░░░░░  0/3 0s 0/d\n⠹      overall ░░░░░░░░░░  0/1 0s 0/d",
+        "⠹       alpha ░░░░░░░░░░░  0/3 0s 0/d\n⠹     overall ░░░░░░░░░░░  0/1 0s 0/d",
     );
 }
 
@@ -339,6 +339,6 @@ fn terminal_exact_h2_no_overall_overflow() {
     group.tick();
     assert_eq!(
         term.contents(),
-        "⠹        alpha ░░░░░░░░░░  0/3 0s 0/d\n⠹      overall ░░░░░░░░░░  0/1 0s 0/d",
+        "⠹       alpha ░░░░░░░░░░░  0/3 0s 0/d\n⠹     overall ░░░░░░░░░░░  0/1 0s 0/d",
     );
 }

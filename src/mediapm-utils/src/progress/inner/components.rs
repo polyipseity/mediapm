@@ -545,14 +545,17 @@ pub(crate) fn visible_width(s: &str) -> usize {
     strip_ansi(s).chars().count()
 }
 
-/// Minimum reserved prefix width (decreasable floor). Bars never shrink
-/// below this, so short prefixes still leave room for the bar to start.
-pub(crate) const MIN_PREFIX_WIDTH: usize = 12;
+/// Minimum reserved prefix width (decreasable floor). The floor is 0 — under
+/// terminal pressure the prefix shrinks before the bar fill is dropped. The
+/// *effective* prefix floor is ~4 because the leading `\x1b[0m` reset is
+/// counted as visible width by `indicatif`.
+pub(crate) const MIN_PREFIX_WIDTH: usize = 0;
 /// Maximum reserved prefix width (hard ceiling). Beyond this, prefixes are
 /// truncated by `semantic_truncate_prefix`.
 pub(crate) const MAX_PREFIX_WIDTH: usize = 40;
-/// Minimum reserved suffix width (decreasable floor).
-pub(crate) const MIN_SUFFIX_WIDTH: usize = 12;
+/// Minimum reserved suffix width (decreasable floor). The floor is 0 — the
+/// suffix shrinks before the bar fill is dropped.
+pub(crate) const MIN_SUFFIX_WIDTH: usize = 0;
 /// Maximum reserved suffix width (hard ceiling).
 pub(crate) const MAX_SUFFIX_WIDTH: usize = 50;
 
