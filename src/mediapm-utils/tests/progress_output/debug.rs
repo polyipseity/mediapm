@@ -124,10 +124,14 @@ fn progress_debug_env_auto_creates_file() {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
     );
     let debug_path = format!("progress-debug-test-{unique_suffix}.jsonl");
-    // SAFETY: single-threaded test — no concurrent env access.
-    unsafe {
-        std::env::set_var("MEDIAPM_PROGRESS_DEBUG", &debug_path);
-    }
+
+    // Serialize on ENV_LOCK: parallel tests in the same process share the
+    // process-global env var. Without this, a sibling test's set_var/remove_var
+    // between our build() and tick() causes the sink to point at the wrong file
+    // or to be absent entirely.
+    let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+    // SAFETY: held under ENV_LOCK — single-threaded access.
+    let _guard = unsafe { EnvVarGuard::set("MEDIAPM_PROGRESS_DEBUG", &debug_path) };
 
     let expected_path = std::path::PathBuf::from(&debug_path);
 
@@ -136,15 +140,6 @@ fn progress_debug_env_auto_creates_file() {
 
     let (mp, _term) = mk();
     let group = ProgressGroup::builder().with_multi_progress(mp).build();
-
-    // Remove the env var *immediately* after build() so that other tests
-    // running in parallel (cargo test runs integration tests in the same
-    // binary concurrently) do NOT also trigger detect_progress_debug_env()
-    // and overwrite this test's file.
-    // SAFETY: single-threaded test — no concurrent env access.
-    unsafe {
-        std::env::remove_var("MEDIAPM_PROGRESS_DEBUG");
-    }
 
     group.tick();
     std::thread::sleep(Duration::from_millis(10));
@@ -156,7 +151,9 @@ fn progress_debug_env_auto_creates_file() {
     let contents = std::fs::read_to_string(&expected_path).unwrap();
     assert!(!contents.is_empty(), "debug file should contain at least one tick line");
 
-    // Clean up.
+    // Clean up — _guard drop restores the env var first.
+    drop(_guard);
+    drop(_lock);
     let _ = std::fs::remove_file(&expected_path);
 }
 
@@ -170,10 +167,13 @@ fn progress_debug_append_across_groups() {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
     );
     let debug_path = format!("progress-debug-append-{unique_suffix}.jsonl");
-    // SAFETY: single-threaded test — no concurrent env access.
-    unsafe {
-        std::env::set_var("MEDIAPM_PROGRESS_DEBUG", &debug_path);
-    }
+
+    // Serialize on ENV_LOCK: without this, a sibling test's set_var/remove_var
+    // between our two build() calls makes group 2 write to a different file or
+    // nowhere, leaving only group 1's lines (5 < 6 → false failure).
+    let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+    // SAFETY: held under ENV_LOCK — single-threaded access.
+    let _guard = unsafe { EnvVarGuard::set("MEDIAPM_PROGRESS_DEBUG", &debug_path) };
 
     let expected_path = std::path::PathBuf::from(&debug_path);
     let _ = std::fs::remove_file(&expected_path);
@@ -201,10 +201,9 @@ fn progress_debug_append_across_groups() {
         drop(group);
     }
 
-    // SAFETY: single-threaded test — no concurrent env access.
-    unsafe {
-        std::env::remove_var("MEDIAPM_PROGRESS_DEBUG");
-    }
+    // Release env lock and guard — restore env before file read.
+    drop(_guard);
+    drop(_lock);
 
     let contents = std::fs::read_to_string(&expected_path).unwrap();
     let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();

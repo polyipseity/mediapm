@@ -1,6 +1,6 @@
 //! Shared constants, helper functions, and re-exports for progress output tests.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // Re-export the symbols used across progress-output modules so each module can
 // rely on `use super::common::*;` alone instead of repeating the import block.
@@ -60,6 +60,67 @@ pub fn mk_with_size_and_ts(h: u16, w: u16) -> (MultiProgress, InMemoryTerm, Arc<
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let ts = Arc::new(TestTimeSource::new());
     (MultiProgress::with_draw_target(target), term, ts)
+}
+
+// ---- Process-env lock for tests that mutate MEDIAPM_PROGRESS_DEBUG -------
+
+/// Process-wide lock for tests that mutate `MEDIAPM_PROGRESS_DEBUG`.
+///
+/// `progress_debug_env_auto_creates_file` and
+/// `progress_debug_append_across_groups` both set/remove this env var.
+/// libtest runs tests in parallel threads in one process, so the env var is
+/// a shared mutable resource. Serializing on this mutex prevents races.
+pub static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// RAII guard that saves and restores a process env var.
+///
+/// On creation reads the current value (`Option<String>`). On drop restores
+/// it — or removes it if it was absent. Never leaves the var in a
+/// transient state. Aligned with the repo-wide no-fallbacks principle:
+/// the caller holds the `ENV_LOCK` for the whole mutation scope.
+pub struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    /// Set `key` to `value` for the guard's lifetime; restore on drop.
+    ///
+    /// # Safety
+    ///
+    /// Caller MUST hold [`ENV_LOCK`] for the guard's entire lifetime.
+    pub unsafe fn set(key: &'static str, value: &str) -> Self {
+        // SAFETY: caller holds ENV_LOCK — single-threaded access.
+        let previous = std::env::var(key).ok();
+        // SAFETY: caller holds ENV_LOCK — single-threaded access.
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
+
+    /// Remove `key` for the guard's lifetime; restore on drop.
+    ///
+    /// # Safety
+    ///
+    /// Caller MUST hold [`ENV_LOCK`] for the guard's entire lifetime.
+    #[allow(dead_code)]
+    pub unsafe fn remove(key: &'static str) -> Self {
+        // SAFETY: caller holds ENV_LOCK — single-threaded access.
+        let previous = std::env::var(key).ok();
+        // SAFETY: caller holds ENV_LOCK — single-threaded access.
+        unsafe { std::env::remove_var(key) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            // SAFETY: caller holds ENV_LOCK — single-threaded access.
+            Some(val) => unsafe { std::env::set_var(self.key, val) },
+            // SAFETY: caller holds ENV_LOCK — single-threaded access.
+            None => unsafe { std::env::remove_var(self.key) },
+        }
+    }
 }
 
 /// Shorthand: create a bar, set style+prefix, add to mp, return it.
