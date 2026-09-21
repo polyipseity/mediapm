@@ -223,6 +223,19 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | FileSystemCas cross-process contention (flock barrier detection)      | `file_system_cas_contention_with_flock_barrier`                                                                            | [covered] |
 | FileSystemCas concurrent clones share lock (no contention)            | `file_system_cas_concurrent_clones_no_contention`                                                                          | [covered] |
 | FileSystemCas symlink canonicalization (symlink → same dir detected)  | `file_system_cas_contention_with_canonical_symlink`                                                                        | [covered] |
+| FileSystemCas concurrent puts (distinct + identical payloads, WAL durability) | `file_system_cas_concurrent_puts_are_safe`                                                                    | [covered] |
+
+### Parallel tool provisioning
+
+| Spec item                                                                                     | Test(s)                                                                          | Status    |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------- |
+| Level-0 (dep) entries precede level-1 (explicit) entries                                      | `build_provisioning_entries_level_split_ordering` (unit)                         | [covered] |
+| Shared dep deduplication (two requesters, one dep)                                            | `build_provisioning_entries_level_split_ordering` (unit)                         | [covered] |
+| Dep entries have empty dependencies (non-transitive)                                          | `build_provisioning_entries_level_split_ordering` (unit)                         | [covered] |
+| Level ordering: dep applied before requester (deps/ keys present)                             | `sync_level_ordering_applies_deps_before_requesters` (integration)               | [covered] |
+| Dep content map has no deps/ keys (non-transitive)                                            | `sync_level_ordering_applies_deps_before_requesters` (integration)               | [covered] |
+| Exactly one state entry per distinct tool id                                                  | `sync_level_ordering_applies_deps_before_requesters` (integration)               | [covered] |
+| Parallel driver determinism (two syncs → identical bytes)                                     | `sync_parallel_driver_is_deterministic` (integration)                            | [covered] |
 
 ### Counting mechanism
 
