@@ -600,3 +600,42 @@ async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), medi
 
     Ok(())
 }
+
+/// Determinism test for the parallel provisioning driver: two fresh syncs
+/// of the same hermetic workspace produce byte-identical generated docs
+/// and identical summary fields.
+#[tokio::test]
+async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmError> {
+    let deno_tag = "1.46.0";
+    let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
+
+    // Run 1
+    let root1 = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache1 = mediapm_utils::temp::cache_dir().expect("cache tempdir");
+    let mut svc1 =
+        provisioned_yt_dlp_with_deno(root1.path(), cache1.path(), deno_tag, deno_hash).await?;
+    let summary1 = svc1.sync_tools().await?;
+    let doc1_bytes = std::fs::read(svc1.paths().conductor_generated_ncl.clone())
+        .expect("generated doc readable");
+
+    // Run 2 (separate workspace, separate cache)
+    let root2 = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache2 = mediapm_utils::temp::cache_dir().expect("cache tempdir");
+    let mut svc2 =
+        provisioned_yt_dlp_with_deno(root2.path(), cache2.path(), deno_tag, deno_hash).await?;
+    let summary2 = svc2.sync_tools().await?;
+    let doc2_bytes = std::fs::read(svc2.paths().conductor_generated_ncl.clone())
+        .expect("generated doc readable");
+
+    // Summary fields must match.
+    assert_eq!(summary1.added_tools, summary2.added_tools, "added_tools differ");
+    assert_eq!(summary1.updated_tools, summary2.updated_tools, "updated_tools differ");
+    assert_eq!(summary1.pruned_tools, summary2.pruned_tools, "pruned_tools differ");
+    assert_eq!(summary1.removed_tools, summary2.removed_tools, "removed_tools differ");
+    assert_eq!(summary1.warnings, summary2.warnings, "warnings differ");
+
+    // Generated doc bytes must be identical.
+    assert_eq!(doc1_bytes, doc2_bytes, "generated doc bytes differ between runs");
+
+    Ok(())
+}
