@@ -151,7 +151,7 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// e.g., ffmpeg has 2: btbn tag + evermeet version). When all metadata lookups
 /// were cache hits, the bar shows `"N cached"` where N = `metadata_fetch_count`
 /// (e.g. `2 cached`). When the tool is already up-to-date (Skip), the bar shows
-/// `"skipped cached"` (with the count when cached, e.g. `2 skipped cached`) or
+/// `"skipped, N cached"` (with the count when cached, e.g. `skipped, 2 cached`) or
 /// `"skipped"` otherwise. Fetch bar shows
 /// `sources.len()` items (one per source).  Process bar shows the sum
 /// of per-source items: archive sources contribute 2 items (decompress +
@@ -243,10 +243,10 @@ pub(super) async fn fetch_and_import_tool_payload(
             resolve_bar.set_position(bar_total.into());
             if metadata_cached {
                 resolve_bar.set_suffix_components(SuffixComponents {
-                    custom: SuffixComponents::status_list(&[StatusCount {
-                        word: "skipped cached",
-                        count: Some(metadata_fetch_count),
-                    }])
+                    custom: SuffixComponents::status_list(&[
+                        StatusCount { word: "skipped", count: None },
+                        StatusCount { word: "cached", count: Some(metadata_fetch_count) },
+                    ])
                     .custom,
                     ..Default::default()
                 });
@@ -849,9 +849,9 @@ mod tests {
             ops.iter().any(|op| matches!(
                 op,
                 ProgressOp::SetSuffixComponents { components }
-                    if components.custom == "1 skipped cached"
+                    if components.custom == "skipped, 1 cached"
             )),
-            "expected SetSuffixComponents(custom=1 skipped cached) in ops\ngot: {ops:#?}",
+            "expected SetSuffixComponents(custom=skipped, 1 cached) in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.contains(&ProgressOp::FinishSuccess),
@@ -1055,7 +1055,7 @@ mod tests {
     #[tokio::test]
     async fn skip_bar_shows_skipped_cached_two() {
         // Regression: skip bar with metadata_cached=true and
-        // metadata_fetch_count=2 must show "skipped cached (2)" and fill the
+        // metadata_fetch_count=2 must show "skipped, 2 cached" and fill the
         // bar to position = total.
         let cas = new_in_memory_cas();
         let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
@@ -1106,9 +1106,9 @@ mod tests {
             ops.iter().any(|op| matches!(
                 op,
                 ProgressOp::SetSuffixComponents { components }
-                    if components.custom == "2 skipped cached"
+                    if components.custom == "skipped, 2 cached"
             )),
-            "expected SetSuffixComponents(custom=2 skipped cached) in ops\ngot: {ops:#?}",
+            "expected SetSuffixComponents(custom=skipped, 2 cached) in ops\ngot: {ops:#?}",
         );
         assert!(
             ops.contains(&ProgressOp::FinishSuccess),
