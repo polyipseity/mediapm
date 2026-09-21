@@ -32,6 +32,7 @@ pub(crate) mod service;
 pub(crate) mod service_standalone;
 pub(crate) mod source_metadata;
 pub mod state;
+pub mod sync_report;
 pub(crate) mod tools;
 pub(crate) mod util;
 
@@ -70,6 +71,7 @@ pub use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 pub use paths::MediaPmPaths;
 pub use service::MediaPmService;
 pub use service_standalone::{registered_builtin_ids, resolve_effective_paths_for_root};
+pub use sync_report::{SyncLibraryOptions, SyncPhaseObserver, SyncPhaseReport};
 pub use tools::provider::RecheckPolicy;
 
 /// Media package descriptor returned by source processing.
@@ -112,6 +114,30 @@ pub struct SyncSummary {
     pub workflow_failed_steps: usize,
     /// Non-fatal warnings surfaced during sync.
     pub warnings: Vec<String>,
+}
+
+/// Aggregate result of the managed-workflow phase.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowSyncSummary {
+    /// Conductor instances newly executed in this sync.
+    pub executed_instances: usize,
+    /// Conductor instances served from cache.
+    pub cached_instances: usize,
+    /// Steps that failed after exhausting retries across all workflows.
+    pub failed_steps: usize,
+}
+
+/// Aggregate result of the materialization phase.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MaterializationSyncSummary {
+    /// Paths materialized (new or updated).
+    pub materialized_paths: usize,
+    /// Paths already up to date and therefore skipped.
+    pub skipped_paths: usize,
+    /// Stale paths removed.
+    pub removed_paths: usize,
+    /// Empty parent directories removed after stale-path cleanup.
+    pub removed_empty_dirs: usize,
 }
 
 /// Summary of tool sync operations.
