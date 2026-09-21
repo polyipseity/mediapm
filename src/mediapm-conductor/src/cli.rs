@@ -295,7 +295,25 @@ async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
     };
     let summary = conductor.run_workflow(workflow_name, options).await?;
     group.join();
-    println!("Workflow '{workflow_name}' completed: {summary:?}");
+    let icon = if summary.failed_steps > 0 {
+        mediapm_utils::report::StatusIcon::Warning
+    } else {
+        mediapm_utils::report::StatusIcon::Success
+    };
+    println!(
+        "{}",
+        mediapm_utils::report::format_result_line(
+            icon,
+            &format!("workflow '{workflow_name}'"),
+            &[
+                ("executed", &summary.executed_steps as &dyn std::fmt::Display),
+                ("cached", &summary.cached_steps),
+                ("failed", &summary.failed_steps),
+                ("retried", &summary.retried_steps),
+            ],
+            None,
+        )
+    );
     Ok(())
 }
 
