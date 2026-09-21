@@ -278,13 +278,13 @@ Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]
 
 ## Post-finish result messages
 
-After progress bars finish, the CLI prints structured result lines via primitives in `src/mediapm/src/output/report.rs`. These appear below the finalized progress bar output.
+After progress bars finish, the CLI prints structured result lines via primitives centralized in `mediapm_utils::report` (feature `report`). These appear below the finalized progress bar output. Both `mediapm` and `mediapm-conductor` render through the same code, so the log format is identical across binaries.
 
 ### Output primitives
 
 | Primitive | Stream | Format | Styling |
 |---|---|---|---|
-| `print_result(icon, op, fields, duration)` | stdout | `{icon} {bold_op}    {k}={v}  {k}={v}  in {duration}` | icon: styled per StatusIcon; op: bold |
+| `format_result_line(icon, op, fields, duration) -> String` | — | `{icon} {bold_op}    {k}={v}  {k}={v}  in {duration}` | Pure, testable |
 | `print_warning(msg)` | stderr | `Δ {msg}` | Δ yellow |
 | `print_hint(msg)` | stderr | `→ {msg}` | → cyan bold |
 | `print_heading(heading)` | stderr | `{heading}` + dim underline | heading bold, underline dim |
@@ -304,12 +304,12 @@ After progress bars finish, the CLI prints structured result lines via primitive
 **Screen A — `mediapm sync`** (via `print_sync_summary` in `output/mod.rs`):
 
 ```text
-✓ sync complete    executed=3  cached=2  materialized=1  removed=1
+✓ sync complete    executed=3  cached=2  materialized=5  pruned_tools=0  removed_tools=0
   Δ warning message
 ```
 
-- Icon: `✓` (green bold) when `executed > 0 || materialized > 0`; `–` (dim) otherwise.
-- Fields: `executed` always shown; `cached`, `materialized`, `removed`, `removed_empty`, `added_tools`, `updated_tools` shown only when >0.
+- Icon: `Warning` when `workflow_failed_steps > 0`; `Success` when `executed > 0 || materialized > 0`; `NoChange` otherwise.
+- Fields: `executed` always shown; `cached`, `materialized`, `skipped`, `removed`, `removed_empty`, `added_tools`, `updated_tools`, `pruned_tools`, `removed_tools`, `skipped_tools`, `failed` shown only when >0.
 - Warnings: one `print_warning` line per warning.
 
 **Screen A — `mediapm tool sync`** (via `print_result` + `ToolsSyncSummary`):
@@ -322,13 +322,28 @@ After progress bars finish, the CLI prints structured result lines via primitive
 - Fields: `added`, `updated`, `pruned`, `removed` (all always shown).
 - Warnings: one `print_warning` line per warning.
 
-**Screen B — workflow** (via `RunSummary`):
+**Screen B — workflow** (via `CliSyncObserver` in `output/observer.rs`):
 
-`RunSummary` is `#[derive(Debug)]` and printed via `{summary:?}`. The coordinator's overall bar suffix already shows `cached=N  failed=N  retried=N` before finish. There is no `print_result` call for workflow runs — the summary is conveyed through the progress bar's final state (success/warning) and the `RunSummary` struct returned to the caller.
+```text
+✓ workflow    executed=3  cached=2  failed=0
+```
 
-**Screen C — materialization** (folded into sync summary):
+- Icon: `Warning` when `failed_steps > 0`; `NoChange` when nothing ran; `Success` otherwise.
+- Fields: `executed`, `cached`, `failed`.
+- The conductor CLI (`conductor run`) renders identically via `format_result_line`.
 
-Materialization results are folded into `SyncSummary.materialized_paths` and printed as part of the Screen A sync summary. No separate materialization summary line exists.
+**Screen C — materialization** (via `CliSyncObserver` in `output/observer.rs`):
+
+```text
+✓ materialized    paths=5  skipped=3  removed=1
+```
+
+- Icon: `Success` when `materialized + removed > 0`; `NoChange` otherwise.
+- Fields: `paths`, `skipped`, `removed`.
+
+### Per-phase observer contract
+
+The library (`MediaPmService::sync_library_with_tag_update_checks_and_observer`) calls `observer.on_phase(report)` immediately after each screen's `group.join()` returns, in order: `Tools` → `Workflow` → `Materialization`. The `CliSyncObserver` renders structured `print_result` lines. Tests use a recording observer to assert the exact phase sequence and values.
 
 ## Worked examples (Production, W=80)
 

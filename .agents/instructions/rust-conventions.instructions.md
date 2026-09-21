@@ -253,7 +253,7 @@ extra animation frames.
 
 ### Global toggle and auto-detection
 
-`set_progress_enabled(false)` suppresses all progress output. Progress bars are also automatically disabled when stderr is not a TTY or when `--quiet` / `MEDIAPM_QUIET` is active. `progress_enabled()` queries the current state.
+Progress is suppressed by passing `no_progress: true` or by constructing a `ProgressGroup::disabled()`. Progress bars are also automatically hidden when stderr is not a TTY (indicatif self-detects via `console::Term::stderr()`). The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress.
 
 ### Spinner animation
 
@@ -301,17 +301,17 @@ The `format_duration(Duration) -> String` function formats durations as follows:
 
 ## Output crate module structure
 
-### Module: mediapm::output::report
+### Module: mediapm_utils::report
 
-Located in the `mediapm` crate behind the `cli` feature. Exports `StatusIcon`, `print_result`, `print_warning`, `print_hint`, `print_error`, `print_heading`, and `print_status_report`. Used for all user-facing CLI output including result lines, warnings, errors, hints, headings, and aligned status reports.
+Located in the `mediapm-utils` crate behind the `report` feature (`dep:console`). Exports `StatusIcon`, `print_result`, `format_result_line` (pure formatter, testable), `print_warning`, `print_hint`, `print_error`, `print_heading`, `print_status_report`, and `format_duration`. Re-exported by `mediapm::output::report` for backward compatibility with existing `crate::output::*` import paths. Both `mediapm` and `mediapm-conductor` render through this module, so the log format is identical across binaries.
 
 ### Module: mediapm::output::progress
 
-Located in the `mediapm` crate behind the `cli` feature. Exports `ProgressGroup`, `TrackedHandle`, `set_progress_enabled`, and `progress_enabled`. Used for progress bar rendering during long-running operations such as tool provisioning, media sync, and materialization.
+Located in the `mediapm` crate. Exports `ProgressGroup`, `TrackedHandle`, `ProgressBarApi`, and `ProgressGroupApi`. Used for progress bar rendering during long-running operations such as tool provisioning, media sync, and materialization. Progress is suppressed via `no_progress: true` in `SyncLibraryOptions` or `ProgressGroup::disabled()`.
 
-### Module: mediapm-utils::progress
+### Module: mediapm_utils::progress
 
-Located in the `mediapm-utils` crate. Two availability tiers: `DownloadProgressSnapshot` and `ProgressCallback` are always available without an indicatif dependency. These are the types used at the conductor library boundary — the conductor's `run_workflow` and related APIs take `ProgressCallback` closures and never import indicatif directly. `ProgressGroup`, `TrackedHandle`, `set_progress_enabled`, `format_bytes`, and `format_count` are behind the `progress` feature gate and are used by CLI binaries that render progress bars to the terminal.
+Located in the `mediapm-utils` crate. Two availability tiers: `DownloadProgressSnapshot` and `ProgressCallback` are always available without an indicatif dependency. These are the types used at the conductor library boundary — the conductor's `run_workflow` and related APIs take `ProgressCallback` closures and never import indicatif directly. `ProgressGroup`, `TrackedHandle`, `format_bytes`, and `format_count` are behind the `progress` feature gate and are used by CLI binaries that render progress bars to the terminal.
 
 ### Dependency boundary rule
 
@@ -321,16 +321,18 @@ The conductor _library_ (`mediapm-conductor`) must not depend on indicatif direc
 
 | Type / module                                                                                                                   | Crate           | Feature gate | Available to          |
 | ------------------------------------------------------------------------------------------------------------------------------- | --------------- | ------------ | --------------------- |
+| `mediapm_utils::report::{StatusIcon, print_result, format_result_line, format_duration, print_warning, print_hint, print_error, print_heading, print_status_report}` | `mediapm-utils` | `report`     | All crates            |
 | `mediapm_utils::progress::DownloadProgressSnapshot`                                                                             | `mediapm-utils` | always       | All crates            |
 | `mediapm_utils::progress::ProgressCallback`                                                                                     | `mediapm-utils` | always       | All crates            |
 | `mediapm_utils::progress::{ProgressGroup, TrackedHandle}`                                                                       | `mediapm-utils` | `progress`   | Crates with indicatif |
-| `mediapm_utils::progress::{set_progress_enabled, format_bytes, format_count}`                                                   | `mediapm-utils` | `progress`   | Crates with indicatif |
-| `crate::output::report::{StatusIcon, print_result, print_warning, print_hint, print_error, print_heading, print_status_report}` | `mediapm`       | `cli`        | `mediapm` crate only  |
-| `crate::output::progress::{ProgressGroup, TrackedHandle, set_progress_enabled, progress_enabled}`                               | `mediapm`       | `cli`        | `mediapm` crate only  |
+| `mediapm_utils::progress::{format_bytes, format_count}`                                                                         | `mediapm-utils` | `progress`   | Crates with indicatif |
+| `crate::output::report::{StatusIcon, print_result, format_result_line, ...}` (re-export)                                       | `mediapm`       | always       | `mediapm` crate       |
+| `crate::output::observer::CliSyncObserver`                                                                                      | `mediapm`       | always       | `mediapm` crate       |
+| `crate::output::progress::{ProgressGroup, TrackedHandle}`                                                                       | `mediapm`       | always       | `mediapm` crate       |
 
 ### Common usage pattern in handlers
 
-Every CLI command handler follows a consistent shape: perform the operation, print the result line via `print_result` with the appropriate `StatusIcon`, then print any warnings or hints on stderr. The sync command uses the legacy `print_sync_summary(&summary)` wrapper which internally calls `print_result` with a formatted summary.
+Every CLI command handler follows a consistent shape: perform the operation, print the result line via `print_result` with the appropriate `StatusIcon`, then print any warnings or hints on stderr. The sync command passes a `CliSyncObserver` that prints per-phase result lines after each progress screen finishes, and `print_sync_summary` at the end for the combined summary.
 
 ### Output stream policy
 
