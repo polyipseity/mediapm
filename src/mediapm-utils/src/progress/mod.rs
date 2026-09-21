@@ -116,6 +116,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     fn set_truncation(&self, truncation: Arc<dyn BarLabelTruncation>) {
         recording::RecordingTrackedHandle::set_truncation(self, &truncation);
     }
+    fn restart(&self) {
+        recording::RecordingTrackedHandle::restart(self);
+    }
     fn set_style(&self, style: BarStyle) {
         recording::RecordingTrackedHandle::set_style(self, style);
     }
