@@ -19,9 +19,9 @@ applyTo: "**/*.ncl"
 ## Schema version markers
 
 - Every persisted Nickel document must carry an explicit top-level numeric `version` field.
-- Version files export `validate_document_vN` and `envelope_contract_vN` — not plain `validate_document` at the version file level; unversioned aliases live in `mod.ncl`.
+- Version files export `validate_document_vN` and `envelope_contract_vN`, not plain `validate_document` at the version file level; unversioned aliases live in `mod.ncl`.
 - `mod.ncl` is the migration registry: exports `current_version`, `supported_versions` (array), `migrate_to` (function), and a `SupportedVersion` predicate contract.
-- **Strict version separation.** Each version file (`vN.ncl`) is self-contained: it defines exclusively its own `*VN` contract names and never references contracts from other versions. Never reuse a `*V1` name inside `v2.ncl` or vice versa, and never mix versions in one file. `mod.ncl` is the only place that imports multiple version files, and it acts purely as a registry/dispatcher — no contract definitions live there.
+- **Strict version separation.** Each version file (`vN.ncl`) is self-contained: it defines exclusively its own `*VN` contract names and never references contracts from other versions. Never reuse a `*V1` name inside `v2.ncl` or vice versa, and never mix versions in one file. `mod.ncl` is the only place that imports multiple version files, and it acts purely as a registry/dispatcher, with no contract definitions living there.
 - **Each version keeps its own envelope shape.** A version file (`vN.ncl`) defines its own `*VN` contract with the field layout that version actually used — do not reshape an older version's contract to mirror the latest version's internal grouping (e.g. do not push V2's sub-record grouping into `MediaRuntimeStorageV1`). Older versions bridge to the latest boundary type through the unified model, not by copying the latest shape.
 - **Version-specific types and their `From` bridges live INSIDE the version file** (`versions/v1.rs`, `versions/v_latest.rs`), never in the shared `config/mod.rs`. `config/mod.rs` holds ONLY the resolved (option-free) types and a thin `from_boundary` delegation. The active `*Latest` boundary family is version-specific and belongs in `versions/v_latest.rs`, not `config/mod.rs`.
 
@@ -31,25 +31,25 @@ applyTo: "**/*.ncl"
 - Dictionary/map types: `{ _ : Type }`.
 - Open records: `{ .. }` only with a `# |||` why-comment per S1.
 - Optional fields: `{ field | Contract | optional }`. Default values: `| default = value`.
-- `Dyn` for nullable/untyped fields only where no closed set exists (S2) — `null` and `String` are unrelated in Nickel's contract system.
+- `Dyn` for nullable/untyped fields only where no closed set exists (S2); `null` and `String` are unrelated in Nickel's contract system.
 
 ## Schema strictness policy
 
 Normative spec for all Nickel schema work (existing, new, schema-related code). Test obligations are in `sdd-tdd-workflow.instructions.md` ("Regression requirements").
 
-**S1 — Closed record contracts by default.** No `..` without a `# |||` why-comment on the preceding line. Unknown fields fail validation, never silently dropped.
-**S2 — No untyped values.** No `Dyn`, `std.enum.TagOrString`, or bare `String` where a closed set exists. Tag-like fields use `from_predicate`/`any_of` enums mirroring the Rust enum exactly (same variant names, same serde rename).
-**S3 — Integer guards on every Number.** Integral fields (counts, slots, timeouts, version markers, indexes) use a `from_predicate` integer predicate (`value == std.number.floor value` or `std.number.is_integer`).
-**S4 — Required version marker.** Every persisted document contract requires top-level `version` (no `| optional`).
-**S5 — Per-version exports.** Every `versions/vN.ncl` exports `validate_document_vN`, `envelope_contract_vN`, and its migration function, with `# |||` docs and the `{ ... }` export record.
-**S6 — Unversioned registry surface.** Every `versions/mod.ncl` exports `current_version`, `supported_versions`, `migrate_to`, `SupportedVersion`, plus unversioned `validate_document` and `envelope_contract` aliases.
-**S7 — deny_unknown_fields everywhere.** Every Rust serde type on a config/state/envelope/document boundary carries `#[serde(deny_unknown_fields)]` (Rust mirror of S1), including new types from schema work.
-**S8 — No catch-all types.** No `serde_json::Value`, `Dyn`, `any`, or bare dict-of-string where a closed shape exists. Use typed untagged enums (`#[serde(untagged)]`) with per-variant `deny_unknown_fields`.
-**S9 — Fail-fast on unknown names.** Stringly-typed names mapping to enums (verify strategies, platform keys, materialization methods, capture kinds) error on unknown values, never silent ignore.
-**S10 — Strict JSON schema exports.** Every exported JSON schema (`mediapm.schema.json`, future conductor exports) is strict: `additionalProperties: false` at every object, typed items, enum `const` lists, `"type": "integer"` for integral fields, `required` lists. No `{ "type": "object" }` stubs.
-**S11 — Migration compatibility.** Every migration (`migrate_v1_to_v2`, `migrate_v2_to_v1`) produces output satisfying the tightened target contract, proven by a round-trip test.
-**S12 — Schema/Rust parity guarded by tests.** Every persisted schema has a parity test (`schema_sync.rs` pattern) asserting Nickel contract and Rust serde shape agree — including strictness properties (closed records, integer guards, enums), not just field presence.
-**S13 — New schemas follow the same cycle.** Any new schema file, contract, or code path satisfies S1–S12, gets spec items + tests in the same commit, and is added to the coverage matrix.
+**S1: Closed record contracts by default.** No `..` without a `# |||` why-comment on the preceding line. Unknown fields fail validation, never silently dropped.
+**S2: No untyped values.** No `Dyn`, `std.enum.TagOrString`, or bare `String` where a closed set exists. Tag-like fields use `from_predicate`/`any_of` enums mirroring the Rust enum exactly (same variant names, same serde rename).
+**S3: Integer guards on every Number.** Integral fields (counts, slots, timeouts, version markers, indexes) use a `from_predicate` integer predicate (`value == std.number.floor value` or `std.number.is_integer`).
+**S4: Required version marker.** Every persisted document contract requires top-level `version` (no `| optional`).
+**S5: Per-version exports.** Every `versions/vN.ncl` exports `validate_document_vN`, `envelope_contract_vN`, and its migration function, with `# |||` docs and the `{ ... }` export record.
+**S6: Unversioned registry surface.** Every `versions/mod.ncl` exports `current_version`, `supported_versions`, `migrate_to`, `SupportedVersion`, plus unversioned `validate_document` and `envelope_contract` aliases.
+**S7: deny_unknown_fields everywhere.** Every Rust serde type on a config/state/envelope/document boundary carries `#[serde(deny_unknown_fields)]` (Rust mirror of S1), including new types from schema work.
+**S8: No catch-all types.** No `serde_json::Value`, `Dyn`, `any`, or bare dict-of-string where a closed shape exists. Use typed untagged enums (`#[serde(untagged)]`) with per-variant `deny_unknown_fields`.
+**S9: Fail-fast on unknown names.** Stringly-typed names mapping to enums (verify strategies, platform keys, materialization methods, capture kinds) error on unknown values, never silent ignore.
+**S10: Strict JSON schema exports.** Every exported JSON schema (`mediapm.schema.json`, future conductor exports) is strict: `additionalProperties: false` at every object, typed items, enum `const` lists, `"type": "integer"` for integral fields, `required` lists. No `{ "type": "object" }` stubs.
+**S11: Migration compatibility.** Every migration (`migrate_v1_to_v2`, `migrate_v2_to_v1`) produces output satisfying the tightened target contract, proven by a round-trip test.
+**S12: Schema/Rust parity guarded by tests.** Every persisted schema has a parity test (`schema_sync.rs` pattern) asserting Nickel contract and Rust serde shape agree, including strictness properties (closed records, integer guards, enums), not just field presence.
+**S13: New schemas follow the same cycle.** Any new schema file, contract, or code path satisfies S1–S12, gets spec items + tests in the same commit, and is added to the coverage matrix.
 
 ## Migration patterns
 
@@ -62,14 +62,14 @@ Normative spec for all Nickel schema work (existing, new, schema-related code). 
 ## Common pitfalls
 
 - Nickel numbers are always floats; guard integer-only fields with `std.number.is_integer`.
-- `let ... in` for all local bindings — no top-level imperative style. `import "path"` for module references.
+- `let ... in` for all local bindings; no top-level imperative style. `import "path"` for module references.
 - Top-level envelope contract applied as `data | NickelDocumentV2`.
 - Record shorthand self-references fail: `{ VersionContract, other = 1 }` errors "missing definition for VersionContract", and `{ x = x }` recurses infinitely. Export via `let _x = X in { X = _x, ... }`.
 - `std.string.is_string` does not exist in 0.18 — use top-level `std.is_string` (returns false on non-strings).
-- `std.string.is_match` errors on non-strings ("contract broken by the caller") — guard first: `std.is_string value && std.string.is_match "^.+$" value`.
+- `std.string.is_match` errors on non-strings ("contract broken by the caller"); guard first: `std.is_string value && std.string.is_match "^.+$" value`.
 - A plain function used as a contract (`x | f`) is deprecated and broken: the contract _label_ is passed as the argument. Wrap predicates in `std.contract.from_predicate (fun v => ...)` and call validators as functions.
-- `std.contract.from_validator` in 0.18 expects an `'Ok value` / `'Error {...}` enum, not a bool — do not wrap boolean predicates with it.
-- Contracts are not JSON-serializable ("non serializable term" on export) — export wrappers/functions, or alias contracts under `let` and access only fields.
+- `std.contract.from_validator` in 0.18 expects an `'Ok value` / `'Error {...}` enum, not a bool; do not wrap boolean predicates with it.
+- Contracts are not JSON-serializable ("non serializable term" on export); export wrappers/functions, or alias contracts under `let` and access only fields.
 
 ## Rust-side evaluation (`src/mediapm/src/config/versions/mod.rs`)
 

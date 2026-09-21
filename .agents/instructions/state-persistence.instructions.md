@@ -8,13 +8,13 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 
 ## Format reality
 
-- `state.json` is machine-managed **JSON with pretty-printing and always-write semantics** — not a Nickel document, though legacy versions were `.ncl`.
+- `state.json` is machine-managed **JSON with pretty-printing and always-write semantics**, not a Nickel document, though legacy versions were `.ncl`.
 - `mediapm.ncl` is the user-owned Nickel intent document; `conductor.generated.ncl` is the machine-managed Nickel runtime document. Only `state.json` is JSON.
 - Legacy `state.ncl` files are auto-migrated on load and then deleted (`load_mediapm_state_document` in `nickel_io.rs` is JSON-first, falls back to the legacy Nickel file, and removes it after a successful load). Never write new `.ncl` state files.
 
 State persisted in `state.json` under `<runtime_root>/` tracks managed file records, tool fetch/deploy metadata, and media workflow step state, with version dispatch for migration from legacy `.ncl` formats.
 
-- **No `MigrateState` trait** — migration helpers are plain functions in `state/versions/v1.rs` (no trait dispatch), avoiding trait overhead for a single migration path.
+- **No `MigrateState` trait**: migration helpers are plain functions in `state/versions/v1.rs` (no trait dispatch), avoiding trait overhead for a single migration path.
 - **File organization**: public API in `state/ser.rs` (thin delegation), V1 wire types and migration in `state/versions/v1.rs`, V2 wire types in `state/versions/v2.rs`, version dispatch utilities in `state/versions/mod.rs`.
 
 ## `MediaPmState` fields (v3)
@@ -43,16 +43,16 @@ State persisted in `state.json` under `<runtime_root>/` tracks managed file reco
 
 The three `resolved_*` fields are `Option<String>`: `None` serializes as JSON
 `null`, and a missing field deserializes to `None` via `#[serde(default)]`.
-Empty is `None` — the empty string `""` is invalid for these fields and is
+Empty is `None`; the empty string `""` is invalid for these fields and is
 rejected by the parser (no normalization, no migration). Stale state files
 containing `""` fail to load and are discarded/regenerated on the next run.
 
 The schema change is applied **in place**: the existing V3 schema keeps its
-version marker (3) — there is no version bump, no V4 wire format, and no
+version marker (3), with no version bump, no V4 wire format, and no
 migration code. Old and new files are distinguished by content, not by version
 number.
 
-**Why-empty invariant:** any field left `None` must be documented — an inline
+**Why-empty invariant:** any field left `None` must be documented via an inline
 `// WHY:` comment on the provider dispatch arm, the per-tool provider module
 doc comment, and the per-tool row in `provider-dispatch.instructions.md`.
 Current `None` fields: ffmpeg `resolved_version`/`resolved_vcs_hash` (mixed
@@ -61,7 +61,7 @@ and media-tagger `resolved_tag` (builtin launcher, no upstream tag).
 
 ## `ToolRegistryEntry` vs legacy `ActiveToolInstance`
 
-`ToolRegistryEntry.deployed_at` supersedes the removed `ActiveToolInstance` struct. The "active" tool is resolved by querying `managed_tools` and sorting entries for the same logical tool id by `deployed_at` descending — the latest-deployed entry is the current active version. Multiple entries per tool id are expected (each fetch+deploy cycle creates a new entry).
+`ToolRegistryEntry.deployed_at` supersedes the removed `ActiveToolInstance` struct. The "active" tool is resolved by querying `managed_tools` and sorting entries for the same logical tool id by `deployed_at` descending; the latest-deployed entry is the current active version. Multiple entries per tool id are expected (each fetch+deploy cycle creates a new entry).
 
 ## `ManagedFileRecord`
 
@@ -133,7 +133,7 @@ Flat→v2 mapping:
 - `MediaPmState.version` uses `state_version` default, not `document_version`.
 - V1 = legacy Nickel formats (both wrapper and flat).
 - V2 = intermediate JSON format, migrated to V3 on load (never written).
-- V3 = current JSON format (always written, never reverted). Schema changes to V3 are applied in place — no version bump for field-level changes.
+- V3 = current JSON format (always written, never reverted). Schema changes to V3 are applied in place, with no version bump for field-level changes.
 
 ## Version dispatch
 
@@ -154,7 +154,7 @@ Flat→v2 mapping:
 ## Normalization / retain rules
 
 - `managed_files`: remove entries with empty/whitespace-only keys.
-- `managed_tools`: retain only entries with a non-empty `canonical_version` or at least one `Some` `resolved_*` field. No trim/empty-string guards are applied to the `resolved_*` `Option` fields — empty is `None`, never `""`.
+- `managed_tools`: retain only entries with a non-empty `canonical_version` or at least one `Some` `resolved_*` field. No trim/empty-string guards are applied to the `resolved_*` `Option` fields; empty is `None`, never `""`.
 - `workflow_states`: no special normalization.
 - Normalization runs in `MediaPmState::normalize()`.
 
@@ -163,7 +163,7 @@ Flat→v2 mapping:
 `canonical_version` is populated by the provisioning pipeline at fetch time.
 The resolve phase determines it from available data (GitHub tag, VCS hash,
 etc.) and stores it in the resulting `ToolRegistryEntry`. The semantic kind
-(VCS hash vs version vs tag) is fixed per tool at code-writing time — each
+(VCS hash vs version vs tag) is fixed per tool at code-writing time; each
 tool's provider always returns the same kind of identifier. No runtime
 fallback chain exists.
 
@@ -172,7 +172,7 @@ string equality. GitHub-release-based tools (yt-dlp, deno, rsgain, sd) use the
 resolved commit hash as canonical version; ffmpeg uses the composite
 `"{autobuild_tag}+evermeet-{evermeet_version}"`; media-tagger uses the
 mediapm build-time git hash. The `resolved_*` provenance fields are separate
-and informational — they never participate in skip/update decisions.
+and informational; they never participate in skip/update decisions.
 
 ## State write policy
 
@@ -186,5 +186,5 @@ artifact-stability via its own change-detected write policy
 
 **Invariant:** `state.json` content changes are not errors. A diff showing only
 `canonical_version`, `deployed_at`, or `resolved_*` changes with unchanged
-`content_map_hash` indicates metadata churn without payload change — expected
+`content_map_hash` indicates metadata churn without payload change, expected
 behavior.
