@@ -4,18 +4,20 @@
 //! # Submodules
 //!
 //! * [`progress`] — progress bars with [`ProgressGroup`]
-//! * [`report`] — result lines with status icons via [`print_result`] and friends
+//!
+//! Result-line primitives (`StatusIcon`, `print_result`, `format_result_line`, etc.)
+//! are centralized in `mediapm_utils::report` and re-exported here for backward
+//! compatibility with existing `crate::output::*` import paths.
 
 pub mod progress;
-pub mod report;
 
+pub use mediapm_utils::report::{
+    StatusIcon, format_duration, format_result_line, print_error, print_heading, print_hint,
+    print_result, print_status_report, print_warning,
+};
 pub use progress::{
     DimensionSource, ProgressBarApi, ProgressGroup, ProgressGroupApi, TestDimensionSource,
     TestTimeSource, TrackedHandle,
-};
-pub use report::{
-    StatusIcon, print_error, print_heading, print_hint, print_result, print_status_report,
-    print_warning,
 };
 
 use crate::SyncSummary;
