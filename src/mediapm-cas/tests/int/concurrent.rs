@@ -15,7 +15,7 @@ use mediapm_cas::Hash;
 use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi};
 use mediapm_cas::new_in_memory_cas;
 
-use crate::common::put_static;
+use crate::common::{open_file_cas, put_static};
 
 /// Write → Delete → Write for the same content must work.
 ///
@@ -339,4 +339,67 @@ async fn pending_ops_deduplicates_concurrent_gets() {
         let result = handle.await.unwrap().unwrap_or_else(|_| panic!("get task {i} failed"));
         assert_eq!(result, data, "task {i}: data mismatch");
     }
+}
+
+/// Concurrent put safety for FileSystemCas.
+///
+/// Exercises the real WAL journal, flock, and on-disk metadata under
+/// contention — the InMemory CAS path is already covered by
+/// `concurrent_operations_many_hashes` and `concurrent_dedup_same_content`.
+#[tokio::test(flavor = "multi_thread")]
+async fn file_system_cas_concurrent_puts_are_safe() {
+    use mediapm_cas::api::CasMaintenanceApi;
+
+    let (_dir, cas) = open_file_cas().await;
+    let task_count = 16;
+
+    // Phase 1: concurrent puts of distinct payloads.
+    let mut handles = Vec::with_capacity(task_count);
+    for i in 0..task_count {
+        let cas_ref = cas.clone();
+        handles.push(tokio::spawn(async move {
+            let data = Bytes::from(format!("unique-payload-{i}"));
+            let hash = cas_ref.put(data.clone()).await.unwrap();
+            let retrieved = cas_ref.get(hash).await.unwrap();
+            assert_eq!(retrieved, data, "phase 1 task {i}: content mismatch");
+            let meta = cas_ref.stat(hash).await.unwrap();
+            assert_eq!(meta.len, data.len() as u64, "phase 1 task {i}: stat len mismatch");
+            hash
+        }));
+    }
+    let mut phase1_hashes = Vec::with_capacity(task_count);
+    for (i, handle) in handles.into_iter().enumerate() {
+        phase1_hashes.push(handle.await.unwrap_or_else(|_| panic!("phase 1 task {i} panicked")));
+    }
+    // All 16 hashes must be distinct.
+    let unique: std::collections::HashSet<_> = phase1_hashes.iter().copied().collect();
+    assert_eq!(unique.len(), task_count, "all phase-1 hashes must be distinct");
+
+    // Phase 2: concurrent puts of identical payloads.
+    let shared_content = Bytes::from_static(b"shared-identical-content");
+    let mut handles = Vec::with_capacity(task_count);
+    for _ in 0..task_count {
+        let cas_ref = cas.clone();
+        let data = shared_content.clone();
+        handles.push(tokio::spawn(async move { cas_ref.put(data).await.unwrap() }));
+    }
+    let mut phase2_hashes = Vec::with_capacity(task_count);
+    for handle in handles {
+        phase2_hashes.push(handle.await.unwrap());
+    }
+    let expected_phase2 = phase2_hashes[0];
+    for (i, hash) in phase2_hashes[1..].iter().enumerate() {
+        assert_eq!(*hash, expected_phase2, "phase 2 task {i}: hash must match");
+    }
+    let retrieved = cas.get(expected_phase2).await.unwrap();
+    assert_eq!(retrieved, shared_content);
+    // Phase-2 hash must differ from all phase-1 hashes.
+    assert!(!phase1_hashes.contains(&expected_phase2), "phase-2 hash must differ from phase-1");
+
+    // Phase 3: WAL durability — flush then re-read.
+    cas.run_maintenance_cycle().await.unwrap();
+    let re_read_phase1 = cas.get(phase1_hashes[0]).await.unwrap();
+    assert_eq!(re_read_phase1, Bytes::from(format!("unique-payload-0")));
+    let re_read_phase2 = cas.get(expected_phase2).await.unwrap();
+    assert_eq!(re_read_phase2, shared_content);
 }
