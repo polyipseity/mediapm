@@ -12,6 +12,7 @@ default = []
 cli = ["dep:clap"]
 nickel = ["dep:serde_json"]
 progress = ["dep:indicatif", "dep:console", "dep:tokio", "dep:serde_json"]
+report = ["dep:console"]
 
 [lints]
 workspace = true
