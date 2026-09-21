@@ -1,5 +1,5 @@
 ---
-description: "Use when authoring or editing TOML config files (Cargo.toml, prek.toml, .cargo/config.toml, rust-toolchain.toml, rumdl.toml) in this repository."
+description: "Use when authoring or editing TOML config files (Cargo.toml, prek.toml, .cargo/config.toml, rust-toolchain.toml, .rumdl.toml) in this repository."
 name: "TOML Conventions"
 applyTo: "**/*.toml"
 ---
@@ -40,7 +40,7 @@ applyTo: "**/*.toml"
 
 - Minimal three-field `[toolchain]` section: `channel`, `profile`, `components`.
 
-## rumdl.toml
+## .rumdl.toml
 
-- Root file has `[global]` section with `include`, `disable`, `extend-disable` arrays.
-- Override files (e.g. `.agents/.rumdl.toml`) use `extends = "../.rumdl.toml"` and override specific fields.
+- Root file `.rumdl.toml` has `[global]` section with `include` and `disable` arrays.
+- Override files (e.g. `.agents/.rumdl.toml`) use `extends = "../.rumdl.toml"` and add `extend-disable` for file-type-specific overrides.
