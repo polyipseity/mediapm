@@ -883,6 +883,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             updated_tools: report.tools_updated,
             pruned_tools: report.pruned_tools,
             removed_tools: report.tools_removed,
+            skipped_tools: report.tools_skipped,
             warnings: report.warnings,
         })
     }
@@ -1058,6 +1059,7 @@ impl MediaPmService<FileSystemCas> {
             .collect();
         let mut executed_instances: usize = 0;
         let mut cached_instances: usize = 0;
+        let mut workflow_failed_steps: usize = 0;
         self.conductor
             .ensure_persisted_state_loaded()
             .await
@@ -1107,6 +1109,7 @@ impl MediaPmService<FileSystemCas> {
             let ran = summary.executed_steps + summary.cached_steps;
             cached_instances += ran.saturating_sub(new_keys);
             if summary.failed_steps > 0 {
+                workflow_failed_steps += summary.failed_steps;
                 warnings.push(format!(
                     "workflow '{workflow_name}' had {} failed step(s)",
                     summary.failed_steps
@@ -1184,10 +1187,15 @@ impl MediaPmService<FileSystemCas> {
             executed_instances,
             cached_instances,
             materialized_paths: materialize_report.materialized_paths,
+            skipped_paths: materialize_report.skipped_paths,
             removed_paths: materialize_report.removed_paths,
             removed_empty_dirs: materialize_report.removed_empty_dirs,
             added_tools: tools_report.added_tools,
             updated_tools: tools_report.updated_tools,
+            pruned_tools: tools_report.pruned_tools,
+            removed_tools: tools_report.removed_tools,
+            skipped_tools: tools_report.skipped_tools,
+            workflow_failed_steps,
             warnings,
         })
     }

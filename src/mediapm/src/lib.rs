@@ -92,6 +92,8 @@ pub struct SyncSummary {
     pub cached_instances: usize,
     /// Number of hierarchy paths materialized to the resolved library root.
     pub materialized_paths: usize,
+    /// Number of hierarchy paths already up to date and skipped.
+    pub skipped_paths: usize,
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,
     /// Number of empty parent directories removed after stale path cleanup.
@@ -100,6 +102,14 @@ pub struct SyncSummary {
     pub added_tools: usize,
     /// Number of tools updated/promoted in conductor machine config.
     pub updated_tools: usize,
+    /// Number of tool entries pruned from the generated conductor document.
+    pub pruned_tools: usize,
+    /// Number of tools removed entirely.
+    pub removed_tools: usize,
+    /// Number of tools skipped (already at the desired version).
+    pub skipped_tools: usize,
+    /// Number of managed-workflow steps that failed across all workflows.
+    pub workflow_failed_steps: usize,
     /// Non-fatal warnings surfaced during sync.
     pub warnings: Vec<String>,
 }
@@ -116,6 +126,8 @@ pub struct ToolsSyncSummary {
     pub pruned_tools: usize,
     /// Number of tools removed entirely.
     pub removed_tools: usize,
+    /// Number of tools skipped (already at the desired version).
+    pub skipped_tools: usize,
     /// Tool-specific warnings.
     pub warnings: Vec<String>,
 }
