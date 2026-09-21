@@ -65,6 +65,10 @@ pub(super) enum PreResolveOutcome {
     /// Tool should be fetched and imported normally.
     Resolved(ResolvedToolFetch, ResolvedToolMetadata),
     /// Tool is already provisioned at the given canonical version (skip).
+    #[expect(
+        dead_code,
+        reason = "constructed only in tests; production skip path returns EntryOutcome::Skipped directly"
+    )]
     Skip {
         /// Tool identifier.
         name: String,

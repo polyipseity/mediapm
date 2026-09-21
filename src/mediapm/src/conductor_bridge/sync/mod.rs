@@ -17,6 +17,8 @@ use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
 
+use futures_util::stream::{self, StreamExt};
+
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
@@ -37,7 +39,9 @@ use crate::conductor_bridge::documents::{
     save_conductor_generated_document,
 };
 use crate::conductor_bridge::sync::lifecycle::is_builtin_source_ingest_requirement;
-use crate::conductor_bridge::sync::provision::{PreResolveOutcome, fetch_and_import_tool_payload};
+use crate::conductor_bridge::sync::provision::{
+    FetchedToolPayload, PreResolveOutcome, fetch_and_import_tool_payload,
+};
 
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
 use crate::config::ToolRequirement;
@@ -48,6 +52,535 @@ use crate::paths::MediaPmPaths;
 use crate::source_metadata::resolve_conductor_cas_root;
 use crate::tools::downloader::ToolDownloadCache;
 use crate::tools::provider;
+
+/// Maximum number of provisioning entries resolved/fetched/processed at once.
+///
+/// Bounded because every entry opens up to 3 OS-variant downloads and the
+/// user-level cache is shared with concurrent `mediapm` processes; unbounded
+/// fan-out saturates bandwidth and slows the whole workspace.
+const MAX_CONCURRENT_TOOL_PROVISIONING: usize = 4;
+
+/// Outcome of provisioning a single entry (resolve + fetch + I/O).
+///
+/// Carries all computed data so `apply_entry_outcome` can perform state
+/// mutations without any async operations.
+#[derive(Debug)]
+enum EntryOutcome {
+    /// First-skip: exact version match against persisted state + CAS available.
+    Skipped {
+        /// Tool identifier.
+        tool_id: String,
+        /// Generated-doc key for the active tool spec.
+        key: String,
+        /// Runtime from the active tool spec.
+        spec_runtime: ToolRuntime,
+        /// Own (pre-inline) content map for dep inlining.
+        own_map: BTreeMap<String, String>,
+    },
+    /// Resolve failed (network/cache error).
+    ResolveError {
+        /// Tool identifier.
+        tool_id: String,
+        /// The error that caused the failure.
+        error: MediaPmError,
+    },
+    /// Resolved but skipped: composite canonical version already provisioned.
+    SkippedAfterResolve {
+        /// Tool identifier.
+        tool_id: String,
+        /// Generated-doc key for the active tool spec.
+        key: String,
+        /// Runtime from the active tool spec.
+        spec_runtime: ToolRuntime,
+        /// Own (pre-inline) content map for dep inlining.
+        own_map: BTreeMap<String, String>,
+        /// Backfill entry for resolved-field population.
+        backfill: ToolRegistryEntry,
+        /// Tool record for managed_tools registration.
+        tool_record: ToolRegistryEntry,
+    },
+    /// Resolved and fetched with payload.
+    Fetched {
+        /// Tool identifier.
+        tool_id: String,
+        /// Whether this is a builtin source-ingest tool.
+        is_builtin_code: bool,
+        /// Whether the tool already existed in the generated doc.
+        already_exists: bool,
+        /// The fetched payload (content_map NOT yet inlined with deps).
+        payload: FetchedToolPayload,
+    },
+    /// Resolved and fetched with no payload (builtin/launcher).
+    FetchedNone {
+        /// Tool identifier.
+        tool_id: String,
+        /// Whether this is a builtin source-ingest tool.
+        is_builtin_code: bool,
+        /// Whether the tool already existed in the generated doc.
+        already_exists: bool,
+        /// Resolved canonical version from provider metadata.
+        resolved_canonical_version: String,
+        /// Resolved upstream tag from provider metadata.
+        resolved_tag: Option<String>,
+        /// Resolved upstream version from provider metadata.
+        resolved_version: Option<String>,
+        /// Resolved upstream VCS hash from provider metadata.
+        resolved_vcs_hash: Option<String>,
+    },
+    /// Fetch/import failed (network/disk error).
+    FetchError {
+        /// Tool identifier.
+        tool_id: String,
+        /// The error that caused the failure.
+        error: MediaPmError,
+    },
+}
+
+/// Provisions a single tool entry: resolve metadata, skip checks, and fetch
+/// the tool payload. Returns an [`EntryOutcome`] carrying all computed data;
+/// state mutations happen in [`apply_entry_outcome`].
+///
+/// This function is fully async and takes only immutable references, so it
+/// can be called concurrently for parallel provisioning.
+async fn provision_entry(
+    entry: &ProvisionEntry,
+    state: &MediaPmState,
+    generated_doc: &NickelDocument,
+    live_state: &HashMap<String, Vec<ToolRegistryEntry>>,
+    workspace_cas: &FileSystemCas,
+    cache: &ToolDownloadCache,
+    effective_group: &dyn ProgressGroupApi,
+    recheck_policy: RecheckPolicy,
+) -> EntryOutcome {
+    let tool_id = &entry.tool_id;
+    let tool_req = &entry.tool_requirement;
+    let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
+    let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
+
+    // First skip check: exact version match against persisted state.
+    if tool_req.version_spec != ConfigVersionSpec::Latest
+        && tool_req.version_spec != ConfigVersionSpec::Inherit
+        && let Some(entry) = state.managed_tools.iter().find(|e| e.tool_id == *tool_id)
+    {
+        let resolved_spec = match &tool_req.version_spec {
+            ConfigVersionSpec::Exact(fields) => VersionSpec::Exact(fields.clone()),
+            _ => unreachable!(),
+        };
+        if spec_matches_entry(
+            &resolved_spec,
+            entry.resolved_tag.as_deref(),
+            entry.resolved_version.as_deref(),
+            entry.resolved_vcs_hash.as_deref(),
+        ) {
+            if let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
+                && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map)
+                    .await
+            {
+                return EntryOutcome::Skipped {
+                    tool_id: tool_id.clone(),
+                    key: key.clone(),
+                    spec_runtime: spec.runtime.clone(),
+                    own_map: strip_inlined_deps_keys(&spec.runtime.content_map),
+                };
+            }
+        }
+    }
+
+    // Resolve: get source descriptors from the provider.
+    let mut resolved_canonical_version = String::new();
+    let mut resolved_tag_value: Option<String> = None;
+    let mut resolved_version_value: Option<String> = None;
+    let mut resolved_vcs_hash_value: Option<String> = None;
+    let pre_resolved = match provider::resolve_tool_fetch(
+        tool_id,
+        Some((cache, "tool_metadata")),
+        recheck_policy,
+    )
+    .await
+    {
+        Ok((fetch, metadata)) => {
+            let human_readable_version = metadata.human_readable_version.clone();
+            let canonical_version = metadata.canonical_version.clone();
+            resolved_canonical_version.clone_from(&canonical_version);
+            resolved_tag_value.clone_from(&metadata.resolved_tag);
+            resolved_version_value.clone_from(&metadata.resolved_version);
+            resolved_vcs_hash_value.clone_from(&metadata.resolved_vcs_hash);
+
+            // Version validation.
+            match &tool_req.version_spec {
+                ConfigVersionSpec::Exact(fields) => {
+                    if let Some(hash) = &fields.vcs_hash {
+                        if resolved_canonical_version != *hash
+                            && resolved_tag_value.as_deref() != Some(hash.as_str())
+                        {
+                            return EntryOutcome::ResolveError {
+                                tool_id: tool_id.clone(),
+                                error: MediaPmError::Workflow(format!(
+                                    "tool {tool_id}: requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {}",
+                                    resolved_tag_value.as_deref().unwrap_or("(none)")
+                                )),
+                            };
+                        }
+                    }
+                    if let Some(tag) = &fields.tag
+                        && resolved_tag_value.as_deref() != Some(tag.as_str())
+                    {
+                        return EntryOutcome::ResolveError {
+                            tool_id: tool_id.clone(),
+                            error: MediaPmError::Workflow(format!(
+                                "tool {tool_id}: requested tag {tag} but resolved {}",
+                                resolved_tag_value.as_deref().unwrap_or("(none)")
+                            )),
+                        };
+                    }
+                    if let Some(ver) = &fields.version
+                        && human_readable_version != *ver
+                    {
+                        return EntryOutcome::ResolveError {
+                            tool_id: tool_id.clone(),
+                            error: MediaPmError::Workflow(format!(
+                                "tool {tool_id}: requested version {ver} but resolved {human_readable_version}"
+                            )),
+                        };
+                    }
+                }
+                ConfigVersionSpec::Latest => {}
+                ConfigVersionSpec::Inherit => {
+                    return EntryOutcome::ResolveError {
+                        tool_id: tool_id.clone(),
+                        error: MediaPmError::Workflow(format!(
+                            "tool {tool_id}: 'inherit' version_spec is only valid for dependencies, not global tool requirements"
+                        )),
+                    };
+                }
+            }
+
+            // Compute expected composite canonical_version for skip check.
+            let expected_composite = compute_composite_canonical_version(
+                &canonical_version,
+                tool_id,
+                tool_req,
+                live_state,
+            );
+
+            // Second skip check: composite match against live_state.
+            let should_skip = live_state.get(tool_id.as_str()).is_some_and(|entries| {
+                entries.iter().any(|e| {
+                    !e.content_map_hash.is_empty() && e.canonical_version == expected_composite
+                })
+            });
+            let content_map_available = find_active_tool_spec(generated_doc, tool_id)
+                .map(|(_, spec)| spec.runtime.content_map.clone())
+                .is_some_and(|content_map| !content_map.is_empty());
+
+            if should_skip
+                && content_map_available
+                && match find_active_tool_spec(generated_doc, tool_id) {
+                    Some((_, spec)) => {
+                        workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map)
+                            .await
+                    }
+                    None => false,
+                }
+            {
+                // Build the skip outcome.
+                let _metadata_cached = metadata.metadata_cached;
+                let _metadata_fetch_count = metadata.metadata_fetch_count;
+                let human_readable_version = metadata.human_readable_version.clone();
+                let key_and_spec = find_active_tool_spec(generated_doc, tool_id);
+                let (key, spec_runtime, own_map) = match key_and_spec {
+                    Some((key, spec)) => (
+                        key,
+                        spec.runtime.clone(),
+                        strip_inlined_deps_keys(&spec.runtime.content_map),
+                    ),
+                    None => unreachable!("content_map_available checked above"),
+                };
+                let backfill = ToolRegistryEntry {
+                    tool_id: tool_id.clone(),
+                    version: human_readable_version.clone(),
+                    canonical_version: expected_composite.clone(),
+                    content_map_hash: String::new(),
+                    deployed_at: mediapm_utils::Timestamp::default(),
+                    resolved_tag: metadata.resolved_tag.clone(),
+                    resolved_version: metadata.resolved_version.clone(),
+                    resolved_vcs_hash: metadata.resolved_vcs_hash.clone(),
+                };
+                let tool_record = ToolRegistryEntry {
+                    tool_id: tool_id.clone(),
+                    version: human_readable_version,
+                    canonical_version: expected_composite,
+                    content_map_hash: {
+                        let json = serde_json::to_string(&spec_runtime.content_map)
+                            .expect("content_map serializes to JSON");
+                        if spec_runtime.content_map.is_empty() {
+                            String::new()
+                        } else {
+                            format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
+                        }
+                    },
+                    deployed_at: mediapm_utils::Timestamp::default(),
+                    resolved_tag: metadata.resolved_tag,
+                    resolved_version: metadata.resolved_version,
+                    resolved_vcs_hash: metadata.resolved_vcs_hash,
+                };
+                return EntryOutcome::SkippedAfterResolve {
+                    tool_id: tool_id.clone(),
+                    key: key.clone(),
+                    spec_runtime,
+                    own_map,
+                    backfill,
+                    tool_record,
+                };
+            }
+
+            let mut provision_metadata = metadata;
+            provision_metadata.canonical_version = expected_composite;
+            PreResolveOutcome::Resolved(fetch, provision_metadata)
+        }
+        Err(e) => {
+            return EntryOutcome::ResolveError {
+                tool_id: tool_id.clone(),
+                error: MediaPmError::Conductor(e),
+            };
+        }
+    };
+
+    // Fetch and import tool payload.
+    let payload_result = if is_builtin_code {
+        Ok(None)
+    } else {
+        fetch_and_import_tool_payload(workspace_cas, tool_id, cache, effective_group, pre_resolved)
+            .await
+    };
+
+    match payload_result {
+        Ok(Some(payload)) => EntryOutcome::Fetched {
+            tool_id: tool_id.clone(),
+            is_builtin_code,
+            already_exists,
+            payload,
+        },
+        Ok(None) => EntryOutcome::FetchedNone {
+            tool_id: tool_id.clone(),
+            is_builtin_code,
+            already_exists,
+            resolved_canonical_version,
+            resolved_tag: resolved_tag_value,
+            resolved_version: resolved_version_value,
+            resolved_vcs_hash: resolved_vcs_hash_value,
+        },
+        Err(e) => EntryOutcome::FetchError { tool_id: tool_id.clone(), error: e },
+    }
+}
+
+/// Applies a single entry outcome to the shared mutable state.
+///
+/// This is the ordered-merge half of the parallel provisioning design:
+/// outcomes are produced concurrently by [`provision_entry`], then applied
+/// sequentially in entry order here.
+fn apply_entry_outcome(
+    entry: &ProvisionEntry,
+    outcome: EntryOutcome,
+    generated_doc: &mut NickelDocument,
+    tool_runtimes: &mut BTreeMap<String, ToolRuntime>,
+    provisioned_own_maps: &mut BTreeMap<String, BTreeMap<String, String>>,
+    report: &mut ToolSyncReport,
+    live_state: &mut HashMap<String, Vec<ToolRegistryEntry>>,
+    pruned_tools: &mut usize,
+    inherited_env_vars: &BTreeMap<String, Vec<String>>,
+    pb: &dyn ProgressBarApi,
+) {
+    let tool_req = &entry.tool_requirement;
+
+    match outcome {
+        EntryOutcome::Skipped { tool_id, key, spec_runtime, own_map } => {
+            tool_runtimes.entry(key).or_insert(spec_runtime);
+            provisioned_own_maps.insert(tool_id, own_map);
+            report.tools_skipped += 1;
+            pb.advance(1);
+        }
+        EntryOutcome::ResolveError { tool_id, error } => {
+            report.warnings.push(format!(
+                "tool {tool_id}: resolve failed (will retry on next sync): {error}",
+            ));
+            pb.advance(1);
+        }
+        EntryOutcome::SkippedAfterResolve {
+            tool_id,
+            key,
+            spec_runtime,
+            own_map,
+            backfill,
+            tool_record,
+        } => {
+            tool_runtimes.entry(key).or_insert(spec_runtime);
+            provisioned_own_maps.insert(tool_id, own_map);
+            report.resolved_field_backfills.push(backfill);
+            report.tool_records.push(tool_record);
+            report.tools_skipped += 1;
+            pb.advance(1);
+        }
+        EntryOutcome::Fetched { tool_id, is_builtin_code, already_exists, mut payload } => {
+            // Record the tool's own (pre-inline) content map.
+            provisioned_own_maps.insert(tool_id.clone(), payload.content_map.clone());
+
+            // Inline direct same-step dependency payloads.
+            payload.content_map.extend(inline_same_step_deps(
+                &tool_id,
+                tool_req,
+                provisioned_own_maps,
+                crate::tools::dependency::known_dependency_type,
+            ));
+
+            // Compute content-addressed hash.
+            let content_map_hash: String = if payload.content_map.is_empty() {
+                String::new()
+            } else {
+                let json = serde_json::to_string(&payload.content_map)
+                    .expect("content_map serializes to JSON");
+                format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
+            };
+
+            let ffmpeg_limits =
+                resolve_ffmpeg_slot_limits(tool_req.max_input_slots, tool_req.max_output_slots);
+            let (spec, runtime) = build_tool_spec(
+                &tool_id,
+                payload.content_map,
+                &payload.os_exec_paths,
+                ffmpeg_limits,
+            );
+
+            if !already_exists && !is_builtin_code {
+                report.tools_added += 1;
+            } else {
+                report.tools_updated += 1;
+            }
+
+            let now = mediapm_utils::Timestamp::now();
+            report.tool_records.push(ToolRegistryEntry {
+                tool_id: tool_id.clone(),
+                version: payload.human_readable_version,
+                canonical_version: payload.canonical_version,
+                content_map_hash: content_map_hash.clone(),
+                deployed_at: now,
+                resolved_tag: payload.resolved_tag,
+                resolved_version: payload.resolved_version,
+                resolved_vcs_hash: payload.resolved_vcs_hash,
+            });
+
+            let entry_for_live = report.tool_records.last().unwrap().clone();
+            live_state.entry(tool_id.clone()).or_default().push(entry_for_live);
+
+            let inherited = inherited_env_vars.get(tool_id.as_str()).cloned().unwrap_or_default();
+            let mut full_runtime = runtime;
+            full_runtime.inherited_env_vars = inherited;
+
+            let tool_key = if content_map_hash.is_empty() {
+                tool_id.clone()
+            } else {
+                format!("{tool_id}@{content_map_hash}")
+            };
+
+            // Prune old version keys.
+            let prefix = format!("{tool_id}@");
+            let old: Vec<String> = generated_doc
+                .tools
+                .keys()
+                .filter(|k| {
+                    (k.starts_with(&prefix) || k.as_str() == tool_id.as_str())
+                        && k.as_str() != tool_key.as_str()
+                })
+                .cloned()
+                .collect();
+            *pruned_tools += old.len();
+            for k in &old {
+                if let Some(spec) = generated_doc.tools.get_mut(k) {
+                    spec.runtime.content_map.clear();
+                }
+            }
+
+            generated_doc.tools.insert(tool_key.clone(), spec);
+            tool_runtimes.insert(tool_key, full_runtime);
+        }
+        EntryOutcome::FetchedNone {
+            tool_id,
+            is_builtin_code,
+            already_exists,
+            resolved_canonical_version,
+            resolved_tag,
+            resolved_version,
+            resolved_vcs_hash,
+        } => {
+            provisioned_own_maps.insert(tool_id.clone(), BTreeMap::new());
+            let runtime = ToolRuntime {
+                impure: false,
+                inherited_env_vars: inherited_env_vars.get(&tool_id).cloned().unwrap_or_default(),
+                ..ToolRuntime::default()
+            };
+            tool_runtimes.insert(tool_id.clone(), runtime.clone());
+
+            let now = mediapm_utils::Timestamp::now();
+            let composite_for_ok_none = compute_composite_canonical_version(
+                &resolved_canonical_version,
+                &tool_id,
+                tool_req,
+                live_state,
+            );
+            report.tool_records.push(ToolRegistryEntry {
+                tool_id: tool_id.clone(),
+                version: format!(
+                    "{}+{}",
+                    env!("CARGO_PKG_VERSION"),
+                    crate::global::MEDIAPM_GIT_HASH
+                ),
+                canonical_version: composite_for_ok_none,
+                content_map_hash: String::new(),
+                deployed_at: now,
+                resolved_tag,
+                resolved_version,
+                resolved_vcs_hash,
+            });
+
+            let entry_for_live = report.tool_records.last().unwrap().clone();
+            live_state.entry(tool_id.clone()).or_default().push(entry_for_live);
+
+            if !already_exists && !is_builtin_code {
+                report.tools_added += 1;
+            }
+
+            if is_builtin_code {
+                if already_exists {
+                    report.tools_updated += 1;
+                }
+            } else if generated_doc.tools.contains_key(&tool_id) {
+                report.tools_updated += 1;
+            } else {
+                generated_doc.tools.insert(
+                    tool_id.clone(),
+                    mediapm_conductor::ToolSpec {
+                        name: tool_id.clone(),
+                        kind: mediapm_conductor::ToolKindSpec::Executable {
+                            command: Vec::new(),
+                            env_vars: BTreeMap::new(),
+                            success_codes: vec![0],
+                        },
+                        inputs: BTreeMap::new(),
+                        default_inputs: BTreeMap::new(),
+                        outputs: BTreeMap::new(),
+                        runtime,
+                    },
+                );
+            }
+        }
+        EntryOutcome::FetchError { tool_id, error } => {
+            report.warnings.push(format!(
+                "tool {tool_id}: provisioning failed (will retry on next sync): {error}",
+            ));
+            pb.advance(1);
+        }
+    }
+}
 
 /// Returns whether every hash in a string content map is present in `cas`.
 async fn workspace_content_map_is_available(
@@ -190,16 +723,14 @@ struct ProvisionEntry {
     /// The tool requirement to apply when provisioning this entry.
     tool_requirement: ToolRequirement,
     /// Whether this entry came from the user config or was auto-vivified.
-    #[allow(dead_code)]
     kind: EntryKind,
 }
 
-#[allow(dead_code)]
 enum EntryKind {
     /// Entry from the user's `tools.<id>` config.
     Explicit,
     /// Auto-vivified from a dependency declaration.
-    Dep { dependent: String },
+    Dep,
 }
 
 /// Resolve a dependency's effective version spec, converting from
@@ -326,7 +857,7 @@ fn build_provisioning_entries(
             dep_entries.push(ProvisionEntry {
                 tool_id: dep_id.clone(),
                 tool_requirement: dep_req,
-                kind: EntryKind::Dep { dependent: tool_id.clone() },
+                kind: EntryKind::Dep,
             });
         }
     }
@@ -350,7 +881,7 @@ fn build_provisioning_entries(
                 // Dep entries come first in the vec; if the existing entry is
                 // a dep and this is explicit, skip the explicit one.
                 if matches!(entry.kind, EntryKind::Explicit)
-                    && matches!(deduped[idx].kind, EntryKind::Dep { .. })
+                    && matches!(deduped[idx].kind, EntryKind::Dep)
                 {
                     continue;
                 }
@@ -694,479 +1225,103 @@ pub(crate) async fn reconcile_desired_tools(
     // `deps/<dep_id>/` from these maps, so they must hold each dep's OWN
     // payload keys only — never inlined `deps/` entries (non-transitive).
     let mut provisioned_own_maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    for entry in &entries {
-        let tool_id = &entry.tool_id;
-        let tool_req = &entry.tool_requirement;
-        let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
-        let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
+    // Split entries into two levels: level-0 (deps, no own deps) and
+    // level-1 (explicit tools, may have deps). All level-0 entries must be
+    // applied before level-1 entries start, because level-1 inlining reads
+    // `provisioned_own_maps` populated by level-0 apply.
+    let level0: Vec<(usize, &ProvisionEntry)> =
+        entries.iter().enumerate().filter(|(_, e)| matches!(e.kind, EntryKind::Dep)).collect();
+    let level1: Vec<(usize, &ProvisionEntry)> =
+        entries.iter().enumerate().filter(|(_, e)| matches!(e.kind, EntryKind::Explicit)).collect();
 
-        if tool_req.version_spec != ConfigVersionSpec::Latest
-            && tool_req.version_spec != ConfigVersionSpec::Inherit
-            && let Some(entry) = state.managed_tools.iter().find(|e| e.tool_id == *tool_id)
-        {
-            // Convert ConfigVersionSpec to VersionSpec for spec matching.
-            // At this point we know it's Exact (guarded by the != Latest/Inherit check above).
-            let resolved_spec = match &tool_req.version_spec {
-                ConfigVersionSpec::Exact(fields) => VersionSpec::Exact(fields.clone()),
-                _ => unreachable!(), // Latest/Inherit already filtered above
-            };
-            if spec_matches_entry(
-                &resolved_spec,
-                entry.resolved_tag.as_deref(),
-                entry.resolved_version.as_deref(),
-                entry.resolved_vcs_hash.as_deref(),
-            ) {
-                // Already have the desired version — skip provisioning when the
-                // workspace CAS still holds the active content map bytes.
-                // Reconstruct the runtime under its conductor tool id
-                // (generated doc key). The active `{name}@{hash}` entry wins;
-                // stale pruned keys have cleared maps and a bare stale entry
-                // may linger.
-                if let Some((key, spec)) = find_active_tool_spec(&generated_doc, tool_id)
-                    && workspace_content_map_is_available(
-                        workspace_cas.as_ref(),
-                        &spec.runtime.content_map,
-                    )
-                    .await
-                {
-                    tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
-                    // Track the dep's own (pre-inline) payload map so
-                    // requesters processed later in this pass can re-inline
-                    // it under `deps/<tool_id>/`.
-                    provisioned_own_maps.insert(
-                        tool_id.clone(),
-                        strip_inlined_deps_keys(&spec.runtime.content_map),
-                    );
-                    report.tools_skipped += 1;
-                    pb.advance(1);
-                    continue;
-                }
+    // Level 0: parallel resolve + fetch, sequential apply.
+    let level0_outcomes: Vec<(usize, EntryOutcome)> = stream::iter(level0.iter().copied())
+        .map(|(idx, entry)| {
+            let cache_ref = &cache;
+            let cas_ref = workspace_cas.as_ref();
+            let state_ref = state;
+            let gen_ref = &generated_doc;
+            let live_ref = &live_state;
+            let group_ref = effective_group;
+            async move {
+                let outcome = provision_entry(
+                    entry,
+                    state_ref,
+                    gen_ref,
+                    live_ref,
+                    cas_ref,
+                    cache_ref,
+                    group_ref,
+                    recheck_policy,
+                )
+                .await;
+                (idx, outcome)
             }
-        }
+        })
+        .buffer_unordered(MAX_CONCURRENT_TOOL_PROVISIONING)
+        .collect()
+        .await;
+    let mut sorted0 = level0_outcomes;
+    sorted0.sort_by_key(|(idx, _)| *idx);
+    for (idx, outcome) in sorted0 {
+        apply_entry_outcome(
+            &entries[idx],
+            outcome,
+            &mut generated_doc,
+            &mut tool_runtimes,
+            &mut provisioned_own_maps,
+            &mut report,
+            &mut live_state,
+            &mut pruned_tools,
+            &inherited_env_vars,
+            pb.as_ref(),
+        );
+    }
 
-        // Initialized in the Ok(fetch) arm before the skip check;
-        // used in the Ok(None) payload branch below. String::new() is
-        // the dead initial value because the assignment in the match
-        // arm always runs before any read (other paths `continue`).
-        #[allow(unused_assignments)]
-        let mut resolved_canonical_version = String::new();
-        // Captured from provider metadata in the Ok(fetch) arm before the skip
-        // check; used in the Ok(None) payload branch below. None is the dead
-        // initial value because the assignment in the match arm always runs
-        // before any read (other paths `continue`).
-        #[allow(unused_assignments)]
-        let mut resolved_tag_value: Option<String> = None;
-        #[allow(unused_assignments)]
-        let mut resolved_version_value: Option<String> = None;
-        #[allow(unused_assignments)]
-        let mut resolved_vcs_hash_value: Option<String> = None;
-        let pre_resolved = match provider::resolve_tool_fetch(
-            tool_id,
-            Some((&*cache, "tool_metadata")),
-            recheck_policy,
-        )
-        .await
-        {
-            Ok((fetch, metadata)) => {
-                let human_readable_version = metadata.human_readable_version.clone();
-                let canonical_version = metadata.canonical_version.clone();
-                let metadata_cached = metadata.metadata_cached;
-                let metadata_fetch_count = metadata.metadata_fetch_count;
-                resolved_canonical_version.clone_from(&canonical_version);
-                resolved_tag_value.clone_from(&metadata.resolved_tag);
-                resolved_version_value.clone_from(&metadata.resolved_version);
-                resolved_vcs_hash_value.clone_from(&metadata.resolved_vcs_hash);
-
-                match &tool_req.version_spec {
-                    ConfigVersionSpec::Exact(fields) => {
-                        if let Some(hash) = &fields.vcs_hash {
-                            // A `None` resolved tag never satisfies the hash
-                            // check; only the canonical version may match.
-                            if resolved_canonical_version != *hash
-                                && resolved_tag_value.as_deref() != Some(hash.as_str())
-                            {
-                                return Err(MediaPmError::Workflow(format!(
-                                    "tool {tool_id}: requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {}",
-                                    resolved_tag_value.as_deref().unwrap_or("(none)")
-                                )));
-                            }
-                        }
-                        if let Some(tag) = &fields.tag
-                            && resolved_tag_value.as_deref() != Some(tag.as_str())
-                        {
-                            return Err(MediaPmError::Workflow(format!(
-                                "tool {tool_id}: requested tag {tag} but resolved {}",
-                                resolved_tag_value.as_deref().unwrap_or("(none)")
-                            )));
-                        }
-                        if let Some(ver) = &fields.version
-                            && human_readable_version != *ver
-                        {
-                            return Err(MediaPmError::Workflow(format!(
-                                "tool {tool_id}: requested version {ver} but resolved {human_readable_version}"
-                            )));
-                        }
-                    }
-                    ConfigVersionSpec::Latest => {} // always OK
-                    ConfigVersionSpec::Inherit => {
-                        return Err(MediaPmError::Workflow(format!(
-                            "tool {tool_id}: 'inherit' version_spec is only valid for dependencies, not global tool requirements"
-                        )));
-                    }
-                }
-
-                // Compute expected composite canonical_version for skip check.
-                // For tools with same-step dependencies, include dep versions in composite.
-                let expected_composite = compute_composite_canonical_version(
-                    &canonical_version,
-                    tool_id,
-                    tool_req,
-                    &live_state,
-                );
-
-                // Check skip: does live_state[tool_id] have any ACTIVE entry with
-                // canonical_version == expected_composite? Filter to only non-empty hashes.
-                let should_skip = live_state.get(tool_id.as_str()).is_some_and(|entries| {
-                    entries.iter().any(|e| {
-                        !e.content_map_hash.is_empty() && e.canonical_version == expected_composite
-                    })
-                });
-
-                let content_map_available = find_active_tool_spec(&generated_doc, tool_id)
-                    .map(|(_, spec)| spec.runtime.content_map.clone())
-                    .is_some_and(|content_map| !content_map.is_empty());
-
-                if should_skip
-                    && content_map_available
-                    && match find_active_tool_spec(&generated_doc, tool_id) {
-                        Some((_, spec)) => {
-                            workspace_content_map_is_available(
-                                workspace_cas.as_ref(),
-                                &spec.runtime.content_map,
-                            )
-                            .await
-                        }
-                        None => false,
-                    }
-                {
-                    PreResolveOutcome::Skip {
-                        name: tool_id.clone(),
-                        human_readable_version: human_readable_version.clone(),
-                        version: expected_composite.clone(),
-                        metadata_cached,
-                        metadata_fetch_count,
-                        resolved_tag: metadata.resolved_tag.clone(),
-                        resolved_version: metadata.resolved_version.clone(),
-                        resolved_vcs_hash: metadata.resolved_vcs_hash.clone(),
-                    }
-                } else {
-                    let mut provision_metadata = metadata;
-                    provision_metadata.canonical_version = expected_composite;
-                    PreResolveOutcome::Resolved(fetch, provision_metadata)
-                }
+    // Level 1: parallel resolve + fetch, sequential apply.
+    // `provisioned_own_maps` is now fully populated from level-0, so
+    // level-1 entries can inline same-step dep payloads.
+    let level1_outcomes: Vec<(usize, EntryOutcome)> = stream::iter(level1.iter().copied())
+        .map(|(idx, entry)| {
+            let cache_ref = &cache;
+            let cas_ref = workspace_cas.as_ref();
+            let state_ref = state;
+            let gen_ref = &generated_doc;
+            let live_ref = &live_state;
+            let group_ref = effective_group;
+            async move {
+                let outcome = provision_entry(
+                    entry,
+                    state_ref,
+                    gen_ref,
+                    live_ref,
+                    cas_ref,
+                    cache_ref,
+                    group_ref,
+                    recheck_policy,
+                )
+                .await;
+                (idx, outcome)
             }
-            Err(e) => {
-                let error_bar = effective_group.add_bar(1, &format!("{tool_id} [res]"));
-                error_bar.finish_warning();
-                report.warnings.push(format!(
-                    "tool {tool_id}: resolve failed (will retry on next sync): {e}",
-                ));
-                pb.advance(1);
-                continue;
-            }
-        };
-
-        let was_skip = matches!(&pre_resolved, PreResolveOutcome::Skip { .. });
-        // Clone BEFORE pre_resolved is moved into fetch_and_import_tool_payload
-        // below, so the Skip-path registration can read its resolved fields.
-        let pre_resolved_for_skip = pre_resolved.clone();
-        // Capture fresh resolved metadata for the skip backfill BEFORE
-        // pre_resolved is moved into fetch_and_import_tool_payload below.
-        let skip_backfill: Option<ToolRegistryEntry> = match &pre_resolved {
-            PreResolveOutcome::Skip {
-                name,
-                human_readable_version,
-                version,
-                resolved_tag,
-                resolved_version,
-                resolved_vcs_hash,
-                ..
-            } => Some(ToolRegistryEntry {
-                tool_id: name.clone(),
-                version: human_readable_version.clone(),
-                canonical_version: version.clone(),
-                content_map_hash: String::new(),
-                deployed_at: mediapm_utils::Timestamp::default(),
-                resolved_tag: resolved_tag.clone(),
-                resolved_version: resolved_version.clone(),
-                resolved_vcs_hash: resolved_vcs_hash.clone(),
-            }),
-            PreResolveOutcome::Resolved(..) => None,
-        };
-        let payload_result = if is_builtin_code {
-            Ok(None)
-        } else {
-            fetch_and_import_tool_payload(
-                workspace_cas.as_ref(),
-                tool_id,
-                &cache,
-                effective_group,
-                pre_resolved,
-            )
-            .await
-        };
-
-        if was_skip {
-            // Skipped tools still need env var entries. Reconstruct the
-            // runtime under its conductor tool id (generated doc key): the
-            // active `{name}@{hash}` entry with a non-empty content map wins
-            // (stale pruned keys have cleared maps).
-            if let Some((key, spec)) = find_active_tool_spec(&generated_doc, tool_id) {
-                tool_runtimes.entry(key.clone()).or_insert(spec.runtime.clone());
-                // Track the dep's own (pre-inline) payload map — the doc
-                // runtime carries inlined `deps/...` entries, so strip them
-                // before storing the own map for re-inlining.
-                provisioned_own_maps
-                    .insert(tool_id.clone(), strip_inlined_deps_keys(&spec.runtime.content_map));
-            }
-            // Backfill fresh resolved metadata into the persisted registry.
-            if let Some(backfill) = skip_backfill {
-                report.resolved_field_backfills.push(backfill);
-            }
-            // Register the skipped tool in the managed-tool registry. A
-            // provisioned-but-unregistered tool is illegal state: the
-            // post-sync warning check would otherwise flag it as needing
-            // sync on every pass. The Resolved path already pushes a
-            // `tool_records` entry; the Skip path must do the same.
-            if let Some((_, spec)) = find_active_tool_spec(&generated_doc, tool_id) {
-                let content_map_hash: String = if spec.runtime.content_map.is_empty() {
-                    String::new()
-                } else {
-                    let json = serde_json::to_string(&spec.runtime.content_map)
-                        .expect("content_map serializes to JSON");
-                    format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
-                };
-                let (
-                    human_readable_version,
-                    expected_composite,
-                    resolved_tag,
-                    resolved_version,
-                    resolved_vcs_hash,
-                ) = match &pre_resolved_for_skip {
-                    PreResolveOutcome::Skip {
-                        human_readable_version,
-                        version,
-                        resolved_tag,
-                        resolved_version,
-                        resolved_vcs_hash,
-                        ..
-                    } => (
-                        human_readable_version.clone(),
-                        version.clone(),
-                        resolved_tag.clone(),
-                        resolved_version.clone(),
-                        resolved_vcs_hash.clone(),
-                    ),
-                    PreResolveOutcome::Resolved(..) => unreachable!("was_skip implies Skip"),
-                };
-                report.tool_records.push(ToolRegistryEntry {
-                    tool_id: tool_id.clone(),
-                    version: human_readable_version,
-                    canonical_version: expected_composite,
-                    content_map_hash,
-                    deployed_at: mediapm_utils::Timestamp::default(),
-                    resolved_tag,
-                    resolved_version,
-                    resolved_vcs_hash,
-                });
-            }
-            report.tools_skipped += 1;
-            pb.advance(1);
-            continue;
-        }
-
-        match payload_result {
-            Ok(Some(mut payload)) => {
-                // Track the tool's own (pre-inline) content map BEFORE
-                // inlining so requesters later in this pass can re-inline it
-                // under `deps/<tool_id>/`.
-                provisioned_own_maps.insert(tool_id.clone(), payload.content_map.clone());
-
-                // Inline direct same-step dependency payloads under
-                // `deps/<dep_id>/<key>`. The hash below is computed AFTER
-                // this extend so the tool key and skip identity reflect the
-                // inlined deps.
-                payload.content_map.extend(inline_same_step_deps(
-                    tool_id,
-                    tool_req,
-                    &provisioned_own_maps,
-                    crate::tools::dependency::known_dependency_type,
-                ));
-
-                // Compute content-addressed hash from content_map before it's
-                // moved into build_tool_spec.
-                let content_map_hash: String = if payload.content_map.is_empty() {
-                    String::new()
-                } else {
-                    let json = serde_json::to_string(&payload.content_map)
-                        .expect("content_map serializes to JSON");
-                    format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
-                };
-
-                // Determine ffmpeg slot limits from the tool requirement.
-                // Non-ffmpeg tools never set these fields (validated earlier),
-                // so the default applies for them; ffmpeg honors its override.
-                let ffmpeg_limits =
-                    resolve_ffmpeg_slot_limits(tool_req.max_input_slots, tool_req.max_output_slots);
-
-                // Build proper spec and runtime.
-                let (spec, runtime) = build_tool_spec(
-                    tool_id,
-                    payload.content_map,
-                    &payload.os_exec_paths,
-                    ffmpeg_limits,
-                );
-
-                if !already_exists && !is_builtin_code {
-                    report.tools_added += 1;
-                } else {
-                    report.tools_updated += 1;
-                }
-
-                // Record deployment metadata for the managed-tool registry.
-                let now = mediapm_utils::Timestamp::now();
-                report.tool_records.push(ToolRegistryEntry {
-                    tool_id: tool_id.clone(),
-                    version: payload.human_readable_version.clone(),
-                    canonical_version: payload.canonical_version.clone(),
-                    content_map_hash: content_map_hash.clone(),
-                    deployed_at: now,
-                    resolved_tag: payload.resolved_tag.clone(),
-                    resolved_version: payload.resolved_version.clone(),
-                    resolved_vcs_hash: payload.resolved_vcs_hash.clone(),
-                });
-
-                // Update live_state for subsequent entries in the same sync.
-                let entry_for_live = report.tool_records.last().unwrap().clone();
-                live_state.entry(tool_id.clone()).or_default().push(entry_for_live.clone());
-
-                // Inject inherited_env_vars from requirement config.
-                let inherited = inherited_env_vars.get(tool_id).cloned().unwrap_or_default();
-
-                let mut full_runtime = runtime.clone();
-                full_runtime.inherited_env_vars = inherited;
-
-                // Use content-addressed key: "{name}@{hash}".
-                let tool_key = if content_map_hash.is_empty() {
-                    tool_id.clone()
-                } else {
-                    format!("{tool_id}@{content_map_hash}")
-                };
-
-                // Prune old version keys from generated documents.
-                let prefix = format!("{tool_id}@");
-                let old: Vec<String> = generated_doc
-                    .tools
-                    .keys()
-                    .filter(|k| (k.starts_with(&prefix) || *k == tool_id) && *k != &tool_key)
-                    .cloned()
-                    .collect();
-                pruned_tools += old.len();
-                for k in &old {
-                    // Clear content_map instead of removing the entry.
-                    // User-added manual entries (whose bare tool_id is not in
-                    // used_tool_ids) are never touched.
-                    if let Some(spec) = generated_doc.tools.get_mut(k) {
-                        spec.runtime.content_map.clear();
-                    }
-                }
-
-                generated_doc.tools.insert(tool_key.clone(), spec);
-                // Key by the conductor tool id (the generated doc key) so
-                // env paths match the ProvisionCache deployment layout.
-                tool_runtimes.insert(tool_key.clone(), full_runtime);
-            }
-            Ok(None) => {
-                // No payload fetched (internal launcher, no catalog entry,
-                // or no host-OS action). Create a minimal spec without
-                // content map so the tool is still registered. The own map
-                // is empty — nothing to inline for requesters.
-                provisioned_own_maps.insert(tool_id.clone(), BTreeMap::new());
-                let runtime = ToolRuntime {
-                    impure: false,
-                    inherited_env_vars: inherited_env_vars
-                        .get(tool_id)
-                        .cloned()
-                        .unwrap_or_default(),
-                    ..ToolRuntime::default()
-                };
-                // Key by the conductor tool id — bare form here because
-                // there is no content map.
-                tool_runtimes.insert(tool_id.clone(), runtime.clone());
-
-                // Record deployment metadata (no payload — builtin or launcher).
-                let now = mediapm_utils::Timestamp::now();
-                let composite_for_ok_none = compute_composite_canonical_version(
-                    &resolved_canonical_version,
-                    tool_id,
-                    &entry.tool_requirement,
-                    &live_state,
-                );
-                report.tool_records.push(ToolRegistryEntry {
-                    tool_id: tool_id.clone(),
-                    version: format!(
-                        "{}+{}",
-                        env!("CARGO_PKG_VERSION"),
-                        crate::global::MEDIAPM_GIT_HASH
-                    ),
-                    canonical_version: composite_for_ok_none,
-                    content_map_hash: String::new(),
-                    deployed_at: now,
-                    resolved_tag: resolved_tag_value.clone(),
-                    resolved_version: resolved_version_value.clone(),
-                    resolved_vcs_hash: resolved_vcs_hash_value.clone(),
-                });
-
-                // Update live_state for subsequent entries in the same sync.
-                let entry_for_live = report.tool_records.last().unwrap().clone();
-                live_state.entry(tool_id.clone()).or_default().push(entry_for_live.clone());
-
-                if !already_exists && !is_builtin_code {
-                    report.tools_added += 1;
-                }
-
-                if is_builtin_code {
-                    if already_exists {
-                        report.tools_updated += 1;
-                    }
-                } else if generated_doc.tools.contains_key(tool_id) {
-                    report.tools_updated += 1;
-                } else {
-                    generated_doc.tools.insert(
-                        tool_id.clone(),
-                        mediapm_conductor::ToolSpec {
-                            name: tool_id.clone(),
-                            kind: mediapm_conductor::ToolKindSpec::Executable {
-                                command: Vec::new(),
-                                env_vars: BTreeMap::new(),
-                                success_codes: vec![0],
-                            },
-                            inputs: BTreeMap::new(),
-                            default_inputs: BTreeMap::new(),
-                            outputs: BTreeMap::new(),
-                            runtime,
-                        },
-                    );
-                }
-            }
-            Err(e) => {
-                report.warnings.push(format!(
-                    "tool {tool_id}: provisioning failed (will retry on next sync): {e}",
-                ));
-            }
-        }
-
-        pb.advance(1);
+        })
+        .buffer_unordered(MAX_CONCURRENT_TOOL_PROVISIONING)
+        .collect()
+        .await;
+    let mut sorted1 = level1_outcomes;
+    sorted1.sort_by_key(|(idx, _)| *idx);
+    for (idx, outcome) in sorted1 {
+        apply_entry_outcome(
+            &entries[idx],
+            outcome,
+            &mut generated_doc,
+            &mut tool_runtimes,
+            &mut provisioned_own_maps,
+            &mut report,
+            &mut live_state,
+            &mut pruned_tools,
+            &inherited_env_vars,
+            pb.as_ref(),
+        );
     }
 
     if report.warnings.is_empty() {
@@ -2314,7 +2469,7 @@ mod tests {
         assert_eq!(entries.len(), 2);
         // Dep entry should come first (dep-first sort)
         assert_eq!(entries[0].tool_id, "ffmpeg");
-        assert!(matches!(entries[0].kind, EntryKind::Dep { .. }));
+        assert!(matches!(entries[0].kind, EntryKind::Dep));
         assert_eq!(entries[1].tool_id, "yt-dlp");
         assert!(matches!(entries[1].kind, EntryKind::Explicit));
     }
