@@ -348,7 +348,10 @@ where
                         "",
                         "",
                     )));
-                    worker_bars.push(bar);
+                    worker_bars.push(bar.clone());
+                    // Start idle bars as finished — no spinner animation
+                    // until a step is dispatched to this worker.
+                    bar.finish_success();
                 }
             }
 
@@ -417,6 +420,10 @@ where
                         if options.progress_group.is_some() {
                             worker_steps_assigned[worker_idx] += 1;
                             let bar = worker_bars[worker_idx].clone();
+                            // Re-activate the worker bar from finished-idle
+                            // to active — restart() clears the terminal state
+                            // marker and resets elapsed tracking.
+                            bar.restart();
                             let assigned = worker_steps_assigned[worker_idx];
                             bar.set_truncation(Arc::new(worker_slot_label(
                                 WorkerSlotState::Active,

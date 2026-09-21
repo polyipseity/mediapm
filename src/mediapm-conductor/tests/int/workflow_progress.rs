@@ -230,12 +230,15 @@ async fn single_step_success_progress_ops() {
             // Overall bar created by with_overall(), total set to real step count.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
             ProgressOp::SetTotal { total: 1 },
-            // Per-worker idle bars (2 workers).
+            // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
+            ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
-            // Dispatch s1 to worker-0 (consume idle bar).
+            ProgressOp::FinishSuccess,
+            // Dispatch s1 to worker-0 (re-activate idle bar).
+            ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // Step completes — idle count1/total1, advance, finish success.
@@ -282,15 +285,19 @@ async fn two_step_same_level_success_progress_ops() {
             // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
             ProgressOp::SetTotal { total: 2 },
-            // Per-worker idle bars (2 workers).
+            // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
+            ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
-            // Dispatch s1 to worker-0 (consume idle bar).
+            ProgressOp::FinishSuccess,
+            // Dispatch s1 to worker-0 (re-activate idle bar).
+            ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
-            // Dispatch s2 to worker-1 (consume idle bar).
+            // Dispatch s2 to worker-1 (re-activate idle bar).
+            ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // Step 1 completes.
@@ -348,18 +355,23 @@ async fn three_step_same_level_progress_ops() {
             // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
             ProgressOp::SetTotal { total: 3 },
-            // Per-worker idle bars (2 workers).
+            // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
+            ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
-            // Dispatch s1 to worker-0 (assigned 1).
+            ProgressOp::FinishSuccess,
+            // Dispatch s1 to worker-0 (re-activate, assigned 1).
+            ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
-            // Dispatch s2 to worker-1 (assigned 1).
+            // Dispatch s2 to worker-1 (re-activate, assigned 1).
+            ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
-            // Dispatch s3 to worker-0 (assigned 2).
+            // Dispatch s3 to worker-0 (re-activate, assigned 2).
+            ProgressOp::Restart,
             dispatch_pc("default", "s3", "echo@v1", 2),
             ProgressOp::SetTotal { total: 2 },
             // Step 1 completes (worker-0: succeeded 1 / assigned 2 — s3 already
@@ -445,12 +457,15 @@ async fn two_step_sequential_levels_progress_ops() {
             // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
             ProgressOp::SetTotal { total: 2 },
-            // Per-worker idle bars (2 workers).
+            // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
+            ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
             idle_pc(),
-            // Level 0: dispatch s1 to worker-0 (assigned 1).
+            ProgressOp::FinishSuccess,
+            // Level 0: dispatch s1 to worker-0 (re-activate, assigned 1).
+            ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // Level 0 await — step 1 completes.
@@ -459,7 +474,8 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // Level 1: dispatch s2 to worker-0 (assigned 2).
+            // Level 1: dispatch s2 to worker-0 (re-activate, assigned 2).
+            ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 2),
             ProgressOp::SetTotal { total: 2 },
             // Level 1 await — step 2 completes.
