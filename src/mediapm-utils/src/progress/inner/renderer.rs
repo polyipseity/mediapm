@@ -972,176 +972,89 @@ impl ProgressRenderer {
     /// Advance all progress bars by one frame.
     ///
     /// Recomputes the uniform alignment width, then redraws every visible
-    /// bar from its tracked source state.
+    /// bar from its tracked source state.  Delegates entirely to
+    /// [`run_frame`](Self::run_frame) to guarantee exactly one draw per tick.
     pub fn tick(&mut self) {
-        // Step 0: Enable buffering BEFORE recomputing layout so all
-        // style changes from recompute_layout → sync_slot → apply_*_bar_style
-        // are suppressed until the WriteGate draw release.
-        self.gate.suppress();
-
-        // Step 1: Recompute uniform alignment width (styles now buffered).
-        self.recompute_layout();
-
-        // Step 2: Existing update logic with dirty tracking.
-        let resized = self.maybe_adjust_for_resize();
-
-        // When resize happened, mark all bound slots as dirty so they
-        // get re-synced even if no other mutation occurred.
-        if resized {
-            for slot in &self.slots {
-                if let Some(ref source) = *slot.source.borrow() {
-                    source.dirty.store(true, Ordering::Release);
-                }
-            }
-        }
-
-        for (i, slot) in self.slots.iter().enumerate() {
-            if let Some(ref source) = *slot.source.borrow() {
-                // Skip clean slots — nothing changed since last tick.
-                let dirty = resized || source.dirty.swap(false, Ordering::AcqRel);
-                if !dirty {
-                    continue;
-                }
-                let snap = source.snapshot();
-
-                // Compute EMA-smoothed rate for display in active bars only.
-                // Rate is only recomputed when position actually changes.
-                let rate_str: Option<String> = if snap.status == TrackStatus::Active {
-                    if snap.position != self.slots_timing[i].prev_position {
-                        let now = self.time_source.now();
-                        let dt =
-                            now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
-                        if dt > 0.001 {
-                            #[allow(clippy::cast_precision_loss)]
-                            let current =
-                                (snap.position.saturating_sub(self.slots_timing[i].prev_position))
-                                    as f64
-                                    / dt;
-                            self.slots_timing[i].rate =
-                                self.slots_timing[i].rate * 0.9 + current * 0.1;
-                            self.slots_timing[i].prev_position = snap.position;
-                            self.slots_timing[i].prev_instant = now;
+        self.run_frame(|renderer| {
+            // Emit debug snapshot (if enabled) — all bar states are fresh
+            // from sync.  The snapshot reads SharedState directly, so the
+            // order relative to sync_slot does not matter.
+            if let Some(ref sink) = renderer.debug_sink {
+                let bars: Vec<DebugSlotState> = renderer
+                    .slots
+                    .iter()
+                    .enumerate()
+                    .map(|(i, slot)| {
+                        let (bound, snap) = match slot.source.borrow().as_ref() {
+                            Some(s) => (true, s.snapshot()),
+                            None => (
+                                false,
+                                TrackSnapshot {
+                                    position: 0,
+                                    total: 0,
+                                    label: String::new(),
+                                    prefix: String::new(),
+                                    prefix_components: PrefixComponents::default(),
+                                    suffix: String::new(),
+                                    suffix_components: SuffixComponents::default(),
+                                    status: TrackStatus::Active,
+                                    elapsed: Duration::ZERO,
+                                },
+                            ),
+                        };
+                        let rate = if bound && snap.status == TrackStatus::Active {
+                            renderer.slots_timing[i].rate
+                        } else {
+                            0.0
+                        };
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "progress ETA math tolerates u64 to f64 precision loss"
+                        )]
+                        let eta = if bound
+                            && snap.status == TrackStatus::Active
+                            && snap.total > snap.position
+                            && renderer.slots_timing[i].rate > 0.0
+                        {
+                            Some(
+                                (snap.total - snap.position) as f64 / renderer.slots_timing[i].rate,
+                            )
+                        } else {
+                            None
+                        };
+                        DebugSlotState {
+                            slot: i,
+                            bound,
+                            label: snap.label.clone(),
+                            prefix: snap.prefix.clone(),
+                            position: snap.position,
+                            total: snap.total,
+                            status: format!("{:?}", snap.status),
+                            elapsed_secs: snap.elapsed.as_secs_f64(),
+                            rate_bytes_per_sec: rate,
+                            eta_secs: eta,
+                            suffix: snap.suffix.clone(),
+                            dirty: slot
+                                .source
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(|s| s.dirty.load(Ordering::Acquire)),
                         }
-                    }
-                    Some(format_rate(self.slots_timing[i].rate))
-                } else {
-                    None
+                    })
+                    .collect();
+                let snapshot = DebugTickSnapshot {
+                    r#type: "tick".to_string(),
+                    tick: sink.tick_count.load(Ordering::Relaxed),
+                    elapsed_secs: renderer
+                        .time_source
+                        .now()
+                        .duration_since(sink.start)
+                        .as_secs_f64(),
+                    bars,
                 };
-
-                // Compute ETA for active bars with known total and
-                // non-zero rate.
-                let eta_str = if snap.status == TrackStatus::Active
-                    && snap.total > snap.position
-                    && self.slots_timing[i].rate > 0.0
-                {
-                    #[allow(clippy::cast_precision_loss)]
-                    let remaining = (snap.total - snap.position) as f64 / self.slots_timing[i].rate;
-                    Some(format_eta(remaining))
-                } else {
-                    None
-                };
-
-                self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), eta_str.as_deref());
-                if snap.status == TrackStatus::Active {
-                    // bar.tick() called after buffer disable below.
-                } else if source.is_cleared() {
-                    slot.bar.set_style(blank_bar_style());
-                    slot.bar.set_message(" ");
-                    slot.bar.set_prefix("");
-                } else {
-                    self.finish_slot(i, snap.status);
-                }
+                sink.emit(&snapshot);
             }
-        }
-
-        // Emit debug snapshot (if enabled) — all bar states are fresh from sync.
-        if let Some(ref sink) = self.debug_sink {
-            let bars: Vec<DebugSlotState> = self
-                .slots
-                .iter()
-                .enumerate()
-                .map(|(i, slot)| {
-                    let (bound, snap) = match slot.source.borrow().as_ref() {
-                        Some(s) => (true, s.snapshot()),
-                        None => (
-                            false,
-                            TrackSnapshot {
-                                position: 0,
-                                total: 0,
-                                label: String::new(),
-                                prefix: String::new(),
-                                prefix_components: PrefixComponents::default(),
-                                suffix: String::new(),
-                                suffix_components: SuffixComponents::default(),
-                                status: TrackStatus::Active,
-                                elapsed: Duration::ZERO,
-                            },
-                        ),
-                    };
-                    let rate = if bound && snap.status == TrackStatus::Active {
-                        self.slots_timing[i].rate
-                    } else {
-                        0.0
-                    };
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        reason = "progress ETA math tolerates u64 to f64 precision loss"
-                    )]
-                    let eta = if bound
-                        && snap.status == TrackStatus::Active
-                        && snap.total > snap.position
-                        && self.slots_timing[i].rate > 0.0
-                    {
-                        Some((snap.total - snap.position) as f64 / self.slots_timing[i].rate)
-                    } else {
-                        None
-                    };
-                    DebugSlotState {
-                        slot: i,
-                        bound,
-                        label: snap.label.clone(),
-                        prefix: snap.prefix.clone(),
-                        position: snap.position,
-                        total: snap.total,
-                        status: format!("{:?}", snap.status),
-                        elapsed_secs: snap.elapsed.as_secs_f64(),
-                        rate_bytes_per_sec: rate,
-                        eta_secs: eta,
-                        suffix: snap.suffix.clone(),
-                        dirty: slot
-                            .source
-                            .borrow()
-                            .as_ref()
-                            .is_some_and(|s| s.dirty.load(Ordering::Acquire)),
-                    }
-                })
-                .collect();
-            let snapshot = DebugTickSnapshot {
-                r#type: "tick".to_string(),
-                tick: sink.tick_count.load(Ordering::Relaxed),
-                elapsed_secs: self.time_source.now().duration_since(sink.start).as_secs_f64(),
-                bars,
-            };
-            sink.emit(&snapshot);
-        }
-
-        // Step 3: Pre-roll newlines before first draw (bypasses buffer).
-        self.pre_roll_if_needed();
-
-        // Steps 4-6: RAII guard — draws go through while guard is alive,
-        // buffer re-enabled automatically when guard drops.
-        let _guard = self.gate.open();
-
-        // Always tick active bars
-        // Skip finished/abandoned/failed bars — their spinner is frozen on
-        // the final frame set by `finish_slot`.
-        for slot in &self.slots {
-            if let Some(ref source) = *slot.source.borrow()
-                && !source.is_finished()
-            {
-                slot.bar.tick();
-            }
-        }
+        });
     }
 
     /// Execute a frame: suppress writes, run `mutate`, advance spinners,
@@ -1152,7 +1065,6 @@ impl ProgressRenderer {
     /// After `mutate` returns, spinners are advanced and a single draw
     /// is triggered by opening the gate (indicatif draws on the next bar
     /// operation while the gate is open).
-    #[expect(dead_code, reason = "C5 will wire run_frame into tick() and ProgressGroup::tick()")]
     pub(crate) fn run_frame(&mut self, mutate: impl FnOnce(&mut Self)) {
         // Step 1: Suppress writes.
         self.gate.suppress();
@@ -1216,7 +1128,13 @@ impl ProgressRenderer {
                 };
 
                 self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), eta_str.as_deref());
-                if snap.status != TrackStatus::Active && !source.is_finished() {
+                if snap.status == TrackStatus::Active {
+                    // bar.tick() called in the spinner loop below.
+                } else if source.is_cleared() {
+                    slot.bar.set_style(blank_bar_style());
+                    slot.bar.set_message(" ");
+                    slot.bar.set_prefix("");
+                } else {
                     self.finish_slot(i, snap.status);
                 }
             }
