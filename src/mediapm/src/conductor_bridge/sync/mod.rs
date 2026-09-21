@@ -3287,4 +3287,176 @@ mod tests {
             "skip-path registration must carry a non-empty content_map_hash",
         );
     }
+
+    /// Seeds a user-level download cache with yt-dlp metadata (tag+hash)
+    /// and three plain-binary payloads (windows/macos/linux).
+    ///
+    /// Returns the cache root path. The `Cache` handle is dropped before
+    /// return, releasing the directory lock; the caller keeps the
+    /// underlying `TempDir` alive so the data persists.
+    ///
+    /// media-tagger is an offline builtin launcher (`GenerateLauncher`);
+    /// its `resolve_tool_fetch` arm returns `sources()` directly with
+    /// `metadata_fetch_count: 0`, so no metadata seeding is required.
+    async fn seed_two_tool_cache(cache_root: &std::path::Path) {
+        let cache = Cache::open(
+            cache_root,
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("test cache opens");
+
+        // Metadata: yt-dlp tag resolution served from cache (no GitHub API).
+        let tag = "2025.07.15";
+        let hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+        let api_key = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
+        cache.store_bytes("tool_metadata", api_key, format!("{tag}\n{hash}").as_bytes()).await;
+
+        // Payloads: three plain binaries at the REWRITTEN release URLs.
+        // `fetch_tool_sources` consults the cache by final URL, so seeding
+        // these exact keys makes the run network-free.
+        for (filename, payload) in &[
+            ("yt-dlp.exe", &b"fake yt-dlp windows binary"[..]),
+            ("yt-dlp_macos", &b"fake yt-dlp macos binary"[..]),
+            ("yt-dlp_linux", &b"fake yt-dlp linux binary"[..]),
+        ] {
+            let url =
+                format!("https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/{filename}");
+            cache.store_bytes("tools", &url, payload).await;
+        }
+        // Cache handle dropped here — directory lock released, data persists
+        // on disk under the TempDir that the caller holds.
+    }
+
+    /// Verifies that the parallel provisioning driver creates the correct
+    /// per-tool bars regardless of completion order. The assertion is a
+    /// **sorted multiset** of `(tool_id, phase)` pairs extracted from every
+    /// `AddBar` label — order-free by construction.
+    ///
+    /// Two tools: yt-dlp (seeded metadata + payloads) and media-tagger
+    /// (offline `GenerateLauncher`). Both take the `Resolved` path (empty
+    /// `MediaPmState` defeats both skip checks), so each produces exactly
+    /// 3 bars: `[res]`, `[fch]`, `[pro]`. The overall bar adds 1.
+    #[tokio::test]
+    async fn sync_multi_tool_per_tool_bars_are_order_independent() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root_tmp = mediapm_utils::temp::cache_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let tracker = RecordingProgressTracker::new();
+        let state = MediaPmState::default();
+
+        // Seed the cache with yt-dlp metadata + payloads.
+        seed_two_tool_cache(cache_root_tmp.path()).await;
+        // Cache handle dropped inside the fixture — directory lock released.
+
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+
+        // desired_tools: yt-dlp (needs cache seed) + media-tagger (offline).
+        // Both use Latest so neither skip-check fires (empty state).
+        let mut desired_tools = BTreeMap::new();
+        desired_tools.insert(
+            "yt-dlp".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: ConfigVersionSpec::Latest,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        desired_tools.insert(
+            "media-tagger".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: ConfigVersionSpec::Latest,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+
+        let result = reconcile_desired_tools(
+            workspace_cas,
+            &paths,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root_tmp.path()),
+            Some(&tracker),
+        )
+        .await;
+
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+
+        let ops = tracker.ops();
+
+        // --- overall bar ---
+        let add_bars: Vec<&ProgressOp> =
+            ops.iter().filter(|op| matches!(op, ProgressOp::AddBar { .. })).collect();
+        assert_eq!(
+            add_bars.len(),
+            1 + 3 * 2,
+            "expected 1 overall + 3 bars per tool (res/fch/pro) × 2 tools = 7, got {}",
+            add_bars.len()
+        );
+
+        // --- extract (tool_id, phase) from each AddBar label ---
+        let mut observed: Vec<(String, String)> = Vec::new();
+        for op in &add_bars {
+            if let ProgressOp::AddBar { label, .. } = op {
+                // Labels: "syncing tools", "yt-dlp <ver> [res]", etc.
+                // Phase is the last token in brackets.
+                let phase = label
+                    .rsplit_once('[')
+                    .and_then(|(_, rest)| rest.strip_suffix(']'))
+                    .unwrap_or("overall")
+                    .to_string();
+                // Tool id: everything before the phase tag (or "tools" for overall).
+                let tool_id = if phase == "overall" {
+                    "tools".to_string()
+                } else {
+                    label.split_once(' ').map(|(id, _)| id.to_string()).unwrap_or_default()
+                };
+                observed.push((tool_id, phase));
+            }
+        }
+        observed.sort();
+
+        let mut expected: Vec<(String, String)> = vec![
+            ("tools".to_string(), "overall".to_string()),
+            ("yt-dlp".to_string(), "res".to_string()),
+            ("yt-dlp".to_string(), "fch".to_string()),
+            ("yt-dlp".to_string(), "pro".to_string()),
+            ("media-tagger".to_string(), "res".to_string()),
+            ("media-tagger".to_string(), "fch".to_string()),
+            ("media-tagger".to_string(), "pro".to_string()),
+        ];
+        expected.sort();
+
+        assert_eq!(
+            observed, expected,
+            "sorted (tool_id, phase) multiset mismatch — order-independence violated"
+        );
+
+        // --- bar totals: [fch] = 3, [pro] = 3 for both tools ---
+        for op in &add_bars {
+            if let ProgressOp::AddBar { label, total } = op {
+                if label.ends_with("[fch]") || label.ends_with("[pro]") {
+                    assert_eq!(
+                        *total, 3,
+                        "{label}: expected total 3 for plain-binary/launcher sources, got {total}"
+                    );
+                }
+            }
+        }
+    }
 }
