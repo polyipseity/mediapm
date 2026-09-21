@@ -236,6 +236,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Dep content map has no deps/ keys (non-transitive)                                            | `sync_level_ordering_applies_deps_before_requesters` (integration)               | [covered] |
 | Exactly one state entry per distinct tool id                                                  | `sync_level_ordering_applies_deps_before_requesters` (integration)               | [covered] |
 | Parallel driver determinism (two syncs → identical bytes)                                     | `sync_parallel_driver_is_deterministic` (integration)                            | [covered] |
+| Per-tool bar order-independence (sorted multiset of AddBar labels)                              | `sync_multi_tool_per_tool_bars_are_order_independent` (unit)                     | [covered] |
 
 ### Counting mechanism
 
