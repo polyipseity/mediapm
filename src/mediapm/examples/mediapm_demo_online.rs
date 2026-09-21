@@ -2901,8 +2901,13 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         workspace_root.display()
     );
 
+    let options = mediapm::SyncLibraryOptions {
+        verify_materialization: true,
+        observer: Some(std::sync::Arc::new(mediapm::output::observer::CliSyncObserver)),
+        ..Default::default()
+    };
     let summary = sync_service
-        .sync_library_with_tag_update_checks(true, false, false)
+        .sync_library_with_options(options)
         .await
         .map_err(|error| format!("online demo sync failed: {error}"))?;
 

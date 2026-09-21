@@ -1095,8 +1095,18 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         clear_machine_workflows(&ingest_service.paths().conductor_generated_ncl)?;
     }
 
-    let maybe_summary =
-        if run_sync { Some(ingest_service.sync_library(false).await?) } else { None };
+    let maybe_summary = if run_sync {
+        let options =
+            mediapm::SyncLibraryOptions { verify_materialization: false, ..Default::default() };
+        // Demo prints per-phase result lines via observer.
+        let options = mediapm::SyncLibraryOptions {
+            observer: Some(std::sync::Arc::new(mediapm::output::observer::CliSyncObserver)),
+            ..options
+        };
+        Some(ingest_service.sync_library_with_options(options).await?)
+    } else {
+        None
+    };
     if let Some(summary) = &maybe_summary
         && summary.warnings.iter().any(|w| w.contains("failed step"))
     {
