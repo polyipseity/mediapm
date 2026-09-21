@@ -10,16 +10,16 @@ This file is the authoritative reference for what progress bars actually look li
 
 ## Source of truth
 
-- `src/mediapm-utils/src/progress/inner/components.rs` — templates, styles, truncation functions (`semantic_truncate_prefix`, `semantic_truncate_suffix`, `render_prefix_components`, `render_suffix_components`)
-- `src/mediapm-utils/src/progress/inner/renderer.rs` — layout (`recompute_layout`), single push point (`sync_snapshot_to_bar`), pre-roll, resize handling, debug sink
+- `src/mediapm-utils/src/progress/inner/components.rs`: templates, styles, truncation functions (`semantic_truncate_prefix`, `semantic_truncate_suffix`, `render_prefix_components`, `render_suffix_components`)
+- `src/mediapm-utils/src/progress/inner/renderer.rs`: layout (`recompute_layout`), single push point (`sync_snapshot_to_bar`), pre-roll, resize handling, debug sink
 - Verified by `src/mediapm-utils/tests/progress_output/*.rs` using exact `assert_eq!(term.contents(), concat!(...))`
 
 ## Width constants
 
 ```text
-MIN_PREFIX_WIDTH = 0       (decreasable floor — effective floor ~4 from ANSI reset in sync_snapshot_to_bar)
-MAX_PREFIX_WIDTH = 40      (hard ceiling — prefixes truncate beyond this)
-MIN_SUFFIX_WIDTH = 0       (decreasable floor — no ANSI overhead on suffix side)
+MIN_PREFIX_WIDTH = 0       (decreasable floor, effective floor ~4 from ANSI reset in sync_snapshot_to_bar)
+MAX_PREFIX_WIDTH = 40      (hard ceiling, prefixes truncate beyond this)
+MIN_SUFFIX_WIDTH = 0       (decreasable floor, no ANSI overhead on suffix side)
 MAX_SUFFIX_WIDTH = 50
 ```
 
@@ -87,7 +87,7 @@ All status-list suffixes use the **number-first** format: `{n} {word}`, comma-jo
 
 `sync_snapshot_to_bar` subtracts an ANSI overhead from `prefix_w` before calling either the client-truncation trait or the built-in `semantic_truncate_prefix`/`render_prefix_components` path.
 
-- **Client-truncated bars** (when `BarLabelTruncation` is installed via `set_truncation`): always **4 bytes** — client strings carry no colored markers; only the ANSI reset is needed. The renderer prepends `\x1b[0m` to the client-truncated prefix string.
+- **Client-truncated bars** (when `BarLabelTruncation` is installed via `set_truncation`): always **4 bytes**, since client strings carry no colored markers and only the ANSI reset is needed. The renderer prepends `\x1b[0m` to the client-truncated prefix string.
 - **Built-in bars** (`PrefixComponents` path): **13 bytes** for `Failed`/`Warning` (reset + color escape around marker); **4 bytes** for all other states.
 
 `recompute_layout` uses the same overhead logic to compute the available prefix width before layout.
@@ -157,13 +157,13 @@ Carries real-progress fields: version, completed/total, phase, workflow/step ide
 | 5 | `count/total` | Atomic |
 | 6 | fallback | Hard truncate |
 
-`eta` renders only when `rate` is present (eta-only-when-rate guard). `count` and `total` are stored separately but rendered and trimmed as one unit — a bare count or bare total is never shown.
+`eta` renders only when `rate` is present (eta-only-when-rate guard). `count` and `total` are stored separately but rendered and trimmed as one unit; a bare count or bare total is never shown.
 
 ### Struct 2: `WorkerBarLabel` (conductor worker-slot bars)
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries activity flag only — no workflow phase, no progress tally.
+Carries activity flag only, with no workflow phase and no progress tally.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
@@ -221,7 +221,7 @@ Carries file-path identity and phase. No version, no count/total, no workflow/st
 
 Each screen carries different semantic fields:
 
-- **Step bars** need progress tallies (`completed`/`total`) and version — materialization and worker bars have neither.
+- **Step bars** need progress tallies (`completed`/`total`) and version, whereas materialization and worker bars have neither.
 - **Worker bars** need activity flags but no progress tally or phase.
 - **Materialization bars** need path/name decomposition but no workflow identity, no version, no count/total.
 
@@ -272,7 +272,7 @@ Worker-slot states (`worker_slot_label` in `coordinator.rs`):
 | Failed | (empty) | (empty) | `idle` | `idle` | `F` |
 | Idle / Succeeded | (empty) | (empty) | `idle` | `idle` | (empty) |
 
-Worker labels are mediapm-agnostic — `tool` is the conductor step's own `ToolSpec.name`, never a managed-tool name.
+Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec.name`, never a managed-tool name.
 
 ### Screen C: Materialization (`src/mediapm/src/materializer/`)
 
