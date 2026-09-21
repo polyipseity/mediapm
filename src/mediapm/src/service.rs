@@ -1001,6 +1001,23 @@ impl MediaPmService<FileSystemCas> {
         self.sync_library_with_tag_update_checks(verify_materialization, false, false).await
     }
 
+    /// Runs a full library sync with options and an optional phase observer.
+    ///
+    /// When an observer is provided, [`SyncPhaseReport`]s are delivered after
+    /// each progress screen finishes.
+    pub async fn sync_library_with_options(
+        &mut self,
+        options: crate::SyncLibraryOptions,
+    ) -> Result<SyncSummary, MediaPmError> {
+        self.sync_library_with_tag_update_checks_and_observer(
+            options.verify_materialization,
+            options.check_tag_updates,
+            options.no_progress,
+            options.observer,
+        )
+        .await
+    }
+
     /// Runs a full library sync with optional tag-update checks.
     ///
     /// This is the primary sync entrypoint:
@@ -1025,6 +1042,23 @@ impl MediaPmService<FileSystemCas> {
         check_tag_updates: bool,
         no_progress: bool,
     ) -> Result<SyncSummary, MediaPmError> {
+        self.sync_library_with_tag_update_checks_and_observer(
+            verify_materialization,
+            check_tag_updates,
+            no_progress,
+            None,
+        )
+        .await
+    }
+
+    /// Runs a full library sync with optional tag-update checks and phase observer.
+    pub async fn sync_library_with_tag_update_checks_and_observer(
+        &mut self,
+        verify_materialization: bool,
+        check_tag_updates: bool,
+        no_progress: bool,
+        observer: Option<std::sync::Arc<dyn crate::SyncPhaseObserver + Send + Sync>>,
+    ) -> Result<SyncSummary, MediaPmError> {
         let effective_paths = self.resolve_effective_paths()?;
         let merged = self.resolve_effective_runtime_storage()?;
         let recheck_policy = if check_tag_updates {
@@ -1041,6 +1075,11 @@ impl MediaPmService<FileSystemCas> {
         // 2. Sync tools.
         let tools_report =
             self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, false).await?;
+
+        // Notify observer: tool sync phase complete.
+        if let Some(ref obs) = observer {
+            obs.on_phase(crate::SyncPhaseReport::Tools(tools_report.clone()));
+        }
 
         // Tool sync rewrites `.env.generated`; reload dotenv so workflow
         // unified-config env inheritance captures fresh tool paths.
@@ -1123,6 +1162,15 @@ impl MediaPmService<FileSystemCas> {
             group.join();
         }
 
+        // Notify observer: workflow phase complete.
+        if let Some(ref obs) = observer {
+            obs.on_phase(crate::SyncPhaseReport::Workflow(crate::WorkflowSyncSummary {
+                executed_instances,
+                cached_instances,
+                failed_steps: workflow_failed_steps,
+            }));
+        }
+
         // 4. Load mediapm document and state.
         let mut document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
@@ -1176,6 +1224,18 @@ impl MediaPmService<FileSystemCas> {
         .await?;
         if let Some(ref group) = materialize_pg {
             group.join();
+        }
+
+        // Notify observer: materialization phase complete.
+        if let Some(ref obs) = observer {
+            obs.on_phase(crate::SyncPhaseReport::Materialization(
+                crate::MaterializationSyncSummary {
+                    materialized_paths: materialize_report.materialized_paths,
+                    skipped_paths: materialize_report.skipped_paths,
+                    removed_paths: materialize_report.removed_paths,
+                    removed_empty_dirs: materialize_report.removed_empty_dirs,
+                },
+            ));
         }
 
         save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
