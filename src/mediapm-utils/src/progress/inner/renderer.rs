@@ -448,7 +448,7 @@ impl TrackedHandle {
     /// resets elapsed tracking, and marks the bar dirty so the next
     /// tick redraws it as active.
     pub fn restart(&self) {
-        self.state.restart()
+        self.state.restart();
     }
 }
 
@@ -563,7 +563,7 @@ struct SlotCache {
     suffix: RefCell<String>,
     /// Last prefix sent to `set_prefix`.
     prefix: RefCell<String>,
-    /// Cached prefix_w at last set_style call (style dedup).
+    /// Cached `prefix_w` at last `set_style` call (style dedup).
     style_prefix_w: Cell<usize>,
     /// Cached suffix_w at last set_style call (style dedup).
     style_suffix_w: Cell<usize>,
