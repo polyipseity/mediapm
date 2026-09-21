@@ -52,3 +52,22 @@ provision time or provisioning errors.
 - `ToolRequirement` entries are kept during normalization if `version_spec` is set (any variant). Old `version`/`tag` fields no longer exist — the single `version_spec` field is authoritative.
 - `dependencies` entries with `ConfigVersionSpec::Inherit` are treated as "use global default" — they are not removed but resolved at provision time.
 - Normalization runs in `MediaPmDocument::normalize()` and `MediaPmState::normalize()`.
+
+## Dependency types (`DependencyTypes`)
+
+Role flags on a `bool`-field struct defined in `src/mediapm/src/tools/dependency.rs`. A dependency may carry one or both roles. Not user-configurable; no serde derives.
+
+| Role flag | Meaning |
+|---|---|
+| `SAME_STEP` | Folded into the same step as a companion |
+| `CROSS_STEP` | Invoked as a separate workflow step |
+
+`SAME_STEP` and `CROSS_STEP` are the single-role constants; `combine()` unions them. The companion relationship type is determined by per-preset `known_dependency_type()` lookup, not by user config.
+
+## Spec matching (`spec_matches_entry`)
+
+`spec_matches_entry(spec, resolved_tag: Option<&str>, resolved_version: Option<&str>, resolved_vcs_hash: Option<&str>) -> bool`.
+
+- `VersionSpec::Latest` always returns `false` (caller re-resolves); `Inherit` is resolved away before this point.
+- `VersionSpec::Exact(fields)`: each specified field matches only when stored is `Some` AND equals the spec; unspecified fields are unchecked; stored `None` never matches (missing field means always re-provision).
+- All comparisons are exact string match — no trim, no semver normalization.

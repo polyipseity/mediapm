@@ -1,7 +1,7 @@
 ---
 description: "Use when editing tool-sync reconciliation coordination and content-addressed identity keys in src/mediapm/src/conductor_bridge/sync/mod.rs and documents.rs."
 name: "Tool Sync Coordinator and Content-Addressed Identity"
-applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conductor_bridge/documents.rs"
+applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conductor_bridge/documents.rs, src/mediapm/src/conductor_bridge/sync/lifecycle.rs"
 ---
 
 # Tool sync coordinator and content-addressed identity
@@ -302,3 +302,36 @@ stored entries for comparison).
 | `logical_tool_requires_sync` returns `false` when composite matches                          | `sync_logical_requires_sync_composite_comparison` (integration)  | [covered] |
 | `logical_tool_requires_sync` returns `true` when composite mismatches                        | `sync_logical_requires_sync_on_composite_mismatch` (integration) | [covered] |
 | Public API: `compute_composite_canonical_version` and `index_managed_tools` are `pub(crate)` | Compilation check (used by integration tests via service.rs)     | [covered] |
+
+## Document I/O and lifecycle
+
+### Document load/save
+
+`load_conductor_document(path, label)` reads bytes and calls `decode_document()`. Missing files return an empty `NickelDocument`. `save_conductor_document(path, document, label)` encodes via `encode_document()` then writes via `write_bytes_if_changed()` (writes only when bytes differ, preventing filesystem churn).
+
+Lifecycle helpers:
+
+| Function | Purpose |
+|---|---|
+| `load_conductor_generated_document(paths)` | Loads `paths.conductor_generated_ncl` |
+| `save_conductor_generated_document(paths, doc)` | Saves to `paths.conductor_generated_ncl` |
+| `load_conductor_state_document(paths)` | Loads `paths.conductor_state_config` |
+| `save_conductor_state_document(paths, doc)` | Saves to `paths.conductor_state_config` |
+
+### Builtin registration
+
+`register_missing_builtin_tools(generated_doc)` ensures all builtin tool defs (`echo`, `fs`, `import`, `export`, `archive`) exist in the generated document. Idempotent: skips existing tools. Builtins are registered with `kind`, `name`, `version` only (strict schema). `apply_builtin_runtime_defaults(generated_doc)` sets default runtime values only when the field is unset.
+
+### Lifecycle helpers (`lifecycle.rs`)
+
+| Function | Purpose |
+|---|---|
+| `is_builtin_source_ingest_requirement(tool_name)` | True for builtin `import` (special content-ingestion handling) |
+| `is_hash_in_tool_content_maps(hash, doc)` | Checks if a hash is still referenced by any tool content map |
+| `lock_registry_version(cas, tool_id, identity)` | Stores a deterministic CAS marker `registry-locks/{tool_id}/{identity}` |
+
+### Document I/O invariants
+
+- `write_bytes_if_changed` gates all NCL saves. State JSON does not use this gate (see state-persistence spec).
+- Builtin tools are re-registered every sync (idempotent `insert`).
+- `list_tools` key parsing uses `rfind('@')` to handle tool names containing `@`.
