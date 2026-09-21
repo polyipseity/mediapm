@@ -24,3 +24,5 @@ mod dual_write;
 mod runtime_gitignore;
 /// State JSON persistence and migration tests.
 mod state_persistence;
+/// Per-phase sync observer wiring and centralized output primitives.
+mod sync_observer;
