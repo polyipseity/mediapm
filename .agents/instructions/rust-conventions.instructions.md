@@ -214,126 +214,36 @@ Avoid these known anti-patterns: bare one-line docs that repeat the function nam
 
 ## CLI output style
 
-### StatusIcon
+All CLI output primitives, progress bar architecture, per-screen summary formats, formatting helpers, duration formatting, the dependency boundary rule, and the output stream policy live in `progress-output.instructions.md`. Read that file before editing any CLI output code.
 
-The `StatusIcon` enum has four variants: `Success` (✓ bold green — changes applied), `NoChange` (– dim — already up to date), `Warning` (Δ bold yellow — completed with degradation), and `Error` (✗ bold red — handled failure). Every icon uses a Unicode glyph. No ASCII fallback is implemented currently.
+The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress. The `--no-progress` flag or `ProgressGroup::disabled()` suppresses progress bars entirely.
 
-### print_result shape
+## Behavior change expectations
 
-Every result line follows the exact structure `{icon} {bold_op}    {k}={v}  {k}={v}    in {duration}`, printed to stdout. The duration component is omitted when `None` is passed. The caller passes each field value as `&value as &dyn std::fmt::Display`. Keys are `snake_case` and alphabetic only; well-known abbreviations like `id`, `dir`, `ref` are permitted. The separator is `=` with no surrounding spaces. Numbers appear as bare digits without comma separators. Strings are unquoted unless they contain spaces. Field ordering puts quantity fields first, then identifiers and names, then boolean flags. Zero-valued fields may be omitted when they are not meaningful, but primary metrics must always be shown.
+### Atomic test updates
 
-### Warning, hint, and error helpers
+Update or add tests in the same commit as a behavior change. Never change behavior without test updates: silent behavior changes are a quality regression. Update CLI and reporting docs if command output contracts change. This covers all behavior changes, however trivial: renaming a CLI flag, changing a default, altering error wording, or reordering output fields.
 
-All diagnostic helpers write to stderr. `print_warning(msg)` produces `"  Δ {msg}"` with the Δ glyph in yellow. `print_hint(msg)` produces `"  → {msg}"` with the → glyph in bold cyan and is suppressed by `--quiet`. `print_error(msg)` produces `"  ✗ {msg}"` with the ✗ glyph in bold red. `print_heading(heading)` renders the heading text in bold with a dimmed ── underline. Warnings and hints never appear on the same line as a result — they are emitted as separate stderr lines, typically after the stdout result line.
+### Demo update policy
 
-### Progress bar architecture
+When the full pipeline behavior changes (tool provisioning, sync orchestration, materialization defaults), verify that both `mediapm_demo` and `mediapm_demo_online` still produce correct output. Update the demo examples if the expected output or timing profile has changed meaningfully. The demos serve as the authoritative end-to-end contract for the mediapm application.
 
-`mediapm-utils::progress::ProgressGroup` wraps `MultiProgress` from the indicatif crate. `TrackedHandle` wraps an `Arc<SharedState>` with an optional `ProgressBar` instance. Clones share state. `TrackedHandle` methods include: `advance(delta)`, `set_position(pos)`, `set_prefix_components(components)`, `set_suffix_components(components)`, `set_total(total)`, `total()`, `finish_success()`, `finish_error()`, `finish_warning()`, `finish_and_clear()`, `snapshot()`, `is_finished()`. `ProgressHandle` is a deprecated alias.
+### Content map coverage
 
-Construction uses `ProgressGroup::new()` for a simple group without an overall bar, or `ProgressGroup::with_overall(label, total)` to pin an aggregate bar at the bottom of the group:
+For conductor executable `content_map` changes, cover both file and directory-ZIP semantics in tests. This includes explicit invalid ZIP failure paths (e.g., truncated or corrupt archive data), root-directory key (`./` on Unix, `.\` on Windows) handling, and non-overwrite collision rejection when separate content map entries target the same output file path.
 
-```rust
-// Simple group, one bar:
-let group = ProgressGroup::new();
-let pb = group.add_bar(total, "materializing");
+### yt-dlp output-variant coverage
 
-// Group with overall bar at bottom:
-let (group, overall) = ProgressGroup::with_overall("sync", phase_count);
-let pb1 = group.add_bar(sub_total, "phase 1");
-let pb2 = group.add_bar(sub_total, "phase 2");
-```
+For yt-dlp output-variant behavior changes, cover the object semantics of `kind` (default capture behavior), optional `capture_kind` override (`"file"` or `"folder"`), optional `langs` capture filtering (subtitle-family artifacts only), and the ownership boundary where downloader language selection remains the responsibility of step `options.sub_langs` (output-variant `langs` is a capture-filter hint, not a downloader setting).
 
-Finalization calls `finish_success("done")` on each tracked handle followed by `group.join()`, which keeps bars visible until the group drops. Use `join_and_clear()` only when the terminal must be cleared before subsequent output — for example, before printing a result line.
+### Regex capture coverage
 
-For deterministic progress group tests that assert spinner or animation
-frame behavior, use `.with_ticker_enabled(false)` on the builder to
-suppress the background ticker thread. Without suppression, the ticker
-thread advances the renderer between test-controlled ticks, introducing
-extra animation frames.
+For conductor regex capture behavior changes, assert `file_regex` exact-one matching (the pattern must match exactly one file) and `folder_regex` zero-to-many behavior (the pattern may match zero, one, or many folders, and zero-match is a valid success path).
 
-### Global toggle and auto-detection
+### Sidecar synchronization
 
-Progress is suppressed by passing `no_progress: true` or by constructing a `ProgressGroup::disabled()`. Progress bars are also automatically hidden when stderr is not a TTY (indicatif self-detects via `console::Term::stderr()`). The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress.
+Keep `verify` and `gc` in sync with sidecar model updates. When the sidecar data model changes, update both verification and GC logic in the same commit. The sidecar model is the authoritative description of reachable data: verification confirms reachable data matches it, and GC removes data it does not reference. The two must agree on reachability.
 
-### Spinner animation
+### State document and migration coverage
 
-Every progress bar automatically enables a steady tick at 100 ms intervals via `enable_steady_tick(100ms)`, keeping the spinner animating even during long periods without position updates — for example, slow downloads. No manual `tick()` calls are needed. The spinner uses braille dots: `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`.
-
-### Library stack
-
-The styling stack uses `indicatif` 0.17 (`ProgressBar`, `MultiProgress`, `ProgressStyle`, `HumanBytes`, `HumanCount`) and `console` 0.15 (`Term::stderr().size()` for terminal width detection, `style()` for ANSI coloring). Do not add `owo-colors`, `colored`, `termion`, or other styling crates — `console::style()` is the single styling entry point.
-
-### Visual templates
-
-The active template is chosen automatically via `apply_bar_style()` which checks `terminal_width()`.
-
-**Wide terminal (≥ 60 cols) — child bar:**
-
-```text
-{spinner:.green} {prefix:>12.12} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {msg} ({eta})
-```
-
-**Wide terminal — overall bar:**
-
-```text
-{prefix:>12.12} [{elapsed_precise}] {wide_bar:.green/dim} {pos}/{len} {msg}
-```
-
-### Styling rules
-
-The spinner glyph is green. The prefix is bold and right-aligned to 12 characters. The elapsed timer is cyan. For child bars, the bar fill is cyan on blue. For the overall bar, the bar fill is green on dim. The ETA display is dim. Progress characters use `█` for fill and `░` for empty.
-
-### Custom RHS message
-
-Call `set_suffix_components(SuffixComponents { status_list: vec![...], .. })` on any `TrackedHandle` to append structured status entries (e.g. `StatusCount { count: N, status: "cached" }`) after the auto-computed right-hand side (count/total, elapsed, rate, ETA). The status list appears separated by a single space from the auto-computed text. Common uses include `skipped` (tool already provisioned at the latest version) and `N cached` (N sources served from download cache). The custom text works after `finish_success()` because the daemon ticker continues syncing shared state to the indicatif bar until the bar is removed from `MultiProgress`.
-
-### Formatting helpers
-
-`format_bytes(u64) -> String` wraps `indicatif::HumanBytes` and produces output like `"650.23 MiB"` or `"1.24 GiB"`. `format_count(u64) -> String` wraps `indicatif::HumanCount` and produces output like `"1.2M"` or `"42"`. There is no `format_throughput` function — use `format_bytes(value) + "/s"` inline if throughput formatting is needed.
-
-### Performance note for progress bars
-
-For standalone bars created via `ProgressBar::new()` (outside a `MultiProgress`), only the final `finish_success` or `finish_error` render is guaranteed to appear. Use `MultiProgress` (via `ProgressGroup`) for live-updating progress during long async awaits.
-
-### Duration formatting
-
-The `format_duration(Duration) -> String` function formats durations as follows: values under 1 second show two decimal places (e.g., `0.01s`, `0.05s`); values from 1 to 9 seconds show two decimal places (e.g., `1.00s`, `9.00s`); values from 10 to 59 seconds show whole seconds without decimals (e.g., `10s`, `42s`); values from 1 to 59 minutes show minutes and seconds (e.g., `1m 0s`, `30m 42s`); values of 1 hour or more show hours, minutes, and seconds (e.g., `1h 0m 0s`, `2h 15m 30s`).
-
-## Output crate module structure
-
-### Module: mediapm_utils::report
-
-Located in the `mediapm-utils` crate behind the `report` feature (`dep:console`). Exports `StatusIcon`, `print_result`, `format_result_line` (pure formatter, testable), `print_warning`, `print_hint`, `print_error`, `print_heading`, `print_status_report`, and `format_duration`. Re-exported by `mediapm::output::report` for backward compatibility with existing `crate::output::*` import paths. Both `mediapm` and `mediapm-conductor` render through this module, so the log format is identical across binaries.
-
-### Module: mediapm::output::progress
-
-Located in the `mediapm` crate. Exports `ProgressGroup`, `TrackedHandle`, `ProgressBarApi`, and `ProgressGroupApi`. Used for progress bar rendering during long-running operations such as tool provisioning, media sync, and materialization. Progress is suppressed via `no_progress: true` in `SyncLibraryOptions` or `ProgressGroup::disabled()`.
-
-### Module: mediapm_utils::progress
-
-Located in the `mediapm-utils` crate. Two availability tiers: `DownloadProgressSnapshot` and `ProgressCallback` are always available without an indicatif dependency. These are the types used at the conductor library boundary — the conductor's `run_workflow` and related APIs take `ProgressCallback` closures and never import indicatif directly. `ProgressGroup`, `TrackedHandle`, `format_bytes`, and `format_count` are behind the `progress` feature gate and are used by CLI binaries that render progress bars to the terminal.
-
-### Dependency boundary rule
-
-The conductor _library_ (`mediapm-conductor`) must not depend on indicatif directly. It receives progress updates via `Fn` callbacks typed as `ProgressCallback`. Only the conductor _CLI binary_ and the `mediapm` crate may use indicatif, accessed through `mediapm-utils/progress` with the `progress` feature enabled. This boundary ensures that downstream consumers of the conductor library (such as alternative frontends or test harnesses) are not forced to pull in indicatif and its transitive dependencies.
-
-### Architecture — type location reference
-
-| Type / module                                                                                                                   | Crate           | Feature gate | Available to          |
-| ------------------------------------------------------------------------------------------------------------------------------- | --------------- | ------------ | --------------------- |
-| `mediapm_utils::report::{StatusIcon, print_result, format_result_line, format_duration, print_warning, print_hint, print_error, print_heading, print_status_report}` | `mediapm-utils` | `report`     | All crates            |
-| `mediapm_utils::progress::DownloadProgressSnapshot`                                                                             | `mediapm-utils` | always       | All crates            |
-| `mediapm_utils::progress::ProgressCallback`                                                                                     | `mediapm-utils` | always       | All crates            |
-| `mediapm_utils::progress::{ProgressGroup, TrackedHandle}`                                                                       | `mediapm-utils` | `progress`   | Crates with indicatif |
-| `mediapm_utils::progress::{format_bytes, format_count}`                                                                         | `mediapm-utils` | `progress`   | Crates with indicatif |
-| `crate::output::report::{StatusIcon, print_result, format_result_line, ...}` (re-export)                                       | `mediapm`       | always       | `mediapm` crate       |
-| `crate::output::observer::CliSyncObserver`                                                                                      | `mediapm`       | always       | `mediapm` crate       |
-| `crate::output::progress::{ProgressGroup, TrackedHandle}`                                                                       | `mediapm`       | always       | `mediapm` crate       |
-
-### Common usage pattern in handlers
-
-Every CLI command handler follows a consistent shape: perform the operation, print the result line via `print_result` with the appropriate `StatusIcon`, then print any warnings or hints on stderr. The sync command passes a `CliSyncObserver` that prints per-phase result lines after each progress screen finishes, and `print_sync_summary` at the end for the combined summary.
-
-### Output stream policy
-
-Result lines via `print_result` always go to stdout and are never suppressible. Progress bars go to stderr and are suppressible via `--quiet` or non-TTY detection. Warnings and errors go to stderr and are never suppressible. Hints go to stderr and are suppressible via `--quiet`. This policy ensures that the structured result output on stdout can always be parsed or piped without interference from diagnostic output, which remains on stderr.
+When changing state document schemas or adding migration paths, add tests that verify round-trip serialization (write then read) for both the old and new schema versions. Test that migration from previous versions produces the expected current-version output. Verify that unknown fields in older persisted state are handled gracefully (either preserved or rejected with a clear error) per the crate's versioning policy.

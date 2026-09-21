@@ -1,7 +1,7 @@
 ---
 description: "Use when editing MultiItemBudget per-item progress tracking in mediapm-utils and the provider pipeline: type, ItemBudget, extraction-helper callback protocol, phase-loop mapping."
 name: "Progress Budget and MultiItemBudget"
-applyTo: "src/mediapm-utils/src/progress.rs, src/mediapm-conductor/src/tools/provider/mod.rs"
+applyTo: "src/mediapm-utils/src/progress/mod.rs, src/mediapm-utils/src/progress/multi_item_budget.rs, src/mediapm-utils/src/progress/byte_budget.rs, src/mediapm-utils/src/progress/download.rs, src/mediapm-conductor/src/tools/provider/mod.rs"
 ---
 
 # Progress budget (`MultiItemBudget`) architecture
@@ -268,28 +268,11 @@ All process-phase progress now uses a single chunk threshold: `SUB_ENTRY_CHUNK =
 
 This keeps callback granularity consistent at ~64 KB across all archive formats and phases.
 
-## Screens outside the provider pipeline
+## Screens and ownership
 
-The provider pipeline (Resolve/Fetch/Process) uses `MultiItemBudget` for byte-level tracking. Two additional progress screens exist at higher layers, using `ProgressBarApi` and `ProgressGroupApi` directly — no `MultiItemBudget`.
-
-### Workflow screen (`[wf]`)
-
-Owned by `mediapm-conductor` (`coordinator.rs`). One overall bar (total = step count) plus one child bar per step. Each child bar carries `PrefixComponents { phase: "wf", tool_name: step_id, count, total }`. Finish-state policy: per-step `finish_success` on completion, `finish_warning` on failure/RPC error; overall `finish_warning` when `failed_steps > 0`, else `finish_success`. The progress group is passed via `RunWorkflowOptions.progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>` (feature-gated).
-
-### Materialization screen (`[mat]`/`[stg]`/`[vrf]`/`[cmt]`)
-
-Owned by `mediapm` (`materializer/mod.rs`). One overall bar (`[mat]`, total = entry count) plus per-entry child bars. Per-entry bars use `PrefixComponents { phase: "stg" }` during staging, `phase: "vrf"` during verify, `phase: "cmt"` during commit. `MediaFolder` entries additionally spawn per-file sub-bars for extracted ZIP members. Finish-state policy: per-entry `finish_warning` on skipped/notice, `finish_success` on completion; overall `finish_warning` on any non-fatal skip, else `finish_success`. The progress group is passed via `sync_hierarchy(..., progress_group)`.
-
-### Ownership model
-
-| Screen      | Owner crate        | Phase labels     | Primitives used              |
-| ----------- | ------------------ | ---------------- | ---------------------------- |
-| Tool sync   | `mediapm`          | `[res]`/`[fch]`/`[pro]`/`[prn]` | `MultiItemBudget` + `ProgressBarApi` |
-| Workflow    | `mediapm-conductor` | `[wf]`          | `ProgressBarApi` + `ProgressGroupApi` |
-| Materialization | `mediapm`      | `[mat]`/`[stg]`/`[vrf]`/`[cmt]`/`[wrt]` | `ProgressBarApi` + `ProgressGroupApi` |
+Workflow and materialization screen specs live in `progress-output.instructions.md` ("Per-screen specs"). This file covers only the provider pipeline (Resolve/Fetch/Process) and its byte-level budget tracking.
 
 ## Placement
 
-- `MultiItemBudget` and `ItemBudget` live in `mediapm-utils/src/progress.rs` in the always-available section (before `#[cfg(feature = "progress")] mod inner`).
+- `MultiItemBudget` and `ItemBudget` live in `mediapm-utils/src/progress/multi_item_budget.rs` (always available).
 - `ProviderPhase`, `ProviderProgressSnapshot`, and `ProcessedSource` live in `src/mediapm-conductor/src/tools/provider/mod.rs`.
-- This instruction file replaces the "Progress monotonicity invariants", "Progress sizing policy", and "Per-entry progress" sections in the existing AGENTS.md files.

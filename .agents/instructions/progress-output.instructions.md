@@ -1,7 +1,7 @@
 ---
 description: "Use when editing progress-bar rendering code in mediapm-utils or any consumer (conductor workflow screen, mediapm tool-sync, materialization). Records the ACTUAL rendered output format so agents never guess or invent ASCII mocks."
 name: "Progress Bar Rendered Output Format"
-applyTo: "src/mediapm-utils/src/progress.rs, src/mediapm-utils/src/progress/inner/**/*.rs, src/mediapm-utils/src/progress/truncation.rs, src/mediapm-conductor/src/orchestration/progress_labels.rs, src/mediapm-conductor/src/orchestration/coordinator.rs, src/mediapm/src/materializer/progress_labels.rs, src/mediapm/src/materializer/mod.rs, src/mediapm/src/output/progress.rs, src/mediapm/src/conductor_bridge/sync/**/*.rs"
+applyTo: "src/mediapm-utils/src/progress/mod.rs, src/mediapm-utils/src/progress/traits.rs, src/mediapm-utils/src/progress/recording.rs, src/mediapm-utils/src/progress/inner/**/*.rs, src/mediapm-utils/src/progress/truncation.rs, src/mediapm-conductor/src/orchestration/progress_labels.rs, src/mediapm-conductor/src/orchestration/coordinator.rs, src/mediapm/src/materializer/progress_labels.rs, src/mediapm/src/materializer/mod.rs, src/mediapm/src/output/progress.rs, src/mediapm/src/conductor_bridge/sync/**/*.rs"
 ---
 
 # Progress bar rendered output format
@@ -431,9 +431,47 @@ These test files use `assert_eq!(term.contents(), concat!(...))` and ARE the rea
 - `src/mediapm-utils/tests/progress_output/*.rs` (terminal.rs, consumer.rs, transition.rs, progress_group.rs, spinner.rs, regression.rs, single_bar.rs, resolve_label.rs)
 - `src/mediapm/src/output/progress.rs`
 
+## Global toggle and auto-detection
+
+Progress is suppressed by passing `no_progress: true` or by constructing a `ProgressGroup::disabled()`. Progress bars are also automatically hidden when stderr is not a TTY (indicatif self-detects via `console::Term::stderr()`). The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress.
+
+## Spinner animation
+
+Every progress bar uses a daemon ticker at 50 ms intervals, keeping the spinner animating even during long periods without position updates. The spinner uses braille dots: `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`. For deterministic tests, disable the ticker with `.with_ticker_enabled(false)`.
+
+## Library stack
+
+The styling stack uses `indicatif` 0.17 (`ProgressBar`, `MultiProgress`, `ProgressStyle`, `HumanBytes`, `HumanCount`) and `console` 0.15 (`Term::stderr().size()` for terminal width detection, `style()` for ANSI coloring). Do not add `owo-colors`, `colored`, `termion`, or other styling crates; `console::style()` is the single styling entry point.
+
+## Formatting helpers
+
+`format_bytes(u64) -> String` wraps `indicatif::HumanBytes` and produces output like `"650.23 MiB"` or `"1.24 GiB"`. `format_count(u64) -> String` wraps `indicatif::HumanCount` and produces output like `"1.2M"` or `"42"`. There is no `format_throughput` function; use `format_bytes(value) + "/s"` inline if throughput formatting is needed.
+
+## Duration formatting
+
+The `format_duration(Duration) -> String` function formats durations as follows: values under 1 second show two decimal places (e.g., `0.01s`, `0.05s`); values from 1 to 9 seconds show two decimal places (e.g., `1.00s`, `9.00s`); values from 10 to 59 seconds show whole seconds without decimals (e.g., `10s`, `42s`); values from 1 to 59 minutes show minutes and seconds (e.g., `1m 0s`, `30m 42s`); values of 1 hour or more show hours, minutes, and seconds (e.g., `1h 0m 0s`, `2h 15m 30s`).
+
+## Dependency boundary rule
+
+The conductor library (`mediapm-conductor`) must not depend on indicatif directly. It receives progress updates via `Fn` callbacks typed as `ProgressCallback`. Only the conductor CLI binary and the `mediapm` crate may use indicatif, accessed through `mediapm-utils/progress` with the `progress` feature enabled.
+
+## Common usage pattern in handlers
+
+Every CLI command handler follows a consistent shape: perform the operation, print the result line via `print_result` with the appropriate `StatusIcon`, then print any warnings or hints on stderr. The sync command passes a `CliSyncObserver` that prints per-phase result lines after each progress screen finishes, and `print_sync_summary` at the end for the combined summary.
+
 ## Related files
 
 - `src/mediapm/src/output/report.rs` — post-finish result primitives (`print_result`, `print_warning`, `print_hint`, `print_heading`, `print_error`, `StatusIcon`)
 - `src/mediapm/src/output/mod.rs` — `print_sync_summary` (Screen A sync summary)
 - `src/mediapm-conductor/src/api.rs` — `RunSummary` struct (Screen B)
 - `src/mediapm/src/lib.rs` — `SyncSummary`, `ToolsSyncSummary` struct definitions
+
+## Module reference
+
+| Module | Crate | Feature | Purpose |
+|---|---|---|---|
+| `mediapm_utils::report` | `mediapm-utils` | `report` | `StatusIcon`, `print_result`, `format_result_line`, `print_warning`, `print_hint`, `print_error`, `print_heading`, `print_status_report`, `format_duration` |
+| `mediapm_utils::progress` | `mediapm-utils` | `progress` | `ProgressGroup`, `TrackedHandle`, `format_bytes`, `format_count` |
+| `mediapm_utils::progress` (always) | `mediapm-utils` | — | `DownloadProgressSnapshot`, `ProgressCallback` |
+| `mediapm::output::progress` | `mediapm` | — | `ProgressGroup`, `TrackedHandle`, `ProgressBarApi`, `ProgressGroupApi` re-exports |
+| `mediapm::output::report` | `mediapm` | — | Re-exports from `mediapm_utils::report` |
