@@ -1,16 +1,15 @@
 //! `ProgressGroup`: combined tracking + rendering with optional overall bar.
 
 use std::marker::PhantomData;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use indicatif::{MultiProgress, ProgressDrawTarget, TermLike};
 
 use super::{
-    BufferedTerm, DimensionSource, MAX_SLOTS, ProgressDebugSink, ProgressRenderer,
-    RealTerminalSource, RealTimeSource, SharedState, TimeSource, TrackedHandle,
-    detect_progress_debug_env,
+    DimensionSource, MAX_SLOTS, ProgressDebugSink, ProgressRenderer, RealTerminalSource,
+    RealTimeSource, SharedState, TimeSource, TrackedHandle, WriteGate, detect_progress_debug_env,
+    gate::BufferedTerm,
 };
 use crate::progress::BarStyle;
 
@@ -174,25 +173,21 @@ impl ProgressGroupBuilder<NoOverall> {
             let (rows, _) = self.dim_source.dimensions();
             (rows as usize).clamp(1, MAX_SLOTS)
         });
-        let (mp, buffer_enabled, pre_roll_term): (
-            MultiProgress,
-            Option<Arc<AtomicBool>>,
-            Option<Box<dyn TermLike>>,
-        ) = if let Some(ref mp) = self.mp {
-            (mp.clone(), None, self.pre_roll_term)
-        } else {
-            let flag = Arc::new(AtomicBool::new(true));
-            let term =
-                BufferedTerm { inner: console::Term::stderr(), buffer_enabled: flag.clone() };
-            let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
-            (mp, Some(flag), Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
-        };
+        let (mp, gate, pre_roll_term): (MultiProgress, WriteGate, Option<Box<dyn TermLike>>) =
+            if let Some(ref mp) = self.mp {
+                (mp.clone(), WriteGate::new_noop(), self.pre_roll_term)
+            } else {
+                let (term, gate) = BufferedTerm::new(Box::new(console::Term::stderr()));
+                let mp =
+                    MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
+                (mp, gate, Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
+            };
         let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
         let mut renderer = ProgressRenderer::from_mp(
             mp,
             cap,
             self.dim_source,
-            buffer_enabled,
+            gate,
             self.time_source,
             pre_roll_term,
             debug_sink,
@@ -250,19 +245,15 @@ impl ProgressGroupBuilder<HasOverall> {
             let (rows, _) = self.dim_source.dimensions();
             (rows as usize).clamp(1, MAX_SLOTS)
         });
-        let (mp, buffer_enabled, pre_roll_term): (
-            MultiProgress,
-            Option<Arc<AtomicBool>>,
-            Option<Box<dyn TermLike>>,
-        ) = if let Some(ref mp) = self.mp {
-            (mp.clone(), None, self.pre_roll_term)
-        } else {
-            let flag = Arc::new(AtomicBool::new(true));
-            let term =
-                BufferedTerm { inner: console::Term::stderr(), buffer_enabled: flag.clone() };
-            let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
-            (mp, Some(flag), Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
-        };
+        let (mp, gate, pre_roll_term): (MultiProgress, WriteGate, Option<Box<dyn TermLike>>) =
+            if let Some(ref mp) = self.mp {
+                (mp.clone(), WriteGate::new_noop(), self.pre_roll_term)
+            } else {
+                let (term, gate) = BufferedTerm::new(Box::new(console::Term::stderr()));
+                let mp =
+                    MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
+                (mp, gate, Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
+            };
         let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
         let (mut renderer, state) = ProgressRenderer::from_mp_with_overall(
             mp,
@@ -270,7 +261,7 @@ impl ProgressGroupBuilder<HasOverall> {
             total,
             &label,
             self.dim_source,
-            buffer_enabled,
+            gate,
             self.time_source,
             pre_roll_term,
             debug_sink,

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use indicatif::{MultiProgress, ProgressBar, TermLike};
 
 use super::{
-    BufferGuard, DebugSlotState, DebugTickSnapshot, DimensionSource, MAX_SLOTS, MIN_PREFIX_WIDTH,
+    DebugSlotState, DebugTickSnapshot, DimensionSource, MAX_SLOTS, MIN_PREFIX_WIDTH,
     MIN_SUFFIX_WIDTH, PrefixComponents, ProgressDebugSink, RealTimeSource, SuffixComponents,
-    TimeSource, apply_bar_style, apply_done_bar_style, apply_failed_bar_style,
+    TimeSource, WriteGate, apply_bar_style, apply_done_bar_style, apply_failed_bar_style,
     apply_overall_bar_style, bar_color_code, blank_bar_style, format_count, format_elapsed,
     format_eta, format_rate, max_prefix_width, max_suffix_width, prefix_components_from_str,
     render_prefix_components, render_suffix_components, semantic_truncate_prefix,
@@ -491,10 +491,10 @@ pub struct ProgressRenderer {
 
     /// EMA-smoothed rate tracking, one entry per slot.
     slots_timing: Vec<SlotTiming>,
-    /// When `Some`, property-setter terminal writes are suppressed
-    /// during [`tick`](Self::tick).  `None` when the user provided
-    /// their own [`MultiProgress`] (tests via `InMemoryTerm`).
-    buffer_enabled: Option<Arc<AtomicBool>>,
+    /// Write gate controlling terminal-write suppression during frames.
+    /// Owned exclusively by the renderer — the only way to open/close
+    /// the write window is through `gate.open()` (private to `gate.rs`).
+    gate: WriteGate,
 
     /// One-shot flag: has the first-draw pre-roll (newline scroll) been
     /// performed?  Used to push intervening stderr content into scrollback
@@ -575,7 +575,7 @@ impl ProgressRenderer {
         mp: MultiProgress,
         capacity: usize,
         dim_source: Arc<dyn DimensionSource>,
-        buffer_enabled: Option<Arc<AtomicBool>>,
+        gate: WriteGate,
         time_source: Arc<dyn TimeSource>,
         pre_roll_term: Option<Box<dyn TermLike>>,
         debug_sink: Option<ProgressDebugSink>,
@@ -609,7 +609,7 @@ impl ProgressRenderer {
             finalized: Cell::new(false),
             time_source,
             slots_timing,
-            buffer_enabled,
+            gate,
             pre_rolled: AtomicBool::new(false),
             pre_roll_term,
             debug_sink,
@@ -627,7 +627,7 @@ impl ProgressRenderer {
         total: u64,
         label: &str,
         dim_source: Arc<dyn DimensionSource>,
-        buffer_enabled: Option<Arc<AtomicBool>>,
+        gate: WriteGate,
         time_source: Arc<dyn TimeSource>,
         pre_roll_term: Option<Box<dyn TermLike>>,
         debug_sink: Option<ProgressDebugSink>,
@@ -666,7 +666,7 @@ impl ProgressRenderer {
                 finalized: Cell::new(false),
                 time_source,
                 slots_timing,
-                buffer_enabled,
+                gate,
                 pre_rolled: AtomicBool::new(false),
                 pre_roll_term,
                 debug_sink,
@@ -748,7 +748,7 @@ impl ProgressRenderer {
     pub(crate) fn attach(&mut self, state: &Arc<SharedState>) {
         // Buffer all draws during attach — slot shifts + sync_slot + recompute_layout
         // produce many intermediate state changes that should appear atomically.
-        let _attach_guard = BufferGuard::new(self.buffer_enabled.as_ref());
+        let _attach_guard = self.gate.open();
         let child_cap = self.slots.len() - usize::from(self.has_overall);
         let bottom = child_cap.saturating_sub(1);
 
@@ -819,7 +819,7 @@ impl ProgressRenderer {
     ///
     /// Includes resize reactivity and full style re-application.
     ///
-    /// When [`buffer_enabled`](Self::buffer_enabled) is `Some` (production),
+    /// When the write gate is active (production),
     /// property-setter terminal writes are suppressed during the update
     /// loop, then exactly one draw is released at the end.  This ensures
     /// the 50 ms daemon ticker is the sole draw authority and eliminates
@@ -976,10 +976,8 @@ impl ProgressRenderer {
     pub fn tick(&mut self) {
         // Step 0: Enable buffering BEFORE recomputing layout so all
         // style changes from recompute_layout → sync_slot → apply_*_bar_style
-        // are suppressed until the BufferGuard draw release.
-        if let Some(ref flag) = self.buffer_enabled {
-            flag.store(true, Ordering::Release);
-        }
+        // are suppressed until the WriteGate draw release.
+        self.gate.suppress();
 
         // Step 1: Recompute uniform alignment width (styles now buffered).
         self.recompute_layout();
@@ -1132,9 +1130,9 @@ impl ProgressRenderer {
 
         // Steps 4-6: RAII guard — draws go through while guard is alive,
         // buffer re-enabled automatically when guard drops.
-        let _guard = BufferGuard::new(self.buffer_enabled.as_ref());
+        let _guard = self.gate.open();
 
-        // Always tick active bars for spinner animation (dirty-independent).
+        // Always tick active bars
         // Skip finished/abandoned/failed bars — their spinner is frozen on
         // the final frame set by `finish_slot`.
         for slot in &self.slots {
@@ -1405,7 +1403,7 @@ impl ProgressRenderer {
         // content instead of scrolling it into scrollback.
         self.pre_roll_if_needed();
         // RAII guard: buffer OFF during final draw, re-enabled on drop.
-        let _guard = BufferGuard::new(self.buffer_enabled.as_ref());
+        let _guard = self.gate.open();
         // Finish all bound bars that have reached a terminal state:
         // sync their final state FIRST (so position/total/elapsed/suffix
         // is up-to-date), then call finish_slot which applies the done
@@ -1459,8 +1457,15 @@ mod tests {
         let dims = Arc::new(TestDimensionSource::new((10, 80)));
         let ts = Arc::new(TestTimeSource::new());
 
-        let mut renderer =
-            ProgressRenderer::from_mp(mp, 4, dims, None, ts as Arc<dyn TimeSource>, None, None);
+        let mut renderer = ProgressRenderer::from_mp(
+            mp,
+            4,
+            dims,
+            WriteGate::new_noop(),
+            ts as Arc<dyn TimeSource>,
+            None,
+            None,
+        );
 
         // Short label ("a") and a 20-char label ("aaaaaaaaaaaaaaaaaaaa").
         let short =

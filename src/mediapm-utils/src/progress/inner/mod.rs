@@ -6,6 +6,7 @@
 
 mod components;
 mod debug;
+mod gate;
 mod group;
 mod renderer;
 mod sources;
@@ -22,8 +23,11 @@ pub use debug::{
 pub use group::{HasOverall, NoOverall, ProgressGroup, ProgressGroupBuilder};
 pub use renderer::{ProgressRenderer, TrackSnapshot, TrackStatus, TrackedHandle};
 
-pub(crate) use debug::{BufferGuard, detect_progress_debug_env};
-pub(crate) use sources::BufferedTerm;
+pub(crate) use debug::detect_progress_debug_env;
+// `BufferedTerm` and `WriteWindow` are re-exported for use by `group.rs`
+// (via `super::BufferedTerm`) and will be used by `renderer.rs` in C4.
+#[allow(unused_imports)]
+pub(crate) use gate::{BufferedTerm, WriteGate, WriteWindow};
 // `strip_ansi`/`visible_width` are re-exported so `progress::tests` can reach
 // them via the `super::inner::strip_ansi` path (the `components` submodule is
 // private, so the path only resolves through this re-export). Path-based access

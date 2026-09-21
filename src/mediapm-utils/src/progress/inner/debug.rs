@@ -1,40 +1,10 @@
 //! RAII buffer guard, dimension/time sources, and debug-env detection.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::ProgressDebugSink;
-
-// ---- RAII buffer guard -----------------------------------------------
-
-/// RAII guard that temporarily disables buffering and restores it on drop.
-///
-/// On creation stores `false` (buffer OFF — next draw goes to terminal); on
-/// drop stores `true` (buffer ON — subsequent writes suppressed). When `flag`
-/// is `None` (test mode with user-provided `MultiProgress`), both are no-ops.
-#[derive(Debug)]
-pub(crate) struct BufferGuard {
-    flag: Option<Arc<AtomicBool>>,
-}
-
-impl BufferGuard {
-    pub(crate) fn new(flag: Option<&Arc<AtomicBool>>) -> Self {
-        if let Some(flag) = flag {
-            flag.store(false, Ordering::Release);
-        }
-        Self { flag: flag.cloned() }
-    }
-}
-
-impl Drop for BufferGuard {
-    fn drop(&mut self) {
-        if let Some(ref flag) = self.flag {
-            flag.store(true, Ordering::Release);
-        }
-    }
-}
 
 // ---- dimension source (injectable for tests) -------------------------
 
