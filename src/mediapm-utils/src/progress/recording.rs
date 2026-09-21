@@ -9,7 +9,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 use crate::progress::BarStyle;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 /// Recorded progress operation for test assertions.
@@ -74,6 +74,8 @@ pub enum ProgressOp {
     FinishWarning,
     /// `finish_and_clear()` was called.
     FinishAndClear,
+    /// `restart()` was called.
+    Restart,
 }
 
 /// A recording progress tracker that records operations into a shared
@@ -123,7 +125,7 @@ impl RecordingProgressTracker {
         RecordingTrackedHandle {
             ops: self.ops.clone(),
             total: Some(total),
-            start_time: Instant::now(),
+            start_time: RwLock::new(Instant::now()),
             finished_elapsed: Arc::new(Mutex::new(None)),
         }
     }
@@ -148,12 +150,24 @@ impl Default for RecordingProgressTracker {
 
 /// A recording tracked handle that records operations into the shared log
 /// of its parent [`RecordingProgressTracker`].
-#[derive(Clone)]
 pub struct RecordingTrackedHandle {
     ops: Arc<Mutex<Vec<ProgressOp>>>,
     total: Option<u64>,
-    start_time: Instant,
+    start_time: RwLock<Instant>,
     finished_elapsed: Arc<Mutex<Option<Duration>>>,
+}
+
+impl Clone for RecordingTrackedHandle {
+    fn clone(&self) -> Self {
+        Self {
+            ops: Arc::clone(&self.ops),
+            total: self.total,
+            start_time: RwLock::new(
+                self.start_time.read().expect("recording start_time lock").clone(),
+            ),
+            finished_elapsed: Arc::clone(&self.finished_elapsed),
+        }
+    }
 }
 
 impl RecordingTrackedHandle {
@@ -165,7 +179,7 @@ impl RecordingTrackedHandle {
         Self {
             ops: Arc::new(Mutex::new(Vec::new())),
             total: Some(total),
-            start_time: Instant::now(),
+            start_time: RwLock::new(Instant::now()),
             finished_elapsed: Arc::new(Mutex::new(None)),
         }
     }
@@ -179,7 +193,7 @@ impl RecordingTrackedHandle {
         Self {
             ops: Arc::new(Mutex::new(Vec::new())),
             total: None,
-            start_time: Instant::now(),
+            start_time: RwLock::new(Instant::now()),
             finished_elapsed: Arc::new(Mutex::new(None)),
         }
     }
@@ -275,6 +289,15 @@ impl RecordingTrackedHandle {
         self.mark_finished();
     }
 
+    /// Re-activate a finished bar. Clears the terminal state marker,
+    /// resets elapsed tracking, and marks the bar dirty so the next
+    /// tick redraws it as active.
+    pub fn restart(&self) {
+        self.ops.lock().expect("recording lock").push(ProgressOp::Restart);
+        *self.finished_elapsed.lock().expect("recording finished_elapsed lock") = None;
+        *self.start_time.write().expect("recording start_time lock") = Instant::now();
+    }
+
     /// Return a snapshot of recorded operations for this handle.
     ///
     /// When created via [`RecordingProgressTracker::add_bar`], this
@@ -292,7 +315,7 @@ impl RecordingTrackedHandle {
         {
             frozen
         } else {
-            self.start_time.elapsed()
+            self.start_time.read().expect("recording start_time lock").elapsed()
         }
     }
 
@@ -300,7 +323,7 @@ impl RecordingTrackedHandle {
     fn mark_finished(&self) {
         let mut elapsed = self.finished_elapsed.lock().expect("recording finished_elapsed lock");
         if elapsed.is_none() {
-            *elapsed = Some(self.start_time.elapsed());
+            *elapsed = Some(self.start_time.read().expect("recording start_time lock").elapsed());
         }
     }
 }

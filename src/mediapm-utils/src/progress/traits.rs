@@ -80,6 +80,10 @@ pub trait ProgressBarApi: Send + Sync {
     /// truncation order. When unset, the built-in rendering remains the
     /// fallback.
     fn set_truncation(&self, truncation: Arc<dyn BarLabelTruncation>);
+    /// Re-activate a finished bar. Clears the terminal state marker,
+    /// resets elapsed tracking, and marks the bar dirty so the next
+    /// tick redraws it as active.
+    fn restart(&self);
     /// Set the visual style for the bar (see [`BarStyle`]).
     ///
     /// Defaults to [`StepCount`](BarStyle::StepCount). Callers that own a
@@ -123,6 +127,9 @@ impl ProgressBarApi for TrackedHandle {
     }
     fn set_truncation(&self, truncation: Arc<dyn BarLabelTruncation>) {
         TrackedHandle::set_truncation(self, truncation);
+    }
+    fn restart(&self) {
+        TrackedHandle::restart(self);
     }
     fn set_style(&self, style: BarStyle) {
         TrackedHandle::set_style(self, style);

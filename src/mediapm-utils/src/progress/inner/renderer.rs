@@ -72,7 +72,7 @@ pub(crate) struct SharedState {
     /// bars. Read by the renderer's single push point to apply the
     /// style-specific `0/0` div-by-zero guard.
     style: AtomicU8,
-    start_time: Instant,
+    start_time: RwLock<Instant>,
     finished_elapsed: RwLock<Option<Duration>>,
     time_source: Arc<dyn TimeSource>,
 }
@@ -124,7 +124,7 @@ impl SharedState {
             dirty: AtomicBool::new(true),
             disabled: AtomicBool::new(false),
             style: AtomicU8::new(style as u8),
-            start_time: time_source.now(),
+            start_time: RwLock::new(time_source.now()),
             finished_elapsed: RwLock::new(None),
             time_source,
         }
@@ -172,13 +172,24 @@ impl SharedState {
         {
             frozen
         } else {
-            self.time_source.now() - self.start_time
+            self.time_source.now() - *self.start_time.read().expect("shared_state start_time lock")
         }
+    }
+
+    /// Re-activate a finished bar. Clears the terminal state marker,
+    /// resets elapsed tracking, and marks the bar dirty so the next
+    /// tick redraws it as active.
+    pub(crate) fn restart(&self) {
+        self.status.store(0, Ordering::Relaxed); // Active
+        *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") = None;
+        *self.start_time.write().expect("shared_state start_time lock") = self.time_source.now();
+        self.dirty.store(true, Ordering::Release);
     }
 
     pub(crate) fn mark_finished(&self) {
         self.dirty.store(true, Ordering::Release);
-        let elapsed = self.time_source.now() - self.start_time;
+        let elapsed =
+            self.time_source.now() - *self.start_time.read().expect("shared_state start_time lock");
         *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") = Some(elapsed);
     }
 
@@ -431,6 +442,13 @@ impl TrackedHandle {
     #[must_use]
     pub fn is_finished(&self) -> bool {
         self.state.is_finished()
+    }
+
+    /// Re-activate a finished bar. Clears the terminal state marker,
+    /// resets elapsed tracking, and marks the bar dirty so the next
+    /// tick redraws it as active.
+    pub fn restart(&self) {
+        self.state.restart()
     }
 }
 

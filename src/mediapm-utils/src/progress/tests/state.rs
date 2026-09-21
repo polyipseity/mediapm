@@ -754,3 +754,130 @@ fn bar_color_code_success() {
         "32"
     );
 }
+
+// ---- restart tests ---------------------------------------------------
+
+#[test]
+fn restart_clears_finished_status() {
+    let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
+    let g = ProgressGroup::builder()
+        .with_time_source(ts as std::sync::Arc<dyn super::super::TimeSource>)
+        .build();
+    let h = g.add_bar(100, "restart-bar");
+    h.finish_success();
+    assert!(h.is_finished(), "bar should be finished after finish_success");
+    h.restart();
+    let snap = h.snapshot();
+    assert!(
+        matches!(snap.status, TrackStatus::Active),
+        "after restart, status must be Active, got {:?}",
+        snap.status
+    );
+    assert!(!h.is_finished(), "bar must not be finished after restart");
+    g.join_and_clear();
+}
+
+#[test]
+fn restart_clears_frozen_elapsed() {
+    let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
+    let s = super::super::SharedState::with_time_source(
+        100,
+        "test",
+        std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>,
+    );
+    // Advance some time, then finish to freeze elapsed.
+    ts.advance(std::time::Duration::from_secs(5));
+    s.mark_finished();
+    let frozen = s.elapsed();
+    assert!(frozen.as_secs() >= 5, "frozen elapsed should be >= 5s, got {frozen:?}");
+    // Advance more time — elapsed stays frozen until restart.
+    ts.advance(std::time::Duration::from_secs(100));
+    assert_eq!(s.elapsed(), frozen, "elapsed must stay frozen before restart");
+    // Restart clears the frozen marker and resets start_time.
+    s.restart();
+    // Elapsed is now live again from the restart point.  Since we just
+    // restarted, it should be very small (near zero relative to 105s).
+    let after = s.elapsed();
+    assert!(after.as_millis() < 1000, "elapsed after restart should be near zero, got {after:?}");
+}
+
+#[test]
+fn restart_resets_start_time() {
+    let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
+    let s = super::super::SharedState::with_time_source(
+        100,
+        "test",
+        std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>,
+    );
+    // Run some work, then finish.
+    ts.advance(std::time::Duration::from_secs(10));
+    s.mark_finished();
+    // Restart — elapsed should start tracking from ~0 again.
+    s.restart();
+    // Advance a small amount and verify elapsed tracks the new window.
+    ts.advance(std::time::Duration::from_millis(200));
+    let elapsed = s.elapsed();
+    assert!(
+        elapsed.as_millis() >= 150 && elapsed.as_millis() < 1000,
+        "elapsed after restart + 200ms advance should be ~200ms, got {elapsed:?}"
+    );
+}
+
+#[test]
+fn sync_slot_resets_finished_bar_on_restart() {
+    use super::super::inner::DimensionSource;
+    use std::sync::Arc;
+
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
+    let ts = Arc::new(super::super::TestTimeSource::new());
+
+    let group = ProgressGroup::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_dim_source(dims as Arc<dyn DimensionSource>)
+        .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
+        .with_ticker_enabled(false)
+        .build();
+
+    let h = group.add_bar(100, "tool [work]");
+    h.advance(50);
+    group.tick();
+
+    // Finish the bar — indicatif marks it DoneVisible.
+    h.finish_success();
+    ts.advance(std::time::Duration::from_millis(50));
+    group.tick();
+
+    // After tick, the indicatif bar is finished.  Verify via snapshot.
+    let snap = h.snapshot();
+    assert!(
+        matches!(snap.status, TrackStatus::Success),
+        "bar should be Success after finish_success"
+    );
+
+    // Restart the bar — it goes back to Active.
+    h.restart();
+    ts.advance(std::time::Duration::from_millis(50));
+    group.tick();
+
+    // The bar must now be active again and tick without issue.
+    let snap = h.snapshot();
+    assert!(
+        matches!(snap.status, TrackStatus::Active),
+        "bar must be Active after restart, got {:?}",
+        snap.status
+    );
+
+    // Advance the restarted bar — verify it tracks correctly.
+    h.advance(30);
+    group.tick();
+    let snap = h.snapshot();
+    assert_eq!(snap.position, 80, "position must track after restart (cumulative 50 + 30)");
+    assert!(
+        snap.elapsed.as_millis() < 2000,
+        "elapsed should be small after restart, got {:?}",
+        snap.elapsed
+    );
+
+    group.join_and_clear();
+}
