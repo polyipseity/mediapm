@@ -26,29 +26,17 @@ For workspace-crate integration tests under `src/*/tests/`, prefer one CAS-style
 
 ### Demo examples
 
-`mediapm_demo` and `mediapm_demo_online` validate the full pipeline end-to-end with real tool invocations. Run `mediapm_demo` before push — never during incremental development. `mediapm_demo` uses stream-copy (`codec_copy = "true"`) for fast local fixture execution. The online demo's full-sync path is human-gated to explicit `cargo run --example` runs (three-level run model in "CI auto-detection in demos" below). During development, prefer selective `cargo test -p <crate>` calls.
+`mediapm_demo` and `mediapm_demo_online` validate the full pipeline end-to-end with real tool invocations. Run `mediapm_demo` before push, never during incremental development. `mediapm_demo` uses stream-copy (`codec_copy = "true"`) for fast local fixture execution. The online demo's full-sync path is human-gated to explicit `cargo run --example` runs (three-level run model in `example-execution-policy.instructions.md`). During development, prefer selective `cargo test -p <crate>` calls.
 
 Demos need external tools: `mediapm_demo` needs ffmpeg, rsgain, and media-tagger; `mediapm_demo_online` needs yt-dlp, ffmpeg, media-tagger, and network access. Use selective unit/integration tests during iteration.
 
-### Per-crate coverage scope
-
-Each crate has defined coverage responsibilities. `mediapm-cas` tests cover store/get/constraint/optimize operations. `mediapm-conductor` tests cover tool import/run/cache/re-exec workflows. `mediapm` tests cover tool lifecycle (add, sync, remove) + media add/add-local + sync/materialize + state document operations (prune, verify). Unit tests stay close to module-level invariants in `#[cfg(test)]` blocks; behavior-focused integration tests in `tests/` cover workflow guarantees.
-
-### Advanced correctness coverage
-
-Add property tests via `proptest` for determinism/idempotency-sensitive logic (planning, keying, merge). Add concurrency-permutation tests via `loom` for lock/atomic-sensitive components when race safety is a core invariant. Add deterministic golden/snapshot assertions where rendered planning output or state projections must stay stable across refactors.
-
-### Performance validation
-
-Back performance claims with an evidence-first loop: profile the hotspot, hypothesize an optimization, implement it, benchmark the effect, and revert optimizations without measured wins. Benchmark hot paths (hashing throughput, reconstruction depth, orchestration overhead, materialization throughput) when claiming performance there.
-
 ### CI auto-detection in demos
 
-The online demo detects CI in its embedded `main_is_exercised` test, never inside `main()` (see `example-execution-policy.instructions.md`). The offline demo has no CI path and always runs its full-sync path — no reduced mode, no env gate. The online demo uses a three-level run model: (1) in CI (`CI`/`GITHUB_ACTIONS`/`GITLAB_CI`/`CIRCLECI`/`TRAVIS`/`BUILDKITE`/`DRONE` set) the embedded test skips with a documented message; (2) in the local test harness outside CI (cargo test / `cargo test-all` / prek pre-push hook) it runs `main()` in reduced config-only mode by setting `MEDIAPM_RUN_ONLINE_SYNC=false` — deterministic, no network; (3) the full-sync path (network + external tools yt-dlp/ffmpeg/deno/rsgain) runs only on explicit `cargo run -p mediapm --example mediapm_demo_online`. The same Level 3 rule applies to every cache-using example (`mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`, `mediapm_demo`, `mediapm_demo_online`): explicit `cargo run --example` reuses the real user-level tool download cache (`example_isolation::user_level_cache_root()`), while embedded tests stay hermetic via `MEDIAPM_EXAMPLE_CACHE_ROOT`. `main()` is deterministic given environment inputs and never probes CI variables itself. The single shared Level 3 env var `MEDIAPM_RUN_ONLINE_SYNC` (defined as `example_isolation::RUN_ONLINE_SYNC_ENV`) is the only gate: the online demo `main()` uses it as a disable toggle (unset/enabled = full sync; disabled = reduced mode), and the non-example regression test `online_sync_post_sync_dump` uses it as an enable toggle (unset/disabled/unknown = skip). Manual reduced-mode runs use `MEDIAPM_RUN_ONLINE_SYNC=false`; manual full runs stay `cargo run --example <demo>`. When reduced mode is active, neither ffmpeg, yt-dlp, rsgain, nor media-tagger are required — only the Rust toolchain and workspace dependencies are needed.
+See `example-execution-policy.instructions.md` for the three-level run model, the `MEDIAPM_RUN_ONLINE_SYNC` env var, and the CI detection gate. The offline demo has no CI path and always runs its full-sync path.
 
 ### Verification commands reference
 
-Run `cargo test -p <crate>` for selective crate testing during development. Before push, run `cargo test --no-fail-fast` for full workspace validation (the online demo's embedded test runs reduced config-only mode — no network), then `cargo run --package mediapm --example mediapm_demo`. The online demo's full-sync path runs only on explicit `cargo run --package mediapm --example mediapm_demo_online` when network validation is wanted. Use `cargo fmt-check`, `cargo clippy-all`, and `cargo test-all` for the full CI gate suite.
+Run `cargo test -p <crate>` for selective crate testing during development. Before push, run `cargo test --no-fail-fast` for full workspace validation (the online demo's embedded test runs reduced config-only mode, no network), then `cargo run --package mediapm --example mediapm_demo`. The online demo's full-sync path runs only on explicit `cargo run --package mediapm --example mediapm_demo_online` when network validation is wanted. Use `cargo fmt-check`, `cargo clippy-all`, and `cargo test-all` for the full CI gate suite.
 
 ### Full-sync demo verification
 
@@ -56,7 +44,7 @@ When running full-sync demos, verify the following success indicators: all manag
 
 ### Timing expectations
 
-`mediapm_demo` (local transcode): approximately 5–15 seconds. `mediapm_demo_online` (yt-dlp + transcode): approximately 15–45 seconds, network-dependent. Repeated explicit runs reuse the real user-level tool download cache (`<os-cache-dir>/mediapm/cache`) via `example_isolation::user_level_cache_root()` — tool downloads persist across runs and are shared with regular mediapm syncs. The workspace `.mediapm/cache` tool cache remains distinct. For manual online demo runs, use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=600` and `env -u TMPDIR` as needed to extend the timeout and avoid temp-directory interference. Metadata-only ffmpeg extraction can be tuned with `-probesize 32k -analyzeduration 0` for dramatic speedups — for example, ffmetadata export drops from approximately 5 seconds to approximately 0.02 seconds.
+`mediapm_demo` (local transcode): approximately 5-15 seconds. `mediapm_demo_online` (yt-dlp + transcode): approximately 15-45 seconds, network-dependent. Repeated explicit runs reuse the real user-level tool download cache via `example_isolation::user_level_cache_root()`. For manual online demo runs, use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=600` and `env -u TMPDIR` as needed to extend the timeout.
 
 ## Required test qualities
 
