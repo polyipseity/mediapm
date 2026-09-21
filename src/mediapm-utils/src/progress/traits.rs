@@ -26,11 +26,12 @@ use std::sync::Arc;
 /// - [`WorkerSpinner`](BarStyle::WorkerSpinner) — a fixed worker-slot bar
 ///   driven by **per-worker** state rather than a per-step or global total.
 ///   The coordinator populates `prefix_components`/`suffix_components`
-///   directly (no `version`/`phase`; `custom` = `` `<status>` `` `[ <F> failed][ <R>
-///   retry]`), and the renderer applies a `0/0` div-by-zero guard (renders
-///   `total = 1, pos = 0` when the worker's assigned count is `0`) so an
-///   idle worker shows an empty all-░ bar. The same `wide_bar` child template
-///   as `StepCount` is used; only the field population differs.
+///   directly (no `version`/`phase`; status markers are `[F]` for failed,
+///   `[W]` for pending-retry, empty for active/idle), and the renderer
+///   applies a `0/0` div-by-zero guard (renders `total = 1, pos = 0` when
+///   the worker's assigned count is `0`) so an idle worker shows an empty
+///   all-░ bar. The same `wide_bar` child template as `StepCount` is used;
+///   only the field population differs.
 ///
 /// Set via [`ProgressBarApi::set_style`] (or [`TrackedHandle::set_style`]) after
 /// [`ProgressGroup::add_bar`]. Defaults to [`StepCount`](BarStyle::StepCount).

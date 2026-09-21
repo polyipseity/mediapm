@@ -105,8 +105,8 @@ All status-list suffixes use the **number-first** format: `{n} {word}`, comma-jo
 
 The tick loop and attach operation are designed to minimize visible flicker:
 
-- **Buffer-first tick**: `tick()` enables buffering (`flag.store(true)`) BEFORE calling `recompute_layout()`. This ensures all `set_style` calls from `recompute_layout` → `sync_slot` → `apply_*_bar_style` are suppressed through `BufferedTerm` until the `BufferGuard` drop releases them atomically.
-- **Buffered attach**: `attach()` wraps its entire body in a `BufferGuard` so slot shifts, sync_slot, and recompute_layout during bar attachment are buffered and appear atomically.
+- **Buffer-first tick**: `tick()` enables the `WriteGate` (suppresses writes) BEFORE calling `recompute_layout()`. This ensures all `set_style` calls from `recompute_layout` → `sync_slot` → `apply_*_bar_style` are suppressed until `WriteGate::open()` releases them atomically.
+- **Buffered attach**: `attach()` wraps its entire body in a `WriteGate::suppress()`/`open()` pair so slot shifts, sync_slot, and recompute_layout during bar attachment are buffered and appear atomically.
 - **Style dedup**: `sync_slot` caches `(prefix_w, suffix_w, is_overall, status_code)` in `SlotCache` and only calls `apply_*_bar_style` when any component of this tuple changes. This eliminates redundant style writes when bar dimensions and status are stable across ticks.
 
 ## Three bar-label structs
@@ -421,7 +421,7 @@ After all bars finish, the CLI prints:
 ## Pre-roll, gap conversion, finalize
 
 - **Pre-roll**: On first draw, writes blank lines to scroll existing terminal content into scrollback, then repositions cursor. Only fires when `pre_roll_term` is `Some` (not in test mode).
-- **Gap conversion**: Child bars that are inactive or finished show a fully-dimmed empty bar (`total=1, pos=0`). The `WorkerSpinner` style pins idle workers to this state.
+- **Gap conversion**: Child bars that are inactive or finished show a fully-dimmed empty bar (`total=1, pos=0`). Idle workers are explicitly finished (via `finish_success`), so they appear as dimmed empty bars. The `WorkerSpinner` style detects this state.
 - **Finalize**: `group.join()` returns after all bars finish; the renderer removes blank reserved slots and triggers a final draw so only finished bars persist in scrollback.
 
 ## Authoritative tests
