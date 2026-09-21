@@ -90,7 +90,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 
 ## SDD/TDD compliance
 
-- Spec-to-test coverage is tracked in `sdd-tdd-workflow.instructions.md` ("Coverage matrix" section). Update it when spec items or tests change.
+- Spec-to-test coverage is tracked in `.agents/coverage-matrix.md`. Update it when spec items or tests change.
 - All new features follow spec-first, test-first implementation per `.agents/instructions/sdd-tdd-workflow.instructions.md`.
 - Close high-priority test gaps before feature work in the same area.
 
