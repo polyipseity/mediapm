@@ -40,44 +40,31 @@ pub fn style_from(template: &str) -> ProgressStyle {
     ProgressStyle::with_template(template).unwrap().progress_chars("█░")
 }
 
-/// Create a [`MultiProgress`] + [`InMemoryTerm`] pair for one test
-/// at the default terminal size (H=24, W=40).
+/// Create an [`InMemoryTerm`] at the default terminal size (H=24, W=40).
 pub fn mk() -> (MultiProgress, InMemoryTerm) {
     mk_with_size(H, W)
 }
 
-/// Create a [`MultiProgress`] + [`InMemoryTerm`] pair at a custom size.
+/// Create an [`InMemoryTerm`] at a custom size.
 pub fn mk_with_size(h: u16, w: u16) -> (MultiProgress, InMemoryTerm) {
     let term = InMemoryTerm::new(h, w);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     (MultiProgress::with_draw_target(target), term)
 }
 
-/// Create a [`MultiProgress`] + [`InMemoryTerm`] + [`TestTimeSource`] triple
+/// Create an [`InMemoryTerm`] + [`TestTimeSource`] pair
 /// for tests that need deterministic elapsed timing.
 pub fn mk_with_size_and_ts(h: u16, w: u16) -> (MultiProgress, InMemoryTerm, Arc<TestTimeSource>) {
-    let term = InMemoryTerm::new(h, w);
-    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let ts = Arc::new(TestTimeSource::new());
-    (MultiProgress::with_draw_target(target), term, ts)
+    let (mp, term) = mk_with_size(h, w);
+    (mp, term, Arc::new(TestTimeSource::new()))
 }
 
 // ---- Process-env lock for tests that mutate MEDIAPM_PROGRESS_DEBUG -------
 
 /// Process-wide lock for tests that mutate `MEDIAPM_PROGRESS_DEBUG`.
-///
-/// `progress_debug_env_auto_creates_file` and
-/// `progress_debug_append_across_groups` both set/remove this env var.
-/// libtest runs tests in parallel threads in one process, so the env var is
-/// a shared mutable resource. Serializing on this mutex prevents races.
 pub static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// RAII guard that saves and restores a process env var.
-///
-/// On creation reads the current value (`Option<String>`). On drop restores
-/// it — or removes it if it was absent. Never leaves the var in a
-/// transient state. Aligned with the repo-wide no-fallbacks principle:
-/// the caller holds the `ENV_LOCK` for the whole mutation scope.
 pub struct EnvVarGuard {
     key: &'static str,
     previous: Option<String>,

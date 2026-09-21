@@ -458,10 +458,8 @@ fn progress_group_excess_bars_return_active_handles() {
     // (clamped to 4-200).  Use a MultiProgress with small term to force
     // small capacity.
     let term = indicatif::InMemoryTerm::new(4, 40);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term));
-    let mp = MultiProgress::with_draw_target(target);
     let (group, _overall) = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .capacity(4)
         .with_overall("overall", 10)
         .build();
@@ -541,9 +539,7 @@ fn rate_computation_handles_non_monotonic_position() {
     // When a bar's position regresses between ticks, the EMA rate
     // computation must not panic (saturating_sub guard).
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
-    let group = ProgressGroup::builder().with_multi_progress(mp).capacity(4).build();
+    let group = ProgressGroup::builder().with_term_like(Box::new(term.clone())).capacity(4).build();
     let h = group.add_bar(100, "test");
     h.advance(80); // position grows to 80
     group.tick(); // tick captures prev_position = 80
@@ -562,13 +558,11 @@ fn spinner_advances_per_cycle_for_all_bars() {
     use std::sync::Arc;
 
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let (group, overall) = super::super::ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -647,15 +641,13 @@ fn recycled_bar_spinner_animates() {
     use std::sync::Arc;
 
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     // capacity=2 means 1 child + 1 overall bar.
     // dynamic_height=false fixed capacity prevents auto-growing.
     let (group, overall) = super::super::ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real

@@ -128,9 +128,9 @@ pub(crate) struct WriteGate {
 impl WriteGate {
     /// Create a gate that never suppresses writes.
     ///
-    /// Used when the caller provides their own [`MultiProgress`]
-    /// (tests via `InMemoryTerm`). The flag stays `false` (writes
-    /// go through) forever.
+    /// Used by [`ProgressRenderer`] test paths where the caller
+    /// provides their own [`MultiProgress`] without a [`BufferedTerm`].
+    #[allow(dead_code, reason = "used by renderer unit tests and group.rs with_multi_progress")]
     pub(crate) fn new_noop() -> Self {
         Self { flag: Arc::new(AtomicBool::new(false)) }
     }

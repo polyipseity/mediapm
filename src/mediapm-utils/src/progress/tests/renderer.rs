@@ -8,10 +8,8 @@ fn dirty_tracking_initial_state_starts_dirty() {
     // The SharedState dirty flag starts true so the very first tick always
     // draws, even without explicit mutations.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .capacity(4)
         // Disable the daemon ticker: it fires group.tick() on real
         // wall-clock time, injecting extra ticks/draws beyond the manual
@@ -30,10 +28,8 @@ fn multiple_mutations_before_tick_single_draw() {
     // Several mutations between ticks should all be reflected in a single
     // coherent draw after the next tick, without intermediate draws.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .capacity(4)
         // Disable the daemon ticker: it fires group.tick() on real
         // wall-clock time, injecting extra ticks/draws beyond the manual
@@ -61,11 +57,9 @@ fn finalize_produces_final_output() {
     use std::time::Duration;
 
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let ts = Arc::new(super::super::TestTimeSource::new());
     let (group, overall) = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
         // wall-clock time, injecting extra ticks/draws beyond the manual
@@ -122,13 +116,11 @@ fn dirty_tracking_skips_clean_ticks() {
     use std::sync::Arc;
 
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -185,13 +177,11 @@ fn dirty_tracking_draws_on_mutation() {
     use std::sync::Arc;
 
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -231,13 +221,11 @@ fn pre_roll_reserves_full_terminal_height() {
 
     let mp_term = indicatif::InMemoryTerm::new(10, 80);
     let cap_term = indicatif::InMemoryTerm::new(100, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let _group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -265,13 +253,11 @@ fn pre_roll_one_shot() {
 
     let mp_term = indicatif::InMemoryTerm::new(10, 80);
     let cap_term = indicatif::InMemoryTerm::new(100, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -306,13 +292,11 @@ fn pre_roll_with_overall() {
 
     let mp_term = indicatif::InMemoryTerm::new(10, 80);
     let cap_term = indicatif::InMemoryTerm::new(100, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let (_group, _overall) = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -344,13 +328,11 @@ fn pre_roll_height_changes_no_effect() {
 
     let mp_term = indicatif::InMemoryTerm::new(10, 80);
     let cap_term = indicatif::InMemoryTerm::new(100, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims.clone() as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -402,13 +384,11 @@ fn pre_roll_with_existing_content_scrolls_it_away() {
     assert!(initial_content.contains("existing content line 5"), "content must be written");
 
     // Same InMemoryTerm for both draw target AND pre_roll capture.
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_pre_roll_capture(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -462,13 +442,11 @@ fn pre_roll_fires_on_join_and_clear_before_ticker() {
 
     let mp_term = indicatif::InMemoryTerm::new(10, 80);
     let cap_term = indicatif::InMemoryTerm::new(100, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(mp_term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -516,11 +494,9 @@ fn sync_slot_preserves_custom_suffix_on_attach() {
     use std::time::Duration;
 
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = indicatif::MultiProgress::with_draw_target(target);
     let ts = Arc::new(super::super::TestTimeSource::new());
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         .capacity(2)
         .build();
@@ -590,11 +566,9 @@ fn suffix_merge_user_count_total_overrides_auto() {
     use std::time::Duration;
 
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = indicatif::MultiProgress::with_draw_target(target);
     let ts = Arc::new(super::super::TestTimeSource::new());
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         .capacity(2)
         .build();
@@ -625,11 +599,9 @@ fn suffix_merge_user_rate_eta_elapsed_override_auto() {
     use std::time::Duration;
 
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = indicatif::MultiProgress::with_draw_target(target);
     let ts = Arc::new(super::super::TestTimeSource::new());
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         .capacity(2)
         .build();
@@ -730,10 +702,8 @@ fn set_truncation_replaces_builtin_rendering() {
     // When a bar has client truncation installed, the terminal output must
     // contain the client's strings and NOT the built-in component render.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .capacity(4)
         .with_ticker_enabled(false)
         .build();
@@ -765,10 +735,8 @@ fn client_truncated_prefix_starts_with_ansi_reset() {
     // built-in component render is bypassed.  The preceding colour
     // bleed would cause garbled display, which the `\x1b[0m` prevents.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let group = ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .capacity(4)
         .with_ticker_enabled(false)
         .build();

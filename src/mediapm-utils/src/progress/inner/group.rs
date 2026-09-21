@@ -8,8 +8,8 @@ use indicatif::{MultiProgress, ProgressDrawTarget, TermLike};
 
 use super::{
     DimensionSource, MAX_SLOTS, ProgressDebugSink, ProgressRenderer, RealTerminalSource,
-    RealTimeSource, SharedState, TimeSource, TrackedHandle, WriteGate, detect_progress_debug_env,
-    gate::BufferedTerm,
+    RealTimeSource, SharedState, TimeSource, TrackedHandle, detect_progress_debug_env,
+    gate::{BufferedTerm, WriteGate},
 };
 use crate::progress::BarStyle;
 
@@ -49,13 +49,13 @@ pub struct HasOverall;
 ///
 /// | Field | Default |
 /// |---|---|
-/// | `mp` | `None` (creates a fresh [`MultiProgress`]) |
+/// | `term` | `None` (creates a [`BufferedTerm`](super::gate::BufferedTerm) over [`console::Term::stderr`]) |
 /// | `dim_source` | [`RealTerminalSource`] |
 /// | `overall` | `None` (no overall bar) |
 /// | `capacity` | `None` (derived from terminal height via `dim_source`) |
 /// | `dynamic_height` | `true` |
 pub struct ProgressGroupBuilder<S = NoOverall> {
-    mp: Option<MultiProgress>,
+    mp_and_gate: Option<(MultiProgress, WriteGate)>,
     dim_source: Arc<dyn DimensionSource>,
     overall: Option<(String, u64)>,
     capacity: Option<usize>,
@@ -70,7 +70,7 @@ pub struct ProgressGroupBuilder<S = NoOverall> {
 impl Default for ProgressGroupBuilder<NoOverall> {
     fn default() -> Self {
         Self {
-            mp: None,
+            mp_and_gate: None,
             dim_source: Arc::new(RealTerminalSource),
             overall: None,
             capacity: None,
@@ -88,10 +88,46 @@ impl Default for ProgressGroupBuilder<NoOverall> {
 macro_rules! impl_builder_config {
     ($ty:ty) => {
         impl ProgressGroupBuilder<$ty> {
-            /// Use an existing [`MultiProgress`] instead of creating a fresh one.
+            /// Use an injectable [`TermLike`] instead of creating a
+            /// [`BufferedTerm`](super::gate::BufferedTerm) over
+            /// [`console::Term::stderr`]. Always wraps the term in
+            /// [`BufferedTerm`](super::gate::BufferedTerm) so the
+            /// write-gate protocol is exercised in tests.
+            ///
+            /// After calling this, use [`multi_progress()`](Self::multi_progress)
+            /// to obtain the [`MultiProgress`] for adding bars.
+            #[must_use]
+            pub fn with_term_like(mut self, term: Box<dyn TermLike>) -> Self {
+                let (buffered, gate) = super::gate::BufferedTerm::new(term);
+                let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(
+                    buffered,
+                )));
+                self.mp_and_gate = Some((mp, gate));
+                self
+            }
+
+            /// Get the [`MultiProgress`] created by [`with_term_like()`](Self::with_term_like).
+            ///
+            /// Panics if called before `with_term_like()` or `with_multi_progress()`.
+            pub fn multi_progress(&self) -> &MultiProgress {
+                &self
+                    .mp_and_gate
+                    .as_ref()
+                    .expect(
+                        "multi_progress() requires with_term_like() or with_multi_progress() first",
+                    )
+                    .0
+            }
+
+            /// Use an existing [`MultiProgress`] directly.
+            ///
+            /// Prefer [`with_term_like()`](Self::with_term_like) for new code;
+            /// this method exists for incremental test migration. The write gate
+            /// is a noop — tests using this path do not exercise the
+            /// draw-per-frame guarantee.
             #[must_use]
             pub fn with_multi_progress(mut self, mp: MultiProgress) -> Self {
-                self.mp = Some(mp);
+                self.mp_and_gate = Some((mp, super::gate::WriteGate::new_noop()));
                 self
             }
 
@@ -173,15 +209,12 @@ impl ProgressGroupBuilder<NoOverall> {
             let (rows, _) = self.dim_source.dimensions();
             (rows as usize).clamp(1, MAX_SLOTS)
         });
-        let (mp, gate, pre_roll_term): (MultiProgress, WriteGate, Option<Box<dyn TermLike>>) =
-            if let Some(ref mp) = self.mp {
-                (mp.clone(), WriteGate::new_noop(), self.pre_roll_term)
-            } else {
-                let (term, gate) = BufferedTerm::new(Box::new(console::Term::stderr()));
-                let mp =
-                    MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
-                (mp, gate, Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
-            };
+        let (mp, gate) = self.mp_and_gate.unwrap_or_else(|| {
+            let (buffered, gate) = BufferedTerm::new(Box::new(console::Term::stderr()));
+            let mp =
+                MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
+            (mp, gate)
+        });
         let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
         let mut renderer = ProgressRenderer::from_mp(
             mp,
@@ -189,7 +222,7 @@ impl ProgressGroupBuilder<NoOverall> {
             self.dim_source,
             gate,
             self.time_source,
-            pre_roll_term,
+            self.pre_roll_term,
             debug_sink,
         );
         renderer.dynamic_height = self.dynamic_height;
@@ -214,7 +247,7 @@ impl ProgressGroupBuilder<NoOverall> {
     #[must_use]
     pub fn with_overall(self, label: &str, total: u64) -> ProgressGroupBuilder<HasOverall> {
         ProgressGroupBuilder {
-            mp: self.mp,
+            mp_and_gate: self.mp_and_gate,
             dim_source: self.dim_source,
             overall: Some((label.to_string(), total)),
             capacity: self.capacity,
@@ -245,15 +278,12 @@ impl ProgressGroupBuilder<HasOverall> {
             let (rows, _) = self.dim_source.dimensions();
             (rows as usize).clamp(1, MAX_SLOTS)
         });
-        let (mp, gate, pre_roll_term): (MultiProgress, WriteGate, Option<Box<dyn TermLike>>) =
-            if let Some(ref mp) = self.mp {
-                (mp.clone(), WriteGate::new_noop(), self.pre_roll_term)
-            } else {
-                let (term, gate) = BufferedTerm::new(Box::new(console::Term::stderr()));
-                let mp =
-                    MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
-                (mp, gate, Some(Box::new(console::Term::stderr()) as Box<dyn TermLike>))
-            };
+        let (mp, gate) = self.mp_and_gate.unwrap_or_else(|| {
+            let (buffered, gate) = BufferedTerm::new(Box::new(console::Term::stderr()));
+            let mp =
+                MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
+            (mp, gate)
+        });
         let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
         let (mut renderer, state) = ProgressRenderer::from_mp_with_overall(
             mp,
@@ -263,7 +293,7 @@ impl ProgressGroupBuilder<HasOverall> {
             self.dim_source,
             gate,
             self.time_source,
-            pre_roll_term,
+            self.pre_roll_term,
             debug_sink,
         );
         renderer.dynamic_height = self.dynamic_height;

@@ -185,13 +185,11 @@ fn bar_style_worker_spinner_zero_zero_guard_renders_empty() {
     use std::sync::Arc;
 
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
     let group = super::super::ProgressGroup::builder()
-        .with_multi_progress(mp)
+        .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         .with_ticker_enabled(false)

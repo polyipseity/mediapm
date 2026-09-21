@@ -21,7 +21,6 @@ pub use super::recording::{ProgressOp, RecordingProgressTracker, RecordingTracke
 pub use super::{
     BarStyle, PrefixComponents, ProgressGroup, SuffixComponents, TrackStatus, TrackedHandle,
 };
-pub use indicatif::MultiProgress;
 pub use std::sync::Arc;
 
 mod ansi;
