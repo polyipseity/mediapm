@@ -528,3 +528,75 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
     );
     Ok(())
 }
+
+/// Integration test proving level-0 (dep) entries are applied before
+/// level-1 (requester) entries in the parallel provisioning driver.
+///
+/// The level ordering is load-bearing: level-1 inlining reads
+/// `provisioned_own_maps` populated by level-0 apply. If level-0
+/// were not applied first, the requester's content map would lack
+/// `deps/deno/...` keys. This test makes the ordering property
+/// explicit (rather than inferred from a single key's presence) by
+/// asserting:
+///   1. The dep's own content map has zero `deps/` keys (non-transitive).
+///   2. Every dep key appears as a `deps/<dep_id>/` subset in the requester.
+///   3. Exactly one state entry per distinct tool id.
+#[tokio::test]
+async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), mediapm::MediaPmError> {
+    let deno_tag = "1.46.0";
+    let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
+
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
+    let mut service =
+        provisioned_yt_dlp_with_deno(root.path(), cache_root.path(), deno_tag, deno_hash).await?;
+    service.sync_tools().await?;
+
+    let doc = read_generated_doc(&service);
+    let deno_spec = doc
+        .tools
+        .values()
+        .find(|s| s.name == "deno" && !s.runtime.content_map.is_empty())
+        .expect("active deno spec");
+    let yt_dlp_spec = doc
+        .tools
+        .values()
+        .find(|s| s.name == "yt-dlp" && !s.runtime.content_map.is_empty())
+        .expect("active yt-dlp spec");
+
+    // Property 1: dep's own content map has no deps/ keys (non-transitive).
+    for key in deno_spec.runtime.content_map.keys() {
+        assert!(
+            !key.starts_with("deps/"),
+            "dep entry must not carry deps/ keys (non-transitive): {key}"
+        );
+    }
+
+    // Property 2: every dep key appears as a deps/<dep_id>/ subset in the requester.
+    for (key, hash) in &deno_spec.runtime.content_map {
+        let inlined_key = format!("deps/deno/{key}");
+        assert_eq!(
+            yt_dlp_spec.runtime.content_map.get(&inlined_key),
+            Some(hash),
+            "requester must inline dep key {key} as {inlined_key}"
+        );
+    }
+
+    // Property 3: exactly one state entry per distinct tool id.
+    let state_bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state readable");
+    let state: MediaPmState = serde_json::from_slice(&state_bytes).expect("valid state json");
+    let mut tool_ids: Vec<_> = state.managed_tools.iter().map(|e| e.tool_id.as_str()).collect();
+    tool_ids.sort();
+    tool_ids.dedup();
+    assert_eq!(
+        tool_ids.len(),
+        state.managed_tools.len(),
+        "each tool id must appear exactly once in managed_tools, got {tool_ids:?}"
+    );
+
+    // The two tool ids are yt-dlp and deno.
+    assert!(tool_ids.contains(&"yt-dlp"), "yt-dlp must be in managed_tools");
+    assert!(tool_ids.contains(&"deno"), "deno must be in managed_tools");
+
+    Ok(())
+}
