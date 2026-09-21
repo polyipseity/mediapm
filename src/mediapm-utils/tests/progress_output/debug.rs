@@ -116,14 +116,10 @@ fn progress_debug_no_bars_shows_empty_bars_array() {
 
 #[test]
 fn progress_debug_env_auto_creates_file() {
-    // Use a unique file path (not `auto` which derives from shared PID) so that
-    // other tests also calling `detect_progress_debug_env()` in the same process
-    // write to a different file and cannot truncate this test's output.
-    let unique_suffix = format!(
-        "{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    );
-    let debug_path = format!("progress-debug-test-{unique_suffix}.jsonl");
+    // Write under a managed temp dir so panics don't leak files into the crate root.
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
+    let debug_path = dir.path().join("debug-env.jsonl");
+    let debug_path_str = debug_path.to_str().unwrap().to_string();
 
     // Serialize on ENV_LOCK: parallel tests in the same process share the
     // process-global env var. Without this, a sibling test's set_var/remove_var
@@ -131,12 +127,10 @@ fn progress_debug_env_auto_creates_file() {
     // or to be absent entirely.
     let _lock = ENV_LOCK.lock().expect("env lock poisoned");
     // SAFETY: held under ENV_LOCK — single-threaded access.
-    let _guard = unsafe { EnvVarGuard::set("MEDIAPM_PROGRESS_DEBUG", &debug_path) };
-
-    let expected_path = std::path::PathBuf::from(&debug_path);
+    let _guard = unsafe { EnvVarGuard::set("MEDIAPM_PROGRESS_DEBUG", &debug_path_str) };
 
     // Ensure no stale file from a previous run.
-    let _ = std::fs::remove_file(&expected_path);
+    let _ = std::fs::remove_file(&debug_path);
 
     let (mp, _term) = mk();
     let group = ProgressGroup::builder().with_multi_progress(mp).build();
@@ -146,15 +140,12 @@ fn progress_debug_env_auto_creates_file() {
 
     drop(group);
 
-    assert!(expected_path.exists(), "expected debug file at {}", expected_path.display());
+    assert!(debug_path.exists(), "expected debug file at {}", debug_path.display());
 
-    let contents = std::fs::read_to_string(&expected_path).unwrap();
+    let contents = std::fs::read_to_string(&debug_path).unwrap();
     assert!(!contents.is_empty(), "debug file should contain at least one tick line");
 
-    // Clean up — _guard drop restores the env var first.
-    drop(_guard);
-    drop(_lock);
-    let _ = std::fs::remove_file(&expected_path);
+    // Cleanup handled by dir Drop (TempDir removes the whole tree).
 }
 
 #[test]
@@ -162,21 +153,18 @@ fn progress_debug_append_across_groups() {
     // Two sequential `ProgressGroup::builder().build()` calls in the same
     // process must both contribute lines to the same debug file. The sink must
     // APPEND (not truncate) so the earlier group's ticks survive.
-    let unique_suffix = format!(
-        "{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    );
-    let debug_path = format!("progress-debug-append-{unique_suffix}.jsonl");
+    let dir = mediapm_utils::temp::artifact_dir().unwrap();
+    let debug_path = dir.path().join("debug-append.jsonl");
+    let debug_path_str = debug_path.to_str().unwrap().to_string();
 
     // Serialize on ENV_LOCK: without this, a sibling test's set_var/remove_var
     // between our two build() calls makes group 2 write to a different file or
     // nowhere, leaving only group 1's lines (5 < 6 → false failure).
     let _lock = ENV_LOCK.lock().expect("env lock poisoned");
     // SAFETY: held under ENV_LOCK — single-threaded access.
-    let _guard = unsafe { EnvVarGuard::set("MEDIAPM_PROGRESS_DEBUG", &debug_path) };
+    let _guard = unsafe { EnvVarGuard::set("MEDIAPM_PROGRESS_DEBUG", &debug_path_str) };
 
-    let expected_path = std::path::PathBuf::from(&debug_path);
-    let _ = std::fs::remove_file(&expected_path);
+    let _ = std::fs::remove_file(&debug_path);
 
     // First group: writes its ticks to the file.
     {
@@ -205,7 +193,7 @@ fn progress_debug_append_across_groups() {
     drop(_guard);
     drop(_lock);
 
-    let contents = std::fs::read_to_string(&expected_path).unwrap();
+    let contents = std::fs::read_to_string(&debug_path).unwrap();
     let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
 
     // Both groups contributed ticks; the file must hold more than a single
@@ -219,6 +207,5 @@ fn progress_debug_append_across_groups() {
         assert!(line.contains(r#""type":"tick""#), "line {i} missing type field: {line}");
     }
 
-    // Clean up.
-    let _ = std::fs::remove_file(&expected_path);
+    // Cleanup handled by dir Drop (TempDir removes the whole tree).
 }
