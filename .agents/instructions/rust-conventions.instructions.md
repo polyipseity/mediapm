@@ -285,7 +285,7 @@ The spinner glyph is green. The prefix is bold and right-aligned to 12 character
 
 ### Custom RHS message
 
-Call `set_suffix_components(SuffixComponents { custom, .. })` on any `TrackedHandle` to append custom text after the auto-computed right-hand side (count/total, elapsed, rate, ETA). The custom text appears separated by a single space from the auto-computed text. Common uses include `"skipped"` (tool already provisioned at the latest version) and `"cached (N)"` (N sources served from download cache). The custom text works after `finish_success()` because the daemon ticker continues syncing shared state to the indicatif bar until the bar is removed from `MultiProgress`.
+Call `set_suffix_components(SuffixComponents { status_list: vec![...], .. })` on any `TrackedHandle` to append structured status entries (e.g. `StatusCount { count: N, status: "cached" }`) after the auto-computed right-hand side (count/total, elapsed, rate, ETA). The status list appears separated by a single space from the auto-computed text. Common uses include `skipped` (tool already provisioned at the latest version) and `N cached` (N sources served from download cache). The custom text works after `finish_success()` because the daemon ticker continues syncing shared state to the indicatif bar until the bar is removed from `MultiProgress`.
 
 ### Formatting helpers
 

@@ -17,9 +17,9 @@ This file is the authoritative reference for what progress bars actually look li
 ## Width constants
 
 ```text
-MIN_PREFIX_WIDTH = 12      (decreaseable floor — bars never shrink below this)
+MIN_PREFIX_WIDTH = 0       (decreasable floor — effective floor ~4 from ANSI reset in sync_snapshot_to_bar)
 MAX_PREFIX_WIDTH = 40      (hard ceiling — prefixes truncate beyond this)
-MIN_SUFFIX_WIDTH = 12
+MIN_SUFFIX_WIDTH = 0       (decreasable floor — no ANSI overhead on suffix side)
 MAX_SUFFIX_WIDTH = 50
 ```
 
@@ -68,6 +68,10 @@ Rendered by `render_prefix_components`. The marker (`[F]` or `[W]`) is wrapped i
 ### Suffix count/total color
 
 `render_suffix_components` wraps the `count/total` segment in `\x1b[{code}m` using `bar_color_code(status, is_overall)`. The color matches the bar's semantic status, not the bar's visual style.
+
+### Status-list format rule
+
+All status-list suffixes use the **number-first** format: `{n} {word}`, comma-joined, no parentheses. Each status is a single word (compound words banned). `None` → bare word, `Some(0)` → dropped, `Some(n)` → `n word`. The format is defined once here; other files link to this section. See `StatusCount` and `format_status_list` in `src/mediapm-utils/src/progress/mod.rs`.
 
 ### `bar_color_code` lookup
 
@@ -250,8 +254,8 @@ The built-in `semantic_truncate_prefix` path (used when no `BarLabelTruncation` 
 
 Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases are shortened from longer names (`resolve` → `res`, `fetch` → `fch`, `process` → `pro`, `prune` → `prn`).
 
-- **Resolve bar** shows `cached (N)` message via `SuffixComponents::custom`.
-- **Skip bar** shows `skipped cached (N)` (when cached) vs `skipped` (when not cached).
+- **Resolve bar** shows `N cached` status list via `SuffixComponents::status_list`.
+- **Skip bar** shows `skipped, N cached` status list (when cached) vs `skipped` (when not cached).
 - **Prune bar** (`[prn]`) uses the `tools.len()` call before the `retain` block to count prune candidates and sets the total to that count. Zero-bar guard: `[prn]` bar is not created when there are no candidates. The bar advances once per document-rewrite removal, then once more for filesystem prune.
 - Overall bar uses `apply_overall_bar_style` (magenta); child bars use `apply_bar_style` (yellow).
 

@@ -16,14 +16,14 @@ by a pre-resolve step:
 The caller resolves the tool fetch before calling `fetch_and_import_tool_payload()` and passes the outcome:
 
 - **`Resolved(fetch, metadata)`** — normal path. `metadata` is a `ResolvedToolMetadata` carrying `human_readable_version`, `canonical_version`, `metadata_cached` (bool: all lookups were cache hits), `metadata_fetch_count` (u32: lookup count, e.g. ffmpeg = 2), and the three `resolved_*` provenance fields (all `Option<String>` — `None` when the provider has no value).
-- **`Skip { name, version, metadata_cached, metadata_fetch_count, resolved_tag, resolved_version, resolved_vcs_hash }`** — already provisioned at the canonical version. Only the resolve bar shows, then the function returns `Ok(None)`. `metadata_cached` toggles `"skipped cached (N)"` vs `"skipped"` (N = `metadata_fetch_count`); the `resolved_*` fields carry fresh provenance for coordinator backfill.
+- **`Skip { name, version, metadata_cached, metadata_fetch_count, resolved_tag, resolved_version, resolved_vcs_hash }`** — already provisioned at the canonical version. Only the resolve bar shows, then the function returns `Ok(None)`. `metadata_cached` toggles `"skipped, N cached"` vs `"skipped"` (N = `metadata_fetch_count`); the `resolved_*` fields carry fresh provenance for coordinator backfill.
 
 This keeps the function single-responsibility: it renders a resolve bar for every tool (avoiding a bare `pb.advance(1)` with no per-tool feedback).
 
 ### Phase 1: Resolve
 
 - Receives the resolved `ResolvedToolFetch` from `PreResolveOutcome::Resolved` (the caller does the resolve, not this function).
-- Resolve bar shows `metadata_fetch_count` items (total 0 = indeterminate when no lookups). When `metadata_cached`, the bar shows `"cached (N)"`.
+- Resolve bar shows `metadata_fetch_count` items (total 0 = indeterminate when no lookups). When `metadata_cached`, the bar shows `"N cached"` status list.
 
 ### Phase 1b: HEAD prefetch
 
@@ -33,7 +33,7 @@ This keeps the function single-responsibility: it renders a resolve bar for ever
 ### Phase 2: Fetch
 
 - Delegates to `mediapm_conductor::tools::provider::fetch_tool_sources(fetch, cache, progress)`; downloads bytes or generates launcher scripts.
-- Per-source bar shows `items.current/items.total` and `bytes.current/bytes.total`, created on-demand. When `DownloadedSources.cached_count > 0`, the fetch bar shows `"cached (N)"` via `set_suffix_components(SuffixComponents { custom: ... })` before finishing.
+- Per-source bar shows `items.current/items.total` and `bytes.current/bytes.total`, created on-demand. When `DownloadedSources.cached_count > 0`, the fetch bar shows `"N cached"` status list via `set_suffix_components(SuffixComponents { status_list: ... })` before finishing.
 
 ### Phase 3: Process
 
@@ -64,4 +64,4 @@ This keeps the function single-responsibility: it renders a resolve bar for ever
 - Progress bar values are relayed directly from conductor's `ProviderProgressCallback` — the bridge does not interpret item or byte counts.
 - All progress bars are `group.add_bar()` — they are owned by the calling coordinator's progress group.
 - The metadata cache must NOT have `touch()` called — its TTL (1 day) is anchored to creation time, not last use.
-- `set_suffix_components(SuffixComponents { custom: "skipped" })` or `set_suffix_components(SuffixComponents { custom: "skipped cached (N)" })` (where `N` = `metadata_fetch_count`) is called on the resolve bar before `finish_success()`, depending on `metadata_cached`. `set_suffix_components(SuffixComponents { custom: "cached (N)" })` (where `N` = `downloaded.cached_count`) is called on the fetch bar before `finish_success()`. Both work because the daemon ticker still syncs `SharedState` to the indicatif bar until the bar is removed from `MultiProgress`.
+- `set_suffix_components(SuffixComponents { status_list: vec![StatusCount { count: 0, status: "skipped" }] })` or `set_suffix_components(SuffixComponents { status_list: vec![StatusCount { count: 0, status: "skipped" }, StatusCount { count: metadata_fetch_count, status: "cached" }] })` is called on the resolve bar before `finish_success()`, depending on `metadata_cached`. `set_suffix_components(SuffixComponents { status_list: vec![StatusCount { count: downloaded.cached_count, status: "cached" }] })` is called on the fetch bar before `finish_success()`. Both work because the daemon ticker still syncs `SharedState` to the indicatif bar until the bar is removed from `MultiProgress`.

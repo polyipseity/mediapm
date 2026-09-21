@@ -998,7 +998,7 @@ mod tests {
     async fn resolve_bar_cached_two_shows_cached_two() {
         // Regression: resolve bar with metadata_cached=true and
         // metadata_fetch_count=2 (e.g., ffmpeg btbn + evermeet) must show
-        // "cached (2)" (not bare "cached" without count).
+        // "2 cached" status list (not bare "cached" without count).
         let cas = new_in_memory_cas();
         let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
