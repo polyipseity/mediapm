@@ -52,6 +52,15 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    mirroring the provision-cache layout.
 9. **Save generated document** — `save_conductor_generated_document()`.
 
+### Two-level parallel provisioning
+
+The provisioning loop runs in two levels with bounded parallelism:
+
+- **Level 0** (`EntryKind::Dep`): same-step dependency entries run in parallel via `buffer_unordered(MAX_CONCURRENT_TOOL_PROVISIONING=4)`. Results are sorted by original index to preserve deterministic application order.
+- **Level 1** (`EntryKind::Explicit`): user-configured tool entries run after level-0 apply completes, so `provisioned_own_maps` is populated before inlining.
+
+Within each level, `provision_entry` fetches and processes a single tool. `apply_entry_outcome` runs sequentially after each level completes, merging results into the generated document and populating `provisioned_own_maps` for dependency inlining.
+
 ### Dual-write strategy
 
 The sync coordinator persists two distinct documents with different write policies:

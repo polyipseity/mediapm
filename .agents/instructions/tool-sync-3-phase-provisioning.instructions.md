@@ -60,6 +60,7 @@ This keeps the function single-responsibility: it renders a resolve bar for ever
 
 ## Key invariants
 
+- **Per-tool wrapper**: `provision_entry` (in `sync/mod.rs`) wraps `fetch_and_import_tool_payload` with pre-resolve, error handling, and progress-bar lifecycle. Each call to `provision_entry` is independent and can run in parallel via `buffer_unordered`.
 - **Tool id contract**: provisioning at the mediapm layer is keyed by the mediapm tool id (plain logical id). The conductor layer receives the **mediapm conductor tool id** — the generated-doc `tools` map key (`{name}@{content_map_hash}`, e.g. `yt-dlp@blake3:abc`, or bare `{name}` when the content map is empty) — as the provision-cache key. The provision cache (`mediapm-conductor` code) must use the conductor tool id only, never the plain mediapm tool id; payloads land at `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/` and the `.env.generated` paths mirror that layout.
 - Progress bar values are relayed directly from conductor's `ProviderProgressCallback` — the bridge does not interpret item or byte counts.
 - All progress bars are `group.add_bar()` — they are owned by the calling coordinator's progress group.
