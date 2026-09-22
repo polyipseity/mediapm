@@ -217,12 +217,13 @@ Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sampl
 
 ## Cross-Crate Invariants
 
-- **Content identity**: BLAKE3-256 multihash; `Hash::composite(&[Hash])` for deterministic composite hashing.
-- **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence, runtime env files (`.env`, `.env.generated`), and gitignore. MediaPM delegates gitignore creation to `extend_runtime_gitignore()` at construction and dotenv writing to `write_generated_dotenv()` during tool sync. The latter receives conductor-keyed tool runtimes (`tool_runtimes` keys are mediapm conductor tool ids, e.g. `yt-dlp@blake3:abc`) and emits payload paths `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`; env var names derive from the stripped plain mediapm tool id (hash-free).
-- **MediaPM → CAS**: Materialization reads from CAS; all outputs read-only after commit. Hash mismatch → no fallback.
-- **NCL→Rust sync**: Typed envelope — `deny_unknown_fields` on envelope, `#[serde(flatten)]` inner, custom deserializers for Nickel f64→u64. All user-facing config fields are non-Option in domain types; absent keys resolve to explicit defaults at the serde boundary, so downstream code never handles `Option`. Follow the schema strictness policy (S1–S13) and regression requirements R1–R6: every config/state/envelope boundary type carries `deny_unknown_fields`, no catch-all `Value`/`Dyn` shapes, unknown enum names fail fast, exported JSON schemas are strict, and every persisted Nickel schema has a parity test (`schema_sync.rs`).
-- **Config versioning pattern**: each version envelope keeps its own shape. V1 types (e.g. `MediaRuntimeStorageV1`) are flat wire shapes bridging to the active V2 boundary `MediaRuntimeStorageLatest` via `From` impls; they are never reshaped to mirror V2's sub-record grouping. Migrations live in the target version file (`v1.ncl`/`v2.ncl`); `mod.ncl` only dispatches. Version-specific types and their `From` bridges live inside the version file (`versions/v1.rs`, `versions/v_latest.rs`), never in `config/mod.rs`, which holds only resolved (option-free) types and a thin `from_boundary` delegation. See `.agents/instructions/versioning-and-migration.instructions.md`.
+Cross-crate data flow, shared invariants, and the full module-layer index are in `mediapm-architecture.instructions.md`. Key mediapm-specific rules:
+
+- **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence, and runtime env files. MediaPM delegates gitignore creation to `extend_runtime_gitignore()` at construction and dotenv writing to `write_generated_dotenv()` during tool sync.
+- **MediaPM → CAS**: Materialization reads from CAS; all outputs read-only after commit. Hash mismatch means no fallback.
 - **Lock→CAS referential integrity**: Prune must not remove hashes referenced by lock records.
+
+See `versioning-and-migration.instructions.md` for the config versioning pattern and `nickel.instructions.md` for the NCL-to-Rust sync contract (S1-S13).
 
 ## Testing & Validation
 
