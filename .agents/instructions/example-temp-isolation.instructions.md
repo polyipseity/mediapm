@@ -20,7 +20,7 @@ $TMPDIR/mediapm-{role}-{unique}
 | **cache** | `mediapm-cache-` | `mediapm_utils::temp::cache_dir()` | Hermetic user-level tool download cache (`cache_root_override`) |
 | **runtime** | `mediapm-runtime-{16hex}` | `mediapm_utils::temp::runtime_dir_for_workspace(root)` | Conductor sandbox tmp root per workspace (stable hash of workspace path) |
 
-Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code — use the role helpers above so orphans are identifiable and the janitor can remove them. The naming contract, janitor contract, regression gates, and authoring rules are the canonical spec: **`temp-directory-spec.instructions.md`**.
+Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code (use the role helpers above so orphans are identifiable and the janitor can remove them. The naming contract, janitor contract, regression gates, and authoring rules are the canonical spec: **`temp-directory-spec.instructions.md`**.
 
 ## Directory classes
 
@@ -78,7 +78,7 @@ let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path
 
 Rules:
 
-- Bind `TempDir` to a local variable for the full test scope — do not leak paths without a cleanup owner.
+- Bind `TempDir` to a local variable for the full test scope (do not leak paths without a cleanup owner.
 - Pass `cache_root_override` whenever the test calls `sync_tools`, provisioning, or full `sync_library`.
 - Drop exclusive CAS handles before reopening the same store path (see `StoreLocked` pattern in `rust-conventions.instructions.md`).
 - Process-global env vars: hold the example env lock (`example_isolation::lock_process_env()`) for the mutation scope, or keep an `IsolatedExampleRoots` guard alive; restore env before the lock/guard is released.
@@ -107,21 +107,21 @@ Tests that mutate `MEDIAPM_EXAMPLE_*` (or any process env) directly without a gu
 
 ## Manual janitor
 
-`scripts/clean-mediapm-temp.sh` (POSIX) and its twin `scripts/clean-mediapm-temp.ps1` (Windows) remove stale mediapm temp trees. The full janitor contract — glob set (temp-root three prefixes only), `--dry-run` semantics, readonly/retry handling, and the parity requirement — is in **`temp-directory-spec.instructions.md`** ("Janitor contract").
+`scripts/clean-mediapm-temp.sh` (POSIX) and its twin `scripts/clean-mediapm-temp.ps1` (Windows) remove stale mediapm temp trees. The full janitor contract — glob set (temp-root three prefixes only), `--dry-run` semantics, readonly/retry handling, and the parity requirement (is in **`temp-directory-spec.instructions.md`** ("Janitor contract").
 
 ## Authoring checklist
 
 - [ ] Example `main()` reads `ARTIFACT_ROOT_ENV` / `CACHE_ROOT_ENV` (via `example_isolation` constants), not hardcoded canonical paths only.
-- [ ] Example tests use `IsolatedExampleRoots` — not hand-rolled `tempfile` + `set_var` guards.
+- [ ] Example tests use `IsolatedExampleRoots` : not hand-rolled `tempfile` + `set_var` guards.
 - [ ] Share-violation fallbacks use `isolated_artifact_dir()` and keep the `TempDir` alive until cleanup.
 - [ ] Full-sync demos that run tool-update precheck require `with_cache()` so `CACHE_ROOT_ENV` is set.
-- [ ] Integration tests use `artifact_dir()` + `cache_dir()` + `cache_root_override` — never the real OS cache or canonical example artifacts.
+- [ ] Integration tests use `artifact_dir()` + `cache_dir()` + `cache_root_override` : never the real OS cache or canonical example artifacts.
 - [ ] No test fixtures written into `src/` or committed artifact trees.
 - [ ] After local debug with fixed paths, run the janitor script or delete manually.
 
 ## Related instructions
 
-- `example-execution-policy.instructions.md` — `main_is_exercised`, three-level run model for nondeterministic examples (CI skip / test-harness reduced config-only mode / explicit-run full sync)
+- `example-execution-policy.instructions.md` : `main_is_exercised`, three-level run model for nondeterministic examples (CI skip / test-harness reduced config-only mode / explicit-run full sync)
 - `rust-conventions.instructions.md` — general test isolation, `StoreLocked`, async tests
 - `paths-layout.instructions.md` — `conductor_tmp_dir`, `mediapm_tmp_dir`, workspace cache layout
 - `tool-sync-coordinator-and-identity.instructions.md` — hermetic cache override for provisioning

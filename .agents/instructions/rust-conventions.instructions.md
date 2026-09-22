@@ -62,17 +62,17 @@ Avoid depending on nondeterministic iteration order from `HashMap`, `HashSet`, o
 
 ### Test isolation
 
-Use temporary directories for filesystem tests — create them with `mediapm_utils::temp::artifact_dir()` / `cache_dir()` (or `assert_fs::TempDir` where appropriate) and avoid depending on host machine state or pre-existing data. Tests must be self-contained and leave no filesystem artifacts after completion. Do not write test fixtures into the source tree. When setting process-global environment variables that affect other tests' behavior, remove them immediately after the setup step that consumes them — do not wait until function exit. Delayed cleanup races with parallel test execution (cargo test runs integration tests in the same process concurrently).
+Use temporary directories for filesystem tests (create them with `mediapm_utils::temp::artifact_dir()` / `cache_dir()` (or `assert_fs::TempDir` where appropriate) and avoid depending on host machine state or pre-existing data. Tests must be self-contained and leave no filesystem artifacts after completion. Do not write test fixtures into the source tree. When setting process-global environment variables that affect other tests' behavior, remove them immediately after the setup step that consumes them — do not wait until function exit. Delayed cleanup races with parallel test execution (cargo test runs integration tests in the same process concurrently).
 
 **mediapm temp model:** Integration tests (`src/mediapm/tests/`) use per-test `mediapm_utils::temp::artifact_dir()` workspaces plus `MediaRuntimeStorage.cache_root_override` (via `cache_dir()`) for hermetic provisioning. Examples-as-tests use `mediapm::example_isolation::IsolatedExampleRoots` and `MEDIAPM_EXAMPLE_*` env overrides. See `example-temp-isolation.instructions.md` for role prefixes, cleanup lifecycle, conductor sandbox teardown, and example env serialization (process-wide lock via `example_isolation::lock_process_env()`).
 
 ### Credential isolation for AcoustID tests
 
-Tests that validate missing-AcoustID-key behavior must explicitly blank credentials by unsetting `ACOUSTID_API_KEY` or passing a CLI override. This prevents ambient host environment variables from masking the expected failure path. Set the env var to an empty string with `std::env::remove_var` or use a test-scoped approach that restores the original value on drop. The same principle applies to any test that depends on the absence of ambient configuration — always explicitly control the environment rather than assuming it is empty.
+Tests that validate missing-AcoustID-key behavior must explicitly blank credentials by unsetting `ACOUSTID_API_KEY` or passing a CLI override. This prevents ambient host environment variables from masking the expected failure path. Set the env var to an empty string with `std::env::remove_var` or use a test-scoped approach that restores the original value on drop. The same principle applies to any test that depends on the absence of ambient configuration (always explicitly control the environment rather than assuming it is empty.
 
 ### Async test patterns
 
-Use `tokio::test` for async tests. Prefer `#[tokio::test(start_paused = true)]` for tests that involve timeouts or intervals to avoid real-time waiting. For tests that spawn tasks, ensure all spawned tasks complete before the test function returns by using `tokio::task::spawn` with a `JoinHandle` that is awaited. Avoid `tokio::spawn` without tracking the handle in tests — unchecked background tasks may outlive the test and cause flaky failures in subsequent tests.
+Use `tokio::test` for async tests. Prefer `#[tokio::test(start_paused = true)]` for tests that involve timeouts or intervals to avoid real-time waiting. For tests that spawn tasks, ensure all spawned tasks complete before the test function returns by using `tokio::task::spawn` with a `JoinHandle` that is awaited. Avoid `tokio::spawn` without tracking the handle in tests (unchecked background tasks may outlive the test and cause flaky failures in subsequent tests.
 
 ### Module split conventions
 
@@ -80,7 +80,7 @@ Place `#[cfg(test)]` blocks inline in the source file they test. If the inline b
 
 ### StoreLocked pattern for tests opening CAS twice
 
-`FileSystemCas::open()` acquires an exclusive `flock` on `{root}/lock`. When a test opens CAS at `cas_root` and later passes `&cas_root` to `sync_hierarchy()` (which opens the same store internally), the second open hits `CasError::StoreLocked`. The fix is to `drop(cas)` before calling `sync_hierarchy()`, then reopen with `FileSystemCas::open(&cas_root).await` if CAS access is needed after the sync completes. The same pattern applies to `ToolDownloadCache::open()` at the global cache path — defer opening the cache until provisioning is actually needed.
+`FileSystemCas::open()` acquires an exclusive `flock` on `{root}/lock`. When a test opens CAS at `cas_root` and later passes `&cas_root` to `sync_hierarchy()` (which opens the same store internally), the second open hits `CasError::StoreLocked`. The fix is to `drop(cas)` before calling `sync_hierarchy()`, then reopen with `FileSystemCas::open(&cas_root).await` if CAS access is needed after the sync completes. The same pattern applies to `ToolDownloadCache::open()` at the global cache path (defer opening the cache until provisioning is actually needed.
 
 ## Terminal output matching
 
@@ -89,11 +89,11 @@ Place `#[cfg(test)]` blocks inline in the source file they test. If the inline b
 When writing progress bar tests that use `InMemoryTerm` to capture rendered
 output, **MUST** use exact `assert_eq!(term.contents(), concat!(...))`
 matching over substring or count-only assertions. The expected output string
-must appear **literally** in the test source code via `concat!(...)` — never
+must appear **literally** in the test source code via `concat!(...)` (never
 read from an external file, environment variable, or runtime-constructed
 string.
 
-**Why.** An exact-string assertion is self-documenting: the expected output appears inline, so a reader sees the rendered shape without running the test or opening a snapshot file. It collapses fragile `lines()[i].contains(...)` chains into one `assert_eq!` that catches every class of rendering defect at once — missing blank lines, wrong bar ordering, stale position/total, wrong fill characters, missing brackets, wrong elapsed times, truncated or wrapped output. A substring assertion like `assert!(lines[0].contains("3/5"))` checks one dimension; the bar could be on the wrong line with wrong neighbors and still pass.
+**Why.** An exact-string assertion is self-documenting: the expected output appears inline, so a reader sees the rendered shape without running the test or opening a snapshot file. It collapses fragile `lines()[i].contains(...)` chains into one `assert_eq!` that catches every class of rendering defect at once (missing blank lines, wrong bar ordering, stale position/total, wrong fill characters, missing brackets, wrong elapsed times, truncated or wrapped output. A substring assertion like `assert!(lines[0].contains("3/5"))` checks one dimension; the bar could be on the wrong line with wrong neighbors and still pass.
 
 **Exception.** Substring or count-only assertions are acceptable when:
 
@@ -107,7 +107,7 @@ string.
 
 When asserting across resize events with dynamic height, prefer comparing
 non-empty content line counts (`lines().filter(|l| !l.is_empty()).count()`)
-over total `.lines().count()` — trailing empty lines in the virtual terminal
+over total `.lines().count()` (trailing empty lines in the virtual terminal
 buffer may differ after grow→shrink cycles even when visible content is
 functionally identical.
 
@@ -115,14 +115,14 @@ functionally identical.
 
 1. Write the test body with a deliberately wrong expected string (e.g.
    `assert_eq!(term.contents(), "WRONG")`).
-2. Run the test — it fails and prints the actual `term.contents()` output.
+2. Run the test (it fails and prints the actual `term.contents()` output.
 3. Copy the actual output verbatim into the `concat!(...)` assertion.
 4. Re-run to confirm PASS.
 
 This avoids manual arithmetic of `█` fill characters and bar-template width
 computation.
 
-**Inline expected output in source code.** Write the expected output literally in the test body via `concat!(...)`. Do not read it from external snapshot files, golden files, environment variables, or runtime-constructed strings — an inline `concat!(...)` is self-documenting and shows mismatches directly in the assertion line.
+**Inline expected output in source code.** Write the expected output literally in the test body via `concat!(...)`. Do not read it from external snapshot files, golden files, environment variables, or runtime-constructed strings (an inline `concat!(...)` is self-documenting and shows mismatches directly in the assertion line.
 
 **Conventions.** Use `H=24, W=40` from `common::mk()` as the default terminal
 size unless the test specifically targets narrow/wide/short/tall behavior.
@@ -131,7 +131,7 @@ height that fits the expected number of bars (children + overall + blank
 reserve). Name tests with a suffix that signals exact matching
 (e.g. `consumer_exact_parallel_worker_output`), making the assertion style
 self-documenting. Prefix slots right-pad to their template width and the
-rendered width includes ANSI escapes — a 30-col `{prefix:>30.30}` slot holding
+rendered width includes ANSI escapes (a 30-col `{prefix:>30.30}` slot holding
 `\x1b[0m` plus 4 visible chars renders 26 leading spaces. When a space-count
 expectation breaks, re-derive the width from the template slot plus ANSI
 overhead before suspecting a rendering refactor.

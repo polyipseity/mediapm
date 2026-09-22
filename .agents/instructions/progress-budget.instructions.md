@@ -38,7 +38,7 @@ Methods:
 | `snap(item_idx)`             | `(pos, total)` for one item                                | —                 |
 | `aggregate()`                | `(sum_pos, sum_total)` across all items                    | —                 |
 
-**Hard assert**: `assert!` (always compiled). Violation means a bug in size tracking logic — `pos ≤ total` per item is non-negotiable.
+**Hard assert**: `assert!` (always compiled). Violation means a bug in size tracking logic (`pos ≤ total` per item is non-negotiable.
 
 **All atomic operations** use `Ordering::AcqRel`/`Acquire`/`Release` so a progress bar thread sees a consistent snapshot.
 
@@ -72,7 +72,7 @@ fn set_pos(item_idx, pos):
 
 ## Extraction-helper callback protocol
 
-Extraction helpers (`extract_zip`, `extract_tar_gz`, `extract_tar_xz`, `extract_archive`, `CountingReader`) receive only a `local_cb: Option<&dyn Fn(u64)>`. The `source_total` parameter has been removed — helpers never know the total work for the source.
+Extraction helpers (`extract_zip`, `extract_tar_gz`, `extract_tar_xz`, `extract_archive`, `CountingReader`) receive only a `local_cb: Option<&dyn Fn(u64)>`. The `source_total` parameter has been removed (helpers never know the total work for the source.
 
 - `local_cb` fires with `local_pos: u64` where `local_pos` is the current compressed bytes consumed. The helper does NOT call `set_pos`/`advance` on the shared budget — it only fires position snapshots through the callback.
 - The outer phase loop (`process_single_source`) creates the callback internally from the `MultiItemBudget` using `budget.set_pos(item_idx, pos)`. This maps the helper's local position directly to the item's absolute position.
@@ -145,13 +145,13 @@ invariants:
     entry_decompressed`. Endpoint is exact; mid-entry is approximate (uniform
     compression ratio assumed).
   - **tar.gz extraction**: `CountingReader` tracks compressed bytes consumed.
-    GzDecoder may read ahead causing jumps up to ~32 KB — mitigated by
+    GzDecoder may read ahead causing jumps up to ~32 KB (mitigated by
     per-entry callbacks.
   - **tar.xz extraction**: `CountingReader` tracks compressed bytes consumed.
     More responsive than `XzDecoder::total_in()` (which only updates at xz
     block boundaries, potentially multi-MB apart).
   - **Compress packing**: file sizes accumulate as decompressed bytes written.
-    ZIP metadata overhead (~KB) excluded from total — negligible vs payload
+    ZIP metadata overhead (~KB) excluded from total (negligible vs payload
     sizes.
 - **Fidelity over precision**: smooth visual updates matter more than byte-exact accuracy; all paths stay monotonic and complete.
 
@@ -159,7 +159,7 @@ invariants:
 
 The prune phase wraps the wholesale document rewrite and filesystem directory
 prune that runs after the provisioning loop completes. It uses a simple counter
-bar (total = 2), not a `MultiItemBudget` — these are atomic operations, not
+bar (total = 2), not a `MultiItemBudget` (these are atomic operations, not
 byte-level.
 
 ```text
@@ -236,7 +236,7 @@ pub struct ProviderProgressSnapshot {
 }
 ```
 
-The `items` field reports `(completed_items, total_items)` in fetch and process — this drives the `{tool} [process] 1/3` → `2/3` → `3/3` prefix in progress bars.
+The `items` field reports `(completed_items, total_items)` in fetch and process (this drives the `{tool} [process] 1/3` → `2/3` → `3/3` prefix in progress bars.
 
 ## ByteBudget (legacy)
 

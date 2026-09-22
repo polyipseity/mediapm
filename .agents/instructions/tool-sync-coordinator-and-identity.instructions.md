@@ -21,10 +21,10 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
    - `Some(path)` → use the provided path as the cache root
      A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
-4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_suffix_components(SuffixComponents { custom: "skipped" })` and returns `Ok(None)`. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are candidates for `resolved_*` backfill (see below). When a skipped tool's runtime is reconstructed under its conductor tool id, the coordinator uses `find_active_tool_spec()` (both skip paths plus external consumers like the demo examples — see "Active tool spec resolution").
+4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_suffix_components(SuffixComponents { custom: "skipped" })` and returns `Ok(None)`. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are candidates for `resolved_*` backfill (see below). When a skipped tool's runtime is reconstructed under its conductor tool id, the coordinator uses `find_active_tool_spec()` (both skip paths plus external consumers like the demo examples : see "Active tool spec resolution").
 5. **Active-tool tracking (pruning)** — the active set for filesystem pruning is
    the set of **mediapm conductor tool ids** collected in `tool_runtimes` (every
-   tool inserted by the provisioning loop, keyed by its generated-doc key —
+   tool inserted by the provisioning loop, keyed by its generated-doc key:
    `{name}@{hash}` when the content map is non-empty, bare `{name}` when empty).
    Tools NOT in this set get their content_map cleared and filesystem payloads
    removed after the provisioning loop. (`compute_used_tool_ids` was deleted:
@@ -73,7 +73,7 @@ The sync coordinator persists two distinct documents with different write polici
 - **`conductor.generated.ncl` (artifact-driven, change-detected):** Updated only when
   tool content-map hashes (the actual binary payloads) differ from the previous write.
   Uses `write_bytes_if_changed()` — reads the existing file and skips the write when
-  bytes are identical. This is the artifact manifest — it only changes when deployable
+  bytes are identical. This is the artifact manifest (it only changes when deployable
   artifacts change.
 
 **Rationale:** Canonical version tags (e.g., daily autobuild timestamps from BtbN) can change without producing different binaries. An unconditional conductor-file write would create git noise for every upstream tag rotation. The dual strategy gives zero git churn in the conductor file when payloads are stable, and a complete sync history in state.json for debugging and audit.
@@ -106,9 +106,9 @@ The sync coordinator persists two distinct documents with different write polici
 ### Invariants
 
 - **Two tool id concepts (never confuse)**:
-  - **MediaPM tool id** — the plain logical id (`yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`). Used in `mediapm.ncl` tools keys, dependency keys, `ToolRegistryEntry.tool_id`, `step.tool`, and the **env var name stem** (`MEDIAPM_YT_DLP_LINUX[_DIR]` — hash-free).
+  - **MediaPM tool id** — the plain logical id (`yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`). Used in `mediapm.ncl` tools keys, dependency keys, `ToolRegistryEntry.tool_id`, `step.tool`, and the **env var name stem** (`MEDIAPM_YT_DLP_LINUX[_DIR]` : hash-free).
   - **MediaPM conductor tool id** — the generated-doc `tools` map key: `"{name}@{hash}"` when the content map is non-empty, bare `"{name}"` when empty. This is the **provision-cache key** (`<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/`) and the **`tool_runtimes` map key**; the mediapm layer must never key provisioning state by the plain mediapm tool id.
-- Provision failures produce warnings only — they never abort the loop or return `Err`. The failed tool will be retried on next sync.
+- Provision failures produce warnings only (they never abort the loop or return `Err`. The failed tool will be retried on next sync.
 - Content-addressed hash is computed from `serde_json::to_string(&payload.content_map)` → `blake3::hash()` → hex.
 - Tool key format: `"{name}@{hash}"` when content_map non-empty, bare `"{name}"` when empty.
 - Builtin source-ingest tools (`import`) skip hash-key generation and use bare name.
@@ -186,7 +186,7 @@ Format: `"{name}@{blake3(content_map_json)}"`
 
 - `name` is the tool identifier (e.g. `"yt-dlp"`).
 - `hash` is the lowercase hex blake3 hash of the content_map JSON serialized with `serde_json::to_string`.
-- When content_map is empty (no payload fetched, internal launcher), the bare `"{name}"` is used — no `@` suffix.
+- When content_map is empty (no payload fetched, internal launcher), the bare `"{name}"` is used (no `@` suffix.
 
 ### Semantics
 
@@ -215,7 +215,7 @@ In `list_tools()` (`documents.rs`), keys are parsed by splitting on the last `@`
 `ToolRegistryEntry.canonical_version` stores a **composite** version string that
 includes the tool's own version plus the versions of its SameStep dependencies.
 This ensures that a tool is re-provisioned when any SameStep dependency version
-changes — not just when the tool itself changes.
+changes (not just when the tool itself changes.
 
 ### Format
 
@@ -235,7 +235,7 @@ changes — not just when the tool itself changes.
   because they resolve in a different sync pass.
 - **Non-transitive invariant**: dependencies are DIRECT-ONLY. Composite
   segments always reference each dep's own version segment (the part before the
-  first `;` of the dep's stored canonical version), never a dep's composite — a
+  first `;` of the dep's stored canonical version), never a dep's composite (a
   tool that is both a dep and an explicitly-configured tool with its own
   same-step deps contributes only its bare version.
 - For tools with no SameStep dependencies, `composite == bare`.

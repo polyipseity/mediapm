@@ -240,7 +240,7 @@ The built-in `semantic_truncate_prefix` path (used when no `BarLabelTruncation` 
 | 5 | `tool_name` | Progressive |
 | 6 | fallback | Hard truncate whatever remains |
 
-`count` and `total` are stored separately but rendered and trimmed as one unit — a bare count or bare total is never shown. The built-in path is still used by Screen A (tool-sync) bars which do not install `BarLabelTruncation`.
+`count` and `total` are stored separately but rendered and trimmed as one unit (a bare count or bare total is never shown. The built-in path is still used by Screen A (tool-sync) bars which do not install `BarLabelTruncation`.
 
 ## Test-only vs production output
 
@@ -305,7 +305,7 @@ After progress bars finish, the CLI prints structured result lines via primitive
 
 ### Per-screen summary formats
 
-**Screen A — `mediapm sync`** (via `print_sync_summary` in `output/mod.rs`):
+**Screen A: `mediapm sync`** (via `print_sync_summary` in `output/mod.rs`):
 
 ```text
 ✓ sync complete    executed=3  cached=2  materialized=5  pruned_tools=0  removed_tools=0
@@ -316,7 +316,7 @@ After progress bars finish, the CLI prints structured result lines via primitive
 - Fields: `executed` always shown; `cached`, `materialized`, `skipped`, `removed`, `removed_empty`, `added_tools`, `updated_tools`, `pruned_tools`, `removed_tools`, `skipped_tools`, `failed` shown only when >0.
 - Warnings: one `print_warning` line per warning.
 
-**Screen A — `mediapm tool sync`** (via `print_result` + `ToolsSyncSummary`):
+**Screen A: `mediapm tool sync`** (via `print_result` + `ToolsSyncSummary`):
 
 ```text
 ✓ tools synced    added=2  updated=1  pruned=0  removed=0
@@ -326,7 +326,7 @@ After progress bars finish, the CLI prints structured result lines via primitive
 - Fields: `added`, `updated`, `pruned`, `removed` (all always shown).
 - Warnings: one `print_warning` line per warning.
 
-**Screen B — workflow** (via `CliSyncObserver` in `output/observer.rs`):
+**Screen B: workflow** (via `CliSyncObserver` in `output/observer.rs`):
 
 ```text
 ✓ workflow    executed=3  cached=2  failed=0
@@ -336,7 +336,7 @@ After progress bars finish, the CLI prints structured result lines via primitive
 - Fields: `executed`, `cached`, `failed`.
 - The conductor CLI (`conductor run`) renders identically via `format_result_line`.
 
-**Screen C — materialization** (via `CliSyncObserver` in `output/observer.rs`):
+**Screen C: materialization** (via `CliSyncObserver` in `output/observer.rs`):
 
 ```text
 ✓ materialized    paths=5  skipped=3  removed=1
@@ -353,7 +353,7 @@ The library (`MediaPmService::sync_library_with_tag_update_checks_and_observer`)
 
 Children render above the overall bar: child bars first, overall bar last.
 
-### Screen A — tool-sync, mid-resolve (3 tools, ffmpeg resolving)
+### Screen A: tool-sync, mid-resolve (3 tools, ffmpeg resolving)
 
 ```text
 ⠋                   ffmpeg@7.1 [res] 0/100 0s 42.5/d
@@ -366,7 +366,7 @@ Children render above the overall bar: child bars first, overall bar last.
 - Lines 1-3: child bars, yellow spinner + yellow/dim bar.
 - `[prn]` prune bar shows `N/M` count (M = prune candidates from `tools.len()` before `retain`; N = items removed so far + filesystem prune step).
 
-### Screen B — workflow, mid-run (3 workers, pool_size=3)
+### Screen B: workflow, mid-run (3 workers, pool_size=3)
 
 ```text
 ⠙                  default s5 (echo@v1) [active] 1/2 running
@@ -392,7 +392,7 @@ Children render above the overall bar: child bars first, overall bar last.
 - Overall bar: `materializing [mat]`.
 - `[wrt]` per-file sub-bars appear inside `media_folder` entries with `file_name` set.
 
-### Screen A — tool-sync post-finish
+### Screen A: tool-sync post-finish
 
 After all bars finish, the CLI prints:
 

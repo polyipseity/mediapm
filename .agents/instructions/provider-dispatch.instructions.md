@@ -37,7 +37,7 @@ removed, the count adjusts automatically.
 - Cache-first: looks up `https://api.github.com/repos/{owner}/{repo}/releases/latest` in metadata cache.
 - On miss: sends GET request via `mediapm_conductor::http::client::shared_http_client()`, parses `tag_name` from JSON response.
 - On hit: stores result in metadata cache with key = API URL.
-- **Metadata cache rules**: caller must NOT call `touch()` — TTL (1 day) is anchored to creation time, not last use.
+- **Metadata cache rules**: caller must NOT call `touch()` (TTL (1 day) is anchored to creation time, not last use.
 
 ## URL templating rules per tool
 
@@ -64,7 +64,7 @@ The canonical version is the resolved commit hash for GitHub-release-based tools
 
 ## Resolved provenance fields (`resolved_tag` / `resolved_version` / `resolved_vcs_hash`)
 
-Every `ResolvedToolMetadata` carries three provenance fields of type `Option<String>`. Empty is `None` (serialized as JSON `null`) — never `""`. Providers that have no value return `None`; consumers branch on `Some`/`None`. These fields are informational provenance; version comparison, skip-if-up-to-date, and update decisions all use `canonical_version`.
+Every `ResolvedToolMetadata` carries three provenance fields of type `Option<String>`. Empty is `None` (serialized as JSON `null`) (never `""`. Providers that have no value return `None`; consumers branch on `Some`/`None`. These fields are informational provenance; version comparison, skip-if-up-to-date, and update decisions all use `canonical_version`.
 
 | Tool           | resolved_tag           | resolved_version         | resolved_vcs_hash       | Why empty? |
 | -------------- | ---------------------- | ------------------------ | ----------------------- | ---------- |
@@ -79,5 +79,5 @@ Every `ResolvedToolMetadata` carries three provenance fields of type `Option<Str
 
 ## Platform-specific considerations
 
-- macOS ffmpeg: Evermeet.cc and getrelease URLs use dynamic endpoints — HEAD is skipped during prefetch.
+- macOS ffmpeg: Evermeet.cc and getrelease URLs use dynamic endpoints (HEAD is skipped during prefetch.
 - media-tagger: uses `GenerateLauncher` for cross-platform launcher script generation instead of binary download on some platforms.
