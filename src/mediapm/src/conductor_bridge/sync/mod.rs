@@ -53,12 +53,20 @@ use crate::source_metadata::resolve_conductor_cas_root;
 use crate::tools::downloader::ToolDownloadCache;
 use crate::tools::provider;
 
-/// Maximum number of provisioning entries resolved/fetched/processed at once.
+/// Environment override for tool provisioning concurrency.
+const ENV_TOOL_PROVISION_CONCURRENCY: &str = "MEDIAPM_TOOL_PROVISION_CONCURRENCY";
+
+/// Returns the maximum number of provisioning entries resolved/fetched/processed at once.
 ///
-/// Bounded because every entry opens up to 3 OS-variant downloads and the
-/// user-level cache is shared with concurrent `mediapm` processes; unbounded
-/// fan-out saturates bandwidth and slows the whole workspace.
-const MAX_CONCURRENT_TOOL_PROVISIONING: usize = 4;
+/// Reads `MEDIAPM_TOOL_PROVISION_CONCURRENCY` from env. Falls back to the
+/// host's available parallelism, capped at 1 minimum.
+fn default_tool_provision_concurrency() -> usize {
+    std::env::var(ENV_TOOL_PROVISION_CONCURRENCY)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, usize::from).max(1))
+}
 
 /// Outcome of provisioning a single entry (resolve + fetch + I/O).
 ///
@@ -1258,7 +1266,7 @@ pub(crate) async fn reconcile_desired_tools(
                 (idx, outcome)
             }
         })
-        .buffer_unordered(MAX_CONCURRENT_TOOL_PROVISIONING)
+        .buffer_unordered(default_tool_provision_concurrency().min(level0.len()))
         .collect()
         .await;
     let mut sorted0 = level0_outcomes;
@@ -1304,7 +1312,7 @@ pub(crate) async fn reconcile_desired_tools(
                 (idx, outcome)
             }
         })
-        .buffer_unordered(MAX_CONCURRENT_TOOL_PROVISIONING)
+        .buffer_unordered(default_tool_provision_concurrency().min(level1.len()))
         .collect()
         .await;
     let mut sorted1 = level1_outcomes;
@@ -3580,5 +3588,35 @@ mod tests {
         bars1.sort();
         bars2.sort();
         assert_eq!(bars1, bars2, "bar-operation multisets differ between runs");
+    }
+
+    #[test]
+    fn tool_provision_concurrency_default_returns_positive() {
+        let concurrency = default_tool_provision_concurrency();
+        assert!(concurrency >= 1, "concurrency must be >= 1, got {concurrency}");
+    }
+
+    #[test]
+    fn tool_provision_concurrency_env_override() {
+        unsafe {
+            std::env::set_var(ENV_TOOL_PROVISION_CONCURRENCY, "2");
+        }
+        let concurrency = default_tool_provision_concurrency();
+        assert_eq!(concurrency, 2, "env override should return 2");
+        unsafe {
+            std::env::remove_var(ENV_TOOL_PROVISION_CONCURRENCY);
+        }
+    }
+
+    #[test]
+    fn tool_provision_concurrency_env_invalid_falls_back() {
+        unsafe {
+            std::env::set_var(ENV_TOOL_PROVISION_CONCURRENCY, "xyz");
+        }
+        let concurrency = default_tool_provision_concurrency();
+        assert!(concurrency >= 1, "invalid env should fall back to >= 1, got {concurrency}");
+        unsafe {
+            std::env::remove_var(ENV_TOOL_PROVISION_CONCURRENCY);
+        }
     }
 }
