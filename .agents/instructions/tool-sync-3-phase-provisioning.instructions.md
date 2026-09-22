@@ -33,6 +33,7 @@ This keeps the function single-responsibility: it renders a resolve bar for ever
 ### Phase 2: Fetch
 
 - Delegates to `mediapm_conductor::tools::provider::fetch_tool_sources(fetch, cache, progress)`; downloads bytes or generates launcher scripts.
+- Fetch sources are downloaded concurrently via `buffer_unordered(MAX_CONCURRENT_SOURCE_FETCHES=3)`. Each source runs as an independent future with its own cache lookup, HTTP download, and budget advancement. Results are sorted by source index after collection to preserve determinism. GenerateLauncher sources are handled inline (not parallelized).
 - Per-source bar shows `items.current/items.total` and `bytes.current/bytes.total`, created on-demand. When `DownloadedSources.cached_count > 0`, the fetch bar shows `"N cached"` status list via `set_suffix_components(SuffixComponents { status_list: ... })` before finishing.
 
 ### Phase 3: Process
