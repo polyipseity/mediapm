@@ -1,7 +1,7 @@
 ---
-status: partial-complete
-committed: partial
-current-step: 6
+status: complete
+committed: yes
+current-step: 7
 inputs:
   atomicCommits: yes
   backwardsCompat: no
@@ -86,3 +86,27 @@ The retained JSONL at `/var/folders/p_/7x6tl4551dz0mkcclw1xqph00000gn/T/tmp.chZp
 | Non-deterministic content_map under concurrency | index-preserving collection + BTreeMap |
 | Progress bar churn under parallel updates | atomic budget; 50ms ticker coalesces |
 | media-tagger gap hides a real bug | A11-0c makes it explicit |
+
+## Outcome
+
+**A11 kept.** Parallel source fetch is implemented, tested, and committed. The A/B gate (A11-7) is **inconclusive** due to three protocol defects discovered during Measurement 1:
+
+1. **D5**: `MAX_CONCURRENT_SOURCE_FETCHES` is a Rust `const`, not env-driven — the sequential control run was a no-op.
+2. **D6**: The demo's 600s hard watchdog killed both runs before tool sync completed.
+3. **Path collision**: `--keep-ticks` paths collided, overwriting run 1's ticks.
+
+The data does not measure A11's effect. No revert is warranted based on timeout-bound data. The corrected protocol is documented in `docs/superpowers/plans/2026-09-22-a11-remaining-tasks.md` (D5, D6) and the invalid measurement data is recorded in `docs/superpowers/plans/2026-09-22-a11-measurement-results.md`.
+
+**Commits:**
+
+- `3ecd9f53` — `perf(conductor): parallelize per-source fetch within tool download`
+- `5804f4a6` — `test(conductor): add determinism test for parallel source fetch`
+- `e145e18e` — `docs(coverage): add parallel source fetch coverage rows`
+- `5ecc8c0d` — `docs(conductor): document parallel source fetch in 3-phase provisioning spec`
+- `e339cffc` — `fix(conductor): report monotone completed-source count in parallel fetch` (A11-5)
+- `f2b049ba` — `fix(conductor): reject duplicate content_map keys in process phase` (A11-4)
+- `39349e82` — `docs(plans): record A11-7 Measurement 1 results (invalid — protocol defects)`
+
+**A11-4 re-scoped:** The original spec called for per-source extraction directories as the primary fix. Investigation showed every current provider emits one source per OS, so the collision is unreachable today. The real latent defect is silent `content_map` overwrite via `content_map.extend`. Task 2 fixes the real defect (fail-fast duplicate-key guard) and adds per-source extraction dirs as defense-in-depth. This is recorded as decision D2 in the remaining-tasks plan.
+
+**Re-measurement deferred.** A11-7 requires a corrected re-run (edit the source constant for the sequential control, extend the demo timeout, use different `--keep-ticks` paths). The re-run is tracked in the remaining-tasks plan as Tasks 4-5 (currently invalidated, pending re-execution with the corrected protocol).
