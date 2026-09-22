@@ -12,13 +12,14 @@
 # Timeout: 1800s for the cargo run (background watchdog).
 #
 # --ticks <path>  parse a captured JSONL fixture without running cargo (offline mode).
+# --keep-ticks <path>  copy the ticks JSONL to <path> before cleanup.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'EOF'
-usage: measure-tool-sync-split.sh [--help] [--ticks <path>]
+usage: measure-tool-sync-split.sh [--help] [--ticks <path>] [--keep-ticks <path>]
 
 Runs the mediapm online demo with a cold workspace and a JSONL tick sink,
 then parses the JSONL to compute:
@@ -27,7 +28,8 @@ then parses the JSONL to compute:
   - Per-tool wall-clock
 
 Options:
-  --ticks <path>  offline mode: parse a captured JSONL file (no network)
+  --ticks <path>     offline mode: parse a captured JSONL file (no network)
+  --keep-ticks <path>  copy the ticks JSONL to <path> before cleanup
 
 Requires: cargo, python3, network access (not needed for --ticks).
 Timeout: 1800s for the cargo run.
@@ -36,6 +38,7 @@ EOF
 
 WATCHDOG_SECS=1800
 ticks_path=""
+keep_ticks_path=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -47,6 +50,13 @@ while [[ $# -gt 0 ]]; do
             ticks_path="$2"; shift 2
             ;;
         --ticks=*) ticks_path="${1#--ticks=}"; shift ;;
+        --keep-ticks)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --keep-ticks requires a path" >&2; exit 1
+            fi
+            keep_ticks_path="$2"; shift 2
+            ;;
+        --keep-ticks=*) keep_ticks_path="${1#--keep-ticks=}"; shift ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -202,6 +212,12 @@ if [[ "$KILLED" -eq 1 ]]; then
 fi
 
 echo "=== demo completed in ${WALL_SECS}s ===" >&2
+
+if [[ -n "$keep_ticks_path" ]]; then
+    mkdir -p "$(dirname "$keep_ticks_path")"
+    cp "$tmpdir/ticks.jsonl" "$keep_ticks_path"
+    echo "=== ticks retained at ${keep_ticks_path} ===" >&2
+fi
 
 ticks_path="$tmpdir/ticks.jsonl"
 if [[ ! -s "$ticks_path" ]]; then

@@ -7,11 +7,15 @@ Reads the ticks.jsonl produced by measure-tool-sync-split.sh and reports:
   - Gate check: balanced sources, not bandwidth-bound
 
 Usage:
-  python3 analyze-per-source.py <ticks.jsonl> [--tool <name>]
+  python3 analyze-per-source.py <ticks.jsonl> [--tool <name>] [--mode sequential|parallel]
 
 Extracts per-source data from the fetch bar's item counter
 ({completed}/{total} in the prefix). Sources complete when the
 counter increments.
+
+In --mode parallel, per-source attribution is unavailable (aggregate
+position mixes concurrent sources); the tool reports the completion
+timeline instead.
 """
 import json
 import re
@@ -159,17 +163,83 @@ def analyze_tool(ticks, target_tool):
           f"(save {sum(durations) - max_dur:.1f}s)")
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+def parse_args(argv):
+    """Parse CLI arguments. Returns (ticks_path, target_tool, mode)."""
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0)
-
-    ticks_path = sys.argv[1]
+    ticks_path = argv[1]
     target_tool = None
-    if "--tool" in sys.argv:
-        idx = sys.argv.index("--tool")
-        if idx + 1 < len(sys.argv):
-            target_tool = sys.argv[idx + 1]
+    mode = "sequential"
+    if "--tool" in argv:
+        idx = argv.index("--tool")
+        if idx + 1 >= len(argv):
+            print("error: --tool requires a value", file=sys.stderr)
+            sys.exit(2)
+        target_tool = argv[idx + 1]
+    if "--mode" in argv:
+        idx = argv.index("--mode")
+        if idx + 1 >= len(argv):
+            print("error: --mode requires a value", file=sys.stderr)
+            sys.exit(2)
+        mode = argv[idx + 1]
+    if mode not in ("sequential", "parallel"):
+        print(f"error: --mode must be 'sequential' or 'parallel', got '{mode}'", file=sys.stderr)
+        sys.exit(2)
+    return ticks_path, target_tool, mode
+
+
+def report_parallel(ticks, target_tool):
+    """Report the completion timeline for a tool fetched concurrently.
+
+    Under parallel fetch the item counter increments once per completed
+    source, but the aggregate byte position mixes every in-flight source, so
+    per-source byte attribution is not recoverable from ticks. Report the
+    timeline instead: total fetch wall-clock, completion timestamps and
+    intervals, and time-to-first-completion (which collapses from the first
+    source's full duration to the fastest source's duration).
+    """
+    completions = []
+    prev_counter = None
+    first_elapsed = None
+    last_elapsed = None
+    for t in ticks:
+        for b in t.get("bars", []):
+            if tool_id(b) == target_tool and extract_phase(b) == "fch":
+                if first_elapsed is None:
+                    first_elapsed = t["elapsed_secs"]
+                if is_active(b):
+                    last_elapsed = t["elapsed_secs"]
+                if b.get("status") == "Success":
+                    last_elapsed = t["elapsed_secs"]
+                m = re.search(r"\[fch\]\s*(\d+)/(\d+)", b.get("prefix", ""))
+                if m and m.group(1) != "0":
+                    counter = int(m.group(1))
+                    if prev_counter is None or counter > prev_counter:
+                        completions.append((counter, t["elapsed_secs"]))
+                        prev_counter = counter
+    if first_elapsed is None or last_elapsed is None:
+        print(f"  no [fch] data found for {target_tool}")
+        return
+
+    print(f"\n=== {target_tool} ===")
+    print("  mode: parallel")
+    print(f"  total_fetch: {last_elapsed - first_elapsed:.1f}s")
+    print("  per-source attribution unavailable in parallel mode "
+          "(aggregate position mixes concurrent sources); use sequential mode")
+    if not completions:
+        print("  no completion transitions found")
+        return
+    print("  completions:")
+    prev = first_elapsed
+    for counter, elapsed in completions:
+        print(f"    {counter}/{len(completions)} at {elapsed:.1f}s (+{elapsed - prev:.1f}s)")
+        prev = elapsed
+    print(f"  time_to_first_completion: {completions[0][1] - first_elapsed:.1f}s")
+
+
+def main():
+    ticks_path, target_tool, mode = parse_args(sys.argv)
 
     ticks = load_ticks(ticks_path)
     if not ticks:
@@ -188,6 +258,11 @@ def main():
             print(f"error: tool '{target_tool}' not found in JSONL", file=sys.stderr)
             sys.exit(1)
         tools = {target_tool}
+
+    if mode == "parallel":
+        for tool in sorted(tools):
+            report_parallel(ticks, tool)
+        return
 
     for tool in sorted(tools):
         analyze_tool(ticks, tool)
