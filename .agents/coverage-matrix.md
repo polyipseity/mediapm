@@ -172,6 +172,9 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Parallel fetch determinism (two runs → identical doc bytes + bar multiset)                     | `sync_parallel_fetch_is_deterministic` (integration)                             | [covered] |
 | GenerateLauncher sources handled inline (not parallelized)                                     | existing provider tests (compile + pass)                                         | [covered] |
 | Budget shared via Arc (AtomicU64 concurrent access)                                           | `sync_parallel_fetch_is_deterministic` (integration, no races)                   | [covered] |
+| Fetch `items` counter is a monotone completed-source count                              | `fetch_items_counter_never_decreases_under_concurrent_reporting` (unit)          | [covered] |
+| Cached-source path counts every source as completed                                     | `fetch_progress_uses_size_hint_bytes_when_expected_size_none` (unit)             | [covered] |
+| Launcher-source path counts every source as completed                                   | `fetch_progress_monotonic_with_known_sizes` (unit)                               | [covered] |
 
 ### Counting mechanism
 

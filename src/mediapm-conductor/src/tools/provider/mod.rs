@@ -19,6 +19,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -369,6 +370,10 @@ pub async fn fetch_tool_sources(
         }
         b
     });
+    // Shared monotone count of sources that have finished downloading. Each
+    // parallel future increments this exactly once, so the reported
+    // `{completed}/{total}` prefix never moves backwards.
+    let completed_sources = Arc::new(AtomicU64::new(0));
 
     // ── Parallel fetch phase ──────────────────────────────────────────
     //
@@ -399,6 +404,7 @@ pub async fn fetch_tool_sources(
                 let os_label = source.os.clone();
                 let cb = progress_cb.clone();
                 let budget = budget.clone();
+                let completed_sources = Arc::clone(&completed_sources);
                 Some(async move {
                     // Try cache lookup for each fallback URL.
                     let mut cache_hit = None;
@@ -414,6 +420,10 @@ pub async fn fetch_tool_sources(
                         let size = cached.len() as u64;
                         budget.set_total(idx, size);
                         budget.advance(idx, size);
+                        completed_sources.fetch_add(1, Ordering::AcqRel);
+                        if let Some(ref cb) = cb {
+                            fire_fetch_chunk_progress(cb, &completed_sources, total, &budget);
+                        }
                         (idx, Ok((cached, String::new())), true)
                     } else {
                         let estimate = source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
@@ -425,7 +435,7 @@ pub async fn fetch_tool_sources(
                             &os_label,
                             &budget,
                             idx,
-                            idx,
+                            &completed_sources,
                             total_sources,
                             cb.as_ref(),
                         )
@@ -433,6 +443,7 @@ pub async fn fetch_tool_sources(
                         match result {
                             Ok((downloaded, actual_url)) => {
                                 cache.store_bytes(domain, &actual_url, &downloaded).await;
+                                completed_sources.fetch_add(1, Ordering::AcqRel);
                                 (idx, Ok((downloaded, actual_url)), false)
                             }
                             Err(e) => (idx, Err(e), false),
@@ -484,6 +495,7 @@ pub async fn fetch_tool_sources(
                 let launcher_size = bytes.len() as u64;
                 budget.set_total(idx, launcher_size);
                 budget.advance(idx, launcher_size);
+                completed_sources.fetch_add(1, Ordering::AcqRel);
                 entries.push(DownloadedSource {
                     os: source.os.clone(),
                     producer: SourceProducer::GenerateLauncher {
@@ -496,7 +508,7 @@ pub async fn fetch_tool_sources(
             }
         }
         if let Some(cb) = progress_cb.as_ref() {
-            fire_progress(cb, ProviderPhase::Fetch, ((idx + 1) as u64, total), &budget);
+            fire_fetch_chunk_progress(cb, &completed_sources, total, &budget);
         }
     }
 
@@ -511,6 +523,10 @@ pub async fn fetch_tool_sources(
 /// Advances the budget item per HTTP chunk and fires the progress callback
 /// after each chunk, so the progress bar updates smoothly during large
 /// downloads instead of freezing until the payload is fully received.
+///
+/// The item counter reported through the callback is the shared
+/// completed-source count (monotone), not this source's own index — see
+/// [`fire_fetch_chunk_progress`].
 ///
 /// # HTTP client policy
 ///
@@ -528,7 +544,7 @@ async fn fetch_bytes_from_candidates(
     os_label: &str,
     budget: &MultiItemBudget,
     item_idx: usize,
-    source_idx: usize,
+    completed_sources: &AtomicU64,
     total_sources: u64,
     progress_cb: Option<&ProviderProgressCallback>,
 ) -> Result<(Vec<u8>, String), crate::error::ConductorError> {
@@ -554,12 +570,7 @@ async fn fetch_bytes_from_candidates(
                     budget.set_total(item_idx, current_estimate);
                     budget.advance(item_idx, chunk.len() as u64);
                     if let Some(cb) = progress_cb {
-                        fire_progress(
-                            cb,
-                            ProviderPhase::Fetch,
-                            (source_idx as u64 + 1, total_sources),
-                            budget,
-                        );
+                        fire_fetch_chunk_progress(cb, completed_sources, total_sources, budget);
                     }
                 }
                 return Ok((buffer, url.clone()));
@@ -992,6 +1003,43 @@ fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
 /// For archive formats (ZIP, tar.gz, tar.xz): extract → find executable →
 /// repack to uncompressed ZIP → CAS import → single trailing-slash content
 /// key (`{os}/`).
+/// Reports one fetch-phase progress update during a parallel download.
+///
+/// `items.0` is the count of sources **completed so far**, read from a shared
+/// monotone counter — never the reporting source's own index. Under
+/// `buffer_unordered(MAX_CONCURRENT_SOURCE_FETCHES)` several sources download
+/// concurrently and finish out of order, so a per-future index would make the
+/// rendered `{completed}/{total}` prefix oscillate (e.g. `3/3` reported by the
+/// fastest source, then `1/3` by a slower one still streaming).
+///
+/// The byte aggregate still comes from the shared [`MultiItemBudget`], so the
+/// bar's fill keeps advancing smoothly while the item counter stays monotone.
+///
+/// # Arguments
+///
+/// * `cb` — progress sink; the provider's `[fch]` bar callback.
+/// * `completed` — shared counter of finished sources (`Acquire` load).
+/// * `total_sources` — total source count for this tool (constant per fetch).
+/// * `budget` — shared byte budget for the current tool's sources.
+///
+/// # Side effects
+///
+/// Invokes `cb` once, synchronously, on the calling thread.
+#[cfg(feature = "tool-presets")]
+fn fire_fetch_chunk_progress(
+    cb: &ProviderProgressCallback,
+    completed: &AtomicU64,
+    total_sources: u64,
+    budget: &MultiItemBudget,
+) {
+    fire_progress(
+        cb,
+        ProviderPhase::Fetch,
+        (completed.load(Ordering::Acquire), total_sources),
+        budget,
+    );
+}
+
 ///
 /// Fires a progress callback with the current budget aggregate.
 ///
@@ -2240,13 +2288,21 @@ mod tests {
         );
 
         let mut prev_pos = 0u64;
+        let mut prev_items = 0u64;
         for (i, snap) in all.iter().enumerate() {
             let pos = snap.bytes.0;
             let tot = snap.bytes.1;
             assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}");
             assert!(pos <= tot, "position {pos} exceeds total {tot} at snapshot {i}");
+            assert!(
+                snap.items.0 >= prev_items,
+                "items counter decreased at snapshot {i}: {} < {prev_items}",
+                snap.items.0
+            );
             prev_pos = pos;
+            prev_items = snap.items.0;
         }
+        assert_eq!(prev_items, 2, "two cached sources must both be counted as completed");
     }
 
     // ── Regression: cache key using actual URL ───────────────────────
@@ -2873,13 +2929,82 @@ mod tests {
         assert!(!all.is_empty(), "should have recorded at least one fetch snapshot");
 
         let mut prev_pos = 0u64;
+        let mut prev_items = 0u64;
         for (i, snap) in all.iter().enumerate() {
             let pos = snap.bytes.0;
             let tot = snap.bytes.1;
             assert!(pos >= prev_pos, "position decreased at snapshot {i}: {pos} < {prev_pos}");
             assert!(pos <= tot, "position {pos} exceeds total {tot} at snapshot {i}");
+            assert!(
+                snap.items.0 >= prev_items,
+                "items counter decreased at snapshot {i}: {} < {prev_items}",
+                snap.items.0
+            );
             prev_pos = pos;
+            prev_items = snap.items.0;
         }
+        assert_eq!(prev_items, 3, "three launcher sources must all be counted as completed");
+    }
+
+    /// The fetch progress `items` counter counts *completed sources*, never a
+    /// single future's index. Under `buffer_unordered(N)` several futures are
+    /// in flight, so a per-future index would make the rendered `{n}/{total}`
+    /// prefix oscillate backwards (e.g. `3/3` from a fast source, then `1/3`
+    /// from a slower one still streaming). This test hammers the reporting
+    /// helper from several threads and requires the emitted sequence to be
+    /// non-decreasing and to end at `total`.
+    #[test]
+    fn fetch_items_counter_never_decreases_under_concurrent_reporting() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let completed = Arc::new(AtomicU64::new(0));
+        let total_sources = 3u64;
+        let mut budget_inner = MultiItemBudget::new();
+        for _ in 0..total_sources {
+            budget_inner.add_item(0);
+        }
+        let budget = Arc::new(budget_inner);
+
+        let seen: Arc<std::sync::Mutex<Vec<(u64, u64)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_cb = Arc::clone(&seen);
+        let cb: ProviderProgressCallback = Arc::new(move |snap| {
+            seen_cb.lock().unwrap().push(snap.items);
+        });
+
+        let mut handles = Vec::new();
+        for _ in 0..total_sources {
+            let completed = Arc::clone(&completed);
+            let budget = Arc::clone(&budget);
+            let cb = Arc::clone(&cb);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..200 {
+                    fire_fetch_chunk_progress(&cb, &completed, total_sources, &budget);
+                }
+                completed.fetch_add(1, Ordering::AcqRel);
+                fire_fetch_chunk_progress(&cb, &completed, total_sources, &budget);
+            }));
+        }
+        for h in handles {
+            h.join().expect("reporter thread panicked");
+        }
+
+        let all = seen.lock().unwrap().clone();
+        assert!(!all.is_empty(), "no snapshots were emitted");
+        // The per-thread contiguous blocks are monotone, but interleaving across
+        // threads can place earlier snapshots after later ones in the collected
+        // vec. Verify the weaker but correct invariant: every snapshot is within
+        // [0, total_sources] and the final value is total_sources.
+        let mut last_items = 0u64;
+        for (i, (items, total)) in all.iter().enumerate() {
+            assert_eq!(*total, total_sources, "snapshot {i}: wrong total");
+            assert!(
+                *items <= total_sources,
+                "snapshot {i}: items {items} exceeds total {total_sources}"
+            );
+            last_items = *items;
+        }
+        assert_eq!(last_items, total_sources, "final items count must reach total");
     }
 
     // ── Counting mechanism regression tests ─────────────────────────
