@@ -691,6 +691,11 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 /// minimum byte interval between sub-entry progress callbacks during
 /// extraction/compression, preventing excessive callback overhead.
 ///
+/// Extraction directories are per source (`{temp_root}/{os_label}/{source_index}`)
+/// rather than per OS label, so two sources that happened to share an OS label
+/// could never repack each other's files. Duplicate `content_map` keys are
+/// rejected before they can overwrite one another.
+///
 /// # Errors
 ///
 /// Returns [`ConductorError`] when extraction, packing, or CAS import fails.
@@ -739,9 +744,14 @@ pub async fn process_tool_sources(
     }
 
     let mut next_item_idx: usize = 0;
-    for source in &downloaded.entries {
+    for (source_idx, source) in downloaded.entries.iter().enumerate() {
         let os_label = &source.os;
-        let os_dir = temp_root.path().join(os_label);
+        // Extraction is scoped per source, not per OS label: if two sources
+        // ever shared an OS label, a shared directory would let the second
+        // extraction repack the first source's files. The duplicate-key guard
+        // above rejects that case outright; this keeps the two concerns
+        // independent.
+        let os_dir = temp_root.path().join(os_label).join(source_idx.to_string());
         let is_archive = is_archive_source(&source.producer);
         let item_count = if is_archive { 2usize } else { 1usize };
 
@@ -765,7 +775,16 @@ pub async fn process_tool_sources(
         )
         .await?;
 
-        content_map.extend(processed.content_map);
+        for (key, hash) in processed.content_map {
+            if content_map.insert(key.clone(), hash).is_some() {
+                return Err(crate::error::ConductorError::Workflow(format!(
+                    "tool {}: duplicate content_map key '{key}' — two sources resolve to the \
+                     same target (archive sources key on '{{os}}/', binary sources on \
+                     '{{os}}/{{filename}}'); refusing to silently overwrite",
+                    downloaded.tool_id
+                )));
+            }
+        }
         os_exec_paths.insert(os_label.clone(), processed.exec_path);
 
         if let Some(cb) = progress_cb.as_ref() {
@@ -2586,6 +2605,51 @@ mod tests {
             final_total > compressed_total,
             "final total {final_total} should exceed compressed total {compressed_total} (decompressed cost was not added)"
         );
+    }
+
+    /// Two sources resolving to the same `content_map` key must fail loudly
+    /// instead of silently overwriting. Archive sources key on `{os}/`, so two
+    /// archive entries for one OS label collide; before this guard the second
+    /// entry replaced the first and the tool provisioned with one payload.
+    #[tokio::test]
+    async fn process_rejects_duplicate_content_map_keys() {
+        let first = synthetic_zip(&[("tool.bin", b"first-payload")]);
+        let second = synthetic_zip(&[("tool.bin", b"second-payload")]);
+
+        let downloaded = DownloadedSources {
+            tool_id: "test".to_string(),
+            entries: vec![
+                DownloadedSource {
+                    os: "linux".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/tool-a.zip".to_string()],
+                    },
+                    bytes: first,
+                    expected_size: None,
+                },
+                DownloadedSource {
+                    os: "linux".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/tool-b.zip".to_string()],
+                    },
+                    bytes: second,
+                    expected_size: None,
+                },
+            ],
+            cached_count: 0,
+        };
+
+        let cas = InMemoryCas::default();
+        let err = process_tool_sources(&downloaded, &cas, None)
+            .await
+            .expect_err("duplicate content_map key must be rejected");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("duplicate content_map key"),
+            "error must name the duplicate key problem, got: {message}"
+        );
+        assert!(message.contains("linux/"), "error must name the colliding key, got: {message}");
     }
 
     // ── generate_launcher_script ──────────────────────────────────────

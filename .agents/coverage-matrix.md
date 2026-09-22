@@ -176,6 +176,15 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Cached-source path counts every source as completed                                     | `fetch_progress_uses_size_hint_bytes_when_expected_size_none` (unit)             | [covered] |
 | Launcher-source path counts every source as completed                                   | `fetch_progress_monotonic_with_known_sizes` (unit)                               | [covered] |
 
+### Process-phase content map
+
+| Spec item                                                                                     | Test(s)                                                                          | Status    |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------- |
+| Duplicate content_map key between sources is rejected (no silent overwrite)                    | `process_rejects_duplicate_content_map_keys` (unit)                              | [covered] |
+| Extraction directory is scoped per source, not per OS label                                    | `process_position_never_exceeds_total_with_archive_entries` (unit)               | [covered] |
+| Archive source content map uses the `{os}/` key                                                | `process_position_never_exceeds_total_with_archive_entries` (unit)               | [covered] |
+| Binary source content map uses the `{os}/{filename}` key                                       | `process_single_source_binary_budget_advances_correct_item` (unit)               | [covered] |
+
 ### Counting mechanism
 
 | Spec item                                                                                     | Test(s)                                                                          | Status    |
