@@ -163,6 +163,16 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Parallel driver determinism (two syncs → identical bytes)                                     | `sync_parallel_driver_is_deterministic` (integration)                            | [covered] |
 | Per-tool bar order-independence (sorted multiset of AddBar labels)                              | `sync_multi_tool_per_tool_bars_are_order_independent` (unit)                     | [covered] |
 
+### Parallel source fetch
+
+| Spec item                                                                                     | Test(s)                                                                          | Status    |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------- |
+| Fetch sources downloaded concurrently via buffer_unordered(3)                                  | existing provider tests (compile + pass)                                         | [covered] |
+| Source index order preserved after parallel fetch (sort-by-index)                              | `sync_parallel_fetch_is_deterministic` (integration)                             | [covered] |
+| Parallel fetch determinism (two runs → identical doc bytes + bar multiset)                     | `sync_parallel_fetch_is_deterministic` (integration)                             | [covered] |
+| GenerateLauncher sources handled inline (not parallelized)                                     | existing provider tests (compile + pass)                                         | [covered] |
+| Budget shared via Arc (AtomicU64 concurrent access)                                           | `sync_parallel_fetch_is_deterministic` (integration, no races)                   | [covered] |
+
 ### Counting mechanism
 
 | Spec item                                                                                     | Test(s)                                                                          | Status    |
