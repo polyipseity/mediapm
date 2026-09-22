@@ -162,12 +162,13 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Exactly one state entry per distinct tool id                                                  | `sync_level_ordering_applies_deps_before_requesters` (integration)               | [covered] |
 | Parallel driver determinism (two syncs → identical bytes)                                     | `sync_parallel_driver_is_deterministic` (integration)                            | [covered] |
 | Per-tool bar order-independence (sorted multiset of AddBar labels)                              | `sync_multi_tool_per_tool_bars_are_order_independent` (unit)                     | [covered] |
+| Env-var override for tool provisioning concurrency (MEDIAPM_TOOL_PROVISION_CONCURRENCY)          | `tool_provision_concurrency_env_override` (unit)                                 | [covered] |
 
 ### Parallel source fetch
 
 | Spec item                                                                                     | Test(s)                                                                          | Status    |
 | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------- |
-| Fetch sources downloaded concurrently via buffer_unordered(3)                                  | existing provider tests (compile + pass)                                         | [covered] |
+| Fetch sources downloaded concurrently via buffer_unordered(default_source_fetch_concurrency().min(n)) | existing provider tests (compile + pass)                                         | [covered] |
 | Source index order preserved after parallel fetch (sort-by-index)                              | `sync_parallel_fetch_is_deterministic` (integration)                             | [covered] |
 | Parallel fetch determinism (two runs → identical doc bytes + bar multiset)                     | `sync_parallel_fetch_is_deterministic` (integration)                             | [covered] |
 | GenerateLauncher sources handled inline (not parallelized)                                     | existing provider tests (compile + pass)                                         | [covered] |
@@ -175,6 +176,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Fetch `items` counter is a monotone completed-source count                              | `fetch_items_counter_never_decreases_under_concurrent_reporting` (unit)          | [covered] |
 | Cached-source path counts every source as completed                                     | `fetch_progress_uses_size_hint_bytes_when_expected_size_none` (unit)             | [covered] |
 | Launcher-source path counts every source as completed                                   | `fetch_progress_monotonic_with_known_sizes` (unit)                               | [covered] |
+| Env-var override for source fetch concurrency (MEDIAPM_SOURCE_FETCH_CONCURRENCY)              | `source_fetch_concurrency_env_override` (unit)                                   | [covered] |
 
 ### Process-phase content map
 
