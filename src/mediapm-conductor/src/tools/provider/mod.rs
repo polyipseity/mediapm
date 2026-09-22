@@ -18,9 +18,11 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use futures_util::stream::{self, StreamExt};
 use mediapm_utils::progress::{
     MultiItemBudget, ProviderPhase, ProviderProgressCallback, ProviderProgressSnapshot,
 };
@@ -32,6 +34,11 @@ use mediapm_utils::progress::{
 const ARCHIVE_ZIP: &str = "zip";
 const ARCHIVE_TAR_GZ: &str = "tar.gz";
 const ARCHIVE_TAR_XZ: &str = "tar.xz";
+
+/// Maximum concurrent HTTP downloads within a single tool's fetch phase.
+/// Bounded to avoid overwhelming remote servers while still overlapping
+/// latency (DNS, TLS handshake) across independent sources.
+const MAX_CONCURRENT_SOURCE_FETCHES: usize = 3;
 
 /// Maximum number of sources to probe concurrently for expected sizes.
 /// Covers all current tools (≤3 sources) with headroom.
@@ -348,61 +355,119 @@ pub async fn fetch_tool_sources(
     domain: &str,
     progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<DownloadedSources, crate::error::ConductorError> {
-    let mut entries = Vec::with_capacity(fetch.sources.len());
-    let mut cached_count: usize = 0;
     let total = fetch.sources.len() as u64;
 
     // Create per-item budget: each source gets its own item.
-    let mut budget = MultiItemBudget::with_capacity(fetch.sources.len());
-    for src in &fetch.sources {
-        let est = src.expected_size.or(src.size_hint_bytes).unwrap_or(0);
-        budget.add_item(est);
+    // Wrapped in Arc so concurrent fetch futures can share it —
+    // MultiItemBudget uses AtomicU64 internally, so advance/set_total
+    // are safe under concurrent access.
+    let budget = Arc::new({
+        let mut b = MultiItemBudget::with_capacity(fetch.sources.len());
+        for src in &fetch.sources {
+            let est = src.expected_size.or(src.size_hint_bytes).unwrap_or(0);
+            b.add_item(est);
+        }
+        b
+    });
+
+    // ── Parallel fetch phase ──────────────────────────────────────────
+    //
+    // Spawn one concurrent task per Fetch source. Each task performs its
+    // own cache lookup, downloads on miss, and returns the source index
+    // together with the result. GenerateLauncher sources are fast and
+    // handled inline after the parallel fetch.
+    //
+    // Fire an initial progress snapshot so the bar shows the byte aggregate
+    // immediately (matching the sequential contract where the first snapshot
+    // fires before any source completes).
+    if let Some(cb) = progress_cb.as_ref() {
+        fire_progress(cb, ProviderPhase::Fetch, (0, total), &budget);
     }
 
-    for (idx, source) in fetch.sources.iter().enumerate() {
-        match &source.producer {
+    type FetchResult = Result<(Vec<u8>, String), crate::error::ConductorError>;
+
+    // Build futures for every Fetch source, each carrying its index and
+    // owned URLs so the async block is self-contained.
+    let fetch_futures: Vec<_> = fetch
+        .sources
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, source)| match &source.producer {
             SourceProducer::Fetch { urls } => {
-                let bytes = {
-                    // Try each URL in order for cache lookup.  A prior download
-                    // from a previous run may have been stored under any of the
-                    // fallback URLs, so we check each one.
+                let urls = urls.clone();
+                let tool_id = fetch.tool_id.clone();
+                let os_label = source.os.clone();
+                let cb = progress_cb.clone();
+                let budget = budget.clone();
+                Some(async move {
+                    // Try cache lookup for each fallback URL.
                     let mut cache_hit = None;
-                    for url in urls {
+                    for url in &urls {
                         if let Some(cached) = cache.lookup_bytes(domain, url).await {
                             cache.touch(domain, url);
                             cache_hit = Some((url.clone(), cached));
                             break;
                         }
                     }
+
                     if let Some((_cache_key, cached)) = cache_hit {
-                        // Set total to cached size so advance works (item may have
-                        // been created with total=0 when no estimate was available).
-                        budget.set_total(idx, cached.len() as u64);
-                        budget.advance(idx, cached.len() as u64);
-                        cached_count += 1;
-                        cached
+                        let size = cached.len() as u64;
+                        budget.set_total(idx, size);
+                        budget.advance(idx, size);
+                        (idx, Ok((cached, String::new())), true)
                     } else {
                         let estimate = source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
-                        // Ensure the item total reflects any estimate so aggregate
-                        // includes it even before download starts.
                         budget.set_total(idx, estimate);
-
-                        let total_sources = fetch.sources.len() as u64;
-                        let (downloaded, actual_url) = fetch_bytes_from_candidates(
-                            urls,
-                            &fetch.tool_id,
-                            &source.os,
+                        let total_sources = total;
+                        let result = fetch_bytes_from_candidates(
+                            &urls,
+                            &tool_id,
+                            &os_label,
                             &budget,
                             idx,
                             idx,
                             total_sources,
-                            progress_cb.as_ref(),
+                            cb.as_ref(),
                         )
-                        .await?;
-                        cache.store_bytes(domain, &actual_url, &downloaded).await;
-                        downloaded
+                        .await;
+                        match result {
+                            Ok((downloaded, actual_url)) => {
+                                cache.store_bytes(domain, &actual_url, &downloaded).await;
+                                (idx, Ok((downloaded, actual_url)), false)
+                            }
+                            Err(e) => (idx, Err(e), false),
+                        }
                     }
-                };
+                })
+            }
+            SourceProducer::GenerateLauncher { .. } => None,
+        })
+        .collect();
+
+    // Run all fetch futures concurrently, bounded by MAX_CONCURRENT_SOURCE_FETCHES.
+    let fetch_results: Vec<(usize, FetchResult, bool)> =
+        stream::iter(fetch_futures).buffer_unordered(MAX_CONCURRENT_SOURCE_FETCHES).collect().await;
+
+    // Sort by source index to preserve original order (determinism).
+    let mut fetch_results = fetch_results;
+    fetch_results.sort_by_key(|&(idx, _, _)| idx);
+
+    // ── Collect results in source order ───────────────────────────────
+    let mut entries = Vec::with_capacity(fetch.sources.len());
+    let mut fetch_iter = fetch_results.into_iter().peekable();
+    let mut total_cached: usize = 0;
+
+    for (idx, source) in fetch.sources.iter().enumerate() {
+        match &source.producer {
+            SourceProducer::Fetch { urls } => {
+                // The parallel fetch produced exactly one result per Fetch source,
+                // in sorted order — advance the iterator.
+                let (_, result, was_cached) =
+                    fetch_iter.next().expect("parallel fetch result missing for Fetch source");
+                let (bytes, _actual_url) = result?;
+                if was_cached {
+                    total_cached += 1;
+                }
                 entries.push(DownloadedSource {
                     os: source.os.clone(),
                     producer: SourceProducer::Fetch { urls: urls.clone() },
@@ -414,10 +479,9 @@ pub async fn fetch_tool_sources(
                 });
             }
             SourceProducer::GenerateLauncher { builtin_id, argv_prefix } => {
+                // Launcher generation is in-memory, no I/O — run inline.
                 let bytes = generate_launcher_script(source.os.as_str(), builtin_id, argv_prefix);
                 let launcher_size = bytes.len() as u64;
-                // Launcher script sizes aren't in the initial total
-                // (expected_size/size_hint_bytes is None for launcher sources).
                 budget.set_total(idx, launcher_size);
                 budget.advance(idx, launcher_size);
                 entries.push(DownloadedSource {
@@ -436,7 +500,7 @@ pub async fn fetch_tool_sources(
         }
     }
 
-    Ok(DownloadedSources { tool_id: fetch.tool_id.clone(), entries, cached_count })
+    Ok(DownloadedSources { tool_id: fetch.tool_id.clone(), entries, cached_count: total_cached })
 }
 
 /// Downloads bytes from URL candidates (tried in order).
