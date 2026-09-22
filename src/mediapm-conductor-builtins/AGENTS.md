@@ -12,59 +12,18 @@ The crate provides five standard tools (`echo`, `fs`, `archive`, `import`, `expo
 
 ---
 
-## A. Cross-Crate Data Flow (Builtins Role)
+## Cross-Crate Context
 
-```text
-User Input (mediapm.ncl)
-    ↓
-MediaPm Configuration Parsing
-    ├─→ CAS: Content-address media
-    ├─→ Conductor: Synthesize workflows
-    └─→ Builtins: Tool registration
-    ↓
-Conductor Workflow Execution
-    ├─ Step 1: import (builtin) → CAS store
-    ├─ Step 2: ffmpeg (managed tool) → CAS store
-    ├─ Step 3: media-tagger (managed tool) → CAS store
-    └─ Step N: export (builtin) → Materialized files
-    ↓
-CAS-Backed Materialization
-    └─ Direct materialization to final output paths
+Cross-crate data flow, shared invariants, and integration boundaries are documented in `mediapm-architecture.instructions.md`. Builtins-specific integration points:
 
-Temp extraction directory (`mediapm_tmp_dir`, for zip processing only)
-    └─ Extract → materialize → cleanup
-    ↓
-State Persistence (state.ncl)
-    └─ Lock records: path → media_id, variant, hash
-```
-
----
-
-## B. Shared Invariants Across Crates (Builtins Rows)
-
-| Invariant | Builtins Behavior |
-| --- | --- |
-| Content Identity | Pure builtins (echo, archive) produce deterministic payloads |
-| Reconstructability | Output bytes persist; pure outputs are deterministic |
-| Atomicity | File operations succeed or rollback (no orphaned state) |
-| Determinism | Pure (echo, archive) deterministic; impure (fs, import, export) side-effect-driven |
-| NCL↔Rust Schema Sync | N/A — CLI/API contracts enforced by builtin validation |
-
----
-
-## C. Integration Boundaries — Conductor↔Builtins
-
-Conductor discovers builtins at compile time via `registered_builtin_ids()` → `["import@v1", "fs@v1", ...]`.
-
+- Conductor discovers builtins at compile time via `registered_builtin_ids()`.
 - CLI: builtin binary receives `--arg KEY VALUE` pairs.
-- API: builtin library receives `BTreeMap<String, String>` params + optional binary payload.
+- API: builtin library receives `BTreeMap<String, String>` params plus optional binary payload.
 - Pure builtins return deterministic payloads; impure signal via side effects.
+- Ownership: Conductor owns tool lifecycle, input binding, output capture. Builtins own implementation, error semantics, validation.
+- Contract: CLI and API inputs/outputs are identical (parity); undeclared keys are rejected immediately.
 
-Ownership: Conductor owns tool lifecycle, input binding, and output capture. Builtins own implementation, error semantics, and validation.
-
-Contract: CLI and API inputs/outputs are identical (parity); undeclared keys are rejected immediately; failures use ordinary Rust error types, never fake success payloads.
-
----
+## D. Conductor-Builtins Specification
 
 ## D. Conductor-Builtins Specification
 
