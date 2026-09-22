@@ -24,37 +24,14 @@ See `.agents/instructions/temp-directory-spec.instructions.md` for the canonical
 
 ### MEDIAPM_PROGRESS_DEBUG
 
-When set, progress bar renderers emit one JSONL line per tick (every ~50ms) with the full state of every bar slot. Values:
-
-- `auto` (or empty) — writes to `progress-debug-<pid>.jsonl` in the current working directory.
-- Any other value is treated as a file path to write to.
-
-Stderr output is intentionally not supported — debug output must not compete with terminal rendering. Monitor live with `tail -f <file>`. The JSONL format is documented in `ProgressDebugSink`; each record includes `"type": "tick"`. All field names use `snake_case`.
-
-The sink **appends** to the target file (it never truncates). When a process builds several `ProgressGroup`s in sequence (e.g. the `mediapm_demo_online` example builds a tool-sync group, then a workflow group, then a materialize group), every group's ticks accumulate into the same JSONL stream as consecutive segments, each segment restarting its `tick` counter at `0`. This makes the *entire* run capturable from a single file.
+See `progress-output.instructions.md` ("Debug JSONL") for the full JSONL debug format, field names, and monitoring instructions.
 
 ## Optional `progress` feature
 
-- When enabled, pulls in `indicatif` + `console` and provides `ProgressGroup`, `ProgressHandle`, `format_bytes`, `format_count`.
+- When enabled, pulls in `indicatif` + `console` and provides `ProgressGroup`, `TrackedHandle`, `format_bytes`, `format_count`.
 - `DownloadProgressSnapshot` and `ProgressCallback` are always available (no feature gate).
-- The conductor *library* must not depend on this feature — it uses `Fn` callbacks instead.
+- The conductor *library* must not depend on this feature -- it uses `Fn` callbacks instead.
 - The conductor *CLI binary* and the `mediapm` crate enable this feature.
 - **SI prefixes are 1000-based**: `format_count` and `format_rate` use decimal SI prefixes (`k` = 1,000, `M` = 1,000,000, `G` = 1,000,000,000), not binary (`Ki` = 1,024). Byte counts and transfer rates follow the same convention.
 
-### Pre-roll contract
-
-`ProgressRenderer::pre_roll_if_needed()` reserves full terminal height before the first `MultiProgress` draw, preventing intervening stderr output from being overwritten during bar draws.
-
-- Writes exactly `rows` newlines (terminal height from `DimensionSource`), then cursor-up `rows`.
-- One-shot: only the first `tick()` call writes; subsequent calls are no-ops.
-- In test mode (user-provided `MultiProgress` via `with_multi_progress`), `pre_roll_term` is `None` and pre-roll is a hard no-op.
-- Production path testable via `with_pre_roll_capture()` builder method + same `InMemoryTerm` used for `MultiProgress`.
-- `pre_roll_term` field stores `Option<Box<dyn TermLike>>`: `Some(...)` in production (writes to `console::Term::stderr()`), `None` or user-provided term in test mode.
-
-### Test convention
-
-Exact-output matching is mandatory for all progress bar rendering tests. When writing or modifying unit/integration tests for progress bar rendering (in `src/progress.rs` `mod tests` or `tests/progress_output/`), use exact `assert_eq!(term.contents(), concat!(...))` matching over substring assertions. See `.agents/instructions/rust-conventions.instructions.md` ("Terminal output matching") for the full rule and capture strategy.
-
-### Rendered output format reference
-
-The actual rendered format (templates, glyphs, colors, prefix/suffix shapes, child-above-overall ordering, worked examples) is documented in `.agents/instructions/progress-output.instructions.md`. That file plus the `src/mediapm-utils/tests/progress_output/*.rs` suite are the source of truth for progress-bar output — never invent ASCII mocks when editing rendering code.
+All progress bar rendering, templates, glyphs, colors, prefix/suffix shapes, truncation dispatch, per-screen specs, post-finish result messages, and pre-roll contract live in `progress-output.instructions.md` and `progress-budget.instructions.md`. Read those files before editing progress code. The actual rendered format is verified by `src/mediapm-utils/tests/progress_output/*.rs`.
