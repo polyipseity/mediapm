@@ -18,38 +18,15 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
 1. **Load generated document** — `load_conductor_generated_document(paths)`. Returns empty `NickelDocument` if file doesn't exist.
 2. **Register builtins** — `register_missing_builtin_tools()`, `apply_builtin_runtime_defaults()`.
 3. **Open cache** — `Cache::open()` with two domains: `"tools"` (content, 7d TTL) and `"tool_metadata"` (metadata, 1d TTL) under the user-level cache root. The cache root path is determined by the `cache_root_override` parameter:
-   - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir)
-   - `Some(path)` → use the provided path as the cache root
-     A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
+   - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir) - `Some(path)` → use the provided path as the cache root A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
 4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_suffix_components(SuffixComponents { custom: "skipped" })` and returns `Ok(None)`. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are candidates for `resolved_*` backfill (see below). When a skipped tool's runtime is reconstructed under its conductor tool id, the coordinator uses `find_active_tool_spec()` (both skip paths plus external consumers like the demo examples : see "Active tool spec resolution").
 5. **Active-tool tracking (pruning)** — the active set for filesystem pruning is
-   the set of **mediapm conductor tool ids** collected in `tool_runtimes` (every
-   tool inserted by the provisioning loop, keyed by its generated-doc key:
-   `{name}@{hash}` when the content map is non-empty, bare `{name}` when empty).
-   Tools NOT in this set get their content_map cleared and filesystem payloads
-   removed after the provisioning loop. (`compute_used_tool_ids` was deleted:
-   the provisioning loop's `tool_runtimes` keys are the single source of truth
-   for what is active.)
-   5b. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`:
-   - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`).
-   - Resolve the tool fetch via `provider::resolve_tool_fetch()`. If resolve fails, emit a warning and continue.
-   - Determine `PreResolveOutcome`: `Skip` if the tool is already provisioned at the resolved version, else `Resolved`.
-   - Call `fetch_and_import_tool_payload()` with the outcome. On skip (`was_skip`), increment `tools_skipped` and continue.
-   - On `Ok(Some(payload))`: compute content-addressed hash, build spec+runtime, insert into generated doc.
-   - **External data registration**: before inserting the tool spec, register every CAS hash in the tool's `content_map` as an `ExternalDataEntry` in `generated_doc.external_data` with `OutputSaveMode::Saved`. This satisfies the `content_map ⊆ external_data` invariant.
-   - On `Ok(None)`: create minimal spec without content map.
-   - On `Err`: append warning to report, continue loop.
+   the set of **mediapm conductor tool ids** collected in `tool_runtimes` (every tool inserted by the provisioning loop, keyed by its generated-doc key: `{name}@{hash}` when the content map is non-empty, bare `{name}` when empty). Tools NOT in this set get their content_map cleared and filesystem payloads removed after the provisioning loop. (`compute_used_tool_ids` was deleted: the provisioning loop's `tool_runtimes` keys are the single source of truth for what is active.) 5b. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`: - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`). - Resolve the tool fetch via `provider::resolve_tool_fetch()`. If resolve fails, emit a warning and continue. - Determine `PreResolveOutcome`: `Skip` if the tool is already provisioned at the resolved version, else `Resolved`. - Call `fetch_and_import_tool_payload()` with the outcome. On skip (`was_skip`), increment `tools_skipped` and continue. - On `Ok(Some(payload))`: compute content-addressed hash, build spec+runtime, insert into generated doc. - **External data registration**: before inserting the tool spec, register every CAS hash in the tool's `content_map` as an `ExternalDataEntry` in `generated_doc.external_data` with `OutputSaveMode::Saved`. This satisfies the `content_map ⊆ external_data` invariant. - On `Ok(None)`: create minimal spec without content map. - On `Err`: append warning to report, continue loop.
 6. **Dependency version resolution** — call `resolve_dep_version_spec()` for
-   each dependency's `version_spec` (`ConfigVersionSpec` from serde).
-   `ConfigVersionSpec::Inherit` is resolved against the global tool
-   requirements; `Exact`/`Latest` pass through (converted to `VersionSpec`).
-   Errors on missing global tool or circular inherit resolution.
+   each dependency's `version_spec` (`ConfigVersionSpec` from serde). `ConfigVersionSpec::Inherit` is resolved against the global tool requirements; `Exact`/`Latest` pass through (converted to `VersionSpec`). Errors on missing global tool or circular inherit resolution.
 7. **Create tools dir** — `std::fs::create_dir_all(&paths.tools_dir)`.
 8. **Write env file** — `mediapm_conductor::runtime_env::write_generated_dotenv()`.
-   The `tool_runtimes` map is keyed by **mediapm conductor tool id**; env var
-   names derive from the stripped plain mediapm tool id (hash-free), while env
-   var values point at `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`
-   mirroring the provision-cache layout.
+   The `tool_runtimes` map is keyed by **mediapm conductor tool id**; env var names derive from the stripped plain mediapm tool id (hash-free), while env var values point at `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>` mirroring the provision-cache layout.
 9. **Save generated document** — `save_conductor_generated_document()`.
 
 ### Two-level parallel provisioning
@@ -66,15 +43,10 @@ Within each level, `provision_entry` fetches and processes a single tool. `apply
 The sync coordinator persists two distinct documents with different write policies:
 
 - **`state.json` (metadata-driven, always-write):** Updated unconditionally after every
-  sync pass. Records the latest sync metadata (canonical version, deploy timestamp,
-  fetch hash) even when tool payloads are unchanged. This is the runtime audit trail
-  for every invocation.
+  sync pass. Records the latest sync metadata (canonical version, deploy timestamp, fetch hash) even when tool payloads are unchanged. This is the runtime audit trail for every invocation.
 
 - **`conductor.generated.ncl` (artifact-driven, change-detected):** Updated only when
-  tool content-map hashes (the actual binary payloads) differ from the previous write.
-  Uses `write_bytes_if_changed()` — reads the existing file and skips the write when
-  bytes are identical. This is the artifact manifest (it only changes when deployable
-  artifacts change.
+  tool content-map hashes (the actual binary payloads) differ from the previous write. Uses `write_bytes_if_changed()` — reads the existing file and skips the write when bytes are identical. This is the artifact manifest (it only changes when deployable artifacts change.
 
 **Rationale:** Canonical version tags (e.g., daily autobuild timestamps from BtbN) can change without producing different binaries. An unconditional conductor-file write would create git noise for every upstream tag rotation. The dual strategy gives zero git churn in the conductor file when payloads are stable, and a complete sync history in state.json for debugging and audit.
 
@@ -118,46 +90,20 @@ The sync coordinator persists two distinct documents with different write polici
   `state.json` alone means only metadata changed; a change to
   `conductor.generated.ncl` means binary artifacts changed.
 - **Skip path MUST register the tool in `state.managed_tools`.** When a tool routes
-  through `PreResolveOutcome::Skip` (already provisioned at the resolved canonical
-  version), the coordinator pushes a full `ToolRegistryEntry` into
-  `report.tool_records` — not only into `report.resolved_field_backfills`. The
-  `managed_tools` registry is the authoritative record of what is provisioned; a
-  tool present in `conductor.generated.ncl` (active spec, non-empty `content_map`)
-  but absent from `managed_tools` is illegal state. `apply_resolved_field_backfills` only updates existing
-  `managed_tools` entries, so a skipped tool that is never recorded would be
-  unrecoverable by backfill. The skip-path entry carries a real `content_map_hash`
-  (blake3 of the active generated-doc spec's content map via `find_active_tool_spec`)
-  and a `deployed_at` timestamp, exactly like the resolved path.
+  through `PreResolveOutcome::Skip` (already provisioned at the resolved canonical version), the coordinator pushes a full `ToolRegistryEntry` into `report.tool_records` — not only into `report.resolved_field_backfills`. The `managed_tools` registry is the authoritative record of what is provisioned; a tool present in `conductor.generated.ncl` (active spec, non-empty `content_map`) but absent from `managed_tools` is illegal state. `apply_resolved_field_backfills` only updates existing `managed_tools` entries, so a skipped tool that is never recorded would be unrecoverable by backfill. The skip-path entry carries a real `content_map_hash` (blake3 of the active generated-doc spec's content map via `find_active_tool_spec`) and a `deployed_at` timestamp, exactly like the resolved path.
 - **`ToolSyncReport.tool_records` contract:** every provisioned tool — whether it
-  took the `Resolved` path (`Ok(Some(payload))`) or the `Skip` path — contributes
-  exactly one `ToolRegistryEntry` to `report.tool_records`. `service.rs` appends
-  every `report.tool_records` entry to `state.managed_tools` after the sync pass.
-  The `resolved_field_backfills` list is a *secondary* channel for provenance
-  backfill only and is never a substitute for `tool_records` registration.
+  took the `Resolved` path (`Ok(Some(payload))`) or the `Skip` path — contributes exactly one `ToolRegistryEntry` to `report.tool_records`. `service.rs` appends every `report.tool_records` entry to `state.managed_tools` after the sync pass. The `resolved_field_backfills` list is a *secondary* channel for provenance backfill only and is never a substitute for `tool_records` registration.
 - **Warning check resolves from the sync cache root.** `logical_tool_requires_sync`
-  (the post-sync "tools require sync before library sync" check in `service.rs`)
-  must resolve tool versions from the **same cache root the sync used**
-  (`runtime_storage_overrides.cache_root_override`), never from the default
-  user-level cache. Divergent cache roots produce divergent `canonical_version`
-  values and spurious `!=` mismatches. It must pass
-  `Some((&cache, "tool_metadata"))` to `resolve_tool_fetch`, mirroring the sync
-  path in `reconcile_desired_tools`.
+  (the post-sync "tools require sync before library sync" check in `service.rs`) must resolve tool versions from the **same cache root the sync used** (`runtime_storage_overrides.cache_root_override`), never from the default user-level cache. Divergent cache roots produce divergent `canonical_version` values and spurious `!=` mismatches. It must pass `Some((&cache, "tool_metadata"))` to `resolve_tool_fetch`, mirroring the sync path in `reconcile_desired_tools`.
 
 ### Provisioning pruning (generated doc + filesystem)
 
 - **Active set**: the live `tool_runtimes` keys (mediapm conductor tool ids —
-  every tool inserted by the provisioning loop, keyed by its generated-doc
-  key). The active set is NOT recomputed separately; `compute_used_tool_ids`
-  was deleted because the provisioning loop's `tool_runtimes` keys are the
-  single source of truth for what remains provisioned.
+  every tool inserted by the provisioning loop, keyed by its generated-doc key). The active set is NOT recomputed separately; `compute_used_tool_ids` was deleted because the provisioning loop's `tool_runtimes` keys are the single source of truth for what remains provisioned.
 - **Generated doc pruning**: after the provisioning loop, old `"{name}@{old_hash}"`
-  keys are pruned from the generated document when the content_map_hash changes
-  (new hash → new key → old key is stale). The `pruned_tools` field in
-  `ToolSyncReport` tracks the count of pruned keys.
+  keys are pruned from the generated document when the content_map_hash changes (new hash → new key → old key is stale). The `pruned_tools` field in `ToolSyncReport` tracks the count of pruned keys.
 - **Filesystem pruning**: `retain_only_tool_dirs(data_dir, active_conductor_ids)`
-  removes filesystem tool directories not in the active set; the set is the
-  `tool_runtimes` keys (conductor tool ids), so provisioned dirs keyed by
-  `sanitize_tool_id(conductor_tool_id)` are retained.
+  removes filesystem tool directories not in the active set; the set is the `tool_runtimes` keys (conductor tool ids), so provisioned dirs keyed by `sanitize_tool_id(conductor_tool_id)` are retained.
 - **Preserves keys for remaining tools**: pruning only removes stale/unused keys;
   newly computed keys for active tools survive the prune.
 
@@ -167,12 +113,9 @@ The sync coordinator persists two distinct documents with different write polici
 - The `default_mediapm_user_download_cache_root().is_none()` skip guard is macOS-ineffective and must not be relied upon. Use `cache_root_override` instead.
 - Test assertions should verify the override path was used (e.g., cache index files exist under the override path rather than the default).
 - Tests must verify both the skip-if-up-to-date path (state.json-only change) and the
-  full-provision path (both files change). A hermetic test should assert that re-running
-  sync with identical tool payloads produces identical conductor file bytes.
+  full-provision path (both files change). A hermetic test should assert that re-running sync with identical tool payloads produces identical conductor file bytes.
 - Skip-path tests (`tests/int/tool_sync.rs`) must seed generated-doc entries with a
-  non-hash placeholder content map (e.g. `"provisioned"`) for every tool that must skip:
-  skip requires `find_active_tool_spec` plus `workspace_content_map_is_available`, and the
-  placeholder passes hermetically without network.
+  non-hash placeholder content map (e.g. `"provisioned"`) for every tool that must skip: skip requires `find_active_tool_spec` plus `workspace_content_map_is_available`, and the placeholder passes hermetically without network.
 
 ## Content-addressed identity
 
@@ -227,17 +170,12 @@ changes (not just when the tool itself changes.
   `MEDIAPM_GIT_HASH` for builtin launchers, a tag or VCS hash for fetched
   tools).
 - Each `dep_id:dep_ver` pair is the dependency's tool ID and the dependency's
-  OWN version segment (`dep_ver` is the dep's bare version, never its
-  composite), sorted deterministically by `dep_id`.
+  OWN version segment (`dep_ver` is the dep's bare version, never its composite), sorted deterministically by `dep_id`.
 - Only dependencies carrying the **SameStep** role (classified by
   `known_dependency_type()`) are included; a dependency carrying both roles
-  contributes its SameStep role. CrossStep-only dependencies are excluded
-  because they resolve in a different sync pass.
+  contributes its SameStep role. CrossStep-only dependencies are excluded because they resolve in a different sync pass.
 - **Non-transitive invariant**: dependencies are DIRECT-ONLY. Composite
-  segments always reference each dep's own version segment (the part before the
-  first `;` of the dep's stored canonical version), never a dep's composite (a
-  tool that is both a dep and an explicitly-configured tool with its own
-  same-step deps contributes only its bare version.
+  segments always reference each dep's own version segment (the part before the first `;` of the dep's stored canonical version), never a dep's composite (a tool that is both a dep and an explicitly-configured tool with its own same-step deps contributes only its bare version.
 - For tools with no SameStep dependencies, `composite == bare`.
 
 ### `compute_composite_canonical_version()` helper
@@ -266,22 +204,14 @@ This helper is the single source of truth used by all 3 injection points:
 ### Inlined same-step deps (`deps/<mediapm_tool_id>/`)
 
 - Same-step dep payloads are inlined into the requester's content map under the
-  reserved `deps/` prefix: `deps/{dep_mediapm_tool_id}/{dep_own_key}` → hash.
-  Keys use the **mediapm tool id** (bare, e.g. `deps/ffmpeg/...`), never the
-  conductor id (`ffmpeg@hash`).
+  reserved `deps/` prefix: `deps/{dep_mediapm_tool_id}/{dep_own_key}` → hash. Keys use the **mediapm tool id** (bare, e.g. `deps/ffmpeg/...`), never the conductor id (`ffmpeg@hash`).
 - **Direct-only, non-transitive**: inlining copies the dep's OWN pre-inline
   payload map; a dep's own `deps/` entries are never re-inlined.
 - Hook point: the `Ok(Some(payload))` provision arm calls
   `inline_same_step_deps(tool_id, tool_req, &provisioned_own_maps,
-known_dependency_type)` BEFORE `content_map_hash` is computed, so the
-  requester tool_key, prune prefix, and `external_data` (DataUsageTracker scans
-  all content-map values) automatically cover inlined entries. A requester's
-  tool_key changes iff any direct dep's own payload changes.
+known_dependency_type)` BEFORE `content_map_hash` is computed, so the requester tool_key, prune prefix, and `external_data` (DataUsageTracker scans all content-map values) automatically cover inlined entries. A requester's tool_key changes iff any direct dep's own payload changes.
 - Skip interplay: dep unchanged → dep skipped → requester composite (own
-  version segments from live_state) matches → requester skipped too; the
-  reconstructed runtime from the generated doc already carries `deps/...`.
-  Dep changed → dep re-provisions → requester composite changes → requester
-  re-provisions and re-inlines. No recursion.
+  version segments from live_state) matches → requester skipped too; the reconstructed runtime from the generated doc already carries `deps/...`. Dep changed → dep re-provisions → requester composite changes → requester re-provisions and re-inlines. No recursion.
 - `write_generated_dotenv` skips `deps/`-prefixed keys (no companion env vars).
 
 ### Indexing: `index_managed_tools()`

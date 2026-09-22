@@ -12,13 +12,10 @@ applyTo: "src/mediapm-utils/src/progress/mod.rs, src/mediapm-utils/src/progress/
 
 ```rust
 /// Thread-safe collection of per-item progress budgets.
-pub struct MultiItemBudget {
-    items: Vec<ItemBudget>,
+pub struct MultiItemBudget { items: Vec<ItemBudget>,
 }
 
-struct ItemBudget {
-    pos: AtomicU64,
-    total: AtomicU64,
+struct ItemBudget { pos: AtomicU64, total: AtomicU64,
 }
 ```
 
@@ -47,27 +44,13 @@ Methods:
 ### `advance` (per-item `compare_exchange_weak` loop)
 
 ```text
-fn advance(item_idx, amount):
-    item = items[item_idx]
-    loop:
-        old = item.pos.load(Acquire)
-        new = old + amount
-        total = item.total.load(Acquire)
-        assert(new ≤ total)
-        if item.pos.compare_exchange_weak(old, new, AcqRel, Acquire).is_ok():
-            return
+fn advance(item_idx, amount): item = items[item_idx] loop: old = item.pos.load(Acquire) new = old + amount total = item.total.load(Acquire) assert(new ≤ total) if item.pos.compare_exchange_weak(old, new, AcqRel, Acquire).is_ok(): return
 ```
 
 ### `set_pos` (per-item, single load-store)
 
 ```text
-fn set_pos(item_idx, pos):
-    item = items[item_idx]
-    total = item.total.load(Acquire)
-    assert(pos ≤ total)
-    current = item.pos.load(Acquire)
-    assert(pos ≥ current)
-    item.pos.store(pos, Release)
+fn set_pos(item_idx, pos): item = items[item_idx] total = item.total.load(Acquire) assert(pos ≤ total) current = item.pos.load(Acquire) assert(pos ≥ current) item.pos.store(pos, Release)
 ```
 
 ## Extraction-helper callback protocol
@@ -85,33 +68,11 @@ The outer phase loop owns the `MultiItemBudget` and creates one item per tracked
 
 ```text
 budget = MultiItemBudget::with_capacity(sources.len())
-for src in sources:
-    est = src.expected_size.or(size_hint_bytes).unwrap_or(0)
-    budget.add_item(est)
+for src in sources: est = src.expected_size.or(size_hint_bytes).unwrap_or(0) budget.add_item(est)
 
-for (idx, source) in sources:
-    match source.producer:
-        Fetch { urls }:
-            if cache hit:
-                budget.set_total(idx, cached.len())
-                budget.advance(idx, cached.len())
-            else:
-                budget.set_total(idx, estimate)
-                fetch_bytes_from_candidates(urls, ..., &budget, idx, ...)
-                # Inside fetch (per chunk):
-                #   budget.set_total(idx, content_length_estimate)
-                #   budget.advance(idx, chunk.len())
-                #   cb(aggregate snapshot)  ← fires after EACH chunk
-        GenerateLauncher { .. }:
-            budget.set_total(idx, launcher_size)
-            budget.advance(idx, launcher_size)
+for (idx, source) in sources: match source.producer: Fetch { urls }: if cache hit: budget.set_total(idx, cached.len()) budget.advance(idx, cached.len()) else: budget.set_total(idx, estimate) fetch_bytes_from_candidates(urls, ..., &budget, idx, ...) # Inside fetch (per chunk): #   budget.set_total(idx, content_length_estimate) #   budget.advance(idx, chunk.len()) #   cb(aggregate snapshot)  ← fires after EACH chunk GenerateLauncher { .. }: budget.set_total(idx, launcher_size) budget.advance(idx, launcher_size)
 
-    # Per-source callback (cached/launcher: only here; fetch: in addition to per-chunk)
-    cb(ProviderProgressSnapshot {
-        phase: Fetch,
-        items: (idx + 1, total),        # (completed_items, total_items)
-        bytes: budget.aggregate(),       # (sum_pos, sum_total)
-    })
+    # Per-source callback (cached/launcher: only here; fetch: in addition to per-chunk) cb(ProviderProgressSnapshot { phase: Fetch, items: (idx + 1, total),        # (completed_items, total_items) bytes: budget.aggregate(),       # (sum_pos, sum_total) })
 ```
 
 `fetch_bytes_from_candidates` receives `&MultiItemBudget` + `item_idx` + `progress_cb`; during download it calls `budget.set_total` + `budget.advance` per chunk and fires the aggregate callback after each. Cached/launcher sources advance in one step, covered by the end-of-source callback.
@@ -142,17 +103,13 @@ invariants:
 - **Eventual completion**: position equals total at the end of each phase.
 - **Multi-archive format accuracy**:
   - **ZIP extraction**: proportional estimation `(written * entry_compressed) /
-    entry_decompressed`. Endpoint is exact; mid-entry is approximate (uniform
-    compression ratio assumed).
+    entry_decompressed`. Endpoint is exact; mid-entry is approximate (uniform compression ratio assumed).
   - **tar.gz extraction**: `CountingReader` tracks compressed bytes consumed.
-    GzDecoder may read ahead causing jumps up to ~32 KB (mitigated by
-    per-entry callbacks.
+    GzDecoder may read ahead causing jumps up to ~32 KB (mitigated by per-entry callbacks.
   - **tar.xz extraction**: `CountingReader` tracks compressed bytes consumed.
-    More responsive than `XzDecoder::total_in()` (which only updates at xz
-    block boundaries, potentially multi-MB apart).
+    More responsive than `XzDecoder::total_in()` (which only updates at xz block boundaries, potentially multi-MB apart).
   - **Compress packing**: file sizes accumulate as decompressed bytes written.
-    ZIP metadata overhead (~KB) excluded from total (negligible vs payload
-    sizes.
+    ZIP metadata overhead (~KB) excluded from total (negligible vs payload sizes.
 - **Fidelity over precision**: smooth visual updates matter more than byte-exact accuracy; all paths stay monotonic and complete.
 
 ### Prune phase (document rewrite + filesystem prune)
@@ -183,30 +140,14 @@ Archive sources use **2 budget items** (decompress + compress); binary/launcher 
 ```text
 total_items = sum(2 if is_archive(source) else 1 for source in entries)
 budget = MultiItemBudget::with_capacity(total_items)
-for entry in entries:
-    is_archive = is_archive_source(&entry.producer)
-    budget.add_item(expected_size.unwrap_or(bytes.len()))  # item i: decompress or binary
-    if is_archive:
-        budget.add_item(0)                                   # item i+1: compress (total set later)
+for entry in entries: is_archive = is_archive_source(&entry.producer) budget.add_item(expected_size.unwrap_or(bytes.len()))  # item i: decompress or binary if is_archive: budget.add_item(0)                                   # item i+1: compress (total set later)
 
 next_item_idx = 0
-for source in entries:
-    is_archive = is_archive_source(&source.producer)
-    item_count = 2 if is_archive else 1
+for source in entries: is_archive = is_archive_source(&source.producer) item_count = 2 if is_archive else 1
 
-    process_single_source(bytes, ..., &budget, next_item_idx, item_count).await
-    # Inside archive arm:
-    #   callback 1 → budget.set_pos(item_idx, pos)       # decompress via extraction callback
-    #   callback 2 → budget.set_pos(item_idx + 1, pos)   # compress via pack callback
-    # Inside binary arm:
-    #   budget.advance(item_idx, bytes.len())             # single CAS import
+    process_single_source(bytes, ..., &budget, next_item_idx, item_count).await # Inside archive arm: #   callback 1 → budget.set_pos(item_idx, pos)       # decompress via extraction callback #   callback 2 → budget.set_pos(item_idx + 1, pos)   # compress via pack callback # Inside binary arm: #   budget.advance(item_idx, bytes.len())             # single CAS import
 
-    cb(ProviderProgressSnapshot {
-        phase: Process,
-        items: (next_item_idx + item_count, total_items),  # (completed_items, total_items)
-        bytes: budget.aggregate(),                          # (sum_pos, sum_total)
-    })
-    next_item_idx += item_count
+    cb(ProviderProgressSnapshot { phase: Process, items: (next_item_idx + item_count, total_items),  # (completed_items, total_items) bytes: budget.aggregate(),                          # (sum_pos, sum_total) }) next_item_idx += item_count
 ```
 
 `process_single_source` receives `budget: &MultiItemBudget`, `item_idx: usize`, and `item_count: usize`. For archive sources (`item_count=2`): it creates a decompress callback `\|pos| budget.set_pos(item_idx, pos)` for extraction and a compress callback `\|pos| budget.set_pos(item_idx + 1, pos)` for packing. After each sub-phase it calls `budget.set_pos(...)` to ensure completion. For binary sources (`item_count=1`): it calls `budget.advance(item_idx, bytes.len())` for the single CAS import step.
@@ -218,21 +159,10 @@ for source in entries:
 ## ProviderPhase enum
 
 ```rust
-pub enum ProviderPhase {
-    Resolve,
-    Fetch,
-    Process,
+pub enum ProviderPhase { Resolve, Fetch, Process,
 }
 
-pub struct ProviderProgressSnapshot {
-    pub phase: ProviderPhase,
-    /// Items completed vs total: (completed, total).
-    /// Resolve: metadata URLs resolved.
-    /// Fetch: sources fetched.
-    /// Process: sources processed.
-    pub items: (u64, u64),
-    /// Bytes completed vs total: (completed, total).
-    pub bytes: (u64, u64),
+pub struct ProviderProgressSnapshot { pub phase: ProviderPhase, /// Items completed vs total: (completed, total). /// Resolve: metadata URLs resolved. /// Fetch: sources fetched. /// Process: sources processed. pub items: (u64, u64), /// Bytes completed vs total: (completed, total). pub bytes: (u64, u64),
 }
 ```
 
@@ -245,11 +175,7 @@ The `items` field reports `(completed_items, total_items)` in fetch and process 
 ## CountingReader (Cell-based, no atomics)
 
 ```rust
-struct CountingReader<'a> {
-    cursor: std::io::Cursor<&'a [u8]>,
-    bytes_read: &'a Cell<u64>,
-    last_cb_pos: Cell<u64>,
-    progress_cb: Option<&'a dyn Fn(u64)>,
+struct CountingReader<'a> { cursor: std::io::Cursor<&'a [u8]>, bytes_read: &'a Cell<u64>, last_cb_pos: Cell<u64>, progress_cb: Option<&'a dyn Fn(u64)>,
 }
 ```
 

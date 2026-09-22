@@ -67,13 +67,7 @@ and media-tagger `resolved_tag` (builtin launcher, no upstream tag).
 
 ```rust
 /// Records which media source and variant produced a managed file.
-pub struct ManagedFileRecord {
-    /// Media id that produced this managed file.
-    pub media_id: String,
-    /// Output variant selected for this materialized file.
-    pub variant: String,
-    /// Canonical CAS hash string for this file's payload.
-    pub hash: String,
+pub struct ManagedFileRecord { /// Media id that produced this managed file. pub media_id: String, /// Output variant selected for this materialized file. pub variant: String, /// Canonical CAS hash string for this file's payload. pub hash: String,
 }
 ```
 
@@ -82,15 +76,7 @@ pub struct ManagedFileRecord {
 The pre-rewrite format wrapped state in a `state` key:
 
 ```text
-{
-  "version": 1,
-  "state": {
-    "managed_files": { "<path>": { "media_id": "...", "variant": "...", "hash": "..." } },
-    "tool_registry": { "<key>": { "name": "...", "version": "...", "source": "...", "registry_multihash": "...", "last_transition_unix_seconds": 0 } },
-    "active_tools": { "<id>": "<key>" },
-    "workflow_states": { "<media_id>": [ { "variant_hashes": {...}, "steps_completed": 0, "last_impure_sync_at": null } ] },
-    "last_materialized_state_hash": null
-  }
+{ "version": 1, "state": { "managed_files": { "<path>": { "media_id": "...", "variant": "...", "hash": "..." } }, "tool_registry": { "<key>": { "name": "...", "version": "...", "source": "...", "registry_multihash": "...", "last_transition_unix_seconds": 0 } }, "active_tools": { "<id>": "<key>" }, "workflow_states": { "<media_id>": [ { "variant_hashes": {...}, "steps_completed": 0, "last_impure_sync_at": null } ] }, "last_materialized_state_hash": null }
 }
 ```
 
@@ -107,14 +93,7 @@ V1→v2 mapping:
 The post-rewrite flat format (current `state.json`):
 
 ```text
-{
-  "version": 1,
-  "media": { "<id>": { "variant_hashes": {...}, "steps_completed": 0, "last_impure_sync_at": null } },
-  "tools": { ... },
-  "tool_registry": { ... },
-  "active_tools": { ... },
-  "last_materialized_state_hash": "",
-  "managed_files": [ "<path>" ]
+{ "version": 1, "media": { "<id>": { "variant_hashes": {...}, "steps_completed": 0, "last_impure_sync_at": null } }, "tools": { ... }, "tool_registry": { ... }, "active_tools": { ... }, "last_materialized_state_hash": "", "managed_files": [ "<path>" ]
 }
 ```
 

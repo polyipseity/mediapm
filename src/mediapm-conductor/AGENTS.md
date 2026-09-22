@@ -950,60 +950,17 @@ Version bump required for: removing a field, renaming a field, changing a field 
 ### O.9 Architecture Diagrams
 
 ```mermaid
-graph TD
-    subgraph "Conductor Crate"
-        API[Public API<br/>ConductorApi, Conductor]
-        CLI[cli module]
-        CONFIG[model::config<br/>Three-document schema]
-        STATE[model::state<br/>OrchestrationState]
-        ORCH[orchestration module<br/>Actor-based execution]
-        TOOLS[tools module<br/>Builtin registry]
-        ERROR[error module]
-        TCC[tool-cache module<br/>ToolContentCache]
-    end
+graph TD subgraph "Conductor Crate" API[Public API<br/>ConductorApi, Conductor] CLI[cli module] CONFIG[model::config<br/>Three-document schema] STATE[model::state<br/>OrchestrationState] ORCH[orchestration module<br/>Actor-based execution] TOOLS[tools module<br/>Builtin registry] ERROR[error module] TCC[tool-cache module<br/>ToolContentCache] end
 
-    API --> CLI
-    API --> CONFIG
-    API --> STATE
-    API --> ORCH
-    ORCH --> TOOLS
-    ORCH --> STATE
-    ORCH --> TCC
+    API --> CLI API --> CONFIG API --> STATE API --> ORCH ORCH --> TOOLS ORCH --> STATE ORCH --> TCC
 
-    subgraph "External Dependencies"
-        CAS[CasApi from mediapm-cas]
-        BUILTINS[conductor-builtins]
-        NICKEL[nickel]
-        SERDE[serde]
-        TOKIO[tokio]
-        RACTOR[ractor]
-    end
+    subgraph "External Dependencies" CAS[CasApi from mediapm-cas] BUILTINS[conductor-builtins] NICKEL[nickel] SERDE[serde] TOKIO[tokio] RACTOR[ractor] end
 
-    ORCH --> CAS
-    TOOLS --> BUILTINS
-    CONFIG --> NICKEL
-    STATE --> SERDE
-    API --> TOKIO
-    ORCH --> RACTOR
+    ORCH --> CAS TOOLS --> BUILTINS CONFIG --> NICKEL STATE --> SERDE API --> TOKIO ORCH --> RACTOR
 ```
 
 ```mermaid
-stateDiagram-v2
-    [*] --> PENDING: workflow submitted
-    PENDING --> VALIDATING: schedule
-    VALIDATING --> PLANNING: schema ok
-    PLANNING --> DISPATCHING: topological sort
-    DISPATCHING --> STEP_EXECUTING: per level
-    STEP_EXECUTING --> STEP_DONE: tool completes
-    STEP_EXECUTING --> STEP_ERROR: tool fails
-    STEP_DONE --> DISPATCHING: more levels remain
-    STEP_DONE --> FINALIZING: all levels done
-    STEP_ERROR --> DISPATCHING: retry available
-    STEP_ERROR --> FAILED: retries exhausted
-    FINALIZING --> COMPLETED: state persisted to CAS
-    FINALIZING --> FAILED: persistence error
-    COMPLETED --> [*]
-    FAILED --> [*]
+stateDiagram-v2 [*] --> PENDING: workflow submitted PENDING --> VALIDATING: schedule VALIDATING --> PLANNING: schema ok PLANNING --> DISPATCHING: topological sort DISPATCHING --> STEP_EXECUTING: per level STEP_EXECUTING --> STEP_DONE: tool completes STEP_EXECUTING --> STEP_ERROR: tool fails STEP_DONE --> DISPATCHING: more levels remain STEP_DONE --> FINALIZING: all levels done STEP_ERROR --> DISPATCHING: retry available STEP_ERROR --> FAILED: retries exhausted FINALIZING --> COMPLETED: state persisted to CAS FINALIZING --> FAILED: persistence error COMPLETED --> [*] FAILED --> [*]
 ```
 
 ## Appendix: Architecture Rationale & Non-Goals

@@ -18,14 +18,7 @@
 
 ```rust
 #[async_trait]
-pub trait CasApi: Send + Sync {
-    async fn put(&self, data: Bytes) -> Result<Hash, CasError>;
-    async fn get(&self, hash: Hash) -> Result<Bytes, CasError>;
-    async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError>;
-    async fn delete(&self, hash: Hash) -> Result<(), CasError>;
-    async fn flush(&self) -> Result<u64, CasError>;
-    async fn put_stream(&self, reader: impl AsyncRead + Send + Unpin) -> Result<Hash, CasError>;
-    async fn get_to_writer(&self, hash: Hash, writer: &mut (dyn AsyncWrite + Send + Unpin)) -> Result<(), CasError>;
+pub trait CasApi: Send + Sync { async fn put(&self, data: Bytes) -> Result<Hash, CasError>; async fn get(&self, hash: Hash) -> Result<Bytes, CasError>; async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError>; async fn delete(&self, hash: Hash) -> Result<(), CasError>; async fn flush(&self) -> Result<u64, CasError>; async fn put_stream(&self, reader: impl AsyncRead + Send + Unpin) -> Result<Hash, CasError>; async fn get_to_writer(&self, hash: Hash, writer: &mut (dyn AsyncWrite + Send + Unpin)) -> Result<(), CasError>;
 }
 ```
 
@@ -65,10 +58,7 @@ Overridden by stores to bypass the in-memory buffering in the default impl.
 ### 2.2 CasError — TooLarge variant
 
 ```rust
-pub enum CasError {
-    // ... existing variants ...
-    #[error("object {hash} too large for in-memory get: size={size} limit={limit}")]
-    TooLarge { hash: Hash, size: u64, limit: u64 },
+pub enum CasError { // ... existing variants ... #[error("object {hash} too large for in-memory get: size={size} limit={limit}")] TooLarge { hash: Hash, size: u64, limit: u64 },
 }
 ```
 
@@ -78,10 +68,7 @@ Returned only when a delta chain exceeds `MAX_DELTA_CHAIN_DEPTH = 5`. `get()` de
 
 ```rust
 #[async_trait]
-pub trait ConstraintApi: Send + Sync {
-    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>;
-    async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError>;
-    async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
+pub trait ConstraintApi: Send + Sync { async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>; async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError>; async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
 }
 ```
 
@@ -91,10 +78,7 @@ Stored in a separate constraint map (in-memory `DashMap<Hash, BTreeSet<Hash>>`, 
 Empty-content sentinel exception: constraints on `Hash::empty()` are always empty. `set_constraint`, `get_constraint`, and `patch_constraint` all succeed but have no effect (always return or leave empty sets).
 
 ```rust
-pub struct ConstraintPatch {
-    pub add_bases: BTreeSet<Hash>,
-    pub remove_bases: BTreeSet<Hash>,
-    pub clear: bool,   // clear existing bases before applying adds/removes
+pub struct ConstraintPatch { pub add_bases: BTreeSet<Hash>, pub remove_bases: BTreeSet<Hash>, pub clear: bool,   // clear existing bases before applying adds/removes
 }
 ```
 
@@ -102,10 +86,7 @@ pub struct ConstraintPatch {
 
 ```rust
 #[async_trait]
-pub trait CasMaintenanceApi: Send + Sync {
-    async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError>;
-    async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
-    async fn list_hashes(&self) -> Result<Vec<Hash>, CasError>;
+pub trait CasMaintenanceApi: Send + Sync { async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError>; async fn prune_constraints(&self) -> Result<PruneReport, CasError>; async fn list_hashes(&self) -> Result<Vec<Hash>, CasError>;
 }
 ```
 
@@ -144,14 +125,10 @@ the entire CAS lifetime via `Arc<DirectoryLockGuard>` (shared across
 clones). It implements a two-layer architecture:
 
 1. **In-process layer** (`DashMap<PathBuf, Arc<Mutex<()>>>` + `try_lock_owned()`):
-   detects when two `FileSystemCas` instances in the same process try to
-   open the same directory. Non-blocking: returns immediately with
-   `CasError::LockContention` if the path is already held.
+   detects when two `FileSystemCas` instances in the same process try to open the same directory. Non-blocking: returns immediately with `CasError::LockContention` if the path is already held.
 
 2. **Inter-process layer** (`fs4::AsyncFileExt::try_lock()` on `<dir>/lock`):
-   uses OS-level file locking to detect cross-process contention.
-   Non-blocking: returns immediately with `CasError::LockContention` if
-   the lock file is already held.
+   uses OS-level file locking to detect cross-process contention. Non-blocking: returns immediately with `CasError::LockContention` if the lock file is already held.
 
 Both layers are fail-fast — they never block waiting for a lock to
 become available. This means opening two `FileSystemCas` instances on
@@ -170,9 +147,7 @@ same directory are correctly identified as contention.
 #### ConfiguredCas — dispatch enum
 
 ```rust
-pub enum ConfiguredCas {
-    InMemory(InMemoryCas),
-    FileSystem(FileSystemCas),
+pub enum ConfiguredCas { InMemory(InMemoryCas), FileSystem(FileSystemCas),
 }
 ```
 
@@ -225,57 +200,18 @@ src/mediapm-cas/src/
 │   ├── patch.rs         — DeltaPatch (VCDIFF via oxidelta) + apply_delta_chain
 │   ├── object.rs        — DeltaState + StoredObject (version-agnostic)
 │   └── versions/        — V1/V2/V3 delta envelope wire formats (mod.rs = canonical API)
-└── storage/
-    ├── mod.rs             — module root
-    ├── store.rs           — CasStore<J,I,B> (composed handle, implements all traits)
-    ├── wal/               — Wal trait + InMemoryWal + FileWal + entry types + versions
-    │   ├── mod.rs         — Wal trait + entry types + re-exports
-    │   ├── mem_wal.rs     — InMemoryWal (VecDeque, ephemeral)
-    │   ├── file_wal.rs    — FileWal (segmented file-backed WAL)
-    │   └── versions/      — on-disk format V1+
-    │       ├── mod.rs
-    │       ├── v1.rs     — V1 format (decode only)
-    │       └── v2.rs     — V2 format with PutLarge entry type
-    ├── blob_store/        — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore + versioned path layout
-    │   ├── mod.rs         — Blob trait + re-exports
-    │   ├── mem.rs         — InMemoryBlobStore (DashMap, ephemeral)
-    │   ├── fs.rs          — FileSystemBlobStore (atomic hash-derived layout)
-    │   └── versions/      — path layout versions V1+
-    │       ├── mod.rs     — version dispatch
-    │       └── v1.rs      — V1 layout: v1/blake3/ab/cd/<hex>
-    ├── metadata_store/    — MetadataStore trait + InMemoryMetadataStore + FileSystemMetadataStore
-    │   ├── mod.rs         — trait + MetadataEntry + re-exports
-    │   ├── mem.rs         — InMemoryMetadataStore (DashMap, separate constraint map)
-    │   ├── fs.rs          — FileSystemMetadataStore (persistent snapshot via JSON)
-    │   └── versions/      — V1 persistence format (versioned JSON metadata file)
-    ├── read_view.rs       — ComposedReadView (3-layer lookup: Metadata → Blob → WAL)
-    ├── pending_ops.rs     — PendingOps (in-flight read dedup helper)
-    ├── bg_engine.rs       — BackgroundEngine (WAL consumer → Blob + Metadata, maintenance)
-    ├── in_memory.rs       — InMemoryCas wrapper
-    └── file_system.rs     — FileSystemCas wrapper + open()
+└── storage/ ├── mod.rs             — module root ├── store.rs           — CasStore<J,I,B> (composed handle, implements all traits) ├── wal/               — Wal trait + InMemoryWal + FileWal + entry types + versions │   ├── mod.rs         — Wal trait + entry types + re-exports │   ├── mem_wal.rs     — InMemoryWal (VecDeque, ephemeral) │   ├── file_wal.rs    — FileWal (segmented file-backed WAL) │   └── versions/      — on-disk format V1+ │       ├── mod.rs │       ├── v1.rs     — V1 format (decode only) │       └── v2.rs     — V2 format with PutLarge entry type ├── blob_store/        — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore + versioned path layout │   ├── mod.rs         — Blob trait + re-exports │   ├── mem.rs         — InMemoryBlobStore (DashMap, ephemeral) │   ├── fs.rs          — FileSystemBlobStore (atomic hash-derived layout) │   └── versions/      — path layout versions V1+ │       ├── mod.rs     — version dispatch │       └── v1.rs      — V1 layout: v1/blake3/ab/cd/<hex> ├── metadata_store/    — MetadataStore trait + InMemoryMetadataStore + FileSystemMetadataStore │   ├── mod.rs         — trait + MetadataEntry + re-exports │   ├── mem.rs         — InMemoryMetadataStore (DashMap, separate constraint map) │   ├── fs.rs          — FileSystemMetadataStore (persistent snapshot via JSON) │   └── versions/      — V1 persistence format (versioned JSON metadata file) ├── read_view.rs       — ComposedReadView (3-layer lookup: Metadata → Blob → WAL) ├── pending_ops.rs     — PendingOps (in-flight read dedup helper) ├── bg_engine.rs       — BackgroundEngine (WAL consumer → Blob + Metadata, maintenance) ├── in_memory.rs       — InMemoryCas wrapper └── file_system.rs     — FileSystemCas wrapper + open()
 ```
 
 ## 4. Data flow
 
 ```text
-put(data) → Hash(data)
-  │ ≤ WAL_INLINE_LIMIT (1 MiB) → Wal.append(Put{hash, data})
-  │ > WAL_INLINE_LIMIT (1 MiB) → Blob.write(hash, data) → Wal.append(PutLarge{hash, content_len})
-  ↓
-WAL consumer (bg_engine) → Blob.write(hash) + Metadata.put(hash) → checkpoint
-  (PutLarge: already materialized, just advance checkpoint + add metadata)
-                                                                    ↓
-get(hash) → delegates to get_to_writer → buffers result in memory
-  (full- and delta-object resolution handled transparently)
-                                                                    ↓
-get_to_writer(hash, writer) → ReadView: Metadata → Blob.read_to_writer
-  (streams directly to writer, bypasses in-memory Bytes buffer)
-                                                                    ↓
-put_stream(reader) → hash incrementally → Blob.write_stream(hash, reader)
-  → Wal.append(PutLarge{hash, content_len})
-                                                                    ↓
-delete(hash) → Wal.append(Delete{hash})
-                                                                    ↓
+put(data) → Hash(data) │ ≤ WAL_INLINE_LIMIT (1 MiB) → Wal.append(Put{hash, data}) │ > WAL_INLINE_LIMIT (1 MiB) → Blob.write(hash, data) → Wal.append(PutLarge{hash, content_len}) ↓
+WAL consumer (bg_engine) → Blob.write(hash) + Metadata.put(hash) → checkpoint (PutLarge: already materialized, just advance checkpoint + add metadata) ↓
+get(hash) → delegates to get_to_writer → buffers result in memory (full- and delta-object resolution handled transparently) ↓
+get_to_writer(hash, writer) → ReadView: Metadata → Blob.read_to_writer (streams directly to writer, bypasses in-memory Bytes buffer) ↓
+put_stream(reader) → hash incrementally → Blob.write_stream(hash, reader) → Wal.append(PutLarge{hash, content_len}) ↓
+delete(hash) → Wal.append(Delete{hash}) ↓
 WAL consumer → re-materialize dependents → Blob.delete(hash) + Metadata.delete(hash)
 ```
 
