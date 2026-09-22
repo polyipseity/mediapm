@@ -44,41 +44,9 @@ Key ecosystem (from `Cargo.toml`):
 
 ## Progress bar boundary (no indicatif in library)
 
-- The conductor **library** must never depend on `indicatif`. Progress is communicated upward via `RunWorkflowOptions.progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>` (feature-gated behind `progress`). The conductor composes the workflow screen (`[wf]` phase) from this group.
-- The conductor **CLI binary** (`src/mediapm-conductor/src/cli.rs`) builds a `ProgressGroup`, wraps it in `Arc`, and passes it as `progress_group`.
-- `DownloadProgressSnapshot` and `ProgressCallback` from `mediapm-utils` are available in the library for download progress.
+The conductor library must not depend on indicatif directly. Progress is communicated via `RunWorkflowOptions.progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>`. The conductor composes the workflow screen (`[wf]` phase) from this group. The conductor CLI binary builds a `ProgressGroup` and passes it. `DownloadProgressSnapshot` and `ProgressCallback` from `mediapm-utils` are available in the library for download progress.
 
-### Rendered output format reference
-
-The conductor workflow screen (`[wf]` phase) reuses the shared `mediapm-utils`
-progress rendering. The ACTUAL rendered format (templates, braille spinner glyphs,
-ANSI colors, prefix/suffix shapes, child-above-overall ordering, worked
-examples) is documented in `.agents/instructions/progress-output.instructions.md`.
-Treat that file plus `src/mediapm-utils/tests/progress_output/*.rs` as the source
-of truth — never invent ASCII mocks when editing the workflow progress screen.
-
-## Provider progress size tracking
-
-Provider progress size tracking uses the [`MultiItemBudget`](../../.agents/instructions/progress-budget.instructions.md)
-architecture: a per-item budget model where each tool source or archive entry
-is one budget item. This replaces ad-hoc `agg_completed_bytes`/`agg_total_bytes`/
-`source_input_cost` parameters and the legacy `ByteBudget` type.
-
-See `.agents/instructions/progress-budget.instructions.md` for the full
-architecture, `MultiItemBudget` API, extraction-helper callback protocol, and
-phase-loop mapping.
-
-Key invariants at a glance:
-
-- Position is monotonically non-decreasing per item.
-- Total is set once per item (via `set_total`); indeterminate items (`total == 0`)
-  contribute 0 bytes to the aggregate.
-- `pos ≤ total` is enforced by hard `assert!` on every mutation per item.
-- Extraction helpers fire local callbacks only (`local_cb: &dyn Fn(u64)`);
-  the outer phase loop owns the `MultiItemBudget` and uses `aggregate()` to
-  derive combined progress for progress bars.
-- `ByteBudget` still exists as a legacy type but is unused in the provider
-  pipeline.
+All progress bar rendering, templates, glyphs, colors, prefix/suffix shapes, truncation dispatch, per-screen specs, post-finish result messages, output stream policy, and the module boundary rule live in `progress-output.instructions.md` and `progress-budget.instructions.md`. Read those files before editing progress code. The actual rendered format is also verified by `src/mediapm-utils/tests/progress_output/*.rs`; never invent ASCII mocks.
 
 ## Configuration Document Model
 
@@ -129,52 +97,9 @@ enforced at both encoding (via `encode_document()` calling
 
 ## Cache Architecture (Three-Tier)
 
-### 1. Tool content cache (`tools.json`)
+The three-tier cache hierarchy (content cache, metadata cache, provision cache) is fully documented in `cache-and-http.instructions.md` (TTL policies, HTTP client configuration, cache tiers) and `paths-layout.instructions.md` (directory tree). Read those files before editing cache code.
 
-- **Engine**: `Cache` (CAS-backed, logical-key).
-- **Type**: User-level download cache.
-- **Location**: `<os-cache>/mediapm/cache/` (mediapm) or `<os-cache>/mediapm-conductor/cache/` (conductor standalone).
-- **Index file**: `tools.json`.
-- **TTL**: 7 days, based on **last use**.
-- **Last-use semantics**: `last_access_unix_seconds` is set on `store_bytes()` (initial download) and updated by explicit `touch()` call. `lookup_bytes()` does NOT touch the timestamp — the consumer must call `touch()` to refresh.
-- **Consumer**: Phase 2 (fetch) calls `cache.touch(key)` on cache hit, so last use reflects when the content was last downloaded, NOT when the tool was last run.
-- **Purpose**: Avoid re-downloading identical binary payloads across tool versions, projects, or sync runs.
-- **Pruning**: `prune_expired_entries()` removes entries where `last_access_unix_seconds` is older than TTL. Cooldown: 24h between full prune scans. Orphaned CAS payloads (not referenced by any index file in the cache root) are garbage-collected.
-- **Key**: Download URI (actual URL used for download).
-- **API**: `store_bytes(uri, bytes)` / `lookup_bytes(uri)` / `touch(uri)`.
-- **Module**: `src/mediapm-conductor/src/cache.rs` and `cache_user_level.rs`.
-
-### 2. Tool metadata cache (`tool_metadata.json`)
-
-- **Engine**: `Cache` (CAS-backed, logical-key).
-- **Type**: User-level metadata cache.
-- **Location**: Same cache root as tool content cache (shared `<os-cache>/.../cache/` root, separate index file).
-- **Index file**: `tool_metadata.json`.
-- **TTL**: 1 day, based on **creation time**.
-- **Last-use semantics**: `last_access_unix_seconds` is set on `store_bytes()` (initial creation) and is **never touched by `lookup_bytes()`**. The consumer for this cache MUST NOT call `touch()`. This means the TTL measures time-since-creation, not time-since-last-use.
-- **Consumer**: Phase 1 (resolve) uses this cache to store/retrieve version-tag resolution results (e.g., "latest tag for tool X as of fetch time"). The resolve phase calls `store_bytes()` on a new tag fetch and `lookup_bytes()` on subsequent accesses without calling `touch()`. After 1 day from creation, the entry expires and the next resolve re-fetches the tag data.
-- **Purpose**: Cache version/tag resolution results so repeated `mediapm tool sync` runs (or runs across projects) do not hit GitHub API/network for every tool on every invocation.
-- **Key**: Resolution API endpoint URL (e.g., `"https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"`, `"https://evermeet.cx/ffmpeg/info/zip"`).
-- **API**: `store_bytes(key, bytes)` / `lookup_bytes(key)` (no `touch()` on read).
-- **Module**: `src/mediapm-conductor/src/cache.rs` and `cache_user_level.rs`.
-
-### 3. Tool-content provision cache (`ProvisionCache`)
-
-- **Type**: Per-tool extraction cache with CAS-backed materialization and RAII guards.
-- **Location**: Workspace-scoped `<workspace>/tools/<sanitized_tool_id>/`.
-- **TTL**: 24 hours since last use, refreshed on every `materialize()` call.
-- **Purpose**: Single-flight extraction of tool content maps into ready-to-execute directory trees. Holds advisory locks to prevent pruning while in use.
-- **Key**: Tool id (filesystem-sanitized).
-- **API**: `materialize(tool_id, content_map) → ProvisionedTool (RAII guard)`, `prune_expired()`, `retain_only()`.
-- **Extra**: Platform filtering via `link_to_sandbox(payload_dir, sandbox_dir)` to exclude foreign-platform directories.
-- **Module**: `src/mediapm-conductor/src/provision/`.
-
-### Hard rules
-
-1. The tool content cache (`tools.json`) and tool metadata cache (`tool_metadata.json`) share the same CAS `store/` and cache root but have independent index files and TTL policies. Both are `Cache` engine instances opened with different index-file names.
-2. The provision cache (`ProvisionCache`) is a fundamentally different mechanism — it manages extracted tool trees with file locks, not raw bytes with CAS hashes. Never bypass `ProvisionCache` to read from `<tools_dir>/` directly.
-3. The `tools.json` cache consumer (phase 2) calls `touch()` on cache hit — this is intentional so the 7-day TTL measures last-download, not last-run.
-4. The `tool_metadata.json` cache consumer (phase 1) must NOT call `touch()` on cache hit — this keeps the TTL anchored to creation time.
+Conductor-specific note: the provision cache (`ProvisionCache`) manages extracted tool trees with file locks, not raw bytes with CAS hashes. Never bypass `ProvisionCache` to read from `<tools_dir/>` directly.
 
 ## Conductor Builtin Tool Strategy
 
@@ -193,8 +118,8 @@ Use `sd` for deterministic text rewrites where possible so workflow behavior sta
 
 Tool provisioning uses a two-module architecture in `src/mediapm-conductor/src/tools/`:
 
-- `preset/` — Per-tool `ToolSpec`/`ToolRuntime` builders (configuration/declarative intent)
-- `provider/` — Three-phase pipeline (resolve → fetch → process) handling download, archive extraction, binary CAS-import, and content-map construction. Process returns `ProvisionResult { content_map, os_exec_paths }`.
+- `preset/`: per-tool `ToolSpec`/`ToolRuntime` builders (configuration/declarative intent)
+- `provider/`: three-phase pipeline (resolve → fetch → process) handling download, archive extraction, binary CAS-import, and content-map construction. Process returns `ProvisionResult { content_map, os_exec_paths }`.
 
 Source definitions use `SourceProducer::Fetch` (URL-based download) for managed tools and `SourceProducer::GenerateLauncher` (inline launcher script) for builtins. Each entry defines per-OS download URLs for all three supported platforms (`windows`, `linux`, `macos`).
 
@@ -322,13 +247,7 @@ When changing parser/templating logic, update Rust docstrings in:
 
 ## Rust module split layout convention
 
-When splitting one conductor Rust module into multiple files, use folder-module layout consistently:
-
-- move `foo.rs` to `foo/mod.rs`,
-- place sibling module files in `foo/*.rs`,
-- place unit tests as `#[cfg(test)]` blocks inline in the source file they test. If the inline block exceeds ~300 lines, split into a themed sibling file `foo_<theme>.rs` declared with `#[cfg(test)] mod foo_<theme>;`.
-
-Avoid keeping both `foo.rs` and `foo/mod.rs` for one module and avoid `#[path = "..."]` for ordinary in-crate module/test placement.
+See `rust-workflow.instructions.md` ("Rust module split layout convention") for the canonical guidance on folder-module layout, test placement, and `#[path]` avoidance.
 
 ## GC Pipeline Logging
 
@@ -377,7 +296,7 @@ The tool-content cache lives at `<conductor_tools_dir>/` (default `<conductor_di
 
 Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
-- **Cache key**: the **mediapm conductor tool id** — the map key in the conductor document's `tools` map — sanitized to a filesystem-safe name via `sanitize_tool_id`. One cache entry per tool id: `<conductor_tools_dir>/<sanitize_tool_id(conductor_tool_id)>/`. In the mediapm integration the conductor tool id is `{mediapm_tool_id}@{content_map_hash}` for tools with a content map (e.g. `yt-dlp@blake3:abc` → dir `yt-dlp@blake3_abc`) and the bare `{mediapm_tool_id}` when the content map is empty. The two ids are distinct: the **mediapm tool id** (`yt-dlp`) identifies the tool in `mediapm.ncl`, dependency keys, and env var name stems; the **conductor tool id** is the conductor-document key and the provision-cache key. `.env.generated` payload paths mirror this layout: `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`.
+- **Cache key**: the **mediapm conductor tool id** (the map key in the conductor document's `tools` map — sanitized to a filesystem-safe name via `sanitize_tool_id`. One cache entry per tool id: `<conductor_tools_dir>/<sanitize_tool_id(conductor_tool_id)>/`. In the mediapm integration the conductor tool id is `{mediapm_tool_id}@{content_map_hash}` for tools with a content map (e.g. `yt-dlp@blake3:abc` → dir `yt-dlp@blake3_abc`) and the bare `{mediapm_tool_id}` when the content map is empty. The two ids are distinct: the **mediapm tool id** (e.g. `yt-dlp`) identifies the tool in `mediapm.ncl`, dependency keys, and env var name stems; the **conductor tool id** is the conductor-document key and the provision-cache key. `.env.generated` payload paths mirror this layout: `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`.
 
 - **RAII guard**: `ProvisionCache::materialize` returns a `ProvisionedTool` that holds a shared advisory lock on the entry until dropped. This prevents pruning while the entry is in use.
 
@@ -385,7 +304,7 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 - **Payload root**: `<entry>/payload/` is the extraction root for all `tool_content_map` entries. File entries are written at their relative key paths; directory entries (keys with a trailing `/` or `\\`) are unpacked from ZIP payloads. `./` (or `.\\`) means the ZIP is unpacked directly into `payload/`.
 
-- **Bundled tool content**: inline dependency payload bytes into one managed tool record only for mediapm **same-step companion** dependencies (e.g. `yt-dlp`'s `ffmpeg`/`deno`). A dependency may carry both roles: inline for the same-step role, keep in its own record for the cross-step role. Inlined same-step bytes land under the reserved `deps/<mediapm_tool_id>/` prefix in the requester's content map and are direct-only/non-transitive (a dep's own `deps/` entries are never re-inlined). For **cross-step** dependencies, keep payload bytes in the dependency tool's own `tool_content_map`; never inline them into the requesting step tool. Never point one tool's runtime lookup at another tool's cache entry directory — each step reads only its own `payload/` tree.
+- **Bundled tool content**: inline dependency payload bytes into one managed tool record only for mediapm same-step companion dependencies (e.g. `yt-dlp`'s `ffmpeg`/`deno`). A dependency may carry both roles: inline for the same-step role, keep in its own record for the cross-step role. Inlined same-step bytes land under the reserved `deps/<mediapm_tool_id>/` prefix in the requester's content map and are direct-only/non-transitive (a dep's own `deps/` entries are never re-inlined). For **cross-step** dependencies, keep payload bytes in the dependency tool's own `tool_content_map`; never inline them into the requesting step tool. Never point one tool's runtime lookup at another tool's cache entry directory — each step reads only its own `payload/` tree.
 
 - **TTL**: cache entries expire after 24 hours of non-use. Last-used time is refreshed on every cache hit. `ProvisionCache::prune_expired` is called best-effort at the start of each `ProvisionCache::materialize` call; prune errors are logged and ignored.
 
@@ -395,76 +314,23 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 ## Versioned Schema Editing Policy
 
-For config schema files under `src/mediapm-conductor/src/config/versions/`:
-
-- This repository may intentionally evolve `v1` directly when requested.
-- Do not add compatibility shims unless explicitly requested.
-- Keep Rust bridge structs synchronized with `.ncl` contracts.
-- Follow the schema strictness policy (S1–S13) in `.agents/instructions/nickel.instructions.md`: closed record contracts by default, no untyped `Dyn`/`TagOrString` values, integer guards on every integral Number, required `version` markers, per-version + unversioned registry exports. Unknown fields, untyped values, and unguarded numbers must be rejected, never silently accepted or dropped.
-- Keep unversioned/latest Nickel contract aliases (`validate_document` and `envelope_contract`) in `mod.ncl`; versioned files (`vN.ncl`) should expose only version-suffixed contracts (`validate_document_vN`, `envelope_contract_vN`).
-- Every persisted Nickel schema must have a parity test (the `schema_sync.rs` pattern) asserting the Nickel contract and the Rust serde shape agree, including strictness properties; the regression requirements R1–R6 in `.agents/instructions/sdd-tdd-workflow.instructions.md` apply.
-- Keep test fixtures aligned with current schema semantics.
-
-If schema shape changes, update together:
-
-- `v1.ncl`
-- `v_latest.rs`
-- bridge mappings in `versions/mod.rs`
-- runtime model in `config/mod.rs` (if runtime semantics changed)
-- affected examples/tests
+See `nickel.instructions.md` (schema strictness S1-S13) and `versioning-and-migration.instructions.md` (cross-transport versioned-struct protocol). Every persisted schema must have a parity test (`schema_sync.rs` pattern) asserting Nickel contract and Rust serde shape agree.
 
 ## Example Policy
 
-Examples live under `src/mediapm-conductor/examples/`.
-
-- `demo.rs` generates inspectable artifacts under `.artifacts/demo/` and clears that dir before each run for deterministic, easy-to-inspect output.
-- `demo.rs` exercises all official builtins (`echo`, `fs`, `import`, `export`, `archive`) at least once.
-- `demo.rs` keeps generated `conductor.ncl` newcomer-friendly: emit explicit default grouped runtime storage as schema fields (not comments) — `conductor_dir = .conductor`, `conductor_state_config = .conductor/state.ncl`, `cas_store_dir = .conductor/store/`.
-- For filesystem flows, prefer compact pipelines with `import` first and `export` last, minimizing intermediate filesystem steps.
-- `demo.rs` persists orchestration state snapshots to `examples/artifacts/demo/` and prints only the file path, never full state JSON.
-- Non-demo examples stay ephemeral unless persistence is essential to the teaching goal.
-- Keep example tool definitions consistent with current schema invariants.
+See `example-execution-policy.instructions.md` for the full three-level run model, `example-temp-isolation.instructions.md` for temp isolation, and `demo-hierarchy-golden.instructions.md` for the online demo hierarchy.
 
 ## Validation Workflow
 
-**For development:** Use targeted cargo aliases from `.cargo/config.toml`:
-
-- `cargo test-pkg mediapm-conductor` — test only conductor crate
-- `cargo clippy-pkg mediapm-conductor` — lint only conductor crate
-- `cargo fmt-check` — check formatting on all files
-
-Conductor-focused development loop after meaningful edits:
-
-1. `cargo fmt --all`
-2. `cargo fmt-check`
-3. `cargo test-pkg mediapm-conductor`
-4. `cargo clippy-pkg mediapm-conductor`
-5. `cargo build-pkg mediapm-conductor --all-targets --all-features`
-6. If examples changed, run representative examples (especially `demo`).
-
-**Before submitting (pre-push):** Run full workspace validation:
-
-- `cargo fmt-check`
-- `cargo clippy-all`
-- `cargo test-all`
-
-See `.cargo/config.toml` for all available validation aliases and shortcuts.
+See `rust-workflow.instructions.md` for the canonical validation workflow and command reference, and `ci-workflow.instructions.md` for hook mechanics and CI parity.
 
 ## Rust Docstring Expectations
 
-For touched Rust code in this crate:
-
-- Add/refresh `///` or `//!` docs for behavior changes.
-- Document invariants, edge cases, and side effects (not just names).
-- When behavior depends on configuration merging or schema rules, state that explicitly.
-- For templating, include supported token forms and failure conditions.
+See `rust-conventions.instructions.md` ("Docstring depth requirement") for the full docstring policy including module-level, item-level, field-level, and test documentation requirements.
 
 ## Change Discipline
 
-- Keep edits scoped and coherent; avoid unrelated refactors.
-- Preserve actor/runtime boundaries (`orchestration/` vs `config/` and `state/`).
-- Prefer explicit errors over silent coercion.
-- When conflicts are possible, fail with actionable messages including field or tool names.
+See `rust-conventions.instructions.md` ("Behavior change expectations") for the atomic test update, demo update, content map, yt-dlp output-variant, regex capture, sidecar synchronization, and state document coverage requirements.
 
 ## Specification source
 
@@ -498,83 +364,11 @@ Overwrites `.env.generated` with the canonical header and tool binary path entri
 
 `ensure_conductor()` in `cli.rs` calls both `ensure_runtime_env_files()` and `ensure_runtime_gitignore()` during initialization.
 
-## A. Cross-Crate Data Flow (Conductor Context)
+## A. Cross-Crate Data Flow and Shared Invariants
 
-The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Conductor perspective:
+Cross-crate data flow, shared invariants, and the full module-layer index are documented in `mediapm-architecture.instructions.md`. Conductor-specific integration boundaries (CAS ↔ Conductor, Conductor ↔ Builtins, MediaPM ↔ Conductor) remain below.
 
-```text
-┌───────────────────────────────────────────────────────────────┐
-│                        Conductor                              │
-│  ┌─────────────────┐    ┌──────────────────────────────┐      │
-│  │  State Model     │    │  Orchestration              │      │
-│  │  (3-document)   │───▶│  - Coordinator               │      │
-│  │  user/machine/   │    │  - Step Workers              │      │
-│  │  state           │    │  - Scheduler                 │      │
-│  └─────────────────┘    └──────┬───────────────────────┘      │
-│                                │                              │
-│  ┌─────────────────────────────▼────────────────────────┐     │
-│  │  Execution Layer                                      │     │
-│  │  ┌──────────┐  ┌──────────┐  ┌───────────┐           │     │
-│  │  │ Process  │  │ Builtin  │  │ Provision │           │     │
-│  │  │ Runner   │  │ Dispatch │  │ Cache     │           │     │
-│  │  │          │  │          │  │           │           │     │
-│  │  └────┬─────┘  └────┬─────┘  └─────┬─────┘           │     │
-│  └───────┼──────────────┼──────────────┼─────────────────┘     │
-│          │              │              │                        │
-│          ▼              ▼              ▼                        │
-│  ┌────────────────────────────────────────────────────────┐     │
-│  │  CAS Backend (mediapm-cas)                             │     │
-│  │  - put/get/delete                                      │     │
-│  │  - delta chains                                        │     │
-│  │  - index management                                    │     │
-│  │  - GC sweep                                            │     │
-│  └────────────────────────────────────────────────────────┘     │
-│                                │                                │
-│                                ▼                                │
-│  ┌────────────────────────────────────────────────────────┐     │
-│  │  conductor-builtins (echo/fs/archive/import/export)    │     │
-│  │  - CLI binaries + library API                          │     │
-│  │  - Pure (echo, archive) vs Impure (fs, import, export) │     │
-│  │  - Fail-fast validation                                │     │
-│  └────────────────────────────────────────────────────────┘     │
-└───────────────────────────────────────────────────────────────┘
-         │                            │
-         ▼                            ▼
-┌──────────────────┐    ┌──────────────────────────────┐
-│  MediaPM         │    │  Filesystem (sandbox, store)  │
-│  - Workflow      │    │  - tools_dir/                 │
-│    synthesis     │    │  - store/                     │
-│  - Tool          │    │  - state.ncl                  │
-│    provisioning  │    │  - .env.generated             │
-│  - Hierarchy     │    │                               │
-│    materializ'n  │    └──────────────────────────────┘
-└──────────────────┘
-```
-
-**Key flows (Conductor-centric)**:
-
-1. **Config → State**: User/machine NCL configs are merged and resolved into `OrchestrationState` (CAS blob).
-2. **State → Execution**: Instances from state are probed for cache hits; uncached steps are dispatched to workers.
-3. **Worker → CAS**: Step outputs are captured and persisted to CAS; new instance keys are stored in state.
-4. **Worker → Builtins**: Builtin steps dispatch to `conductor-builtins/*` via library API or CLI subprocess.
-5. **Worker → Process**: Executable steps run subprocesses with sandboxed cwd and content-map materialization.
-6. **Tool Cache → Worker**: `ToolContentCache` materializes tool payloads from CAS into `tools_dir/<id>/payload/`.
-7. **Worker → Tool Cache**: `link_to_sandbox` hard-links payload files into the step sandbox.
-8. **Progress → Caller**: Coordinator emits `WorkflowStepEvent` on an optional channel for progress display.
-9. **GC → CAS**: Background loop and CLI `run_gc` run full CAS maintenance (index optimize, constraint prune, GC sweep, index compact) using root set computation from `run_cas_gc_sweep()`.
-
-## B. Shared Invariants (Conductor-Relevant Rows)
-
-| Invariant | Applies To | Description |
-| --- | --- | --- |
-| **3-document config** | Conductor, MediaPM | User intent (`conductor.ncl`) + machine setup (`conductor.generated.ncl`) + volatile state (`state.ncl`). Machine documents are never user-edited. |
-| **Deterministic workflow keys** | Conductor | Instance key = hash(tool_id + sorted inputs + impure_timestamp). Equivalent calls produce same key regardless of content-map details or persistence flags. |
-| **Explicit version markers** | Conductor, Builtins, MediaPM | Every persisted document carries top-level `version: u32`. Sequential migrations only. |
-| **Fail-fast validation** | Conductor, Builtins | Validation before execution; undeclared config keys, missing required tool inputs, and unresolvable template expressions are errors. |
-| **CAS integrity trusted** | Conductor, Builtins | CAS `get()` returns bytes that match the requested hash; no additional integrity checks at call site. |
-| **Impure timestamp** | Conductor | Instance key includes `impure_timestamp: Option<Timestamp>` (mediapm-utils nanos) for non-deterministic steps. `None` = pure (deterministic). |
-
-## C. Integration Boundaries (Conductor-Centric)
+## C. Integration Boundaries (Conductor-Centric)## C. Integration Boundaries (Conductor-Centric)
 
 ### CAS ↔ Conductor
 
@@ -613,7 +407,7 @@ The `decode_state()` function at `src/mediapm-conductor/src/state/mod.rs` handle
 
 ### Runtime-Only State Field
 
-- `OrchestrationState` gains `instance_blob_hashes: BTreeSet<Hash>` — a runtime-only field (skip-serialize, skip-deserialize) that caches the CAS hashes of per-instance encoded `OrchestrationStateEnvelopeV2` blobs. Populated during V2 decode from `OrchestrationStateEnvelopeV2.instances[*].hash`. The root set computation in CAS GC sweep includes these hashes so per-instance blobs are not orphaned.
+- `OrchestrationState` gains `instance_blob_hashes: BTreeSet<Hash>`: a runtime-only field (skip-serialize, skip-deserialize) that caches the CAS hashes of per-instance encoded `OrchestrationStateEnvelopeV2` blobs. Populated during V2 decode from `OrchestrationStateEnvelopeV2.instances[*].hash`. The root set computation in CAS GC sweep includes these hashes so per-instance blobs are not orphaned.
 
 ### Migration Bridge (`versions/v2.rs`)
 
@@ -628,7 +422,7 @@ After `decode_state()` runs, every instance key has a corresponding `aux` entry 
 
 ### Cutoff Computation
 
-Instance TTL uses `Option<u64>` with `#[serde(deserialize_with = "deserialize_option_integral_u64")]` to accept both `N::PosInt` and `N::Float` (Nickel exports all numbers as f64). The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS` (604800 — 7 days) via `set_instance_ttl` before passing to the state-store actor. Cutoff = `SystemTime::now() - Duration::from_secs(ttl)`.
+Instance TTL uses `Option<u64>` with `#[serde(deserialize_with = "deserialize_option_integral_u64")]` to accept both `N::PosInt` and `N::Float` (Nickel exports all numbers as f64). The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS` (604800, 7 days) via `set_instance_ttl` before passing to the state-store actor. Cutoff = `SystemTime::now() - Duration::from_secs(ttl)`.
 
 ## E. Instance Key Lifecycle and Failure Recovery
 
@@ -670,9 +464,9 @@ The design ensures prior successful instances remain reachable after a step fail
 
 Instance GC uses a two-phase reachability-first approach:
 
-1. **Phase 1 — Reachability scan**: From the current `OrchestrationState`, collect all instance keys referenced by workflow steps whose inputs are still satisfiable (all referenced external data and step outputs exist). These are "reachable" instances.
+1. **Phase 1: reachability scan**: From the current `OrchestrationState`, collect all instance keys referenced by workflow steps whose inputs are still satisfiable (all referenced external data and step outputs exist). These are "reachable" instances.
 
-2. **Phase 2 — TTL sweep**: For unreachable instances, compute `now - last_unreachable` and compare against `instance_ttl_seconds`. Instances whose elapsed time exceeds TTL are removed from the state blob before persistence.
+2. **Phase 2: TTL sweep**: For unreachable instances, compute `now - last_unreachable` and compare against `instance_ttl_seconds`. Instances whose elapsed time exceeds TTL are removed from the state blob before persistence.
 
 The `last_unreachable` timestamp is set to `ImpureTimestamp::now()` on first detection of unreachability (not on every scan). This prevents rapid TTL expiry from brief unreachability windows.
 
@@ -711,11 +505,11 @@ A shared `compute_gc_roots()` in `gc.rs` computes the root set from:
 
 `external_data` is also stored as a runtime-only (non-serialized) field on `OrchestrationState` itself. The decoupled `run_cas_gc_sweep()` reads `state.external_data` directly instead of receiving a separate parameter — keeping root computation unified with the state it governs.
 
-`content_map` entries are not iterated directly — the decode-time invariant (`vet_latest_envelope`) enforces `content_map ⊆ external_data`, so all content-map hashes are covered by external_data roots.
+`content_map` entries are not iterated directly: the decode-time invariant (`vet_latest_envelope`) enforces `content_map ⊆ external_data`, so all content-map hashes are covered by external_data roots.
 
 ### Sweep Contract
 
-Deleting a non-root object that is a delta base of a root object is safe — the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
+Deleting a non-root object that is a delta base of a root object is safe: the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
 
 ## H. Background GC Loop
 
@@ -723,7 +517,7 @@ The conductor node actor spawns a background task in `pre_start` that:
 
 1. **Waits** for the `gc_initialized` flag to be set (via `Acquire` load with 1-second polling), which happens after the first successful `LoadResolvedState`, `ReplaceResolvedState`, or `RunGc` call populates the state's `external_data`. This prevents premature GC from sweeping all unprotected objects before state is loaded.
 
-2. **Shared state**: The actor state holds `shared_state_store: Arc<OnceLock<StateStoreClient>>`. The OnceLock is populated by `SubmitWorkflow` (after `ensure_runtime_support()`), `LoadResolvedState`, and `ReplaceResolvedState` (via `coordinator.state_store()` after success). Previously the OnceLock was only populated by `SubmitWorkflow`, leaving a window where phase-1 succeeded but the background loop hung on a missing state store. The `external_data` lives directly on `OrchestrationState` — no separate synchronization is needed.
+2. **Shared state**: The actor state holds `shared_state_store: Arc<OnceLock<StateStoreClient>>`. The OnceLock is populated by `SubmitWorkflow` (after `ensure_runtime_support()`), `LoadResolvedState`, and `ReplaceResolvedState` (via `coordinator.state_store()` after success). Previously the OnceLock was only populated by `SubmitWorkflow`, leaving a window where phase-1 succeeded but the background loop hung on a missing state store. The `external_data` lives directly on `OrchestrationState` (no separate synchronization is needed).
 
 3. **Enters a periodic loop**: loads the current state from the coordinator via `state_store.current_state()` and calls `run_cas_gc_sweep()` with it (bypassing the actor mailbox entirely), then sleeps `GC_INTERVAL_SECONDS` (3600) and repeats. The `RunGc` handler is preserved for CLI use.
 
@@ -764,13 +558,13 @@ The `ToolContentCache<C>` struct at `src/mediapm-conductor/src/tool_cache/mod.rs
 ### Public API
 
 - `PAYLOAD_DIR_NAME` — literal `"payload"`, the subdirectory name inside each tool cache entry where extracted content lives.
-- `sanitize_tool_id(name) -> String` — replaces reserved filesystem characters with `_`. Used by all callers to derive cache directory names.
+- `sanitize_tool_id(name) -> String`: replaces reserved filesystem characters with `_`. Used by all callers to derive cache directory names.
 - `ToolContentCache<C: CasApi + Send + Sync>`:
-  - `new(tools_dir, cas)` — construct with a shared CAS backend.
-  - `materialize(tool_id, content_map, ...) -> ToolCacheEntry` — core API: returns a RAII-guarded path to the cached tool payload.
-  - `link_to_sandbox(entry, sandbox_dir)` — associated fn that hard-links the cache entry's payload into a per-step sandbox.
-  - `prune()` — remove expired TTL entries.
-  - `retain_only(active_ids)` — remove cache directories not in the provided set. Used by mediapm lifecycle for sync-time cleanup.
+  - `new(tools_dir, cas)`: construct with a shared CAS backend.
+  - `materialize(tool_id, content_map, ...) -> ToolCacheEntry`: core API: returns a RAII-guarded path to the cached tool payload.
+  - `link_to_sandbox(entry, sandbox_dir)`: associated fn that hard-links the cache entry's payload into a per-step sandbox.
+  - `prune()`: remove expired TTL entries.
+  - `retain_only(active_ids)`: remove cache directories not in the provided set. Used by mediapm lifecycle for sync-time cleanup.
 
 ### Lock Protocol
 
@@ -784,7 +578,7 @@ Per-entry `flock` advisory locking via `fs4::FileExt`:
 
 `ToolCacheEntry` (the return type of `materialize()`) holds a shared-lock fd in an RAII guard. For direct-execution paths, the entry is held across the entire process spawn so the cache entry cannot be evicted mid-use. For one-shot callers (`resolve_managed_tool_executable`, `run_managed_tool`), the entry is dropped immediately after use.
 
-**Safety**: Locks are per-open-file-description (standard `flock` semantics). Automatically released when the fd is closed — no manual unlock needed, even if the holding task panics.
+**Safety**: Locks are per-open-file-description (standard `flock` semantics). Automatically released when the fd is closed (no manual unlock needed, even if the holding task panics.
 
 **Platform guard**: Locking is gated behind `cfg(unix)`. On non-Unix platforms, `ToolCacheEntry` holds no fd and locking is a no-op.
 
@@ -823,12 +617,12 @@ During `reconcile_desired_tools` in `sync/mod.rs`, when an existing active tool 
 
 The `FileSystemCas` backend uses a `FileObjectActor` (ractor actor) to serialize all file mutations per store. Large objects (≥64 KB) are served via mmap with reference-counted `ActiveMmapLease` entries tracked in an `ActiveMmapRegistry`.
 
-**Deadlock scenario** (observed in `optimize_target_if_beneficial` — resolved by two-phase staging):
+**Deadlock scenario** (observed in `optimize_target_if_beneficial`, resolved by two-phase staging):
 
 The optimizer and delete paths no longer send actor RPCs. Both use two-phase staging:
 
-1. **Phase 1** (async, outside lock) — write new object variant to a staging path under `tmp/`.
-2. **Phase 2** (under index write lock, sync-only) — `std::fs::rename(staging → final)`, remove the opposite variant, and update index metadata. A concurrent reader holding the read lock is blocked during Phase 2 and sees consistent state.
+1. **Phase 1** (async, outside lock): write new object variant to a staging path under `tmp/`.
+2. **Phase 2** (under index write lock, sync-only): `std::fs::rename(staging → final)`, remove the opposite variant, and update index metadata. A concurrent reader holding the read lock is blocked during Phase 2 and sees consistent state.
 
 This eliminates both the mmap lease deadlock and a TOCTOU race where a reader could observe new file content with stale index metadata.
 
@@ -887,7 +681,7 @@ All progress messages must fit within the terminal width; detected via `terminal
 
 **Issue**: A step references `${external_data.<hash>}` where `<hash>` does not exist in CAS.
 
-**Current behavior**: Input resolution (Pass 1) fails at step execution time — the hash reference cannot be resolved. This is a missing-data (configuration) error, not an integrity failure, so pure workflows do NOT auto-recover (they only recover from integrity failures).
+**Current behavior**: input resolution (Pass 1) fails at step execution time — the hash reference cannot be resolved. This is a missing-data (configuration) error, not an integrity failure, so pure workflows do NOT auto-recover (they only recover from integrity failures).
 
 ### N.4 Document Merging Conflict Resolution (§2.4)
 
@@ -923,7 +717,7 @@ Six scenarios where instance GC interacts with other subsystems:
 
 3. **GC with zero instances (empty state)**: `gc_instances()` on an empty instances map is a no-op.
 
-4. **Instance TTL = 0 (immediate expiry)**: Instances are GC'd on the next commit after they become unreachable. This is valid for testing but not recommended for production — it prevents any cross-run caching.
+4. **Instance TTL = 0 (immediate expiry)**: Instances are GC'd on the next commit after they become unreachable. This is valid for testing but not recommended for production (it prevents any cross-run caching.
 
 5. **Clock skew between GC evaluations**: If the system clock jumps backward, instances that would have been expired may survive longer. If the clock jumps forward, instances may be prematurely expired. The `last_unreachable` timestamp uses `SystemTime::now()`, which is susceptible to clock jumps.
 
@@ -986,7 +780,7 @@ Three race scenarios in the tool content cache:
 - Completed steps are tracked via a local counter (`completed_steps += 1`), not recomputed from dependency state lengths.
 - The consumer (mediapm) creates the channel, renders one overall bar plus text-only worker lines.
 - Worker lines use `mp.add_bar(0).with_format("{msg}")` (total=0; pulsebar renders `fraction()` as 1.0 at total=0, no crash).
-- Per-worker `Vec<usize>` is indexed by `worker_index` — must stay in bounds (guaranteed by `worker_count` set on first event).
+- Per-worker `Vec<usize>` is indexed by `worker_index` (must stay in bounds (guaranteed by `worker_count` set on first event).
 - 75 ms settle delay lets the render thread flush before `MultiProgress` is dropped.
 - No settle delay in conductor (events are fire-and-forget).
 
@@ -1039,11 +833,11 @@ Three race scenarios in the tool content cache:
 Input resolution is split into two passes so the state-stored `ToolCallInstance` carries only lightweight hash references:
 
 - **`ResolvedInputKey { hash: Hash }`** — a hash-only type used in `ToolCallInstance.inputs`. Stores only the content hash; occupies ~32 bytes per entry regardless of content size.
-- **`ResolvedInput`** — full content type for the execution hot path. Includes `plain_content: Bytes` alongside the hash. Used only during active step execution, then dropped.
+- **`ResolvedInput`** — full content type for the execution hot path (includes `plain_content: Bytes` alongside the hash). Used only during active step execution, then dropped.
 
 **Two-pass resolution in `StepWorker`**:
 
-1. **Pass 1 (hash resolution)**: Resolve all bindings to their CAS hashes. Produce `BTreeMap<String, ResolvedInputKey>`. No CAS `get()` called — only `HashConstraint` evaluation and `content_map` key lookups. This map is stored in `ToolCallInstance.inputs`.
+1. **Pass 1 (hash resolution)**: Resolve all bindings to their CAS hashes. Produce `BTreeMap<String, ResolvedInputKey>`. No CAS `get()` called: only `HashConstraint` evaluation and `content_map` key lookups. This map is stored in `ToolCallInstance.inputs`.
 2. **Pass 2 (content loading)**: Scan step templates for `${input_name}` or `${input_name.path}` references. For each referenced input, call `cas.get(hash)` to load `Bytes` content. Produce `BTreeMap<String, ResolvedInput>` only for the referenced subset. Unreferenced inputs remain hash-only.
 
 **ZIP member selectors** (`hash#member_path`): Pass 1 resolves the parent archive hash only. If a template references a ZIP member selector, Pass 2 loads the full archive, extracts the member, hashes the extracted content, and returns it as `ResolvedInput`.
@@ -1052,14 +846,14 @@ Input resolution is split into two passes so the state-stored `ToolCallInstance`
 
 - Every binding MUST resolve to a hash in Pass 1. A binding that fails hash resolution is a hard error.
 - Pass 2 content loading is lazy: only inputs whose name appears in a template expression are loaded.
-- `ResolvedInputKey` is comparable and hashable — instance key derivation uses input hashes directly without loading content.
+- `ResolvedInputKey` is comparable and hashable: instance key derivation uses input hashes directly without loading content.
 - `ToolCallInstance.inputs` stores `ResolvedInputKey` exclusively.
 
 ### N.21 Two-Phase Input Resolution Edge Cases
 
 #### N.21.1 Hash-Only Input (Content Never Requested)
 
-If no template `${input_name}` reference exists for a binding, Pass 2 never loads its content. Memory impact: zero for that input — even GB-scale files cost nothing in memory. Content is still available via `content_map` → filesystem materialization.
+If no template `${input_name}` reference exists for a binding, Pass 2 never loads its content. Memory impact: zero for that input (even GB-scale files cost nothing in memory. Content is still available via `content_map` → filesystem materialization.
 
 #### N.21.2 Template References Undeclared Binding
 
@@ -1147,7 +941,7 @@ Separation of concerns: user intent (`mediapm.ncl`), machine setup (`state.ncl`)
 
 #### Tool ID Format (§7.4)
 
-Tool IDs are arbitrary strings; deduplication is exact string match (case-sensitive). No semver requirement on the ID format itself — version is tracked separately in `tools.<id>.runtime.version`.
+Tool IDs are arbitrary strings; deduplication is exact string match (case-sensitive). No semver requirement on the ID format itself; version is tracked separately in `tools.<id>.runtime.version`.
 
 #### Config Document Versioning (§7.7)
 
