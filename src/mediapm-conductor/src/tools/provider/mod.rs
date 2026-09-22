@@ -36,10 +36,21 @@ const ARCHIVE_ZIP: &str = "zip";
 const ARCHIVE_TAR_GZ: &str = "tar.gz";
 const ARCHIVE_TAR_XZ: &str = "tar.xz";
 
-/// Maximum concurrent HTTP downloads within a single tool's fetch phase.
-/// Bounded to avoid overwhelming remote servers while still overlapping
-/// latency (DNS, TLS handshake) across independent sources.
-const MAX_CONCURRENT_SOURCE_FETCHES: usize = 3;
+/// Environment override for per-tool source fetch concurrency.
+const ENV_SOURCE_FETCH_CONCURRENCY: &str = "MEDIAPM_SOURCE_FETCH_CONCURRENCY";
+
+/// Returns the maximum concurrent HTTP downloads within a single tool's fetch
+/// phase.
+///
+/// Reads `MEDIAPM_SOURCE_FETCH_CONCURRENCY` from env. Falls back to the
+/// host's available parallelism, capped at 1 minimum.
+fn default_source_fetch_concurrency() -> usize {
+    std::env::var(ENV_SOURCE_FETCH_CONCURRENCY)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(3, usize::from).max(1))
+}
 
 /// Maximum number of sources to probe concurrently for expected sizes.
 /// Covers all current tools (≤3 sources) with headroom.
@@ -455,9 +466,10 @@ pub async fn fetch_tool_sources(
         })
         .collect();
 
-    // Run all fetch futures concurrently, bounded by MAX_CONCURRENT_SOURCE_FETCHES.
+    // Run all fetch futures concurrently, bounded by default_source_fetch_concurrency().
+    let fetch_concurrency = default_source_fetch_concurrency().min(fetch_futures.len());
     let fetch_results: Vec<(usize, FetchResult, bool)> =
-        stream::iter(fetch_futures).buffer_unordered(MAX_CONCURRENT_SOURCE_FETCHES).collect().await;
+        stream::iter(fetch_futures).buffer_unordered(fetch_concurrency).collect().await;
 
     // Sort by source index to preserve original order (determinism).
     let mut fetch_results = fetch_results;
@@ -1026,7 +1038,7 @@ fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
 ///
 /// `items.0` is the count of sources **completed so far**, read from a shared
 /// monotone counter — never the reporting source's own index. Under
-/// `buffer_unordered(MAX_CONCURRENT_SOURCE_FETCHES)` several sources download
+/// `buffer_unordered(default_source_fetch_concurrency().min(n))` several sources download
 /// concurrently and finish out of order, so a per-future index would make the
 /// rendered `{completed}/{total}` prefix oscillate (e.g. `3/3` reported by the
 /// fastest source, then `1/3` by a slower one still streaming).
@@ -3586,5 +3598,39 @@ mod tests {
         let json = serde_json::json!({"vcs_hash": "abc", "unknown": "x"});
         let result: Result<ConfigVersionSpec, _> = serde_json::from_value(json);
         assert!(result.is_err(), "unknown fields should be rejected");
+    }
+
+    #[test]
+    fn source_fetch_concurrency_default_returns_positive() {
+        // Clear any env override so we get the default path.
+        unsafe {
+            std::env::remove_var(ENV_SOURCE_FETCH_CONCURRENCY);
+        }
+        let concurrency = default_source_fetch_concurrency();
+        assert!(concurrency >= 1, "concurrency must be >= 1, got {concurrency}");
+    }
+
+    #[test]
+    fn source_fetch_concurrency_env_override() {
+        unsafe {
+            std::env::set_var(ENV_SOURCE_FETCH_CONCURRENCY, "1");
+        }
+        let concurrency = default_source_fetch_concurrency();
+        assert_eq!(concurrency, 1);
+        unsafe {
+            std::env::remove_var(ENV_SOURCE_FETCH_CONCURRENCY);
+        }
+    }
+
+    #[test]
+    fn source_fetch_concurrency_env_invalid_falls_back() {
+        unsafe {
+            std::env::set_var(ENV_SOURCE_FETCH_CONCURRENCY, "xyz");
+        }
+        let concurrency = default_source_fetch_concurrency();
+        assert!(concurrency >= 1, "invalid env must fall back to default >= 1, got {concurrency}");
+        unsafe {
+            std::env::remove_var(ENV_SOURCE_FETCH_CONCURRENCY);
+        }
     }
 }
