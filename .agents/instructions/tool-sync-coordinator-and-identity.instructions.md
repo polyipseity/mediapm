@@ -33,7 +33,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
 
 The provisioning loop runs in two levels with bounded parallelism:
 
-- **Level 0** (`EntryKind::Dep`): same-step dependency entries run in parallel via `buffer_unordered(MAX_CONCURRENT_TOOL_PROVISIONING=4)`. Results are sorted by original index to preserve deterministic application order.
+- **Level 0** (`EntryKind::Dep`): same-step dependency entries run in parallel via `buffer_unordered(default_tool_provision_concurrency().min(n))`. The concurrency is auto-scaled from `available_parallelism()` with a `MEDIAPM_TOOL_PROVISION_CONCURRENCY` env-var override. Results are sorted by original index to preserve deterministic application order.
 - **Level 1** (`EntryKind::Explicit`): user-configured tool entries run after level-0 apply completes, so `provisioned_own_maps` is populated before inlining.
 
 Within each level, `provision_entry` fetches and processes a single tool. `apply_entry_outcome` runs sequentially after each level completes, merging results into the generated document and populating `provisioned_own_maps` for dependency inlining.
