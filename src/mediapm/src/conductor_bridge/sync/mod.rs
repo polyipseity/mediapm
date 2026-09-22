@@ -3459,4 +3459,126 @@ mod tests {
             }
         }
     }
+
+    /// Parallel source fetch must be deterministic: running
+    /// `reconcile_desired_tools` twice with the same seeded cache must
+    /// produce identical generated-document bytes and bar-operation multisets.
+    #[tokio::test]
+    async fn sync_parallel_fetch_is_deterministic() {
+        let tmp1 = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp2 = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache1 = mediapm_utils::temp::cache_dir().unwrap();
+        let cache2 = mediapm_utils::temp::cache_dir().unwrap();
+
+        let paths1 = MediaPmPaths::from_root(tmp1.path());
+        let paths2 = MediaPmPaths::from_root(tmp2.path());
+
+        // Seed both caches identically.
+        seed_two_tool_cache(cache1.path()).await;
+        seed_two_tool_cache(cache2.path()).await;
+
+        let mut desired_tools = BTreeMap::new();
+        desired_tools.insert(
+            "yt-dlp".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: ConfigVersionSpec::Latest,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        desired_tools.insert(
+            "media-tagger".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: ConfigVersionSpec::Latest,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+
+        let state = MediaPmState::default();
+
+        // --- Run 1 ---
+        let cas1 = super::open_workspace_cas_store(&paths1).await.expect("open cas 1");
+        let tracker1 = RecordingProgressTracker::new();
+        reconcile_desired_tools(
+            cas1,
+            &paths1,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache1.path()),
+            Some(&tracker1),
+        )
+        .await
+        .expect("run 1 failed");
+
+        // --- Run 2 ---
+        let cas2 = super::open_workspace_cas_store(&paths2).await.expect("open cas 2");
+        let tracker2 = RecordingProgressTracker::new();
+        reconcile_desired_tools(
+            cas2,
+            &paths2,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache2.path()),
+            Some(&tracker2),
+        )
+        .await
+        .expect("run 2 failed");
+
+        // --- Assert identical generated-doc bytes ---
+        let doc1 = std::fs::read(&paths1.conductor_generated_ncl).expect("read generated doc 1");
+        let doc2 = std::fs::read(&paths2.conductor_generated_ncl).expect("read generated doc 2");
+        assert_eq!(doc1, doc2, "generated-doc bytes differ between runs");
+
+        // --- Assert identical bar-operation multisets ---
+        let mut bars1: Vec<(String, String)> = tracker1
+            .ops()
+            .iter()
+            .filter_map(|op| {
+                if let ProgressOp::AddBar { label, .. } = op {
+                    let phase = label
+                        .rsplit_once('[')
+                        .and_then(|(_, rest)| rest.strip_suffix(']'))
+                        .unwrap_or("overall")
+                        .to_string();
+                    let tool_id = if phase == "overall" {
+                        "tools".to_string()
+                    } else {
+                        label.split_once(' ').map(|(id, _)| id.to_string()).unwrap_or_default()
+                    };
+                    Some((tool_id, phase))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut bars2: Vec<(String, String)> = tracker2
+            .ops()
+            .iter()
+            .filter_map(|op| {
+                if let ProgressOp::AddBar { label, .. } = op {
+                    let phase = label
+                        .rsplit_once('[')
+                        .and_then(|(_, rest)| rest.strip_suffix(']'))
+                        .unwrap_or("overall")
+                        .to_string();
+                    let tool_id = if phase == "overall" {
+                        "tools".to_string()
+                    } else {
+                        label.split_once(' ').map(|(id, _)| id.to_string()).unwrap_or_default()
+                    };
+                    Some((tool_id, phase))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        bars1.sort();
+        bars2.sort();
+        assert_eq!(bars1, bars2, "bar-operation multisets differ between runs");
+    }
 }
