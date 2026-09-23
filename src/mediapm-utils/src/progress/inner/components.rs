@@ -557,7 +557,7 @@ pub(crate) const MAX_PREFIX_WIDTH: usize = 40;
 /// suffix shrinks before the bar fill is dropped.
 pub(crate) const MIN_SUFFIX_WIDTH: usize = 0;
 /// Maximum reserved suffix width (hard ceiling).
-pub(crate) const MAX_SUFFIX_WIDTH: usize = 50;
+pub(crate) const MAX_SUFFIX_WIDTH: usize = 65;
 
 /// Maximum visible width for the prefix field.
 ///

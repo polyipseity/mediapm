@@ -20,7 +20,7 @@ This file is the authoritative reference for what progress bars actually look li
 MIN_PREFIX_WIDTH = 0       (decreasable floor, effective floor ~4 from ANSI reset in sync_snapshot_to_bar)
 MAX_PREFIX_WIDTH = 40      (hard ceiling, prefixes truncate beyond this)
 MIN_SUFFIX_WIDTH = 0       (decreasable floor, no ANSI overhead on suffix side)
-MAX_SUFFIX_WIDTH = 50
+MAX_SUFFIX_WIDTH = 65
 ```
 
 `max_prefix_width(cols)` and `max_suffix_width(cols)` are `const fn` that return the constant ceilings; the `cols` parameter is intentionally unused. Clamping in `recompute_layout`: `prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, max_prefix_width(cols))`, `suffix_w = max_suffix.clamp(MIN_SUFFIX_WIDTH, max_suffix_width(cols))`.
