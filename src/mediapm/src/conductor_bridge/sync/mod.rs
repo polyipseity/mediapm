@@ -1266,7 +1266,7 @@ pub(crate) async fn reconcile_desired_tools(
                 (idx, outcome)
             }
         })
-        .buffer_unordered(default_tool_provision_concurrency().min(level0.len()))
+        .buffer_unordered(default_tool_provision_concurrency().min(level0.len()).max(1))
         .collect()
         .await;
     let mut sorted0 = level0_outcomes;
@@ -1312,7 +1312,7 @@ pub(crate) async fn reconcile_desired_tools(
                 (idx, outcome)
             }
         })
-        .buffer_unordered(default_tool_provision_concurrency().min(level1.len()))
+        .buffer_unordered(default_tool_provision_concurrency().min(level1.len()).max(1))
         .collect()
         .await;
     let mut sorted1 = level1_outcomes;

@@ -467,7 +467,7 @@ pub async fn fetch_tool_sources(
         .collect();
 
     // Run all fetch futures concurrently, bounded by default_source_fetch_concurrency().
-    let fetch_concurrency = default_source_fetch_concurrency().min(fetch_futures.len());
+    let fetch_concurrency = default_source_fetch_concurrency().min(fetch_futures.len()).max(1);
     let fetch_results: Vec<(usize, FetchResult, bool)> =
         stream::iter(fetch_futures).buffer_unordered(fetch_concurrency).collect().await;
 
@@ -3081,6 +3081,71 @@ mod tests {
             last_items = *items;
         }
         assert_eq!(last_items, total_sources, "final items count must reach total");
+    }
+
+    // ── buffer_unordered(0) regression test ──────────────────────────
+    //
+    // Verifies that fetch_tool_sources completes when all sources are
+    // GenerateLauncher (no Fetch sources). Without the `.max(1)` capacity
+    // floor, `buffer_unordered(0)` on an empty stream hangs forever.
+
+    /// Regression test for `buffer_unordered(0)` hanging on empty streams.
+    /// When all sources are `GenerateLauncher`, `fetch_futures` is empty and
+    /// `fetch_concurrency` was 0 — `buffer_unordered(0)` never polls the
+    /// inner stream, so the `.collect().await` never completes.
+    #[tokio::test]
+    async fn fetch_tool_sources_completes_with_generate_launcher_only() {
+        use crate::cache::{Cache, CacheDomainConfig};
+        use crate::cache_user_level::UserLevelCache;
+
+        let cache_dir = mediapm_utils::temp::cache_dir().expect("temp cache dir");
+        let cache = Cache::open(
+            cache_dir.path(),
+            &[CacheDomainConfig {
+                domain: "tools".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 86400,
+            }],
+        )
+        .await
+        .expect("cache open");
+        let user_cache = UserLevelCache::from_cache(cache);
+
+        let fetch = ResolvedToolFetch {
+            tool_id: "media-tagger".to_string(),
+            sources: vec![
+                ResolvedSource {
+                    os: "linux".to_string(),
+                    producer: SourceProducer::mediapm_builtin("media-tagger"),
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+                ResolvedSource {
+                    os: "macos".to_string(),
+                    producer: SourceProducer::mediapm_builtin("media-tagger"),
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+                ResolvedSource {
+                    os: "windows".to_string(),
+                    producer: SourceProducer::mediapm_builtin("media-tagger"),
+                    expected_size: None,
+                    size_hint_bytes: None,
+                },
+            ],
+        };
+
+        // Must complete within a reasonable time — the old code hung here.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fetch_tool_sources(&fetch, &user_cache, "tools", None),
+        )
+        .await
+        .expect("fetch_tool_sources must not hang (buffer_unordered(0) regression)");
+
+        let downloaded = result.expect("fetch should succeed");
+        assert_eq!(downloaded.entries.len(), 3, "all 3 launcher sources processed");
+        assert_eq!(downloaded.cached_count, 0, "no cache hits for launchers");
     }
 
     // ── Counting mechanism regression tests ─────────────────────────
