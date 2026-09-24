@@ -37,8 +37,7 @@ mod tests {
     ///
     /// The capture keeps the terminal's one-shot pre-roll (one blank line per
     /// terminal row) off fd 2 and out of the draw target these tests read.
-    /// An overall bar belongs to the *screen*: calling `with_overall` on this
-    /// terminal builder would return a handle no renderer reads, because only
+    /// An overall bar belongs to the *screen*: only
     /// `terminal.screen().with_overall()` registers the bottom slot.
     fn mk_terminal(mp: MultiProgress) -> ProgressTerminalBuilder {
         ProgressTerminal::builder()

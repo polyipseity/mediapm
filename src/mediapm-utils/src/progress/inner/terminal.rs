@@ -113,134 +113,124 @@ struct ScreenState {
 
 // ---- ProgressTerminalBuilder --------------------------------------------
 
-/// Builder for [`ProgressTerminal`] with compile-time overall-bar enforcement.
+/// Builder for [`ProgressTerminal`].
 ///
 /// Created by [`ProgressTerminal::builder`]. The builder configures the
 /// terminal's draw target, dimension source, time source, pre-roll, debug
-/// sink, and ticker settings.
-pub struct ProgressTerminalBuilder<S = NoOverall> {
+/// sink, and ticker settings. An overall bar is not a terminal concern: it
+/// belongs to a screen, added with
+/// [`ProgressTerminal::screen`] + `with_overall()`.
+pub struct ProgressTerminalBuilder {
     mp_and_gate: Option<(MultiProgress, WriteGate)>,
     dim_source: Arc<dyn DimensionSource>,
-    overall: Option<(String, u64)>,
     capacity: Option<usize>,
     dynamic_height: bool,
     time_source: Arc<dyn TimeSource>,
     pre_roll_term: Option<Box<dyn TermLike>>,
     debug_sink: Option<ProgressDebugSink>,
     ticker_enabled: bool,
-    _state: PhantomData<S>,
 }
 
-impl Default for ProgressTerminalBuilder<NoOverall> {
+impl Default for ProgressTerminalBuilder {
     fn default() -> Self {
         Self {
             mp_and_gate: None,
             dim_source: Arc::new(RealTerminalSource),
-            overall: None,
             capacity: None,
             dynamic_height: false,
             time_source: Arc::new(RealTimeSource),
             pre_roll_term: Some(Box::new(console::Term::stderr())),
             debug_sink: None,
             ticker_enabled: true,
-            _state: PhantomData,
         }
     }
 }
 
-/// Configuration methods shared by both `NoOverall` and `HasOverall` states.
-macro_rules! impl_terminal_builder_config {
-    ($ty:ty) => {
-        impl ProgressTerminalBuilder<$ty> {
-            /// Use an injectable [`TermLike`] instead of creating a
-            /// [`BufferedTerm`](super::gate::BufferedTerm) over
-            /// [`console::Term::stderr`]. Always wraps the term in
-            /// [`BufferedTerm`](super::gate::BufferedTerm) so the
-            /// write-gate protocol is exercised in tests.
-            #[must_use]
-            pub fn with_term_like(mut self, term: Box<dyn TermLike>) -> Self {
-                let (buffered, gate) = super::gate::BufferedTerm::new(term);
-                let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(
-                    buffered,
-                )));
-                self.mp_and_gate = Some((mp, gate));
-                self
-            }
+/// Configuration methods for [`ProgressTerminalBuilder`].
+impl ProgressTerminalBuilder {
+    /// Use an injectable [`TermLike`] instead of creating a
+    /// [`BufferedTerm`](super::gate::BufferedTerm) over
+    /// [`console::Term::stderr`]. Always wraps the term in
+    /// [`BufferedTerm`](super::gate::BufferedTerm) so the
+    /// write-gate protocol is exercised in tests.
+    #[must_use]
+    pub fn with_term_like(mut self, term: Box<dyn TermLike>) -> Self {
+        let (buffered, gate) = super::gate::BufferedTerm::new(term);
+        let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
+        self.mp_and_gate = Some((mp, gate));
+        self
+    }
 
-            /// Use an existing [`MultiProgress`] directly.
-            ///
-            /// Prefer [`with_term_like()`](Self::with_term_like) for new code;
-            /// this method exists for incremental test migration. The write gate
-            /// is a noop — tests using this path do not exercise the
-            /// draw-per-frame guarantee.
-            #[must_use]
-            pub fn with_multi_progress(mut self, mp: MultiProgress) -> Self {
-                self.mp_and_gate = Some((mp, super::gate::WriteGate::new_noop()));
-                self
-            }
+    /// Use an existing [`MultiProgress`] directly.
+    ///
+    /// Prefer [`with_term_like()`](Self::with_term_like) for new code;
+    /// this method exists for incremental test migration. The write gate
+    /// is a noop — tests using this path do not exercise the
+    /// draw-per-frame guarantee.
+    #[must_use]
+    pub fn with_multi_progress(mut self, mp: MultiProgress) -> Self {
+        self.mp_and_gate = Some((mp, super::gate::WriteGate::new_noop()));
+        self
+    }
 
-            /// Use an injectable dimension source (for tests).
-            #[must_use]
-            pub fn with_dim_source(mut self, dim_source: Arc<dyn DimensionSource>) -> Self {
-                self.dim_source = dim_source;
-                self
-            }
+    /// Use an injectable dimension source (for tests).
+    #[must_use]
+    pub fn with_dim_source(mut self, dim_source: Arc<dyn DimensionSource>) -> Self {
+        self.dim_source = dim_source;
+        self
+    }
 
-            /// Set the exact slot capacity (clamped to `[1, MAX_SLOTS]`).
-            /// When `None` (default), capacity is derived from terminal height.
-            #[must_use]
-            pub fn capacity(mut self, n: usize) -> Self {
-                self.capacity = Some(n);
-                self
-            }
+    /// Set the exact slot capacity (clamped to `[1, MAX_SLOTS]`).
+    /// When `None` (default), capacity is derived from terminal height.
+    #[must_use]
+    pub fn capacity(mut self, n: usize) -> Self {
+        self.capacity = Some(n);
+        self
+    }
 
-            /// Enable or disable dynamic height adaptation (default: `false`).
-            #[must_use]
-            pub fn dynamic_height(mut self, enabled: bool) -> Self {
-                self.dynamic_height = enabled;
-                self
-            }
+    /// Enable or disable dynamic height adaptation (default: `false`).
+    #[must_use]
+    pub fn dynamic_height(mut self, enabled: bool) -> Self {
+        self.dynamic_height = enabled;
+        self
+    }
 
-            /// Use an injectable time source (for tests).
-            #[must_use]
-            pub fn with_time_source(mut self, time_source: Arc<dyn TimeSource>) -> Self {
-                self.time_source = time_source;
-                self
-            }
+    /// Use an injectable time source (for tests).
+    #[must_use]
+    pub fn with_time_source(mut self, time_source: Arc<dyn TimeSource>) -> Self {
+        self.time_source = time_source;
+        self
+    }
 
-            /// Use an injectable term for pre-roll capture (for test assertions).
-            #[must_use]
-            pub fn with_pre_roll_capture(mut self, term: Box<dyn TermLike>) -> Self {
-                self.pre_roll_term = Some(term);
-                self
-            }
+    /// Use an injectable term for pre-roll capture (for test assertions).
+    #[must_use]
+    pub fn with_pre_roll_capture(mut self, term: Box<dyn TermLike>) -> Self {
+        self.pre_roll_term = Some(term);
+        self
+    }
 
-            /// Attach a JSONL debug sink for progress bar state snapshots.
-            #[must_use]
-            pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
-                self.debug_sink = Some(sink);
-                self
-            }
+    /// Attach a JSONL debug sink for progress bar state snapshots.
+    #[must_use]
+    pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
+        self.debug_sink = Some(sink);
+        self
+    }
 
-            /// Disable or enable the background render ticker thread (default:
-            /// enabled). Disable in tests for deterministic progress bar output.
-            #[must_use]
-            pub fn with_ticker_enabled(mut self, enabled: bool) -> Self {
-                self.ticker_enabled = enabled;
-                self
-            }
-        }
-    };
+    /// Disable or enable the background render ticker thread (default:
+    /// enabled). Disable in tests for deterministic progress bar output.
+    #[must_use]
+    pub fn with_ticker_enabled(mut self, enabled: bool) -> Self {
+        self.ticker_enabled = enabled;
+        self
+    }
 }
 
-impl_terminal_builder_config!(NoOverall);
-impl_terminal_builder_config!(HasOverall);
-
-impl ProgressTerminalBuilder<NoOverall> {
-    /// Build a terminal without an overall bar.
+impl ProgressTerminalBuilder {
+    /// Build a terminal.
     ///
-    /// For screens that require an overall bar, call
-    /// [`with_overall()`](Self::with_overall) first, then `build()`.
+    /// An overall bar belongs to a screen, not to the terminal:
+    /// `terminal.screen().with_overall(label, total).build()` registers it as
+    /// the pinned bottom slot of that screen.
     #[must_use]
     pub fn build(self) -> ProgressTerminal {
         let cap = self.capacity.unwrap_or_else(|| {
@@ -274,75 +264,6 @@ impl ProgressTerminalBuilder<NoOverall> {
             dynamic_height: self.dynamic_height,
             ticker_enabled: self.ticker_enabled,
         }
-    }
-
-    /// Add an overall aggregate bar pinned at the bottom slot.
-    ///
-    /// Transitions the builder from [`NoOverall`] to [`HasOverall`],
-    /// enabling [`build()`](ProgressTerminalBuilder::build).
-    #[must_use]
-    pub fn with_overall(self, label: &str, total: u64) -> ProgressTerminalBuilder<HasOverall> {
-        ProgressTerminalBuilder {
-            mp_and_gate: self.mp_and_gate,
-            dim_source: self.dim_source,
-            overall: Some((label.to_string(), total)),
-            capacity: self.capacity,
-            dynamic_height: self.dynamic_height,
-            time_source: self.time_source,
-            pre_roll_term: self.pre_roll_term,
-            debug_sink: self.debug_sink,
-            ticker_enabled: self.ticker_enabled,
-            _state: PhantomData,
-        }
-    }
-}
-
-impl ProgressTerminalBuilder<HasOverall> {
-    /// Build a terminal with the overall bar pinned at the bottom slot.
-    ///
-    /// Returns both the [`ProgressTerminal`] and a [`ProgressBarHandle`] for the
-    /// overall bar.
-    #[must_use]
-    pub fn build(self) -> (ProgressTerminal, ProgressBarHandle) {
-        let (label, total) = self.overall.expect("HasOverall builder must have overall set");
-        let cap = self.capacity.unwrap_or_else(|| {
-            let (rows, _) = self.dim_source.dimensions();
-            (rows as usize).clamp(1, MAX_SLOTS)
-        });
-        let (mp, gate) = self.mp_and_gate.unwrap_or_else(|| {
-            let (buffered, gate) = BufferedTerm::new(Box::new(console::Term::stderr()));
-            let mp =
-                MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
-            (mp, gate)
-        });
-        let debug_sink = self.debug_sink.or_else(detect_progress_debug_env).map(Arc::new);
-        let terminal = ProgressTerminal {
-            inner: Arc::new(TerminalInner {
-                mp,
-                gate,
-                state: Mutex::new(TerminalState {
-                    screen: None,
-                    next_id: 0,
-                    renderer: None,
-                    ticker: None,
-                }),
-                dim_source: self.dim_source,
-                time_source: self.time_source,
-                debug_sink,
-                pre_rolled: std::sync::atomic::AtomicBool::new(false),
-                pre_roll_term: self.pre_roll_term,
-            }),
-            capacity: cap,
-            dynamic_height: self.dynamic_height,
-            ticker_enabled: self.ticker_enabled,
-        };
-        let overall_state = Arc::new(SharedState::with_time_source(
-            total,
-            &label,
-            Arc::clone(&terminal.inner.time_source),
-        ));
-        let handle = ProgressBarHandle { state: overall_state };
-        (terminal, handle)
     }
 }
 
