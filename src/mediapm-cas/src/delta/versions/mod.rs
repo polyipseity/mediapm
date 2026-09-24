@@ -8,6 +8,7 @@
 //! this `mod.rs` is the only place where latest version state is bridged to
 //! unversioned runtime state. Files outside `delta/versions/` interact with
 //! envelopes only through this module, never direct `versions::vX` imports.
+//! Version checks should always start checking from the latest version to ensure performance.
 
 use crate::delta::object::DeltaState;
 use crate::{CasError, HashParseError};
@@ -466,8 +467,15 @@ mod tests {
         let content = fs::read_to_string(&mod_file)
             .unwrap_or_else(|err| panic!("failed reading '{}': {err}", mod_file.display()));
 
+        // Search the production portion only: the asserted literal below lives in
+        // this same file, so scanning the whole file would let the assertion
+        // satisfy itself and the guard could never fail.
+        let (production, _tests) = content.split_once("#[cfg(test)]").unwrap_or_else(|| {
+            panic!("'{}' must contain a #[cfg(test)] module", mod_file.display())
+        });
+
         assert!(
-            content.contains("Version checks should always start checking from the latest version to ensure performance."),
+            production.contains("Version checks should always start checking from the latest version to ensure performance."),
             "{} must keep the latest-first version dispatch performance guard docstring",
             mod_file.display()
         );
