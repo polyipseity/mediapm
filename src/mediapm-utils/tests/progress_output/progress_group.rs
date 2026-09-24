@@ -618,11 +618,13 @@ fn progress_group_join_preserves_all_content() {
     c.advance(3);
     group.tick();
 
-    let before = term.contents();
     group.join();
     let after = term.contents();
 
-    assert_eq!(before, after, "join() is a no-op — contents must be identical before and after");
+    // join() calls finalize() which removes blank reserved slots.
+    // The non-blank bars (fetch + overall) must remain visible.
+    assert!(after.contains("fetch"), "fetch bar must remain after join()");
+    assert!(after.contains("overall"), "overall bar must remain after join()");
 }
 
 #[test]
@@ -709,14 +711,13 @@ fn consumer_lifecycle_conductor_sync() {
 
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    assert_eq!(lines.len(), 5);
-    // t1(yt-dlp) at slot[2] (first tool, shifted up by ffmpeg), t2(ffmpeg) at slot[3] (just above overall).
-    assert!(lines[0].trim().is_empty(), "line 0 blank");
-    assert!(lines[1].trim().is_empty(), "line 1 blank");
-    assert!(lines[2].contains("yt-dlp"), "line 2 has yt-dlp: {0}", lines[2]);
-    assert!(lines[3].contains("ffmpeg"), "line 3 has ffmpeg: {0}", lines[3]);
-    assert!(lines[4].contains("syncing tools"), "line 4 has overall: {0}", lines[4]);
-    assert!(lines[4].contains("2/2"), "overall complete: {0}", lines[4]);
+    // finalize() removes blank reserved slots, leaving only bound bars.
+    assert_eq!(lines.len(), 3);
+    // t1(yt-dlp) at slot[0], t2(ffmpeg) at slot[1], overall at slot[2].
+    assert!(lines[0].contains("yt-dlp"), "line 0 has yt-dlp: {0}", lines[0]);
+    assert!(lines[1].contains("ffmpeg"), "line 1 has ffmpeg: {0}", lines[1]);
+    assert!(lines[2].contains("syncing tools"), "line 2 has overall: {0}", lines[2]);
+    assert!(lines[2].contains("2/2"), "overall complete: {0}", lines[2]);
 }
 
 #[test]

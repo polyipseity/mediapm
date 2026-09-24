@@ -19,6 +19,47 @@ use super::{
 };
 use crate::progress::BarStyle;
 
+/// Compute the ANSI byte overhead for the prefix template field.
+///
+/// The `{prefix:N.N}` template in indicatif counts ANSI escape bytes as
+/// visible characters. Client-truncated bars add only a 4-byte reset
+/// (`\x1b[0m`); built-in rendering adds 13 bytes for failed/warning
+/// status markers (`\x1b[0m\x1b[3Xm\x1b[0m`). This helper centralizes
+/// the calculation so both `sync_snapshot_to_bar` and `recompute_layout`
+/// use the same value.
+fn compute_ansi_overhead(status: TrackStatus, has_client_truncation: bool) -> usize {
+    if has_client_truncation {
+        4
+    } else {
+        match status {
+            TrackStatus::Failed | TrackStatus::Warning => 13,
+            _ => 4,
+        }
+    }
+}
+
+/// Compose the full suffix component set from snapshot data and timing.
+///
+/// Merges auto-derived fields (count, total, elapsed, rate, eta) with
+/// user-set overrides from `snap.suffix_components`. Used by both
+/// `sync_snapshot_to_bar` (for rendering) and `recompute_layout` (for
+/// width measurement) so the draw path and the layout estimate agree.
+fn compose_suffix(
+    snap: &TrackSnapshot,
+    rate_str: Option<&str>,
+    eta_str: Option<&str>,
+) -> SuffixComponents {
+    let auto_suffix = SuffixComponents {
+        count: format_count(snap.position),
+        total: format_count(snap.total),
+        elapsed: format_elapsed(snap.elapsed),
+        rate: rate_str.map(str::to_owned),
+        eta: eta_str.map(str::to_owned),
+        custom: String::new(),
+    };
+    SuffixComponents::merge(&auto_suffix, &snap.suffix_components)
+}
+
 // ---- SharedState (pure tracking, no indicatif dependency) -------------
 
 /// Status of a tracked progress bar.
@@ -863,45 +904,16 @@ impl ProgressRenderer {
         for (i, slot) in self.slots.iter().enumerate() {
             if let Some(ref source) = *slot.source.borrow() {
                 let snap = source.snapshot();
-                // `snap.prefix` is rendered WITH its leading `\x1b[0m`
-                // escape (see `snapshot`), and indicatif counts those
-                // escape bytes as visible characters in the
-                // `{prefix:N.N}` template field. So the template field
-                // width must be the *visible* label width PLUS the per-status
-                // ANSI overhead (4 for normal, 13 for failed/warning). The
-                // suffix side measures `render_suffix_components(&full_suffix,
-                // "")` (no color) which is already ANSI-free, so it stays
-                // `visible_width`. `sync_snapshot_to_bar` subtracts the same
-                // per-status `ansi_overhead` to recover the visible budget
-                // for `semantic_truncate_prefix`, keeping both sides in the
-                // same coordinate system.
-                // Client-truncated bars only carry the 4-byte `\x1b[0m`
-                // reset, never the per-status marker bytes (13).  The
-                // built-in path adds those extra bytes, but when a client
-                // truncation is installed we use the client path instead.
-                // The `snap.prefix` is always the built-in rendered prefix;
-                // to size the layout correctly we check for client
-                // truncation and use the matching overhead.
                 let has_client_truncation = slot.source.borrow().as_ref().is_some_and(|s| {
                     s.truncation.read().expect("shared_state truncation lock").is_some()
                 });
-                let status_overhead: usize = if has_client_truncation {
-                    4
-                } else {
-                    match snap.status {
-                        TrackStatus::Failed | TrackStatus::Warning => 13,
-                        _ => 4,
-                    }
-                };
+                let status_overhead = compute_ansi_overhead(snap.status, has_client_truncation);
                 max_prefix = max_prefix.max(visible_width(snap.prefix.as_str()) + status_overhead);
                 // Measure the full rendered suffix (auto fields + custom),
                 // not just the stored custom text — the rendered RHS also
                 // carries count/total/elapsed/rate/eta which consume the
                 // width budget. Replicate the rate/eta computation from the
                 // tick loop so the estimate matches what will actually draw.
-                let count_str = format_count(snap.position);
-                let total_str = format_count(snap.total);
-                let elapsed_str = format_elapsed(snap.elapsed);
                 let rate_str: Option<String> = if snap.status == TrackStatus::Active {
                     // Prospective rate: replicate the tick-loop EMA update
                     // read-only so the measured width matches what will draw.
@@ -945,15 +957,7 @@ impl ProgressRenderer {
                 // overrides), not just the auto-derived fields.  A wider
                 // user-set `rate`/`eta`/`custom` must widen `suffix_w` or
                 // it would overflow at draw and get truncated away.
-                let auto_suffix = SuffixComponents {
-                    count: count_str,
-                    total: total_str,
-                    elapsed: elapsed_str,
-                    rate: rate_str,
-                    eta: eta_str,
-                    custom: snap.suffix.clone(),
-                };
-                let full_suffix = SuffixComponents::merge(&auto_suffix, &snap.suffix_components);
+                let full_suffix = compose_suffix(&snap, rate_str.as_deref(), eta_str.as_deref());
                 let suffix_width = if has_client_truncation {
                     // Client-truncated bars: call the client's suffix
                     // truncation with a generous budget to measure the
@@ -1215,34 +1219,9 @@ impl ProgressRenderer {
         } else {
             (snap.total, snap.position)
         };
-        let count_str = format_count(render_pos);
-        let total_str = format_count(render_total);
-        let elapsed_str = format_elapsed(snap.elapsed);
         let color_code = bar_color_code(snap.status, is_overall);
-        // Compose a fresh suffix component set each tick: auto fields from
-        // snapshot + ticker timing, user-set fields from stored components.
-        // Stored non-empty fields override the auto-derived ones; stored
-        // rate/eta override when Some; empty fields auto-fill.  Use the
-        // shared merge helper so the draw path matches the layout estimate.
-        let auto_suffix = SuffixComponents {
-            count: count_str,
-            total: total_str,
-            elapsed: elapsed_str,
-            rate: rate_str.map(str::to_owned),
-            eta: eta_str.map(str::to_owned),
-            custom: String::new(),
-        };
-        let fresh_suffix = SuffixComponents::merge(&auto_suffix, &snap.suffix_components);
+        let fresh_suffix = compose_suffix(snap, rate_str, eta_str);
 
-        // Truncate prefix to fit template width, accounting for ANSI
-        // escapes added by render_prefix_components (which indicatif counts
-        // as visible chars). Normal: \x1b[0m = 4; failed/warning:
-        // \x1b[0m\x1b[3Xm\x1b[0m = 13. The marker brackets are visible data
-        // and consume the width budget via semantic_truncate_prefix.
-        let ansi_overhead: usize = match snap.status {
-            TrackStatus::Failed | TrackStatus::Warning => 13,
-            _ => 4,
-        };
         // Client-defined truncation takes precedence when installed. The
         // renderer only *calls* the trait; it owns no field layout. The
         // `None` branch keeps the built-in component rendering as the
@@ -1252,12 +1231,10 @@ impl ProgressRenderer {
             .borrow()
             .as_ref()
             .and_then(|s| s.truncation.read().expect("shared_state truncation lock").clone());
+        let has_client_truncation = truncation.is_some();
+        let ansi_overhead = compute_ansi_overhead(snap.status, has_client_truncation);
         let new_prefix = if let Some(t) = truncation.as_ref() {
-            // Client-truncated bars only add the 4-byte `\x1b[0m` reset;
-            // the 13-byte overhead for failed/warning status markers is
-            // only used by the built-in component rendering.
-            let client_overhead: usize = 4;
-            let raw = t.truncate_prefix(self.prefix_w.get().saturating_sub(client_overhead));
+            let raw = t.truncate_prefix(self.prefix_w.get().saturating_sub(ansi_overhead));
             format!("\x1b[0m{raw}")
         } else {
             let truncated_prefix = semantic_truncate_prefix(

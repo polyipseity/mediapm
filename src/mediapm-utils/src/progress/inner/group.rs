@@ -76,7 +76,7 @@ impl Default for ProgressGroupBuilder<NoOverall> {
             capacity: None,
             dynamic_height: false,
             time_source: Arc::new(RealTimeSource),
-            pre_roll_term: None,
+            pre_roll_term: Some(Box::new(console::Term::stderr())),
             debug_sink: None,
             ticker_enabled: true,
             _state: PhantomData,
@@ -368,12 +368,23 @@ impl ProgressGroup {
         TrackedHandle { state }
     }
 
-    /// Block until all bars in the group reach a finished state.
+    /// Block until all bars in the group reach a finished state and
+    /// finalize the display.
     ///
-    /// In indicatif 0.17 `MultiProgress` has no blocking join, so this is
-    /// effectively a no-op.  Bars remain visible in the terminal after
-    /// this call.
-    pub fn join(&self) {}
+    /// Calls [`finalize`](ProgressRenderer::finalize) to remove blank
+    /// reserved slots and trigger a final draw so only finished bars
+    /// persist in scrollback. The caller may then print a summary line
+    /// that appears below the finalized bars.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the internal `Mutex` is poisoned (another thread
+    /// panicked while holding the lock).
+    pub fn join(&self) {
+        if let Some(ref renderer) = self.renderer {
+            renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finalize();
+        }
+    }
 
     /// Clear the terminal display after all bars are done.
     ///
