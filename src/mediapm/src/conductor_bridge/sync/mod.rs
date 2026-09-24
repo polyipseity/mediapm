@@ -1337,10 +1337,6 @@ pub(crate) async fn reconcile_desired_tools(
     } else {
         pb.finish_warning();
     }
-    if let Some(ref g) = owned_group {
-        g.join();
-    }
-
     // The generated document is a pure machine artifact: drop any tool
     // entries mediapm did not produce this sync (hand-added manual entries).
     // Retain everything the provisioning pipeline manages — explicit tools
@@ -1373,8 +1369,12 @@ pub(crate) async fn reconcile_desired_tools(
             generated_doc.tools[*key].runtime.content_map.is_empty()
         })
         .count();
-    let prn_bar = if prune_candidates > 0 {
-        owned_group.as_ref().map(|g| g.add_bar(prune_candidates as u64, "pruning [prn]"))
+    // The prune bar belongs to whichever screen is driving the sync, not to the
+    // sync's own fallback screen: the caller-owned screen is the one production
+    // hands down, so sourcing the bar from `owned_group` would drop it from
+    // every caller-supplied sync.
+    let prn_bar: Option<Arc<dyn ProgressBarApi>> = if prune_candidates > 0 {
+        Some(effective_group.add_bar(prune_candidates as u64, "pruning [prn]"))
     } else {
         None
     };
@@ -1451,6 +1451,15 @@ pub(crate) async fn reconcile_desired_tools(
         bar.finish_success();
     }
 
+    // Only now is every bar of the sync's own screen done: the `[prn]` bar is
+    // created after the provisioning loop, so joining earlier committed the
+    // screen while the prune phase still added a bar to it (a committed screen
+    // has no live renderer, and `add_bar` on one panics). `owned_group` is
+    // `None` when the caller owns the screen, and the caller joins it.
+    if let Some(ref g) = owned_group {
+        g.join();
+    }
+
     report.pruned_tools = pruned_tools;
 
     Ok(report)
@@ -1496,32 +1505,157 @@ mod tests {
 
         let ops = tracker.ops();
 
-        // The overall progress bar is registered via the tracker, so we see
-        // exactly one AddBar op.
-        let add_bars: Vec<&ProgressOp> =
-            ops.iter().filter(|op| matches!(op, ProgressOp::AddBar { .. })).collect();
-        assert_eq!(
-            add_bars.len(),
-            1,
-            "expected exactly one AddBar op (overall progress), got {add_bars:?}",
-        );
-
-        if let ProgressOp::AddBar { total, label } = &add_bars[0] {
-            assert_eq!(*total, 0, "overall bar total should be 0 (indeterminate)");
-            assert_eq!(label.as_str(), "syncing tools", "overall bar label mismatch");
-        }
-
-        // The overall bar is finished with success after the tool loop.
-        let finish_successes: Vec<&ProgressOp> =
-            ops.iter().filter(|op| matches!(op, ProgressOp::FinishSuccess)).collect();
-        assert_eq!(
-            finish_successes.len(),
-            1,
-            "expected exactly one FinishSuccess op (overall bar only; no owned group means no [prn] bar), got {finish_successes:?}",
-        );
+        // Both bars the sync creates are registered through the tracker: the
+        // overall "syncing tools" bar, and the `[prn]` prune bar — which this
+        // fixture must NOT create, because nothing in the empty generated doc
+        // is a prune candidate (the documented zero-bar guard). Each bar is
+        // asserted by label, not by count: a count would also pass if the
+        // overall bar vanished and two prune bars appeared in its place.
+        let add_bars: Vec<(usize, &ProgressOp)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op, ProgressOp::AddBar { .. }))
+            .collect();
+        let label_of = |op: &ProgressOp| match op {
+            ProgressOp::AddBar { label, .. } => Some(label.clone()),
+            _ => None,
+        };
+        let overall_index = add_bars
+            .iter()
+            .position(|(_, op)| label_of(op).as_deref() == Some("syncing tools"))
+            .expect("the overall bar must be registered through the tracker");
+        let ProgressOp::AddBar { total: overall_total, .. } = add_bars[overall_index].1 else {
+            unreachable!("filtered to AddBar ops")
+        };
+        assert_eq!(*overall_total, 0, "overall bar total should be 0 (indeterminate)");
+        assert_eq!(add_bars.len(), 1, "nothing to prune means no `[prn]` bar: {add_bars:?}");
         assert!(
-            matches!(&finish_successes[0], ProgressOp::FinishSuccess),
-            "expected FinishSuccess"
+            add_bars.iter().all(|(_, op)| label_of(op).as_deref() == Some("syncing tools")),
+            "the only registered bar is the overall bar: {add_bars:?}"
+        );
+
+        // Every bar created finishes successfully.
+        let finish_successes: usize =
+            ops.iter().filter(|op| matches!(op, ProgressOp::FinishSuccess)).count();
+        assert_eq!(
+            finish_successes,
+            add_bars.len(),
+            "every registered bar must finish successfully, got {finish_successes} finishes for {} bars",
+            add_bars.len(),
+        );
+    }
+
+    // A sync that has something to prune registers the `[prn]` bar on the screen
+    // that drives it, after the overall bar.
+    #[tokio::test]
+    async fn reconcile_desired_tools_registers_prune_bar_on_the_caller_screen() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        // Seed a generated doc holding one entry the rewrite must prune, so the
+        // prune bar has a real total.
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
+        let tool_spec = ToolSpec {
+            name: "user_script".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let doc = NickelDocument {
+            tools: BTreeMap::from([("user_script@somehash".to_string(), tool_spec)]),
+            ..Default::default()
+        };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        let tracker = RecordingProgressTracker::new();
+        let state = MediaPmState::default();
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+        let result = reconcile_desired_tools(
+            workspace_cas,
+            &paths,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            Some(&tracker),
+        )
+        .await;
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+        let report = result.unwrap();
+        assert!(
+            report.pruned_tools >= 1,
+            "fixture must prune the seeded manual entry, got {}",
+            report.pruned_tools
+        );
+
+        let ops = tracker.ops();
+        let labels: Vec<String> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProgressOp::AddBar { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["syncing tools".to_string(), "pruning [prn]".to_string()],
+            "the sync registers its overall bar, then the prune bar, on the caller's screen"
+        );
+        let prune_total = ops.iter().find_map(|op| match op {
+            ProgressOp::AddBar { total, label } if label == "pruning [prn]" => Some(*total),
+            _ => None,
+        });
+        assert_eq!(
+            prune_total,
+            Some(1),
+            "prune bar total must be the candidate count (the seeded manual entry)"
+        );
+    }
+
+    // The `--no-progress` path hands the disabled screen down as the caller's
+    // screen, so the prune bar is added to it. That must stay inert: no bar is
+    // allocated, nothing draws, and the sync still does its work.
+    #[tokio::test]
+    async fn prune_bar_is_inert_on_a_disabled_screen() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
+        let tool_spec = ToolSpec {
+            name: "user_script".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let doc = NickelDocument {
+            tools: BTreeMap::from([("user_script@somehash".to_string(), tool_spec)]),
+            ..Default::default()
+        };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        let screen = ProgressScreen::disabled();
+        let state = MediaPmState::default();
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+        let result = reconcile_desired_tools(
+            workspace_cas,
+            &paths,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            Some(&screen),
+        )
+        .await;
+        assert!(result.is_ok(), "a disabled screen must not fail the sync: {:?}", result.err());
+        assert!(
+            result.unwrap().pruned_tools >= 1,
+            "the prune must still run with progress disabled"
         );
     }
 
