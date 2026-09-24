@@ -5,19 +5,11 @@
 //! that screen reserved on the shared draw target, so the next screen of a
 //! sync renders in full below the committed frame.
 //!
-//! Retention is asserted by [`retired_screen_cannot_repaint_the_committed_frame`],
-//! the only test here that fails when the commit is reverted: a committed bar
-//! must be unreachable through the handle that used to own it, so mutating that
-//! handle cannot repaint the committed line.
-//! [`next_screen_draws_below_the_committed_lines`] is deliberately *weaker* —
-//! at `capacity == ROWS - 1` a leaked bar and a committed one produce
-//! byte-identical `contents()`, so it passes with and without the fix (see its
-//! own doc).
+//! Retention is asserted by [`retired_screen_cannot_repaint_the_committed_frame`] and [`join_commits_an_unfinished_bar`]: a committed bar must be unreachable through the handle that used to own it, so mutating that handle cannot repaint the committed line, and a bar still unfinished when the screen is committed must keep its line exactly like a finished one. [`drop_without_join_keeps_an_unfinished_bar`] repeats the second half on the drop path, which is what a `?` early return takes. [`next_screen_draws_below_the_committed_lines`] is deliberately *weaker* — at `capacity == ROWS - 1` a leaked bar and a committed one produce byte-identical `contents()`, so it passes with and without the fix (see its own doc).
 //!
-//! Release is asserted twice: [`second_screen_renders_at_full_capacity`] draws
-//! a second screen that needs every row (a leaked reservation clips it), and
-//! [`release_holds_with_the_ticker_running`] repeats that with the production
-//! daemon ticker running instead of a manually driven `tick`.
+//! Release is asserted twice: [`second_screen_renders_at_full_capacity`] draws a second screen that needs every row (a leaked reservation clips it), and [`release_holds_with_the_ticker_running`] repeats that with the production daemon ticker running instead of a manually driven `tick`.
+//!
+//! Reverting the release fix makes three of these tests fail together — [`second_screen_renders_at_full_capacity`], [`retired_screen_cannot_repaint_the_committed_frame`], and [`release_holds_with_the_ticker_running`] — so none of them is "the" failing assertion. [`join_commits_an_unfinished_bar`] discriminates the other half of the contract: it is red at `bfa740bc`, where release is fixed but the line of an unfinished bar is still cleared on the way out.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -105,6 +97,60 @@ fn drop_without_join_commits() {
     assert_eq!(term.contents(), after);
 }
 
+/// A join commits the line of a bar that is still **unfinished**, not only the lines of bars that were finished first.
+///
+/// The retention contract is total: whatever the screen last drew becomes committed output.  indicatif's default `ProgressFinish::AndClear` breaks that for an unfinished bar — `BarState::drop` runs `finish_using_style`, which sets `Status::DoneHidden` and clears the line on the way out — so the screen sets [`ProgressFinish::AndLeave`](indicatif::ProgressFinish::AndLeave) on every slot bar.  This is the failure path that matters: a `?` early return drops a screen mid-flight, and the partially-filled line is the information a user most wants to keep.
+///
+/// Measured red at `bfa740bc`, where the release half is already fixed but the finish policy is still indicatif's default: the join leaves `contents()` with no `alpha` at all.  The retired handle is probed afterwards so the test shows a *commit* rather than a re-leaked reservation.
+#[test]
+fn join_commits_an_unfinished_bar() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_term(&term, ROWS as usize - 1);
+    let first = terminal.screen().build();
+    let bar = first.add_bar(60, "alpha");
+    bar.advance(1);
+    first.tick();
+    let running = term.contents();
+    assert!(running.contains("alpha"), "precondition: the bar rendered: {running:?}");
+
+    first.join();
+    let committed = term.contents();
+    assert!(
+        committed.contains("alpha"),
+        "join dropped the unfinished bar's line instead of committing it: {committed:?}"
+    );
+
+    // The probe: a commit puts the line out of the retired handle's reach, so
+    // neither the handle nor the retired screen may repaint it.  A re-leaked
+    // reservation would move here.
+    bar.advance(10);
+    first.tick();
+    assert_eq!(
+        term.contents(),
+        committed,
+        "a committed frame must never be repainted by the screen that committed it"
+    );
+}
+
+/// Dropping a screen without an explicit `join` commits an unfinished bar too.
+///
+/// `ManagedScreen::drop` (in `progress/inner/terminal.rs`) routes through `join`, so this is the same contract on the path an early `?` return takes: the line a screen drew before it was dropped survives the drop.
+#[test]
+fn drop_without_join_keeps_an_unfinished_bar() {
+    let (t, term) = term_terminal();
+    {
+        let s = t.screen().build();
+        let bar = s.add_bar(60, "gone");
+        bar.advance(1);
+        t.tick();
+        assert!(term.contents().contains("gone"), "precondition: bar rendered");
+    }
+    let after = term.contents();
+    assert!(after.contains("gone"), "the drop cleared the unfinished bar's line: {after:?}");
+    t.tick();
+    assert_eq!(term.contents(), after, "a committed frame must never be repainted");
+}
+
 /// Adding a bar after join is a programming error — the screen is no longer live.
 #[test]
 #[should_panic(expected = "not the live screen")]
@@ -126,10 +172,7 @@ fn add_bar_after_join_panics() {
 /// nine is still [`ROWS`], so nothing is clipped and both mechanisms produce
 /// the same grid.
 ///
-/// What it does establish is that the commit *erases* nothing: `alpha` survives
-/// both the join and the second screen's frame, which rules out a commit built
-/// on `MultiProgress::remove` or `clear`.  The assertion that fails with the
-/// fix reverted is [`retired_screen_cannot_repaint_the_committed_frame`].
+/// What it does establish is that the commit *erases* nothing: `alpha` survives both the join and the second screen's frame, which rules out a commit built on `MultiProgress::clear`.  It is also the test that catches an erasing commit built on `MultiProgress::remove` alone — the `join erased the committed frame` assertion still passes there (the removal only marks the member, and the clearing draw comes later), and the erasure surfaces at the `expect("alpha committed")` below once the second screen draws.  The assertions that fail with the release fix reverted are [`retired_screen_cannot_repaint_the_committed_frame`], [`second_screen_renders_at_full_capacity`], and [`release_holds_with_the_ticker_running`].
 ///
 /// `capacity == ROWS - 1` is the exact fit, not a workaround: a screen's frame
 /// is one line per reserved slot, so at `capacity == ROWS` the second screen's
@@ -168,13 +211,7 @@ fn next_screen_draws_below_the_committed_lines() {
 /// presented `1 + capacity` bars on a `ROWS`-tall terminal and indicatif stopped
 /// printing at the terminal height, leaving `beta` invisible.
 ///
-/// This test pins the release half only; [`next_screen_draws_below_the_committed_lines`]
-/// pins retention, and it must run at `capacity == ROWS - 1`.  A screen's frame
-/// is exactly `capacity` lines (every reserved slot draws one), so at full
-/// capacity that frame occupies every row of the terminal and the committed
-/// frame is scrolled out of `InMemoryTerm`'s visible grid
-/// (`InMemoryTerm::contents` reads the screen, not its scrollback) whichever
-/// mechanism commits it.
+/// This test pins the release half only; retention is pinned by [`retired_screen_cannot_repaint_the_committed_frame`] and [`join_commits_an_unfinished_bar`], and it must run at `capacity == ROWS - 1`.  A screen's frame is exactly `capacity` lines (every reserved slot draws one), so at full capacity that frame occupies every row of the terminal and the committed frame is scrolled out of `InMemoryTerm`'s visible grid (`InMemoryTerm::contents` reads the screen, not its scrollback) whichever mechanism commits it.
 #[test]
 fn second_screen_renders_at_full_capacity() {
     let term = InMemoryTerm::new(ROWS, COLS);
@@ -195,26 +232,11 @@ fn second_screen_renders_at_full_capacity() {
 /// neither the handle that owned it nor the retired screen can change a
 /// character of it.
 ///
-/// This is the assertion that fails when the commit is reverted.  At `da358265`
-/// the screen handle kept the renderer — and with it every [`ProgressBar`] the
-/// screen reserved — alive behind a strong `Arc`, so `ManagedScreen::tick`
-/// still ran a frame: the surviving bar was re-rendered from its still-live
-/// `SharedState`, and the `advance` below moved its rendered `count/total` from
-/// `1/60` to `11/60` on the already-committed line.  After the fix the handle
-/// holds a `Weak`, `join` drops the last strong reference, and `tick` is a
-/// no-op.
+/// This is one of the assertions that fail with the release fix reverted.  At `da358265` the screen handle kept the renderer — and with it every [`ProgressBar`] the screen reserved — alive behind a strong `Arc`, so `ManagedScreen::tick` still ran a frame: the surviving bar was re-rendered from its still-live `SharedState`, and the `advance` below moved its rendered `count/total` from `1/60` to `11/60` on the already-committed line.  After the fix the handle holds a `Weak`, `join` drops the last strong reference, and `tick` is a no-op.
 ///
-/// The retained handle is the probe, not the subject: `ProgressBarHandle` is
-/// the public way to mutate a bar, and once the screen is committed the bar
-/// must no longer be reachable through it.  The `join erased the committed
-/// frame` assertion covers the opposite failure — a commit that frees slots by
-/// clearing lines fails there, before the equality check runs.
+/// The retained handle is the probe, not the subject: `ProgressBarHandle` is the public way to mutate a bar, and once the screen is committed the bar must no longer be reachable through it.  The `join erased the committed frame` assertion is a precondition here, not the erasure detector: an erasing commit built on `MultiProgress::remove` passes it (see [`next_screen_draws_below_the_committed_lines`], which catches that shape).
 ///
-/// `alpha` is finished before the join on purpose.  indicatif reaps a *finished*
-/// bar as a zombie whose lines are kept, but an unfinished bar is dropped
-/// through the default `ProgressFinish::AndClear`, which hides it — so a line
-/// that is still live at `join` is not retained at all, and asserting on one
-/// would fail at the fixed revision instead of the reverted one.
+/// `alpha` is finished before the join on purpose: this test probes a *finished* bar, whose reaping indicatif never routes through the finish policy at all.  The unfinished case is the separate assertion of [`join_commits_an_unfinished_bar`], which is what pins the screen's `ProgressFinish::AndLeave` policy.
 #[test]
 fn retired_screen_cannot_repaint_the_committed_frame() {
     let term = InMemoryTerm::new(ROWS, COLS);

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use indicatif::{MultiProgress, ProgressBar};
+use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
 
 use super::{
     DebugSlotState, DebugTickSnapshot, DimensionSource, MAX_SLOTS, MIN_PREFIX_WIDTH,
@@ -626,6 +626,17 @@ impl SlotCache {
 
 impl RenderedSlot {}
 
+/// Apply the screen's slot finish policy to a bar that has just been added to a [`MultiProgress`].
+///
+/// Slot bars use [`ProgressFinish::AndLeave`] so that a bar which is still **unfinished** when its screen is committed keeps the last line it drew, just like a finished one. `join`/`Drop` release the renderer, and indicatif's default [`ProgressFinish::AndClear`] would otherwise hide the line on the way out: `BarState::drop` runs `finish_using_style` for an unfinished bar, setting `Status::DoneHidden`, so a partially-filled line — exactly what a `?` early return leaves behind — is cleared instead of committed.
+///
+/// `AndLeave` cannot change the finished-bar path: `BarState::drop` short-circuits on `is_finished()` (`indicatif/src/state.rs`), returns before `finish_using_style` is reached, and therefore never consults this policy.
+///
+/// Callers must add the bar to the [`MultiProgress`] first (as `from_mp` documents); this only returns the same bar with the policy applied.
+fn with_slot_finish_policy(bar: ProgressBar) -> ProgressBar {
+    bar.with_finish(ProgressFinish::AndLeave)
+}
+
 impl ProgressRenderer {
     /// Pre-allocate `capacity` blank bars in an existing [`MultiProgress`].
     pub(crate) fn from_mp(
@@ -642,7 +653,7 @@ impl ProgressRenderer {
             // IMPORTANT: add to MultiProgress FIRST, then configure.
             // Configuring before mp.add() prevents InMemoryTerm from
             // capturing blank bar output in tests.
-            let bar = mp.add(pb);
+            let bar = with_slot_finish_policy(mp.add(pb));
             bar.set_style(blank_bar_style());
             bar.set_message(" ");
             bar.set_prefix("");
@@ -692,7 +703,7 @@ impl ProgressRenderer {
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity.saturating_sub(1) {
             let pb = ProgressBar::new(0);
-            let bar = mp.add(pb);
+            let bar = with_slot_finish_policy(mp.add(pb));
             bar.set_style(blank_bar_style());
             bar.set_message(" ");
             bar.set_prefix("");
@@ -702,7 +713,7 @@ impl ProgressRenderer {
         let overall_state =
             Arc::new(SharedState::with_time_source(total, label, Arc::clone(&time_source)));
         let inner = ProgressBar::new(total);
-        let overall_bar = mp.add(inner);
+        let overall_bar = with_slot_finish_policy(mp.add(inner));
         apply_overall_bar_style(&overall_bar, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH);
         overall_bar.set_prefix(label.to_string());
         slots.push(RenderedSlot {
@@ -742,7 +753,7 @@ impl ProgressRenderer {
         let overall_state =
             Arc::new(SharedState::with_time_source(total, label, Arc::clone(&self.time_source)));
         let inner = ProgressBar::new(total);
-        let overall_bar = self.inner.add(inner);
+        let overall_bar = with_slot_finish_policy(self.inner.add(inner));
         apply_overall_bar_style(&overall_bar, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH);
         overall_bar.set_prefix(label.to_string());
         self.slots.push(RenderedSlot {
@@ -1351,7 +1362,7 @@ impl ProgressRenderer {
                 let insert_pos = self.slots.len() - usize::from(self.has_overall);
                 for _ in 0..(desired_cap - current_cap) {
                     let pb = ProgressBar::new(0);
-                    let bar = self.inner.insert(insert_pos, pb);
+                    let bar = with_slot_finish_policy(self.inner.insert(insert_pos, pb));
                     bar.set_style(blank_bar_style());
                     bar.set_message(" ");
                     bar.set_prefix("");

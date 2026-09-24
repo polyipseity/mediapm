@@ -688,21 +688,12 @@ impl ManagedScreen {
     /// screen reserved, which is what commits their lines: indicatif reaps a
     /// dropped bar as a zombie and retains its drawn lines, while returning the
     /// bar's slot index to the [`MultiProgress`] free set for the next screen.
+    /// Every slot bar carries `ProgressFinish::AndLeave` (see `with_slot_finish_policy` in [`ProgressRenderer`]), so a bar that is still unfinished here keeps its line too — indicatif's default `ProgressFinish::AndClear` would hide it from `BarState::drop` on the way out.
     ///
-    /// Two limits of that retention, both measured on the terminal path:
+    /// One measured limit of that retention, and one derived bound:
     ///
-    /// - Only a bar that is **finished** at this point keeps its line.
-    ///   indicatif's `BarState::drop` short-circuits for a finished bar and
-    ///   keeps its lines, but an unfinished bar is dropped through the default
-    ///   `ProgressFinish::AndClear`, which hides it.  Commit a screen only
-    ///   after finishing its bars, or those lines are cleared rather than kept.
-    /// - The ticker's `Weak::upgrade()` fails here, but a tick already in
-    ///   flight holds a strong clone of the renderer until it returns, so the
-    ///   retired reservation can outlive `join` by up to one tick.
-    ///   [`ProgressRenderer::run_frame`] returns immediately once finalized, so
-    ///   that window is a single no-op tick and the reservation is dropped when
-    ///   it ends; a screen built and drawn inside the window sees the retired
-    ///   reservation for one frame.
+    /// - Measured on the terminal path: a bar that was **finished** before the drop keeps its line through `BarState::drop`'s `is_finished()` short-circuit, and an unfinished one keeps it through the `AndLeave` policy.  Both are exercised by `progress::tests::screen`.
+    /// - Derived, **not** measured: the ticker's `Weak::upgrade()` fails here, but a tick already in flight holds a strong clone of the renderer until it returns, so the retired reservation can outlive `join` by up to one tick.  That bound follows from [`ProgressRenderer::run_frame`] returning immediately once finalized (the guard `finalize` sets): the window is a single no-op tick that drops the reservation when it ends, so a screen built and drawn inside the window sees the retired reservation for one frame.  The overlap itself is unmeasured and cannot be forced from a test — it needs a join to land inside another thread's upgrade.
     ///
     /// Idempotent: joining an already-joined (or never-live) screen is a no-op,
     /// which is what makes `Drop` safe to route through here.
