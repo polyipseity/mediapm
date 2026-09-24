@@ -47,7 +47,7 @@ use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot
 use crate::config::ToolRequirement;
 use crate::config::{MediaPmState, ToolRegistryEntry};
 use crate::error::MediaPmError;
-use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
+use crate::output::{ProgressBarApi, ProgressScreen, ProgressScreenApi};
 use crate::paths::MediaPmPaths;
 use crate::source_metadata::resolve_conductor_cas_root;
 use crate::tools::downloader::ToolDownloadCache;
@@ -157,7 +157,7 @@ async fn provision_entry(
     live_state: &HashMap<String, Vec<ToolRegistryEntry>>,
     workspace_cas: &FileSystemCas,
     cache: &ToolDownloadCache,
-    effective_group: &dyn ProgressGroupApi,
+    effective_group: &dyn ProgressScreenApi,
     recheck_policy: RecheckPolicy,
 ) -> EntryOutcome {
     let tool_id = &entry.tool_id;
@@ -1145,7 +1145,7 @@ pub(crate) async fn reconcile_desired_tools(
     recheck_policy: RecheckPolicy,
     state: &MediaPmState,
     cache_root_override: Option<&Path>,
-    progress_group: Option<&dyn ProgressGroupApi>,
+    progress_group: Option<&dyn ProgressScreenApi>,
 ) -> Result<ToolSyncReport, MediaPmError> {
     let mut report = ToolSyncReport::default();
 
@@ -1211,19 +1211,19 @@ pub(crate) async fn reconcile_desired_tools(
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = entries.len() as u64;
-    let (owned_group, pb): (Option<ProgressGroup>, Arc<dyn ProgressBarApi>) =
+    let (owned_group, pb): (Option<ProgressScreen>, Arc<dyn ProgressBarApi>) =
         if let Some(pg) = progress_group {
             (None, pg.add_bar(total_tools, "syncing tools"))
         } else {
-            let (g, p) = ProgressGroup::builder()
+            let (g, p) = ProgressScreen::builder()
                 .dynamic_height(true)
                 .with_overall("syncing tools", total_tools)
                 .build();
             (Some(g), Arc::new(p))
         };
-    let effective_group: &dyn ProgressGroupApi = owned_group
+    let effective_group: &dyn ProgressScreenApi = owned_group
         .as_ref()
-        .map(|g| g as &dyn ProgressGroupApi)
+        .map(|g| g as &dyn ProgressScreenApi)
         .or(progress_group)
         .expect("at least one progress group available");
 

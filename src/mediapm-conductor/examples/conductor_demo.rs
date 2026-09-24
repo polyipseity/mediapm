@@ -19,7 +19,7 @@ use mediapm_conductor::{
 };
 
 #[cfg(feature = "progress")]
-use mediapm_utils::progress::ProgressGroup;
+use mediapm_utils::progress::ProgressScreen;
 
 use support::{ExampleResult, echo_tool, write_text_file};
 
@@ -84,10 +84,10 @@ async fn run_demo() -> ExampleResult<()> {
 
 /// Build run options that own a workflow progress screen: a fixed overall
 /// bar (pinned at the bottom slot) plus one worker-slot spinner bar per
-/// worker, created by the caller via `ProgressGroup::builder().with_overall()`.
+/// worker, created by the caller via `ProgressScreen::builder().with_overall()`.
 #[cfg(feature = "progress")]
 fn run_options_with_progress() -> RunWorkflowOptions {
-    let (group, overall) = ProgressGroup::builder().with_overall("workflow steps", 1).build();
+    let (group, overall) = ProgressScreen::builder().with_overall("workflow steps", 1).build();
     RunWorkflowOptions {
         progress_group: Some(Arc::new(group)),
         overall_bar: Some(Arc::new(overall)),

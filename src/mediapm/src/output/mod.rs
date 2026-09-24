@@ -3,7 +3,7 @@
 //!
 //! # Submodules
 //!
-//! * [`progress`] — progress bars with [`ProgressGroup`]
+//! * [`progress`] — progress bars with [`ProgressScreen`]
 //!
 //! Result-line primitives (`StatusIcon`, `print_result`, `format_result_line`, etc.)
 //! are centralized in `mediapm_utils::report` and re-exported here for backward
@@ -17,8 +17,8 @@ pub use mediapm_utils::report::{
     print_result, print_status_report, print_warning,
 };
 pub use progress::{
-    DimensionSource, ProgressBarApi, ProgressGroup, ProgressGroupApi, TestDimensionSource,
-    TestTimeSource, TrackedHandle,
+    DimensionSource, ProgressBarApi, ProgressBarHandle, ProgressScreen, ProgressScreenApi,
+    TestDimensionSource, TestTimeSource,
 };
 
 use crate::SyncSummary;

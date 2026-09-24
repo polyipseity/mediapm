@@ -178,7 +178,7 @@ fn render_prefix(parts: &super::super::inner::PrefixComponents) -> String {
 
 #[test]
 fn regression_finish_warning_stores_warning_and_decodes() {
-    let h = TrackedHandle::new(10);
+    let h = ProgressBarHandle::new(10);
     assert!(!h.is_finished());
     h.finish_warning();
     assert!(h.is_finished(), "finish_warning marks the handle finished");
@@ -187,7 +187,7 @@ fn regression_finish_warning_stores_warning_and_decodes() {
 
 #[test]
 fn regression_finish_error_stores_failed_and_decodes() {
-    let h = TrackedHandle::new(10);
+    let h = ProgressBarHandle::new(10);
     h.finish_error();
     assert!(h.is_finished(), "finish_error marks the handle finished");
     assert_eq!(h.snapshot().status, TrackStatus::Failed, "finish_error stores Failed");
@@ -195,7 +195,7 @@ fn regression_finish_error_stores_failed_and_decodes() {
 
 #[test]
 fn regression_finish_success_stores_success_and_decodes() {
-    let h = TrackedHandle::new(10);
+    let h = ProgressBarHandle::new(10);
     h.finish_success();
     assert!(h.is_finished(), "finish_success marks the handle finished");
     assert_eq!(h.snapshot().status, TrackStatus::Success, "finish_success stores Success");
@@ -251,24 +251,24 @@ fn regression_snapshot_status_code_round_trip() {
     // Each known status decodes back to the correct TrackStatus via the
     // public finish_* API. The `_ => Success` fallback for unknown codes
     // is covered by the inner-module unit test below.
-    let active = TrackedHandle::new(10);
+    let active = ProgressBarHandle::new(10);
     assert_eq!(active.snapshot().status, TrackStatus::Active);
 
-    let success = TrackedHandle::new(10);
+    let success = ProgressBarHandle::new(10);
     success.finish_success();
     assert_eq!(success.snapshot().status, TrackStatus::Success);
 
-    let failed = TrackedHandle::new(10);
+    let failed = ProgressBarHandle::new(10);
     failed.finish_error();
     assert_eq!(failed.snapshot().status, TrackStatus::Failed);
 
-    let warning = TrackedHandle::new(10);
+    let warning = ProgressBarHandle::new(10);
     warning.finish_warning();
     assert_eq!(warning.snapshot().status, TrackStatus::Warning);
 
     // finish_and_clear stores code 5, which the snapshot decoder maps to
     // Success (the `_ => Success` fallback arm).
-    let cleared = TrackedHandle::new(10);
+    let cleared = ProgressBarHandle::new(10);
     cleared.finish_and_clear();
     assert_eq!(cleared.snapshot().status, TrackStatus::Success);
 }
@@ -337,7 +337,7 @@ fn shared_state_parses_label_into_components() {
     // add_bar labels must be parsed into PrefixComponents at construction
     // (regression: previously the entire label was stored as tool_name,
     // so semantic truncation chopped `[res]` off resolve bars).
-    let h = TrackedHandle::with_label(100, "ffmpeg autobuild-2026-07-31 [res]");
+    let h = ProgressBarHandle::with_label(100, "ffmpeg autobuild-2026-07-31 [res]");
     let snap = h.snapshot();
     assert_eq!(snap.prefix_components.tool_name, "ffmpeg");
     assert_eq!(snap.prefix_components.version, "autobuild-2026-07-31");
@@ -345,11 +345,11 @@ fn shared_state_parses_label_into_components() {
     assert!(snap.prefix_components.count.is_empty());
     assert!(snap.prefix_components.total.is_empty());
 
-    let h = TrackedHandle::with_label(100, "syncing tools");
+    let h = ProgressBarHandle::with_label(100, "syncing tools");
     let snap = h.snapshot();
     assert_eq!(snap.prefix_components.tool_name, "syncing tools");
 
-    let h = TrackedHandle::with_label(100, "");
+    let h = ProgressBarHandle::with_label(100, "");
     let snap = h.snapshot();
     assert!(snap.prefix_components.tool_name.is_empty());
     assert!(snap.prefix_components.version.is_empty());

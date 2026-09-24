@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(feature = "progress")]
-use mediapm_utils::progress::ProgressGroupApi;
+use mediapm_utils::progress::ProgressScreenApi;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
@@ -279,12 +279,12 @@ async fn ensure_conductor() -> Result<&'static Conductor<ConfiguredCas>, Conduct
 }
 
 async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
-    use mediapm_utils::progress::ProgressGroup;
+    use mediapm_utils::progress::ProgressScreen;
     let conductor = ensure_conductor().await?;
 
-    let (group, overall): (Arc<dyn ProgressGroupApi + Send + Sync>, _) = {
+    let (group, overall): (Arc<dyn ProgressScreenApi + Send + Sync>, _) = {
         let (g, overall) =
-            ProgressGroup::builder().dynamic_height(true).with_overall("workflow [wf]", 1).build();
+            ProgressScreen::builder().dynamic_height(true).with_overall("workflow [wf]", 1).build();
         (Arc::new(g), Arc::new(overall))
     };
     let options = RunWorkflowOptions {

@@ -143,15 +143,15 @@ fn recording_handle_finish_and_clear_warning() {
 
 #[test]
 fn bar_style_default_is_step_count() {
-    // A freshly created TrackedHandle uses StepCount (preserves all
+    // A freshly created ProgressBarHandle uses StepCount (preserves all
     // existing callers: sync screen, materialization, etc.).
-    let h = TrackedHandle::new(100);
+    let h = ProgressBarHandle::new(100);
     assert_eq!(h.style(), BarStyle::StepCount);
 }
 
 #[test]
 fn bar_style_set_style_switches_to_worker_spinner() {
-    let h = TrackedHandle::new(100);
+    let h = ProgressBarHandle::new(100);
     assert_eq!(h.style(), BarStyle::StepCount);
     h.set_style(BarStyle::WorkerSpinner);
     assert_eq!(h.style(), BarStyle::WorkerSpinner);
@@ -159,7 +159,7 @@ fn bar_style_set_style_switches_to_worker_spinner() {
 
 #[test]
 fn bar_style_set_style_is_idempotent() {
-    let h = TrackedHandle::new(100);
+    let h = ProgressBarHandle::new(100);
     h.set_style(BarStyle::WorkerSpinner);
     h.set_style(BarStyle::WorkerSpinner);
     assert_eq!(h.style(), BarStyle::WorkerSpinner);
@@ -188,7 +188,7 @@ fn bar_style_worker_spinner_zero_zero_guard_renders_empty() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = super::super::ProgressGroup::builder()
+    let group = super::super::ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -214,7 +214,7 @@ fn bar_style_worker_spinner_populates_no_version_or_phase() {
     // WorkerSpinner bars populate only marker/tool_name/count-total in the
     // prefix and custom/elapsed in the suffix — never version or phase.
     // This locks the style-aware truncation order from the plan.
-    let h = TrackedHandle::new(0);
+    let h = ProgressBarHandle::new(0);
     h.set_style(BarStyle::WorkerSpinner);
     h.set_prefix_components(PrefixComponents {
         tool_name: "wf-1/step-5 (echo)".into(),

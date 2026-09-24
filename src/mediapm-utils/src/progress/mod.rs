@@ -26,10 +26,9 @@ mod inner;
 #[cfg(feature = "progress")]
 pub use inner::{
     DebugSlotState, DebugTickSnapshot, DimensionSource, HasOverall, NoOverall, PrefixComponents,
-    ProgressDebugSink, ProgressGroup, ProgressGroupBuilder, ProgressRenderer, ProgressScreen,
-    ProgressScreenBuilder, ProgressTerminal, ProgressTerminalBuilder, RealTerminalSource,
-    RealTimeSource, StatusCount, SuffixComponents, TestDimensionSource, TestTimeSource, TimeSource,
-    TrackSnapshot, TrackStatus, TrackedHandle,
+    ProgressBarHandle, ProgressDebugSink, ProgressRenderer, ProgressScreen, ProgressScreenBuilder,
+    ProgressTerminal, ProgressTerminalBuilder, RealTerminalSource, RealTimeSource, StatusCount,
+    SuffixComponents, TestDimensionSource, TestTimeSource, TimeSource, TrackSnapshot, TrackStatus,
 };
 
 #[cfg(feature = "progress")]
@@ -41,7 +40,7 @@ pub(crate) use inner::{SharedState, format_elapsed, format_rate};
 #[cfg(feature = "progress")]
 mod traits;
 #[cfg(feature = "progress")]
-pub use traits::{BarStyle, ProgressBarApi, ProgressGroupApi};
+pub use traits::{BarStyle, ProgressBarApi, ProgressScreenApi};
 
 // Client-defined truncation contract (feature-gated)
 
@@ -126,7 +125,7 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
 }
 
 #[cfg(feature = "progress")]
-impl ProgressGroupApi for recording::RecordingProgressTracker {
+impl ProgressScreenApi for recording::RecordingProgressTracker {
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
         Arc::new(recording::RecordingProgressTracker::add_bar(self, total, label))
     }

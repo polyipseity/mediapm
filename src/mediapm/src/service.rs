@@ -34,7 +34,7 @@ use crate::hierarchy::{
 };
 use crate::materializer;
 use crate::metadata_cache::MetadataCache;
-use crate::output::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
+use crate::output::{ProgressBarApi, ProgressScreen, ProgressScreenApi};
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
@@ -825,12 +825,12 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         // Load current state before reconciliation (needed for skip logic).
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
 
-        // When --no-progress is set, use a disabled ProgressGroup that produces
+        // When --no-progress is set, use a disabled ProgressScreen that produces
         // zero-cost no-op handles — no ticker thread, no terminal output.
-        let progress_group: Option<ProgressGroup> =
-            if no_progress { Some(ProgressGroup::disabled()) } else { None };
-        let pg_ref: Option<&dyn ProgressGroupApi> =
-            progress_group.as_ref().map(|g| g as &dyn ProgressGroupApi);
+        let progress_group: Option<ProgressScreen> =
+            if no_progress { Some(ProgressScreen::disabled()) } else { None };
+        let pg_ref: Option<&dyn ProgressScreenApi> =
+            progress_group.as_ref().map(|g| g as &dyn ProgressScreenApi);
 
         let workspace_cas =
             Cas::workspace_provisioning_cas(self.conductor(), effective_paths).await?;
@@ -1110,17 +1110,17 @@ impl MediaPmService<FileSystemCas> {
         // handles); otherwise build a live dynamic-height group with a pinned
         // overall bar at the bottom slot. The coordinator receives the overall
         // handle and sets its total to the actual step count.
-        let (workflow_group, workflow_overall): (ProgressGroup, Option<Arc<dyn ProgressBarApi>>) =
+        let (workflow_group, workflow_overall): (ProgressScreen, Option<Arc<dyn ProgressBarApi>>) =
             if no_progress {
-                (ProgressGroup::disabled(), None)
+                (ProgressScreen::disabled(), None)
             } else {
-                let (g, overall) = ProgressGroup::builder()
+                let (g, overall) = ProgressScreen::builder()
                     .dynamic_height(true)
                     .with_overall("workflow [wf]", 1)
                     .build();
                 (g, Some(Arc::new(overall)))
             };
-        let workflow_pg: Option<Arc<dyn ProgressGroupApi + Send + Sync>> =
+        let workflow_pg: Option<Arc<dyn ProgressScreenApi + Send + Sync>> =
             Some(Arc::new(workflow_group));
         for workflow_name in workflow_names {
             let before = self.conductor.get_state()?;
@@ -1197,18 +1197,18 @@ impl MediaPmService<FileSystemCas> {
         // conductor): it gets its own group so the two screens never share a
         // draw target. A disabled group is used under --no-progress.
         let (materialize_group, materialize_overall): (
-            ProgressGroup,
+            ProgressScreen,
             Option<Arc<dyn ProgressBarApi>>,
         ) = if no_progress {
-            (ProgressGroup::disabled(), None)
+            (ProgressScreen::disabled(), None)
         } else {
-            let (g, overall) = ProgressGroup::builder()
+            let (g, overall) = ProgressScreen::builder()
                 .dynamic_height(true)
                 .with_overall("materializing [mat]", 1)
                 .build();
             (g, Some(Arc::new(overall)))
         };
-        let materialize_pg: Option<Arc<dyn ProgressGroupApi + Send + Sync>> =
+        let materialize_pg: Option<Arc<dyn ProgressScreenApi + Send + Sync>> =
             Some(Arc::new(materialize_group));
         let materialize_report = materializer::sync_hierarchy(
             &effective_paths,

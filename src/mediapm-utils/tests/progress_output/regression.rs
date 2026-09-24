@@ -158,7 +158,7 @@ fn regression_finish_and_clear_with_tick_fn() {
     let c2 = group.add_bar(5, "clear");
     group.tick();
 
-    // c2 is ProgressGroup-managed so mutating methods go through tick_fn.
+    // c2 is ProgressScreen-managed so mutating methods go through tick_fn.
     c2.finish_and_clear();
     group.tick();
 

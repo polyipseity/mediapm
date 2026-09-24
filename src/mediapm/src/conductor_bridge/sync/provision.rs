@@ -23,7 +23,7 @@ use mediapm_utils::progress::{
 use tokio::sync::Semaphore;
 
 use crate::error::MediaPmError;
-use crate::output::ProgressGroupApi;
+use crate::output::ProgressScreenApi;
 use crate::tools::downloader::ToolDownloadCache;
 #[cfg(test)]
 use crate::tools::provider;
@@ -176,7 +176,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
     tool_id: &str,
     cache: &ToolDownloadCache,
-    group: &dyn ProgressGroupApi,
+    group: &dyn ProgressScreenApi,
     outcome: PreResolveOutcome,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     // Track created bars so we can mark them red on error.

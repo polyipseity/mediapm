@@ -8,7 +8,7 @@ fn dirty_tracking_initial_state_starts_dirty() {
     // The SharedState dirty flag starts true so the very first tick always
     // draws, even without explicit mutations.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .capacity(4)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -28,7 +28,7 @@ fn multiple_mutations_before_tick_single_draw() {
     // Several mutations between ticks should all be reflected in a single
     // coherent draw after the next tick, without intermediate draws.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .capacity(4)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -58,7 +58,7 @@ fn finalize_produces_final_output() {
 
     let term = indicatif::InMemoryTerm::new(10, 80);
     let ts = Arc::new(super::super::TestTimeSource::new());
-    let (group, overall) = ProgressGroup::builder()
+    let (group, overall) = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -119,7 +119,7 @@ fn dirty_tracking_skips_clean_ticks() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -180,7 +180,7 @@ fn dirty_tracking_draws_on_mutation() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -224,7 +224,7 @@ fn pre_roll_reserves_full_terminal_height() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let _group = ProgressGroup::builder()
+    let _group = ProgressScreen::builder()
         .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
@@ -256,7 +256,7 @@ fn pre_roll_one_shot() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
@@ -295,7 +295,7 @@ fn pre_roll_with_overall() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let (_group, _overall) = ProgressGroup::builder()
+    let (_group, _overall) = ProgressScreen::builder()
         .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
@@ -331,7 +331,7 @@ fn pre_roll_height_changes_no_effect() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims.clone() as Arc<dyn DimensionSource>)
@@ -387,7 +387,7 @@ fn pre_roll_with_existing_content_scrolls_it_away() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_pre_roll_capture(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
@@ -445,7 +445,7 @@ fn pre_roll_fires_on_join_and_clear_before_ticker() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
@@ -495,7 +495,7 @@ fn sync_slot_preserves_custom_suffix_on_attach() {
 
     let term = indicatif::InMemoryTerm::new(10, 80);
     let ts = Arc::new(super::super::TestTimeSource::new());
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         .capacity(2)
@@ -540,7 +540,7 @@ fn suffix_stored_state_is_structured() {
     // set_suffix_components must store the full structured set (all six
     // fields), not just `custom` — snapshot() carries them through so the
     // sync path can merge field-by-field.
-    let h = TrackedHandle::new(100);
+    let h = ProgressBarHandle::new(100);
     h.set_suffix_components(SuffixComponents {
         count: "9".into(),
         total: "9".into(),
@@ -567,7 +567,7 @@ fn suffix_merge_user_count_total_overrides_auto() {
 
     let term = indicatif::InMemoryTerm::new(10, 80);
     let ts = Arc::new(super::super::TestTimeSource::new());
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         .capacity(2)
@@ -600,7 +600,7 @@ fn suffix_merge_user_rate_eta_elapsed_override_auto() {
 
     let term = indicatif::InMemoryTerm::new(10, 80);
     let ts = Arc::new(super::super::TestTimeSource::new());
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         .capacity(2)
@@ -702,7 +702,7 @@ fn set_truncation_replaces_builtin_rendering() {
     // When a bar has client truncation installed, the terminal output must
     // contain the client's strings and NOT the built-in component render.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .capacity(4)
         .with_ticker_enabled(false)
@@ -735,7 +735,7 @@ fn client_truncated_prefix_starts_with_ansi_reset() {
     // built-in component render is bypassed.  The preceding colour
     // bleed would cause garbled display, which the `\x1b[0m` prevents.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .capacity(4)
         .with_ticker_enabled(false)

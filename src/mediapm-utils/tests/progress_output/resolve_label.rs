@@ -5,13 +5,13 @@ use super::common::*;
 /// Helper: build a group with a wide terminal (4x120) but narrow dims (4x40),
 /// so truncation uses the compact-template budget without wrap artifacts
 /// (resize.rs pattern) and the full compact-template line is assertable.
-fn resolve_group() -> (ProgressGroup, InMemoryTerm) {
+fn resolve_group() -> (ProgressScreen, InMemoryTerm) {
     let dims = Arc::new(TestDimensionSource::new((4, 40)));
     let term = InMemoryTerm::new(4, 120);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let mp = MultiProgress::with_draw_target(target);
     let ts = Arc::new(TestTimeSource::new());
-    let (group, _overall) = ProgressGroup::builder()
+    let (group, _overall) = ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 1)

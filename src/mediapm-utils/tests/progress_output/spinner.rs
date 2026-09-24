@@ -315,7 +315,7 @@ fn spinner_on_both_finish() {
     );
 }
 
-// ── ProgressGroup spinner tests: dirty-independent redraw ────────────────────
+// ── ProgressScreen spinner tests: dirty-independent redraw ────────────────────
 //
 // These tests verify the spec: every tick() advances the spinner character on
 // active bars regardless of dirty state, and finished bars' spinners are frozen.

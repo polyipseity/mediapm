@@ -1,4 +1,4 @@
-//! `TrackedHandle`, `SharedState`, and `ProgressRenderer` (pure tracking + indicatif rendering).
+//! `ProgressBarHandle`, `SharedState`, and `ProgressRenderer` (pure tracking + indicatif rendering).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -278,7 +278,7 @@ pub struct TrackSnapshot {
     pub elapsed: Duration,
 }
 
-// ---- TrackedHandle ----------------------------------------------------
+// ---- ProgressBarHandle ----------------------------------------------------
 
 /// Handle to a progress bar with optional display.
 ///
@@ -286,18 +286,18 @@ pub struct TrackSnapshot {
 /// state — all clones share state and advancing any one of them updates
 /// the shared state that both clones reference.
 ///
-/// To create a no-op handle, use [`TrackedHandle::disabled`]. All mutating
+/// To create a no-op handle, use [`ProgressBarHandle::disabled`]. All mutating
 /// methods on a disabled handle are zero-cost and do nothing.
 ///
-/// [`TrackedHandle`] manages **tracking state only** (`Arc<SharedState>`);
+/// [`ProgressBarHandle`] manages **tracking state only** (`Arc<SharedState>`);
 /// the display bar is managed separately by [`ProgressRenderer`], which
 /// reads the same `Arc<SharedState>` and picks up changes asynchronously.
 #[derive(Clone)]
-pub struct TrackedHandle {
+pub struct ProgressBarHandle {
     pub(crate) state: Arc<SharedState>,
 }
 
-impl TrackedHandle {
+impl ProgressBarHandle {
     /// Create a no-op handle (all methods are zero-cost).
     #[must_use]
     pub fn disabled() -> Self {
@@ -307,7 +307,7 @@ impl TrackedHandle {
     }
 
     /// Create a standalone progress handle (not managed by a
-    /// [`ProgressGroup`]) with no display backend.
+    /// [`ProgressScreen`]) with no display backend.
     ///
     #[must_use]
     pub fn new(total: u64) -> Self {
@@ -493,9 +493,9 @@ impl TrackedHandle {
     }
 }
 
-// ---- (ProgressTracker removed: use TrackedHandle::with_label) -----
+// ---- (ProgressTracker removed: use ProgressBarHandle::with_label) -----
 
-// ---- ProgressRenderer + ProgressGroup (rendering + combined) ----------
+// ---- ProgressRenderer + ProgressScreen (rendering + combined) ----------
 
 /// A single slot in the renderer's fixed-size grid.
 pub(crate) struct RenderedSlot {
@@ -568,7 +568,7 @@ pub struct ProgressRenderer {
     pre_roll_term: Option<Box<dyn TermLike>>,
 
     /// Optional JSONL debug sink — emits bar-state snapshots on every tick.
-    debug_sink: Option<Arc<ProgressDebugSink>>,
+    debug_sink: Option<ProgressDebugSink>,
 
     /// Current uniform prefix width applied to every visible bar this frame.
     /// Recomputed each tick from the max measured prefix across bound slots,
@@ -640,7 +640,7 @@ impl ProgressRenderer {
         gate: WriteGate,
         time_source: Arc<dyn TimeSource>,
         pre_roll_term: Option<Box<dyn TermLike>>,
-        debug_sink: Option<Arc<ProgressDebugSink>>,
+        debug_sink: Option<ProgressDebugSink>,
     ) -> Self {
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity {
@@ -693,7 +693,7 @@ impl ProgressRenderer {
         gate: WriteGate,
         time_source: Arc<dyn TimeSource>,
         pre_roll_term: Option<Box<dyn TermLike>>,
-        debug_sink: Option<Arc<ProgressDebugSink>>,
+        debug_sink: Option<ProgressDebugSink>,
     ) -> (Self, Arc<SharedState>) {
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity.saturating_sub(1) {
@@ -740,6 +740,8 @@ impl ProgressRenderer {
             overall_state,
         )
     }
+
+    /// Pre-allocate `capacity` bars with an overall bar at the bottom,
 
     /// Add an overall aggregate bar pinned at the bottom slot.
     ///
@@ -1614,24 +1616,6 @@ impl ProgressRenderer {
             if slot.source.borrow().is_some() {
                 slot.bar.tick();
                 break;
-            }
-        }
-    }
-
-    /// Returns `true` if [`finalize`] has already been called.
-    pub(crate) fn is_finalized(&self) -> bool {
-        self.finalized.get()
-    }
-
-    /// Remove all bound bars from the [`MultiProgress`], committing them
-    /// into scrollback as retained lines.  After this call the bars are
-    /// retired (indicatif zombie) and will never be repainted.
-    ///
-    /// Safe to call multiple times — only the first call has any effect.
-    pub(crate) fn commit_bars(&self) {
-        for slot in &self.slots {
-            if slot.source.borrow().is_some() {
-                self.inner.remove(&slot.bar);
             }
         }
     }

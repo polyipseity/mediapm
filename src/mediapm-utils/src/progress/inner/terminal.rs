@@ -1,9 +1,9 @@
 //! `ProgressTerminal`: the single owner of a draw target, write gate,
 //! ticker thread, and pre-roll state for one sync operation.
 //!
-//! Exactly one [`ProgressScreen`] may be live inside a terminal at any time.
+//! Exactly one [`ManagedScreen`] may be live inside a terminal at any time.
 //! Creating a second screen while one is already live panics — the caller
-//! must [`join`](ProgressScreen::join) or drop the current screen first.
+//! must [`join`](ManagedScreen::join) or drop the current screen first.
 
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
@@ -14,8 +14,8 @@ use indicatif::{MultiProgress, ProgressDrawTarget, TermLike};
 use super::HasOverall;
 use super::NoOverall;
 use super::{
-    DimensionSource, MAX_SLOTS, ProgressDebugSink, ProgressRenderer, RealTerminalSource,
-    RealTimeSource, SharedState, TimeSource, TrackedHandle, detect_progress_debug_env,
+    DimensionSource, MAX_SLOTS, ProgressBarHandle, ProgressDebugSink, ProgressRenderer,
+    RealTerminalSource, RealTimeSource, SharedState, TimeSource, detect_progress_debug_env,
     gate::{BufferedTerm, WriteGate},
 };
 use crate::progress::BarStyle;
@@ -48,7 +48,7 @@ struct TerminalInner {
     /// Injectable time source (real wall clock or test double).
     time_source: Arc<dyn TimeSource>,
     /// Optional JSONL debug sink for bar-state snapshots.
-    debug_sink: Option<Arc<ProgressDebugSink>>,
+    debug_sink: Option<ProgressDebugSink>,
     /// One-shot flag: has the first-draw pre-roll (newline scroll) been
     /// performed?  True after the first frame renders.
     pre_rolled: std::sync::atomic::AtomicBool,
@@ -90,7 +90,7 @@ pub struct ProgressTerminalBuilder<S = NoOverall> {
     dynamic_height: bool,
     time_source: Arc<dyn TimeSource>,
     pre_roll_term: Option<Box<dyn TermLike>>,
-    debug_sink: Option<Arc<ProgressDebugSink>>,
+    debug_sink: Option<ProgressDebugSink>,
     ticker_enabled: bool,
     _state: PhantomData<S>,
 }
@@ -182,7 +182,7 @@ macro_rules! impl_terminal_builder_config {
             /// Attach a JSONL debug sink for progress bar state snapshots.
             #[must_use]
             pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
-                self.debug_sink = Some(Arc::new(sink));
+                self.debug_sink = Some(sink);
                 self
             }
 
@@ -264,10 +264,10 @@ impl ProgressTerminalBuilder<NoOverall> {
 impl ProgressTerminalBuilder<HasOverall> {
     /// Build a terminal with the overall bar pinned at the bottom slot.
     ///
-    /// Returns both the [`ProgressTerminal`] and a [`TrackedHandle`] for the
+    /// Returns both the [`ProgressTerminal`] and a [`ProgressBarHandle`] for the
     /// overall bar.
     #[must_use]
-    pub fn build(self) -> (ProgressTerminal, TrackedHandle) {
+    pub fn build(self) -> (ProgressTerminal, ProgressBarHandle) {
         let (label, total) = self.overall.expect("HasOverall builder must have overall set");
         let cap = self.capacity.unwrap_or_else(|| {
             let (rows, _) = self.dim_source.dimensions();
@@ -305,7 +305,7 @@ impl ProgressTerminalBuilder<HasOverall> {
             &label,
             Arc::clone(&terminal.inner.time_source),
         ));
-        let handle = TrackedHandle { state: overall_state };
+        let handle = ProgressBarHandle { state: overall_state };
         (terminal, handle)
     }
 }
@@ -316,7 +316,7 @@ impl ProgressTerminalBuilder<HasOverall> {
 /// pre-roll state for one sync operation.
 ///
 /// Create via [`ProgressTerminal::builder`] or [`ProgressTerminal::disabled`].
-/// Exactly one [`ProgressScreen`] may be live at any time — creating a
+/// Exactly one [`ManagedScreen`] may be live at any time — creating a
 /// second screen while one is already live panics.
 pub struct ProgressTerminal {
     /// Shared inner state.
@@ -372,15 +372,15 @@ impl ProgressTerminal {
 
     /// Begin building a new screen on this terminal.
     ///
-    /// Returns a [`ProgressScreenBuilder`] that can configure dynamic height,
+    /// Returns a [`TerminalScreenBuilder`] that can configure dynamic height,
     /// capacity, and an optional overall bar before calling `.build()`.
     ///
     /// # Panics
     ///
     /// Panics if a screen is already live — the caller must
-    /// [`join`](ProgressScreen::join) or drop the current screen first.
-    pub fn screen(&self) -> ProgressScreenBuilder<'_, NoOverall> {
-        ProgressScreenBuilder { terminal: self, overall: None, _state: PhantomData }
+    /// [`join`](ManagedScreen::join) or drop the current screen first.
+    pub fn screen(&self) -> TerminalScreenBuilder<'_, NoOverall> {
+        TerminalScreenBuilder { terminal: self, overall: None, _state: PhantomData }
     }
 
     /// Force a render sync (used in tests with
@@ -416,37 +416,37 @@ impl Drop for ProgressTerminal {
     }
 }
 
-// ---- ProgressScreenBuilder ----------------------------------------------
+// ---- TerminalScreenBuilder ----------------------------------------------
 
-/// Builder for [`ProgressScreen`] with compile-time overall-bar enforcement.
+/// Builder for [`ManagedScreen`] with compile-time overall-bar enforcement.
 ///
 /// Created by [`ProgressTerminal::screen`]. Use
 /// [`with_overall`](Self::with_overall) to add an overall bar, then
 /// `.build()` to obtain the screen (and overall handle when overall is set).
-pub struct ProgressScreenBuilder<'a, S = NoOverall> {
+pub struct TerminalScreenBuilder<'a, S = NoOverall> {
     terminal: &'a ProgressTerminal,
     overall: Option<(String, u64)>,
     _state: PhantomData<S>,
 }
 
-impl<'a> ProgressScreenBuilder<'a, NoOverall> {
+impl<'a> TerminalScreenBuilder<'a, NoOverall> {
     /// Build a screen without an overall bar.
     ///
     /// # Panics
     ///
     /// Panics when a screen is already live on the terminal.
     #[must_use]
-    pub fn build(self) -> ProgressScreen {
+    pub fn build(self) -> ManagedScreen {
         build_screen(self.terminal, self.overall)
     }
 
     /// Add an overall aggregate bar pinned at the bottom slot.
     ///
     /// Transitions the builder from [`NoOverall`] to [`HasOverall`],
-    /// enabling [`build()`](ProgressScreenBuilder::build).
+    /// enabling [`build()`](TerminalScreenBuilder::build).
     #[must_use]
-    pub fn with_overall(self, label: &str, total: u64) -> ProgressScreenBuilder<'a, HasOverall> {
-        ProgressScreenBuilder {
+    pub fn with_overall(self, label: &str, total: u64) -> TerminalScreenBuilder<'a, HasOverall> {
+        TerminalScreenBuilder {
             terminal: self.terminal,
             overall: Some((label.to_string(), total)),
             _state: PhantomData,
@@ -454,20 +454,20 @@ impl<'a> ProgressScreenBuilder<'a, NoOverall> {
     }
 }
 
-impl<'a> ProgressScreenBuilder<'a, HasOverall> {
+impl<'a> TerminalScreenBuilder<'a, HasOverall> {
     /// Build a screen with the overall bar pinned at the bottom slot.
     ///
-    /// Returns both the [`ProgressScreen`] and a [`TrackedHandle`] for the
+    /// Returns both the [`ManagedScreen`] and a [`ProgressBarHandle`] for the
     /// overall bar.
     ///
     /// # Panics
     ///
     /// Panics when a screen is already live on the terminal.
     #[must_use]
-    pub fn build(self) -> (ProgressScreen, TrackedHandle) {
+    pub fn build(self) -> (ManagedScreen, ProgressBarHandle) {
         let overall = self.overall.expect("HasOverall builder must have overall set");
         let screen = build_screen(self.terminal, Some(overall.clone()));
-        let handle = TrackedHandle {
+        let handle = ProgressBarHandle {
             state: Arc::new(SharedState::with_time_source(
                 overall.1,
                 &overall.0,
@@ -478,8 +478,8 @@ impl<'a> ProgressScreenBuilder<'a, HasOverall> {
     }
 }
 
-/// Internal: create a [`ProgressScreen`] on the given terminal.
-fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> ProgressScreen {
+/// Internal: create a [`ManagedScreen`] on the given terminal.
+fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> ManagedScreen {
     // Check that no screen is live.
     {
         let mut state =
@@ -531,7 +531,7 @@ fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> 
         state.ticker = ticker;
         state.screen = Some(ScreenState { id });
 
-        ProgressScreen {
+        ManagedScreen {
             inner: Some(Arc::clone(&terminal.inner)),
             renderer: Some(renderer),
             screen_id: id,
@@ -540,7 +540,7 @@ fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> 
     }
 }
 
-// ---- ProgressScreen -----------------------------------------------------
+// ---- ManagedScreen -----------------------------------------------------
 
 /// A handle for one live screen inside a [`ProgressTerminal`].
 ///
@@ -549,8 +549,8 @@ fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> 
 /// without an explicit `join` also commits it (the `Drop` impl calls
 /// `join`).
 ///
-/// To create a no-op screen, use [`ProgressScreen::disabled`].
-pub struct ProgressScreen {
+/// To create a no-op screen, use [`ManagedScreen::disabled`].
+pub struct ManagedScreen {
     /// Shared terminal inner state (`None` when disabled).
     inner: Option<Arc<TerminalInner>>,
     /// Per-screen renderer (`None` when disabled).
@@ -561,7 +561,7 @@ pub struct ProgressScreen {
     joined: std::sync::atomic::AtomicBool,
 }
 
-impl ProgressScreen {
+impl ManagedScreen {
     /// Create a disabled (no-op) screen.
     ///
     /// All bars added are no-ops.  Joining is a no-op.
@@ -592,7 +592,7 @@ impl ProgressScreen {
     ///
     /// Panics if this screen is not the live screen (already joined or dropped).
     #[must_use]
-    pub fn add_bar(&self, total: u64, label: &str) -> TrackedHandle {
+    pub fn add_bar(&self, total: u64, label: &str) -> ProgressBarHandle {
         self.add_bar_with_style(total, label, BarStyle::StepCount)
     }
 
@@ -603,14 +603,19 @@ impl ProgressScreen {
     /// # Panics
     ///
     /// Panics if this screen is not the live screen (already joined or dropped).
-    pub fn add_bar_with_style(&self, total: u64, label: &str, style: BarStyle) -> TrackedHandle {
+    pub fn add_bar_with_style(
+        &self,
+        total: u64,
+        label: &str,
+        style: BarStyle,
+    ) -> ProgressBarHandle {
         let Some(ref renderer) = self.renderer else {
-            return TrackedHandle::disabled();
+            return ProgressBarHandle::disabled();
         };
         // Check live status before acquiring the renderer lock.
         if !self.is_live() {
             panic!(
-                "ProgressScreen is not the live screen \
+                "ManagedScreen is not the live screen \
                  (already joined or dropped)"
             );
         }
@@ -625,7 +630,7 @@ impl ProgressScreen {
             ));
             locked.attach(&state);
         }
-        TrackedHandle { state }
+        ProgressBarHandle { state }
     }
 
     /// Commit this screen's bars into scrollback.
@@ -669,7 +674,7 @@ impl ProgressScreen {
     }
 }
 
-impl Drop for ProgressScreen {
+impl Drop for ManagedScreen {
     fn drop(&mut self) {
         self.join();
     }
@@ -682,7 +687,7 @@ impl Drop for ProgressScreen {
 /// and debug emission), performs the one-shot pre-roll, then draws once
 /// by opening the gate and ticking active bars.
 ///
-/// This is the single frame entry point for [`ProgressScreen::tick`].
+/// This is the single frame entry point for [`ManagedScreen::tick`].
 /// The renderer's own [`tick`](ProgressRenderer::tick) method is used
 /// only by the ticker thread for autonomous animation.
 pub(crate) fn run_terminal_frame(renderer: &std::sync::Mutex<ProgressRenderer>) {

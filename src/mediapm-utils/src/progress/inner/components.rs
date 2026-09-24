@@ -109,7 +109,7 @@ pub(crate) fn format_rate(rate: f64) -> String {
 ///
 /// Every tick cycle writes one JSON line to the configured writer with a
 /// snapshot of all bar states.  Controlled via
-/// [`ProgressGroupBuilder::with_progress_debug_sink`] or the
+/// [`ProgressScreenBuilder::with_progress_debug_sink`] or the
 /// `MEDIAPM_PROGRESS_DEBUG` environment variable.
 pub struct ProgressDebugSink {
     /// Output writer (e.g. file, stderr).
@@ -287,7 +287,7 @@ pub(crate) fn render_suffix_components(parts: &SuffixComponents, color_code: &st
 /// visible characters that participate in truncation.
 ///
 /// Initial values come from parsing the `add_bar`/`with_overall` label at
-/// construction; [`TrackedHandle::set_prefix_components`] is the only
+/// construction; [`ProgressBarHandle::set_prefix_components`] is the only
 /// runtime mutation API. The removal order above is a normative spec,
 /// verified verbatim by the `semantic_truncate_prefix_*` unit suites.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -326,7 +326,7 @@ pub struct PrefixComponents {
 /// Render rule: `eta` is rendered only when `rate` is present
 /// (eta-only-when-rate guard).
 ///
-/// [`TrackedHandle::set_suffix_components`] is the only mutation API (the
+/// [`ProgressBarHandle::set_suffix_components`] is the only mutation API (the
 /// legacy `set_suffix(String)` is removed); user-set fields override the
 /// auto-derived ticker fields at sync time with empty fields auto-filled.
 /// The removal order above is a normative spec, verified verbatim by the

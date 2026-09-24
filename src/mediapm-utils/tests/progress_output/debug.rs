@@ -18,11 +18,11 @@ fn debug_sink_to_file() -> (ProgressDebugSink, std::path::PathBuf, tempfile::Tem
     (ProgressDebugSink::new(Box::new(file)), path, dir)
 }
 
-/// Helper: create a minimal `ProgressGroup` with a debug sink, a single bar,
+/// Helper: create a minimal `ProgressScreen` with a debug sink, a single bar,
 /// and manual tick control.
-fn make_debug_group(sink: ProgressDebugSink) -> (ProgressGroup, TrackedHandle) {
+fn make_debug_group(sink: ProgressDebugSink) -> (ProgressScreen, ProgressBarHandle) {
     let (mp, _term) = mk();
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(4)
         .with_progress_debug_sink(sink)
@@ -94,7 +94,7 @@ fn progress_debug_shows_bar_state() {
 fn progress_debug_no_bars_shows_empty_bars_array() {
     let (sink, path, _dir) = debug_sink_to_file();
     let (mp, _term) = mk();
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(4)
         .with_progress_debug_sink(sink)
@@ -133,7 +133,7 @@ fn progress_debug_env_auto_creates_file() {
     let _ = std::fs::remove_file(&debug_path);
 
     let (mp, _term) = mk();
-    let group = ProgressGroup::builder().with_multi_progress(mp).build();
+    let group = ProgressScreen::builder().with_multi_progress(mp).build();
 
     group.tick();
     std::thread::sleep(Duration::from_millis(10));
@@ -150,7 +150,7 @@ fn progress_debug_env_auto_creates_file() {
 
 #[test]
 fn progress_debug_append_across_groups() {
-    // Two sequential `ProgressGroup::builder().build()` calls in the same
+    // Two sequential `ProgressScreen::builder().build()` calls in the same
     // process must both contribute lines to the same debug file. The sink must
     // APPEND (not truncate) so the earlier group's ticks survive.
     let dir = mediapm_utils::temp::artifact_dir().unwrap();
@@ -169,7 +169,7 @@ fn progress_debug_append_across_groups() {
     // First group: writes its ticks to the file.
     {
         let (mp, _term) = mk();
-        let group = ProgressGroup::builder().with_multi_progress(mp).build();
+        let group = ProgressScreen::builder().with_multi_progress(mp).build();
         for _ in 0..5 {
             group.tick();
             std::thread::sleep(Duration::from_millis(5));
@@ -181,7 +181,7 @@ fn progress_debug_append_across_groups() {
     // remain. Keep the env var set so build() re-detects the same path.
     {
         let (mp, _term) = mk();
-        let group = ProgressGroup::builder().with_multi_progress(mp).build();
+        let group = ProgressScreen::builder().with_multi_progress(mp).build();
         for _ in 0..5 {
             group.tick();
             std::thread::sleep(Duration::from_millis(5));

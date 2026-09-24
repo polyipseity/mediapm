@@ -8,8 +8,8 @@ pub use indicatif::{
     InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike,
 };
 pub use mediapm_utils::progress::{
-    DimensionSource, ProgressDebugSink, ProgressGroup, SuffixComponents, TestDimensionSource,
-    TestTimeSource, TimeSource, TrackedHandle,
+    DimensionSource, ProgressBarHandle, ProgressDebugSink, ProgressScreen, SuffixComponents,
+    TestDimensionSource, TestTimeSource, TimeSource,
 };
 
 /// Default terminal dimensions for standard tests.
@@ -126,23 +126,23 @@ pub fn ins_bar(mp: &MultiProgress, before: &ProgressBar, total: u64, prefix: &st
     mp.insert_before(before, pb)
 }
 
-/// Build a [`ProgressGroup`] without an overall bar, ticker disabled.
-pub fn group(mp: MultiProgress, capacity: usize) -> ProgressGroup {
-    ProgressGroup::builder()
+/// Build a [`ProgressScreen`] without an overall bar, ticker disabled.
+pub fn group(mp: MultiProgress, capacity: usize) -> ProgressScreen {
+    ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(capacity)
         .with_ticker_enabled(false)
         .build()
 }
 
-/// Build a [`ProgressGroup`] without an overall bar, with a deterministic
+/// Build a [`ProgressScreen`] without an overall bar, with a deterministic
 /// time source and ticker disabled.
 pub fn group_with_ts(
     mp: MultiProgress,
     capacity: usize,
     ts: &Arc<TestTimeSource>,
-) -> ProgressGroup {
-    ProgressGroup::builder()
+) -> ProgressScreen {
+    ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(capacity)
         .with_time_source(Arc::clone(ts) as Arc<dyn TimeSource>)
@@ -150,14 +150,14 @@ pub fn group_with_ts(
         .build()
 }
 
-/// Build a [`ProgressGroup`] with an overall bar, ticker disabled.
+/// Build a [`ProgressScreen`] with an overall bar, ticker disabled.
 pub fn group_with_overall(
     mp: MultiProgress,
     capacity: usize,
     label: &str,
     overall_total: u64,
-) -> (ProgressGroup, TrackedHandle) {
-    ProgressGroup::builder()
+) -> (ProgressScreen, ProgressBarHandle) {
+    ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(capacity)
         .with_overall(label, overall_total)
@@ -165,7 +165,7 @@ pub fn group_with_overall(
         .build()
 }
 
-/// Build a [`ProgressGroup`] with an overall bar and a deterministic time
+/// Build a [`ProgressScreen`] with an overall bar and a deterministic time
 /// source, ticker disabled.
 pub fn group_with_overall_and_ts(
     mp: MultiProgress,
@@ -173,8 +173,8 @@ pub fn group_with_overall_and_ts(
     label: &str,
     overall_total: u64,
     ts: &Arc<TestTimeSource>,
-) -> (ProgressGroup, TrackedHandle) {
-    ProgressGroup::builder()
+) -> (ProgressScreen, ProgressBarHandle) {
+    ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(capacity)
         .with_overall(label, overall_total)
@@ -183,7 +183,7 @@ pub fn group_with_overall_and_ts(
         .build()
 }
 
-/// Build a [`ProgressGroup`] with an overall bar, a custom dimension source,
+/// Build a [`ProgressScreen`] with an overall bar, a custom dimension source,
 /// and dynamic-height toggle, ticker disabled.
 pub fn group_with_overall_and_dims(
     mp: MultiProgress,
@@ -192,8 +192,8 @@ pub fn group_with_overall_and_dims(
     overall_total: u64,
     dims: &Arc<TestDimensionSource>,
     dynamic_height: bool,
-) -> (ProgressGroup, TrackedHandle) {
-    ProgressGroup::builder()
+) -> (ProgressScreen, ProgressBarHandle) {
+    ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(capacity)
         .with_overall(label, overall_total)
@@ -213,8 +213,8 @@ pub fn group_with_overall_and_dims_and_ts(
     dims: &Arc<TestDimensionSource>,
     ts: &Arc<TestTimeSource>,
     dynamic_height: bool,
-) -> (ProgressGroup, TrackedHandle) {
-    ProgressGroup::builder()
+) -> (ProgressScreen, ProgressBarHandle) {
+    ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(capacity)
         .with_overall(label, overall_total)

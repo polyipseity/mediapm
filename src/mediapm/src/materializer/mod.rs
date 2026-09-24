@@ -27,7 +27,7 @@ use crate::config::hierarchy_types::{
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
-use crate::output::progress::{ProgressBarApi, ProgressGroup, ProgressGroupApi};
+use crate::output::progress::{ProgressBarApi, ProgressScreen, ProgressScreenApi};
 use crate::paths::MediaPmPaths;
 use crate::tools::workflows::{
     resolve_ffmpeg_slot_limits, resolve_media_variant_output_binding_with_limits,
@@ -152,7 +152,7 @@ pub async fn sync_hierarchy(
     verify_materialization: bool,
     conductor_state: &ConductorState,
     generated_doc: &NickelDocument,
-    progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>,
+    progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn ProgressBarApi>>,
 ) -> Result<MaterializeReport, MediaPmError> {
     let hierarchy_root = &paths.hierarchy_root_dir;
@@ -183,7 +183,7 @@ pub async fn sync_hierarchy(
 
     // Use the caller-provided overall bar if available, otherwise create one
     // from the progress group or from a local fallback group.
-    let (owned_group, pb): (Option<ProgressGroup>, Arc<dyn ProgressBarApi>) =
+    let (owned_group, pb): (Option<ProgressScreen>, Arc<dyn ProgressBarApi>) =
         if let Some(bar) = overall_bar {
             // Caller owns the overall bar — set the real entry count.
             bar.set_total(flattened.len() as u64);
@@ -202,7 +202,7 @@ pub async fn sync_hierarchy(
             }));
             (None, bar)
         } else {
-            let g = ProgressGroup::builder().dynamic_height(true).build();
+            let g = ProgressScreen::builder().dynamic_height(true).build();
             let p: Arc<dyn ProgressBarApi> =
                 Arc::new(g.add_bar(flattened.len() as u64, "materializing [mat]"));
             (Some(g), p)
@@ -324,7 +324,7 @@ async fn prepare_hierarchy_entry(
     document: &MediaPmDocument,
     shared: &SyncSharedState,
     lookup: &MaterializationLookupContext,
-    progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>,
+    progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     let relative_path = entry.path_str();
     let target_path = shared.hierarchy_root.join(&relative_path);
@@ -591,7 +591,7 @@ async fn materialize_media_folder_entry(
     relative_path: &str,
     shared: &SyncSharedState,
     lookup: &MaterializationLookupContext,
-    progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>,
+    progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     tokio::fs::create_dir_all(target_path).await.map_err(|source| MediaPmError::Io {
         operation: "creating media-folder directory".to_string(),

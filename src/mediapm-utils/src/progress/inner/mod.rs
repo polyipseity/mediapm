@@ -2,13 +2,13 @@
 //!
 //! This module groups the always-feature-gated rendering machinery: the terminal
 //! wrapper, dimension/time sources, prefix/suffix components, the tracked-handle
-//! state model, and the combined [`ProgressGroup`].
+//! state model, and the combined [`ProgressScreen`].
 
 mod components;
 mod debug;
 mod gate;
-mod group;
 mod renderer;
+mod screen;
 mod sources;
 mod terminal;
 
@@ -21,14 +21,12 @@ pub use debug::{
     DimensionSource, RealTerminalSource, RealTimeSource, TestDimensionSource, TestTimeSource,
     TimeSource,
 };
-pub use group::{HasOverall, NoOverall, ProgressGroup, ProgressGroupBuilder};
-pub use renderer::{ProgressRenderer, TrackSnapshot, TrackStatus, TrackedHandle};
-pub use terminal::{
-    ProgressScreen, ProgressScreenBuilder, ProgressTerminal, ProgressTerminalBuilder,
-};
+pub use renderer::{ProgressBarHandle, ProgressRenderer, TrackSnapshot, TrackStatus};
+pub use screen::{HasOverall, NoOverall, ProgressScreen, ProgressScreenBuilder};
+pub use terminal::{ProgressTerminal, ProgressTerminalBuilder};
 
 pub(crate) use debug::detect_progress_debug_env;
-// `BufferedTerm` and `WriteWindow` are re-exported for use by `group.rs`
+// `BufferedTerm` and `WriteWindow` are re-exported for use by `screen.rs`
 // (via `super::BufferedTerm`) and will be used by `renderer.rs` in C4.
 #[allow(unused_imports)]
 pub(crate) use gate::{BufferedTerm, WriteGate, WriteWindow};

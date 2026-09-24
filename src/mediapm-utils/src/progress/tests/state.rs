@@ -198,7 +198,7 @@ fn shared_state_elapsed_monotonic() {
     assert!(t2 >= t1, "t2 ({t2:?}) should be >= t1 ({t1:?})");
 }
 
-// ---- TrackedHandle elapsed (integration) -----------------------------
+// ---- ProgressBarHandle elapsed (integration) -----------------------------
 
 #[test]
 fn tracked_handle_elapsed_frozen_after_all_finish_methods() {
@@ -207,23 +207,24 @@ fn tracked_handle_elapsed_frozen_after_all_finish_methods() {
     for (name, finish_fn) in [
         (
             "finish_success",
-            Box::new(|h: &TrackedHandle| h.finish_success()) as Box<dyn Fn(&TrackedHandle)>,
+            Box::new(|h: &ProgressBarHandle| h.finish_success()) as Box<dyn Fn(&ProgressBarHandle)>,
         ),
         (
             "finish_error",
-            Box::new(|h: &TrackedHandle| h.finish_error()) as Box<dyn Fn(&TrackedHandle)>,
+            Box::new(|h: &ProgressBarHandle| h.finish_error()) as Box<dyn Fn(&ProgressBarHandle)>,
         ),
         (
             "finish_warning",
-            Box::new(|h: &TrackedHandle| h.finish_warning()) as Box<dyn Fn(&TrackedHandle)>,
+            Box::new(|h: &ProgressBarHandle| h.finish_warning()) as Box<dyn Fn(&ProgressBarHandle)>,
         ),
         (
             "finish_and_clear",
-            Box::new(|h: &TrackedHandle| h.finish_and_clear()) as Box<dyn Fn(&TrackedHandle)>,
+            Box::new(|h: &ProgressBarHandle| h.finish_and_clear())
+                as Box<dyn Fn(&ProgressBarHandle)>,
         ),
     ] {
         let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
-        let g = super::super::ProgressGroup::builder()
+        let g = super::super::ProgressScreen::builder()
             .with_time_source(
                 std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>
             )
@@ -240,7 +241,7 @@ fn tracked_handle_elapsed_frozen_after_all_finish_methods() {
 
 #[test]
 fn progress_group_new_creates_handle() {
-    let g = ProgressGroup::builder().build();
+    let g = ProgressScreen::builder().build();
     let h = g.add_bar(42, "child");
     assert!(h.total() > 0, "enabled handle must have total > 0");
     assert_eq!(h.total(), 42);
@@ -248,7 +249,7 @@ fn progress_group_new_creates_handle() {
 
 #[test]
 fn progress_group_with_overall_creates_both() {
-    let (g, overall) = ProgressGroup::builder().with_overall("all", 100).build();
+    let (g, overall) = ProgressScreen::builder().with_overall("all", 100).build();
     assert_eq!(overall.total(), 100, "overall bar must have total == 100");
     let child = g.add_bar(50, "child");
     assert_eq!(child.total(), 50, "child bar must have total == 50");
@@ -281,25 +282,25 @@ fn recording_handle_multiple_advances_sum() {
 #[test]
 fn progress_group_join_and_clear_does_not_panic() {
     // Non-empty group
-    let g = ProgressGroup::builder().build();
+    let g = ProgressScreen::builder().build();
     let _h = g.add_bar(10, "a");
     g.join();
     g.join_and_clear();
 
     // Empty group
-    let g = ProgressGroup::builder().build();
+    let g = ProgressScreen::builder().build();
     g.join();
     g.join_and_clear();
 }
 
 #[test]
 fn progress_group_disabled_construction() {
-    let g1 = ProgressGroup::disabled();
+    let g1 = ProgressScreen::disabled();
     let h1 = g1.add_bar(50, "c1");
     assert_eq!(h1.total(), 0);
 
     // disabled + explicit disabled handle pair for with-overall patterns.
-    let (_g2, h2) = (ProgressGroup::disabled(), TrackedHandle::disabled());
+    let (_g2, h2) = (ProgressScreen::disabled(), ProgressBarHandle::disabled());
     assert_eq!(h2.total(), 0);
 }
 
@@ -321,7 +322,7 @@ fn recording_handle_finish_does_not_generate_clear() {
 #[test]
 fn progress_group_join_leaves_handles_intact() {
     // join() is a no-op — handles must still be usable afterward.
-    let g = ProgressGroup::builder().build();
+    let g = ProgressScreen::builder().build();
     let h = g.add_bar(42, "child");
     h.advance(10);
     h.set_total(50);
@@ -334,7 +335,7 @@ fn progress_group_join_leaves_handles_intact() {
 fn progress_group_finish_success_and_error_preserve_group() {
     // Finish calls on a handle must preserve the total and the group must
     // remain functional (join() must not panic).
-    let g = ProgressGroup::builder().build();
+    let g = ProgressScreen::builder().build();
     let h = g.add_bar(10, "test");
     h.finish_success();
     assert_eq!(h.total(), 10, "handle total preserved after finish_success");
@@ -397,11 +398,11 @@ fn recording_handle_finish_ops_sequence() {
     assert_eq!(h3.ops(), vec![ProgressOp::FinishError], "finish_error records FinishError");
 }
 
-// ── TrackedHandle::new (with bar) ──────────────────────────────────
+// ── ProgressBarHandle::new (with bar) ──────────────────────────────────
 
 #[test]
 fn tracked_handle_new_creates_handle_with_total() {
-    let h = TrackedHandle::new(50);
+    let h = ProgressBarHandle::new(50);
     assert_eq!(h.total(), 50);
     assert_eq!(h.snapshot().position, 0);
     assert!(!h.is_finished());
@@ -409,7 +410,7 @@ fn tracked_handle_new_creates_handle_with_total() {
 
 #[test]
 fn tracked_handle_new_advance_and_snapshot() {
-    let h = TrackedHandle::new(100);
+    let h = ProgressBarHandle::new(100);
     h.advance(42);
     let snap = h.snapshot();
     assert_eq!(snap.position, 42);
@@ -418,7 +419,7 @@ fn tracked_handle_new_advance_and_snapshot() {
 
 #[test]
 fn tracked_handle_is_finished_after_finish_success() {
-    let h = TrackedHandle::new(10);
+    let h = ProgressBarHandle::new(10);
     assert!(!h.is_finished());
     h.finish_success();
     assert!(h.is_finished());
@@ -426,21 +427,21 @@ fn tracked_handle_is_finished_after_finish_success() {
 
 #[test]
 fn tracked_handle_is_finished_after_finish_error() {
-    let h = TrackedHandle::new(10);
+    let h = ProgressBarHandle::new(10);
     h.finish_error();
     assert!(h.is_finished());
 }
 
 #[test]
 fn tracked_handle_is_finished_after_finish_warning() {
-    let h = TrackedHandle::new(10);
+    let h = ProgressBarHandle::new(10);
     h.finish_warning();
     assert!(h.is_finished());
 }
 
 #[test]
 fn tracked_handle_snapshot_fields_match() {
-    let h = TrackedHandle::new(100);
+    let h = ProgressBarHandle::new(100);
     h.set_prefix_components(PrefixComponents { tool_name: "pfx".into(), ..Default::default() });
     h.advance(7);
     let snap = h.snapshot();
@@ -454,11 +455,11 @@ fn tracked_handle_snapshot_fields_match() {
 fn progress_group_excess_bars_return_active_handles() {
     // Fill slots beyond capacity, verify excess handle still tracks.
 
-    // ProgressGroup::with_overall allocates terminal_height() slots
+    // ProgressScreen::with_overall allocates terminal_height() slots
     // (clamped to 4-200).  Use a MultiProgress with small term to force
     // small capacity.
     let term = indicatif::InMemoryTerm::new(4, 40);
-    let (group, _overall) = ProgressGroup::builder()
+    let (group, _overall) = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .capacity(4)
         .with_overall("overall", 10)
@@ -485,10 +486,10 @@ fn progress_group_excess_bars_return_active_handles() {
 
 #[test]
 fn progress_group_manager_finish_and_clear_via_tick_fn() {
-    // finish_and_clear on a ProgressGroup-managed handle (bar=None,
+    // finish_and_clear on a ProgressScreen-managed handle (bar=None,
     // tick_fn=Some) must still mark state as finished.
 
-    let (_group, overall) = ProgressGroup::builder().with_overall("all", 10).build();
+    let (_group, overall) = ProgressScreen::builder().with_overall("all", 10).build();
     overall.finish_and_clear();
     let snap = overall.snapshot();
     assert!(
@@ -508,7 +509,7 @@ fn progress_group_manager_finish_and_clear_via_tick_fn() {
 fn tracked_handle_finish_and_clear_disabled_is_noop() {
     // disabled() handle with finish_and_clear must not panic and
     // must leave state unchanged.
-    let h = TrackedHandle::disabled();
+    let h = ProgressBarHandle::disabled();
     assert_eq!(h.total(), 0);
     h.finish_and_clear();
     assert_eq!(h.total(), 0);
@@ -516,17 +517,17 @@ fn tracked_handle_finish_and_clear_disabled_is_noop() {
 
 #[test]
 fn progress_group_disabled_add_bar_returns_disabled() {
-    let g = ProgressGroup::disabled();
+    let g = ProgressScreen::disabled();
     let child = g.add_bar(42, "child");
     assert_eq!(child.total(), 0, "child disabled");
 }
 
 #[test]
 fn progress_group_api_trait_via_recording() {
-    // Verify RecordingProgressTracker implements ProgressGroupApi
+    // Verify RecordingProgressTracker implements ProgressScreenApi
     // and can be used via the trait.
-    use super::super::ProgressGroupApi;
-    let tracker: Arc<dyn ProgressGroupApi> = Arc::new(RecordingProgressTracker::new());
+    use super::super::ProgressScreenApi;
+    let tracker: Arc<dyn ProgressScreenApi> = Arc::new(RecordingProgressTracker::new());
     let bar: Arc<dyn super::super::ProgressBarApi> = tracker.add_bar(100, "test");
     assert!(!bar.is_finished(), "recording bar starts unfinished");
     bar.advance(5);
@@ -539,7 +540,8 @@ fn rate_computation_handles_non_monotonic_position() {
     // When a bar's position regresses between ticks, the EMA rate
     // computation must not panic (saturating_sub guard).
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group = ProgressGroup::builder().with_term_like(Box::new(term.clone())).capacity(4).build();
+    let group =
+        ProgressScreen::builder().with_term_like(Box::new(term.clone())).capacity(4).build();
     let h = group.add_bar(100, "test");
     h.advance(80); // position grows to 80
     group.tick(); // tick captures prev_position = 80
@@ -561,7 +563,7 @@ fn spinner_advances_per_cycle_for_all_bars() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let (group, overall) = super::super::ProgressGroup::builder()
+    let (group, overall) = super::super::ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -646,7 +648,7 @@ fn recycled_bar_spinner_animates() {
 
     // capacity=2 means 1 child + 1 overall bar.
     // dynamic_height=false fixed capacity prevents auto-growing.
-    let (group, overall) = super::super::ProgressGroup::builder()
+    let (group, overall) = super::super::ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
@@ -760,7 +762,7 @@ fn bar_color_code_success() {
 #[test]
 fn restart_clears_finished_status() {
     let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
-    let g = ProgressGroup::builder()
+    let g = ProgressScreen::builder()
         .with_time_source(ts as std::sync::Arc<dyn super::super::TimeSource>)
         .build();
     let h = g.add_bar(100, "restart-bar");
@@ -832,7 +834,7 @@ fn sync_slot_resets_finished_bar_on_restart() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)

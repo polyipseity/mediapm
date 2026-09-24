@@ -19,7 +19,7 @@ use crate::{MaterializationSyncSummary, ToolsSyncSummary, WorkflowSyncSummary};
 ///
 /// Implementations must be cheap and must not block; they are invoked on
 /// the sync task between phases. `Arc<dyn ...>` mirrors the existing
-/// `Arc<dyn ProgressGroupApi + Send + Sync>` plumbing used for the
+/// `Arc<dyn ProgressScreenApi + Send + Sync>` plumbing used for the
 /// progress screens and lets callers share one observer across phases.
 ///
 /// Phase order is guaranteed: `Tools` → `Workflow` → `Materialization`.

@@ -1,14 +1,14 @@
 //! Shared API traits and the [`BarStyle`] marker for progress-bar dependency
 //! injection.
 //!
-//! These types are feature-gated behind `progress`. Both [`TrackedHandle`] and
+//! These types are feature-gated behind `progress`. Both [`ProgressBarHandle`] and
 //! [`recording::RecordingTrackedHandle`] implement [`ProgressBarApi`]; both
-//! [`ProgressGroup`] and [`recording::RecordingProgressTracker`] implement
-//! [`ProgressGroupApi`].
+//! [`ProgressScreen`] and [`recording::RecordingProgressTracker`] implement
+//! [`ProgressScreenApi`].
 
 use crate::progress::BarLabelTruncation;
 use crate::progress::inner::{
-    PrefixComponents, ProgressGroup, SuffixComponents, TrackSnapshot, TrackedHandle,
+    PrefixComponents, ProgressBarHandle, ProgressScreen, SuffixComponents, TrackSnapshot,
 };
 use std::sync::Arc;
 
@@ -33,8 +33,8 @@ use std::sync::Arc;
 ///   all-░ bar. The same `wide_bar` child template as `StepCount` is used;
 ///   only the field population differs.
 ///
-/// Set via [`ProgressBarApi::set_style`] (or [`TrackedHandle::set_style`]) after
-/// [`ProgressGroup::add_bar`]. Defaults to [`StepCount`](BarStyle::StepCount).
+/// Set via [`ProgressBarApi::set_style`] (or [`ProgressBarHandle::set_style`]) after
+/// [`ProgressScreen::add_bar`]. Defaults to [`StepCount`](BarStyle::StepCount).
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BarStyle {
@@ -47,7 +47,7 @@ pub enum BarStyle {
 
 /// Minimum progress-bar handle API for dependency injection.
 ///
-/// Both [`TrackedHandle`] and
+/// Both [`ProgressBarHandle`] and
 /// [`RecordingTrackedHandle`](crate::progress::recording::RecordingTrackedHandle) implement
 /// this trait, allowing consumer functions to accept either a real display
 /// bar or a recording bar for testing.
@@ -89,62 +89,62 @@ pub trait ProgressBarApi: Send + Sync {
     ///
     /// Defaults to [`StepCount`](BarStyle::StepCount). Callers that own a
     /// worker-slot bar set [`WorkerSpinner`](BarStyle::WorkerSpinner) after
-    /// [`add_bar`](crate::progress::ProgressGroup::add_bar) so the renderer
+    /// [`add_bar`](crate::progress::ProgressScreen::add_bar) so the renderer
     /// applies the style-specific `0/0` div-by-zero guard.
     fn set_style(&self, style: BarStyle);
 }
 
 #[cfg(feature = "progress")]
-impl ProgressBarApi for TrackedHandle {
+impl ProgressBarApi for ProgressBarHandle {
     fn advance(&self, delta: u64) {
-        TrackedHandle::advance(self, delta);
+        ProgressBarHandle::advance(self, delta);
     }
     fn finish_success(&self) {
-        TrackedHandle::finish_success(self);
+        ProgressBarHandle::finish_success(self);
     }
     fn finish_error(&self) {
-        TrackedHandle::finish_error(self);
+        ProgressBarHandle::finish_error(self);
     }
     fn finish_warning(&self) {
-        TrackedHandle::finish_warning(self);
+        ProgressBarHandle::finish_warning(self);
     }
     fn snapshot(&self) -> TrackSnapshot {
-        TrackedHandle::snapshot(self)
+        ProgressBarHandle::snapshot(self)
     }
     fn is_finished(&self) -> bool {
-        TrackedHandle::is_finished(self)
+        ProgressBarHandle::is_finished(self)
     }
     fn set_position(&self, pos: u64) {
-        TrackedHandle::set_position(self, pos);
+        ProgressBarHandle::set_position(self, pos);
     }
     fn set_total(&self, total: u64) {
-        TrackedHandle::set_total(self, total);
+        ProgressBarHandle::set_total(self, total);
     }
     fn set_prefix_components(&self, components: PrefixComponents) {
-        TrackedHandle::set_prefix_components(self, components);
+        ProgressBarHandle::set_prefix_components(self, components);
     }
     fn set_suffix_components(&self, components: SuffixComponents) {
-        TrackedHandle::set_suffix_components(self, components);
+        ProgressBarHandle::set_suffix_components(self, components);
     }
     fn set_truncation(&self, truncation: Arc<dyn BarLabelTruncation>) {
-        TrackedHandle::set_truncation(self, truncation);
+        ProgressBarHandle::set_truncation(self, truncation);
     }
     fn restart(&self) {
-        TrackedHandle::restart(self);
+        ProgressBarHandle::restart(self);
     }
     fn set_style(&self, style: BarStyle) {
-        TrackedHandle::set_style(self, style);
+        ProgressBarHandle::set_style(self, style);
     }
 }
 
 /// Minimum progress-group API for dependency injection.
 ///
-/// Both [`ProgressGroup`] and
+/// Both [`ProgressScreen`] and
 /// [`RecordingProgressTracker`](crate::progress::recording::RecordingProgressTracker) implement
 /// this trait, allowing consumer functions to accept either a real display
 /// group or a recording group for testing.
 #[cfg(feature = "progress")]
-pub trait ProgressGroupApi {
+pub trait ProgressScreenApi {
     /// Add a child bar and return an [`Arc`]-wrapped handle.
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi>;
     /// Block until all bars in the group reach a finished state.
@@ -152,11 +152,11 @@ pub trait ProgressGroupApi {
 }
 
 #[cfg(feature = "progress")]
-impl ProgressGroupApi for ProgressGroup {
+impl ProgressScreenApi for ProgressScreen {
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
-        Arc::new(ProgressGroup::add_bar(self, total, label))
+        Arc::new(ProgressScreen::add_bar(self, total, label))
     }
     fn join(&self) {
-        ProgressGroup::join(self);
+        ProgressScreen::join(self);
     }
 }

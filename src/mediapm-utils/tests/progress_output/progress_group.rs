@@ -243,7 +243,7 @@ fn progress_group_child_shows_label_and_total() {
 fn progress_group_disabled_returns_noop() {
     // -- with overall --
     let (_mp, term) = mk_with_size(4, 80);
-    let (group, overall) = (ProgressGroup::disabled(), TrackedHandle::disabled());
+    let (group, overall) = (ProgressScreen::disabled(), ProgressBarHandle::disabled());
     assert_eq!(overall.total(), 0, "overall handle must be no-op when disabled");
 
     let child = group.add_bar(5, "child");
@@ -254,7 +254,7 @@ fn progress_group_disabled_returns_noop() {
 
     // -- without overall --
     let (_mp2, term2) = mk_with_size(4, 80);
-    let group2 = ProgressGroup::disabled();
+    let group2 = ProgressScreen::disabled();
     let c2 = group2.add_bar(3, "noop");
     assert_eq!(c2.total(), 0, "child handle must be no-op without overall");
     group2.tick();
@@ -402,7 +402,7 @@ fn progress_group_consumer_lifecycle_keeps_finished_bars() {
 // ── Finalize (join_and_clear) behavior ──
 //
 // These tests verify the `Renderer::finalize()` path exercised by
-// `ProgressGroup::join_and_clear()`.  The critical invariants:
+// `ProgressScreen::join_and_clear()`.  The critical invariants:
 // - **Finished bars (including overall) survive** finalize (Problem 2 from v3→v4).
 // - **Active bars are untouched** by finalize.
 // - **Empty finalize** (no children, only overall) does not panic.
@@ -944,7 +944,7 @@ fn child_bar_elapsed_frozen_after_abandon() {
 fn orphan_reattach_preserves_elapsed() {
     let dims = Arc::new(TestDimensionSource::new((3, 80)));
     let (mp, term, ts) = mk_with_size_and_ts(5, 80);
-    let (group, _overall) = ProgressGroup::builder()
+    let (group, _overall) = ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 5)
@@ -1155,12 +1155,12 @@ fn finalize_exact_terminal_match_after_full_lifecycle() {
     );
 }
 
-/// Verify that content written before `ProgressGroup` creation survives
+/// Verify that content written before `ProgressScreen` creation survives
 /// the finalize lifecycle (test-mode invariant: `pre_roll` is a no-op).
 #[test]
 fn finalize_preserves_content_written_before_progress() {
     let term = InMemoryTerm::new(10, 80);
-    // Write marker content to terminal directly before ProgressGroup.
+    // Write marker content to terminal directly before ProgressScreen.
     let _ = term.write_line("== PRE-EXISTING OUTPUT ==");
     let _ = term.write_line("line before progress bars");
     let before_marker = term.contents();
@@ -1168,7 +1168,7 @@ fn finalize_preserves_content_written_before_progress() {
 
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let mp = MultiProgress::with_draw_target(target);
-    let (group, overall) = ProgressGroup::builder()
+    let (group, overall) = ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(4)
         .with_overall("overall", 5)

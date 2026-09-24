@@ -1,4 +1,4 @@
-//! `ProgressGroup`: combined tracking + rendering with optional overall bar.
+//! `ProgressScreen`: combined tracking + rendering with optional overall bar.
 
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
@@ -7,20 +7,20 @@ use std::time::Duration;
 use indicatif::{MultiProgress, ProgressDrawTarget, TermLike};
 
 use super::{
-    DimensionSource, MAX_SLOTS, ProgressDebugSink, ProgressRenderer, RealTerminalSource,
-    RealTimeSource, SharedState, TimeSource, TrackedHandle, detect_progress_debug_env,
+    DimensionSource, MAX_SLOTS, ProgressBarHandle, ProgressDebugSink, ProgressRenderer,
+    RealTerminalSource, RealTimeSource, SharedState, TimeSource, detect_progress_debug_env,
     gate::{BufferedTerm, WriteGate},
 };
 use crate::progress::BarStyle;
 
-// ---- ProgressGroup (combined tracking + rendering) --------------------
+// ---- ProgressScreen (combined tracking + rendering) --------------------
 
 /// A vertical stack of progress bars.
 ///
 /// Bars are drawn in a fixed-height grid determined by the terminal height at
 /// construction time, which eliminates ghosting from bar-count changes. To
-/// create a no-op group, use [`ProgressGroup::disabled`].
-pub struct ProgressGroup {
+/// create a no-op group, use [`ProgressScreen::disabled`].
+pub struct ProgressScreen {
     /// `None` when progress is disabled.
     renderer: Option<Arc<Mutex<ProgressRenderer>>>,
     /// Daemon ticker task driving renders at 50 ms intervals.
@@ -29,7 +29,7 @@ pub struct ProgressGroup {
     ticker: Option<std::thread::JoinHandle<()>>,
 }
 
-// ---- ProgressGroupBuilder -------------------------------------------------
+// ---- ProgressScreenBuilder -------------------------------------------------
 
 /// Marker type indicating the builder has no overall bar yet.
 pub struct NoOverall;
@@ -37,13 +37,13 @@ pub struct NoOverall;
 /// Marker type indicating the builder has an overall bar configured.
 pub struct HasOverall;
 
-/// Builder for [`ProgressGroup`] with compile-time overall-bar enforcement.
+/// Builder for [`ProgressScreen`] with compile-time overall-bar enforcement.
 ///
 /// The phantom type parameter `S` tracks whether an overall bar has been
-/// configured: [`ProgressGroupBuilder<NoOverall>`] has no `build()` (call
-/// [`with_overall()`](Self::with_overall) first); [`ProgressGroupBuilder<HasOverall>`]
-/// exposes `build()` returning `(ProgressGroup, TrackedHandle)`. This makes it
-/// impossible to construct a `ProgressGroup` without an overall bar.
+/// configured: [`ProgressScreenBuilder<NoOverall>`] has no `build()` (call
+/// [`with_overall()`](Self::with_overall) first); [`ProgressScreenBuilder<HasOverall>`]
+/// exposes `build()` returning `(ProgressScreen, ProgressBarHandle)`. This makes it
+/// impossible to construct a `ProgressScreen` without an overall bar.
 ///
 /// # Defaults
 ///
@@ -54,7 +54,7 @@ pub struct HasOverall;
 /// | `overall` | `None` (no overall bar) |
 /// | `capacity` | `None` (derived from terminal height via `dim_source`) |
 /// | `dynamic_height` | `true` |
-pub struct ProgressGroupBuilder<S = NoOverall> {
+pub struct ProgressScreenBuilder<S = NoOverall> {
     mp_and_gate: Option<(MultiProgress, WriteGate)>,
     dim_source: Arc<dyn DimensionSource>,
     overall: Option<(String, u64)>,
@@ -62,12 +62,12 @@ pub struct ProgressGroupBuilder<S = NoOverall> {
     dynamic_height: bool,
     time_source: Arc<dyn TimeSource>,
     pre_roll_term: Option<Box<dyn TermLike>>,
-    debug_sink: Option<Arc<ProgressDebugSink>>,
+    debug_sink: Option<ProgressDebugSink>,
     ticker_enabled: bool,
     _state: PhantomData<S>,
 }
 
-impl Default for ProgressGroupBuilder<NoOverall> {
+impl Default for ProgressScreenBuilder<NoOverall> {
     fn default() -> Self {
         Self {
             mp_and_gate: None,
@@ -87,7 +87,7 @@ impl Default for ProgressGroupBuilder<NoOverall> {
 /// Configuration methods shared by both `NoOverall` and `HasOverall` states.
 macro_rules! impl_builder_config {
     ($ty:ty) => {
-        impl ProgressGroupBuilder<$ty> {
+        impl ProgressScreenBuilder<$ty> {
             /// Use an injectable [`TermLike`] instead of creating a
             /// [`BufferedTerm`](super::gate::BufferedTerm) over
             /// [`console::Term::stderr`]. Always wraps the term in
@@ -175,7 +175,7 @@ macro_rules! impl_builder_config {
             /// Attach a JSONL debug sink for progress bar state snapshots.
             #[must_use]
             pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
-                self.debug_sink = Some(Arc::new(sink));
+                self.debug_sink = Some(sink);
                 self
             }
 
@@ -193,7 +193,7 @@ macro_rules! impl_builder_config {
 impl_builder_config!(NoOverall);
 impl_builder_config!(HasOverall);
 
-impl ProgressGroupBuilder<NoOverall> {
+impl ProgressScreenBuilder<NoOverall> {
     /// Build a group without an overall bar.
     ///
     /// Use when no overall aggregate bar is needed (e.g., the standalone
@@ -204,7 +204,7 @@ impl ProgressGroupBuilder<NoOverall> {
     ///
     /// Panics when the internal `Mutex` is poisoned.
     #[must_use]
-    pub fn build(self) -> ProgressGroup {
+    pub fn build(self) -> ProgressScreen {
         let cap = self.capacity.unwrap_or_else(|| {
             let (rows, _) = self.dim_source.dimensions();
             (rows as usize).clamp(1, MAX_SLOTS)
@@ -228,25 +228,25 @@ impl ProgressGroupBuilder<NoOverall> {
         renderer.dynamic_height = self.dynamic_height;
         let renderer = Some(Arc::new(Mutex::new(renderer)));
         let ticker = if self.ticker_enabled {
-            ProgressGroup::spawn_ticker(renderer.as_ref().unwrap())
+            ProgressScreen::spawn_ticker(renderer.as_ref().unwrap())
         } else {
             None
         };
-        ProgressGroup { renderer, ticker }
+        ProgressScreen { renderer, ticker }
     }
 
     /// Add an overall aggregate bar pinned at the bottom slot.
     ///
     /// Transitions the builder from [`NoOverall`] to [`HasOverall`],
-    /// enabling [`build()`](ProgressGroupBuilder::build).
+    /// enabling [`build()`](ProgressScreenBuilder::build).
     ///
     /// `label` is parsed into [`PrefixComponents`] at construction,
-    /// exactly like [`ProgressGroup::add_bar`] — the overall bar shares
+    /// exactly like [`ProgressScreen::add_bar`] — the overall bar shares
     /// the single canonical prefix path and the legacy `set_prefix(String)`
     /// API does not exist here either.
     #[must_use]
-    pub fn with_overall(self, label: &str, total: u64) -> ProgressGroupBuilder<HasOverall> {
-        ProgressGroupBuilder {
+    pub fn with_overall(self, label: &str, total: u64) -> ProgressScreenBuilder<HasOverall> {
+        ProgressScreenBuilder {
             mp_and_gate: self.mp_and_gate,
             dim_source: self.dim_source,
             overall: Some((label.to_string(), total)),
@@ -261,10 +261,10 @@ impl ProgressGroupBuilder<NoOverall> {
     }
 }
 
-impl ProgressGroupBuilder<HasOverall> {
+impl ProgressScreenBuilder<HasOverall> {
     /// Build a group with the overall bar pinned at the bottom slot.
     ///
-    /// Returns both the [`ProgressGroup`] and a [`TrackedHandle`] for the
+    /// Returns both the [`ProgressScreen`] and a [`ProgressBarHandle`] for the
     /// overall bar. The caller owns the overall handle and must advance/
     /// finish it when the tracked operation completes.
     ///
@@ -272,7 +272,7 @@ impl ProgressGroupBuilder<HasOverall> {
     ///
     /// Panics when the internal `Mutex` is poisoned.
     #[must_use]
-    pub fn build(self) -> (ProgressGroup, TrackedHandle) {
+    pub fn build(self) -> (ProgressScreen, ProgressBarHandle) {
         let (label, total) = self.overall.expect("HasOverall builder must have overall set");
         let cap = self.capacity.unwrap_or_else(|| {
             let (rows, _) = self.dim_source.dimensions();
@@ -299,22 +299,22 @@ impl ProgressGroupBuilder<HasOverall> {
         renderer.dynamic_height = self.dynamic_height;
         let renderer = Arc::new(Mutex::new(renderer));
         let ticker =
-            if self.ticker_enabled { ProgressGroup::spawn_ticker(&renderer) } else { None };
-        let handle = TrackedHandle { state };
-        (ProgressGroup { renderer: Some(renderer), ticker }, handle)
+            if self.ticker_enabled { ProgressScreen::spawn_ticker(&renderer) } else { None };
+        let handle = ProgressBarHandle { state };
+        (ProgressScreen { renderer: Some(renderer), ticker }, handle)
     }
 }
 
-impl ProgressGroup {
-    /// Create a builder for configuring a [`ProgressGroup`].
+impl ProgressScreen {
+    /// Create a builder for configuring a [`ProgressScreen`].
     #[must_use]
-    pub fn builder() -> ProgressGroupBuilder {
-        ProgressGroupBuilder::default()
+    pub fn builder() -> ProgressScreenBuilder {
+        ProgressScreenBuilder::default()
     }
 
     /// Create a no-op group that produces no terminal output.
     ///
-    /// All bars added via [`add_bar`] return [`TrackedHandle::disabled`].
+    /// All bars added via [`add_bar`] return [`ProgressBarHandle::disabled`].
     /// Useful in tests where progress is not needed.
     #[must_use]
     pub fn disabled() -> Self {
@@ -327,7 +327,7 @@ impl ProgressGroup {
     /// [`SharedState::with_time_source`]), so the bar's prefix is
     /// immediately structured — `[phase]` markers and `count/total`
     /// survive truncation field-by-field. Use
-    /// [`TrackedHandle::set_prefix_components`] to replace the parsed
+    /// [`ProgressBarHandle::set_prefix_components`] to replace the parsed
     /// components with structured source data at runtime; there is no
     /// string mutation API.
     ///
@@ -340,7 +340,7 @@ impl ProgressGroup {
     /// Panics when the internal `Mutex` is poisoned (another thread
     /// panicked while holding the lock).
     #[must_use]
-    pub fn add_bar(&self, total: u64, label: &str) -> TrackedHandle {
+    pub fn add_bar(&self, total: u64, label: &str) -> ProgressBarHandle {
         self.add_bar_with_style(total, label, BarStyle::StepCount)
     }
 
@@ -350,16 +350,15 @@ impl ProgressGroup {
     /// seeds the style marker at construction so the renderer applies
     /// style-specific rendering (e.g. the `WorkerSpinner` `0/0` guard)
     /// from the first tick.
-    pub fn add_bar_with_style(&self, total: u64, label: &str, style: BarStyle) -> TrackedHandle {
+    pub fn add_bar_with_style(
+        &self,
+        total: u64,
+        label: &str,
+        style: BarStyle,
+    ) -> ProgressBarHandle {
         let Some(ref renderer) = self.renderer else {
-            return TrackedHandle::disabled();
+            return ProgressBarHandle::disabled();
         };
-        {
-            let locked = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if locked.is_finalized() {
-                panic!("add_bar called on a screen that is not the live screen");
-            }
-        }
         let state;
         {
             let mut locked = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -371,7 +370,7 @@ impl ProgressGroup {
             ));
             locked.attach(&state);
         }
-        TrackedHandle { state }
+        ProgressBarHandle { state }
     }
 
     /// Block until all bars in the group reach a finished state and
@@ -388,9 +387,7 @@ impl ProgressGroup {
     /// panicked while holding the lock).
     pub fn join(&self) {
         if let Some(ref renderer) = self.renderer {
-            let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            r.finalize();
-            r.commit_bars();
+            renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finalize();
         }
     }
 
@@ -468,22 +465,20 @@ impl ProgressGroup {
     }
 }
 
-impl Default for ProgressGroup {
+impl Default for ProgressScreen {
     fn default() -> Self {
         Self::builder().build()
     }
 }
 
-impl Drop for ProgressGroup {
+impl Drop for ProgressScreen {
     fn drop(&mut self) {
         // Drop the ticker handle to detach the thread — it will
         // exit on its next iteration when weak.upgrade() returns
         // None (the renderer Arc is dropped right after this).
         self.ticker.take();
         if let Some(ref renderer) = self.renderer {
-            let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            r.finalize();
-            r.commit_bars();
+            renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finalize();
         }
     }
 }

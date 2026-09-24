@@ -279,7 +279,7 @@ fn resize_height_partial_shrink_keeps_active_bars() {
 fn resize_height_with_interleaved_attach() {
     let dims = Arc::new(TestDimensionSource::new((5, 80)));
     let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(5)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
@@ -389,7 +389,7 @@ fn resize_height_sequence_with_three_bars() {
 fn resize_height_sequence_without_overall() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressGroup::builder()
+    let group = ProgressScreen::builder()
         .with_multi_progress(mp)
         .capacity(4)
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)

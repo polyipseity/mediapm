@@ -7,8 +7,8 @@
 #[doc(inline)]
 pub use mediapm_utils::progress::{
     DebugSlotState, DebugTickSnapshot, DimensionSource, PrefixComponents, ProgressBarApi,
-    ProgressDebugSink, ProgressGroup, ProgressGroupApi, SuffixComponents, TestDimensionSource,
-    TestTimeSource, TimeSource, TrackedHandle,
+    ProgressBarHandle, ProgressDebugSink, ProgressScreen, ProgressScreenApi, SuffixComponents,
+    TestDimensionSource, TestTimeSource, TimeSource,
 };
 
 #[cfg(test)]
@@ -36,7 +36,7 @@ mod tests {
     #[test]
     fn consumer_child_bar_elapsed_starts_at_zero() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressGroup::builder()
+        let group = ProgressScreen::builder()
             .with_multi_progress(mp)
             .capacity(4)
             .with_time_source(ts.clone() as Arc<dyn TimeSource>)
@@ -49,7 +49,7 @@ mod tests {
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressGroup::builder()
+        let group = ProgressScreen::builder()
             .with_multi_progress(mp)
             .capacity(4)
             .with_time_source(ts.clone() as Arc<dyn TimeSource>)
@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish_success() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressGroup::builder()
+        let group = ProgressScreen::builder()
             .with_multi_progress(mp)
             .capacity(4)
             .with_time_source(ts.clone() as Arc<dyn TimeSource>)
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish_error() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressGroup::builder()
+        let group = ProgressScreen::builder()
             .with_multi_progress(mp)
             .capacity(4)
             .with_time_source(ts.clone() as Arc<dyn TimeSource>)
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish_error_alt() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressGroup::builder()
+        let group = ProgressScreen::builder()
             .with_multi_progress(mp)
             .capacity(4)
             .with_time_source(ts.clone() as Arc<dyn TimeSource>)
@@ -123,7 +123,7 @@ mod tests {
     fn sync_hierarchy_height_change() {
         let dims = Arc::new(TestDimensionSource::new((4, 80)));
         let (mp, term) = mk_resize(6, 80);
-        let group = ProgressGroup::builder()
+        let group = ProgressScreen::builder()
             .with_multi_progress(mp)
             .capacity(4)
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
@@ -151,7 +151,7 @@ mod tests {
     fn reconcile_desired_tools_width_change() {
         let dims = Arc::new(TestDimensionSource::new((4, 80)));
         let (mp, term) = mk_resize(4, 80);
-        let (group, _overall) = ProgressGroup::builder()
+        let (group, _overall) = ProgressScreen::builder()
             .with_multi_progress(mp)
             .capacity(4)
             .with_overall("syncing tools", 5)
@@ -178,7 +178,7 @@ mod tests {
     fn sync_hierarchy_complex_resize_scenario() {
         let dims = Arc::new(TestDimensionSource::new((4, 80)));
         let (mp, term) = mk_resize(6, 80);
-        let group = ProgressGroup::builder()
+        let group = ProgressScreen::builder()
             .with_multi_progress(mp)
             .capacity(4)
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)

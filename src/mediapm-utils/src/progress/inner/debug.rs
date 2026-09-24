@@ -1,7 +1,6 @@
 //! RAII buffer guard, dimension/time sources, and debug-env detection.
 
 use std::io::Write;
-use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -133,7 +132,7 @@ impl TimeSource for TestTimeSource {
     }
 }
 
-pub(crate) fn detect_progress_debug_env() -> Option<Arc<ProgressDebugSink>> {
+pub(crate) fn detect_progress_debug_env() -> Option<ProgressDebugSink> {
     let val = std::env::var("MEDIAPM_PROGRESS_DEBUG").ok()?;
     let writer: Box<dyn Write + Send> = if val == "auto" || val.is_empty() {
         let path = std::path::PathBuf::from(format!("progress-debug-{}.jsonl", std::process::id()));
@@ -154,5 +153,5 @@ pub(crate) fn detect_progress_debug_env() -> Option<Arc<ProgressDebugSink>> {
                 .expect("failed to create progress debug file"),
         )
     };
-    Some(Arc::new(ProgressDebugSink::new(writer)))
+    Some(ProgressDebugSink::new(writer))
 }

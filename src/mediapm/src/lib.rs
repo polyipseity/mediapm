@@ -869,7 +869,7 @@ pub(crate) fn ensure_mediapm_executable_env() -> Result<(), MediaPmError> {
 pub(crate) fn conductor_run_workflow_options(
     _paths: &MediaPmPaths,
     runtime_storage: &MediaRuntimeStorage,
-    progress_group: Option<Arc<dyn mediapm_utils::progress::ProgressGroupApi + Send + Sync>>,
+    progress_group: Option<Arc<dyn mediapm_utils::progress::ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn mediapm_utils::progress::ProgressBarApi>>,
 ) -> mediapm_conductor::RunWorkflowOptions {
     mediapm_conductor::RunWorkflowOptions {

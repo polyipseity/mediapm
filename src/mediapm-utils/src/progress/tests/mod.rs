@@ -5,10 +5,10 @@
 //! * **Recording** — [`RecordingProgressTracker`] tests verify the op-log
 //!   produced by each method call (correct sequence of [`ProgressOp`]
 //!   entries).
-//! * **State-mutation** — [`TrackedHandle::new`] / [`TrackedHandle::with_label`]
+//! * **State-mutation** — [`ProgressBarHandle::new`] / [`ProgressBarHandle::with_label`]
 //!   tests verify that underlying [`SharedState`] is updated correctly
 //!   (positions, totals, status, elapsed).
-//! * **Renderer integration** — [`ProgressGroup`] tests verify that the
+//! * **Renderer integration** — [`ProgressScreen`] tests verify that the
 //!   full tracking-to-terminal path produces correct visual output.
 //!
 //! Each layer covers the same behavioral surface through different
@@ -19,7 +19,7 @@
 pub use super::recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
 #[allow(unused_imports)]
 pub use super::{
-    BarStyle, PrefixComponents, ProgressGroup, SuffixComponents, TrackStatus, TrackedHandle,
+    BarStyle, PrefixComponents, ProgressBarHandle, ProgressScreen, SuffixComponents, TrackStatus,
 };
 pub use std::sync::Arc;
 
