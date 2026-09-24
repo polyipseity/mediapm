@@ -224,11 +224,13 @@ fn tracked_handle_elapsed_frozen_after_all_finish_methods() {
         ),
     ] {
         let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
-        let g = super::super::ProgressScreen::builder()
+        let terminal = super::super::ProgressTerminal::builder()
             .with_time_source(
                 std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>
             )
+            .with_pre_roll_capture(super::pre_roll_capture())
             .build();
+        let g = terminal.screen().build();
         let h = g.add_bar(100, &format!("{name}-bar"));
         ts.advance(std::time::Duration::from_millis(10));
         finish_fn(&h);
@@ -241,7 +243,9 @@ fn tracked_handle_elapsed_frozen_after_all_finish_methods() {
 
 #[test]
 fn progress_group_new_creates_handle() {
-    let g = ProgressScreen::builder().build();
+    let terminal =
+        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let g = terminal.screen().build();
     let h = g.add_bar(42, "child");
     assert!(h.total() > 0, "enabled handle must have total > 0");
     assert_eq!(h.total(), 42);
@@ -249,7 +253,9 @@ fn progress_group_new_creates_handle() {
 
 #[test]
 fn progress_group_with_overall_creates_both() {
-    let (g, overall) = ProgressScreen::builder().with_overall("all", 100).build();
+    let terminal =
+        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let (g, overall) = terminal.screen().with_overall("all", 100).build();
     assert_eq!(overall.total(), 100, "overall bar must have total == 100");
     let child = g.add_bar(50, "child");
     assert_eq!(child.total(), 50, "child bar must have total == 50");
@@ -282,13 +288,17 @@ fn recording_handle_multiple_advances_sum() {
 #[test]
 fn progress_group_join_and_clear_does_not_panic() {
     // Non-empty group
-    let g = ProgressScreen::builder().build();
+    let terminal =
+        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let g = terminal.screen().build();
     let _h = g.add_bar(10, "a");
     g.join();
     g.join_and_clear();
 
     // Empty group
-    let g = ProgressScreen::builder().build();
+    let terminal =
+        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let g = terminal.screen().build();
     g.join();
     g.join_and_clear();
 }
@@ -322,7 +332,9 @@ fn recording_handle_finish_does_not_generate_clear() {
 #[test]
 fn progress_group_join_leaves_handles_intact() {
     // join() is a no-op — handles must still be usable afterward.
-    let g = ProgressScreen::builder().build();
+    let terminal =
+        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let g = terminal.screen().build();
     let h = g.add_bar(42, "child");
     h.advance(10);
     h.set_total(50);
@@ -335,7 +347,9 @@ fn progress_group_join_leaves_handles_intact() {
 fn progress_group_finish_success_and_error_preserve_group() {
     // Finish calls on a handle must preserve the total and the group must
     // remain functional (join() must not panic).
-    let g = ProgressScreen::builder().build();
+    let terminal =
+        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let g = terminal.screen().build();
     let h = g.add_bar(10, "test");
     h.finish_success();
     assert_eq!(h.total(), 10, "handle total preserved after finish_success");
@@ -459,11 +473,14 @@ fn progress_group_excess_bars_return_active_handles() {
     // (clamped to 4-200).  Use a MultiProgress with small term to force
     // small capacity.
     let term = indicatif::InMemoryTerm::new(4, 40);
-    let (group, _overall) = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
-        .capacity(4)
-        .with_overall("overall", 10)
+        .with_pre_roll_capture(super::pre_roll_capture())
+        // 3 child slots; the overall bar adds a fourth. `capacity` counts child
+        // slots, so this is the 4-slot layout the assertions below assume.
+        .capacity(3)
         .build();
+    let (group, _overall) = terminal.screen().with_overall("overall", 10).build();
 
     // 4 slots total → 3 child slots + 1 overall.
     // Add 5 children → first 3 get slots, last 2 have no display slot.
@@ -489,7 +506,9 @@ fn progress_group_manager_finish_and_clear_via_tick_fn() {
     // finish_and_clear on a ProgressScreen-managed handle (bar=None,
     // tick_fn=Some) must still mark state as finished.
 
-    let (_group, overall) = ProgressScreen::builder().with_overall("all", 10).build();
+    let terminal =
+        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let (_group, overall) = terminal.screen().with_overall("all", 10).build();
     overall.finish_and_clear();
     let snap = overall.snapshot();
     assert!(
@@ -540,8 +559,12 @@ fn rate_computation_handles_non_monotonic_position() {
     // When a bar's position regresses between ticks, the EMA rate
     // computation must not panic (saturating_sub guard).
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group =
-        ProgressScreen::builder().with_term_like(Box::new(term.clone())).capacity(4).build();
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .build();
+    let group = terminal.screen().build();
     let h = group.add_bar(100, "test");
     h.advance(80); // position grows to 80
     group.tick(); // tick captures prev_position = 80
@@ -563,8 +586,9 @@ fn spinner_advances_per_cycle_for_all_bars() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let (group, overall) = super::super::ProgressScreen::builder()
+    let terminal = super::super::ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -573,8 +597,8 @@ fn spinner_advances_per_cycle_for_all_bars() {
         // the tick counter through a wall-clock position rate limiter,
         // so the assertion below checks a distinct-glyph set.)
         .with_ticker_enabled(false)
-        .with_overall("syncing", 3)
         .build();
+    let (group, overall) = terminal.screen().with_overall("syncing", 3).build();
 
     let bar1 = group.add_bar(100, "tool [resolve]");
     let bar2 = group.add_bar(100, "tool [fetch]");
@@ -646,10 +670,10 @@ fn recycled_bar_spinner_animates() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    // capacity=2 means 1 child + 1 overall bar.
     // dynamic_height=false fixed capacity prevents auto-growing.
-    let (group, overall) = super::super::ProgressScreen::builder()
+    let terminal = super::super::ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -658,10 +682,13 @@ fn recycled_bar_spinner_animates() {
         // the tick counter through a wall-clock position rate limiter,
         // so the assertion below checks a distinct-glyph set.)
         .with_ticker_enabled(false)
-        .capacity(2)
+        // 1 child slot: with the overall bar's own slot that is the 2 slots
+        // (1 recyclable child + overall) this test needs. `capacity` counts
+        // child slots; the overall bar is pushed as an extra slot.
+        .capacity(1)
         .dynamic_height(false)
-        .with_overall("syncing", 3)
         .build();
+    let (group, overall) = terminal.screen().with_overall("syncing", 3).build();
 
     // Phase 1: finish resolve bar (fills the single child slot).
     let bar1 = group.add_bar(1, "tool [resolve]");
@@ -762,9 +789,11 @@ fn bar_color_code_success() {
 #[test]
 fn restart_clears_finished_status() {
     let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
-    let g = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_time_source(ts as std::sync::Arc<dyn super::super::TimeSource>)
+        .with_pre_roll_capture(super::pre_roll_capture())
         .build();
+    let g = terminal.screen().build();
     let h = g.add_bar(100, "restart-bar");
     h.finish_success();
     assert!(h.is_finished(), "bar should be finished after finish_success");
@@ -834,12 +863,14 @@ fn sync_slot_resets_finished_bar_on_restart() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         .with_ticker_enabled(false)
         .build();
+    let group = terminal.screen().build();
 
     let h = group.add_bar(100, "tool [work]");
     h.advance(50);

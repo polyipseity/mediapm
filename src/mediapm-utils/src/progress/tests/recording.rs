@@ -188,12 +188,14 @@ fn bar_style_worker_spinner_zero_zero_guard_renders_empty() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = super::super::ProgressScreen::builder()
+    let terminal = super::super::ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         .with_ticker_enabled(false)
         .build();
+    let group = terminal.screen().build();
 
     let h = group.add_bar(0, "idle");
     h.set_style(BarStyle::WorkerSpinner);

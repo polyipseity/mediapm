@@ -30,3 +30,16 @@ mod renderer;
 mod screen;
 mod state;
 mod terminal;
+
+/// A throwaway term for a terminal's one-shot pre-roll.
+///
+/// Unit tests build a `ProgressTerminal` and create their screen from it. The
+/// terminal builder leaves `pre_roll_term` at its `console::Term::stderr`
+/// default, and pre-roll writes one blank line per terminal row, so without a
+/// capture every `screen().build()` would push those newlines past libtest's
+/// capture and straight to fd 2.  The capture only needs somewhere to write:
+/// the tests read the (separate) term they passed as the draw target, never
+/// this one.
+pub(crate) fn pre_roll_capture() -> Box<dyn indicatif::TermLike> {
+    Box::new(indicatif::InMemoryTerm::new(200, 80))
+}

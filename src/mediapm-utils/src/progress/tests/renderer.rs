@@ -8,14 +8,16 @@ fn dirty_tracking_initial_state_starts_dirty() {
     // The SharedState dirty flag starts true so the very first tick always
     // draws, even without explicit mutations.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .capacity(4)
         // Disable the daemon ticker: it fires group.tick() on real
         // wall-clock time, injecting extra ticks/draws beyond the manual
         // ticks this test controls.
         .with_ticker_enabled(false)
         .build();
+    let group = terminal.screen().build();
     let _bar = group.add_bar(100, "test");
 
     group.tick();
@@ -28,14 +30,16 @@ fn multiple_mutations_before_tick_single_draw() {
     // Several mutations between ticks should all be reflected in a single
     // coherent draw after the next tick, without intermediate draws.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .capacity(4)
         // Disable the daemon ticker: it fires group.tick() on real
         // wall-clock time, injecting extra ticks/draws beyond the manual
         // ticks this test controls.
         .with_ticker_enabled(false)
         .build();
+    let group = terminal.screen().build();
     let bar = group.add_bar(100, "test");
 
     bar.set_position(20);
@@ -58,16 +62,18 @@ fn finalize_produces_final_output() {
 
     let term = indicatif::InMemoryTerm::new(10, 80);
     let ts = Arc::new(super::super::TestTimeSource::new());
-    let (group, overall) = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
         // wall-clock time, injecting extra ticks/draws beyond the manual
         // ticks this test controls.
         .with_ticker_enabled(false)
-        .capacity(4)
-        .with_overall("overall", 10)
+        // 3 child slots + the overall slot: 4 slots total, as before.
+        .capacity(3)
         .build();
+    let (group, overall) = terminal.screen().with_overall("overall", 10).build();
     let bar = group.add_bar(100, "child");
     bar.advance(50);
     overall.advance(5);
@@ -119,8 +125,9 @@ fn dirty_tracking_skips_clean_ticks() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -129,6 +136,7 @@ fn dirty_tracking_skips_clean_ticks() {
         .with_ticker_enabled(false)
         .capacity(4)
         .build();
+    let group = terminal.screen().build();
     let bar = group.add_bar(100, "test");
     bar.set_position(42);
     ts.advance(std::time::Duration::from_millis(100));
@@ -180,8 +188,9 @@ fn dirty_tracking_draws_on_mutation() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
         // Disable the daemon ticker: it fires group.tick() on real
@@ -190,6 +199,7 @@ fn dirty_tracking_draws_on_mutation() {
         .with_ticker_enabled(false)
         .capacity(4)
         .build();
+    let group = terminal.screen().build();
     let bar = group.add_bar(100, "test");
     bar.set_position(10);
     ts.advance(std::time::Duration::from_millis(100));
@@ -392,11 +402,13 @@ fn sync_slot_preserves_custom_suffix_on_attach() {
 
     let term = indicatif::InMemoryTerm::new(10, 80);
     let ts = Arc::new(super::super::TestTimeSource::new());
-    let group = ProgressScreen::builder()
+    let terminal = super::super::ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         .capacity(2)
         .build();
+    let group = terminal.screen().build();
 
     // Phase 1: add bar A, set custom suffix and partial progress, sync.
     let bar_a = group.add_bar(100, "resolve");
@@ -464,11 +476,13 @@ fn suffix_merge_user_count_total_overrides_auto() {
 
     let term = indicatif::InMemoryTerm::new(10, 80);
     let ts = Arc::new(super::super::TestTimeSource::new());
-    let group = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         .capacity(2)
         .build();
+    let group = terminal.screen().build();
 
     let bar = group.add_bar(100, "test");
     bar.set_position(50);
@@ -497,11 +511,13 @@ fn suffix_merge_user_rate_eta_elapsed_override_auto() {
 
     let term = indicatif::InMemoryTerm::new(10, 80);
     let ts = Arc::new(super::super::TestTimeSource::new());
-    let group = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .with_time_source(Arc::clone(&ts) as Arc<dyn super::super::TimeSource>)
         .capacity(2)
         .build();
+    let group = terminal.screen().build();
 
     let bar = group.add_bar(100, "test");
     bar.set_position(50);
@@ -599,11 +615,13 @@ fn set_truncation_replaces_builtin_rendering() {
     // When a bar has client truncation installed, the terminal output must
     // contain the client's strings and NOT the built-in component render.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .capacity(4)
         .with_ticker_enabled(false)
         .build();
+    let group = terminal.screen().build();
     let bar = group.add_bar(100, "test");
 
     bar.set_truncation(Arc::new(FixedTruncation {
@@ -632,11 +650,13 @@ fn client_truncated_prefix_starts_with_ansi_reset() {
     // built-in component render is bypassed.  The preceding colour
     // bleed would cause garbled display, which the `\x1b[0m` prevents.
     let term = indicatif::InMemoryTerm::new(10, 80);
-    let group = ProgressScreen::builder()
+    let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
         .capacity(4)
         .with_ticker_enabled(false)
         .build();
+    let group = terminal.screen().build();
     let bar = group.add_bar(100, "test");
 
     bar.set_truncation(Arc::new(FixedTruncation { prefix: "CLIENT", suffix: "SFX" }));
