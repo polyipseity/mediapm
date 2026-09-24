@@ -1412,10 +1412,14 @@ impl ProgressRenderer {
             }
         }
 
-        // Trigger one final draw with the reduced bar set.
+        // Trigger one final draw with the reduced bar set, and record whether
+        // that draw happened: it is what the cursor advance below is
+        // conditional on.
+        let mut drew_frame = false;
         for slot in &self.slots {
             if slot.source.borrow().is_some() {
                 slot.bar.tick();
+                drew_frame = true;
                 break;
             }
         }
@@ -1425,7 +1429,20 @@ impl ProgressRenderer {
         // the live region and the next screen's frame claims its rows (see
         // `WriteGate::commit_frame`). Issued here, inside the open write
         // window, because it is the one write that must not be suppressed.
-        self.gate.commit_frame();
+        //
+        // The advance is conditional on this screen having drawn a frame, and
+        // that is not the obvious reading of "nothing was committed, so commit
+        // nothing": the advance is not part of committing, it is compensation
+        // for the draws the gate discarded while the frame was in progress (the
+        // released draw walks the cursor to the frame's last row; a discarded
+        // one does not). A screen that bound no bar discarded nothing, because
+        // no draw ever reached the gate — every draw needs a bar, and the final
+        // draw above runs only for a bound slot. There is therefore no frame of
+        // this screen on the terminal and no cursor position inside one, so
+        // advancing writes a blank row the screen never drew.
+        if drew_frame {
+            self.gate.commit_frame();
+        }
     }
 }
 

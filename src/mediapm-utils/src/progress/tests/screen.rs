@@ -436,6 +436,25 @@ fn gated_second_screen_does_not_unwind_the_discarded_screens_rows() {
     );
 }
 
+/// A screen that binds no bar commits nothing: no draw reaches the terminal, so the commit must not advance the cursor either.
+///
+/// The advance exists to compensate for the draws the write gate discarded: the released draw leaves the cursor on the frame's last row, so without the advance the next screen's band starts there and claims the committed row.  A screen that bound no bar has no discarded draw to compensate for — every draw needs a bar, and `finalize`'s final draw runs only for a bound slot — so the terminal holds no frame from this screen and the cursor is not resting inside one.  Issuing the advance anyway writes one blank row the screen never drew.
+///
+/// The assertion is on the ops rather than on the grid on purpose: a trailing blank row is exactly what `InMemoryTerm::contents()` trims, so the grid is empty whether or not the stray CR+LF is there and cannot see this at all.
+#[test]
+fn gated_screen_without_bars_commits_nothing() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_gate(&term, ROWS as usize);
+    let screen = terminal.screen().build();
+    terminal.tick();
+    screen.join();
+    assert_eq!(
+        term.moves_since_last_check(),
+        "",
+        "a screen that drew nothing must leave the terminal untouched"
+    );
+}
+
 /// A committed screen's frame stays on the terminal once the next screen renders.
 ///
 /// This is the visible half of the commit contract ([`ProgressScreenApi::join`]): the frame is handed over permanently, so the next screen's band must start *below* it. `next_screen_draws_below_the_committed_lines` cannot see the failure because it uses the ungated configuration, where every intermediate draw really writes and walks the cursor down the frame. Production draws through the write gate ([`terminal_with_gate`]), where the discarded draws leave the cursor resting on the committed frame's last row, the next frame's band is written starting there, and the following in-place redraw clears the committed row.
