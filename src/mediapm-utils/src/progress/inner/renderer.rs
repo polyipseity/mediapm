@@ -291,8 +291,9 @@ pub struct TrackSnapshot {
 /// screen with no draw target can hand one out and a caller may drive it
 /// harmlessly. It is not inert, though: position and status mutations still land
 /// in its shared state, so what a disabled run reported stays inspectable. Only
-/// the structured prefix/suffix setters check the disabled flag and discard their
-/// input.
+/// `set_suffix_components`, `set_truncation`, and `set_style` consult the disabled
+/// flag and discard their input; every other mutator, `set_prefix_components`
+/// included, writes straight through.
 ///
 /// [`ProgressBarHandle`] manages **tracking state only** (`Arc<SharedState>`);
 /// the display bar is managed separately by [`ProgressRenderer`], which
