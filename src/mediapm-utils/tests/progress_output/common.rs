@@ -21,8 +21,18 @@
 //! `with_multi_progress` is used rather than `with_term_like` because it is the
 //! path the existing exact strings were captured on: it installs a no-op write
 //! gate, so frames are drawn by indicatif's own bar operations rather than by
-//! the terminal's buffered gate protocol. Frame content is identical either
-//! way; only the number of writes differs.
+//! the terminal's buffered gate protocol.
+//!
+//! The two paths are **not** interchangeable, and what separates them is not
+//! the number of writes. The gate changes what indicatif *erases*: a draw it
+//! discards never reached the terminal, so the release that follows it erases
+//! from the position the terminal is really at rather than from the one the
+//! discarded draw's own accounting assumed. A committed frame therefore
+//! survives the next screen on the gated path for a reason of its own — the
+//! cursor advance the commit issues — and not because the ungated path's
+//! behaviour carries over. A test that must pin what production does builds
+//! through [`mk_with_capacity_gated`] instead of assuming that survival is a
+//! property of the frame content.
 
 use std::sync::{Arc, Mutex};
 
@@ -54,6 +64,34 @@ pub fn mk_with_size(rows: u16, cols: u16) -> (ProgressTerminal, InMemoryTerm) {
 /// [`InMemoryTerm`]'s visible grid after a later screen draws a full frame.
 pub fn mk_with_capacity(rows: u16, cols: u16, capacity: usize) -> (ProgressTerminal, InMemoryTerm) {
     build(rows, cols, capacity, Arc::new(TestDimensionSource::new((rows, cols))), None, false, None)
+}
+
+/// Build a terminal on the **gated** draw path, with the same slot reservation
+/// as [`mk_with_capacity`].
+///
+/// [`mk_with_capacity`] installs a no-op write gate; this helper goes through
+/// `with_term_like`, the path `ProgressTerminal` builds outside tests, so every
+/// frame draw happens under the buffered write gate. A test needs it when what
+/// it asserts depends on *which* draws reached the terminal rather than on the
+/// frame content alone — a discarded draw changes what the next released draw
+/// erases, not only how many writes happen (see the module docs).
+pub fn mk_with_capacity_gated(
+    rows: u16,
+    cols: u16,
+    capacity: usize,
+) -> (ProgressTerminal, InMemoryTerm) {
+    let grid = InMemoryTerm::new(rows, cols);
+    let ts = Arc::new(TestTimeSource::new());
+    let builder = ProgressTerminal::builder()
+        .with_term_like(Box::new(grid.clone()))
+        .with_dim_source(
+            Arc::new(TestDimensionSource::new((rows, cols))) as Arc<dyn DimensionSource>
+        )
+        .capacity(capacity)
+        .with_pre_roll_capture(Box::new(InMemoryTerm::new(rows, cols)))
+        .with_time_source(Arc::clone(&ts) as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false);
+    (builder.build(), grid)
 }
 
 /// Build a terminal with an explicit capacity and an injectable time source.

@@ -15,7 +15,8 @@ use indicatif::TermLike;
 use mediapm_utils::progress::{BarStyle, ProgressScreen, TestTimeSource};
 
 use super::common::{
-    H, W, line_with, mk_with_capacity, mk_with_capacity_and_ts, mk_with_pre_roll_term,
+    H, W, line_with, mk_with_capacity, mk_with_capacity_and_ts, mk_with_capacity_gated,
+    mk_with_pre_roll_term,
 };
 
 /// An unfinished bar's line is committed by `join`, and the committed frame can
@@ -749,5 +750,43 @@ fn overall_handle_progress_reaches_the_renderer() {
             "⠏     overall ██████████████████████████████████████████████████████  4/4 0s"
         ),
         "overall_handle_progress_reaches_the_renderer"
+    );
+}
+
+/// A two-screen sequence on the **gated** draw path keeps the first screen's
+/// committed frame below the second screen's, exactly as it was committed.
+///
+/// Every other exact-frame assertion in this suite runs on the ungated path
+/// ([`mk_with_capacity`]'s no-op gate), where the intermediate draws really
+/// write and walk the cursor down the committed frame. Production draws through
+/// the gate, so what the frame's survival rests on is decided there — see the
+/// harness module docs for what the gate changes.
+///
+/// This is coverage of the production configuration rather than a gated-only
+/// discriminator: the ungated path captures the same grid at this geometry, so
+/// the two coincide while both mechanisms work, which is how the gated defect
+/// stayed green in this suite. The discriminating half is the commit's cursor
+/// advance, which exists only on the gated path and is pinned at the ops level
+/// by the `gated_*` tests in `src/mediapm-utils/src/progress/tests/screen.rs`.
+#[test]
+fn gated_two_screens_keep_the_committed_frame() {
+    let (terminal, term) = mk_with_capacity_gated(H, W, 2);
+    let first = terminal.screen().build();
+    first.add_bar(1, "alpha").finish_success();
+    terminal.tick();
+    first.join();
+
+    let second = terminal.screen().build();
+    second.add_bar(1, "beta").finish_success();
+    terminal.tick();
+
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "⠏     alpha ████████████████████  0/1 0s\n",
+            "\n",
+            "⠹     beta ░░░░░░░░░░░░░░  0/1 0s 0/d"
+        ),
+        "gated_two_screens_keep_the_committed_frame"
     );
 }
