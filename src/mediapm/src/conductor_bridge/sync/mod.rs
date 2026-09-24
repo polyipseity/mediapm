@@ -1476,6 +1476,7 @@ pub(crate) async fn reconcile_desired_tools(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
 
     use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
     use mediapm_conductor::tools::provider::VersionSpecFields;
@@ -1697,15 +1698,82 @@ mod tests {
             .find(|line| line.contains("[prn]"))
             .map(str::to_owned)
             .unwrap_or_else(|| panic!("the `[prn]` bar must reach the display:\n{contents}"));
-        assert!(
-            prune_line.contains("/1"),
+        // The bar renders `position/total`, so the whole count token is matched
+        // rather than a `"/1"` substring: that substring also matches a bar
+        // whose total is 100 (`1/100`), which would hide a wrong candidate
+        // count. The position is 2 because the sync advances the prune bar once
+        // per pruned document entry and once more for the filesystem prune.
+        let counts: Vec<&str> =
+            prune_line.split_whitespace().filter(|token| token.contains('/')).collect();
+        assert_eq!(
+            counts,
+            vec!["2/1"],
             "the drawn prune bar must carry the candidate count as its total: {prune_line:?}"
         );
     }
 
+    /// A caller-owned screen with the inert behaviour of
+    /// [`ProgressScreen::disabled`] that remembers what the sync asked it for.
+    ///
+    /// A disabled screen draws nothing and hands out no-op handles, so the bars
+    /// the sync routes through it are invisible from the outside: the recorded
+    /// `(label, reported total)` pairs are the only way a test can tell "the
+    /// sync asked for the prune bar and got an inert handle" apart from "the
+    /// sync never asked for the prune bar at all". The reported total is the
+    /// one the handle the disabled screen returned carries: `0` for a no-op
+    /// handle, the requested total for a live screen's handle.
+    struct RecordingDisabledScreen {
+        /// The inert screen the sync is handed; it does the real work.
+        inner: ProgressScreen,
+        /// One `(label, reported total)` pair per `add_bar` call, in order.
+        calls: Mutex<Vec<(String, u64)>>,
+    }
+
+    impl RecordingDisabledScreen {
+        /// Create an inert screen whose `add_bar` calls are recorded.
+        fn new() -> Self {
+            Self { inner: ProgressScreen::disabled(), calls: Mutex::new(Vec::new()) }
+        }
+
+        /// The total the handle for `label` reported, or `None` when the sync
+        /// never asked this screen for that bar.
+        fn reported_total(&self, label: &str) -> Option<u64> {
+            self.calls
+                .lock()
+                .expect("recording lock")
+                .iter()
+                .find(|(recorded, _)| recorded == label)
+                .map(|(_, total)| *total)
+        }
+    }
+
+    impl ProgressScreenApi for RecordingDisabledScreen {
+        /// Record the request, then hand back the inert handle.
+        fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
+            let handle = self.inner.add_bar(total, label);
+            let reported = handle.snapshot().total;
+            self.calls.lock().expect("recording lock").push((label.to_string(), reported));
+            Arc::new(handle)
+        }
+
+        /// Joining the inert screen is a no-op; delegate so the sync's join
+        /// path stays exercised.
+        fn join(&self) {
+            self.inner.join();
+        }
+    }
+
     // The `--no-progress` path hands the disabled screen down as the caller's
-    // screen, so the prune bar is added to it. That must stay inert: no bar is
-    // allocated, nothing draws, and the sync still does its work.
+    // screen, so the prune bar is added to it. That must stay inert: the sync
+    // still routes the prune bar through this screen and still does its work,
+    // while every handle the screen hands out reports no total, so nothing is
+    // allocated and nothing draws.
+    //
+    // Both halves are asserted per label. The `[prn]` half is what separates
+    // this test from the other prune-bar tests: a prune bar sourced from the
+    // sync's own fallback screen is never requested here (the caller owns the
+    // screen), so `reported_total("pruning [prn]")` would be `None`, while a
+    // disabled screen that began allocating would report the candidate count.
     #[tokio::test]
     async fn prune_bar_is_inert_on_a_disabled_screen() {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
@@ -1725,7 +1793,7 @@ mod tests {
         };
         save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
 
-        let screen = ProgressScreen::disabled();
+        let screen = RecordingDisabledScreen::new();
         let state = MediaPmState::default();
         let workspace_cas =
             super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
@@ -1744,6 +1812,17 @@ mod tests {
         assert!(
             result.unwrap().pruned_tools >= 1,
             "the prune must still run with progress disabled"
+        );
+        assert_eq!(
+            screen.reported_total("pruning [prn]"),
+            Some(0),
+            "the sync must route the prune bar through the caller's screen, and the disabled \
+             screen must answer it with a no-op handle"
+        );
+        assert_eq!(
+            screen.reported_total("syncing tools"),
+            Some(0),
+            "the overall bar must be inert on a disabled screen too"
         );
     }
 
