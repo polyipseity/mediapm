@@ -61,7 +61,6 @@ pub struct ProgressScreenBuilder<S = NoOverall> {
     capacity: Option<usize>,
     dynamic_height: bool,
     time_source: Arc<dyn TimeSource>,
-    pre_roll_term: Option<Box<dyn TermLike>>,
     debug_sink: Option<ProgressDebugSink>,
     ticker_enabled: bool,
     _state: PhantomData<S>,
@@ -76,7 +75,6 @@ impl Default for ProgressScreenBuilder<NoOverall> {
             capacity: None,
             dynamic_height: false,
             time_source: Arc::new(RealTimeSource),
-            pre_roll_term: Some(Box::new(console::Term::stderr())),
             debug_sink: None,
             ticker_enabled: true,
             _state: PhantomData,
@@ -160,18 +158,6 @@ macro_rules! impl_builder_config {
                 self
             }
 
-            /// Use an injectable term for pre-roll capture (for test assertions).
-            ///
-            /// Pre-roll newlines are written to `term` instead of
-            /// `console::Term::stderr()`. The user must also pass a compatible
-            /// [`MultiProgress`] created from the same term via
-            /// `ProgressDrawTarget::term_like`.
-            #[must_use]
-            pub fn with_pre_roll_capture(mut self, term: Box<dyn TermLike>) -> Self {
-                self.pre_roll_term = Some(term);
-                self
-            }
-
             /// Attach a JSONL debug sink for progress bar state snapshots.
             #[must_use]
             pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
@@ -215,16 +201,9 @@ impl ProgressScreenBuilder<NoOverall> {
                 MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
             (mp, gate)
         });
-        let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
-        let mut renderer = ProgressRenderer::from_mp(
-            mp,
-            cap,
-            self.dim_source,
-            gate,
-            self.time_source,
-            self.pre_roll_term,
-            debug_sink,
-        );
+        let debug_sink = self.debug_sink.or_else(detect_progress_debug_env).map(Arc::new);
+        let mut renderer =
+            ProgressRenderer::from_mp(mp, cap, self.dim_source, gate, self.time_source, debug_sink);
         renderer.dynamic_height = self.dynamic_height;
         let renderer = Some(Arc::new(Mutex::new(renderer)));
         let ticker = if self.ticker_enabled {
@@ -253,7 +232,6 @@ impl ProgressScreenBuilder<NoOverall> {
             capacity: self.capacity,
             dynamic_height: self.dynamic_height,
             time_source: self.time_source,
-            pre_roll_term: self.pre_roll_term,
             debug_sink: self.debug_sink,
             ticker_enabled: self.ticker_enabled,
             _state: PhantomData,
@@ -284,7 +262,7 @@ impl ProgressScreenBuilder<HasOverall> {
                 MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
             (mp, gate)
         });
-        let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
+        let debug_sink = self.debug_sink.or_else(detect_progress_debug_env).map(Arc::new);
         let (mut renderer, state) = ProgressRenderer::from_mp_with_overall(
             mp,
             cap,
@@ -293,7 +271,6 @@ impl ProgressScreenBuilder<HasOverall> {
             self.dim_source,
             gate,
             self.time_source,
-            self.pre_roll_term,
             debug_sink,
         );
         renderer.dynamic_height = self.dynamic_height;

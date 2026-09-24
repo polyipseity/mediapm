@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use indicatif::{MultiProgress, ProgressBar, TermLike};
+use indicatif::{MultiProgress, ProgressBar};
 
 use super::{
     DebugSlotState, DebugTickSnapshot, DimensionSource, MAX_SLOTS, MIN_PREFIX_WIDTH,
@@ -555,20 +555,15 @@ pub struct ProgressRenderer {
     /// the write window is through `gate.open()` (private to `gate.rs`).
     gate: WriteGate,
 
-    /// One-shot flag: has the first-draw pre-roll (newline scroll) been
-    /// performed?  Used to push intervening stderr content into scrollback
-    /// before indicatif's first draw.
-    pre_rolled: AtomicBool,
     /// Nesting guard: `true` while inside [`run_frame`].  Panics in debug
     /// builds if `run_frame` or `tick` is called re-entrantly.
     in_frame: Cell<bool>,
 
-    /// Terminal to write pre-roll newlines to.  `None` in test mode
-    /// (user-provided `MultiProgress` via `with_multi_progress`).
-    pre_roll_term: Option<Box<dyn TermLike>>,
-
     /// Optional JSONL debug sink — emits bar-state snapshots on every tick.
-    debug_sink: Option<ProgressDebugSink>,
+    /// Shared (`Arc`) because one sink belongs to the terminal and is used by
+    /// every screen's renderer, so tick numbering stays monotonic across a
+    /// sync instead of restarting per phase.
+    debug_sink: Option<Arc<ProgressDebugSink>>,
 
     /// Current uniform prefix width applied to every visible bar this frame.
     /// Recomputed each tick from the max measured prefix across bound slots,
@@ -639,8 +634,7 @@ impl ProgressRenderer {
         dim_source: Arc<dyn DimensionSource>,
         gate: WriteGate,
         time_source: Arc<dyn TimeSource>,
-        pre_roll_term: Option<Box<dyn TermLike>>,
-        debug_sink: Option<ProgressDebugSink>,
+        debug_sink: Option<Arc<ProgressDebugSink>>,
     ) -> Self {
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity {
@@ -672,9 +666,7 @@ impl ProgressRenderer {
             time_source,
             slots_timing,
             gate,
-            pre_rolled: AtomicBool::new(false),
             in_frame: Cell::new(false),
-            pre_roll_term,
             debug_sink,
             prefix_w: Cell::new(MIN_PREFIX_WIDTH),
             suffix_w: Cell::new(MIN_SUFFIX_WIDTH),
@@ -683,7 +675,10 @@ impl ProgressRenderer {
 
     /// Pre-allocate `capacity` bars with an overall bar at the bottom,
     /// using an existing [`MultiProgress`].  Returns `(renderer, overall_state)`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the eight parameters are independent collaborators of the renderer — draw target, slot capacity, overall label and total, and four injectable sources; grouping them into a struct would rename the same fields without reducing the wiring"
+    )]
     pub(crate) fn from_mp_with_overall(
         mp: MultiProgress,
         capacity: usize,
@@ -692,8 +687,7 @@ impl ProgressRenderer {
         dim_source: Arc<dyn DimensionSource>,
         gate: WriteGate,
         time_source: Arc<dyn TimeSource>,
-        pre_roll_term: Option<Box<dyn TermLike>>,
-        debug_sink: Option<ProgressDebugSink>,
+        debug_sink: Option<Arc<ProgressDebugSink>>,
     ) -> (Self, Arc<SharedState>) {
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity.saturating_sub(1) {
@@ -730,9 +724,7 @@ impl ProgressRenderer {
                 time_source,
                 slots_timing,
                 gate,
-                pre_rolled: AtomicBool::new(false),
                 in_frame: Cell::new(false),
-                pre_roll_term,
                 debug_sink,
                 prefix_w: Cell::new(MIN_PREFIX_WIDTH),
                 suffix_w: Cell::new(MIN_SUFFIX_WIDTH),
@@ -740,8 +732,6 @@ impl ProgressRenderer {
             overall_state,
         )
     }
-
-    /// Pre-allocate `capacity` bars with an overall bar at the bottom,
 
     /// Add an overall aggregate bar pinned at the bottom slot.
     ///
@@ -1016,10 +1006,6 @@ impl ProgressRenderer {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "tick orchestrates many progress-bar state updates that are clearer inline"
-    )]
     /// Advance all progress bars by one frame.
     ///
     /// Recomputes the uniform alignment width, then redraws every visible
@@ -1106,152 +1092,6 @@ impl ProgressRenderer {
                 sink.emit(&snapshot);
             }
         });
-    }
-
-    /// Emit a debug snapshot of all bar states to the debug sink.
-    ///
-    /// Called by [`run_terminal_frame`](super::terminal::run_terminal_frame)
-    /// after all slots are synced, so the snapshot reflects the final
-    /// per-frame state.  No-op when no debug sink is configured.
-    pub(crate) fn emit_debug_snapshot(&self) {
-        let Some(ref sink) = self.debug_sink else {
-            return;
-        };
-        let bars: Vec<DebugSlotState> = self
-            .slots
-            .iter()
-            .enumerate()
-            .map(|(i, slot)| {
-                let (bound, snap) = match slot.source.borrow().as_ref() {
-                    Some(s) => (true, s.snapshot()),
-                    None => (
-                        false,
-                        TrackSnapshot {
-                            position: 0,
-                            total: 0,
-                            label: String::new(),
-                            prefix: String::new(),
-                            prefix_components: PrefixComponents::default(),
-                            suffix: String::new(),
-                            suffix_components: SuffixComponents::default(),
-                            status: TrackStatus::Active,
-                            elapsed: Duration::ZERO,
-                        },
-                    ),
-                };
-                let rate = if bound && snap.status == TrackStatus::Active {
-                    self.slots_timing[i].rate
-                } else {
-                    0.0
-                };
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "progress ETA math tolerates u64 to f64 precision loss"
-                )]
-                let eta = if bound
-                    && snap.status == TrackStatus::Active
-                    && snap.total > snap.position
-                    && self.slots_timing[i].rate > 0.0
-                {
-                    Some((snap.total - snap.position) as f64 / self.slots_timing[i].rate)
-                } else {
-                    None
-                };
-                DebugSlotState {
-                    slot: i,
-                    bound,
-                    label: snap.label.clone(),
-                    prefix: snap.prefix.clone(),
-                    position: snap.position,
-                    total: snap.total,
-                    status: format!("{:?}", snap.status),
-                    elapsed_secs: snap.elapsed.as_secs_f64(),
-                    rate_bytes_per_sec: rate,
-                    eta_secs: eta,
-                    suffix: snap.suffix.clone(),
-                    dirty: slot
-                        .source
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|s| s.dirty.load(Ordering::Acquire)),
-                }
-            })
-            .collect();
-        let snapshot = DebugTickSnapshot {
-            r#type: "tick".to_string(),
-            tick: sink.tick_count.load(Ordering::Relaxed),
-            elapsed_secs: self.time_source.now().duration_since(sink.start).as_secs_f64(),
-            bars,
-        };
-        sink.emit(&snapshot);
-    }
-
-    /// Sync all dirty render slots to their indicatif bars.
-    ///
-    /// Computes rate/ETA for active slots, calls [`sync_snapshot_to_bar`]
-    /// for each dirty slot, and applies finish/abandon visual state for
-    /// completed slots. Emits a debug snapshot when a debug sink is
-    /// configured.
-    ///
-    /// Called by [`run_terminal_frame`](super::terminal::run_terminal_frame)
-    /// after layout recomputation and resize handling.
-    pub(crate) fn sync_all_dirty_slots(&mut self, resized: bool) {
-        for (i, slot) in self.slots.iter().enumerate() {
-            if let Some(ref source) = *slot.source.borrow() {
-                let dirty = resized || source.dirty.swap(false, Ordering::AcqRel);
-                if !dirty {
-                    continue;
-                }
-                let snap = source.snapshot();
-
-                let rate_str: Option<String> = if snap.status == TrackStatus::Active {
-                    if snap.position != self.slots_timing[i].prev_position {
-                        let now = self.time_source.now();
-                        let dt =
-                            now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
-                        if dt > 0.001 {
-                            #[allow(clippy::cast_precision_loss)]
-                            let current =
-                                (snap.position.saturating_sub(self.slots_timing[i].prev_position))
-                                    as f64
-                                    / dt;
-                            self.slots_timing[i].rate =
-                                self.slots_timing[i].rate * 0.9 + current * 0.1;
-                            self.slots_timing[i].prev_position = snap.position;
-                            self.slots_timing[i].prev_instant = now;
-                        }
-                    }
-                    Some(format_rate(self.slots_timing[i].rate))
-                } else {
-                    None
-                };
-
-                let eta_str = if snap.status == TrackStatus::Active
-                    && snap.total > snap.position
-                    && self.slots_timing[i].rate > 0.0
-                {
-                    #[allow(clippy::cast_precision_loss)]
-                    let remaining = (snap.total - snap.position) as f64 / self.slots_timing[i].rate;
-                    Some(format_eta(remaining))
-                } else {
-                    None
-                };
-
-                self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), eta_str.as_deref());
-                if snap.status == TrackStatus::Active {
-                    // bar.tick() called in the draw phase.
-                } else if source.is_cleared() {
-                    slot.bar.set_style(blank_bar_style());
-                    slot.bar.set_message(" ");
-                    slot.bar.set_prefix("");
-                } else {
-                    self.finish_slot(i, snap.status);
-                }
-            }
-        }
-
-        // Emit debug snapshot after all slots are synced.
-        self.emit_debug_snapshot();
     }
 
     /// Execute a frame: suppress writes, run `mutate`, advance spinners,
@@ -1341,10 +1181,7 @@ impl ProgressRenderer {
             }
         }
 
-        // Step 6: Pre-roll (bypasses buffer).
-        self.pre_roll_if_needed();
-
-        // Step 7: Advance spinners and draw once.
+        // Step 6: Advance spinners and draw once.
         // Open the gate — indicatif draws on the next bar operation.
         let _guard = self.gate.open();
         for slot in &self.slots {
@@ -1470,37 +1307,6 @@ impl ProgressRenderer {
     ///
     /// Writes `rows` newlines to bypass [`BufferedTerm`] so they go directly
     /// to the terminal, then moves the cursor back up `rows` lines. This
-    /// reserves the entire terminal screen for progress bar content,
-    /// preventing intervening stderr content from being overwritten during
-    /// bar draws.
-    ///
-    /// One-shot: only the first call writes; subsequent calls are no-ops. In
-    /// test mode (`pre_roll_term` is `None`) this is always a no-op.
-    ///
-    /// # Scroll guarantee
-    ///
-    /// Moves the cursor to the absolute bottom of the terminal *before*
-    /// writing blank lines, so every blank `write_line` triggers a scroll —
-    /// newlines from a cursor partway down the screen would only fill the
-    /// remaining rows below it, leaving visible content above exposed. After
-    /// the blank lines the cursor returns to the top so indicatif can
-    /// overwrite the now-empty visible area.
-    pub(crate) fn pre_roll_if_needed(&self) {
-        let Some(ref term) = self.pre_roll_term else {
-            return;
-        };
-        if self.pre_rolled.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let rows = self.dim_source.dimensions().0 as usize;
-        // Move to the bottom first so every write_line causes a scroll.
-        let _ = term.move_cursor_down(rows);
-        for _ in 0..rows {
-            let _ = term.write_line("");
-        }
-        let _ = term.move_cursor_up(rows);
-    }
-
     /// Respond to terminal dimension changes since the last tick.
     ///
     /// Adjusts the slot capacity when height changes (prepending or
@@ -1583,12 +1389,10 @@ impl ProgressRenderer {
         if self.finalized.replace(true) {
             return;
         }
-        // Ensure pre_roll fires before the final draw.  When all bars
-        // finish before the first ticker tick (≈50 ms), the ticker
-        // never calls pre_roll_if_needed(), so bars would draw at the
-        // current cursor position and overwrite existing terminal
-        // content instead of scrolling it into scrollback.
-        self.pre_roll_if_needed();
+        // Pre-roll is deliberately absent here: it belongs to the
+        // [`TerminalInner`] and fires when the first screen is built, long
+        // before any `finalize` call, so the scroll has always happened by
+        // the time the final frame draws.
         // RAII guard: buffer OFF during final draw, re-enabled on drop.
         let _guard = self.gate.open();
         // Finish all bound bars that have reached a terminal state:
@@ -1650,7 +1454,6 @@ mod tests {
             dims,
             WriteGate::new_noop(),
             ts as Arc<dyn TimeSource>,
-            None,
             None,
         );
 

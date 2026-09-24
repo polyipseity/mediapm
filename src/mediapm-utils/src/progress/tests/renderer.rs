@@ -214,8 +214,8 @@ fn dirty_tracking_draws_on_mutation() {
 
 #[test]
 fn pre_roll_reserves_full_terminal_height() {
-    // When pre_roll fires, it must write exactly `rows` newlines (one per
-    // terminal row) and move the cursor back up by the same amount.
+    // Pre-roll writes one blank line per dimension-source row and restores the
+    // cursor: move_cursor_down(rows) → rows × write_line("") → move_cursor_up(rows).
     use super::super::inner::DimensionSource;
     use std::sync::Arc;
 
@@ -224,16 +224,17 @@ fn pre_roll_reserves_full_terminal_height() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let _group = ProgressScreen::builder()
+    let terminal = super::super::ProgressTerminal::builder()
         .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
-        .capacity(2)
+        .with_time_source(ts as Arc<dyn super::super::TimeSource>)
+        .capacity(10)
+        .with_ticker_enabled(false)
         .build();
 
-    // Wait for the background ticker to fire pre_roll.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Pre-roll fires synchronously when the first screen is created.
+    let _screen = terminal.screen().build();
 
     let moves = cap_term.moves_since_last_check();
     let newline_count = moves.lines().filter(|l| l.trim() == "NewLine").count();
@@ -244,10 +245,10 @@ fn pre_roll_reserves_full_terminal_height() {
     assert!(moves.contains("Up(10)"), "pre_roll should move cursor up 10 rows:\n{moves}");
 }
 
+/// Pre-roll belongs to the terminal, not the screen: three phase screens of
+/// one sync must scroll the terminal exactly once.
 #[test]
-fn pre_roll_one_shot() {
-    // After pre_roll fires once, subsequent ticks must not write
-    // additional newlines.
+fn pre_roll_fires_once_per_terminal() {
     use super::super::inner::DimensionSource;
     use std::sync::Arc;
 
@@ -256,37 +257,35 @@ fn pre_roll_one_shot() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressScreen::builder()
+    let terminal = super::super::ProgressTerminal::builder()
         .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
-        .with_dim_source(dims as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
-        .capacity(2)
+        .with_dim_source(dims.clone() as Arc<dyn DimensionSource>)
+        .with_time_source(ts as Arc<dyn super::super::TimeSource>)
+        .capacity(10)
+        .with_ticker_enabled(false)
         .build();
 
-    // Wait for the background ticker to fire pre_roll.
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
-    // Drain the pre_roll moves from the first ticker tick.
+    let first = terminal.screen().build();
     let first_moves = cap_term.moves_since_last_check();
     let first_newlines = first_moves.lines().filter(|l| l.trim() == "NewLine").count();
-    assert_eq!(first_newlines, 10, "first tick should write 10 pre_roll newlines");
+    assert_eq!(first_newlines, 10, "first screen must pre-roll:\n{first_moves}");
 
-    // Tick explicitly — pre_roll must not fire again.
-    group.tick();
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    first.join();
+    // A terminal height change must not re-arm the one-shot pre-roll.
+    dims.set((20, 80));
+    let _second = terminal.screen().build();
+
     let second_moves = cap_term.moves_since_last_check();
     let second_newlines = second_moves.lines().filter(|l| l.trim() == "NewLine").count();
     assert_eq!(
         second_newlines, 0,
-        "second tick should NOT fire pre_roll again, got {second_newlines} newlines"
+        "second screen must NOT pre-roll again, got {second_newlines} newlines:\n{second_moves}"
     );
 }
 
 #[test]
 fn pre_roll_with_overall() {
-    // Same as pre_roll_reserves_full_terminal_height but with an overall
-    // aggregate bar.
     use super::super::inner::DimensionSource;
     use std::sync::Arc;
 
@@ -295,17 +294,16 @@ fn pre_roll_with_overall() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let (_group, _overall) = ProgressScreen::builder()
+    let terminal = super::super::ProgressTerminal::builder()
         .with_term_like(Box::new(mp_term.clone()))
         .with_pre_roll_capture(Box::new(cap_term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
-        .capacity(2)
-        .with_overall("total", 100)
+        .with_time_source(ts as Arc<dyn super::super::TimeSource>)
+        .capacity(10)
+        .with_ticker_enabled(false)
         .build();
 
-    // Wait for the background ticker to fire pre_roll.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    let (_screen, _overall) = terminal.screen().with_overall("total", 100).build();
 
     let moves = cap_term.moves_since_last_check();
     let newline_count = moves.lines().filter(|l| l.trim() == "NewLine").count();
@@ -320,52 +318,7 @@ fn pre_roll_with_overall() {
 }
 
 #[test]
-fn pre_roll_height_changes_no_effect() {
-    // Once pre_roll has fired, a subsequent terminal height change must
-    // NOT trigger a second pre_roll (one-shot invariant).
-    use super::super::inner::DimensionSource;
-    use std::sync::Arc;
-
-    let mp_term = indicatif::InMemoryTerm::new(10, 80);
-    let cap_term = indicatif::InMemoryTerm::new(100, 80);
-    let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
-    let ts = Arc::new(super::super::TestTimeSource::new());
-
-    let group = ProgressScreen::builder()
-        .with_term_like(Box::new(mp_term.clone()))
-        .with_pre_roll_capture(Box::new(cap_term.clone()))
-        .with_dim_source(dims.clone() as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
-        .capacity(2)
-        .build();
-
-    // Wait for pre_roll to fire at H=10.
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    let _ = cap_term.moves_since_last_check();
-
-    // Change terminal height — pre_roll must NOT re-fire.
-    dims.set((20, 80));
-    group.tick();
-    std::thread::sleep(std::time::Duration::from_millis(150));
-
-    let moves = cap_term.moves_since_last_check();
-    let newline_count = moves.lines().filter(|l| l.trim() == "NewLine").count();
-    assert_eq!(
-        newline_count, 0,
-        "height change should NOT trigger pre_roll again, got {newline_count} newlines"
-    );
-}
-
-#[test]
 fn pre_roll_with_existing_content_scrolls_it_away() {
-    // Regression test: when the terminal has existing content and the
-    // cursor is NOT at the bottom, pre_roll must write enough newlines
-    // to push ALL visible content into the scrollback buffer.
-    //
-    // In this scenario: cursor is at row 0 (top), terminal has 10 rows
-    // with content at rows 0-4.  Pre-roll with only `rows` newlines
-    // would scroll only 1 line (cursor reaches bottom after 9 newlines,
-    // then 1 scroll), leaving rows 1-4 visible.
     use super::super::inner::DimensionSource;
     use indicatif::TermLike;
     use std::sync::Arc;
@@ -375,10 +328,8 @@ fn pre_roll_with_existing_content_scrolls_it_away() {
     for i in 1..=5 {
         let _ = term.write_line(&format!("existing content line {i}"));
     }
-    // At this point cursor is at row 5 (after writing 5 lines).
     // Move cursor UP 5 to simulate cursor at top (worst case).
     let _ = term.move_cursor_up(5);
-    // Cursor is now at row 0, content at rows 0-4.
     let initial_content = term.contents();
     assert!(initial_content.contains("existing content line 1"), "content must be written");
     assert!(initial_content.contains("existing content line 5"), "content must be written");
@@ -387,41 +338,30 @@ fn pre_roll_with_existing_content_scrolls_it_away() {
     let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
     let ts = Arc::new(super::super::TestTimeSource::new());
 
-    let group = ProgressScreen::builder()
+    let terminal = super::super::ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
         .with_pre_roll_capture(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
-        .capacity(2)
+        .capacity(10)
+        .with_ticker_enabled(false)
         .build();
-    // Wait for the background ticker to fire pre_roll (at 50ms, 3-4
-    // ticks should be enough).
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    // Pre_roll has now pushed all existing content away.
+
+    let group = terminal.screen().build();
 
     let bar = group.add_bar(100, "work");
     bar.set_position(100);
     ts.advance(std::time::Duration::from_millis(100));
     bar.finish_success();
 
-    // Sync state from SharedState to indicatif, then finalize for
-    // deterministic finished-bar output (no spinner animation).
     group.tick();
-    group.join_and_clear();
+    group.join();
 
-    // The visible content must contain ONLY the finished bar output.
-    // All "existing content line *" must be gone (scrolled into
-    // scrollback by pre_roll).
-    // All existing content must have been scrolled into scrollback by
-    // pre_roll.  The visible content must contain ONLY the finished bar
-    // line (pure text — InMemoryTerm::contents strips ANSI codes).
     let after = term.contents();
     assert!(
         !after.contains("existing content"),
         "existing content must be scrolled away, got: {after:?}",
     );
-    // Exactly one visible line with a spinner prefix and deterministic
-    // body.  Strip the multi-byte spinner char for exact body matching.
     let bar_line = after.lines().next().expect("expected at least one bar line");
     let spinner_len = bar_line.chars().next().unwrap().len_utf8();
     let body = &bar_line[spinner_len..];
@@ -429,49 +369,6 @@ fn pre_roll_with_existing_content_scrolls_it_away() {
         body, "     work █████████████████████████████████████████████████████████  100/100 0s",
         "bar body after spinner must match exactly",
     );
-}
-
-#[test]
-fn pre_roll_fires_on_join_and_clear_before_ticker() {
-    // Regression test: when all bars finish before the first ticker tick
-    // (≈50 ms), join_and_clear() → finalize() must still call
-    // pre_roll_if_needed().  Without this, bars draw at the current
-    // cursor position and overwrite existing terminal content.
-    use super::super::inner::DimensionSource;
-    use std::sync::Arc;
-
-    let mp_term = indicatif::InMemoryTerm::new(10, 80);
-    let cap_term = indicatif::InMemoryTerm::new(100, 80);
-    let dims = Arc::new(super::super::inner::TestDimensionSource::new((10, 80)));
-    let ts = Arc::new(super::super::TestTimeSource::new());
-
-    let group = ProgressScreen::builder()
-        .with_term_like(Box::new(mp_term.clone()))
-        .with_pre_roll_capture(Box::new(cap_term.clone()))
-        .with_dim_source(dims as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn super::super::TimeSource>)
-        .capacity(2)
-        .build();
-
-    // Add a bar and complete it immediately — before the 50ms ticker
-    // thread fires its first tick.
-    let bar = group.add_bar(1, "instant");
-    bar.set_position(1);
-    ts.advance(std::time::Duration::from_millis(1));
-    bar.finish_success();
-
-    // Finalize immediately — the background ticker has slept only
-    // microseconds, nowhere near its 50ms interval.
-    group.join_and_clear();
-
-    // Pre_roll must have been called (via finalize).
-    let moves = cap_term.moves_since_last_check();
-    let newline_count = moves.lines().filter(|l| l.trim() == "NewLine").count();
-    assert!(
-        newline_count > 0,
-        "finalize must trigger pre_roll (rows=10), got {newline_count}:\n{moves}",
-    );
-    assert!(moves.contains("Up(10)"), "finalize pre_roll must move cursor up 10 rows:\n{moves}");
 }
 
 #[test]

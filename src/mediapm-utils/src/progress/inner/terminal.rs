@@ -34,7 +34,6 @@ struct ScreenId(u64);
 /// state, and mutable screen tracking. The ticker thread holds a [`Weak`]
 /// reference to the current renderer and exits cleanly when the terminal
 /// is dropped or a new screen is created.
-#[expect(dead_code, reason = "fields reserved for Task 2 renderer demotion")]
 struct TerminalInner {
     /// Draw target for all bars created inside this terminal.
     mp: MultiProgress,
@@ -48,13 +47,38 @@ struct TerminalInner {
     /// Injectable time source (real wall clock or test double).
     time_source: Arc<dyn TimeSource>,
     /// Optional JSONL debug sink for bar-state snapshots.
-    debug_sink: Option<ProgressDebugSink>,
+    /// Shared (`Arc`) because one sink belongs to the terminal and is used by
+    /// every screen's renderer, so tick numbering stays monotonic across a
+    /// sync instead of restarting per phase.
+    debug_sink: Option<Arc<ProgressDebugSink>>,
     /// One-shot flag: has the first-draw pre-roll (newline scroll) been
     /// performed?  True after the first frame renders.
     pre_rolled: std::sync::atomic::AtomicBool,
     /// Terminal to write pre-roll newlines to.  `None` in test mode
     /// (user-provided [`MultiProgress`] via [`with_multi_progress`]).
     pre_roll_term: Option<Box<dyn TermLike>>,
+}
+
+impl TerminalInner {
+    /// Write the one-shot pre-roll the first time it is called.
+    ///
+    /// Pre-roll emits blank lines so existing terminal content scrolls into
+    /// scrollback before the first bar draws, instead of being overwritten.
+    /// It belongs to the terminal rather than a screen: a sync with three
+    /// phase screens must scroll once.  A `None` `pre_roll_term` (a caller
+    /// supplied [`MultiProgress`]) makes this a no-op.
+    fn pre_roll_if_needed(&self) {
+        if self.pre_rolled.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let Some(ref term) = self.pre_roll_term else { return };
+        let rows = self.dim_source.dimensions().0 as usize;
+        let _ = term.move_cursor_down(rows);
+        for _ in 0..rows {
+            let _ = term.write_line("");
+        }
+        let _ = term.move_cursor_up(rows);
+    }
 }
 
 /// Mutable state owned by [`TerminalInner`].
@@ -217,7 +241,7 @@ impl ProgressTerminalBuilder<NoOverall> {
                 MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
             (mp, gate)
         });
-        let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
+        let debug_sink = self.debug_sink.or_else(detect_progress_debug_env).map(Arc::new);
         ProgressTerminal {
             inner: Arc::new(TerminalInner {
                 mp,
@@ -279,7 +303,7 @@ impl ProgressTerminalBuilder<HasOverall> {
                 MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
             (mp, gate)
         });
-        let debug_sink = self.debug_sink.or_else(detect_progress_debug_env);
+        let debug_sink = self.debug_sink.or_else(detect_progress_debug_env).map(Arc::new);
         let terminal = ProgressTerminal {
             inner: Arc::new(TerminalInner {
                 mp,
@@ -493,33 +517,23 @@ fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> 
         let id = ScreenId(state.next_id);
         state.next_id += 1;
 
-        // Create a fresh renderer for this screen.
-        let renderer = if let Some((ref label, total)) = overall {
-            let mut r = ProgressRenderer::from_mp(
-                MultiProgress::with_draw_target(ProgressDrawTarget::hidden()),
-                terminal.capacity,
-                Arc::clone(&terminal.inner.dim_source),
-                WriteGate::new_noop(),
-                Arc::clone(&terminal.inner.time_source),
-                None,
-                None,
-            );
-            r.dynamic_height = terminal.dynamic_height;
+        // One pre-roll per terminal, before any bar of the first screen draws:
+        // the bars must appear below the scrolled content, not over it.
+        terminal.inner.pre_roll_if_needed();
+
+        let mut r = ProgressRenderer::from_mp(
+            terminal.inner.mp.clone(),
+            terminal.capacity,
+            Arc::clone(&terminal.inner.dim_source),
+            terminal.inner.gate.clone(),
+            Arc::clone(&terminal.inner.time_source),
+            terminal.inner.debug_sink.clone(),
+        );
+        r.dynamic_height = terminal.dynamic_height;
+        if let Some((ref label, total)) = overall {
             r.add_overall(label, total);
-            Arc::new(Mutex::new(r))
-        } else {
-            let mut r = ProgressRenderer::from_mp(
-                MultiProgress::with_draw_target(ProgressDrawTarget::hidden()),
-                terminal.capacity,
-                Arc::clone(&terminal.inner.dim_source),
-                WriteGate::new_noop(),
-                Arc::clone(&terminal.inner.time_source),
-                None,
-                None,
-            );
-            r.dynamic_height = terminal.dynamic_height;
-            Arc::new(Mutex::new(r))
-        };
+        }
+        let renderer = Arc::new(Mutex::new(r));
 
         // Stop any existing ticker.
         state.ticker.take();
@@ -670,69 +684,13 @@ impl ManagedScreen {
     /// thread does not run).
     pub fn tick(&self) {
         let Some(ref renderer) = self.renderer else { return };
-        super::terminal::run_terminal_frame(renderer);
+        renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tick();
     }
 }
 
 impl Drop for ManagedScreen {
     fn drop(&mut self) {
         self.join();
-    }
-}
-
-/// Execute one frame on the live screen's renderer.
-///
-/// Suppresses the write gate, recomputes the per-screen layout, handles
-/// terminal resize, syncs all dirty slots (including rate/ETA computation
-/// and debug emission), performs the one-shot pre-roll, then draws once
-/// by opening the gate and ticking active bars.
-///
-/// This is the single frame entry point for [`ManagedScreen::tick`].
-/// The renderer's own [`tick`](ProgressRenderer::tick) method is used
-/// only by the ticker thread for autonomous animation.
-pub(crate) fn run_terminal_frame(renderer: &std::sync::Mutex<ProgressRenderer>) {
-    // Recompute per-screen layout.
-    {
-        let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        r.recompute_layout();
-    }
-
-    // Handle terminal resize.
-    let resized = {
-        let mut r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        r.maybe_adjust_for_resize()
-    };
-    if resized {
-        let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        for slot in &r.slots {
-            if let Some(ref source) = *slot.source.borrow() {
-                source.dirty.store(true, std::sync::atomic::Ordering::Release);
-            }
-        }
-    }
-
-    // Sync all dirty slots (rate/ETA, debug emission).
-    {
-        let mut r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        r.sync_all_dirty_slots(resized);
-    }
-
-    // Pre-roll (one-shot, bypasses buffer).
-    {
-        let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        r.pre_roll_if_needed();
-    }
-
-    // Draw: tick active bars (gate opened implicitly by indicatif).
-    {
-        let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        for slot in &r.slots {
-            if let Some(ref source) = *slot.source.borrow()
-                && !source.is_finished()
-            {
-                slot.bar.tick();
-            }
-        }
     }
 }
 

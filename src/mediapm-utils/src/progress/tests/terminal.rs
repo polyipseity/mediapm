@@ -1,18 +1,81 @@
-//! Tests for [`ProgressTerminal`] and [`ProgressScreen`] (Task 1).
+//! Tests for the terminal-owned draw target (Task 1).
+//!
+//! A screen created from a [`ProgressTerminal`] must draw through that
+//! terminal's own draw target, gate, and debug sink, and pre-roll must fire
+//! exactly once per terminal no matter how many screens a sync creates.
 
-use super::super::ProgressTerminal;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
+
 use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
 
-fn term_terminal() -> (ProgressTerminal, InMemoryTerm) {
-    let term = InMemoryTerm::new(10, 80);
+use super::super::{DimensionSource, ProgressDebugSink, ProgressTerminal, TestDimensionSource};
+
+/// Terminal dimensions used by every test in this module.  `capacity` is
+/// pinned to the same value: `InMemoryTerm::contents()` only reflects frames
+/// drawn at or above the terminal's own height, so a larger capacity makes
+/// every assertion below read `""` even though the frame was drawn.
+const ROWS: u16 = 10;
+const COLS: u16 = 80;
+
+/// Slot capacity for tests that draw **two** screens through one draw target.
+///
+/// indicatif stops printing bars once their cumulative height would exceed the
+/// terminal height (`draw_target.rs`, "Stop here if printing this bar would
+/// exceed the terminal height").  Every screen reserves its own `capacity`
+/// slots on the shared [`MultiProgress`], and the first screen's committed bars
+/// remain there, so two sequential screens need one row of headroom beyond the
+/// reservation or the second screen's bars are clipped away entirely.
+const SEQUENTIAL_CAPACITY: usize = ROWS as usize - 1;
+
+/// A `Write` sink that keeps everything written to it, so a test can read the
+/// JSONL frames a debug sink emitted.
+#[derive(Clone, Default)]
+struct SharedVec(Arc<Mutex<Vec<u8>>>);
+
+impl SharedVec {
+    /// Return everything written so far as UTF-8 lossily decoded text.
+    fn as_string(&self) -> String {
+        let bytes = self.0.lock().expect("capture lock").clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+impl Write for SharedVec {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("capture lock").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Build a terminal over an `InMemoryTerm` the test can read back.
+///
+/// The dimension source is pinned to the terminal size so layout and resize
+/// decisions match the captured frames, and `capacity` is the number of slots
+/// the screen reserves.  `capacity` must not exceed [`ROWS`] (see the module
+/// constants); a test that draws two sequential screens passes
+/// [`SEQUENTIAL_CAPACITY`].
+fn terminal_with_term(term: &InMemoryTerm, capacity: usize) -> ProgressTerminal {
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
-    let t = ProgressTerminal::builder()
-        .with_multi_progress(mp)
+    let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
+    ProgressTerminal::builder()
+        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_dim_source(dims as Arc<dyn DimensionSource>)
+        .capacity(capacity)
         .with_ticker_enabled(false)
-        .with_pre_roll_capture(Box::new(term.clone()))
-        .build();
-    (t, term)
+        .build()
+}
+
+/// A fresh terminal plus a [`ProgressTerminal`] drawing into it with a full
+/// slot reservation — the shape the single-screen tests need.
+fn term_terminal() -> (ProgressTerminal, InMemoryTerm) {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_term(&term, ROWS as usize);
+    (terminal, term)
 }
 
 /// A terminal with no live screen draws nothing: this is the post-commit
@@ -40,4 +103,61 @@ fn disabled_terminal_is_inert() {
     let s = t.screen().build();
     s.add_bar(3, "x").advance(3);
     s.join();
+}
+
+/// A bar added to a terminal screen must reach the terminal's draw target.
+///
+/// Without this assertion every commit-on-join test passes vacuously by
+/// comparing `""` to `""`.
+#[test]
+fn screen_bars_reach_the_terminal_draw_target() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_term(&term, ROWS as usize);
+    let screen = terminal.screen().build();
+    let bar = screen.add_bar(2, "alpha");
+    bar.advance(1);
+    screen.tick();
+    let contents = term.contents();
+    assert!(contents.contains("alpha"), "bar never reached the terminal: {contents:?}");
+}
+
+/// Two sequential screens share one draw target, so the first screen's
+/// committed line survives the second screen's frame.
+#[test]
+fn sequential_screens_share_one_draw_target() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_term(&term, SEQUENTIAL_CAPACITY);
+    let first = terminal.screen().build();
+    first.add_bar(1, "alpha").finish_success();
+    first.tick();
+    first.join();
+    let second = terminal.screen().build();
+    second.add_bar(1, "beta").finish_success();
+    second.tick();
+    let contents = term.contents();
+    assert!(contents.contains("alpha"), "first screen never rendered: {contents:?}");
+    assert!(contents.contains("beta"), "second screen never rendered: {contents:?}");
+}
+
+/// The terminal's debug sink is shared with its screens, so a screen frame
+/// emits a JSONL record.  Passing `None` into `build_screen` regresses
+/// `MEDIAPM_PROGRESS_DEBUG`.
+#[test]
+fn terminal_debug_sink_receives_screen_frames() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
+    let capture = SharedVec::default();
+    let sink = ProgressDebugSink::new(Box::new(capture.clone()));
+    let terminal = ProgressTerminal::builder()
+        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_dim_source(dims as Arc<dyn DimensionSource>)
+        .capacity(ROWS as usize)
+        .with_progress_debug_sink(sink)
+        .with_ticker_enabled(false)
+        .build();
+    let screen = terminal.screen().build();
+    screen.add_bar(1, "alpha").finish_success();
+    screen.tick();
+    assert!(!capture.as_string().is_empty(), "terminal debug sink received no frame records");
 }
