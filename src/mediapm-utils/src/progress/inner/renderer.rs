@@ -105,7 +105,10 @@ pub(crate) struct SharedState {
     /// field layout — the client does.
     truncation: RwLock<Option<Arc<dyn crate::progress::BarLabelTruncation>>>,
     status: AtomicU8,
-    pub(crate) dirty: AtomicBool,
+    /// `true` when this handle's rendered state changed since the last push,
+    /// so the renderer must draw the slot again. Cleared by the renderer's
+    /// single push point after it has copied the values onto the bar.
+    dirty: AtomicBool,
     disabled: AtomicBool,
     /// Visual style for the bar (see [`BarStyle`]). Defaults to
     /// [`StepCount`](BarStyle::StepCount); set to
@@ -234,7 +237,11 @@ impl SharedState {
         *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") = Some(elapsed);
     }
 
-    pub(crate) fn is_finished(&self) -> bool {
+    /// Whether this handle has reached a terminal state (`Success`,
+    /// `Warning`, `Failed`). Read by the renderer's grid bookkeeping, which
+    /// recycles finished slots and keeps active ones; not part of the public
+    /// handle API, whose `is_finished` lives on `ProgressBarHandle`.
+    fn is_finished(&self) -> bool {
         self.status.load(Ordering::Relaxed) != 0
     }
 
@@ -508,12 +515,12 @@ impl ProgressBarHandle {
 // ---- ProgressRenderer + ProgressScreen (rendering + combined) ----------
 
 /// A single slot in the renderer's fixed-size grid.
-pub(crate) struct RenderedSlot {
+struct RenderedSlot {
     /// The indicatif [`ProgressBar`] that draws to the terminal.
-    pub(crate) bar: ProgressBar,
+    bar: ProgressBar,
     /// Optional tracking state this slot is currently bound to.
     /// `None` means the slot is blank (unused).
-    pub(crate) source: RefCell<Option<Arc<SharedState>>>,
+    source: RefCell<Option<Arc<SharedState>>>,
     /// Cached last values pushed to the bar, used to skip redundant
     /// indicatif calls and reduce terminal flicker.
     cache: SlotCache,
@@ -540,7 +547,10 @@ pub(crate) struct RenderedSlot {
 ///    handles need display space.
 pub struct ProgressRenderer {
     inner: MultiProgress,
-    pub(crate) slots: Vec<RenderedSlot>,
+    /// Render slots in draw order: children first, the overall bar last when
+    /// one exists. Slot count is fixed per terminal height (see
+    /// `dynamic_height`), and slots are recycled rather than removed.
+    slots: Vec<RenderedSlot>,
     has_overall: bool,
     dim_source: Arc<dyn DimensionSource>,
     last_width: Option<u16>,
