@@ -688,11 +688,17 @@ impl ManagedScreen {
     /// screen reserved, which is what commits their lines: indicatif reaps a
     /// dropped bar as a zombie and retains its drawn lines, while returning the
     /// bar's slot index to the [`MultiProgress`] free set for the next screen.
-    /// Every slot bar carries `ProgressFinish::AndLeave` (see `with_slot_finish_policy` in [`ProgressRenderer`]), so a bar that is still unfinished here keeps its line too — indicatif's default `ProgressFinish::AndClear` would hide it from `BarState::drop` on the way out.
+    ///
+    /// What retains the line of a bar that is still **unfinished** here depends on the draw target, so it is stated per configuration:
+    ///
+    /// - **Write-gated target** (the `BufferedTerm` a terminal wraps around its term, which is what production draws through): the **write gate** retains it. indicatif's `BarState::drop` finishes an unfinished bar and draws it, but that draw lands after [`finalize`](ProgressRenderer::finalize)'s window has closed, so the gate suppresses it and the frame `finalize` drew is the last one the terminal ever sees. The gate's role here is real: production retention rests on it, and deleting this reasoning is not safe.
+    /// - **Ungated target** (a bare [`MultiProgress`] whose gate is a no-op): the **finish policy** retains it. Every slot bar carries `ProgressFinish::AndLeave` (see `with_slot_finish_policy` in [`ProgressRenderer`]); without it, indicatif's default `ProgressFinish::AndClear` sets `Status::DoneHidden` in `BarState::drop` and clears the bar's line on the way out.
+    ///
+    /// `with_slot_finish_policy` is therefore **defense-in-depth**, not a fix for an observed production defect: it keeps the retention contract from depending on the gate's window timing, so an ungated target — or a future drop path that draws inside an open window — still keeps the line. No production configuration was measured to lose an unfinished bar's line with the policy absent. The gated behavior is pinned by `progress::tests::screen::gated_terminal_retains_an_unfinished_bar`; the ungated half by `join_commits_an_unfinished_bar` and `drop_without_join_keeps_an_unfinished_bar`.
     ///
     /// One measured limit of that retention, and one derived bound:
     ///
-    /// - Measured on the terminal path: a bar that was **finished** before the drop keeps its line through `BarState::drop`'s `is_finished()` short-circuit, and an unfinished one keeps it through the `AndLeave` policy.  Both are exercised by `progress::tests::screen`.
+    /// - On either configuration, a bar that was **finished** before the drop keeps its line through `BarState::drop`'s `is_finished()` short-circuit, which returns before the finish policy is ever consulted.  Exercised by `progress::tests::screen`.
     /// - Derived, **not** measured: the ticker's `Weak::upgrade()` fails here, but a tick already in flight holds a strong clone of the renderer until it returns, so the retired reservation can outlive `join` by up to one tick.  That bound follows from [`ProgressRenderer::run_frame`] returning immediately once finalized (the guard `finalize` sets): the window is a single no-op tick that drops the reservation when it ends, so a screen built and drawn inside the window sees the retired reservation for one frame.  The overlap itself is unmeasured and cannot be forced from a test — it needs a join to land inside another thread's upgrade.
     ///
     /// Idempotent: joining an already-joined (or never-live) screen is a no-op,

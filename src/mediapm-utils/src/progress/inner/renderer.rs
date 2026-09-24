@@ -628,7 +628,9 @@ impl RenderedSlot {}
 
 /// Apply the screen's slot finish policy to a bar that has just been added to a [`MultiProgress`].
 ///
-/// Slot bars use [`ProgressFinish::AndLeave`] so that a bar which is still **unfinished** when its screen is committed keeps the last line it drew, just like a finished one. `join`/`Drop` release the renderer, and indicatif's default [`ProgressFinish::AndClear`] would otherwise hide the line on the way out: `BarState::drop` runs `finish_using_style` for an unfinished bar, setting `Status::DoneHidden`, so a partially-filled line — exactly what a `?` early return leaves behind — is cleared instead of committed.
+/// Slot bars use [`ProgressFinish::AndLeave`] so that a bar which is still **unfinished** when its screen is committed keeps the last line it drew, just like a finished one: indicatif's default [`ProgressFinish::AndClear`] makes `BarState::drop` run `finish_using_style`, which sets `Status::DoneHidden` and clears the line, so a partially-filled line — exactly what a `?` early return leaves behind — would be cleared instead of committed. That clearing draw only reaches a target that writes it: an **ungated** [`MultiProgress`] does, while the production target is a `BufferedTerm` write gate that suppresses every write outside an open window, leaving the frame [`ProgressRenderer::finalize`] drew as the last one the terminal sees.
+///
+/// The policy is therefore **defense-in-depth**, not a fix for an observed production defect: it keeps the retention contract from depending on the gate's window timing. See [`ManagedScreen::join`](super::terminal::ManagedScreen::join) for the full per-configuration statement.
 ///
 /// `AndLeave` cannot change the finished-bar path: `BarState::drop` short-circuits on `is_finished()` (`indicatif/src/state.rs`), returns before `finish_using_style` is reached, and therefore never consults this policy.
 ///

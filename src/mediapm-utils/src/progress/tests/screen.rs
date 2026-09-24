@@ -5,11 +5,11 @@
 //! that screen reserved on the shared draw target, so the next screen of a
 //! sync renders in full below the committed frame.
 //!
-//! Retention is asserted by [`retired_screen_cannot_repaint_the_committed_frame`] and [`join_commits_an_unfinished_bar`]: a committed bar must be unreachable through the handle that used to own it, so mutating that handle cannot repaint the committed line, and a bar still unfinished when the screen is committed must keep its line exactly like a finished one. [`drop_without_join_keeps_an_unfinished_bar`] repeats the second half on the drop path, which is what a `?` early return takes. [`next_screen_draws_below_the_committed_lines`] is deliberately *weaker* — at `capacity == ROWS - 1` a leaked bar and a committed one produce byte-identical `contents()`, so it passes with and without the fix (see its own doc).
+//! Retention is asserted by [`retired_screen_cannot_repaint_the_committed_frame`] and [`join_commits_an_unfinished_bar`]: a committed bar must be unreachable through the handle that used to own it, so mutating that handle cannot repaint the committed line, and a bar still unfinished when the screen is committed must keep its line exactly like a finished one. [`gated_terminal_retains_an_unfinished_bar`] repeats that second half on the write-gated configuration production draws through, where the gate — not the finish policy — is what retains the line. [`drop_without_join_keeps_an_unfinished_bar`] repeats the second half on the drop path, which is what a `?` early return takes. [`next_screen_draws_below_the_committed_lines`] is deliberately *weaker* — at `capacity == ROWS - 1` a leaked bar and a committed one produce byte-identical `contents()`, so it passes with and without the fix (see its own doc).
 //!
 //! Release is asserted twice: [`second_screen_renders_at_full_capacity`] draws a second screen that needs every row (a leaked reservation clips it), and [`release_holds_with_the_ticker_running`] repeats that with the production daemon ticker running instead of a manually driven `tick`.
 //!
-//! Reverting the release fix makes three of these tests fail together — [`second_screen_renders_at_full_capacity`], [`retired_screen_cannot_repaint_the_committed_frame`], and [`release_holds_with_the_ticker_running`] — so none of them is "the" failing assertion. [`join_commits_an_unfinished_bar`] discriminates the other half of the contract: it is red at `bfa740bc`, where release is fixed but the line of an unfinished bar is still cleared on the way out.
+//! Reverting the release fix makes three of these tests fail together — [`second_screen_renders_at_full_capacity`], [`retired_screen_cannot_repaint_the_committed_frame`], and [`release_holds_with_the_ticker_running`] — so none of them is "the" failing assertion. [`join_commits_an_unfinished_bar`] discriminates the other half of the contract, but only in this module's ungated configuration (`with_multi_progress`, a no-op gate): it is red at `bfa740bc`, where release is fixed but the line of an unfinished bar is still cleared on the way out. On the write-gated configuration production uses, that line is retained with and without the finish policy, which [`gated_terminal_retains_an_unfinished_bar`] pins.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,6 +39,10 @@ const COLS: u16 = 80;
 /// deterministic, and [`release_holds_with_the_ticker_running`] turns it on
 /// because a manual `tick` cannot exercise the ticker's own strong clone of the
 /// renderer.
+///
+/// The draw target here is **ungated**: `with_multi_progress` installs a no-op
+/// gate, so the drop-time finishing draw reaches `term`.  Production wraps its
+/// term in a write gate instead — see [`terminal_with_gate`].
 fn terminal_with(term: &InMemoryTerm, capacity: usize, ticker_enabled: bool) -> ProgressTerminal {
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
@@ -55,6 +59,24 @@ fn terminal_with(term: &InMemoryTerm, capacity: usize, ticker_enabled: bool) -> 
 /// frames itself needs.
 fn terminal_with_term(term: &InMemoryTerm, capacity: usize) -> ProgressTerminal {
     terminal_with(term, capacity, false)
+}
+
+/// A [`terminal_with_term`] on the **production draw path**: `with_term_like` wraps
+/// `term` in a `BufferedTerm` write gate — the configuration `ProgressTerminal`
+/// builds outside tests — instead of the no-op gate `with_multi_progress` installs.
+///
+/// Use this for tests that pin what production actually does with the gate in
+/// place; keep [`terminal_with_term`] for tests that need the drop-time draw to
+/// reach `term` so a finish-policy defect stays observable.
+fn terminal_with_gate(term: &InMemoryTerm, capacity: usize) -> ProgressTerminal {
+    let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
+    ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_dim_source(dims as Arc<dyn DimensionSource>)
+        .capacity(capacity)
+        .with_ticker_enabled(false)
+        .with_pre_roll_capture(Box::new(InMemoryTerm::new(ROWS, COLS)))
+        .build()
 }
 
 /// A fresh terminal plus a [`ProgressTerminal`] drawing into it with a full
@@ -101,7 +123,9 @@ fn drop_without_join_commits() {
 ///
 /// The retention contract is total: whatever the screen last drew becomes committed output.  indicatif's default `ProgressFinish::AndClear` breaks that for an unfinished bar — `BarState::drop` runs `finish_using_style`, which sets `Status::DoneHidden` and clears the line on the way out — so the screen sets [`ProgressFinish::AndLeave`](indicatif::ProgressFinish::AndLeave) on every slot bar.  This is the failure path that matters: a `?` early return drops a screen mid-flight, and the partially-filled line is the information a user most wants to keep.
 ///
-/// Measured red at `bfa740bc`, where the release half is already fixed but the finish policy is still indicatif's default: the join leaves `contents()` with no `alpha` at all.  The retired handle is probed afterwards so the test shows a *commit* rather than a re-leaked reservation.
+/// Measured red at `bfa740bc` in this test's configuration: [`terminal_with_term`] builds the terminal with `with_multi_progress`, whose gate is a no-op, so the drop-time `AndClear` draw reaches `term`.  At `bfa740bc` release is already fixed but the finish policy is still indicatif's default, and the join leaves `contents()` with no `alpha` at all.  The same assertions pass with *and* without the policy on the write-gated configuration production uses, where the gate suppresses that draw; that half of the contract is pinned by [`gated_terminal_retains_an_unfinished_bar`].
+///
+/// The retired handle is probed at the end for reachability, not for release: the probe cannot detect a leaked reservation, because the post-join `tick()` is a no-op once `finalize` has set the finalized flag.  The release direction is covered by [`second_screen_renders_at_full_capacity`].
 #[test]
 fn join_commits_an_unfinished_bar() {
     let term = InMemoryTerm::new(ROWS, COLS);
@@ -121,8 +145,14 @@ fn join_commits_an_unfinished_bar() {
     );
 
     // The probe: a commit puts the line out of the retired handle's reach, so
-    // neither the handle nor the retired screen may repaint it.  A re-leaked
-    // reservation would move here.
+    // neither the handle nor the retired screen may repaint it.  It is a
+    // reachability probe only — it cannot detect a leaked reservation.  The
+    // `tick()` below is a no-op once `finalize` set the finalized flag
+    // (`ProgressRenderer::run_frame` returns early), so a reservation that
+    // survived `join` leaves `contents()` unchanged too: deleting only
+    // `state.renderer = None;` from `ManagedScreen::join` keeps this test and
+    // `drop_without_join_keeps_an_unfinished_bar` passing.  Release is covered
+    // by `second_screen_renders_at_full_capacity`.
     bar.advance(10);
     first.tick();
     assert_eq!(
@@ -151,6 +181,37 @@ fn drop_without_join_keeps_an_unfinished_bar() {
     assert_eq!(term.contents(), after, "a committed frame must never be repainted");
 }
 
+/// The production draw configuration retains an unfinished bar's line: this is what production actually does when a screen is committed mid-flight, measured on the write-gated target instead of on the no-op gate the other tests here use.
+///
+/// [`terminal_with_gate`] goes through `with_term_like`, the builder path whose `BufferedTerm` suppresses every write outside an open window.  `BarState::drop` finishes the unfinished bar and draws it after `finalize`'s window has closed, so that draw is suppressed and the frame `finalize` drew — both the bar's label and its `1/60` position — is the last one the terminal sees.
+///
+/// This is a **characterization/regression pin, not a red/green test**: it passes at both `bfa740bc` and `960fdc60`, because production retention is gate-provided and `with_slot_finish_policy`'s `AndLeave` policy is inert there.  Its value is that the configuration production depends on is measured rather than inferred, and that a change which routes the drop-time draw through an open window — or drops the gate from this path — fails a test instead of silently invalidating the reasoning in `ManagedScreen::join`.
+///
+/// Not vacuous, and measured: running these assertions on the **ungated** configuration ([`terminal_with_term`]) fails as soon as the finish policy is also removed, which is the pre-`960fdc60` behavior of the ungated tests (see the `task-2` report for the command and the failing output).  With the policy in place the ungated configuration passes too, which is exactly why this pin is needed to tell the two mechanisms apart.
+#[test]
+fn gated_terminal_retains_an_unfinished_bar() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_gate(&term, ROWS as usize - 1);
+    let screen = terminal.screen().build();
+    let bar = screen.add_bar(60, "alpha");
+    bar.advance(1);
+    terminal.tick();
+    let running = term.contents();
+    assert!(running.contains("alpha"), "precondition: the bar rendered: {running:?}");
+    assert!(running.contains("1/60"), "precondition: the bar rendered its position: {running:?}");
+
+    screen.join();
+    let committed = term.contents();
+    assert!(
+        committed.contains("alpha"),
+        "the gated terminal dropped the unfinished bar's line: {committed:?}"
+    );
+    assert!(
+        committed.contains("1/60"),
+        "the gated terminal must keep the last frame it drew: {committed:?}"
+    );
+}
+
 /// Adding a bar after join is a programming error — the screen is no longer live.
 #[test]
 #[should_panic(expected = "not the live screen")]
@@ -172,7 +233,7 @@ fn add_bar_after_join_panics() {
 /// nine is still [`ROWS`], so nothing is clipped and both mechanisms produce
 /// the same grid.
 ///
-/// What it does establish is that the commit *erases* nothing: `alpha` survives both the join and the second screen's frame, which rules out a commit built on `MultiProgress::clear`.  It is also the test that catches an erasing commit built on `MultiProgress::remove` alone — the `join erased the committed frame` assertion still passes there (the removal only marks the member, and the clearing draw comes later), and the erasure surfaces at the `expect("alpha committed")` below once the second screen draws.  The assertions that fail with the release fix reverted are [`retired_screen_cannot_repaint_the_committed_frame`], [`second_screen_renders_at_full_capacity`], and [`release_holds_with_the_ticker_running`].
+/// What it does establish is that the commit *erases* nothing: `alpha` survives both the join and the second screen's frame, which rules out a commit built on `MultiProgress::clear`.  It is also the test that catches an erasing commit built on `MultiProgress::remove` alone — the `join erased the committed frame` assertion still passes there (removal alone erases nothing: `MultiState::remove_idx` replaces the member with `MultiStateMember::default()` and drops it from the ordering — `indicatif-0.17.11/src/multi.rs:449-463` — so the clearing draw comes later), and the erasure surfaces at the `expect("alpha committed")` below once the second screen draws.  The assertions that fail with the release fix reverted are [`retired_screen_cannot_repaint_the_committed_frame`], [`second_screen_renders_at_full_capacity`], and [`release_holds_with_the_ticker_running`].
 ///
 /// `capacity == ROWS - 1` is the exact fit, not a workaround: a screen's frame
 /// is one line per reserved slot, so at `capacity == ROWS` the second screen's
