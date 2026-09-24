@@ -10,6 +10,7 @@ mod gate;
 mod group;
 mod renderer;
 mod sources;
+mod terminal;
 
 #[allow(unused_imports)]
 pub use components::{
@@ -22,6 +23,9 @@ pub use debug::{
 };
 pub use group::{HasOverall, NoOverall, ProgressGroup, ProgressGroupBuilder};
 pub use renderer::{ProgressRenderer, TrackSnapshot, TrackStatus, TrackedHandle};
+pub use terminal::{
+    ProgressScreen, ProgressScreenBuilder, ProgressTerminal, ProgressTerminalBuilder,
+};
 
 pub(crate) use debug::detect_progress_debug_env;
 // `BufferedTerm` and `WriteWindow` are re-exported for use by `group.rs`

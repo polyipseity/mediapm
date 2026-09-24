@@ -741,6 +741,28 @@ impl ProgressRenderer {
         )
     }
 
+    /// Add an overall aggregate bar pinned at the bottom slot.
+    ///
+    /// Returns an [`Arc<SharedState>`] for the overall bar so the caller
+    /// can advance/finish it. The bar is appended to the slot grid before
+    /// any existing overall bar (or at the end if none exists).
+    pub(crate) fn add_overall(&mut self, label: &str, total: u64) -> Arc<SharedState> {
+        let overall_state =
+            Arc::new(SharedState::with_time_source(total, label, Arc::clone(&self.time_source)));
+        let inner = ProgressBar::new(total);
+        let overall_bar = self.inner.add(inner);
+        apply_overall_bar_style(&overall_bar, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH);
+        overall_bar.set_prefix(label.to_string());
+        self.slots.push(RenderedSlot {
+            bar: overall_bar,
+            source: RefCell::new(Some(overall_state.clone())),
+            cache: SlotCache::new(),
+        });
+        self.has_overall = true;
+        self.slots_timing.push(SlotTiming::new(&*self.time_source));
+        overall_state
+    }
+
     /// Re-configure the bar at slot index `i` to reflect its current
     /// tracked source (or blank state if unbound).
     fn sync_slot(&self, i: usize) {

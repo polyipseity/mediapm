@@ -26,7 +26,8 @@ mod inner;
 #[cfg(feature = "progress")]
 pub use inner::{
     DebugSlotState, DebugTickSnapshot, DimensionSource, HasOverall, NoOverall, PrefixComponents,
-    ProgressDebugSink, ProgressGroup, ProgressGroupBuilder, ProgressRenderer, RealTerminalSource,
+    ProgressDebugSink, ProgressGroup, ProgressGroupBuilder, ProgressRenderer, ProgressScreen,
+    ProgressScreenBuilder, ProgressTerminal, ProgressTerminalBuilder, RealTerminalSource,
     RealTimeSource, StatusCount, SuffixComponents, TestDimensionSource, TestTimeSource, TimeSource,
     TrackSnapshot, TrackStatus, TrackedHandle,
 };

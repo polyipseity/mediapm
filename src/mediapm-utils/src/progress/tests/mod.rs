@@ -28,3 +28,4 @@ mod components;
 mod recording;
 mod renderer;
 mod state;
+mod terminal;
