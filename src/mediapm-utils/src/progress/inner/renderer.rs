@@ -1372,6 +1372,11 @@ impl ProgressRenderer {
     /// when the caller wants the final state of progress bars to
     /// persist in scrollback without empty reserved lines.
     ///
+    /// The commit is completed by advancing the cursor past the frame
+    /// ([`WriteGate::commit_frame`]): the draw protocol alone leaves the
+    /// cursor on the frame's last row, which would leave the committed frame
+    /// inside the next screen's band instead of below it.
+    ///
     /// Safe to call multiple times — only the first call has any effect.
     pub(crate) fn finalize(&self) {
         if self.finalized.replace(true) {
@@ -1414,6 +1419,13 @@ impl ProgressRenderer {
                 break;
             }
         }
+
+        // Hand the frame to the terminal for good: the final draw leaves the
+        // cursor on the frame's last row, so without this the frame is still
+        // the live region and the next screen's frame claims its rows (see
+        // `WriteGate::commit_frame`). Issued here, inside the open write
+        // window, because it is the one write that must not be suppressed.
+        self.gate.commit_frame();
     }
 }
 

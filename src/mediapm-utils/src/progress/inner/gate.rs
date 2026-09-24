@@ -38,6 +38,17 @@
 //! `ProgressBar::set_tab_width` (`progress_bar.rs:167`) — therefore need an
 //! indicatif handle that no mediapm caller can obtain. No in-tree caller
 //! unwraps a draw result.
+//!
+//! # Committing a frame also advances the cursor past it
+//!
+//! A screen commit hands its frame over to the terminal (`LineAdjust::Keep`,
+//! deliberately not a clear) so later output cannot touch it. The draw
+//! protocol on its own does not deliver that: it leaves the cursor resting on
+//! the frame's last row, so the frame is still the live region — the next
+//! screen's frame is written starting at the cursor, claims the committed row
+//! as one of its own, and the following in-place redraw clears it. The
+//! advance issued by [`WriteGate::commit_frame`] is what makes "committed"
+//! true for the terminal rather than nominal.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,9 +80,14 @@ fn suppressed_write_error() -> std::io::Error {
 /// [`width`](Self::width) and [`height`](Self::height) always delegate to
 /// the inner terminal, because the draw decision (how many rows the frame
 /// needs) must stay accurate even while writes are discarded.
+///
+/// The wrapped terminal is held as an [`Arc`] so the paired [`WriteGate`] can
+/// keep a handle on the same terminal and write the commit cursor advance
+/// (see [`WriteGate::commit_frame`]) without going through the suppression it
+/// is compensating for.
 #[derive(Debug)]
 pub(crate) struct BufferedTerm {
-    inner: Box<dyn TermLike>,
+    inner: Arc<dyn TermLike>,
     buffer_enabled: Arc<AtomicBool>,
 }
 
@@ -83,7 +99,9 @@ impl BufferedTerm {
     /// A gate without its enforcing term is unrepresentable.
     pub(crate) fn new(inner: Box<dyn TermLike>) -> (Self, WriteGate) {
         let flag = Arc::new(AtomicBool::new(true));
-        let gate = WriteGate { flag: Arc::clone(&flag) };
+        let inner: Arc<dyn TermLike> = Arc::from(inner);
+        let gate =
+            WriteGate { flag: Arc::clone(&flag), committed_frame_term: Some(Arc::clone(&inner)) };
         (Self { inner, buffer_enabled: flag }, gate)
     }
 }
@@ -167,6 +185,12 @@ impl TermLike for BufferedTerm {
 #[derive(Debug, Clone)]
 pub(crate) struct WriteGate {
     flag: Arc<AtomicBool>,
+    /// The terminal the paired [`BufferedTerm`] wraps, when there is one.
+    ///
+    /// `None` for the no-op gate: a caller that supplies its own
+    /// [`MultiProgress`] has no suppressed draws to compensate for, so there
+    /// is no commit cursor advance to issue (see [`Self::commit_frame`]).
+    committed_frame_term: Option<Arc<dyn TermLike>>,
 }
 
 impl WriteGate {
@@ -176,7 +200,35 @@ impl WriteGate {
     /// provides their own [`MultiProgress`] without a [`BufferedTerm`].
     #[allow(dead_code, reason = "used by renderer unit tests and group.rs with_multi_progress")]
     pub(crate) fn new_noop() -> Self {
-        Self { flag: Arc::new(AtomicBool::new(false)) }
+        Self { flag: Arc::new(AtomicBool::new(false)), committed_frame_term: None }
+    }
+
+    /// Advance the terminal cursor past a frame that has just been committed.
+    ///
+    /// The commit contract (see the module docs) hands the frame over to the
+    /// terminal permanently, but the draw protocol leaves the cursor on the
+    /// frame's last row. Writing one CR+LF moves the cursor to the row below
+    /// the frame, so the next screen's band starts there instead of claiming
+    /// the committed row. CR is not optional: an LF alone keeps the column on
+    /// a terminal that does not translate it, which would start the next
+    /// frame's first line in the middle of a row.
+    ///
+    /// Call while a write window is open ([`Self::open`]) and after the final
+    /// draw. The write goes straight to the wrapped terminal through this
+    /// gate's own handle, so it cannot be swallowed by the very suppression
+    /// it compensates for.
+    ///
+    /// No-op on the no-op gate: with no buffered term there were no discarded
+    /// draws, and the terminal saw every draw walk the cursor down the frame.
+    /// A failed write is not actionable — the frame stays committed either
+    /// way, and the commit path has no error channel (`ProgressBar::tick`
+    /// discards its own draw error for the same reason).
+    pub(crate) fn commit_frame(&self) {
+        let Some(term) = &self.committed_frame_term else { return };
+        // Best effort by contract: the frame is committed whether or not the
+        // terminal accepted the move, and there is no error channel to report
+        // it through (see the method docs).
+        let _ = term.write_str("\r\n");
     }
 
     /// Open the write window. Terminal writes go through until the

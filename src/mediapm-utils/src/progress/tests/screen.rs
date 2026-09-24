@@ -7,6 +7,8 @@
 //!
 //! Retention is asserted by [`retired_screen_cannot_repaint_the_committed_frame`] and [`join_commits_an_unfinished_bar`]: a committed bar must be unreachable through the handle that used to own it, so mutating that handle cannot repaint the committed line, and a bar still unfinished when the screen is committed must keep its line exactly like a finished one. [`gated_terminal_retains_an_unfinished_bar`] repeats that second half on the write-gated configuration production draws through, where the gate — not the finish policy — is what retains the line. [`drop_without_join_keeps_an_unfinished_bar`] repeats the second half on the drop path, which is what a `?` early return takes. [`next_screen_draws_below_the_committed_lines`] is deliberately *weaker* — at `capacity == ROWS - 1` a leaked bar and a committed one produce byte-identical `contents()`, so it passes with and without the fix (see its own doc).
 //!
+//! Where the committed frame *lands* is asserted by [`gated_second_screen_keeps_the_committed_frame`], [`gated_third_screen_keeps_every_committed_frame`], and [`gated_second_screen_keeps_the_committed_frame_across_capacities`]: on the gated configuration the frame outlives the next screen, on the ungated one the intermediate draws already walk the cursor down it and `next_screen_draws_below_the_committed_lines` covers the same ground.
+//!
 //! Release is asserted twice: [`second_screen_renders_at_full_capacity`] draws a second screen that needs every row (a leaked reservation clips it), and [`release_holds_with_the_ticker_running`] repeats that with the production daemon ticker running instead of a manually driven `tick`.
 //!
 //! Reverting the release fix makes three of these tests fail together — [`second_screen_renders_at_full_capacity`], [`retired_screen_cannot_repaint_the_committed_frame`], and [`release_holds_with_the_ticker_running`] — so none of them is "the" failing assertion. [`join_commits_an_unfinished_bar`] discriminates the other half of the contract, but only in this module's ungated configuration (`with_multi_progress`, a no-op gate): it is red at `bfa740bc`, where release is fixed but the line of an unfinished bar is still cleared on the way out. On the write-gated configuration production uses, that line is retained with and without the finish policy, which [`gated_terminal_retains_an_unfinished_bar`] pins.
@@ -432,4 +434,94 @@ fn gated_second_screen_does_not_unwind_the_discarded_screens_rows() {
         !first_draw.contains("Clear"),
         "the first released draw cleared rows it never drew: {ops}"
     );
+}
+
+/// A committed screen's frame stays on the terminal once the next screen renders.
+///
+/// This is the visible half of the commit contract ([`ProgressScreenApi::join`]): the frame is handed over permanently, so the next screen's band must start *below* it. `next_screen_draws_below_the_committed_lines` cannot see the failure because it uses the ungated configuration, where every intermediate draw really writes and walks the cursor down the frame. Production draws through the write gate ([`terminal_with_gate`]), where the discarded draws leave the cursor resting on the committed frame's last row, the next frame's band is written starting there, and the following in-place redraw clears the committed row.
+///
+/// Position is asserted, not mere presence: `alpha` still appearing somewhere could be a redraw in the wrong place, which is why the test pins its row relative to `beta`'s.
+#[test]
+fn gated_second_screen_keeps_the_committed_frame() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_gate(&term, 4);
+    let first = terminal.screen().build();
+    first.add_bar(1, "alpha").finish_success();
+    terminal.tick();
+    first.join();
+
+    let second = terminal.screen().build();
+    second.add_bar(1, "beta").finish_success();
+    terminal.tick();
+
+    assert_eq!(
+        (row_of(&term, "alpha"), row_of(&term, "beta")),
+        (Some(0), Some(4)),
+        "the committed frame must keep its rows above the next screen's:\n{}",
+        term.contents()
+    );
+}
+
+/// The advance keeps working for every later screen: committed frames survive until they are the oldest.
+///
+/// The erasure this guards is total and saturates at exactly one frame: with two screens the defect removes the first frame, and with three it removes both earlier ones, so a two-screen assertion alone cannot distinguish "the advance works" from "the advance works once". Every earlier label is therefore re-checked after every commit, not just the newest one. A commit also collapses a frame whose slots are mostly blank down to its bound bars, so the ordering assertion is "strictly below the previous frame", not a fixed offset.
+#[test]
+fn gated_three_screens_keep_every_committed_frame() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_gate(&term, 4);
+    let mut committed: Vec<&str> = Vec::new();
+    for label in ["alpha", "beta", "gamma"] {
+        let screen = terminal.screen().build();
+        screen.add_bar(1, label).finish_success();
+        terminal.tick();
+        screen.join();
+        committed.push(label);
+        let rows: Vec<Option<usize>> = committed.iter().map(|l| row_of(&term, l)).collect();
+        assert!(
+            rows.iter().all(Option::is_some),
+            "every committed frame must survive, got {rows:?} for {committed:?}:\n{}",
+            term.contents()
+        );
+        let present: Vec<usize> = rows.into_iter().flatten().collect();
+        assert!(
+            present.windows(2).all(|pair| pair[0] < pair[1]),
+            "each screen must sit below the one it followed, got {present:?}:\n{}",
+            term.contents()
+        );
+    }
+}
+
+/// The advance survives the capacities the erasure first showed up at.
+///
+/// A sweep rather than one geometry: the defect is invisible at `capacity == 1` (the frame is a single line and the next band's first line is written below it) and shows up from `capacity == 2` through the full-height case. Pinning only one capacity would leave the others latent.
+#[test]
+fn gated_second_screen_keeps_the_committed_frame_across_capacities() {
+    // `capacity == ROWS - 1` is deliberately absent: two frames that size plus
+    // the separation row need more rows than the terminal has, and `InMemoryTerm`
+    // keeps no scrollback, so the oldest frame leaves the grid for physical
+    // reasons rather than because of this contract.
+    for capacity in [1usize, 2, 3, 4, 8] {
+        let term = InMemoryTerm::new(ROWS, COLS);
+        let terminal = terminal_with_gate(&term, capacity);
+        let first = terminal.screen().build();
+        first.add_bar(1, "alpha").finish_success();
+        terminal.tick();
+        first.join();
+
+        let second = terminal.screen().build();
+        second.add_bar(1, "beta").finish_success();
+        terminal.tick();
+
+        assert_eq!(
+            (row_of(&term, "alpha"), row_of(&term, "beta")),
+            (Some(0), Some(capacity)),
+            "capacity {capacity}: the committed frame must stay above the next screen's:\n{}",
+            term.contents()
+        );
+    }
+}
+
+/// Row of the first line containing `needle`, or `None` when no line does.
+fn row_of(term: &InMemoryTerm, needle: &str) -> Option<usize> {
+    term.contents().lines().position(|line| line.contains(needle))
 }
