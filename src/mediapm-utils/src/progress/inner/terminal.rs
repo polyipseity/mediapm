@@ -569,7 +569,7 @@ fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> 
 
         ManagedScreen {
             inner: Some(Arc::clone(&terminal.inner)),
-            renderer: Some(renderer),
+            renderer: Some(Arc::downgrade(&renderer)),
             screen_id: id,
             joined: std::sync::atomic::AtomicBool::new(false),
         }
@@ -590,7 +590,14 @@ pub struct ManagedScreen {
     /// Shared terminal inner state (`None` when disabled).
     inner: Option<Arc<TerminalInner>>,
     /// Per-screen renderer (`None` when disabled).
-    renderer: Option<Arc<Mutex<ProgressRenderer>>>,
+    ///
+    /// Deliberately [`Weak`]: the terminal's `TerminalState.renderer` is the
+    /// only strong owner, so [`join`](Self::join) can drop the renderer (and
+    /// with it every [`ProgressBar`](indicatif::ProgressBar) the screen
+    /// reserved) by clearing its own field.  A strong clone here would keep
+    /// the bars in the shared [`MultiProgress`] forever, which is the
+    /// accumulated-reservation defect this handle exists to avoid.
+    renderer: Option<Weak<Mutex<ProgressRenderer>>>,
     /// Unique identifier for this screen.
     screen_id: ScreenId,
     /// Whether this screen has been joined (idempotent flag).
@@ -645,16 +652,20 @@ impl ManagedScreen {
         label: &str,
         style: BarStyle,
     ) -> ProgressBarHandle {
-        let Some(ref renderer) = self.renderer else {
-            return ProgressBarHandle::disabled();
-        };
-        // Check live status before acquiring the renderer lock.
+        // Check live status first: a committed screen must panic rather than
+        // fall through to the disabled path when its renderer is already gone.
         if !self.is_live() {
             panic!(
                 "ManagedScreen is not the live screen \
                  (already joined or dropped)"
             );
         }
+        let Some(ref weak) = self.renderer else {
+            return ProgressBarHandle::disabled();
+        };
+        let Some(renderer) = weak.upgrade() else {
+            return ProgressBarHandle::disabled();
+        };
         let state;
         {
             let mut locked = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -671,29 +682,41 @@ impl ManagedScreen {
 
     /// Commit this screen's bars into scrollback.
     ///
-    /// Renders a final frame, removes the screen from the terminal, and
-    /// marks all bars as committed.  After this call, the bars are
-    /// immutable — subsequent terminal ticks will never repaint them.
+    /// Renders the final frame, clears the terminal's live-screen slot and
+    /// releases the terminal's strong reference to the per-screen renderer.
+    /// That drop cascades to every [`ProgressBar`](indicatif::ProgressBar) the
+    /// screen reserved, which is what commits their lines: indicatif reaps a
+    /// dropped bar as a zombie and retains its drawn lines, while returning the
+    /// bar's slot index to the [`MultiProgress`] free set for the next screen.
+    /// The drop also makes the ticker's `Weak::upgrade()` fail so the thread
+    /// exits.
     ///
-    /// Idempotent — calling `join` on an already-joined screen is a no-op.
+    /// Idempotent: joining an already-joined (or never-live) screen is a no-op,
+    /// which is what makes `Drop` safe to route through here.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the terminal's state mutex is poisoned.
     pub fn join(&self) {
         if self.joined.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return; // already joined
         }
         let Some(ref inner) = self.inner else { return };
 
-        // Render the final frame and unregister the screen.
         let mut state = inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.screen.as_ref().is_some_and(|s| s.id == self.screen_id) {
+            return; // another screen is live; this one was already retired
+        }
         // Finalize the renderer (render final frame, remove blank slots).
         if let Some(ref renderer) = state.renderer {
             renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finalize();
         }
-        // Unregister the screen (allows the next screen to be created).
-        if state.screen.as_ref().is_some_and(|s| s.id == self.screen_id) {
-            state.screen = None;
-            state.renderer = None;
-            state.ticker.take();
-        }
+        // Dropping the terminal's `Arc` drops the renderer, its slots and
+        // therefore its bars.  The screen's own handle is a `Weak`, so it does
+        // not keep any of them alive.
+        state.renderer = None;
+        state.screen = None;
+        state.ticker.take();
     }
 
     /// Alias of [`join()`](Self::join) for call-site compatibility.
@@ -704,8 +727,12 @@ impl ManagedScreen {
     /// Force a render sync (used in tests with
     /// [`InMemoryTerm`](indicatif::InMemoryTerm) where the timer
     /// thread does not run).
+    ///
+    /// A no-op once the screen is committed: its renderer is gone (the
+    /// terminal dropped the last strong reference) or already finalized.
     pub fn tick(&self) {
-        let Some(ref renderer) = self.renderer else { return };
+        let Some(ref weak) = self.renderer else { return };
+        let Some(renderer) = weak.upgrade() else { return };
         renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tick();
     }
 }

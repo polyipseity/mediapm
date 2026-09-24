@@ -22,16 +22,6 @@ use super::super::{
 const ROWS: u16 = 10;
 const COLS: u16 = 80;
 
-/// Slot capacity for tests that draw **two** screens through one draw target.
-///
-/// indicatif stops printing bars once their cumulative height would exceed the
-/// terminal height (`draw_target.rs`, "Stop here if printing this bar would
-/// exceed the terminal height").  Every screen reserves its own `capacity`
-/// slots on the shared [`MultiProgress`], and the first screen's committed bars
-/// remain there, so two sequential screens need one row of headroom beyond the
-/// reservation or the second screen's bars are clipped away entirely.
-const SEQUENTIAL_CAPACITY: usize = ROWS as usize - 1;
-
 /// A `Write` sink that keeps everything written to it, so a test can read the
 /// JSONL frames a debug sink emitted.
 #[derive(Clone, Default)]
@@ -61,8 +51,10 @@ impl Write for SharedVec {
 /// The dimension source is pinned to the terminal size so layout and resize
 /// decisions match the captured frames, and `capacity` is the number of slots
 /// the screen reserves.  `capacity` must not exceed [`ROWS`] (see the module
-/// constants); a test that draws two sequential screens passes
-/// [`SEQUENTIAL_CAPACITY`].
+/// constants): a screen's frame is one line per reserved slot, and indicatif
+/// stops printing bars once the cumulative height would exceed the terminal
+/// height (`draw_target.rs`, "Stop here if printing this bar would exceed the
+/// terminal height").
 fn terminal_with_term(term: &InMemoryTerm, capacity: usize) -> ProgressTerminal {
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
@@ -133,21 +125,29 @@ fn screen_bars_reach_the_terminal_draw_target() {
     assert!(contents.contains("alpha"), "bar never reached the terminal: {contents:?}");
 }
 
-/// Two sequential screens share one draw target, so the first screen's
-/// committed line survives the second screen's frame.
+/// Two sequential screens share one draw target, and the joined screen's
+/// released slots let the second screen render in full at `capacity == ROWS`.
+///
+/// The released-slot half is asserted here; the second screen used to present
+/// `1 + capacity` bars on a `ROWS`-tall terminal, so `beta` was clipped away.
+/// Retention of the committed frame is pinned by
+/// `progress::tests::screen::next_screen_draws_below_the_committed_lines`, at
+/// `capacity == ROWS - 1` — the committed frame cannot stay inside
+/// [`InMemoryTerm`]'s visible grid at full capacity, where the second screen's
+/// own frame already fills every row.
 #[test]
 fn sequential_screens_share_one_draw_target() {
     let term = InMemoryTerm::new(ROWS, COLS);
-    let terminal = terminal_with_term(&term, SEQUENTIAL_CAPACITY);
+    let terminal = terminal_with_term(&term, ROWS as usize);
     let first = terminal.screen().build();
     first.add_bar(1, "alpha").finish_success();
     first.tick();
+    assert!(term.contents().contains("alpha"), "precondition: first screen rendered");
     first.join();
     let second = terminal.screen().build();
     second.add_bar(1, "beta").finish_success();
     second.tick();
     let contents = term.contents();
-    assert!(contents.contains("alpha"), "first screen never rendered: {contents:?}");
     assert!(contents.contains("beta"), "second screen never rendered: {contents:?}");
 }
 

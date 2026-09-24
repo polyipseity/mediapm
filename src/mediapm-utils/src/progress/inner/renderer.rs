@@ -1103,7 +1103,14 @@ impl ProgressRenderer {
     ///
     /// This is the terminal path's single frame entry point; pre-roll is not
     /// part of it (see [`finalize`](Self::finalize)).
+    ///
+    /// Returns immediately once [`finalize`](Self::finalize) has run: a
+    /// finalized screen is committed, and repainting it would both rewrite the
+    /// committed frame and re-draw bars the terminal has already released.
     pub(crate) fn run_frame(&mut self) {
+        if self.finalized.get() {
+            return;
+        }
         // Nesting guard: panic in debug builds if called re-entrantly.
         debug_assert!(!self.in_frame.get(), "run_frame called while already in a frame");
         self.in_frame.set(true);

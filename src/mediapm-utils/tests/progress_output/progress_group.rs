@@ -445,15 +445,20 @@ fn progress_group_active_bars_survive_join_and_clear() {
     // alpha is Active — never finished.
     group.tick();
     // join_and_clear runs finalize; Active bars are skipped by the
-    // non-Active guard but should remain visible after blank removal.
+    // non-Active guard but should remain visible after blank removal.  The
+    // exact-output assertion below is what pins that retention: both labels
+    // ("alpha", "overall") and their unfilled styles must still be drawn.
     group.join_and_clear();
+    // The tick after finalize is a no-op: a finalized renderer never repaints,
+    // so the spinner frames below are the ones finalize itself drew rather than
+    // one frame further along.
     group.tick();
     let contents = term.contents();
     assert_eq!(
         contents,
         concat!(
-            "⠼       alpha ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"
+            "⠸       alpha ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"
         )
     );
 }
