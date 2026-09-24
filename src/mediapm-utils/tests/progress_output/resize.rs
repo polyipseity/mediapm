@@ -137,11 +137,17 @@ fn wider_draw_target_expands_the_bar() {
     );
 }
 
-/// A narrow draw target drops the least important suffix fields first: a bar
-/// whose custom suffix does not fit loses it and its rate/ETA, while a wide one
-/// keeps them.
+/// A custom suffix that cannot fit a narrow draw target never reaches the
+/// terminal: the 20-column frame for a bar carrying an 18-character custom suffix
+/// is empty, so neither the custom text nor the rate/ETA after it is drawn. The
+/// wide frame in the same test renders the suffix in full, which is what makes
+/// the absence observable.
+///
+/// This does not evidence truncation ordering: the narrow frame draws no bar at
+/// all, so no field is dropped field-by-field. The order suffix fields are removed
+/// in is pinned by the inline `semantic_truncate_suffix_*` unit tests.
 #[test]
-fn narrow_draw_target_drops_suffix_fields() {
+fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
     let (narrow_terminal, narrow_term) = mk_with_capacity(4, 20, 3);
     let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
     let child = narrow_screen.add_bar(10, "tool-a");
@@ -163,8 +169,15 @@ fn narrow_draw_target_drops_suffix_fields() {
     let narrow = narrow_term.contents();
     let wide = wide_term.contents();
     assert!(wide.contains("already downloaded"), "the wide frame keeps the suffix: {wide:?}");
-    assert!(!narrow.contains("already downloaded"), "the narrow frame drops it: {narrow:?}");
-    assert_eq!(&narrow, concat!(""), "narrow_draw_target_drops_suffix_fields/narrow");
+    assert!(
+        !narrow.contains("already downloaded"),
+        "the narrow frame does not render it: {narrow:?}"
+    );
+    assert_eq!(
+        &narrow,
+        concat!(""),
+        "narrow_draw_target_does_not_render_an_oversize_custom_suffix/narrow"
+    );
     assert_eq!(
         &wide,
         concat!(
@@ -173,7 +186,7 @@ fn narrow_draw_target_drops_suffix_fields() {
             "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d already downloaded\n",
             "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
         ),
-        "narrow_draw_target_drops_suffix_fields/wide"
+        "narrow_draw_target_does_not_render_an_oversize_custom_suffix/wide"
     );
 }
 

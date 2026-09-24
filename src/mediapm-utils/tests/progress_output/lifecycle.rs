@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use indicatif::TermLike;
+use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget, TermLike};
 use mediapm_utils::progress::{BarStyle, ProgressScreen, TestTimeSource};
 
 use super::common::{
@@ -149,7 +149,7 @@ fn second_live_screen_panics() {
 /// `ProgressScreen::disabled()`, and the terminal's disabled constructor takes no
 /// draw target, so its no-op behaviour has nothing observable to assert against.
 #[test]
-fn disabled_screen_returns_inert_handles() {
+fn disabled_screen_handles_report_no_total() {
     let screen = ProgressScreen::disabled();
     let child = screen.add_bar(5, "child");
     assert_eq!(child.total(), 0, "a disabled screen hands out no-op handles");
@@ -759,4 +759,54 @@ fn overall_handle_progress_reaches_the_renderer() {
         ),
         "overall_handle_progress_reaches_the_renderer"
     );
+}
+
+/// Content already on the terminal before a standalone [`ProgressScreen`] draws
+/// survives `join_and_clear`: the screen commits its own bars underneath the
+/// existing lines and leaves them untouched.
+///
+/// This is the screen-path counterpart of the pre-roll tests above.
+/// [`ProgressTerminal`](mediapm_utils::progress::ProgressTerminal) scrolls
+/// pre-existing content away by design (the inline
+/// `pre_roll_with_existing_content_scrolls_it_away` pins that), but production
+/// still builds bare `ProgressScreen`s that pre-roll nothing, so the guarantee the
+/// terminal path deliberately gives up has to hold on the screen path.
+///
+/// The draw target is injected because the standalone builder otherwise draws to
+/// the real stderr: an [`InMemoryTerm`] behind an ungated [`MultiProgress`], the
+/// same shape the rest of this suite captures frames on. The write-gated
+/// `with_term_like` form of the same builder does not preserve this content under
+/// an `InMemoryTerm`; that divergence is reported, not asserted here.
+#[test]
+fn standalone_screen_keeps_content_written_before_it() {
+    let term = InMemoryTerm::new(10, 80);
+    term.write_line("== PRE-EXISTING OUTPUT ==").expect("write the marker line");
+    term.write_line("line before progress bars").expect("write the second marker line");
+    assert!(term.contents().contains("PRE-EXISTING"), "precondition: the marker is on the grid");
+
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let (screen, _overall) = ProgressScreen::builder()
+        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .capacity(4)
+        .with_overall("overall", 5)
+        .with_ticker_enabled(false)
+        .build();
+    let child = screen.add_bar(3, "work");
+    child.advance(3);
+    child.finish_success();
+    screen.tick();
+    screen.join_and_clear();
+
+    let after = term.contents();
+    assert!(after.contains("work"), "precondition: the screen drew into this terminal: {after:?}");
+    let lines: Vec<&str> = after.lines().collect();
+    let marker = lines
+        .iter()
+        .position(|line| line.contains("PRE-EXISTING"))
+        .unwrap_or_else(|| panic!("the first pre-existing line must survive: {lines:?}"));
+    let second = lines
+        .iter()
+        .position(|line| line.contains("line before progress bars"))
+        .unwrap_or_else(|| panic!("the second pre-existing line must survive: {lines:?}"));
+    assert!(marker < second, "the pre-existing lines must keep their order: {lines:?}");
 }

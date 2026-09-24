@@ -279,17 +279,22 @@ fn rate_recomputed_after_more_progress() {
     );
 }
 
-/// A label longer than the prefix budget is trimmed rather than overflowing the
-/// bar; the count/total field must still be present in full.
+/// A label inside the prefix budget is drawn in full: nothing is trimmed, and the
+/// count/total field sits in the suffix exactly as composed.
+///
+/// The label is 26 characters against the 40-column prefix budget, so no
+/// truncation happens here; this pins that a label which fits is not truncated.
+/// The trim itself, and the order it removes fields in, is pinned by the inline
+/// `semantic_truncate_prefix_*` unit tests.
 #[test]
-fn long_label_truncates_to_fit() {
+fn label_within_the_prefix_budget_is_not_truncated() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
     let screen = terminal.screen().build();
     let _child = screen.add_bar(5, "abcdefghijklmnopqrstuvwxyz");
     screen.tick();
     let contents = term.contents();
     let bar_line = contents.lines().next_back().expect("a bar line must be drawn");
-    assert!(bar_line.contains("0/5"), "count/total must survive truncation: {bar_line:?}");
+    assert!(bar_line.contains("0/5"), "count/total must be present in full: {bar_line:?}");
     assert_eq!(
         contents,
         concat!(
@@ -299,7 +304,7 @@ fn long_label_truncates_to_fit() {
             "\n",
             "⠸     abcdefghijklmnopqrstuvwxyz ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d"
         ),
-        "long_label_truncates_to_fit"
+        "label_within_the_prefix_budget_is_not_truncated"
     );
 }
 

@@ -296,7 +296,7 @@ fn worker_children_fill_the_small_grid() {
             "⠦     child-c ███████████████████████████████████████████████████  5/5 0s 0/d\n",
             "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
         ),
-        "worker_children_overflow_a_small_grid"
+        "worker_children_fill_the_small_grid"
     );
 }
 
@@ -317,7 +317,7 @@ fn child_capacity_excludes_the_overall_slot() {
             "⠼        beta ░░░░░░░░░░░  0/3 0s 0/d\n",
             "⠹     overall ░░░░░░░░░░░  0/1 0s 0/d"
         ),
-        "tiny_capacity_keeps_the_newest_child/two_children"
+        "child_capacity_excludes_the_overall_slot/two_children"
     );
 
     let (terminal, term) = mk_with_capacity(3, 40, 2);
@@ -333,7 +333,7 @@ fn child_capacity_excludes_the_overall_slot() {
             "⠼        beta ░░░░░░░░░░░  0/3 0s 0/d\n",
             "⠹     overall ░░░░░░░░░░░  0/1 0s 0/d"
         ),
-        "tiny_capacity_keeps_the_newest_child/three_children"
+        "child_capacity_excludes_the_overall_slot/three_children"
     );
 }
 

@@ -286,8 +286,13 @@ pub struct TrackSnapshot {
 /// state — all clones share state and advancing any one of them updates
 /// the shared state that both clones reference.
 ///
-/// To create a no-op handle, use [`ProgressBarHandle::disabled`]. All mutating
-/// methods on a disabled handle are zero-cost and do nothing.
+/// To create a handle that never draws, use [`ProgressBarHandle::disabled`]. A
+/// disabled handle performs no terminal writes and owns no render slot, so a
+/// screen with no draw target can hand one out and a caller may drive it
+/// harmlessly. It is not inert, though: position and status mutations still land
+/// in its shared state, so what a disabled run reported stays inspectable. Only
+/// the structured prefix/suffix setters check the disabled flag and discard their
+/// input.
 ///
 /// [`ProgressBarHandle`] manages **tracking state only** (`Arc<SharedState>`);
 /// the display bar is managed separately by [`ProgressRenderer`], which
@@ -298,7 +303,11 @@ pub struct ProgressBarHandle {
 }
 
 impl ProgressBarHandle {
-    /// Create a no-op handle (all methods are zero-cost).
+    /// Create a handle that never draws.
+    ///
+    /// See [`ProgressBarHandle`] for what "disabled" suppresses: no terminal
+    /// writes and no render slot, while position and status are still recorded
+    /// for inspection.
     #[must_use]
     pub fn disabled() -> Self {
         let state = Arc::new(SharedState::new(0, ""));

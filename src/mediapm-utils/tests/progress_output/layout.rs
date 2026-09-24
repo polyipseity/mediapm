@@ -223,8 +223,10 @@ fn slot_shift_does_not_corrupt_display() {
     );
 }
 
-/// The overall bar keeps the last slot when more children arrive than can be
-/// bound: the oldest children are dropped from the display, never the overall.
+/// The overall bar keeps its own slot when more children arrive than can be
+/// bound: children take the remaining slots in the order they were added, so the
+/// display keeps the oldest children and the newest arrivals are the ones left
+/// undrawn.
 #[test]
 fn overall_never_shifts_when_children_overflow() {
     let ts = Arc::new(TestTimeSource::new());
@@ -370,11 +372,16 @@ fn overflow_bars_are_tracked_but_not_drawn() {
     );
 }
 
-/// A long resolve label keeps its `[phase]` tag: the label is parsed into
-/// components at construction, and truncation drops the version before it drops
-/// the phase.
+/// A resolve label that fits the prefix budget keeps its `[phase]` tag: the label
+/// is parsed into components at construction, so the tool name and the phase tag
+/// are separate fields before anything is drawn.
+///
+/// The label is 33 characters against the 40-column prefix budget, so nothing is
+/// truncated here. The drop order that would apply if it were — the version
+/// shrinks before the phase is removed — is pinned by the inline
+/// `truncate_parsed_resolve_label_preserves_phase` unit test.
 #[test]
-fn resolve_label_long_keeps_phase_tag() {
+fn resolve_label_within_budget_keeps_phase_tag() {
     let dims = Arc::new(TestDimensionSource::new((4, 40)));
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
@@ -392,7 +399,7 @@ fn resolve_label_long_keeps_phase_tag() {
             "⠸     ffmpeg autobuild-2026-07-31 [res] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d\n",
             "⠹                               overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
         ),
-        "resolve_label_long_keeps_phase_tag"
+        "resolve_label_within_budget_keeps_phase_tag"
     );
 }
 
