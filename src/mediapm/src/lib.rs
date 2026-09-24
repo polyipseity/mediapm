@@ -71,7 +71,9 @@ pub use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 pub use paths::MediaPmPaths;
 pub use service::MediaPmService;
 pub use service_standalone::{registered_builtin_ids, resolve_effective_paths_for_root};
-pub use sync_report::{SyncLibraryOptions, SyncPhaseObserver, SyncPhaseReport};
+pub use sync_report::{
+    SyncLibraryOptions, SyncPhaseObserver, SyncPhaseReport, SyncProgressOverrides,
+};
 pub use tools::provider::RecheckPolicy;
 
 /// Media package descriptor returned by source processing.

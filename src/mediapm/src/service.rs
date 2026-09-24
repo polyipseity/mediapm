@@ -34,7 +34,7 @@ use crate::hierarchy::{
 };
 use crate::materializer;
 use crate::metadata_cache::MetadataCache;
-use crate::output::{ProgressBarApi, ProgressScreen, ProgressScreenApi, ProgressTerminal};
+use crate::output::{ProgressBarApi, ProgressScreenApi, ProgressTerminal};
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
@@ -45,11 +45,31 @@ use crate::tools::workflows::{MANAGED_WORKFLOW_PREFIX, reconcile_media_workflows
 
 use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaStepInvalidationSummary,
-    SyncSummary, ToolsSyncSummary, conductor_run_workflow_options, ensure_mediapm_executable_env,
-    export_mediapm_nickel_config_schemas, load_runtime_dotenv, local_source_default_steps,
-    media_id_from_local_path, media_id_from_uri, merge_runtime_storage, normalize_source_uri,
-    validate_source_uri,
+    SyncProgressOverrides, SyncSummary, ToolsSyncSummary, conductor_run_workflow_options,
+    ensure_mediapm_executable_env, export_mediapm_nickel_config_schemas, load_runtime_dotenv,
+    local_source_default_steps, media_id_from_local_path, media_id_from_uri, merge_runtime_storage,
+    normalize_source_uri, validate_source_uri,
 };
+
+/// Selects the single terminal a sync's phases share.
+///
+/// One sync owns exactly one terminal (spec S1): every phase derives its screen
+/// from the returned terminal, so no phase can believe it owns the cursor and no
+/// phase draws through a target the sync does not own. A phase that built its
+/// own terminal is the defect this contract removes — and it is why the
+/// `--no-progress` flag has to reach *here* instead of being handled per phase.
+///
+/// An injected terminal wins unconditionally, including when it is inert: the
+/// caller (and therefore a test) owns that choice. Otherwise `no_progress` —
+/// either the options flag or the override's — selects an inert terminal rather
+/// than a live one the sync would then have to ignore.
+fn sync_progress_terminal(overrides: SyncProgressOverrides, no_progress: bool) -> ProgressTerminal {
+    match overrides.terminal {
+        Some(terminal) => terminal,
+        None if overrides.no_progress || no_progress => ProgressTerminal::disabled(),
+        None => ProgressTerminal::builder().dynamic_height(true).build(),
+    }
+}
 
 /// Mediapm-specific entries appended to the conductor-managed `.gitignore`
 /// at service construction time. Keeps generated and machine-managed files
@@ -790,11 +810,22 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             RecheckPolicy::UseCached
         };
 
-        self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, no_progress).await
+        // This entry point owns its own sync, so it owns its own terminal.
+        // Under `--no-progress` that terminal is inert: no live terminal is
+        // opened for a run that asked for no progress output.
+        let terminal = sync_progress_terminal(SyncProgressOverrides::default(), no_progress);
+
+        self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, &terminal).await
     }
 
     /// Internal tool-sync implementation that reconciles desired tools from
     /// the resolved runtime storage.
+    ///
+    /// `terminal` is the sync's single terminal, borrowed rather than owned:
+    /// the caller keeps it alive across all three phases and this phase only
+    /// derives its screen from it. The screen is built and joined inside this
+    /// function so the phase's `[prn]` prune bar — registered after the
+    /// provisioning loop — is covered by its lifetime.
     ///
     /// # Errors
     ///
@@ -805,7 +836,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         effective_paths: &MediaPmPaths,
         runtime_storage: &MediaRuntimeStorage,
         recheck_policy: RecheckPolicy,
-        no_progress: bool,
+        terminal: &ProgressTerminal,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         // Build the desired tools map from runtime storage.
         let desired_tools: BTreeMap<String, serde_json::Value> = runtime_storage
@@ -825,21 +856,14 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         // Load current state before reconciliation (needed for skip logic).
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
 
-        // The tool phase renders through a screen — never through a terminal of
-        // its own: the sync owns exactly one terminal and hands each phase a
-        // screen derived from it (spec S1). `--no-progress` is expressed by that
-        // terminal being inert, so this phase needs no flag of its own.
-        //
-        // The pinned `"syncing tools"` overall bar is the phase's own progress
-        // bar; its total is the tool count the phase computes, so it is set
-        // there rather than guessed here.
-        let tool_terminal = if no_progress {
-            ProgressTerminal::disabled()
-        } else {
-            ProgressTerminal::builder().dynamic_height(true).build()
-        };
+        // The tool phase renders through the sync's terminal — never through a
+        // terminal of its own. The pinned `"syncing tools"` overall bar is the
+        // phase's own progress bar; its total is the tool count the phase
+        // computes, so the phase sets it rather than this call guessing. On an
+        // inert terminal both handles are no-ops, which is how `--no-progress`
+        // reaches this phase without a flag of its own.
         let (tool_screen, tool_overall) =
-            tool_terminal.screen().with_overall("syncing tools", 1).build();
+            terminal.screen().with_overall("syncing tools", 1).build();
 
         let workspace_cas =
             Cas::workspace_provisioning_cas(self.conductor(), effective_paths).await?;
@@ -1023,13 +1047,7 @@ impl MediaPmService<FileSystemCas> {
         &mut self,
         options: crate::SyncLibraryOptions,
     ) -> Result<SyncSummary, MediaPmError> {
-        self.sync_library_with_tag_update_checks_and_observer(
-            options.verify_materialization,
-            options.check_tag_updates,
-            options.no_progress,
-            options.observer,
-        )
-        .await
+        self.sync_library_with_progress_overrides(options, SyncProgressOverrides::default()).await
     }
 
     /// Runs a full library sync with optional tag-update checks.
@@ -1056,11 +1074,14 @@ impl MediaPmService<FileSystemCas> {
         check_tag_updates: bool,
         no_progress: bool,
     ) -> Result<SyncSummary, MediaPmError> {
-        self.sync_library_with_tag_update_checks_and_observer(
-            verify_materialization,
-            check_tag_updates,
-            no_progress,
-            None,
+        self.sync_library_with_progress_overrides(
+            crate::SyncLibraryOptions {
+                verify_materialization,
+                check_tag_updates,
+                no_progress,
+                observer: None,
+            },
+            SyncProgressOverrides::default(),
         )
         .await
     }
@@ -1073,6 +1094,66 @@ impl MediaPmService<FileSystemCas> {
         no_progress: bool,
         observer: Option<std::sync::Arc<dyn crate::SyncPhaseObserver + Send + Sync>>,
     ) -> Result<SyncSummary, MediaPmError> {
+        self.sync_library_with_progress_overrides(
+            crate::SyncLibraryOptions {
+                verify_materialization,
+                check_tag_updates,
+                no_progress,
+                observer,
+            },
+            SyncProgressOverrides::default(),
+        )
+        .await
+    }
+
+    /// Runs a full library sync through one caller-visible progress terminal.
+    ///
+    /// This is the entry point every other library-sync method delegates to,
+    /// and the only one that accepts a [`SyncProgressOverrides`]. It exists
+    /// because `indicatif` is a dev-dependency of this crate: production code
+    /// cannot construct a `MultiProgress`, so this seam is the only way a test
+    /// can hand the sync the terminal whose frames it wants to observe.
+    ///
+    /// # Progress ownership
+    ///
+    /// One sync owns exactly one terminal (spec S1). Every phase — tool sync,
+    /// workflow execution, materialization — renders through a screen derived
+    /// from that terminal, so no phase can believe it owns the cursor and no
+    /// phase draws through a target the sync does not own. The screens are
+    /// strictly sequential: each phase joins its screen before the next one is
+    /// built, which is also what makes a second live screen impossible.
+    ///
+    /// `--no-progress` is expressed by that terminal being inert, so a run that
+    /// asked for no progress opens no live terminal at all. Both
+    /// [`SyncLibraryOptions::no_progress`](crate::SyncLibraryOptions::no_progress)
+    /// and [`SyncProgressOverrides::no_progress`] suppress; an injected terminal
+    /// takes precedence over both.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first critical error encountered; non-fatal issues are
+    /// collected as warnings.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "orchestrates tool sync, workflow execution, and materialization in one entrypoint"
+    )]
+    pub async fn sync_library_with_progress_overrides(
+        &mut self,
+        options: crate::SyncLibraryOptions,
+        overrides: SyncProgressOverrides,
+    ) -> Result<SyncSummary, MediaPmError> {
+        let crate::SyncLibraryOptions {
+            verify_materialization,
+            check_tag_updates,
+            no_progress,
+            observer,
+        } = options;
+
+        // One terminal per sync (spec S1): every phase renders through this
+        // single draw target, and `--no-progress` is expressed by it being
+        // inert. No phase builds a terminal of its own.
+        let terminal = sync_progress_terminal(overrides, no_progress);
+
         let effective_paths = self.resolve_effective_paths()?;
         let merged = self.resolve_effective_runtime_storage()?;
         let recheck_policy = if check_tag_updates {
@@ -1086,9 +1167,12 @@ impl MediaPmService<FileSystemCas> {
         // 1. Refresh runtime configuration.
         self.refresh_runtime_configuration()?;
 
-        // 2. Sync tools.
-        let tools_report =
-            self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, false).await?;
+        // 2. Sync tools. The phase derives its screen from the sync's terminal,
+        // so the user's `--no-progress` flag reaches it through the terminal
+        // rather than through a separate flag.
+        let tools_report = self
+            .sync_tools_from_document(&effective_paths, &merged, recheck_policy, &terminal)
+            .await?;
 
         // Notify observer: tool sync phase complete.
         if let Some(ref obs) = observer {
@@ -1120,29 +1204,19 @@ impl MediaPmService<FileSystemCas> {
         ensure_mediapm_executable_env()?;
 
         // Surface the conductor-owned workflow progress screen during sync.
-        // When --no-progress is set, use a disabled group (zero-cost no-op
-        // handles); otherwise build a live dynamic-height group with a pinned
-        // overall bar at the bottom slot. The coordinator receives the overall
-        // handle and sets its total to the actual step count.
+        // The screen is derived from the sync's terminal, so it shares the one
+        // draw target every other phase draws into. The coordinator receives
+        // the overall handle and sets its total to the actual step count; on an
+        // inert terminal that handle draws nothing.
         //
-        // The terminal outlives the screen it backs: dropping a terminal
-        // finalizes its renderer, so it must stay alive for every frame the
-        // workflow draws through `workflow_group`.
-        let workflow_terminal: Option<ProgressTerminal> = if no_progress {
-            None
-        } else {
-            Some(ProgressTerminal::builder().dynamic_height(true).build())
-        };
-        let (workflow_group, workflow_overall): (ProgressScreen, Option<Arc<dyn ProgressBarApi>>) =
-            match workflow_terminal.as_ref() {
-                Some(terminal) => {
-                    let (g, overall) = terminal.screen().with_overall("workflow [wf]", 1).build();
-                    (g, Some(Arc::new(overall)))
-                }
-                None => (ProgressScreen::disabled(), None),
-            };
+        // The workflow screen must be built only after the tool phase's screen
+        // has been joined: a terminal allows exactly one live screen at a time.
+        let (workflow_group, workflow_overall_handle) =
+            terminal.screen().with_overall("workflow [wf]", 1).build();
         let workflow_pg: Option<Arc<dyn ProgressScreenApi + Send + Sync>> =
             Some(Arc::new(workflow_group));
+        let workflow_overall: Option<Arc<dyn ProgressBarApi>> =
+            Some(Arc::new(workflow_overall_handle));
         for workflow_name in workflow_names {
             let before = self.conductor.get_state()?;
             let summary = self
@@ -1214,28 +1288,15 @@ impl MediaPmService<FileSystemCas> {
         // `LockContention`, since the service constructor already holds the
         // directory lock for its lifetime.
         //
-        // The materialization progress screen is owned by mediapm (not the
-        // conductor): it gets its own group so the two screens never share a
-        // draw target. A disabled group is used under --no-progress. The
-        // terminal outlives the screen it backs (dropping a terminal finalizes
-        // its renderer), so it stays bound until the screen is joined.
-        let materialize_terminal: Option<ProgressTerminal> = if no_progress {
-            None
-        } else {
-            Some(ProgressTerminal::builder().dynamic_height(true).build())
-        };
-        let (materialize_group, materialize_overall): (
-            ProgressScreen,
-            Option<Arc<dyn ProgressBarApi>>,
-        ) = match materialize_terminal.as_ref() {
-            Some(terminal) => {
-                let (g, overall) = terminal.screen().with_overall("materializing [mat]", 1).build();
-                (g, Some(Arc::new(overall)))
-            }
-            None => (ProgressScreen::disabled(), None),
-        };
+        // The materialization screen is derived from the same sync terminal as
+        // the workflow screen — the one-terminal rule, not one draw target per
+        // screen. It is built only after the workflow screen has been joined.
+        let (materialize_group, materialize_overall_handle) =
+            terminal.screen().with_overall("materializing [mat]", 1).build();
         let materialize_pg: Option<Arc<dyn ProgressScreenApi + Send + Sync>> =
             Some(Arc::new(materialize_group));
+        let materialize_overall: Option<Arc<dyn ProgressBarApi>> =
+            Some(Arc::new(materialize_overall_handle));
         let materialize_report = materializer::sync_hierarchy(
             &effective_paths,
             &document,

@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+use mediapm_utils::progress::ProgressTerminal;
+
 use crate::{MaterializationSyncSummary, ToolsSyncSummary, WorkflowSyncSummary};
 
 /// Receives one [`SyncPhaseReport`] immediately after each sync phase's
@@ -64,5 +66,33 @@ impl Default for SyncLibraryOptions {
             no_progress: false,
             observer: None,
         }
+    }
+}
+
+/// Progress plumbing overrides for a library sync.
+///
+/// [`MediaPmService::sync_library_with_progress_overrides`](crate::MediaPmService::sync_library_with_progress_overrides)
+/// is the only entry point that accepts these, and it exists for one reason:
+/// `indicatif` is a dev-dependency of this crate, so production code cannot
+/// construct a `MultiProgress` itself and a test that must observe the frames a
+/// sync draws has no other way to hand it a terminal.
+///
+/// `terminal: None` means "the sync builds its own" — the production shape. A
+/// supplied terminal is used exactly as given, including when it is inert, and
+/// it takes precedence over both suppression flags.
+pub struct SyncProgressOverrides {
+    /// The terminal every phase of the sync renders through.
+    pub terminal: Option<ProgressTerminal>,
+    /// Whether the terminal the sync would build itself must be inert.
+    ///
+    /// Unioned with [`SyncLibraryOptions::no_progress`]: either flag suppresses
+    /// progress. Suppression is expressed by *not opening a live terminal*, not
+    /// by opening one and ignoring it.
+    pub no_progress: bool,
+}
+
+impl Default for SyncProgressOverrides {
+    fn default() -> Self {
+        Self { terminal: None, no_progress: false }
     }
 }
