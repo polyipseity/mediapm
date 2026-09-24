@@ -34,7 +34,7 @@ use crate::hierarchy::{
 };
 use crate::materializer;
 use crate::metadata_cache::MetadataCache;
-use crate::output::{ProgressBarApi, ProgressScreen, ProgressScreenApi};
+use crate::output::{ProgressBarApi, ProgressScreen, ProgressScreenApi, ProgressTerminal};
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
@@ -1110,15 +1110,22 @@ impl MediaPmService<FileSystemCas> {
         // handles); otherwise build a live dynamic-height group with a pinned
         // overall bar at the bottom slot. The coordinator receives the overall
         // handle and sets its total to the actual step count.
+        //
+        // The terminal outlives the screen it backs: dropping a terminal
+        // finalizes its renderer, so it must stay alive for every frame the
+        // workflow draws through `workflow_group`.
+        let workflow_terminal: Option<ProgressTerminal> = if no_progress {
+            None
+        } else {
+            Some(ProgressTerminal::builder().dynamic_height(true).build())
+        };
         let (workflow_group, workflow_overall): (ProgressScreen, Option<Arc<dyn ProgressBarApi>>) =
-            if no_progress {
-                (ProgressScreen::disabled(), None)
-            } else {
-                let (g, overall) = ProgressScreen::builder()
-                    .dynamic_height(true)
-                    .with_overall("workflow [wf]", 1)
-                    .build();
-                (g, Some(Arc::new(overall)))
+            match workflow_terminal.as_ref() {
+                Some(terminal) => {
+                    let (g, overall) = terminal.screen().with_overall("workflow [wf]", 1).build();
+                    (g, Some(Arc::new(overall)))
+                }
+                None => (ProgressScreen::disabled(), None),
             };
         let workflow_pg: Option<Arc<dyn ProgressScreenApi + Send + Sync>> =
             Some(Arc::new(workflow_group));
@@ -1195,18 +1202,23 @@ impl MediaPmService<FileSystemCas> {
         //
         // The materialization progress screen is owned by mediapm (not the
         // conductor): it gets its own group so the two screens never share a
-        // draw target. A disabled group is used under --no-progress.
+        // draw target. A disabled group is used under --no-progress. The
+        // terminal outlives the screen it backs (dropping a terminal finalizes
+        // its renderer), so it stays bound until the screen is joined.
+        let materialize_terminal: Option<ProgressTerminal> = if no_progress {
+            None
+        } else {
+            Some(ProgressTerminal::builder().dynamic_height(true).build())
+        };
         let (materialize_group, materialize_overall): (
             ProgressScreen,
             Option<Arc<dyn ProgressBarApi>>,
-        ) = if no_progress {
-            (ProgressScreen::disabled(), None)
-        } else {
-            let (g, overall) = ProgressScreen::builder()
-                .dynamic_height(true)
-                .with_overall("materializing [mat]", 1)
-                .build();
-            (g, Some(Arc::new(overall)))
+        ) = match materialize_terminal.as_ref() {
+            Some(terminal) => {
+                let (g, overall) = terminal.screen().with_overall("materializing [mat]", 1).build();
+                (g, Some(Arc::new(overall)))
+            }
+            None => (ProgressScreen::disabled(), None),
         };
         let materialize_pg: Option<Arc<dyn ProgressScreenApi + Send + Sync>> =
             Some(Arc::new(materialize_group));

@@ -640,7 +640,7 @@ impl RenderedSlot {}
 ///
 /// Slot bars use [`ProgressFinish::AndLeave`] so that a bar which is still **unfinished** when its screen is committed keeps the last line it drew, just like a finished one: indicatif's default [`ProgressFinish::AndClear`] makes `BarState::drop` run `finish_using_style`, which sets `Status::DoneHidden` and clears the line, so a partially-filled line — exactly what a `?` early return leaves behind — would be cleared instead of committed. That clearing draw only reaches a target that writes it: an **ungated** [`MultiProgress`] does, while the production target is a `BufferedTerm` write gate that suppresses every write outside an open window, leaving the frame [`ProgressRenderer::finalize`] drew as the last one the terminal sees.
 ///
-/// The policy is therefore **defense-in-depth**, not a fix for an observed production defect: it keeps the retention contract from depending on the gate's window timing. See [`ManagedScreen::join`](super::terminal::ManagedScreen::join) for the full per-configuration statement.
+/// The policy is therefore **defense-in-depth**, not a fix for an observed production defect: it keeps the retention contract from depending on the gate's window timing. See [`ProgressScreen::join`](super::terminal::ProgressScreen::join) for the full per-configuration statement.
 ///
 /// `AndLeave` cannot change the finished-bar path: `BarState::drop` short-circuits on `is_finished()` (`indicatif/src/state.rs`), returns before `finish_using_style` is reached, and therefore never consults this policy.
 ///
@@ -694,66 +694,6 @@ impl ProgressRenderer {
             prefix_w: Cell::new(MIN_PREFIX_WIDTH),
             suffix_w: Cell::new(MIN_SUFFIX_WIDTH),
         }
-    }
-
-    /// Pre-allocate `capacity` bars with an overall bar at the bottom,
-    /// using an existing [`MultiProgress`].  Returns `(renderer, overall_state)`.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the eight parameters are independent collaborators of the renderer — draw target, slot capacity, overall label and total, and four injectable sources; grouping them into a struct would rename the same fields without reducing the wiring"
-    )]
-    pub(crate) fn from_mp_with_overall(
-        mp: MultiProgress,
-        capacity: usize,
-        total: u64,
-        label: &str,
-        dim_source: Arc<dyn DimensionSource>,
-        gate: WriteGate,
-        time_source: Arc<dyn TimeSource>,
-        debug_sink: Option<Arc<ProgressDebugSink>>,
-    ) -> (Self, Arc<SharedState>) {
-        let mut slots = Vec::with_capacity(capacity);
-        for _ in 0..capacity.saturating_sub(1) {
-            let pb = ProgressBar::new(0);
-            let bar = with_slot_finish_policy(mp.add(pb));
-            bar.set_style(blank_bar_style());
-            bar.set_message(" ");
-            bar.set_prefix("");
-            slots.push(RenderedSlot { bar, source: RefCell::new(None), cache: SlotCache::new() });
-        }
-        // Last slot = overall bar.
-        let overall_state =
-            Arc::new(SharedState::with_time_source(total, label, Arc::clone(&time_source)));
-        let inner = ProgressBar::new(total);
-        let overall_bar = with_slot_finish_policy(mp.add(inner));
-        apply_overall_bar_style(&overall_bar, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH);
-        overall_bar.set_prefix(label.to_string());
-        slots.push(RenderedSlot {
-            bar: overall_bar,
-            source: RefCell::new(Some(overall_state.clone())),
-            cache: SlotCache::new(),
-        });
-        let slots_timing = (0..capacity).map(|_| SlotTiming::new(&*time_source)).collect();
-        (
-            Self {
-                inner: mp,
-                slots,
-                has_overall: true,
-                dim_source,
-                last_width: None,
-                dynamic_height: false,
-                orphaned_states: RefCell::new(VecDeque::new()),
-                finalized: Cell::new(false),
-                time_source,
-                slots_timing,
-                gate,
-                in_frame: Cell::new(false),
-                debug_sink,
-                prefix_w: Cell::new(MIN_PREFIX_WIDTH),
-                suffix_w: Cell::new(MIN_SUFFIX_WIDTH),
-            },
-            overall_state,
-        )
     }
 
     /// Add an overall aggregate bar pinned at the bottom slot, drawing from
@@ -1427,22 +1367,14 @@ impl ProgressRenderer {
         if self.finalized.replace(true) {
             return;
         }
-        // Pre-roll is deliberately absent here: the renderer no longer owns it.
+        // Pre-roll is deliberately absent here: the renderer does not own it.
         //
-        // TRANSITIONAL — pre-roll now fires once per `ProgressTerminal`, from
-        // `build_screen`, before the first bar of the first screen draws. That
-        // covers every terminal-backed screen, but the standalone
-        // `ProgressScreen` path was not migrated in this task, so the five
-        // production call sites that still build one lose the scroll their
-        // first frame used to perform: the workflow and materialization screens
-        // in `service.rs`, tool sync in `conductor_bridge/sync/mod.rs`,
-        // materialization in `materializer/mod.rs`, and the `conductor run` CLI
-        // in `mediapm-conductor/src/cli.rs` (plus the `conductor_demo`
-        // example). Existing terminal content is overwritten by their first
-        // frame instead of being scrolled into scrollback. Tasks 4 and 5
-        // migrate those call sites onto `ProgressTerminal`; do not add a
-        // renderer-side pre-roll fallback to paper over the gap, because one
-        // pre-roll owner is the point of this refactor.
+        // Pre-roll fires once per `ProgressTerminal`, from `build_screen`,
+        // before the first bar of that terminal's first screen draws — and a
+        // `ProgressTerminal` is the only way to build a screen, so every
+        // on-screen bar gets the scroll of existing terminal content it needs
+        // before its first frame. Do not add a renderer-side pre-roll fallback:
+        // one pre-roll owner is the point of the split.
         // RAII guard: buffer OFF during final draw, re-enabled on drop.
         let _guard = self.gate.open();
         // Finish all bound bars that have reached a terminal state:

@@ -19,7 +19,7 @@ use mediapm_conductor::{
 };
 
 #[cfg(feature = "progress")]
-use mediapm_utils::progress::ProgressScreen;
+use mediapm_utils::progress::ProgressTerminal;
 
 use support::{ExampleResult, echo_tool, write_text_file};
 
@@ -69,13 +69,16 @@ async fn run_demo() -> ExampleResult<()> {
         Conductor::new(RuntimeStoragePaths::new(root), FileSystemCas::open(&cas_root).await?);
 
     println!("=== First run ===");
-    let first_summary =
-        conductor.run_workflow("demo_workflow", run_options_with_progress()).await?;
+    // Hold each terminal for the rest of `run_demo`: a terminal owns the draw
+    // target its screen draws into, so dropping it early would finalize the
+    // workflow screen while the conductor still writes to it.
+    let (first_options, _first_terminal) = run_options_with_progress();
+    let first_summary = conductor.run_workflow("demo_workflow", first_options).await?;
     println!("First run summary: {first_summary:?}");
 
     println!("=== Second run (cache reuse) ===");
-    let second_summary =
-        conductor.run_workflow("demo_workflow", run_options_with_progress()).await?;
+    let (second_options, _second_terminal) = run_options_with_progress();
+    let second_summary = conductor.run_workflow("demo_workflow", second_options).await?;
     println!("Second run summary: {second_summary:?}");
 
     println!("Done.");
@@ -84,21 +87,28 @@ async fn run_demo() -> ExampleResult<()> {
 
 /// Build run options that own a workflow progress screen: a fixed overall
 /// bar (pinned at the bottom slot) plus one worker-slot spinner bar per
-/// worker, created by the caller via `ProgressScreen::builder().with_overall()`.
+/// worker, created by the caller from a [`ProgressTerminal`].
+///
+/// The terminal is returned alongside the options because it owns the screen's
+/// draw target: the caller must keep it alive for as long as the screen is in
+/// use. Without the `progress` feature there is no screen to own, so the
+/// second element is `()` and main() drops it immediately.
 #[cfg(feature = "progress")]
-fn run_options_with_progress() -> RunWorkflowOptions {
-    let (group, overall) = ProgressScreen::builder().with_overall("workflow steps", 1).build();
-    RunWorkflowOptions {
+fn run_options_with_progress() -> (RunWorkflowOptions, ProgressTerminal) {
+    let terminal = ProgressTerminal::builder().build();
+    let (group, overall) = terminal.screen().with_overall("workflow steps", 1).build();
+    let options = RunWorkflowOptions {
         progress_group: Some(Arc::new(group)),
         overall_bar: Some(Arc::new(overall)),
         ..RunWorkflowOptions::default()
-    }
+    };
+    (options, terminal)
 }
 
 /// Without the `progress` feature there is no progress screen; use defaults.
 #[cfg(not(feature = "progress"))]
-fn run_options_with_progress() -> RunWorkflowOptions {
-    RunWorkflowOptions::default()
+fn run_options_with_progress() -> (RunWorkflowOptions, ()) {
+    (RunWorkflowOptions::default(), ())
 }
 
 #[tokio::main]

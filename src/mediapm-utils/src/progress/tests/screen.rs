@@ -14,7 +14,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::super::{DimensionSource, ProgressTerminal, TestDimensionSource};
+use super::super::{
+    DimensionSource, ProgressScreen, ProgressScreenApi, ProgressTerminal, TestDimensionSource,
+};
 use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
 
 /// Terminal dimensions used by this module, matching the other terminal tests.
@@ -150,7 +152,7 @@ fn join_commits_an_unfinished_bar() {
     // `tick()` below is a no-op once `finalize` set the finalized flag
     // (`ProgressRenderer::run_frame` returns early), so a reservation that
     // survived `join` leaves `contents()` unchanged too: deleting only
-    // `state.renderer = None;` from `ManagedScreen::join` keeps this test and
+    // `state.renderer = None;` from `ProgressScreen::join` keeps this test and
     // `drop_without_join_keeps_an_unfinished_bar` passing.  Release is covered
     // by `second_screen_renders_at_full_capacity`.
     bar.advance(10);
@@ -164,7 +166,7 @@ fn join_commits_an_unfinished_bar() {
 
 /// Dropping a screen without an explicit `join` commits an unfinished bar too.
 ///
-/// `ManagedScreen::drop` (in `progress/inner/terminal.rs`) routes through `join`, so this is the same contract on the path an early `?` return takes: the line a screen drew before it was dropped survives the drop.
+/// `ProgressScreen::drop` (in `progress/inner/terminal.rs`) routes through `join`, so this is the same contract on the path an early `?` return takes: the line a screen drew before it was dropped survives the drop.
 #[test]
 fn drop_without_join_keeps_an_unfinished_bar() {
     let (t, term) = term_terminal();
@@ -185,7 +187,7 @@ fn drop_without_join_keeps_an_unfinished_bar() {
 ///
 /// [`terminal_with_gate`] goes through `with_term_like`, the builder path whose `BufferedTerm` suppresses every write outside an open window.  `BarState::drop` finishes the unfinished bar and draws it after `finalize`'s window has closed, so that draw is suppressed and the frame `finalize` drew — both the bar's label and its `1/60` position — is the last one the terminal sees.
 ///
-/// This is a **characterization/regression pin, not a red/green test**: it passes at both `bfa740bc` and `960fdc60`, because production retention is gate-provided and `with_slot_finish_policy`'s `AndLeave` policy is inert there.  Its value is that the configuration production depends on is measured rather than inferred, and that a change which routes the drop-time draw through an open window — or drops the gate from this path — fails a test instead of silently invalidating the reasoning in `ManagedScreen::join`.
+/// This is a **characterization/regression pin, not a red/green test**: it passes at both `bfa740bc` and `960fdc60`, because production retention is gate-provided and `with_slot_finish_policy`'s `AndLeave` policy is inert there.  Its value is that the configuration production depends on is measured rather than inferred, and that a change which routes the drop-time draw through an open window — or drops the gate from this path — fails a test instead of silently invalidating the reasoning in `ProgressScreen::join`.
 ///
 /// Not vacuous, and measured: running these assertions on the **ungated** configuration ([`terminal_with_term`]) fails as soon as the finish policy is also removed, which is the pre-`960fdc60` behavior of the ungated tests (see the `task-2` report for the command and the failing output).  With the policy in place the ungated configuration passes too, which is exactly why this pin is needed to tell the two mechanisms apart.
 #[test]
@@ -293,7 +295,7 @@ fn second_screen_renders_at_full_capacity() {
 /// neither the handle that owned it nor the retired screen can change a
 /// character of it.
 ///
-/// This is one of the assertions that fail with the release fix reverted.  At `da358265` the screen handle kept the renderer — and with it every [`ProgressBar`] the screen reserved — alive behind a strong `Arc`, so `ManagedScreen::tick` still ran a frame: the surviving bar was re-rendered from its still-live `SharedState`, and the `advance` below moved its rendered `count/total` from `1/60` to `11/60` on the already-committed line.  After the fix the handle holds a `Weak`, `join` drops the last strong reference, and `tick` is a no-op.
+/// This is one of the assertions that fail with the release fix reverted.  At `da358265` the screen handle kept the renderer — and with it every [`ProgressBar`] the screen reserved — alive behind a strong `Arc`, so `ProgressScreen::tick` still ran a frame: the surviving bar was re-rendered from its still-live `SharedState`, and the `advance` below moved its rendered `count/total` from `1/60` to `11/60` on the already-committed line.  After the fix the handle holds a `Weak`, `join` drops the last strong reference, and `tick` is a no-op.
 ///
 /// The retained handle is the probe, not the subject: `ProgressBarHandle` is the public way to mutate a bar, and once the screen is committed the bar must no longer be reachable through it.  The `join erased the committed frame` assertion is a precondition here, not the erasure detector: an erasing commit built on `MultiProgress::remove` passes it (see [`next_screen_draws_below_the_committed_lines`], which catches that shape).
 ///
@@ -350,7 +352,7 @@ fn retired_screen_cannot_repaint_the_committed_frame() {
 /// screen's frame past the terminal height and its bar never appears), green at
 /// the fixed revision.  What it does *not* prove: it cannot force the join to
 /// land inside the ticker's upgrade window, so it is evidence that the window
-/// does not normally bite, not a proof that it cannot.  `ManagedScreen::join`
+/// does not normally bite, not a proof that it cannot.  `ProgressScreen::join`
 /// documents what bounds that window.
 #[test]
 fn release_holds_with_the_ticker_running() {
@@ -377,4 +379,39 @@ fn release_holds_with_the_ticker_running() {
         contents.contains("beta"),
         "second screen never rendered with the ticker running: {contents:?}"
     );
+}
+
+/// The surviving screen type is reachable only through a terminal and it
+/// implements the dependency-injection trait the conductor consumes.
+///
+/// The coercion below is the compile-time proof of the collapse: exactly one
+/// `ProgressScreen` exists, the terminal's screen builder produces it, and
+/// `ProgressScreenApi` is implemented for it, so `mediapm-conductor` can drive
+/// it through the trait without an `indicatif` dependency of its own.
+#[test]
+fn screen_implements_the_screen_api() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_term(&term, ROWS as usize);
+    let screen: Arc<dyn ProgressScreenApi + Send + Sync> = Arc::new(terminal.screen().build());
+    let bar = screen.add_bar(2, "alpha");
+    bar.advance(1);
+    assert_eq!(bar.snapshot().position, 1, "the trait hands back a real handle for a live screen");
+    screen.join();
+}
+
+/// `ProgressScreen::disabled()` is the inert screen the `--no-progress` path
+/// builds: every handle it hands out has no total however it is driven.
+///
+/// A live screen hands back a handle carrying the requested total, so a
+/// disabled screen that began allocating bars fails here. The disabled screen
+/// is the one screen without a live-status check, and it must not panic when a
+/// caller (the materializer, the tool-sync screen) keeps adding child bars to
+/// the group it was handed.
+#[test]
+fn disabled_screen_is_inert() {
+    let screen = ProgressScreen::disabled();
+    let bar = screen.add_bar(1, "alpha");
+    assert_eq!(bar.total(), 0, "a disabled screen hands out no-op handles");
+    bar.advance(1);
+    screen.join();
 }

@@ -206,9 +206,10 @@ pub struct RunWorkflowOptions {
     pub progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
     /// Pinned overall bar for the workflow progress screen.
     ///
-    /// The caller creates this via `ProgressScreen::builder().with_overall()`
-    /// and passes it here. The coordinator uses it directly instead of
-    /// creating a child bar, so the overall bar stays in the bottom slot.
+    /// The caller creates this via `ProgressTerminal::builder()` plus
+    /// `terminal.screen().with_overall()` and passes it here. The coordinator
+    /// uses it directly instead of creating a child bar, so the overall bar
+    /// stays in the bottom slot.
     /// When `None`, the conductor does not display a workflow progress screen.
     #[cfg(feature = "progress")]
     pub overall_bar: Option<Arc<dyn ProgressBarApi>>,

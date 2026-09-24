@@ -22,8 +22,8 @@ pub use debug::{
     TimeSource,
 };
 pub use renderer::{ProgressBarHandle, ProgressRenderer, TrackSnapshot, TrackStatus};
-pub use screen::{HasOverall, NoOverall, ProgressScreen, ProgressScreenBuilder};
-pub use terminal::{ProgressTerminal, ProgressTerminalBuilder};
+pub use screen::{HasOverall, NoOverall};
+pub use terminal::{ProgressScreen, ProgressTerminal, ProgressTerminalBuilder};
 
 pub(crate) use debug::detect_progress_debug_env;
 // `BufferedTerm` and `WriteWindow` are re-exported for use by `screen.rs`

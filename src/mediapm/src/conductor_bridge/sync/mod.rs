@@ -47,7 +47,7 @@ use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot
 use crate::config::ToolRequirement;
 use crate::config::{MediaPmState, ToolRegistryEntry};
 use crate::error::MediaPmError;
-use crate::output::{ProgressBarApi, ProgressScreen, ProgressScreenApi};
+use crate::output::{ProgressBarApi, ProgressScreen, ProgressScreenApi, ProgressTerminal};
 use crate::paths::MediaPmPaths;
 use crate::source_metadata::resolve_conductor_cas_root;
 use crate::tools::downloader::ToolDownloadCache;
@@ -1211,14 +1211,21 @@ pub(crate) async fn reconcile_desired_tools(
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = entries.len() as u64;
+
+    // Fallback screen for callers that did not supply one. It owns its own
+    // terminal, and the terminal must outlive every frame that screen draws:
+    // `ProgressTerminal::drop` finalizes the renderer, after which ticks are
+    // no-ops. Bind it for the rest of the function and release it once the
+    // screen below is joined.
+    let owned_terminal: Option<ProgressTerminal>;
     let (owned_group, pb): (Option<ProgressScreen>, Arc<dyn ProgressBarApi>) =
         if let Some(pg) = progress_group {
+            owned_terminal = None;
             (None, pg.add_bar(total_tools, "syncing tools"))
         } else {
-            let (g, p) = ProgressScreen::builder()
-                .dynamic_height(true)
-                .with_overall("syncing tools", total_tools)
-                .build();
+            let terminal = ProgressTerminal::builder().dynamic_height(true).build();
+            let (g, p) = terminal.screen().with_overall("syncing tools", total_tools).build();
+            owned_terminal = Some(terminal);
             (Some(g), Arc::new(p))
         };
     let effective_group: &dyn ProgressScreenApi = owned_group
@@ -1459,6 +1466,7 @@ pub(crate) async fn reconcile_desired_tools(
     if let Some(ref g) = owned_group {
         g.join();
     }
+    drop(owned_terminal);
 
     report.pruned_tools = pruned_tools;
 
@@ -1475,6 +1483,7 @@ mod tests {
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
     use crate::config::ToolRequirement;
+    use crate::output::{DimensionSource, TestDimensionSource};
     use crate::tools::dependency::DependencyTypes;
     use crate::tools::dependency::known_dependency_type;
 
@@ -1612,6 +1621,85 @@ mod tests {
             prune_total,
             Some(1),
             "prune bar total must be the candidate count (the seeded manual entry)"
+        );
+    }
+
+    // The `[prn]` prune bar must reach the display: it is created on the screen
+    // that drives the sync (the caller's, when there is one) and the sync keeps
+    // that screen live until the prune phase is done. Asserted on a real draw
+    // target, because "nothing panicked" is exactly the failure mode this test
+    // exists to catch: the pre-fix code added the bar to an already-committed
+    // screen, whose finalized renderer ignored it, so the bar never rendered.
+    //
+    // Red in both directions: sourcing the bar from the sync's own fallback
+    // screen creates no bar here at all (the caller owns this screen), and
+    // joining the sync's own screen before the prune phase panics — see
+    // `reconcile_desired_tools_records_progress_ops`, which runs that path.
+    #[tokio::test]
+    async fn prune_bar_reaches_the_display() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        // Seed a generated doc holding one entry the rewrite must prune: it is
+        // absent from the desired set, so the prune bar gets a real total.
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
+        let tool_spec = ToolSpec {
+            name: "user_script".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let doc = NickelDocument {
+            tools: BTreeMap::from([("user_script@somehash".to_string(), tool_spec)]),
+            ..Default::default()
+        };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        // The caller-owned screen, drawing into a captured grid.
+        let term = indicatif::InMemoryTerm::new(24, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let dims = Arc::new(TestDimensionSource::new((24, 80)));
+        let terminal = ProgressTerminal::builder()
+            .with_multi_progress(indicatif::MultiProgress::with_draw_target(target))
+            .with_dim_source(dims as Arc<dyn DimensionSource>)
+            .with_pre_roll_capture(Box::new(indicatif::InMemoryTerm::new(24, 80)))
+            .with_ticker_enabled(false)
+            .build();
+        let screen = terminal.screen().build();
+
+        let state = MediaPmState::default();
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+        let result = reconcile_desired_tools(
+            workspace_cas,
+            &paths,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            Some(&screen),
+        )
+        .await;
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+        let report = result.unwrap();
+        assert!(
+            report.pruned_tools >= 1,
+            "fixture must prune the seeded manual entry, got {}",
+            report.pruned_tools
+        );
+
+        terminal.tick();
+        let contents = term.contents();
+        let prune_line = contents
+            .lines()
+            .find(|line| line.contains("[prn]"))
+            .map(str::to_owned)
+            .unwrap_or_else(|| panic!("the `[prn]` bar must reach the display:\n{contents}"));
+        assert!(
+            prune_line.contains("/1"),
+            "the drawn prune bar must carry the candidate count as its total: {prune_line:?}"
         );
     }
 

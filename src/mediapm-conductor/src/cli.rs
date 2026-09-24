@@ -279,12 +279,16 @@ async fn ensure_conductor() -> Result<&'static Conductor<ConfiguredCas>, Conduct
 }
 
 async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
-    use mediapm_utils::progress::ProgressScreen;
+    use mediapm_utils::progress::ProgressTerminal;
     let conductor = ensure_conductor().await?;
 
+    // The terminal owns the draw target for the workflow screen, so it must
+    // outlive every frame the coordinator draws through that screen: dropping
+    // it finalizes the renderer. Declaring it ahead of `group` releases it
+    // after `group.join()` below.
+    let terminal = ProgressTerminal::builder().dynamic_height(true).build();
     let (group, overall): (Arc<dyn ProgressScreenApi + Send + Sync>, _) = {
-        let (g, overall) =
-            ProgressScreen::builder().dynamic_height(true).with_overall("workflow [wf]", 1).build();
+        let (g, overall) = terminal.screen().with_overall("workflow [wf]", 1).build();
         (Arc::new(g), Arc::new(overall))
     };
     let options = RunWorkflowOptions {

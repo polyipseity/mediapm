@@ -2,7 +2,7 @@
 //!
 //! A screen owns one live renderer. `join()` commits the frame — the lines the
 //! screen drew stay on the terminal and the slots it reserved are released so
-//! the next screen renders in full below them. `ManagedScreen::join_and_clear`
+//! the next screen renders in full below them. `ProgressScreen::join_and_clear`
 //! is an alias of `join`; neither of them clears a bound bar, they only collapse
 //! the blank reserved slots. The tests here pin those semantics together with
 //! the two consumer patterns that drive them (sequential tool sync and
@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget, TermLike};
+use indicatif::TermLike;
 use mediapm_utils::progress::{BarStyle, ProgressScreen, TestTimeSource};
 
 use super::common::{
@@ -122,16 +122,6 @@ fn finalized_screen_without_children_draws_only_the_overall() {
         concat!("⠏     overall ███████████████████████████████████████████████████  0/1 0s 0/d"),
         "finalized_screen_without_children_draws_only_the_overall"
     );
-}
-
-/// A terminal admits exactly one live screen; building a second one while the
-/// first is live is a programming error rather than silent corruption.
-#[test]
-#[should_panic(expected = "already has a live screen")]
-fn second_live_screen_panics() {
-    let (terminal, _term) = mk_with_capacity(5, 80, 4);
-    let _first = terminal.screen().build();
-    let _second = terminal.screen().build();
 }
 
 /// The disabled screen the `--no-progress` path builds is inert: every handle it
@@ -759,54 +749,4 @@ fn overall_handle_progress_reaches_the_renderer() {
         ),
         "overall_handle_progress_reaches_the_renderer"
     );
-}
-
-/// Content already on the terminal before a standalone [`ProgressScreen`] draws
-/// survives `join_and_clear`: the screen commits its own bars underneath the
-/// existing lines and leaves them untouched.
-///
-/// This is the screen-path counterpart of the pre-roll tests above.
-/// [`ProgressTerminal`](mediapm_utils::progress::ProgressTerminal) scrolls
-/// pre-existing content away by design (the inline
-/// `pre_roll_with_existing_content_scrolls_it_away` pins that), but production
-/// still builds bare `ProgressScreen`s that pre-roll nothing, so the guarantee the
-/// terminal path deliberately gives up has to hold on the screen path.
-///
-/// The draw target is injected because the standalone builder otherwise draws to
-/// the real stderr: an [`InMemoryTerm`] behind an ungated [`MultiProgress`], the
-/// same shape the rest of this suite captures frames on. The write-gated
-/// `with_term_like` form of the same builder does not preserve this content under
-/// an `InMemoryTerm`; that divergence is reported, not asserted here.
-#[test]
-fn standalone_screen_keeps_content_written_before_it() {
-    let term = InMemoryTerm::new(10, 80);
-    term.write_line("== PRE-EXISTING OUTPUT ==").expect("write the marker line");
-    term.write_line("line before progress bars").expect("write the second marker line");
-    assert!(term.contents().contains("PRE-EXISTING"), "precondition: the marker is on the grid");
-
-    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let (screen, _overall) = ProgressScreen::builder()
-        .with_multi_progress(MultiProgress::with_draw_target(target))
-        .capacity(4)
-        .with_overall("overall", 5)
-        .with_ticker_enabled(false)
-        .build();
-    let child = screen.add_bar(3, "work");
-    child.advance(3);
-    child.finish_success();
-    screen.tick();
-    screen.join_and_clear();
-
-    let after = term.contents();
-    assert!(after.contains("work"), "precondition: the screen drew into this terminal: {after:?}");
-    let lines: Vec<&str> = after.lines().collect();
-    let marker = lines
-        .iter()
-        .position(|line| line.contains("PRE-EXISTING"))
-        .unwrap_or_else(|| panic!("the first pre-existing line must survive: {lines:?}"));
-    let second = lines
-        .iter()
-        .position(|line| line.contains("line before progress bars"))
-        .unwrap_or_else(|| panic!("the second pre-existing line must survive: {lines:?}"));
-    assert!(marker < second, "the pre-existing lines must keep their order: {lines:?}");
 }

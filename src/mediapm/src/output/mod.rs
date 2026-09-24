@@ -18,7 +18,7 @@ pub use mediapm_utils::report::{
 };
 pub use progress::{
     DimensionSource, ProgressBarApi, ProgressBarHandle, ProgressScreen, ProgressScreenApi,
-    TestDimensionSource, TestTimeSource,
+    ProgressTerminal, TestDimensionSource, TestTimeSource,
 };
 
 use crate::SyncSummary;

@@ -7,8 +7,8 @@
 #[doc(inline)]
 pub use mediapm_utils::progress::{
     DebugSlotState, DebugTickSnapshot, DimensionSource, PrefixComponents, ProgressBarApi,
-    ProgressBarHandle, ProgressDebugSink, ProgressScreen, ProgressScreenApi, SuffixComponents,
-    TestDimensionSource, TestTimeSource, TimeSource,
+    ProgressBarHandle, ProgressDebugSink, ProgressScreen, ProgressScreenApi, ProgressTerminal,
+    SuffixComponents, TestDimensionSource, TestTimeSource, TimeSource,
 };
 
 #[cfg(test)]
@@ -16,7 +16,7 @@ mod tests {
     use std::sync::Arc;
 
     use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
-    use mediapm_utils::progress::TimeSource;
+    use mediapm_utils::progress::{ProgressTerminalBuilder, TimeSource};
 
     use super::*;
 
@@ -33,14 +33,25 @@ mod tests {
         (MultiProgress::with_draw_target(target), term)
     }
 
+    /// A terminal builder drawing into `mp`, with pre-roll captured.
+    ///
+    /// The capture keeps the terminal's one-shot pre-roll (one blank line per
+    /// terminal row) off fd 2 and out of the draw target these tests read.
+    /// An overall bar belongs to the *screen*: calling `with_overall` on this
+    /// terminal builder would return a handle no renderer reads, because only
+    /// `terminal.screen().with_overall()` registers the bottom slot.
+    fn mk_terminal(mp: MultiProgress) -> ProgressTerminalBuilder {
+        ProgressTerminal::builder()
+            .with_multi_progress(mp)
+            .with_pre_roll_capture(Box::new(InMemoryTerm::new(24, 80)))
+    }
+
     #[test]
     fn consumer_child_bar_elapsed_starts_at_zero() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressScreen::builder()
-            .with_multi_progress(mp)
-            .capacity(4)
-            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-            .build();
+        let terminal =
+            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let group = terminal.screen().build();
         let _ = group.add_bar(5, "tool-a");
         let contents = term.contents();
         assert!(contents.contains("0s"), "elapsed must start at 0, got:\n{contents}");
@@ -49,11 +60,9 @@ mod tests {
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressScreen::builder()
-            .with_multi_progress(mp)
-            .capacity(4)
-            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-            .build();
+        let terminal =
+            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let group = terminal.screen().build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(5);
         child.finish_success();
@@ -66,11 +75,9 @@ mod tests {
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish_success() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressScreen::builder()
-            .with_multi_progress(mp)
-            .capacity(4)
-            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-            .build();
+        let terminal =
+            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let group = terminal.screen().build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(5);
         child.finish_success();
@@ -86,11 +93,9 @@ mod tests {
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish_error() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressScreen::builder()
-            .with_multi_progress(mp)
-            .capacity(4)
-            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-            .build();
+        let terminal =
+            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let group = terminal.screen().build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(2);
         child.finish_error();
@@ -104,11 +109,9 @@ mod tests {
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish_error_alt() {
         let (mp, term, ts) = mk_elapsed();
-        let group = ProgressScreen::builder()
-            .with_multi_progress(mp)
-            .capacity(4)
-            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-            .build();
+        let terminal =
+            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let group = terminal.screen().build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(3);
         child.finish_error();
@@ -123,12 +126,12 @@ mod tests {
     fn sync_hierarchy_height_change() {
         let dims = Arc::new(TestDimensionSource::new((4, 80)));
         let (mp, term) = mk_resize(6, 80);
-        let group = ProgressScreen::builder()
-            .with_multi_progress(mp)
+        let terminal = mk_terminal(mp)
             .capacity(4)
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
             .dynamic_height(true)
             .build();
+        let group = terminal.screen().build();
         let _child = group.add_bar(10, "materialize");
         group.tick();
 
@@ -151,13 +154,13 @@ mod tests {
     fn reconcile_desired_tools_width_change() {
         let dims = Arc::new(TestDimensionSource::new((4, 80)));
         let (mp, term) = mk_resize(4, 80);
-        let (group, _overall) = ProgressScreen::builder()
-            .with_multi_progress(mp)
-            .capacity(4)
-            .with_overall("syncing tools", 5)
+        let terminal = mk_terminal(mp)
+            // 3 child slots; the overall bar adds a fourth.
+            .capacity(3)
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
             .dynamic_height(false)
             .build();
+        let (group, _overall) = terminal.screen().with_overall("syncing tools", 5).build();
         let contents_wide = term.contents();
         assert!(contents_wide.contains("syncing tools"), "overall visible");
 
@@ -178,12 +181,12 @@ mod tests {
     fn sync_hierarchy_complex_resize_scenario() {
         let dims = Arc::new(TestDimensionSource::new((4, 80)));
         let (mp, term) = mk_resize(6, 80);
-        let group = ProgressScreen::builder()
-            .with_multi_progress(mp)
+        let terminal = mk_terminal(mp)
             .capacity(4)
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
             .dynamic_height(true)
             .build();
+        let group = terminal.screen().build();
         let _child = group.add_bar(10, "materialize");
         group.tick();
         let original = term.contents();

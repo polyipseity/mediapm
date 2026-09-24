@@ -27,7 +27,9 @@ use crate::config::hierarchy_types::{
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
-use crate::output::progress::{ProgressBarApi, ProgressScreen, ProgressScreenApi};
+use crate::output::progress::{
+    ProgressBarApi, ProgressScreen, ProgressScreenApi, ProgressTerminal,
+};
 use crate::paths::MediaPmPaths;
 use crate::tools::workflows::{
     resolve_ffmpeg_slot_limits, resolve_media_variant_output_binding_with_limits,
@@ -183,6 +185,12 @@ pub async fn sync_hierarchy(
 
     // Use the caller-provided overall bar if available, otherwise create one
     // from the progress group or from a local fallback group.
+    //
+    // The local fallback group owns its terminal, and the terminal must outlive
+    // every frame that group draws: `ProgressTerminal::drop` finalizes the
+    // renderer, after which ticks are no-ops. Bind it for the rest of the
+    // function and release it once the group below is joined.
+    let mut owned_terminal: Option<ProgressTerminal> = None;
     let (owned_group, pb): (Option<ProgressScreen>, Arc<dyn ProgressBarApi>) =
         if let Some(bar) = overall_bar {
             // Caller owns the overall bar — set the real entry count.
@@ -202,9 +210,11 @@ pub async fn sync_hierarchy(
             }));
             (None, bar)
         } else {
-            let g = ProgressScreen::builder().dynamic_height(true).build();
+            let terminal = ProgressTerminal::builder().dynamic_height(true).build();
+            let g = terminal.screen().build();
             let p: Arc<dyn ProgressBarApi> =
                 Arc::new(g.add_bar(flattened.len() as u64, "materializing [mat]"));
+            owned_terminal = Some(terminal);
             (Some(g), p)
         };
 
@@ -279,6 +289,7 @@ pub async fn sync_hierarchy(
     if let Some(g) = owned_group {
         g.join();
     }
+    drop(owned_terminal);
     if let Some(e) = materialize_error {
         return Err(e);
     }
