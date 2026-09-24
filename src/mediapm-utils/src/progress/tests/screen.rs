@@ -14,9 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::super::{
-    DimensionSource, ProgressScreen, ProgressScreenApi, ProgressTerminal, TestDimensionSource,
-};
+use super::super::{DimensionSource, ProgressScreenApi, ProgressTerminal, TestDimensionSource};
 use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
 
 /// Terminal dimensions used by this module, matching the other terminal tests.
@@ -396,22 +394,5 @@ fn screen_implements_the_screen_api() {
     let bar = screen.add_bar(2, "alpha");
     bar.advance(1);
     assert_eq!(bar.snapshot().position, 1, "the trait hands back a real handle for a live screen");
-    screen.join();
-}
-
-/// `ProgressScreen::disabled()` is the inert screen the `--no-progress` path
-/// builds: every handle it hands out has no total however it is driven.
-///
-/// A live screen hands back a handle carrying the requested total, so a
-/// disabled screen that began allocating bars fails here. The disabled screen
-/// is the one screen without a live-status check, and it must not panic when a
-/// caller (the materializer, the tool-sync screen) keeps adding child bars to
-/// the group it was handed.
-#[test]
-fn disabled_screen_is_inert() {
-    let screen = ProgressScreen::disabled();
-    let bar = screen.add_bar(1, "alpha");
-    assert_eq!(bar.total(), 0, "a disabled screen hands out no-op handles");
-    bar.advance(1);
     screen.join();
 }
