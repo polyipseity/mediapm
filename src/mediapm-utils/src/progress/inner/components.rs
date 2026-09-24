@@ -109,7 +109,8 @@ pub(crate) fn format_rate(rate: f64) -> String {
 ///
 /// Every tick cycle writes one JSON line to the configured writer with a
 /// snapshot of all bar states.  Controlled via
-/// [`ProgressScreenBuilder::with_progress_debug_sink`] or the
+/// [`crate::progress::ProgressTerminalBuilder::with_progress_debug_sink`] or
+/// the
 /// `MEDIAPM_PROGRESS_DEBUG` environment variable.
 pub struct ProgressDebugSink {
     /// Output writer (e.g. file, stderr).
