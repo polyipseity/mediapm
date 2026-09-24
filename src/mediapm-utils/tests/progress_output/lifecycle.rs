@@ -135,9 +135,10 @@ fn finalized_screen_without_children_draws_only_the_overall() {
 /// of this contract and is not asserted.
 ///
 /// `ProgressScreen` rather than `ProgressTerminal` is the type under test: the
-/// `no_progress` flag in `src/mediapm/src/service.rs` still builds
-/// `ProgressScreen::disabled()`, and the terminal's disabled constructor takes no
-/// draw target, so its no-op behaviour has nothing observable to assert against.
+/// `no_progress` flag in `src/mediapm/src/service.rs` builds
+/// `ProgressScreen::disabled()` directly, while the terminal's disabled
+/// constructor — which hands out screens of this same type — is asserted by
+/// `progress::tests::terminal::disabled_terminal_is_inert`.
 #[test]
 fn disabled_screen_handles_report_no_total() {
     let screen = ProgressScreen::disabled();
