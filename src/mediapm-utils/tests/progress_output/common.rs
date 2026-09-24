@@ -1,100 +1,257 @@
-//! Shared constants, helper functions, and re-exports for progress output tests.
+//! Shared scaffolding for the exact-output progress suite.
+//!
+//! Every constructor in this module builds a [`ProgressTerminal`] whose draw
+//! target is the [`InMemoryTerm`] it returns, with the daemon ticker disabled
+//! so frames are produced only by explicit `tick()` calls. The screen type is
+//! deliberately never named here: tests call `terminal.screen().build()`
+//! themselves, so this module keeps compiling when the screen type is renamed.
+//!
+//! Two properties of the harness are load-bearing for every exact assertion:
+//!
+//! - The renderer's [`DimensionSource`] is pinned to the same `(rows, cols)`
+//!   pair the [`InMemoryTerm`] was created with. Left at the default it would
+//!   read the real terminal (24 rows here), so height adaptation would move
+//!   every drawn frame off the captured grid and exact assertions would compare
+//!   `""` with `""`.
+//! - Slot capacity is independent of terminal height. It is a parameter because
+//!   a screen's frame is exactly one line per reserved slot: a frame of `rows`
+//!   lines fills the captured grid completely, so a test that must keep two
+//!   screens' output visible needs `capacity < rows`.
+//!
+//! `with_multi_progress` is used rather than `with_term_like` because it is the
+//! path the existing exact strings were captured on: it installs a no-op write
+//! gate, so frames are drawn by indicatif's own bar operations rather than by
+//! the terminal's buffered gate protocol. Frame content is identical either
+//! way; only the number of writes differs.
 
 use std::sync::{Arc, Mutex};
 
-// Re-export the symbols used across progress-output modules so each module can
-// rely on `use super::common::*;` alone instead of repeating the import block.
-pub use indicatif::{
-    InMemoryTerm, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike,
-};
-pub use mediapm_utils::progress::{
-    DimensionSource, ProgressBarHandle, ProgressDebugSink, ProgressScreen, SuffixComponents,
-    TestDimensionSource, TestTimeSource, TimeSource,
+use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget, TermLike};
+use mediapm_utils::progress::{
+    DimensionSource, ProgressDebugSink, ProgressTerminal, TestDimensionSource, TestTimeSource,
+    TimeSource,
 };
 
-/// Default terminal dimensions for standard tests.
+/// Default terminal height. `mk_with_size` pins both the grid and the capacity
+/// to it, so `mk_with_size(H, W)` is the canonical full-size harness.
 pub const H: u16 = 24;
+/// Default terminal width. Bar geometry is a function of the draw target's
+/// width, so this is what makes a captured line a fixed length.
 pub const W: u16 = 40;
 
-/// Template with wide bar so the visual progress bar is visible in output.
-pub const T: &str = "{prefix:>8.8} [{elapsed_precise}] {wide_bar} {pos}/{len} {msg}";
-
-/// Template with spinner + wide bar for spinner tests.
-pub const TS: &str = "{spinner} {prefix:>8.8} [{elapsed_precise}] {wide_bar} {pos}/{len} {msg}";
-
-/// Template for narrow terminals where the full template overflows W.
-pub const TN: &str = "{prefix:>8.8} {wide_bar} {pos}/{len}";
-
-/// Create a standard [`ProgressStyle`] from template [`T`].
-pub fn style() -> ProgressStyle {
-    ProgressStyle::with_template(T).unwrap().progress_chars("█░")
+/// Build a terminal at an explicit size, capacity pinned to `rows`.
+///
+/// The capacity equals the height so a frame exactly fills the captured grid;
+/// use [`mk_with_capacity`] when a test needs a spare row.
+pub fn mk_with_size(rows: u16, cols: u16) -> (ProgressTerminal, InMemoryTerm) {
+    mk_with_capacity(rows, cols, rows as usize)
 }
 
-/// Create a spinner [`ProgressStyle`] from template [`TS`].
-pub fn spinner_style() -> ProgressStyle {
-    ProgressStyle::with_template(TS).unwrap().progress_chars("█░").tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+/// Build a terminal whose slot reservation is smaller than the terminal height.
+///
+/// A screen's frame is one line per reserved slot, so `capacity < rows` is the
+/// only configuration in which an earlier screen's committed line stays inside
+/// [`InMemoryTerm`]'s visible grid after a later screen draws a full frame.
+pub fn mk_with_capacity(rows: u16, cols: u16, capacity: usize) -> (ProgressTerminal, InMemoryTerm) {
+    build(rows, cols, capacity, Arc::new(TestDimensionSource::new((rows, cols))), None, false, None)
 }
 
-/// Create a [`ProgressStyle`] from a custom template string.
-pub fn style_from(template: &str) -> ProgressStyle {
-    ProgressStyle::with_template(template).unwrap().progress_chars("█░")
+/// Build a terminal with an explicit capacity and an injectable time source.
+///
+/// [`TestTimeSource`] makes elapsed and rate values deterministic; every exact
+/// assertion that involves `s` or `/d` fields needs it.
+pub fn mk_with_capacity_and_ts(
+    rows: u16,
+    cols: u16,
+    capacity: usize,
+    ts: &Arc<TestTimeSource>,
+) -> (ProgressTerminal, InMemoryTerm) {
+    build(
+        rows,
+        cols,
+        capacity,
+        Arc::new(TestDimensionSource::new((rows, cols))),
+        Some(Arc::clone(ts)),
+        false,
+        None,
+    )
 }
 
-/// Create an [`InMemoryTerm`] at the default terminal size (H=24, W=40).
-pub fn mk() -> (MultiProgress, InMemoryTerm) {
-    mk_with_size(H, W)
+/// Build a terminal driven by a caller-owned dimension source.
+///
+/// The caller keeps its own clone so it can change dimensions mid-test; the
+/// grid is sized `rows`×`cols` independently of the dimension source, which is
+/// what lets a test render at a narrow layout width inside a wide grid.
+/// `dynamic_height` enables the renderer's height adaptation, and `ts` supplies
+/// deterministic timing when the assertion needs it.
+pub fn mk_with_dims(
+    rows: u16,
+    cols: u16,
+    capacity: usize,
+    dims: &Arc<TestDimensionSource>,
+    ts: Option<&Arc<TestTimeSource>>,
+    dynamic_height: bool,
+) -> (ProgressTerminal, InMemoryTerm) {
+    build(rows, cols, capacity, Arc::clone(dims), ts.map(Arc::clone), dynamic_height, None)
 }
 
-/// Create an [`InMemoryTerm`] at a custom size.
-pub fn mk_with_size(h: u16, w: u16) -> (MultiProgress, InMemoryTerm) {
-    let term = InMemoryTerm::new(h, w);
-    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-    (MultiProgress::with_draw_target(target), term)
+/// Build a terminal whose frames are written to `sink` as JSONL.
+pub fn mk_with_debug_sink(
+    rows: u16,
+    cols: u16,
+    capacity: usize,
+    sink: ProgressDebugSink,
+) -> (ProgressTerminal, InMemoryTerm) {
+    build(
+        rows,
+        cols,
+        capacity,
+        Arc::new(TestDimensionSource::new((rows, cols))),
+        None,
+        false,
+        Some(sink),
+    )
 }
 
-/// Create an [`InMemoryTerm`] + [`TestTimeSource`] pair
-/// for tests that need deterministic elapsed timing.
-pub fn mk_with_size_and_ts(h: u16, w: u16) -> (MultiProgress, InMemoryTerm, Arc<TestTimeSource>) {
-    let (mp, term) = mk_with_size(h, w);
-    (mp, term, Arc::new(TestTimeSource::new()))
+/// Build a terminal whose pre-roll writes go to a caller-supplied term.
+///
+/// Pre-roll scrolls the existing terminal content away once per terminal, so
+/// what it writes must be observable without landing on fd 2. It must be
+/// recorded through a [`TermLike`], not through an [`InMemoryTerm`]: an
+/// `InMemoryTerm` drops trailing blank rows from `contents()`, and pre-roll
+/// writes blank lines only, so a capture term of that type records nothing.
+pub fn mk_with_pre_roll_term(
+    rows: u16,
+    cols: u16,
+    capacity: usize,
+    term: Box<dyn TermLike>,
+) -> (ProgressTerminal, InMemoryTerm) {
+    let grid = InMemoryTerm::new(rows, cols);
+    let target = ProgressDrawTarget::term_like(Box::new(grid.clone()));
+    let builder = ProgressTerminal::builder()
+        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_dim_source(
+            Arc::new(TestDimensionSource::new((rows, cols))) as Arc<dyn DimensionSource>
+        )
+        .capacity(capacity)
+        .with_pre_roll_capture(term)
+        .with_ticker_enabled(false);
+    (builder.build(), grid)
 }
 
-// ---- Process-env lock for tests that mutate MEDIAPM_PROGRESS_DEBUG -------
+/// The single construction path behind the `mk*` helpers that do not need a
+/// custom pre-roll term.
+///
+/// Every terminal gets an injectable clock: the caller's when it has one, a
+/// fresh [`TestTimeSource`] otherwise. A bar's rate and eta are derived from its
+/// clock, so a terminal left on the real clock renders different digits on every
+/// run (a bar can even alternate between a rate and the `0/d` placeholder) and a
+/// frame containing one is not assertable exactly. A fresh clock is frozen at its
+/// creation instant, which renders as the zero elapsed and the placeholder rate.
+///
+/// Pre-roll gets a throwaway [`InMemoryTerm`] so it never writes to fd 2: it
+/// emits blank lines and cursor moves, and letting it default to
+/// `console::Term::stderr()` would spray escape sequences over the test
+/// runner's own output.
+fn build(
+    rows: u16,
+    cols: u16,
+    capacity: usize,
+    dims: Arc<TestDimensionSource>,
+    ts: Option<Arc<TestTimeSource>>,
+    dynamic_height: bool,
+    sink: Option<ProgressDebugSink>,
+) -> (ProgressTerminal, InMemoryTerm) {
+    let grid = InMemoryTerm::new(rows, cols);
+    let target = ProgressDrawTarget::term_like(Box::new(grid.clone()));
+    let ts = ts.unwrap_or_else(|| Arc::new(TestTimeSource::new()));
+    let mut builder = ProgressTerminal::builder()
+        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_dim_source(dims as Arc<dyn DimensionSource>)
+        .capacity(capacity)
+        .dynamic_height(dynamic_height)
+        .with_pre_roll_capture(Box::new(InMemoryTerm::new(rows, cols)))
+        .with_time_source(Arc::clone(&ts) as Arc<dyn TimeSource>)
+        .with_ticker_enabled(false);
+    if let Some(sink) = sink {
+        builder = builder.with_progress_debug_sink(sink);
+    }
+    (builder.build(), grid)
+}
+
+// ---- Frame inspection helpers -------------------------------------------
+
+/// Number of cells a rendered frame spends on bar fills and blanks.
+///
+/// This is the rendered bar width, independent of how much of it is filled, so
+/// it is the observable that responds to the draw target's width.
+pub fn bar_cells(contents: &str) -> usize {
+    contents.chars().filter(|&cell| cell == '█' || cell == '░').count()
+}
+
+/// The first line of `contents` that contains `label`.
+///
+/// Panics when no line matches: for a test that has just asserted the bar was
+/// bound, a missing line is the failure being reported, not an expected state.
+pub fn line_with<'a>(contents: &'a str, label: &str) -> &'a str {
+    contents
+        .lines()
+        .find(|line| line.contains(label))
+        .unwrap_or_else(|| panic!("no line containing {label:?} in {contents:?}"))
+}
+
+/// `contents` with the spinner glyph blanked out of every drawn line.
+///
+/// The spinner advances on **every** draw, including draws where no tracked
+/// value changed, so "the frame is unchanged" is only meaningful modulo the
+/// spinner. Blanking the first character of each non-empty line (the spinner is
+/// always the first character of a bar line) leaves the prefix, the bar, and the
+/// whole suffix comparable byte for byte.
+pub fn without_spinners(contents: &str) -> String {
+    contents
+        .lines()
+        .map(|line| {
+            let mut chars = line.chars();
+            match chars.next() {
+                Some(first) if first != ' ' => format!(" {}", chars.as_str()),
+                _ => line.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ---- Process-env serialization ------------------------------------------
 
 /// Process-wide lock for tests that mutate `MEDIAPM_PROGRESS_DEBUG`.
+///
+/// The variable is process-global while cargo runs the tests of one binary
+/// concurrently, so a test that sets it must hold this lock for the whole
+/// window in which the sink is created and used.
 pub static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// RAII guard that saves and restores a process env var.
+/// RAII guard that saves and restores a process environment variable.
 pub struct EnvVarGuard {
+    /// The variable being managed.
     key: &'static str,
+    /// Its value before the guard was created; `None` when it was unset.
     previous: Option<String>,
 }
 
 impl EnvVarGuard {
-    /// Set `key` to `value` for the guard's lifetime; restore on drop.
+    /// Set `key` to `value` for the guard's lifetime and restore it on drop.
     ///
     /// # Safety
     ///
-    /// Caller MUST hold [`ENV_LOCK`] for the guard's entire lifetime.
+    /// The caller must hold [`ENV_LOCK`] for the guard's whole lifetime: the
+    /// process environment is shared by every concurrently running test in the
+    /// same binary, and `std::env::set_var` is only sound when no other thread
+    /// reads or writes the environment.
     pub unsafe fn set(key: &'static str, value: &str) -> Self {
-        // SAFETY: caller holds ENV_LOCK — single-threaded access.
+        // SAFETY: the caller holds ENV_LOCK, so no other thread touches the environment.
         let previous = std::env::var(key).ok();
-        // SAFETY: caller holds ENV_LOCK — single-threaded access.
+        // SAFETY: the caller holds ENV_LOCK, so no other thread touches the environment.
         unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-
-    /// Remove `key` for the guard's lifetime; restore on drop.
-    ///
-    /// # Safety
-    ///
-    /// Caller MUST hold [`ENV_LOCK`] for the guard's entire lifetime.
-    #[allow(dead_code)]
-    pub unsafe fn remove(key: &'static str) -> Self {
-        // SAFETY: caller holds ENV_LOCK — single-threaded access.
-        let previous = std::env::var(key).ok();
-        // SAFETY: caller holds ENV_LOCK — single-threaded access.
-        unsafe { std::env::remove_var(key) };
         Self { key, previous }
     }
 }
@@ -102,125 +259,10 @@ impl EnvVarGuard {
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
         match &self.previous {
-            // SAFETY: caller holds ENV_LOCK — single-threaded access.
-            Some(val) => unsafe { std::env::set_var(self.key, val) },
-            // SAFETY: caller holds ENV_LOCK — single-threaded access.
+            // SAFETY: the guard is dropped while its creator still holds ENV_LOCK.
+            Some(value) => unsafe { std::env::set_var(self.key, value) },
+            // SAFETY: the guard is dropped while its creator still holds ENV_LOCK.
             None => unsafe { std::env::remove_var(self.key) },
         }
     }
-}
-
-/// Shorthand: create a bar, set style+prefix, add to mp, return it.
-pub fn add_bar(mp: &MultiProgress, total: u64, prefix: &str) -> ProgressBar {
-    let pb = ProgressBar::new(total);
-    pb.set_style(style());
-    pb.set_prefix(prefix.to_string());
-    mp.add(pb)
-}
-
-/// Like `add_bar` but inserted before `before` (appears above it on screen).
-pub fn ins_bar(mp: &MultiProgress, before: &ProgressBar, total: u64, prefix: &str) -> ProgressBar {
-    let pb = ProgressBar::new(total);
-    pb.set_style(style());
-    pb.set_prefix(prefix.to_string());
-    mp.insert_before(before, pb)
-}
-
-/// Build a [`ProgressScreen`] without an overall bar, ticker disabled.
-pub fn group(mp: MultiProgress, capacity: usize) -> ProgressScreen {
-    ProgressScreen::builder()
-        .with_multi_progress(mp)
-        .capacity(capacity)
-        .with_ticker_enabled(false)
-        .build()
-}
-
-/// Build a [`ProgressScreen`] without an overall bar, with a deterministic
-/// time source and ticker disabled.
-pub fn group_with_ts(
-    mp: MultiProgress,
-    capacity: usize,
-    ts: &Arc<TestTimeSource>,
-) -> ProgressScreen {
-    ProgressScreen::builder()
-        .with_multi_progress(mp)
-        .capacity(capacity)
-        .with_time_source(Arc::clone(ts) as Arc<dyn TimeSource>)
-        .with_ticker_enabled(false)
-        .build()
-}
-
-/// Build a [`ProgressScreen`] with an overall bar, ticker disabled.
-pub fn group_with_overall(
-    mp: MultiProgress,
-    capacity: usize,
-    label: &str,
-    overall_total: u64,
-) -> (ProgressScreen, ProgressBarHandle) {
-    ProgressScreen::builder()
-        .with_multi_progress(mp)
-        .capacity(capacity)
-        .with_overall(label, overall_total)
-        .with_ticker_enabled(false)
-        .build()
-}
-
-/// Build a [`ProgressScreen`] with an overall bar and a deterministic time
-/// source, ticker disabled.
-pub fn group_with_overall_and_ts(
-    mp: MultiProgress,
-    capacity: usize,
-    label: &str,
-    overall_total: u64,
-    ts: &Arc<TestTimeSource>,
-) -> (ProgressScreen, ProgressBarHandle) {
-    ProgressScreen::builder()
-        .with_multi_progress(mp)
-        .capacity(capacity)
-        .with_overall(label, overall_total)
-        .with_time_source(ts.clone())
-        .with_ticker_enabled(false)
-        .build()
-}
-
-/// Build a [`ProgressScreen`] with an overall bar, a custom dimension source,
-/// and dynamic-height toggle, ticker disabled.
-pub fn group_with_overall_and_dims(
-    mp: MultiProgress,
-    capacity: usize,
-    label: &str,
-    overall_total: u64,
-    dims: &Arc<TestDimensionSource>,
-    dynamic_height: bool,
-) -> (ProgressScreen, ProgressBarHandle) {
-    ProgressScreen::builder()
-        .with_multi_progress(mp)
-        .capacity(capacity)
-        .with_overall(label, overall_total)
-        .with_dim_source(Arc::clone(dims) as Arc<dyn DimensionSource>)
-        .dynamic_height(dynamic_height)
-        .with_ticker_enabled(false)
-        .build()
-}
-
-/// Like [`group_with_overall_and_dims`] but also attaches a deterministic
-/// time source (needed by exact-output tests that advance elapsed time).
-pub fn group_with_overall_and_dims_and_ts(
-    mp: MultiProgress,
-    capacity: usize,
-    label: &str,
-    overall_total: u64,
-    dims: &Arc<TestDimensionSource>,
-    ts: &Arc<TestTimeSource>,
-    dynamic_height: bool,
-) -> (ProgressScreen, ProgressBarHandle) {
-    ProgressScreen::builder()
-        .with_multi_progress(mp)
-        .capacity(capacity)
-        .with_overall(label, overall_total)
-        .with_dim_source(Arc::clone(dims) as Arc<dyn DimensionSource>)
-        .with_time_source(ts.clone() as Arc<dyn TimeSource>)
-        .dynamic_height(dynamic_height)
-        .with_ticker_enabled(false)
-        .build()
 }

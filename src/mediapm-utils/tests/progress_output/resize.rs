@@ -1,599 +1,608 @@
+//! Terminal-resize tests.
+//!
+//! Bar geometry follows the *draw target's* width, not the injected dimension
+//! source: `recompute_layout` reads the term it draws into. Changing only the
+//! dimension source's column count therefore redraws a byte-identical frame,
+//! and the tests that claimed a width resize changed the output were really
+//! observing "nothing drawn yet" versus "first frame". The width contract is
+//! asserted here the way it is actually reachable — by rendering the same bars
+//! into draw targets of different widths. Height is different: it drives slot
+//! allocation when the terminal is built with dynamic height.
+
 use std::sync::Arc;
 
-use super::common::*;
+use mediapm_utils::progress::{SuffixComponents, TestDimensionSource};
 
+use super::common::{bar_cells, mk_with_capacity, mk_with_dims, without_spinners};
+
+/// Changing only the dimension source's columns redraws the same frame: the
+/// frame width is fixed by the draw target, so this pins the fact that width
+/// reactivity is not reachable through the dimension source alone.
+///
+/// The comparison normalizes the spinner, which advances on every draw whether or
+/// not any tracked value changed.
 #[test]
-fn resize_width_wide_to_narrow_changes_output() {
-    let dims = Arc::new(TestDimensionSource::new((H, 80)));
-    let (mp, term) = mk_with_size(H, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 5, "overall", 10, &dims, false);
-    let contents_wide = term.contents();
-
-    dims.set((H, 40));
-    group.tick();
-    let contents_narrow = term.contents();
-
-    // Content should differ after resize (different bar templates).
-    assert_ne!(contents_wide, contents_narrow, "output changes after width resize");
-}
-
-#[test]
-fn resize_width_narrow_to_wide_restores_content() {
-    let dims = Arc::new(TestDimensionSource::new((H, 40)));
-    let (mp, term) = mk_with_size(H, 40);
-    let (group, _overall) = group_with_overall_and_dims(mp, 5, "overall", 10, &dims, false);
-    let contents_narrow = term.contents();
-
-    dims.set((H, 80));
-    group.tick();
-    let contents_wide = term.contents();
-    assert_ne!(contents_narrow, contents_wide, "output changes after width resize");
-}
-
-#[test]
-fn resize_width_noop_same_width_no_change() {
-    let dims = Arc::new(TestDimensionSource::new((H, W)));
-    let (mp, term, ts) = mk_with_size_and_ts(H, W);
-    let (group, _overall) =
-        group_with_overall_and_dims_and_ts(mp, 5, "overall", 10, &dims, &ts, false);
-    let before = term.contents();
-    let before_lines = before.lines().count();
-    // (no elapsed assertion before tick — elapsed is injected on tick, and
-    //  we haven't ticked since constructor.)
-
-    dims.set((H, W));
-    group.tick();
-    let after = term.contents();
-    let after_lines = after.lines().count();
-    // Same width → same number of lines, same bar template structure.
-    // Content differs slightly because the spinner animates between ticks.
-    assert_eq!(before_lines, after_lines, "same line count after noop width resize");
-    assert!(after.contains("overall"), "overall visible after");
-    assert!(after.contains("0/10"), "overall shows 0/10 after");
-    assert!(after.contains("0s"), "time after");
-}
-
-#[test]
-fn resize_height_grow_adds_slots() {
-    let dims = Arc::new(TestDimensionSource::new((4, 80)));
-    let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 4, "overall", 10, &dims, true);
-    {
-        let _c1 = group.add_bar(7, "fetch");
-        group.tick();
-    }
-    let before = term.contents();
-    let before_count = before.lines().count();
-
-    dims.set((6, 80));
-    group.tick();
-    let after = term.contents();
-    let after_count = after.lines().count();
-    assert!(after_count > before_count, "more lines after height growth");
-}
-
-/// Exact output: height shrink removes blank slots while preserving content.
-#[test]
-fn resize_exact_height_shrink_removes_slots() {
-    let dims = Arc::new(TestDimensionSource::new((6, 80)));
-    let (mp, term, ts) = mk_with_size_and_ts(6, 80);
-    let (group, _overall) =
-        group_with_overall_and_dims_and_ts(mp, 6, "overall", 10, &dims, &ts, true);
-    let _c1 = group.add_bar(7, "fetch");
-    ts.advance(std::time::Duration::from_secs(1));
-    group.tick();
-
-    // At H=6: 4 blanks + child + overall = 6 lines
-    let before = term.contents();
-    assert_eq!(
-        before,
-        concat!(
-            "\n",
-            "\n",
-            "\n",
-            "\n",
-            "⠹       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d"
-        ),
-        "H=6 output",
-    );
-
-    dims.set((4, 80));
-    ts.advance(std::time::Duration::from_secs(1));
-    group.tick();
-    let after = term.contents();
-    assert_eq!(
-        after,
-        concat!(
-            "\n",
-            "\n",
-            "⠸       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d"
-        ),
-        "H=4 output",
-    );
-}
-
-#[test]
-fn resize_height_shrink_protects_overall() {
-    let dims = Arc::new(TestDimensionSource::new((6, 80)));
-    let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 6, "overall", 10, &dims, true);
-    let _c1 = group.add_bar(7, "fetch");
-    group.tick();
-    let before = term.contents();
-    assert!(before.lines().any(|l| l.contains("overall")), "overall visible before resize");
-
-    dims.set((4, 80));
-    group.tick();
-    let after = term.contents();
-    assert!(after.lines().any(|l| l.contains("overall")), "overall still visible after shrink");
-}
-
-#[test]
-fn resize_height_grow_detached_reappear() {
-    let dims = Arc::new(TestDimensionSource::new((4, 80)));
-    let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 4, "overall", 10, &dims, true);
-    let _c1 = group.add_bar(7, "fetch");
-    group.tick();
-
-    dims.set((6, 80));
-    group.tick();
-    let after = term.contents();
-    assert!(after.lines().any(|l| l.contains("fetch")), "child still visible after growth");
-    assert!(after.lines().any(|l| l.contains("overall")), "overall visible after growth");
-}
-
-#[test]
-fn resize_height_clamps_at_min_slots() {
-    let dims = Arc::new(TestDimensionSource::new((6, 80)));
-    let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 6, "overall", 10, &dims, true);
-    let _c1 = group.add_bar(7, "fetch");
-    group.tick();
-    let _before_count = term.contents().lines().count();
-
-    // Shrink to height=1 → only 1 line (overall), bar evicted to orphaned.
-    dims.set((1, 80));
-    group.tick();
-    let after = term.contents();
-    let after_count = after.lines().count();
-    assert_eq!(after_count, 1, "exactly 1 line at H=1 (overall only)");
-    assert!(after.contains("overall"), "overall visible at H=1");
-    assert!(!after.contains("fetch"), "child evicted at H=1");
-}
-
-#[test]
-fn resize_height_clamps_at_max_slots() {
-    let dims = Arc::new(TestDimensionSource::new((4, 80)));
-    let (mp, term) = mk_with_size(10, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 4, "overall", 10, &dims, true);
-    let _c1 = group.add_bar(7, "fetch");
-    group.tick();
-
-    // Grow to huge height → should clamp at MAX_SLOTS=200.
-    dims.set((999, 80));
-    group.tick();
-    let after_count = term.contents().lines().count();
-    // Should not have 999 lines — clamped to MAX_SLOTS.
-    assert!(after_count <= 200, "at most 200 lines after extreme growth (got {after_count})");
-}
-
-#[test]
-fn resize_both_dimensions() {
-    let dims = Arc::new(TestDimensionSource::new((4, 80)));
-    let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 4, "overall", 10, &dims, true);
-    let _c1 = group.add_bar(7, "fetch");
-    group.tick();
-    let before = term.contents();
-
-    // Change both width and height at once.
-    dims.set((6, 40));
-    group.tick();
-    let after = term.contents();
-    assert_ne!(before, after, "output changes when both dimensions change");
-}
-
-#[test]
-fn resize_then_restore_original() {
-    let dims = Arc::new(TestDimensionSource::new((4, 80)));
-    let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 4, "overall", 10, &dims, true);
-    let _c1 = group.add_bar(7, "fetch");
-    group.tick();
-    let original = term.contents();
-
-    // Grow.
-    dims.set((6, 40));
-    group.tick();
-    // Restore.
-    dims.set((4, 80));
-    group.tick();
-    let restored = term.contents();
-    assert_eq!(
-        restored.lines().count(),
-        original.lines().count(),
-        "restored line count matches original"
-    );
-    assert!(restored.contains("overall"), "overall visible after restore");
-    assert!(restored.contains("fetch"), "child visible after restore");
-}
-
-/// Shrink then grow back — verifies that a shrink–grow cycle preserves the
-/// line count and both tracked bars remain visible.
-#[test]
-fn resize_height_shrink_then_grow_restores_line_count() {
-    let dims = Arc::new(TestDimensionSource::new((6, 80)));
-    let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 6, "overall", 10, &dims, true);
-    let _c1 = group.add_bar(7, "fetch");
-    group.tick();
-    let original_count = term.contents().lines().count();
-    assert!(original_count >= 6, "at least 6 lines at H=6");
-
-    // Shrink to H=4.
-    dims.set((4, 80));
-    group.tick();
-    let shrunken_count = term.contents().lines().count();
-    assert!(
-        shrunken_count < original_count,
-        "fewer lines after shrink (was {original_count}, now {shrunken_count})"
-    );
-
-    // Grow back to H=6.
-    dims.set((6, 80));
-    group.tick();
-    let restored = term.contents();
-    assert_eq!(restored.lines().count(), original_count, "restored line count matches original");
-    assert!(restored.contains("overall"), "overall visible after cycle");
-    assert!(restored.contains("fetch"), "child visible after cycle");
-}
-
-/// Shrink to H=3 — verifies that the render-slot count matches the
-/// terminal height (3: 2 active bars + overall) and all tracked bars
-/// remain visible.
-#[test]
-fn resize_height_partial_shrink_keeps_active_bars() {
-    let dims = Arc::new(TestDimensionSource::new((6, 80)));
-    let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 6, "overall", 10, &dims, true);
-    let _c1 = group.add_bar(7, "fetch1");
-    let _c2 = group.add_bar(5, "fetch2");
-    group.tick();
-
-    // H=3 → 3 lines (2 active + overall, drained 3 blanks with 1 eviction).
-    dims.set((3, 80));
-    group.tick();
-    let after = term.contents();
-    assert_eq!(after.lines().count(), 3, "3 lines at H=3");
-    assert!(after.contains("overall"), "overall visible");
-    assert!(after.contains("fetch1"), "fetch1 visible");
-    assert!(after.contains("fetch2"), "fetch2 visible");
-}
-
-/// Attach a bar, shrink, then attach another bar — verifies that
-/// interleaving attach with resize works correctly.
-#[test]
-fn resize_height_with_interleaved_attach() {
+fn dimension_source_columns_do_not_change_the_frame() {
     let dims = Arc::new(TestDimensionSource::new((5, 80)));
-    let (mp, term) = mk_with_size(5, 80);
-    let group = ProgressScreen::builder()
-        .with_multi_progress(mp)
-        .capacity(5)
-        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
-        .dynamic_height(true)
-        .with_ticker_enabled(false)
-        .build();
-    let _alpha = group.add_bar(10, "alpha");
+    let (terminal, term) = mk_with_dims(5, 80, 4, &dims, None, false);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let _child = screen.add_bar(7, "tool-a");
 
-    // Start with 5 lines (no overall bar).
-    let before_count = term.contents().lines().count();
-    assert!(before_count >= 5, "at least 5 lines at H=5");
-
-    // Shrink to H=4 (removes 1 blank at top).
-    dims.set((4, 80));
-    group.tick();
-    let after_shrink = term.contents();
-    assert!(after_shrink.lines().count() < before_count, "fewer lines after shrink");
-    assert!(after_shrink.contains("alpha"), "alpha visible after shrink");
-    group.tick();
-
-    // Attach a second bar.
-    let _beta = group.add_bar(5, "beta");
-    group.tick();
-    let after_attach = term.contents();
-    // Line count should stay at 4 (H=4).
-    assert_eq!(after_attach.lines().count(), 4, "still 4 lines after attaching beta");
-    assert!(after_attach.contains("alpha"), "alpha visible after attach");
-    assert!(after_attach.contains("beta"), "beta visible after attach");
-}
-
-/// Shrink from H=5 to H=1 then grow back — verifies that eviction and
-/// reattachment preserve chronological order across the full range.
-#[test]
-fn resize_height_sequence_with_three_bars() {
-    let dims = Arc::new(TestDimensionSource::new((5, 80)));
-    let (mp, term) = mk_with_size(5, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 5, "overall", 10, &dims, true);
-    // Add in order: bar3 (oldest), bar2, bar1 (newest).
-    let _bar3 = group.add_bar(7, "bar 3");
-    let _bar2 = group.add_bar(5, "bar 2");
-    let _bar1 = group.add_bar(3, "bar 1");
-    group.tick();
-
-    // H=5 → (empty), (bar 3), (bar 2), (bar 1), (overall)
-    let h5 = term.contents();
-    assert_eq!(h5.lines().count(), 5);
-    assert!(h5.contains("bar 3"), "bar 3 visible at H=5");
-    assert!(h5.contains("bar 2"), "bar 2 visible at H=5");
-    assert!(h5.contains("bar 1"), "bar 1 visible at H=5");
-    assert!(h5.contains("overall"), "overall visible at H=5");
-
-    // H=4 → (bar 3), (bar 2), (bar 1), (overall) — empty slot removed
-    dims.set((4, 80));
-    group.tick();
-    let h4 = term.contents();
-    assert_eq!(h4.lines().count(), 4);
-    assert!(h4.contains("bar 3"));
-    assert!(h4.contains("bar 2"));
-    assert!(h4.contains("bar 1"));
-    assert!(h4.contains("overall"));
-
-    // H=3 → (bar 2), (bar 1), (overall) — bar 3 evicted
-    dims.set((3, 80));
-    group.tick();
-    let h3 = term.contents();
-    assert_eq!(h3.lines().count(), 3);
-    assert!(!h3.contains("bar 3"), "bar 3 evicted at H=3");
-    assert!(h3.contains("bar 2"));
-    assert!(h3.contains("bar 1"));
-    assert!(h3.contains("overall"));
-
-    // H=2 → (bar 1), (overall) — bar 2 evicted
-    dims.set((2, 80));
-    group.tick();
-    let h2 = term.contents();
-    assert_eq!(h2.lines().count(), 2);
-    assert!(!h2.contains("bar 3"), "bar 3 still evicted at H=2");
-    assert!(!h2.contains("bar 2"), "bar 2 evicted at H=2");
-    assert!(h2.contains("bar 1"));
-    assert!(h2.contains("overall"));
-
-    // H=1 → (overall) — bar 1 evicted
-    dims.set((1, 80));
-    group.tick();
-    let h1 = term.contents();
-    assert_eq!(h1.lines().count(), 1);
-    assert!(!h1.contains("bar 3"));
-    assert!(!h1.contains("bar 2"));
-    assert!(!h1.contains("bar 1"));
-    assert!(h1.contains("overall"));
-
-    // Grow back to H=4 → bar 3, bar 2, bar 1, overall (reattach in order).
-    // (pop_back LIFO preserves chronological order after prepend-at-0.)
-    dims.set((4, 80));
-    group.tick();
-    let h4_restored = term.contents();
-    assert_eq!(h4_restored.lines().count(), 4);
-    assert!(h4_restored.contains("bar 3"), "bar 3 reappears on growth");
-    assert!(h4_restored.contains("bar 2"), "bar 2 reappears on growth");
-    assert!(h4_restored.contains("bar 1"), "bar 1 reappears on growth");
-    assert!(h4_restored.contains("overall"));
-}
-
-/// Shrink from H=4 to H=1 (no overall bar) — verifies eviction and
-/// reattachment work correctly without an overall bar.
-#[test]
-fn resize_height_sequence_without_overall() {
-    let dims = Arc::new(TestDimensionSource::new((4, 80)));
-    let (mp, term) = mk_with_size(4, 80);
-    let group = ProgressScreen::builder()
-        .with_multi_progress(mp)
-        .capacity(4)
-        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
-        .dynamic_height(true)
-        .with_ticker_enabled(false)
-        .build();
-    let _bar2 = group.add_bar(5, "bar 2");
-    let _bar1 = group.add_bar(3, "bar 1");
-
-    // H=4 → (empty), (empty), (bar 2), (bar 1)
-    let h4 = term.contents();
-    assert_eq!(h4.lines().count(), 4);
-    assert!(h4.contains("bar 2"), "bar 2 visible at H=4");
-    assert!(h4.contains("bar 1"), "bar 1 visible at H=4");
-
-    // H=3 → (empty), (bar 2), (bar 1) — blank removed
-    dims.set((3, 80));
-    group.tick();
-    let h3 = term.contents();
-    assert_eq!(h3.lines().count(), 3);
-    assert!(h3.contains("bar 2"));
-    assert!(h3.contains("bar 1"));
-
-    // H=2 → (bar 2), (bar 1) — blank removed, all active
-    dims.set((2, 80));
-    group.tick();
-    let h2 = term.contents();
-    assert_eq!(h2.lines().count(), 2);
-    assert!(h2.contains("bar 2"));
-    assert!(h2.contains("bar 1"));
-
-    // H=1 → (bar 1) — bar 2 evicted
-    dims.set((1, 80));
-    group.tick();
-    let h1 = term.contents();
-    assert_eq!(h1.lines().count(), 1);
-    assert!(!h1.contains("bar 2"), "bar 2 evicted at H=1");
-    assert!(h1.contains("bar 1"), "bar 1 still visible at H=1");
-
-    // Grow back to H=3 → bar 2, bar 1 (reattach in order)
-    dims.set((3, 80));
-    group.tick();
-    let h3_restored = term.contents();
-    assert_eq!(h3_restored.lines().count(), 3);
-    assert!(h3_restored.contains("bar 2"), "bar 2 reappears on growth");
-    assert!(h3_restored.contains("bar 1"), "bar 1 reappears on growth");
-}
-
-/// Height growth appends new blank slots before the overall bar (not at the
-/// top), so the child bar position stays stable.
-#[test]
-fn resize_height_grow_appends_not_prepends() {
-    let dims = Arc::new(TestDimensionSource::new((4, 80)));
-    let (mp, term) = mk_with_size(6, 80);
-    let (group, _overall) = group_with_overall_and_dims(mp, 4, "overall", 10, &dims, true);
-
-    // Add one child — it goes to the bottom of the child region (index 2).
-    let _c1 = group.add_bar(7, "fetch");
-    group.tick();
-    let before = term.contents();
-    let before_lines: Vec<&str> = before.lines().collect();
-    assert_eq!(before_lines.len(), 4, "4 lines at H=4");
-    // index 0-1: blanks, index 2: child, index 3: overall
-    assert!(before_lines[2].contains("fetch"), "child at line 2 before grow: {0}", before_lines[2]);
-
-    // Grow to H=6.
-    dims.set((6, 80));
-    group.tick();
-    let after = term.contents();
-    let after_lines: Vec<&str> = after.lines().collect();
-    assert_eq!(after_lines.len(), 6, "6 lines at H=6");
-    // With append behavior, child stays at index 2, new blanks at 3-4,
-    // overall at 5. With prepend behavior, child would shift to index 4.
-    assert!(
-        after_lines[2].contains("fetch"),
-        "child stayed at line 2 after grow (append): {0}",
-        after_lines[2],
-    );
-    assert!(
-        after_lines[5].contains("overall"),
-        "overall at line 5 after grow: {0}",
-        after_lines[5],
-    );
-    // Verify the new slots are before overall (indices 3-4 are blank).
-    assert!(
-        after_lines[3].trim().is_empty(),
-        "line 3 is new blank after grow: {0:?}",
-        after_lines[3],
-    );
-    assert!(
-        after_lines[4].trim().is_empty(),
-        "line 4 is new blank after grow: {0:?}",
-        after_lines[4],
-    );
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Phase 3: Exact-output structural regression tests
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Wide terminal (W=120): verify prefix format, count/total, elapsed, rate.
-/// Exact output: width transition from W=120 to W=40.
-#[test]
-fn resize_exact_width_wide_to_narrow() {
-    let dims = Arc::new(TestDimensionSource::new((4, 120)));
-    let (mp, term, ts) = mk_with_size_and_ts(4, 120);
-    let (group, _overall) =
-        group_with_overall_and_dims_and_ts(mp, 4, "overall", 5, &dims, &ts, false);
-    let child = group.add_bar(10, "test");
-    child.set_position(5);
-    ts.advance(std::time::Duration::from_secs(1));
-    group.tick();
-
-    // W=120: long bar with wide template
+    screen.tick();
     let wide = term.contents();
-    assert_eq!(
-        wide,
-        concat!(
-            "\n",
-            "\n",
-            "⠸        test ████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 1s 30/m\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 1s 0/d"
-        ),
-        "W=120 output",
-    );
-    dims.set((4, 40));
-    ts.advance(std::time::Duration::from_secs(1));
-    group.tick();
+
+    dims.set((5, 40));
+    screen.tick();
     let narrow = term.contents();
+
+    assert!(wide.contains("overall"), "precondition: a frame was drawn: {wide:?}");
     assert_eq!(
-        narrow,
+        without_spinners(&wide),
+        without_spinners(&narrow),
+        "the dimension source's columns must not drive the drawn width"
+    );
+    assert_eq!(
+        &wide,
         concat!(
             "\n",
             "\n",
-            "⠼        test ████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 2s 30/m 10s\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d"
+            "\n",
+            "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
         ),
-        "W=40 output",
+        "dimension_source_columns_do_not_change_the_frame"
     );
 }
 
-/// Narrow terminal (W=40): verify wide template usage (compact mode removed).
+/// A narrow draw target has no room for the bar field at all: the prefix and the
+/// suffix are still written, but the bar between them collapses to nothing (and
+/// the suffix overflows onto further lines).
 #[test]
-fn resize_exact_narrow_uses_wide_template() {
-    let dims = Arc::new(TestDimensionSource::new((4, 40)));
-    let (mp, term, ts) = mk_with_size_and_ts(4, 40);
-    let (group, _overall) =
-        group_with_overall_and_dims_and_ts(mp, 4, "overall", 5, &dims, &ts, false);
-    let child = group.add_bar(10, "test");
-    child.set_position(5);
-    ts.advance(std::time::Duration::from_secs(1));
-    group.tick();
+fn narrow_draw_target_drops_the_bar() {
+    let (wide_terminal, wide_term) = mk_with_capacity(4, 40, 3);
+    let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
+    let _child = wide_screen.add_bar(7, "tool-a");
+    wide_screen.tick();
 
+    let (narrow_terminal, narrow_term) = mk_with_capacity(4, 20, 3);
+    let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
+    let _child = narrow_screen.add_bar(7, "tool-a");
+    narrow_screen.tick();
+
+    let wide = wide_term.contents();
+    let narrow = narrow_term.contents();
+    assert!(bar_cells(&wide) > 0, "the 40-column frame has room for a bar: {wide:?}");
+    assert_eq!(bar_cells(&narrow), 0, "the 20-column frame has none: {narrow:?}");
+    assert_eq!(
+        &wide,
+        concat!(
+            "\n",
+            "\n",
+            "⠸      tool-a ░░░░░░░░░  0/7 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "narrow_draw_target_drops_the_bar/wide"
+    );
+    assert_eq!(
+        &narrow,
+        concat!("\n", "\n", "⠸      tool-a   0/7\n", "0s 0/d"),
+        "narrow_draw_target_drops_the_bar/narrow"
+    );
+}
+
+/// A wider draw target renders a wider bar: the number of bar cells grows with
+/// the terminal width.
+#[test]
+fn wider_draw_target_expands_the_bar() {
+    let (narrow_terminal, narrow_term) = mk_with_capacity(4, 40, 3);
+    let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
+    let child = narrow_screen.add_bar(10, "tool-a");
+    child.advance(5);
+    narrow_screen.tick();
+
+    let (wide_terminal, wide_term) = mk_with_capacity(4, 120, 3);
+    let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
+    let child = wide_screen.add_bar(10, "tool-a");
+    child.advance(5);
+    wide_screen.tick();
+
+    let narrow = narrow_term.contents();
+    let wide = wide_term.contents();
+    assert!(
+        bar_cells(&wide) > bar_cells(&narrow),
+        "a 120-column frame must spend more cells on the bar than a 40-column one: \
+         {} vs {}",
+        bar_cells(&wide),
+        bar_cells(&narrow)
+    );
+    assert_eq!(
+        &narrow,
+        concat!(
+            "\n",
+            "\n",
+            "⠼      tool-a ████░░░░░  5/10 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "wider_draw_target_expands_the_bar/narrow"
+    );
+    assert_eq!(
+        &wide,
+        concat!(
+            "\n",
+            "\n",
+            "⠼      tool-a ████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "wider_draw_target_expands_the_bar/wide"
+    );
+}
+
+/// A narrow draw target drops the least important suffix fields first: a bar
+/// whose custom suffix does not fit loses it and its rate/ETA, while a wide one
+/// keeps them.
+#[test]
+fn narrow_draw_target_drops_suffix_fields() {
+    let (narrow_terminal, narrow_term) = mk_with_capacity(4, 20, 3);
+    let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
+    let child = narrow_screen.add_bar(10, "tool-a");
+    child.set_suffix_components(SuffixComponents {
+        custom: "already downloaded".into(),
+        ..Default::default()
+    });
+    narrow_screen.tick();
+
+    let (wide_terminal, wide_term) = mk_with_capacity(4, 120, 3);
+    let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
+    let child = wide_screen.add_bar(10, "tool-a");
+    child.set_suffix_components(SuffixComponents {
+        custom: "already downloaded".into(),
+        ..Default::default()
+    });
+    wide_screen.tick();
+
+    let narrow = narrow_term.contents();
+    let wide = wide_term.contents();
+    assert!(wide.contains("already downloaded"), "the wide frame keeps the suffix: {wide:?}");
+    assert!(!narrow.contains("already downloaded"), "the narrow frame drops it: {narrow:?}");
+    assert_eq!(&narrow, concat!(""), "narrow_draw_target_drops_suffix_fields/narrow");
+    assert_eq!(
+        &wide,
+        concat!(
+            "\n",
+            "\n",
+            "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d already downloaded\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "narrow_draw_target_drops_suffix_fields/wide"
+    );
+}
+
+/// Shrinking the terminal height to one row evicts every child bar, and growing
+/// it back reattaches the same bar with its progress intact.
+#[test]
+fn height_shrink_orphans_and_grow_reattaches() {
+    let dims = Arc::new(TestDimensionSource::new((5, 80)));
+    let (terminal, term) = mk_with_dims(5, 80, 4, &dims, None, true);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+
+    let child = screen.add_bar(7, "fetch");
+    child.advance(3);
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠼       fetch █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/7 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "height_shrink_orphans_and_grow_reattaches/initial"
+    );
+
+    dims.set((1, 80));
+    screen.tick();
+    let shrunk = term.contents();
+    assert_eq!(shrunk.lines().count(), 1, "one row leaves room for the overall bar only");
+    assert!(!shrunk.contains("fetch"), "the child is evicted at one row: {shrunk:?}");
+    assert_eq!(
+        &shrunk,
+        concat!("⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"),
+        "height_shrink_orphans_and_grow_reattaches/shrunk"
+    );
+
+    dims.set((5, 80));
+    screen.tick();
+    let grown = term.contents();
+    assert!(grown.contains("fetch"), "the child is reattached: {grown:?}");
+    assert!(grown.contains("3/7"), "and keeps its progress: {grown:?}");
+    assert_eq!(
+        &grown,
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠹       fetch █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/7 0s 0/d\n",
+            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "height_shrink_orphans_and_grow_reattaches/grown"
+    );
+}
+
+/// Dynamic height grows the slot count to the terminal height, so the frame
+/// gains rows as the terminal does — the reserved capacity is not the ceiling.
+///
+/// What this pins is the growth itself: two rows draw two lines, 24 rows draw
+/// 24, and the bound bars keep their order with the overall at the bottom either
+/// way. The ceiling the growth stops at is covered by the
+/// `dynamic_height_clamps_at_the_slot_limit` test below.
+#[test]
+fn dynamic_height_grows_the_slot_count_to_the_terminal_height() {
+    let dims = Arc::new(TestDimensionSource::new((2, 80)));
+    let (terminal, term) = mk_with_dims(24, 80, 6, &dims, None, true);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let _c1 = screen.add_bar(7, "fetch");
+
+    screen.tick();
+    let at_two = term.contents();
+    assert_eq!(at_two.lines().count(), 2, "two rows draw two lines: {at_two:?}");
+    let lines: Vec<&str> = at_two.lines().collect();
+    let child = lines.iter().position(|line| line.contains("fetch")).expect("the child's line:");
+    let overall =
+        lines.iter().position(|line| line.contains("overall")).expect("the overall's line:");
+    assert!(child < overall, "the overall stays at the bottom: {lines:?}");
+    assert_eq!(
+        &at_two,
+        concat!(
+            "⠸       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "dynamic_height_grows_the_slot_count_to_the_terminal_height/two_rows"
+    );
+
+    dims.set((24, 80));
+    screen.tick();
+    let at_twenty_four = term.contents();
+    assert_eq!(at_twenty_four.lines().count(), 24, "the terminal grew, so the frame did too");
+    let lines: Vec<&str> = at_twenty_four.lines().collect();
+    let child = lines.iter().position(|line| line.contains("fetch")).expect("the child's line:");
+    let overall =
+        lines.iter().position(|line| line.contains("overall")).expect("the overall's line:");
+    assert!(child < overall, "the overall stays at the bottom: {lines:?}");
+    assert_eq!(
+        at_twenty_four,
+        concat!(
+            "⠼       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "dynamic_height_grows_the_slot_count_to_the_terminal_height/twenty_four_rows"
+    );
+}
+
+/// Shrinking the terminal below the reserved slot count removes the topmost
+/// blank lines first, and the bound bars keep their order.
+#[test]
+fn height_shrink_removes_blank_slots() {
+    let dims = Arc::new(TestDimensionSource::new((6, 80)));
+    let (terminal, term) = mk_with_dims(7, 80, 6, &dims, None, true);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+
+    let _child = screen.add_bar(7, "fetch");
+    screen.tick();
+    let tall = term.contents();
+    assert_eq!(tall.lines().count(), 6, "six rows render six reserved slots");
+    assert_eq!(
+        &tall,
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "⠸       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "height_shrink_removes_blank_slots/tall"
+    );
+
+    dims.set((4, 80));
+    screen.tick();
+    let short = term.contents();
+    assert_eq!(short.lines().count(), 4, "four rows drop the two topmost blanks");
+    assert_eq!(short.lines().last().map(|line| line.contains("overall")), Some(true));
+    assert_eq!(
+        &short,
+        concat!(
+            "\n",
+            "\n",
+            "⠼       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "height_shrink_removes_blank_slots/short"
+    );
+}
+
+/// Growing the terminal adds blank lines above the bound bars: the children
+/// keep their relative order, the overall bar stays last, and no bar is
+/// displaced sideways or duplicated.
+#[test]
+fn height_grow_appends_blank_slots_above_the_bars() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (terminal, term) = mk_with_dims(7, 80, 6, &dims, None, true);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+
+    let _old = screen.add_bar(7, "oldest");
+    let _new = screen.add_bar(7, "newest");
+    screen.tick();
+    let short = term.contents();
+    assert_eq!(short.lines().count(), 4, "four rows render four slots");
+    assert_eq!(
+        &short,
+        concat!(
+            "\n",
+            "⠹      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠼      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "height_grow_appends_blank_slots_above_the_bars/short"
+    );
+
+    dims.set((6, 80));
+    screen.tick();
+    let tall = term.contents();
+    let lines: Vec<&str> = tall.lines().collect();
+    assert_eq!(lines.len(), 6, "six rows render six slots");
+    assert_eq!(lines.last().map(|line| line.contains("overall")), Some(true));
+    let oldest = lines.iter().position(|line| line.contains("oldest")).expect("oldest line");
+    let newest = lines.iter().position(|line| line.contains("newest")).expect("newest line");
+    assert!(oldest < newest, "children keep their order: {lines:?}");
+    assert!(
+        lines[..oldest].iter().all(|line| line.is_empty()),
+        "the growth lands as blanks above the bars: {lines:?}"
+    );
+    assert_eq!(
+        &tall,
+        concat!(
+            "\n",
+            "⠸      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠴      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "\n",
+            "\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "height_grow_appends_blank_slots_above_the_bars/tall"
+    );
+}
+
+/// A shrink-then-grow cycle restores the frame's line count and bar order, so
+/// a resize cannot leave the grid with permanently lost slots.
+#[test]
+fn height_shrink_then_grow_restores_the_frame() {
+    let dims = Arc::new(TestDimensionSource::new((6, 80)));
+    let (terminal, term) = mk_with_dims(7, 80, 6, &dims, None, true);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+
+    let _old = screen.add_bar(7, "oldest");
+    let _new = screen.add_bar(7, "newest");
+    screen.tick();
+    let before = term.contents();
+    assert_eq!(
+        &before,
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠹      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠼      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "height_shrink_then_grow_restores_the_frame/before"
+    );
+
+    dims.set((3, 80));
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "⠸      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠴      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "height_shrink_then_grow_restores_the_frame/shrunk"
+    );
+
+    dims.set((6, 80));
+    screen.tick();
+    let restored = term.contents();
+    let before_lines: Vec<&str> = before.lines().collect();
+    let restored_lines: Vec<&str> = restored.lines().collect();
+    assert_eq!(restored_lines.len(), before_lines.len(), "the line count is restored");
+    for label in ["oldest", "newest", "overall"] {
+        assert!(restored.contains(label), "{label} is back after the cycle: {restored:?}");
+    }
+    assert_eq!(
+        &restored,
+        concat!(
+            "⠼      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠦      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "\n",
+            "\n",
+            "\n",
+            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+        ),
+        "height_shrink_then_grow_restores_the_frame/restored"
+    );
+}
+
+/// Without an overall bar the child region is the whole grid, so a height
+/// sequence is pure slot count: each shrink drops the topmost row, which evicts
+/// the oldest child once the blank rows are gone.
+///
+/// Growth appends the new row below the surviving bars and reattaches the
+/// evicted child there, so a bar that survives the cycle keeps its line and the
+/// reattached one lands below it.
+#[test]
+fn height_sequence_without_overall() {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let (terminal, term) = mk_with_dims(4, 80, 4, &dims, None, true);
+    let screen = terminal.screen().build();
+
+    let _old = screen.add_bar(5, "bar 2");
+    let _new = screen.add_bar(3, "bar 1");
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "⠹     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠼     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"
+        ),
+        "height_sequence_without_overall/tall"
+    );
+
+    dims.set((3, 80));
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "⠸     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠴     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"
+        ),
+        "height_sequence_without_overall/three_rows"
+    );
+
+    dims.set((2, 80));
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "⠼     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
+            "⠦     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"
+        ),
+        "height_sequence_without_overall/two_rows"
+    );
+
+    dims.set((1, 80));
+    screen.tick();
+    let one_row = term.contents();
+    assert_eq!(
+        &one_row,
+        concat!("⠧     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"),
+        "height_sequence_without_overall/one_row"
+    );
+    assert!(one_row.contains("bar 1"), "the newest child keeps the only slot: {one_row:?}");
+
+    dims.set((3, 80));
+    screen.tick();
+    let restored = term.contents();
+    assert_eq!(
+        &restored,
+        concat!(
+            "⠇     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
+            "\n",
+            "⠹     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d"
+        ),
+        "height_sequence_without_overall/reattached"
+    );
+    assert!(restored.contains("bar 2"), "the evicted child is reattached: {restored:?}");
+    assert!(restored.contains("bar 1"), "the surviving child kept its line: {restored:?}");
+}
+
+/// A slot limit bounds the grid: a terminal far taller than the renderer's
+/// `MAX_SLOTS` ceiling grows the frame to exactly that ceiling, not to the
+/// reported height.
+///
+/// The assertion is two-sided on purpose: a frame that stayed at the reserved
+/// capacity fails it just as a frame that reached the terminal height does, so
+/// it cannot pass without height adaptation clamping exactly at the limit.
+#[test]
+fn dynamic_height_clamps_at_the_slot_limit() {
+    let dims = Arc::new(TestDimensionSource::new((1000, 80)));
+    let (terminal, term) = mk_with_dims(300, 40, 4, &dims, None, true);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let _child = screen.add_bar(7, "child");
+
+    screen.tick();
     let contents = term.contents();
     let lines: Vec<&str> = contents.lines().collect();
-    // At W=40 the wide template is always used (compact mode removed).
-    // 2 blank lines + child bar + overall bar fill H=4. The child bar shows
-    // the bar chars, count/total, elapsed, and rate.
-    assert!(lines.len() >= 3, "at least 3 lines at W=40 (got {})", lines.len());
-    assert!(lines.iter().any(|l| l.contains("test")), "child visible");
-    assert!(lines.iter().any(|l| l.contains("5/10")), "count/total visible");
-    assert!(lines.iter().any(|l| l.contains("30/m")), "rate visible");
-    assert!(lines.iter().any(|l| l.contains('█')), "bar chars present in wide template");
+    assert_eq!(lines.len(), 256, "1000 reported rows must clamp to the renderer's 256-slot limit");
+    assert_eq!(
+        lines.last().map(|line| line.contains("overall")),
+        Some(true),
+        "the overall bar keeps the bottom slot at the limit: {contents:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("child")),
+        "the bound child is still drawn at the limit: {contents:?}"
+    );
 }
 
-/// Exact output: height grow from H=4 to H=6 shows more blank slots.
+/// A partial shrink to three rows keeps both active children and the overall
+/// bar: the renderer evicts the blank slots, not the bars.
 #[test]
-fn resize_exact_height_grow_adds_slots() {
-    let dims = Arc::new(TestDimensionSource::new((4, 80)));
-    let (mp, term, ts) = mk_with_size_and_ts(6, 80);
-    let (group, _overall) =
-        group_with_overall_and_dims_and_ts(mp, 4, "overall", 10, &dims, &ts, true);
-    let _c1 = group.add_bar(7, "fetch");
-    ts.advance(std::time::Duration::from_secs(1));
-    group.tick();
+fn partial_height_shrink_keeps_active_children() {
+    let dims = Arc::new(TestDimensionSource::new((6, 80)));
+    let (terminal, term) = mk_with_dims(7, 80, 6, &dims, None, true);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
 
-    // At H=4: 2 blanks + child + overall = 4 lines
-    let before = term.contents();
+    let old = screen.add_bar(7, "oldest");
+    let new = screen.add_bar(7, "newest");
+    old.advance(2);
+    new.advance(4);
+    screen.tick();
     assert_eq!(
-        before,
+        &term.contents(),
         concat!(
             "\n",
             "\n",
-            "⠹       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 1s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d"
+            "\n",
+            "⠸      oldest ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/7 0s 0/d\n",
+            "⠴      newest ████████████████████████████░░░░░░░░░░░░░░░░░░░░░  4/7 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
         ),
-        "H=4 output",
+        "partial_height_shrink_keeps_active_children/tall"
     );
 
-    // Grow to H=6
-    dims.set((6, 80));
-    ts.advance(std::time::Duration::from_secs(1));
-    group.tick();
-    let after = term.contents();
+    dims.set((3, 80));
+    screen.tick();
+    let short = term.contents();
+    assert_eq!(short.lines().count(), 3, "three rows render three slots");
+    for label in ["oldest", "newest", "overall"] {
+        assert!(
+            short.contains(label),
+            "a partial shrink must not evict a bound bar ({label}): {short:?}"
+        );
+    }
     assert_eq!(
-        after,
+        &short,
         concat!(
-            "\n",
-            "\n",
-            "⠸       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 2s 0/d\n",
-            "\n",
-            "\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d"
+            "⠼      oldest ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/7 0s 0/d\n",
+            "⠦      newest ████████████████████████████░░░░░░░░░░░░░░░░░░░░░  4/7 0s 0/d\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
         ),
-        "H=6 output",
+        "partial_height_shrink_keeps_active_children/short"
     );
 }

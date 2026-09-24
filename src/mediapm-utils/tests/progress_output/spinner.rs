@@ -1,502 +1,166 @@
-use super::common::*;
+//! Spinner and bar-style tests.
+//!
+//! Two bar styles are reachable through the public API: `BarStyle::StepCount`
+//! (the default) and `BarStyle::WorkerSpinner`. The tests that this file
+//! replaces asserted spinner behaviour against raw `indicatif` bars, which the
+//! suite no longer constructs; the style contract is asserted here through
+//! `add_bar_with_style` instead. Colour is not observable — `InMemoryTerm`
+//! records text without ANSI escapes — so the assertions use the differences
+//! that survive into the text: which glyph the spinner holds and whether the
+//! bar field is drawn at all.
 
-#[test]
-fn spinner_active() {
-    let (mp, term) = mk();
-    let pb = add_bar(&mp, 5, "test");
-    pb.set_style(spinner_style());
-    pb.tick();
-    let s = term.contents();
-    // First tick shows ⠙ (index 1 of production tick_chars).
-    assert_eq!(s, "⠙     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
+use mediapm_utils::progress::BarStyle;
+
+use super::common::{line_with, mk_with_capacity};
+
+/// The first non-blank character of a line: the spinner position.
+fn first_glyph(line: &str) -> char {
+    line.chars()
+        .find(|ch| !ch.is_whitespace())
+        .expect("a bound bar line always starts with a spinner")
 }
 
+/// The cell-drawing characters of the default `indicatif` tick sequence.
+const BRAILLE_TICKS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// A worker-spinner bar renders a filled bar while busy, an empty track while
+/// idle, and a completed bar once finished.
 #[test]
-fn spinner_with_overall() {
-    let (mp, term) = mk();
-    let o = add_bar(&mp, 4, "overall");
-    let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_style());
-    c.tick();
-    o.tick();
+fn worker_spinner_style_renders_idle_and_active() {
+    let (terminal, term) = mk_with_capacity(5, 80, 4);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+
+    let _idle = screen.add_bar_with_style(0, "idle", BarStyle::WorkerSpinner);
+    let busy = screen.add_bar_with_style(5, "busy", BarStyle::WorkerSpinner);
+    busy.advance(5);
+    screen.tick();
+
+    let active = term.contents();
+    assert!(line_with(&active, "busy").contains('█'), "a busy worker fills its bar: {active:?}");
+    assert!(
+        !line_with(&active, "idle").contains('█'),
+        "a worker with no total leaves its bar empty: {active:?}"
+    );
+    assert!(line_with(&active, "idle").contains('░'), "but its track is still drawn: {active:?}");
     assert_eq!(
-        term.contents(),
+        &active,
         concat!(
-            "⠙    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/4",
+            "\n",
+            "\n",
+            "⠹        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/0 0s 0/d\n",
+            "⠴        busy ███████████████████████████████████████████████████  5/5 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
         ),
+        "worker_spinner_style_renders_idle_and_active/active"
     );
-}
 
-#[test]
-fn spinner_finishes() {
-    let (mp, term) = mk();
-    let pb = add_bar(&mp, 5, "test");
-    pb.set_style(spinner_style());
-    pb.tick(); // ⠙ (frame 1)
-    pb.finish_with_message("done");
-    pb.tick(); // ⠏ (final frame)
-    assert_eq!(term.contents(), "⠏     test [00:00:00] █████████ 5/5 done");
-}
-
-// ── Spinner: multi-frame animation (uses production 10-frame cycle) ──────────
-
-#[test]
-fn spinner_animation_cycle() {
-    let (mp, term) = mk();
-    let pb = add_bar(&mp, 5, "test");
-    pb.set_style(spinner_style());
-    // Production 10-frame "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" cycles as indices 1→2→3→4→5→6→7→8→0.
-    pb.tick();
-    assert_eq!(term.contents(), "⠙     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 1/9");
-    pb.tick();
-    assert_eq!(term.contents(), "⠹     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 2/9");
-    pb.tick();
-    assert_eq!(term.contents(), "⠸     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 3/9");
-    pb.tick();
-    assert_eq!(term.contents(), "⠼     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 4/9");
-    pb.tick();
-    assert_eq!(term.contents(), "⠴     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 5/9");
-    pb.tick();
-    assert_eq!(term.contents(), "⠦     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 6/9");
-    pb.tick();
-    assert_eq!(term.contents(), "⠧     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 7/9");
-    pb.tick();
-    assert_eq!(term.contents(), "⠇     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 8/9");
-    pb.tick();
-    assert_eq!(term.contents(), "⠋     test [00:00:00] ░░░░░░░░░░░░░ 0/5", "frame 9/9 wraps to ⠋");
-}
-
-#[test]
-fn spinner_child_animation_with_overall() {
-    let (mp, term) = mk();
-    let o = add_bar(&mp, 5, "overall");
-    let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_style());
-    // Child progresses through frames while overall stays static.
-    c.tick();
-    o.tick();
+    busy.finish_success();
+    screen.tick();
+    let finished = term.contents();
+    assert!(
+        line_with(&finished, "busy").contains("5/5"),
+        "the finished worker keeps its final count: {finished:?}"
+    );
     assert_eq!(
-        term.contents(),
+        &finished,
         concat!(
-            "⠙    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
+            "\n",
+            "\n",
+            "⠸        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/0 0s 0/d\n",
+            "⠏        busy ███████████████████████████████████████████████████  5/5 0s\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
         ),
-        "child frame 1/9 ⠙",
-    );
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠹    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
-        ),
-        "child frame 2/9 ⠹",
-    );
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠸    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
-        ),
-        "child frame 3/9 ⠸",
-    );
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠼    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            " overall [00:00:00] ░░░░░░░░░░░░░░░ 0/5",
-        ),
-        "child frame 4/9 ⠼",
+        "worker_spinner_style_renders_idle_and_active/finished"
     );
 }
 
-// ── Spinner: multi-bar animation ─────────────────────────────────────────────
-
+/// The spinner only animates while its bar is active: consecutive draws advance
+/// the glyph of an unfinished bar and leave both a successful and a failed bar
+/// frozen — a finished bar must never look busy again.
 #[test]
-fn spinner_both_animate_together() {
-    let (mp, term) = mk();
-    let o = add_bar(&mp, 5, "overall");
-    o.set_style(spinner_style());
-    let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_style());
-    // Both progress independently.
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠙    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
-        ),
-        "both frame 1/9 ⠙",
-    );
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠹    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            "⠹  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
-        ),
-        "both frame 2/9 ⠹",
-    );
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠸    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            "⠸  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
-        ),
-        "both frame 3/9 ⠸",
-    );
-}
+fn spinner_advances_only_while_a_bar_is_active() {
+    let (terminal, term) = mk_with_capacity(5, 80, 4);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
 
-// ── Spinner: finish/reset/abandon animation behavior ─────────────────────────
-
-#[test]
-fn spinner_finish_frame_stability() {
-    let (mp, term) = mk();
-    let pb = add_bar(&mp, 5, "test");
-    pb.set_style(spinner_style());
-    pb.tick();
-    assert_eq!(term.contents(), "⠙     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
-    pb.tick();
-    assert_eq!(term.contents(), "⠹     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
-    // Finish — frame should settle on the last tick char (⠏).
-    pb.finish_with_message("done");
-    pb.tick();
-    assert_eq!(term.contents(), "⠏     test [00:00:00] █████████ 5/5 done");
-    // Additional ticks should still show the same final frame.
-    pb.tick();
-    assert_eq!(term.contents(), "⠏     test [00:00:00] █████████ 5/5 done");
-}
-
-#[test]
-fn spinner_reset_continues_animation() {
-    let (mp, term) = mk();
-    let pb = add_bar(&mp, 5, "test");
-    pb.set_style(spinner_style());
-    pb.tick(); // ⠙ (frame 1)
-    pb.tick(); // ⠹ (frame 2)
-    pb.tick(); // ⠸ (frame 3)
-    pb.reset();
-    pb.tick(); // Continued from frame 4 → ⠼
-    // Reset does NOT restart the animation cycle; it continues from where it was.
-    assert_eq!(
-        term.contents(),
-        "⠼     test [00:00:00] ░░░░░░░░░░░░░ 0/5",
-        "after reset, animation continues from next frame (⠼)"
-    );
-}
-
-#[test]
-fn spinner_abandon_ends_on_last_frame() {
-    let (mp, term) = mk();
-    let pb = add_bar(&mp, 5, "test");
-    pb.set_style(spinner_style());
-    // Production tick_chars "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏": first tick shows ⠙ (index 1).
-    pb.tick();
-    assert_eq!(term.contents(), "⠙     test [00:00:00] ░░░░░░░░░░░░░ 0/5");
-    // Abandon — frame settles on last char (⠏).
-    pb.abandon_with_message("failed");
-    pb.tick();
-    assert_eq!(term.contents(), "⠏     test [00:00:00] ░░░░░░░ 0/5 failed");
-    // Additional ticks stay on the final frame.
-    pb.tick();
-    assert_eq!(term.contents(), "⠏     test [00:00:00] ░░░░░░░ 0/5 failed");
-}
-
-// ── Spinner on both children AND overall ─────────────────────────────────────
-
-#[test]
-fn spinner_child_and_overall_initial() {
-    let (mp, term) = mk();
-    let o = add_bar(&mp, 5, "overall");
-    o.set_style(spinner_style());
-    let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_style());
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠙    tool1 [00:00:00] ░░░░░░░░░░░░░ 0/2\n",
-            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
-        ),
-    );
-}
-
-#[test]
-fn spinner_child_and_overall_child_progress() {
-    let (mp, term) = mk();
-    let o = add_bar(&mp, 5, "overall");
-    o.set_style(spinner_style());
-    let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_style());
-    c.inc(1);
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠹    tool1 [00:00:00] ██████░░░░░░░ 1/2\n",
-            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
-        ),
-    );
-}
-
-#[test]
-fn spinner_child_and_overall_full() {
-    let (mp, term) = mk();
-    let o = add_bar(&mp, 5, "overall");
-    o.set_style(spinner_style());
-    let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_style());
-    c.inc(2);
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠹    tool1 [00:00:00] █████████████ 2/2\n",
-            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
-        ),
-    );
-}
-
-#[test]
-fn spinner_child_finishes_overall_active() {
-    let (mp, term) = mk();
-    let o = add_bar(&mp, 5, "overall");
-    o.set_style(spinner_style());
-    let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_style());
-    c.tick();
-    o.tick();
-    c.finish_with_message("done");
-    c.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠏    tool1 [00:00:00] █████████ 2/2 done\n",
-            "⠙  overall [00:00:00] ░░░░░░░░░░░░░ 0/5",
-        ),
-    );
-}
-
-#[test]
-fn spinner_on_both_finish() {
-    let (mp, term) = mk();
-    let o = add_bar(&mp, 5, "overall");
-    o.set_style(spinner_style());
-    let c = ins_bar(&mp, &o, 2, "tool1");
-    c.set_style(spinner_style());
-    c.tick();
-    o.tick();
-    c.inc(2);
-    o.inc(5);
-    c.finish_with_message("done");
-    o.finish_with_message("done");
-    c.tick();
-    o.tick();
-    assert_eq!(
-        term.contents(),
-        concat!(
-            "⠏    tool1 [00:00:00] █████████ 2/2 done\n",
-            "⠏  overall [00:00:00] █████████ 5/5 done",
-        ),
-    );
-}
-
-// ── ProgressScreen spinner tests: dirty-independent redraw ────────────────────
-//
-// These tests verify the spec: every tick() advances the spinner character on
-// active bars regardless of dirty state, and finished bars' spinners are frozen.
-
-#[test]
-fn spinner_advances_without_dirty() {
-    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
-    let group = group_with_ts(mp, 4, &ts);
-    let _child = group.add_bar(10, "test");
-
-    // First tick establishes initial spinner frame.
-    group.tick();
-    let t1 = term.contents();
-
-    // Subsequent ticks should advance the spinner even without dirty state.
-    group.tick();
-    let t2 = term.contents();
-    group.tick();
-    let t3 = term.contents();
-
-    // All must show 0/10 (no progress made).
-    assert_eq!(
-        t1, "\n\n\n⠸     test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
-        "tick 1 shows 0/10",
-    );
-    assert_eq!(
-        t2, "\n\n\n⠼     test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
-        "tick 2 shows 0/10",
-    );
-    assert_eq!(
-        t3, "\n\n\n⠴     test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
-        "tick 3 shows 0/10",
-    );
-
-    // Spinner must advance between each tick (time frozen → only spinner differs).
-    assert_ne!(t1, t2, "spinner must advance on tick 1→2 (no dirty)");
-    assert_ne!(t2, t3, "spinner must advance on tick 2→3 (no dirty)");
-}
-
-#[test]
-fn spinner_does_not_advance_on_finished_bar() {
-    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
-    let group = group_with_ts(mp, 4, &ts);
-    let finished = group.add_bar(3, "done");
-    finished.finish_success();
-    let active = group.add_bar(10, "working");
-    group.tick();
-
-    // Advance once so the cross-bar layout stabilizes (the active bar's suffix
-    // widens to include the rate field), then capture the finished line.
+    let active = screen.add_bar(5, "active");
+    let done = screen.add_bar(5, "done");
+    let failed = screen.add_bar(5, "failed");
     active.advance(1);
-    group.tick();
-    let finished_line = {
-        let contents = term.contents();
-        let lines: Vec<&str> = contents.lines().collect();
-        lines[2].to_string()
-    };
+    done.advance(5);
+    done.finish_success();
+    failed.advance(2);
+    failed.finish_error();
 
-    for i in 0..5 {
-        active.advance(1);
-        group.tick();
-        let contents = term.contents();
-        let lines: Vec<&str> = contents.lines().collect();
+    screen.tick();
+    let first = term.contents();
+    screen.tick();
+    let second = term.contents();
+
+    let active_first = first_glyph(line_with(&first, "active"));
+    let active_second = first_glyph(line_with(&second, "active"));
+    assert!(
+        BRAILLE_TICKS.contains(&active_first) && BRAILLE_TICKS.contains(&active_second),
+        "the spinner holds braille ticks: {active_first:?}, {active_second:?}"
+    );
+    assert_ne!(active_first, active_second, "an active bar's spinner must advance on every draw");
+    for label in ["done", "failed"] {
         assert_eq!(
-            lines[2], finished_line,
-            "finished bar must stay frozen across ticks (iteration {i})"
+            first_glyph(line_with(&first, label)),
+            first_glyph(line_with(&second, label)),
+            "a {label} bar's spinner must not advance"
         );
     }
-}
-
-#[test]
-fn spinner_active_among_finished() {
-    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
-    let group = group_with_ts(mp, 4, &ts);
-    let finished = group.add_bar(3, "done");
-    finished.finish_success();
-    let active = group.add_bar(10, "working");
-    group.tick();
-
-    // Advance the active bar so the cross-bar layout stabilizes.
-    active.advance(2);
-    group.tick();
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-
-    // Finished bar must stay frozen (captured after layout stabilized).
-    let finished_line = "⠏        done ██████████████████████████████████████████████████  0/3 0s";
-    assert_eq!(lines[2], finished_line, "finished bar must stay frozen");
-    // Active bar shows progress.
     assert_eq!(
-        lines[3], "⠦     working ██████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/10 0s 0/d",
-        "active bar shows 2/10: {}",
-        lines[3],
+        &first,
+        concat!(
+            "\n",
+            "⠸                  active ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/5 0s 0/d\n",
+            "⠏                    done ███████████████████████████████████████  5/5 0s\n",
+            "⠏              [F] failed ███████████████░░░░░░░░░░░░░░░░░░░░░░░░  2/5 0s\n",
+            "⠹                 overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"
+        ),
+        "spinner_advances_only_while_a_bar_is_active/first"
+    );
+    assert_eq!(
+        &second,
+        concat!(
+            "\n",
+            "⠼                  active ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/5 0s 0/d\n",
+            "⠏                    done ███████████████████████████████████████  5/5 0s\n",
+            "⠏              [F] failed ███████████████░░░░░░░░░░░░░░░░░░░░░░░░  2/5 0s\n",
+            "⠸                 overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"
+        ),
+        "spinner_advances_only_while_a_bar_is_active/second"
     );
 }
 
+/// A zero-total bar is rendered full by the default style and empty by the
+/// worker-spinner style — the zero/zero guard, and the only style difference
+/// that survives into text without colour.
 #[test]
-fn regression_spinner_dirty_independence() {
-    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
-    let group = group_with_ts(mp, 4, &ts);
-    let child = group.add_bar(10, "test");
-    child.set_position(5);
-    group.tick(); // Initial draw: 5/10, spinner at some frame
-    let t1 = term.contents();
+fn zero_total_fill_depends_on_the_bar_style() {
+    let (terminal, term) = mk_with_capacity(4, 40, 3);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
 
-    // Three more ticks with NO changes.
-    group.tick();
-    let t2 = term.contents();
-    group.tick();
-    let t3 = term.contents();
-    group.tick();
-    let t4 = term.contents();
-
-    // All ticks show 5/10 (stable position).
-    assert_eq!(
-        t1, "\n\n\n⠼     test ██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
-        "tick 1: 5/10",
-    );
-    assert_eq!(
-        t2, "\n\n\n⠴     test ██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
-        "tick 2: 5/10",
-    );
-    assert_eq!(
-        t3, "\n\n\n⠦     test ██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
-        "tick 3: 5/10",
-    );
-    assert_eq!(
-        t4, "\n\n\n⠧     test ██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d",
-        "tick 4: 5/10",
-    );
-
-    // Spinner advances on each tick (content differs).
-    assert_ne!(t1, t2, "spinner must advance tick 1→2 (no dirty)");
-    assert_ne!(t2, t3, "spinner must advance tick 2→3 (no dirty)");
-    assert_ne!(t3, t4, "spinner must advance tick 3→4 (no dirty)");
-}
-
-#[test]
-fn spinner_stops_on_abandoned_bar() {
-    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
-    let group = group_with_ts(mp, 4, &ts);
-    let abandoned = group.add_bar(5, "abandoned");
-    abandoned.set_position(2);
-    abandoned.finish_error();
-    let active = group.add_bar(3, "active");
-    group.tick();
+    let _tracked = screen.add_bar(0, "step-zero");
+    let _blank = screen.add_bar_with_style(0, "worker-zero", BarStyle::WorkerSpinner);
+    screen.tick();
 
     let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    let abandoned_line = lines[2].to_string();
-    drop(contents);
-
-    for i in 0..5 {
-        active.advance(1);
-        group.tick();
-        let contents = term.contents();
-        let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines[2], abandoned_line, "abandoned bar must stay frozen (iteration {i})");
-    }
-}
-
-#[test]
-fn spinner_stops_on_failed_bar() {
-    let (mp, term, ts) = mk_with_size_and_ts(4, 80);
-    let group = group_with_ts(mp, 4, &ts);
-    let failed = group.add_bar(5, "failed");
-    failed.set_position(2);
-    failed.finish_error();
-    let active = group.add_bar(3, "active");
-    group.tick();
-
-    let contents = term.contents();
-    let lines: Vec<&str> = contents.lines().collect();
-    let failed_line = lines[2].to_string();
-    drop(contents);
-
-    for i in 0..5 {
-        active.advance(1);
-        group.tick();
-        let contents = term.contents();
-        let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines[2], failed_line, "failed bar must stay frozen (iteration {i})");
-    }
+    let step = line_with(&contents, "step-zero");
+    let worker = line_with(&contents, "worker-zero");
+    assert!(step.contains('█'), "the default style fills a zero-total bar: {step:?}");
+    assert!(!step.contains('░'), "so no cell is left blank: {step:?}");
+    assert!(worker.contains('░'), "the worker style leaves it blank: {worker:?}");
+    assert!(!worker.contains('█'), "so no cell is filled: {worker:?}");
+    assert_eq!(
+        &contents,
+        concat!(
+            "\n",
+            "⠹       step-zero ███████  0/0 0s 0/d\n",
+            "⠼     worker-zero ░░░░░░░  0/0 0s 0/d\n",
+            "⠹         overall ░░░░░░░  0/1 0s 0/d"
+        ),
+        "zero_total_fill_depends_on_the_bar_style"
+    );
 }
