@@ -9,6 +9,35 @@
 //! [`WriteWindow`] is an RAII guard: construction opens the window
 //! (writes go through), drop re-suppresses. It is crate-private and
 //! can only be obtained via [`WriteGate::open`].
+//!
+//! # A suppressed write reports failure, it does not report success
+//!
+//! Every suppressed write method returns [`Err`] — see
+//! [`suppressed_write_error`]. This is load-bearing, not cosmetic:
+//! `indicatif`'s `DrawState::draw_to_term` writes back the height it just
+//! drew (`*bar_count = real_height + shift`) at the very end of a draw, so
+//! a suppressed draw that reported success would leave indicatif believing
+//! the terminal holds a frame it never received. The next draw released
+//! inside a write window then unwinds that phantom frame
+//! (`move_cursor_up(bar_count - 1)` followed by one `clear_line` per
+//! phantom row) and erases whatever is really on those rows — the previous
+//! screen's committed frame.
+//!
+//! `draw_to_term` propagates the first failing `TermLike` call with `?`
+//! *before* the height is written back (`indicatif-0.17.11/src/draw_target.rs`,
+//! the `?` on the `move_cursor_up`/`clear_line`/`write_str`/`flush` calls at
+//! lines 504-571 all precede the store at line 572), so reporting `Err`
+//! leaves the recorded height exactly as the last *released* draw left it.
+//!
+//! The `Err` never escapes this crate: the suppression only ever wraps the
+//! draw target of a [`ProgressTerminal`](super::terminal::ProgressTerminal),
+//! which keeps its `MultiProgress` and every `ProgressBar` private. The two
+//! places in indicatif 0.17.11 that unwrap a draw result —
+//! `MultiState::suspend` (`multi.rs:391`, reached only via
+//! `MultiProgress::suspend`/`ProgressBar::suspend`) and
+//! `ProgressBar::set_tab_width` (`progress_bar.rs:167`) — therefore need an
+//! indicatif handle that no mediapm caller can obtain. No in-tree caller
+//! unwraps a draw result.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,14 +46,29 @@ use indicatif::TermLike;
 
 // ---- BufferedTerm: suppress terminal writes from property setters ----
 
+/// Build the error a suppressed write returns.
+///
+/// One constructor keeps the message (and therefore the contract: "this
+/// write was discarded, the draw did not happen") identical across every
+/// suppressed method, so a caller that does inspect the error can identify
+/// the gate without matching on a kind. See the module docs for why a
+/// suppressed write must not report success.
+fn suppressed_write_error() -> std::io::Error {
+    std::io::Error::other(
+        "mediapm progress write gate: terminal write discarded while a frame is in progress",
+    )
+}
+
 /// Wraps any [`TermLike`] to suppress terminal writes while a frame is
 /// in progress. The [`buffer_enabled`](Self::buffer_enabled) flag is
 /// owned privately — the only way to open/close the write window is
 /// through the paired [`WriteGate`].
 ///
-/// When buffering is active, all write/clear/move operations are
-/// no-ops; [`width`](Self::width) and [`height`](Self::height) always
-/// delegate to the inner terminal.
+/// When buffering is active, every write/clear/move operation is discarded
+/// and reports failure (see [`suppressed_write_error`]);
+/// [`width`](Self::width) and [`height`](Self::height) always delegate to
+/// the inner terminal, because the draw decision (how many rows the frame
+/// needs) must stay accurate even while writes are discarded.
 #[derive(Debug)]
 pub(crate) struct BufferedTerm {
     inner: Box<dyn TermLike>,
@@ -55,56 +99,56 @@ impl TermLike for BufferedTerm {
 
     fn write_line(&self, s: &str) -> std::io::Result<()> {
         if self.buffer_enabled.load(Ordering::Acquire) {
-            return Ok(());
+            return Err(suppressed_write_error());
         }
         self.inner.write_line(s)
     }
 
     fn write_str(&self, s: &str) -> std::io::Result<()> {
         if self.buffer_enabled.load(Ordering::Acquire) {
-            return Ok(());
+            return Err(suppressed_write_error());
         }
         self.inner.write_str(s)
     }
 
     fn clear_line(&self) -> std::io::Result<()> {
         if self.buffer_enabled.load(Ordering::Acquire) {
-            return Ok(());
+            return Err(suppressed_write_error());
         }
         self.inner.clear_line()
     }
 
     fn flush(&self) -> std::io::Result<()> {
         if self.buffer_enabled.load(Ordering::Acquire) {
-            return Ok(());
+            return Err(suppressed_write_error());
         }
         self.inner.flush()
     }
 
     fn move_cursor_up(&self, n: usize) -> std::io::Result<()> {
         if self.buffer_enabled.load(Ordering::Acquire) {
-            return Ok(());
+            return Err(suppressed_write_error());
         }
         self.inner.move_cursor_up(n)
     }
 
     fn move_cursor_down(&self, n: usize) -> std::io::Result<()> {
         if self.buffer_enabled.load(Ordering::Acquire) {
-            return Ok(());
+            return Err(suppressed_write_error());
         }
         self.inner.move_cursor_down(n)
     }
 
     fn move_cursor_left(&self, n: usize) -> std::io::Result<()> {
         if self.buffer_enabled.load(Ordering::Acquire) {
-            return Ok(());
+            return Err(suppressed_write_error());
         }
         self.inner.move_cursor_left(n)
     }
 
     fn move_cursor_right(&self, n: usize) -> std::io::Result<()> {
         if self.buffer_enabled.load(Ordering::Acquire) {
-            return Ok(());
+            return Err(suppressed_write_error());
         }
         self.inner.move_cursor_right(n)
     }

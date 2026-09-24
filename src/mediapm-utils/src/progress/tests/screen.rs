@@ -396,3 +396,40 @@ fn screen_implements_the_screen_api() {
     assert_eq!(bar.snapshot().position, 1, "the trait hands back a real handle for a live screen");
     screen.join();
 }
+
+/// A draw released after the gate discarded a frame must not unwind rows the terminal never received.
+///
+/// This is the write gate's success-reporting contract, measured on the production draw path ([`terminal_with_gate`]).  `indicatif` writes the height it drew back into the draw target at the very end of `DrawState::draw_to_term` (`*bar_count = real_height + shift`, `indicatif-0.17.11/src/draw_target.rs:572`), so a discarded draw that reported success left the target believing the terminal held a frame it never saw.  The first draw released afterwards consumed those phantom rows — `move_cursor_up(n - 1)` followed by one `clear_line` per row — which lands on whatever is really on them, here the previous screen's committed frame.
+///
+/// The assertion is on the operations the gate released, not on the grid: `InMemoryTerm` keeps no scrollback and has no public setter, so from `contents()` alone a row erased here and a row pushed off the top are indistinguishable.  Only the ops the gate lets through can tell them apart — a phantom unwind emits clears no frame of this screen drew, and the first released draw must therefore contain none.
+///
+/// `ROWS - 1` capacity is the two-screen fit used by the rest of this module: a screen's frame is one line per reserved slot.
+#[test]
+fn gated_second_screen_does_not_unwind_the_discarded_screens_rows() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_gate(&term, ROWS as usize - 1);
+    let first = terminal.screen().build();
+    first.add_bar(1, "alpha").finish_success();
+    terminal.tick();
+    first.join();
+    // Everything up to the commit is the first screen's own business; the ops
+    // under test are the ones the second screen's first release emits.
+    let _ = term.moves_since_last_check();
+
+    let second = terminal.screen().build();
+    second.add_bar(1, "beta").finish_success();
+    terminal.tick();
+
+    let ops = term.moves_since_last_check();
+    // A draw is one op block ending at its `Flush`; the first one belongs to the
+    // window `add_bar` opens, which is the earliest release after the commit.
+    let first_draw = ops.split("Flush").next().unwrap_or_default();
+    assert!(
+        !first_draw.contains("Up("),
+        "the first released draw moved the cursor up over rows it never drew: {ops}"
+    );
+    assert!(
+        !first_draw.contains("Clear"),
+        "the first released draw cleared rows it never drew: {ops}"
+    );
+}
