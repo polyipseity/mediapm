@@ -27,9 +27,7 @@ use crate::config::hierarchy_types::{
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
-use crate::output::progress::{
-    ProgressBarApi, ProgressScreen, ProgressScreenApi, ProgressTerminal,
-};
+use crate::output::progress::{ProgressBarApi, ProgressBarHandle, ProgressScreenApi};
 use crate::paths::MediaPmPaths;
 use crate::tools::workflows::{
     resolve_ffmpeg_slot_limits, resolve_media_variant_output_binding_with_limits,
@@ -183,40 +181,33 @@ pub async fn sync_hierarchy(
     let worker_count = hierarchy_worker_count();
     let semaphore = Arc::new(Semaphore::new(worker_count));
 
-    // Use the caller-provided overall bar if available, otherwise create one
-    // from the progress group or from a local fallback group.
-    //
-    // The local fallback group owns its terminal, and the terminal must outlive
-    // every frame that group draws: `ProgressTerminal::drop` finalizes the
-    // renderer, after which ticks are no-ops. Bind it for the rest of the
-    // function and release it once the group below is joined.
-    let mut owned_terminal: Option<ProgressTerminal> = None;
-    let (owned_group, pb): (Option<ProgressScreen>, Arc<dyn ProgressBarApi>) =
-        if let Some(bar) = overall_bar {
-            // Caller owns the overall bar — set the real entry count.
-            bar.set_total(flattened.len() as u64);
-            bar.set_truncation(Arc::new(MaterializationBarLabel {
-                phase: "mat".to_string(),
-                entry_name: "materializing".to_string(),
-                ..Default::default()
-            }));
-            (None, bar)
-        } else if let Some(ref pg) = progress_group {
-            let bar = pg.add_bar(flattened.len() as u64, "materializing [mat]");
-            bar.set_truncation(Arc::new(MaterializationBarLabel {
-                phase: "mat".to_string(),
-                entry_name: "materializing".to_string(),
-                ..Default::default()
-            }));
-            (None, bar)
-        } else {
-            let terminal = ProgressTerminal::builder().dynamic_height(true).build();
-            let g = terminal.screen().build();
-            let p: Arc<dyn ProgressBarApi> =
-                Arc::new(g.add_bar(flattened.len() as u64, "materializing [mat]"));
-            owned_terminal = Some(terminal);
-            (Some(g), p)
-        };
+    // The phase's bars belong to the caller's screen, which the sync derives
+    // from its single terminal: this function never builds a screen or a
+    // terminal of its own, because a phase with its own draw target is the
+    // defect the one-terminal-per-sync contract removes.
+    let pb: Arc<dyn ProgressBarApi> = if let Some(bar) = overall_bar {
+        // Caller owns the overall bar — set the real entry count.
+        bar.set_total(flattened.len() as u64);
+        bar.set_truncation(Arc::new(MaterializationBarLabel {
+            phase: "mat".to_string(),
+            entry_name: "materializing".to_string(),
+            ..Default::default()
+        }));
+        bar
+    } else if let Some(ref pg) = progress_group {
+        let bar = pg.add_bar(flattened.len() as u64, "materializing [mat]");
+        bar.set_truncation(Arc::new(MaterializationBarLabel {
+            phase: "mat".to_string(),
+            entry_name: "materializing".to_string(),
+            ..Default::default()
+        }));
+        bar
+    } else {
+        // Neither a screen nor an overall handle: the caller asked for no
+        // progress output. An inert handle draws nowhere, so the phase stays
+        // callable without progress and still adds no draw target.
+        Arc::new(ProgressBarHandle::disabled())
+    };
 
     let mut join_set = tokio::task::JoinSet::new();
     let document_arc = Arc::new(document.clone());
@@ -286,10 +277,6 @@ pub async fn sync_hierarchy(
     } else {
         pb.finish_success();
     }
-    if let Some(g) = owned_group {
-        g.join();
-    }
-    drop(owned_terminal);
     if let Some(e) = materialize_error {
         return Err(e);
     }
