@@ -48,7 +48,7 @@ struct TerminalInner {
     /// Injectable time source (real wall clock or test double).
     time_source: Arc<dyn TimeSource>,
     /// Optional JSONL debug sink for bar-state snapshots.
-    debug_sink: Option<ProgressDebugSink>,
+    debug_sink: Option<Arc<ProgressDebugSink>>,
     /// One-shot flag: has the first-draw pre-roll (newline scroll) been
     /// performed?  True after the first frame renders.
     pre_rolled: std::sync::atomic::AtomicBool,
@@ -90,7 +90,7 @@ pub struct ProgressTerminalBuilder<S = NoOverall> {
     dynamic_height: bool,
     time_source: Arc<dyn TimeSource>,
     pre_roll_term: Option<Box<dyn TermLike>>,
-    debug_sink: Option<ProgressDebugSink>,
+    debug_sink: Option<Arc<ProgressDebugSink>>,
     ticker_enabled: bool,
     _state: PhantomData<S>,
 }
@@ -182,7 +182,7 @@ macro_rules! impl_terminal_builder_config {
             /// Attach a JSONL debug sink for progress bar state snapshots.
             #[must_use]
             pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
-                self.debug_sink = Some(sink);
+                self.debug_sink = Some(Arc::new(sink));
                 self
             }
 
@@ -664,15 +664,70 @@ impl ProgressScreen {
     /// [`InMemoryTerm`](indicatif::InMemoryTerm) where the timer
     /// thread does not run).
     pub fn tick(&self) {
-        if let Some(ref renderer) = self.renderer {
-            renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tick();
-        }
+        let Some(ref renderer) = self.renderer else { return };
+        super::terminal::run_terminal_frame(renderer);
     }
 }
 
 impl Drop for ProgressScreen {
     fn drop(&mut self) {
         self.join();
+    }
+}
+
+/// Execute one frame on the live screen's renderer.
+///
+/// Suppresses the write gate, recomputes the per-screen layout, handles
+/// terminal resize, syncs all dirty slots (including rate/ETA computation
+/// and debug emission), performs the one-shot pre-roll, then draws once
+/// by opening the gate and ticking active bars.
+///
+/// This is the single frame entry point for [`ProgressScreen::tick`].
+/// The renderer's own [`tick`](ProgressRenderer::tick) method is used
+/// only by the ticker thread for autonomous animation.
+pub(crate) fn run_terminal_frame(renderer: &std::sync::Mutex<ProgressRenderer>) {
+    // Recompute per-screen layout.
+    {
+        let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        r.recompute_layout();
+    }
+
+    // Handle terminal resize.
+    let resized = {
+        let mut r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        r.maybe_adjust_for_resize()
+    };
+    if resized {
+        let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for slot in &r.slots {
+            if let Some(ref source) = *slot.source.borrow() {
+                source.dirty.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+    }
+
+    // Sync all dirty slots (rate/ETA, debug emission).
+    {
+        let mut r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        r.sync_all_dirty_slots(resized);
+    }
+
+    // Pre-roll (one-shot, bypasses buffer).
+    {
+        let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        r.pre_roll_if_needed();
+    }
+
+    // Draw: tick active bars (gate opened implicitly by indicatif).
+    {
+        let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for slot in &r.slots {
+            if let Some(ref source) = *slot.source.borrow()
+                && !source.is_finished()
+            {
+                slot.bar.tick();
+            }
+        }
     }
 }
 

@@ -62,7 +62,7 @@ pub struct ProgressGroupBuilder<S = NoOverall> {
     dynamic_height: bool,
     time_source: Arc<dyn TimeSource>,
     pre_roll_term: Option<Box<dyn TermLike>>,
-    debug_sink: Option<ProgressDebugSink>,
+    debug_sink: Option<Arc<ProgressDebugSink>>,
     ticker_enabled: bool,
     _state: PhantomData<S>,
 }
@@ -175,7 +175,7 @@ macro_rules! impl_builder_config {
             /// Attach a JSONL debug sink for progress bar state snapshots.
             #[must_use]
             pub fn with_progress_debug_sink(mut self, sink: ProgressDebugSink) -> Self {
-                self.debug_sink = Some(sink);
+                self.debug_sink = Some(Arc::new(sink));
                 self
             }
 

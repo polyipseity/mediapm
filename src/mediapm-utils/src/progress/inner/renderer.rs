@@ -105,7 +105,7 @@ pub(crate) struct SharedState {
     /// field layout — the client does.
     truncation: RwLock<Option<Arc<dyn crate::progress::BarLabelTruncation>>>,
     status: AtomicU8,
-    dirty: AtomicBool,
+    pub(crate) dirty: AtomicBool,
     disabled: AtomicBool,
     /// Visual style for the bar (see [`BarStyle`]). Defaults to
     /// [`StepCount`](BarStyle::StepCount); set to
@@ -234,7 +234,7 @@ impl SharedState {
         *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") = Some(elapsed);
     }
 
-    fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         self.status.load(Ordering::Relaxed) != 0
     }
 
@@ -498,12 +498,12 @@ impl TrackedHandle {
 // ---- ProgressRenderer + ProgressGroup (rendering + combined) ----------
 
 /// A single slot in the renderer's fixed-size grid.
-struct RenderedSlot {
+pub(crate) struct RenderedSlot {
     /// The indicatif [`ProgressBar`] that draws to the terminal.
-    bar: ProgressBar,
+    pub(crate) bar: ProgressBar,
     /// Optional tracking state this slot is currently bound to.
     /// `None` means the slot is blank (unused).
-    source: RefCell<Option<Arc<SharedState>>>,
+    pub(crate) source: RefCell<Option<Arc<SharedState>>>,
     /// Cached last values pushed to the bar, used to skip redundant
     /// indicatif calls and reduce terminal flicker.
     cache: SlotCache,
@@ -530,7 +530,7 @@ struct RenderedSlot {
 ///    handles need display space.
 pub struct ProgressRenderer {
     inner: MultiProgress,
-    slots: Vec<RenderedSlot>,
+    pub(crate) slots: Vec<RenderedSlot>,
     has_overall: bool,
     dim_source: Arc<dyn DimensionSource>,
     last_width: Option<u16>,
@@ -568,7 +568,7 @@ pub struct ProgressRenderer {
     pre_roll_term: Option<Box<dyn TermLike>>,
 
     /// Optional JSONL debug sink — emits bar-state snapshots on every tick.
-    debug_sink: Option<ProgressDebugSink>,
+    debug_sink: Option<Arc<ProgressDebugSink>>,
 
     /// Current uniform prefix width applied to every visible bar this frame.
     /// Recomputed each tick from the max measured prefix across bound slots,
@@ -640,7 +640,7 @@ impl ProgressRenderer {
         gate: WriteGate,
         time_source: Arc<dyn TimeSource>,
         pre_roll_term: Option<Box<dyn TermLike>>,
-        debug_sink: Option<ProgressDebugSink>,
+        debug_sink: Option<Arc<ProgressDebugSink>>,
     ) -> Self {
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity {
@@ -693,7 +693,7 @@ impl ProgressRenderer {
         gate: WriteGate,
         time_source: Arc<dyn TimeSource>,
         pre_roll_term: Option<Box<dyn TermLike>>,
-        debug_sink: Option<ProgressDebugSink>,
+        debug_sink: Option<Arc<ProgressDebugSink>>,
     ) -> (Self, Arc<SharedState>) {
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity.saturating_sub(1) {
@@ -765,7 +765,7 @@ impl ProgressRenderer {
 
     /// Re-configure the bar at slot index `i` to reflect its current
     /// tracked source (or blank state if unbound).
-    fn sync_slot(&self, i: usize) {
+    pub(crate) fn sync_slot(&self, i: usize) {
         let slot = &self.slots[i];
         if let Some(ref source) = *slot.source.borrow() {
             let snap = source.snapshot();
@@ -920,7 +920,7 @@ impl ProgressRenderer {
     /// is stored in the `prefix_w`/`suffix_w` cells and every bound slot is
     /// re-synced so all bars share the same alignment width — short labels
     /// no longer waste space and long labels no longer overflow the bar.
-    fn recompute_layout(&self) {
+    pub(crate) fn recompute_layout(&self) {
         let mut max_prefix = 0usize;
         let mut max_suffix = 0usize;
         for (i, slot) in self.slots.iter().enumerate() {
@@ -1104,6 +1104,152 @@ impl ProgressRenderer {
                 sink.emit(&snapshot);
             }
         });
+    }
+
+    /// Emit a debug snapshot of all bar states to the debug sink.
+    ///
+    /// Called by [`run_terminal_frame`](super::terminal::run_terminal_frame)
+    /// after all slots are synced, so the snapshot reflects the final
+    /// per-frame state.  No-op when no debug sink is configured.
+    pub(crate) fn emit_debug_snapshot(&self) {
+        let Some(ref sink) = self.debug_sink else {
+            return;
+        };
+        let bars: Vec<DebugSlotState> = self
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                let (bound, snap) = match slot.source.borrow().as_ref() {
+                    Some(s) => (true, s.snapshot()),
+                    None => (
+                        false,
+                        TrackSnapshot {
+                            position: 0,
+                            total: 0,
+                            label: String::new(),
+                            prefix: String::new(),
+                            prefix_components: PrefixComponents::default(),
+                            suffix: String::new(),
+                            suffix_components: SuffixComponents::default(),
+                            status: TrackStatus::Active,
+                            elapsed: Duration::ZERO,
+                        },
+                    ),
+                };
+                let rate = if bound && snap.status == TrackStatus::Active {
+                    self.slots_timing[i].rate
+                } else {
+                    0.0
+                };
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "progress ETA math tolerates u64 to f64 precision loss"
+                )]
+                let eta = if bound
+                    && snap.status == TrackStatus::Active
+                    && snap.total > snap.position
+                    && self.slots_timing[i].rate > 0.0
+                {
+                    Some((snap.total - snap.position) as f64 / self.slots_timing[i].rate)
+                } else {
+                    None
+                };
+                DebugSlotState {
+                    slot: i,
+                    bound,
+                    label: snap.label.clone(),
+                    prefix: snap.prefix.clone(),
+                    position: snap.position,
+                    total: snap.total,
+                    status: format!("{:?}", snap.status),
+                    elapsed_secs: snap.elapsed.as_secs_f64(),
+                    rate_bytes_per_sec: rate,
+                    eta_secs: eta,
+                    suffix: snap.suffix.clone(),
+                    dirty: slot
+                        .source
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|s| s.dirty.load(Ordering::Acquire)),
+                }
+            })
+            .collect();
+        let snapshot = DebugTickSnapshot {
+            r#type: "tick".to_string(),
+            tick: sink.tick_count.load(Ordering::Relaxed),
+            elapsed_secs: self.time_source.now().duration_since(sink.start).as_secs_f64(),
+            bars,
+        };
+        sink.emit(&snapshot);
+    }
+
+    /// Sync all dirty render slots to their indicatif bars.
+    ///
+    /// Computes rate/ETA for active slots, calls [`sync_snapshot_to_bar`]
+    /// for each dirty slot, and applies finish/abandon visual state for
+    /// completed slots. Emits a debug snapshot when a debug sink is
+    /// configured.
+    ///
+    /// Called by [`run_terminal_frame`](super::terminal::run_terminal_frame)
+    /// after layout recomputation and resize handling.
+    pub(crate) fn sync_all_dirty_slots(&mut self, resized: bool) {
+        for (i, slot) in self.slots.iter().enumerate() {
+            if let Some(ref source) = *slot.source.borrow() {
+                let dirty = resized || source.dirty.swap(false, Ordering::AcqRel);
+                if !dirty {
+                    continue;
+                }
+                let snap = source.snapshot();
+
+                let rate_str: Option<String> = if snap.status == TrackStatus::Active {
+                    if snap.position != self.slots_timing[i].prev_position {
+                        let now = self.time_source.now();
+                        let dt =
+                            now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
+                        if dt > 0.001 {
+                            #[allow(clippy::cast_precision_loss)]
+                            let current =
+                                (snap.position.saturating_sub(self.slots_timing[i].prev_position))
+                                    as f64
+                                    / dt;
+                            self.slots_timing[i].rate =
+                                self.slots_timing[i].rate * 0.9 + current * 0.1;
+                            self.slots_timing[i].prev_position = snap.position;
+                            self.slots_timing[i].prev_instant = now;
+                        }
+                    }
+                    Some(format_rate(self.slots_timing[i].rate))
+                } else {
+                    None
+                };
+
+                let eta_str = if snap.status == TrackStatus::Active
+                    && snap.total > snap.position
+                    && self.slots_timing[i].rate > 0.0
+                {
+                    #[allow(clippy::cast_precision_loss)]
+                    let remaining = (snap.total - snap.position) as f64 / self.slots_timing[i].rate;
+                    Some(format_eta(remaining))
+                } else {
+                    None
+                };
+
+                self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), eta_str.as_deref());
+                if snap.status == TrackStatus::Active {
+                    // bar.tick() called in the draw phase.
+                } else if source.is_cleared() {
+                    slot.bar.set_style(blank_bar_style());
+                    slot.bar.set_message(" ");
+                    slot.bar.set_prefix("");
+                } else {
+                    self.finish_slot(i, snap.status);
+                }
+            }
+        }
+
+        // Emit debug snapshot after all slots are synced.
+        self.emit_debug_snapshot();
     }
 
     /// Execute a frame: suppress writes, run `mutate`, advance spinners,
@@ -1337,7 +1483,7 @@ impl ProgressRenderer {
     /// remaining rows below it, leaving visible content above exposed. After
     /// the blank lines the cursor returns to the top so indicatif can
     /// overwrite the now-empty visible area.
-    fn pre_roll_if_needed(&self) {
+    pub(crate) fn pre_roll_if_needed(&self) {
         let Some(ref term) = self.pre_roll_term else {
             return;
         };
@@ -1360,7 +1506,7 @@ impl ProgressRenderer {
     /// crosses the 60-column compact/full template boundary.
     ///
     /// Returns `true` if any dimension actually changed.
-    fn maybe_adjust_for_resize(&mut self) -> bool {
+    pub(crate) fn maybe_adjust_for_resize(&mut self) -> bool {
         let (rows, cols) = self.dim_source.dimensions();
         let mut changed = false;
 
