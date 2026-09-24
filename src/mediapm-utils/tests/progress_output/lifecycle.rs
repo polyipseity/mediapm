@@ -723,23 +723,19 @@ impl TermLike for PreRollRecorder {
     }
 }
 
-/// The overall bar's progress and status cannot be driven through the handle the
-/// screen builder returns.
+/// Driving the overall handle returned by the screen builder moves the rendered overall bar: the handle and the renderer's bottom slot share one state.
 ///
-/// KNOWN DEFECT, reported rather than fixed here (the task's scope is this test
-/// directory): `TerminalScreenBuilder<HasOverall>::build()` builds the returned
-/// handle from a fresh state while the renderer's overall slot keeps the state
-/// `add_overall` created and discarded, so `advance`, `set_position`, `set_total`
-/// and every `finish_*` on that handle are invisible. This test pins the current
-/// rendered output, so the fix lands as a deliberate change to it rather than
-/// silently. Tests elsewhere in this suite therefore use the overall bar as a
-/// layout anchor only.
+/// Regression guard. `TerminalScreenBuilder<HasOverall>::build()` used to return a handle built from a fresh state while the renderer's overall slot kept the state `add_overall` had created inside `build_screen`, so `advance`, `set_position`, `set_total` and every `finish_*` on the handle were invisible and the overall bar stayed at zero for the whole run.
 #[test]
-fn overall_handle_progress_does_not_reach_the_renderer() {
+fn overall_handle_progress_reaches_the_renderer() {
     let (terminal, term) = mk_with_capacity(4, 80, 3);
     let (screen, overall) = terminal.screen().with_overall("overall", 4).build();
     let child = screen.add_bar(2, "child");
     child.advance(2);
+    screen.tick();
+
+    let before = line_with(&term.contents(), "overall").to_string();
+    assert!(before.contains("0/4"), "the overall is still undriven: {before}");
 
     overall.set_position(4);
     overall.finish_success();
@@ -747,17 +743,20 @@ fn overall_handle_progress_does_not_reach_the_renderer() {
 
     let contents = term.contents();
     let overall_line = line_with(&contents, "overall").to_string();
-    assert!(overall_line.contains("0/4"), "the overall still reports position 0: {overall_line}");
-    assert!(overall_line.contains("0/d"), "and is still active, not finished: {overall_line}");
-    assert!(contents.contains("2/2"), "while the child's own progress does render: {contents:?}");
+    assert!(
+        overall_line.contains("4/4"),
+        "the overall reports the driven position: {overall_line}"
+    );
+    assert!(!overall_line.contains("0/d"), "and is finished, not still active: {overall_line}");
+    assert!(contents.contains("2/2"), "while the child's own progress still renders: {contents:?}");
     assert_eq!(
         &contents,
         concat!(
             "\n",
             "\n",
-            "⠼       child ███████████████████████████████████████████████████  2/2 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/4 0s 0/d"
+            "⠴       child ██████████████████████████████████████████████████████  2/2 0s 0/d\n",
+            "⠏     overall ██████████████████████████████████████████████████████  4/4 0s"
         ),
-        "overall_handle_progress_does_not_reach_the_renderer"
+        "overall_handle_progress_reaches_the_renderer"
     );
 }

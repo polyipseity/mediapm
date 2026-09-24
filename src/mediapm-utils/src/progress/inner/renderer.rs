@@ -746,26 +746,32 @@ impl ProgressRenderer {
         )
     }
 
-    /// Add an overall aggregate bar pinned at the bottom slot.
+    /// Add an overall aggregate bar pinned at the bottom slot, drawing from
+    /// `state`.
     ///
-    /// Returns an [`Arc<SharedState>`] for the overall bar so the caller
-    /// can advance/finish it. The bar is appended to the slot grid before
-    /// any existing overall bar (or at the end if none exists).
-    pub(crate) fn add_overall(&mut self, label: &str, total: u64) -> Arc<SharedState> {
-        let overall_state =
-            Arc::new(SharedState::with_time_source(total, label, Arc::clone(&self.time_source)));
+    /// `state` is the caller's own handle state, and the new slot adopts that
+    /// very `Arc` as its render source: the caller's handle and the drawn
+    /// overall bar are two views of one state, so every mutation made through
+    /// the handle reaches the next frame. The bar's total and prefix are read
+    /// from `state`, which stays the single source of truth for the overall bar
+    /// — this method never fabricates a second state of its own.
+    pub(crate) fn add_overall(&mut self, state: Arc<SharedState>) {
+        let total = state.total.load(Ordering::Acquire);
+        let label = {
+            let guard = state.label.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.clone()
+        };
         let inner = ProgressBar::new(total);
         let overall_bar = with_slot_finish_policy(self.inner.add(inner));
         apply_overall_bar_style(&overall_bar, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH);
-        overall_bar.set_prefix(label.to_string());
+        overall_bar.set_prefix(label);
         self.slots.push(RenderedSlot {
             bar: overall_bar,
-            source: RefCell::new(Some(overall_state.clone())),
+            source: RefCell::new(Some(state)),
             cache: SlotCache::new(),
         });
         self.has_overall = true;
         self.slots_timing.push(SlotTiming::new(&*self.time_source));
-        overall_state
     }
 
     /// Re-configure the bar at slot index `i` to reflect its current

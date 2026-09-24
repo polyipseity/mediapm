@@ -473,7 +473,9 @@ impl<'a> TerminalScreenBuilder<'a, NoOverall> {
     /// Panics when a screen is already live on the terminal.
     #[must_use]
     pub fn build(self) -> ManagedScreen {
-        build_screen(self.terminal, self.overall)
+        // A `NoOverall` builder never carries an overall spec, so no overall
+        // bar is registered and no handle is returned.
+        build_screen(self.terminal, None)
     }
 
     /// Add an overall aggregate bar pinned at the bottom slot.
@@ -494,22 +496,24 @@ impl<'a> TerminalScreenBuilder<'a, HasOverall> {
     /// Build a screen with the overall bar pinned at the bottom slot.
     ///
     /// Returns both the [`ManagedScreen`] and a [`ProgressBarHandle`] for the
-    /// overall bar.
+    /// overall bar. The handle wraps the very [`SharedState`] the renderer's
+    /// bottom slot draws from, so driving the handle moves the rendered overall
+    /// bar; a handle whose state the renderer never read would render a
+    /// permanently idle bar.
     ///
     /// # Panics
     ///
     /// Panics when a screen is already live on the terminal.
     #[must_use]
     pub fn build(self) -> (ManagedScreen, ProgressBarHandle) {
-        let overall = self.overall.expect("HasOverall builder must have overall set");
-        let screen = build_screen(self.terminal, Some(overall.clone()));
-        let handle = ProgressBarHandle {
-            state: Arc::new(SharedState::with_time_source(
-                overall.1,
-                &overall.0,
-                Arc::clone(&self.terminal.inner.time_source),
-            )),
-        };
+        let (label, total) = self.overall.expect("HasOverall builder must have overall set");
+        let state = Arc::new(SharedState::with_time_source(
+            total,
+            &label,
+            Arc::clone(&self.terminal.inner.time_source),
+        ));
+        let handle = ProgressBarHandle { state: Arc::clone(&state) };
+        let screen = build_screen(self.terminal, Some(state));
         (screen, handle)
     }
 }
@@ -521,11 +525,16 @@ impl<'a> TerminalScreenBuilder<'a, HasOverall> {
 /// into the same draw target and frames are buffered as a unit. The screen also
 /// inherits the terminal's dimension source, time source and JSONL debug sink.
 ///
+/// `overall` is the caller's overall handle state; when `Some`, the renderer
+/// registers it as the pinned bottom slot, adopting that exact `Arc` so the
+/// caller's handle drives the drawn bar. `None` leaves the slot grid without an
+/// overall bar.
+///
 /// # Panics
 ///
 /// Panics when a screen is already live on this terminal: two live screens
 /// would mean two renderers driving one [`MultiProgress`].
-fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> ManagedScreen {
+fn build_screen(terminal: &ProgressTerminal, overall: Option<Arc<SharedState>>) -> ManagedScreen {
     // Check that no screen is live.
     {
         let mut state =
@@ -552,8 +561,8 @@ fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> 
             terminal.inner.debug_sink.clone(),
         );
         r.dynamic_height = terminal.dynamic_height;
-        if let Some((ref label, total)) = overall {
-            r.add_overall(label, total);
+        if let Some(state) = overall {
+            r.add_overall(state);
         }
         let renderer = Arc::new(Mutex::new(r));
 

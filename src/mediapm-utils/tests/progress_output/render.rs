@@ -75,6 +75,68 @@ fn success_child_with_overall_renders_full_bar() {
     );
 }
 
+/// A successful child and a successful overall bar both render full bars and
+/// full counts.
+///
+/// Restored from the pre-rebuild suite (`two_lines.rs:78`, inventory
+/// `two_lines_exact_both_finished`), which could not be carried over while the
+/// overall handle was disconnected from the renderer.
+#[test]
+fn both_child_and_overall_finish_render_exactly() {
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, term) = mk_with_capacity_and_ts(3, 80, 2, &ts);
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
+    let child = screen.add_bar(5, "child");
+    child.set_position(5);
+    ts.advance(Duration::from_secs(1));
+    screen.tick();
+    child.finish_success();
+    overall.advance(3);
+    overall.finish_success();
+    ts.advance(Duration::from_secs(1));
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "⠏       child ██████████████████████████████████████████████████████████  5/5 1s\n",
+            "⠏     overall ██████████████████████████████████████████████████████████  3/3 1s"
+        ),
+        "both_child_and_overall_finish_render_exactly"
+    );
+}
+
+/// A failed overall bar carries the `[F]` marker while its child still renders
+/// as a success.
+///
+/// Restored from the pre-rebuild suite (`two_lines.rs:102`, inventory
+/// `two_lines_exact_overall_abandoned`, an error variant byte-identical to
+/// `two_lines.rs:125`). The overall's failure state only reaches the frame
+/// through the handle the builder returns.
+#[test]
+fn overall_failed_while_child_succeeded_renders_marker() {
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, term) = mk_with_capacity_and_ts(3, 80, 2, &ts);
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
+    let child = screen.add_bar(5, "child");
+    child.set_position(5);
+    ts.advance(Duration::from_secs(1));
+    screen.tick();
+    child.finish_success();
+    overall.finish_error();
+    ts.advance(Duration::from_secs(1));
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "⠏                    child █████████████████████████████████████████████  5/5 1s\n",
+            "⠏              [F] overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 1s"
+        ),
+        "overall_failed_while_child_succeeded_renders_marker"
+    );
+}
+
 /// A custom suffix survives onto a finished, failed bar.
 #[test]
 fn failed_child_custom_suffix_renders() {

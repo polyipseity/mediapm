@@ -204,8 +204,8 @@ fn sequential_consumer_keeps_finished_bars() {
             "\n",
             "\n",
             "⠏       fetch ███████████████████████████████████████████████████  5/5 0s\n",
-            "⠏       parse ███████████████████████████████████████████████████  2/2 0s\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"
+            "⠏       parse ██████████████████████████████████████████████████████████  2/2 0s\n",
+            "⠏     overall ██████████████████████████████████████████████████████████  3/3 0s"
         ),
         "sequential_consumer_keeps_finished_bars"
     );
@@ -234,10 +234,10 @@ fn workers_with_mixed_finish_states() {
         &term.contents(),
         concat!(
             "\n",
-            "⠏                  worker-a █████████████████████████████████████  2/2 0s\n",
-            "⠏              [F] worker-b ██████████████████░░░░░░░░░░░░░░░░░░░  1/2 0s\n",
-            "⠏              [F] worker-c ██████████████████░░░░░░░░░░░░░░░░░░░  1/2 0s\n",
-            "⠹                   overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"
+            "⠏                  worker-a ████████████████████████████████████████████  2/2 0s\n",
+            "⠏              [F] worker-b ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  1/2 0s\n",
+            "⠏              [F] worker-c ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  1/2 0s\n",
+            "⠏                   overall ████████████████████████████████████████████  3/3 0s"
         ),
         "workers_with_mixed_finish_states"
     );
@@ -265,7 +265,7 @@ fn workers_with_interleaved_advances() {
             "\n",
             "⠸        fast ███████████████████████████████████████░░░░░░░░░░  8/10 1s 48/m 2s\n",
             "⠴        slow ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/10 1s 18/m\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 1s 0/d"
+            "⠸     overall █████████████████████████████████████████████████  11/10 1s 1.1/s"
         ),
         "workers_with_interleaved_advances"
     );
@@ -360,5 +360,58 @@ fn repeated_position_setting_yields_last_value() {
             "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d"
         ),
         "repeated_position_setting_yields_last_value"
+    );
+}
+
+/// The conductor CLI's step-progress callback pattern: the overall bar is
+/// created with an unknown total, its total is set once the step count is
+/// known, and each step then writes an absolute position.
+///
+/// Restored from the pre-rebuild suite (`progress_group.rs:723`, inventory
+/// `consumer_lifecycle_conductor_cli`), which could not be carried over while
+/// the overall handle was disconnected from the renderer. The original asserted
+/// only that the overall's line was present and non-empty after `join`; the
+/// frames below pin the driven values instead, so a disconnected handle fails
+/// the test rather than passing it.
+#[test]
+fn conductor_cli_step_progress_lifecycle() {
+    let (terminal, term) = mk_with_capacity(5, 80, 4);
+    let (screen, overall) = terminal.screen().with_overall("steps", 0).build();
+
+    overall.set_total(3);
+    overall.set_position(1);
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "⠹     steps █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 0s 0/d"
+        ),
+        "conductor_cli_step_progress_lifecycle/first_step"
+    );
+
+    overall.set_position(3);
+    overall.finish_success();
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "⠏     steps ████████████████████████████████████████████████████████████  3/3 0s"
+        ),
+        "conductor_cli_step_progress_lifecycle/last_step"
+    );
+
+    screen.join();
+    assert_eq!(
+        &term.contents(),
+        concat!("⠏     steps ████████████████████████████████████████████████████████████  3/3 0s"),
+        "conductor_cli_step_progress_lifecycle/after_join"
     );
 }
