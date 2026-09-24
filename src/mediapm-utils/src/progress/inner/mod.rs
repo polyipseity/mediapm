@@ -26,10 +26,10 @@ pub use screen::{HasOverall, NoOverall};
 pub use terminal::{ProgressScreen, ProgressTerminal, ProgressTerminalBuilder};
 
 pub(crate) use debug::detect_progress_debug_env;
-// `BufferedTerm` and `WriteWindow` are re-exported for use by `screen.rs`
-// (via `super::BufferedTerm`) and will be used by `renderer.rs` in C4.
-#[allow(unused_imports)]
-pub(crate) use gate::{BufferedTerm, WriteGate, WriteWindow};
+// `renderer.rs` names `WriteGate` through the `super::WriteGate` path, so it is
+// re-exported here. `BufferedTerm` and `WriteWindow` have no such consumer:
+// `terminal.rs` reaches them through the `gate` module directly.
+pub(crate) use gate::WriteGate;
 // `strip_ansi`/`visible_width` are re-exported so `progress::tests` can reach
 // them via the `super::inner::strip_ansi` path (the `components` submodule is
 // private, so the path only resolves through this re-export). Path-based access
