@@ -455,6 +455,52 @@ fn gated_screen_without_bars_commits_nothing() {
     );
 }
 
+/// The durability of the commit advance is a property of indicatif's draw accounting, and this pins that accounting's observable consequence rather than re-measuring where the committed rows landed.
+///
+/// After a commit, the next screen's first **released** draw must erase nothing: no `Up(`, no `Clear`. That is the observable form of indicatif having recorded no live height for the draws the gate discarded — the store at the end of `DrawState::draw_to_term` (`indicatif-0.17.11/src/draw_target.rs:572`, `*bar_count = real_height + shift`) is unreachable on the `Err` return, because the `?` on each `TermLike` call before it propagates the gate's error first. `MultiState::draw`'s reap adjustment (`adjust_last_line_count(LineAdjust::Keep(..))`, `indicatif-0.17.11/src/multi.rs:352-355`) is what keeps that accounting usable, because it is applied even to a draw that returned `Err`.
+///
+/// Both anchors are load-bearing for the advance and neither is public API: change either and the second screen's first released draw begins by unwinding rows it never drew, growing its erase region back over the committed frame. This assertion fails when that happens instead of letting the regression ship silently. It is the ops dimension, deliberately not another capacity sweep: [`gated_second_screen_keeps_the_committed_frame_across_capacities`] asserts where the committed rows end up, this asserts that nothing is erased on the way.
+///
+/// The commit itself is pinned here too, as the last write of its window: one CR+LF and nothing after it.
+#[test]
+fn gated_commit_is_one_write_and_the_next_draw_erases_nothing() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_gate(&term, 4);
+    let first = terminal.screen().build();
+    first.add_bar(1, "alpha").finish_success();
+    terminal.tick();
+    let _ = term.moves_since_last_check();
+
+    first.join();
+
+    let commit_ops = term.moves_since_last_check();
+    assert!(
+        commit_ops.ends_with("Str(\"\\r\\n\")\n"),
+        "the commit must be one CR+LF advance and the last write of its window: {commit_ops}"
+    );
+
+    let second = terminal.screen().build();
+    second.add_bar(1, "beta").finish_success();
+    terminal.tick();
+
+    let ops = term.moves_since_last_check();
+    // A draw is one op block ending at its `Flush`; the first one belongs to the
+    // window `add_bar` opens, which is the earliest release after the commit.
+    let first_draw = ops.split("Flush").next().unwrap_or_default();
+    assert!(
+        first_draw.contains("Str("),
+        "the first released draw must be a real draw, not an empty op block: {ops}"
+    );
+    assert!(
+        !first_draw.contains("Up("),
+        "the first released draw moved the cursor up over rows it never drew: {ops}"
+    );
+    assert!(
+        !first_draw.contains("Clear"),
+        "the first released draw cleared rows it never drew: {ops}"
+    );
+}
+
 /// A committed screen's frame stays on the terminal once the next screen renders.
 ///
 /// This is the visible half of the commit contract ([`ProgressScreenApi::join`]): the frame is handed over permanently, so the next screen's band must start *below* it. `next_screen_draws_below_the_committed_lines` cannot see the failure because it uses the ungated configuration, where every intermediate draw really writes and walks the cursor down the frame. Production draws through the write gate ([`terminal_with_gate`]), where the discarded draws leave the cursor resting on the committed frame's last row, the next frame's band is written starting there, and the following in-place redraw clears the committed row.
