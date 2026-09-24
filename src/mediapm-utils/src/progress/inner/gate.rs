@@ -31,11 +31,11 @@
 //!
 //! The `Err` never escapes this crate: the suppression only ever wraps the
 //! draw target of a [`ProgressTerminal`](super::terminal::ProgressTerminal),
-//! which keeps its `MultiProgress` and every `ProgressBar` private. The two
-//! places in indicatif 0.17.11 that unwrap a draw result —
-//! `MultiState::suspend` (`multi.rs:391`, reached only via
-//! `MultiProgress::suspend`/`ProgressBar::suspend`) and
-//! `ProgressBar::set_tab_width` (`progress_bar.rs:167`) — therefore need an
+//! which keeps its `MultiProgress` and every `ProgressBar` private. The three
+//! places in indicatif 0.17.11 that unwrap a draw result — both of
+//! `MultiState::suspend`'s (`multi.rs:389` for its `clear`, `multi.rs:391` for
+//! its `draw`, reached only via `MultiProgress::suspend`/`ProgressBar::suspend`)
+//! and `ProgressBar::set_tab_width` (`progress_bar.rs:167`) — therefore need an
 //! indicatif handle that no mediapm caller can obtain. No in-tree caller
 //! unwraps a draw result.
 //!
@@ -213,10 +213,23 @@ impl WriteGate {
     /// a terminal that does not translate it, which would start the next
     /// frame's first line in the middle of a row.
     ///
-    /// Call while a write window is open ([`Self::open`]) and after the final
-    /// draw. The write goes straight to the wrapped terminal through this
-    /// gate's own handle, so it cannot be swallowed by the very suppression
-    /// it compensates for.
+    /// # Caller contract
+    ///
+    /// Call this **inside an open write window** ([`Self::open`]) and after
+    /// the frame's final draw. That is a contract on the caller, not an
+    /// invariant this method enforces by construction: the write deliberately
+    /// bypasses the gate (it goes straight to the wrapped terminal through this
+    /// gate's own handle, so it cannot be swallowed by the very suppression it
+    /// compensates for), and it therefore takes effect whether or not a window
+    /// is open. A caller outside a window would emit a terminal write at the
+    /// one moment the gate promises there are none — inside another frame's
+    /// sequence.
+    ///
+    /// Debug builds check the contract, because the gate can already answer
+    /// "is a window open" from the flag it sets: `debug_assert!` on
+    /// [`Self::is_suppressed`], no additional state. The only caller is
+    /// `ProgressRenderer::finalize`, which issues it inside the window it opens
+    /// for the final draw.
     ///
     /// No-op on the no-op gate: with no buffered term there were no discarded
     /// draws, and the terminal saw every draw walk the cursor down the frame.
@@ -225,6 +238,11 @@ impl WriteGate {
     /// discards its own draw error for the same reason).
     pub(crate) fn commit_frame(&self) {
         let Some(term) = &self.committed_frame_term else { return };
+        debug_assert!(
+            !self.is_suppressed(),
+            "WriteGate::commit_frame outside an open write window: the write bypasses \
+             suppression by design, so here it lands inside another frame's sequence"
+        );
         // Best effort by contract: the frame is committed whether or not the
         // terminal accepted the move, and there is no error channel to report
         // it through (see the method docs).

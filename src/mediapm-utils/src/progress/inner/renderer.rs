@@ -1427,8 +1427,10 @@ impl ProgressRenderer {
         // Hand the frame to the terminal for good: the final draw leaves the
         // cursor on the frame's last row, so without this the frame is still
         // the live region and the next screen's frame claims its rows (see
-        // `WriteGate::commit_frame`). Issued here, inside the open write
-        // window, because it is the one write that must not be suppressed.
+        // `WriteGate::commit_frame`). Its caller contract puts it inside an
+        // open write window — the `_guard` opened above holds one for the whole
+        // of this method — because the write bypasses the gate and is the one
+        // write of the commit that must not be suppressed.
         //
         // The advance is conditional on this screen having drawn a frame, and
         // that is not the obvious reading of "nothing was committed, so commit
