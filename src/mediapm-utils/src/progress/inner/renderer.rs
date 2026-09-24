@@ -1395,16 +1395,18 @@ impl ProgressRenderer {
         //
         // TRANSITIONAL — pre-roll now fires once per `ProgressTerminal`, from
         // `build_screen`, before the first bar of the first screen draws. That
-        // covers every terminal-backed screen. The standalone `ProgressScreen`
-        // path still has four live production consumers (the workflow and
-        // materialization screens in `service.rs`, tool sync in
-        // `conductor_bridge/sync/mod.rs`, and materialization in
-        // `materializer/mod.rs`) which therefore lose pre-roll — existing
-        // terminal content is overwritten by their first frame instead of
-        // being scrolled into scrollback. Tasks 4 and 5 migrate those call
-        // sites onto `ProgressTerminal`; do not add a renderer-side pre-roll
-        // fallback to paper over the gap, because one pre-roll owner is the
-        // point of this refactor.
+        // covers every terminal-backed screen, but the standalone
+        // `ProgressScreen` path was not migrated in this task, so the five
+        // production call sites that still build one lose the scroll their
+        // first frame used to perform: the workflow and materialization screens
+        // in `service.rs`, tool sync in `conductor_bridge/sync/mod.rs`,
+        // materialization in `materializer/mod.rs`, and the `conductor run` CLI
+        // in `mediapm-conductor/src/cli.rs` (plus the `conductor_demo`
+        // example). Existing terminal content is overwritten by their first
+        // frame instead of being scrolled into scrollback. Tasks 4 and 5
+        // migrate those call sites onto `ProgressTerminal`; do not add a
+        // renderer-side pre-roll fallback to paper over the gap, because one
+        // pre-roll owner is the point of this refactor.
         // RAII guard: buffer OFF during final draw, re-enabled on drop.
         let _guard = self.gate.open();
         // Finish all bound bars that have reached a terminal state:

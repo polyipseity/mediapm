@@ -76,8 +76,9 @@ impl TerminalInner {
     /// Pre-roll emits blank lines so existing terminal content scrolls into
     /// scrollback before the first bar draws, instead of being overwritten.
     /// It belongs to the terminal rather than a screen: a sync with three
-    /// phase screens must scroll once.  A `None` `pre_roll_term` (a caller
-    /// supplied [`MultiProgress`]) makes this a no-op.
+    /// phase screens must scroll once.  A `None` `pre_roll_term` — set only by
+    /// `ProgressTerminal::disabled` — makes this a no-op; a caller-supplied
+    /// [`MultiProgress`] does not produce `None`.
     fn pre_roll_if_needed(&self) {
         if self.pre_rolled.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return;
