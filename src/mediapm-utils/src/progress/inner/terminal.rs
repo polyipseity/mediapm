@@ -263,6 +263,7 @@ impl ProgressTerminalBuilder {
             capacity: cap,
             dynamic_height: self.dynamic_height,
             ticker_enabled: self.ticker_enabled,
+            enabled: true,
         }
     }
 }
@@ -284,6 +285,15 @@ pub struct ProgressTerminal {
     dynamic_height: bool,
     /// Whether to spawn a ticker thread for each screen.
     ticker_enabled: bool,
+    /// Whether this terminal may create live screens.
+    ///
+    /// `false` only for [`ProgressTerminal::disabled`], whose draw target is
+    /// hidden and whose [`screen`](Self::screen) hands out
+    /// [`ProgressScreen::disabled`] instead of building a renderer. A disabled
+    /// terminal therefore allocates no bars, starts no ticker, writes no
+    /// pre-roll and draws nothing, which is what makes it a `--no-progress`
+    /// building block rather than a live terminal that merely skips pre-roll.
+    enabled: bool,
 }
 
 impl ProgressTerminal {
@@ -295,20 +305,21 @@ impl ProgressTerminal {
 
     /// Create a no-op terminal that produces no terminal output.
     ///
-    /// All screens added via [`screen`](Self::screen) are disabled no-ops.
-    /// Useful in tests where progress is not needed.
+    /// The terminal is inert end to end: its draw target is hidden, its
+    /// [`screen`](Self::screen) builder returns
+    /// [`ProgressScreen::disabled`] (so it allocates no bars and its handles
+    /// are no-ops), and neither pre-roll nor a render ticker ever starts.
+    /// Useful in tests where progress is not needed, and as the `--no-progress`
+    /// building block for callers that must keep adding bars to the screen they
+    /// were handed.
     #[must_use]
     pub fn disabled() -> Self {
-        let (mp, gate) = {
-            let (buffered, gate) = BufferedTerm::new(Box::new(console::Term::stderr()));
-            let mp =
-                MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
-            (mp, gate)
-        };
         Self {
             inner: Arc::new(TerminalInner {
-                mp,
-                gate,
+                // A hidden draw target: even a bar that somehow reached this
+                // terminal's `MultiProgress` would render nowhere.
+                mp: MultiProgress::with_draw_target(ProgressDrawTarget::hidden()),
+                gate: super::gate::WriteGate::new_noop(),
                 state: Mutex::new(TerminalState {
                     screen: None,
                     next_id: 0,
@@ -324,6 +335,7 @@ impl ProgressTerminal {
             capacity: 1,
             dynamic_height: false,
             ticker_enabled: false,
+            enabled: false,
         }
     }
 
@@ -389,11 +401,18 @@ pub struct TerminalScreenBuilder<'a, S = NoOverall> {
 impl<'a> TerminalScreenBuilder<'a, NoOverall> {
     /// Build a screen without an overall bar.
     ///
+    /// A screen built on [`ProgressTerminal::disabled`] is itself disabled: it
+    /// allocates no bar and draws nothing, while still accepting every
+    /// `add_bar` call a `--no-progress` run makes.
+    ///
     /// # Panics
     ///
     /// Panics when a screen is already live on the terminal.
     #[must_use]
     pub fn build(self) -> ProgressScreen {
+        if !self.terminal.enabled {
+            return ProgressScreen::disabled();
+        }
         // A `NoOverall` builder never carries an overall spec, so no overall
         // bar is registered and no handle is returned.
         build_screen(self.terminal, None)
@@ -420,13 +439,20 @@ impl<'a> TerminalScreenBuilder<'a, HasOverall> {
     /// overall bar. The handle wraps the very [`SharedState`] the renderer's
     /// bottom slot draws from, so driving the handle moves the rendered overall
     /// bar; a handle whose state the renderer never read would render a
-    /// permanently idle bar.
+    /// permanently idle bar. On [`ProgressTerminal::disabled`] both are no-ops:
+    /// the screen is [`ProgressScreen::disabled`] and the handle is
+    /// [`ProgressBarHandle::disabled`].
     ///
     /// # Panics
     ///
     /// Panics when a screen is already live on the terminal.
     #[must_use]
     pub fn build(self) -> (ProgressScreen, ProgressBarHandle) {
+        // A disabled terminal has no renderer to register the bottom slot on,
+        // so it hands back the no-op handle rather than a state nothing reads.
+        if !self.terminal.enabled {
+            return (ProgressScreen::disabled(), ProgressBarHandle::disabled());
+        }
         let (label, total) = self.overall.expect("HasOverall builder must have overall set");
         let state = Arc::new(SharedState::with_time_source(
             total,

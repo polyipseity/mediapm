@@ -100,13 +100,29 @@ fn second_live_screen_panics() {
     let _b = t.screen().build();
 }
 
-/// Disabled terminal yields no-op screens that produce no output.
+/// A terminal built by [`ProgressTerminal::disabled`] is inert: its screens are
+/// [`ProgressScreen::disabled`] and every handle they hand out is a no-op.
+///
+/// The handle's `total` is the discriminator: a live screen hands back a handle
+/// carrying the requested total, so a disabled terminal that started building
+/// live screens — the behaviour the name promises is absent — fails here. The
+/// position a no-op handle reports is not part of this contract and is not
+/// asserted (a disabled handle still records it).
 #[test]
 fn disabled_terminal_is_inert() {
     let t = ProgressTerminal::disabled();
     let s = t.screen().build();
-    s.add_bar(3, "x").advance(3);
+    let bar = s.add_bar(3, "x");
+    bar.advance(3);
+    assert_eq!(bar.total(), 0, "a disabled terminal hands out no-op handles");
     s.join();
+
+    // The overall-bar builder is inert too: the handle it returns is the no-op
+    // one, not a `SharedState` no renderer would ever read.
+    let (s, overall) = t.screen().with_overall("overall", 5).build();
+    assert_eq!(overall.total(), 0, "the overall handle must be a no-op too");
+    s.join();
+    t.tick();
 }
 
 /// A bar added to a terminal screen must reach the terminal's draw target.
