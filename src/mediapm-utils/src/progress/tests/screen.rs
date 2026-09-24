@@ -3,12 +3,24 @@
 //! Joining a screen must both *retain* the lines it drew (they become
 //! committed output the terminal never touches again) and *release* the slots
 //! that screen reserved on the shared draw target, so the next screen of a
-//! sync renders in full below the committed frame.  Both halves are asserted
-//! here: the retention tests below compare `contents()` across a later tick,
-//! and `second_screen_renders_at_full_capacity` proves release by drawing a
-//! second screen at the terminal's own height.
+//! sync renders in full below the committed frame.
+//!
+//! Retention is asserted by [`retired_screen_cannot_repaint_the_committed_frame`],
+//! the only test here that fails when the commit is reverted: a committed bar
+//! must be unreachable through the handle that used to own it, so mutating that
+//! handle cannot repaint the committed line.
+//! [`next_screen_draws_below_the_committed_lines`] is deliberately *weaker* —
+//! at `capacity == ROWS - 1` a leaked bar and a committed one produce
+//! byte-identical `contents()`, so it passes with and without the fix (see its
+//! own doc).
+//!
+//! Release is asserted twice: [`second_screen_renders_at_full_capacity`] draws
+//! a second screen that needs every row (a leaked reservation clips it), and
+//! [`release_holds_with_the_ticker_running`] repeats that with the production
+//! daemon ticker running instead of a manually driven `tick`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::super::{DimensionSource, ProgressTerminal, TestDimensionSource};
 use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
@@ -29,16 +41,28 @@ const COLS: u16 = 80;
 /// resize decisions match the captured frames, and pre-roll writes into a
 /// dedicated capture: its newlines and cursor moves must not land in `term`,
 /// which the assertions read, nor on fd 2.
-fn terminal_with_term(term: &InMemoryTerm, capacity: usize) -> ProgressTerminal {
+///
+/// `ticker_enabled` starts the daemon ticker thread, which is the production
+/// frame driver.  Tests that call `tick()` directly leave it off so frames are
+/// deterministic, and [`release_holds_with_the_ticker_running`] turns it on
+/// because a manual `tick` cannot exercise the ticker's own strong clone of the
+/// renderer.
+fn terminal_with(term: &InMemoryTerm, capacity: usize, ticker_enabled: bool) -> ProgressTerminal {
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
     ProgressTerminal::builder()
         .with_multi_progress(MultiProgress::with_draw_target(target))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .capacity(capacity)
-        .with_ticker_enabled(false)
+        .with_ticker_enabled(ticker_enabled)
         .with_pre_roll_capture(Box::new(InMemoryTerm::new(ROWS, COLS)))
         .build()
+}
+
+/// A [`terminal_with`] with the ticker off — the shape every test that drives
+/// frames itself needs.
+fn terminal_with_term(term: &InMemoryTerm, capacity: usize) -> ProgressTerminal {
+    terminal_with(term, capacity, false)
 }
 
 /// A fresh terminal plus a [`ProgressTerminal`] drawing into it with a full
@@ -94,19 +118,26 @@ fn add_bar_after_join_panics() {
 /// A joined screen's slots are released and its lines kept, so the next screen
 /// on the same terminal draws strictly below the committed frame.
 ///
-/// This is the load-bearing half of the pair.  The *release* half cannot
-/// distinguish this task's drop-based commit from the erasing
-/// `MultiProgress::remove` mechanism — `remove` frees the slot indices just as
-/// well, so a second-screen-only assertion passes either way.  What rules out
-/// erasure is that `alpha` is still drawn, and drawn *above* `beta`.
+/// **This test is green with the fix reverted** (measured at `da358265`, the
+/// pre-fix revision), so it does not separate a commit from a leaked
+/// reservation.  At `capacity == ROWS - 1` the un-released bar stays in the
+/// shared [`MultiProgress`] and is redrawn as the head of the second screen's
+/// frame with byte-identical content: one leaked line plus the second screen's
+/// nine is still [`ROWS`], so nothing is clipped and both mechanisms produce
+/// the same grid.
 ///
-/// `capacity == ROWS - 1` (9 + 1 = 10) is the exact fit, not a workaround: a
-/// screen's frame is one line per reserved slot, so at `capacity == ROWS` the
-/// second screen's frame needs every row and the committed frame is scrolled
-/// out of the visible grid by *any* mechanism (see
-/// [`second_screen_renders_at_full_capacity`]).  One spare row is what makes
-/// retention observable at all, which is the measured reason two screens
-/// sharing a draw target need `capacity < ROWS`.
+/// What it does establish is that the commit *erases* nothing: `alpha` survives
+/// both the join and the second screen's frame, which rules out a commit built
+/// on `MultiProgress::remove` or `clear`.  The assertion that fails with the
+/// fix reverted is [`retired_screen_cannot_repaint_the_committed_frame`].
+///
+/// `capacity == ROWS - 1` is the exact fit, not a workaround: a screen's frame
+/// is one line per reserved slot, so at `capacity == ROWS` the second screen's
+/// frame needs every row and the committed frame is scrolled out of the visible
+/// grid by *any* mechanism (see
+/// [`second_screen_renders_at_full_capacity`]).  One spare row is what keeps
+/// both screens' lines inside [`InMemoryTerm`]'s visible grid, which is the
+/// measured reason two screens sharing a draw target need `capacity < ROWS`.
 #[test]
 fn next_screen_draws_below_the_committed_lines() {
     let term = InMemoryTerm::new(ROWS, COLS);
@@ -158,4 +189,109 @@ fn second_screen_renders_at_full_capacity() {
     second.tick();
     let contents = term.contents();
     assert!(contents.contains("beta"), "second screen never rendered: {contents:?}");
+}
+
+/// A committed frame is frozen: the bar that drew it is unreachable, so
+/// neither the handle that owned it nor the retired screen can change a
+/// character of it.
+///
+/// This is the assertion that fails when the commit is reverted.  At `da358265`
+/// the screen handle kept the renderer — and with it every [`ProgressBar`] the
+/// screen reserved — alive behind a strong `Arc`, so `ManagedScreen::tick`
+/// still ran a frame: the surviving bar was re-rendered from its still-live
+/// `SharedState`, and the `advance` below moved its rendered `count/total` from
+/// `1/60` to `11/60` on the already-committed line.  After the fix the handle
+/// holds a `Weak`, `join` drops the last strong reference, and `tick` is a
+/// no-op.
+///
+/// The retained handle is the probe, not the subject: `ProgressBarHandle` is
+/// the public way to mutate a bar, and once the screen is committed the bar
+/// must no longer be reachable through it.  The `join erased the committed
+/// frame` assertion covers the opposite failure — a commit that frees slots by
+/// clearing lines fails there, before the equality check runs.
+///
+/// `alpha` is finished before the join on purpose.  indicatif reaps a *finished*
+/// bar as a zombie whose lines are kept, but an unfinished bar is dropped
+/// through the default `ProgressFinish::AndClear`, which hides it — so a line
+/// that is still live at `join` is not retained at all, and asserting on one
+/// would fail at the fixed revision instead of the reverted one.
+#[test]
+fn retired_screen_cannot_repaint_the_committed_frame() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_term(&term, ROWS as usize - 1);
+    let first = terminal.screen().build();
+    let bar = first.add_bar(60, "alpha");
+    bar.advance(1);
+    bar.finish_success();
+    first.tick();
+    let running = term.contents();
+    assert!(running.contains("1/60"), "precondition: the bar rendered its position: {running:?}");
+
+    first.join();
+    let committed = term.contents();
+    assert!(committed.contains("alpha"), "join erased the committed frame: {committed:?}");
+    assert!(
+        committed.contains("1/60"),
+        "the committed frame must keep what it was committed with: {committed:?}"
+    );
+
+    let second = terminal.screen().build();
+    second.add_bar(1, "beta").finish_success();
+    second.tick();
+    let after_second = term.contents();
+    assert!(after_second.contains("beta"), "second screen never rendered: {after_second:?}");
+
+    // Both of these reached the committed line before the fix: the handle kept
+    // the bar alive, and `tick` drove one more frame on the retired screen.
+    bar.advance(10);
+    first.tick();
+    assert_eq!(
+        term.contents(),
+        after_second,
+        "a committed frame must never be repainted by the screen that committed it"
+    );
+}
+
+/// Release holds on the production path: the second screen renders in full
+/// while the daemon ticker — not a manual `tick` — drives the frames.
+///
+/// Every other test here disables the ticker, so nothing else exercises the one
+/// path that takes a *transient* strong clone of the renderer: the ticker
+/// upgrades its `Weak` for the duration of a tick, so a screen joined inside
+/// that window can keep its reservation alive past `join`.  This test lets the
+/// ticker run at least one frame of the first screen, joins, and then builds and
+/// draws the second screen at `capacity == ROWS`, where a surviving reservation
+/// is clipped away.
+///
+/// Measured: red at `da358265` (the leaked reservation pushes the second
+/// screen's frame past the terminal height and its bar never appears), green at
+/// the fixed revision.  What it does *not* prove: it cannot force the join to
+/// land inside the ticker's upgrade window, so it is evidence that the window
+/// does not normally bite, not a proof that it cannot.  `ManagedScreen::join`
+/// documents what bounds that window.
+#[test]
+fn release_holds_with_the_ticker_running() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with(&term, ROWS as usize, true);
+    let first = terminal.screen().build();
+    first.add_bar(1, "alpha").finish_success();
+    // The ticker's interval is 50 ms; sleep past it so the first screen has been
+    // driven by the thread rather than by an explicit tick.
+    std::thread::sleep(Duration::from_millis(60));
+    let contents = term.contents();
+    assert!(
+        contents.contains("alpha"),
+        "precondition: the ticker drew the first screen: {contents:?}"
+    );
+    first.join();
+    let second = terminal.screen().build();
+    second.add_bar(1, "beta").finish_success();
+    // Three more ticker intervals for the thread to notice the new screen, draw
+    // it, and observe the retired renderer's `Weak` fail.
+    std::thread::sleep(Duration::from_millis(150));
+    let contents = term.contents();
+    assert!(
+        contents.contains("beta"),
+        "second screen never rendered with the ticker running: {contents:?}"
+    );
 }
