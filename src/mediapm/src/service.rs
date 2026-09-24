@@ -825,12 +825,21 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         // Load current state before reconciliation (needed for skip logic).
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
 
-        // When --no-progress is set, use a disabled ProgressScreen that produces
-        // zero-cost no-op handles — no ticker thread, no terminal output.
-        let progress_group: Option<ProgressScreen> =
-            if no_progress { Some(ProgressScreen::disabled()) } else { None };
-        let pg_ref: Option<&dyn ProgressScreenApi> =
-            progress_group.as_ref().map(|g| g as &dyn ProgressScreenApi);
+        // The tool phase renders through a screen — never through a terminal of
+        // its own: the sync owns exactly one terminal and hands each phase a
+        // screen derived from it (spec S1). `--no-progress` is expressed by that
+        // terminal being inert, so this phase needs no flag of its own.
+        //
+        // The pinned `"syncing tools"` overall bar is the phase's own progress
+        // bar; its total is the tool count the phase computes, so it is set
+        // there rather than guessed here.
+        let tool_terminal = if no_progress {
+            ProgressTerminal::disabled()
+        } else {
+            ProgressTerminal::builder().dynamic_height(true).build()
+        };
+        let (tool_screen, tool_overall) =
+            tool_terminal.screen().with_overall("syncing tools", 1).build();
 
         let workspace_cas =
             Cas::workspace_provisioning_cas(self.conductor(), effective_paths).await?;
@@ -843,9 +852,14 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             recheck_policy,
             &state,
             runtime_storage.cache_root_override.as_deref(),
-            pg_ref,
+            &tool_screen,
+            Some(Arc::new(tool_overall)),
         )
         .await?;
+        // The phase's screen is kept live through its `[prn]` prune bar, which
+        // it registers only after the provisioning loop — so the join belongs
+        // here, once the phase has returned and the bar has finished.
+        tool_screen.join();
 
         // Merge deployment records from the provisioning pipeline into the
         // persisted managed-tool registry and save.

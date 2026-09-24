@@ -47,7 +47,7 @@ use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot
 use crate::config::ToolRequirement;
 use crate::config::{MediaPmState, ToolRegistryEntry};
 use crate::error::MediaPmError;
-use crate::output::{ProgressBarApi, ProgressScreen, ProgressScreenApi, ProgressTerminal};
+use crate::output::{ProgressBarApi, ProgressScreenApi};
 use crate::paths::MediaPmPaths;
 use crate::source_metadata::resolve_conductor_cas_root;
 use crate::tools::downloader::ToolDownloadCache;
@@ -1124,6 +1124,23 @@ pub(crate) async fn open_workspace_cas_store(
 
 /// Runs the full tool-reconciliation cycle for the current workspace.
 ///
+/// This phase owns no progress terminal and builds no screen: every bar it
+/// registers belongs to `progress_group`, which the caller derives from the
+/// sync's single terminal. A phase that built its own terminal would give one
+/// sync two draw targets, which is the defect this contract removes.
+///
+/// # Arguments
+///
+/// - `progress_group`: the live screen every bar of this phase is added to.
+/// - `overall_bar`: the caller's pinned `"syncing tools"` overall bar. When
+///   supplied it becomes the phase's own progress bar and the phase sets its
+///   total; when absent the phase registers a child bar on `progress_group`
+///   instead (the shape the in-file tests' recording screens drive).
+///
+/// The caller joins the screen afterwards: this phase keeps it live for the
+/// whole call, including the `[prn]` prune bar it registers after the
+/// provisioning loop, so it must not be committed before the call returns.
+///
 /// # Errors
 ///
 /// Returns an error when any critical step (document loading, builtin
@@ -1135,7 +1152,7 @@ pub(crate) async fn open_workspace_cas_store(
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "reconciliation entrypoint; all 8 parameters are distinct required inputs"
+    reason = "reconciliation entrypoint; all 9 parameters are distinct required inputs"
 )]
 pub(crate) async fn reconcile_desired_tools(
     workspace_cas: Arc<FileSystemCas>,
@@ -1145,7 +1162,8 @@ pub(crate) async fn reconcile_desired_tools(
     recheck_policy: RecheckPolicy,
     state: &MediaPmState,
     cache_root_override: Option<&Path>,
-    progress_group: Option<&dyn ProgressScreenApi>,
+    progress_group: &dyn ProgressScreenApi,
+    overall_bar: Option<Arc<dyn ProgressBarApi>>,
 ) -> Result<ToolSyncReport, MediaPmError> {
     let mut report = ToolSyncReport::default();
 
@@ -1212,27 +1230,18 @@ pub(crate) async fn reconcile_desired_tools(
     // Progress bar for the per-tool provisioning loop.
     let total_tools = entries.len() as u64;
 
-    // Fallback screen for callers that did not supply one. It owns its own
-    // terminal, and the terminal must outlive every frame that screen draws:
-    // `ProgressTerminal::drop` finalizes the renderer, after which ticks are
-    // no-ops. Bind it for the rest of the function and release it once the
-    // screen below is joined.
-    let owned_terminal: Option<ProgressTerminal>;
-    let (owned_group, pb): (Option<ProgressScreen>, Arc<dyn ProgressBarApi>) =
-        if let Some(pg) = progress_group {
-            owned_terminal = None;
-            (None, pg.add_bar(total_tools, "syncing tools"))
-        } else {
-            let terminal = ProgressTerminal::builder().dynamic_height(true).build();
-            let (g, p) = terminal.screen().with_overall("syncing tools", total_tools).build();
-            owned_terminal = Some(terminal);
-            (Some(g), Arc::new(p))
-        };
-    let effective_group: &dyn ProgressScreenApi = owned_group
-        .as_ref()
-        .map(|g| g as &dyn ProgressScreenApi)
-        .or(progress_group)
-        .expect("at least one progress group available");
+    // The pinned overall bar, when the caller has one, is this phase's own
+    // progress bar: `set_total` mirrors the overall-bar contract of
+    // `materializer::sync_hierarchy` and `RunWorkflowOptions`. Without one the
+    // phase takes a child bar on the caller's screen, keeping the bar visible
+    // to whichever screen is driving the sync.
+    let pb: Arc<dyn ProgressBarApi> = match overall_bar {
+        Some(bar) => {
+            bar.set_total(total_tools);
+            bar
+        }
+        None => progress_group.add_bar(total_tools, "syncing tools"),
+    };
 
     let mut pruned_tools: usize = 0;
     // Own (pre-inline) content maps for tools processed this pass, keyed by
@@ -1257,7 +1266,7 @@ pub(crate) async fn reconcile_desired_tools(
             let state_ref = state;
             let gen_ref = &generated_doc;
             let live_ref = &live_state;
-            let group_ref = effective_group;
+            let group_ref = progress_group;
             async move {
                 let outcome = provision_entry(
                     entry,
@@ -1303,7 +1312,7 @@ pub(crate) async fn reconcile_desired_tools(
             let state_ref = state;
             let gen_ref = &generated_doc;
             let live_ref = &live_state;
-            let group_ref = effective_group;
+            let group_ref = progress_group;
             async move {
                 let outcome = provision_entry(
                     entry,
@@ -1376,12 +1385,11 @@ pub(crate) async fn reconcile_desired_tools(
             generated_doc.tools[*key].runtime.content_map.is_empty()
         })
         .count();
-    // The prune bar belongs to whichever screen is driving the sync, not to the
-    // sync's own fallback screen: the caller-owned screen is the one production
-    // hands down, so sourcing the bar from `owned_group` would drop it from
-    // every caller-supplied sync.
+    // The prune bar belongs to the screen that is driving the sync. It is
+    // registered after the provisioning loop, so the screen must still be live
+    // here — the caller joins it only once this function returns.
     let prn_bar: Option<Arc<dyn ProgressBarApi>> = if prune_candidates > 0 {
-        Some(effective_group.add_bar(prune_candidates as u64, "pruning [prn]"))
+        Some(progress_group.add_bar(prune_candidates as u64, "pruning [prn]"))
     } else {
         None
     };
@@ -1458,16 +1466,6 @@ pub(crate) async fn reconcile_desired_tools(
         bar.finish_success();
     }
 
-    // Only now is every bar of the sync's own screen done: the `[prn]` bar is
-    // created after the provisioning loop, so joining earlier committed the
-    // screen while the prune phase still added a bar to it (a committed screen
-    // has no live renderer, and `add_bar` on one panics). `owned_group` is
-    // `None` when the caller owns the screen, and the caller joins it.
-    if let Some(ref g) = owned_group {
-        g.join();
-    }
-    drop(owned_terminal);
-
     report.pruned_tools = pruned_tools;
 
     Ok(report)
@@ -1484,7 +1482,7 @@ mod tests {
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
     use crate::config::ToolRequirement;
-    use crate::output::{DimensionSource, TestDimensionSource};
+    use crate::output::{DimensionSource, ProgressScreen, ProgressTerminal, TestDimensionSource};
     use crate::tools::dependency::DependencyTypes;
     use crate::tools::dependency::known_dependency_type;
 
@@ -1507,7 +1505,8 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
-            Some(&tracker),
+            &tracker,
+            None,
         )
         .await;
 
@@ -1590,7 +1589,8 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
-            Some(&tracker),
+            &tracker,
+            None,
         )
         .await;
         assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
@@ -1680,7 +1680,8 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
-            Some(&screen),
+            &screen,
+            None,
         )
         .await;
         assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
@@ -1805,7 +1806,8 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
-            Some(&screen),
+            &screen,
+            None,
         )
         .await;
         assert!(result.is_ok(), "a disabled screen must not fail the sync: {:?}", result.err());
@@ -1859,7 +1861,8 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
-            Some(&tracker),
+            &tracker,
+            None,
         )
         .await;
 
@@ -1910,6 +1913,7 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
+            &ProgressScreen::disabled(),
             None,
         )
         .await;
@@ -1958,6 +1962,7 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
+            &ProgressScreen::disabled(),
             None,
         )
         .await;
@@ -2020,6 +2025,7 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
+            &ProgressScreen::disabled(),
             None,
         )
         .await;
@@ -2111,6 +2117,7 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
+            &ProgressScreen::disabled(),
             None,
         )
         .await;
@@ -2200,6 +2207,7 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
+            &ProgressScreen::disabled(),
             None,
         )
         .await;
@@ -2391,6 +2399,7 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
+            &ProgressScreen::disabled(),
             None,
         )
         .await;
@@ -2458,6 +2467,7 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
+            &ProgressScreen::disabled(),
             None,
         )
         .await;
@@ -2532,6 +2542,7 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
+            &ProgressScreen::disabled(),
             None,
         )
         .await;
@@ -3576,6 +3587,7 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root.path()),
+            &ProgressScreen::disabled(),
             None,
         )
         .await;
@@ -3700,7 +3712,8 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache_root_tmp.path()),
-            Some(&tracker),
+            &tracker,
+            None,
         )
         .await;
 
@@ -3817,7 +3830,8 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache1.path()),
-            Some(&tracker1),
+            &tracker1,
+            None,
         )
         .await
         .expect("run 1 failed");
@@ -3833,7 +3847,8 @@ mod tests {
             RecheckPolicy::default(),
             &state,
             Some(cache2.path()),
-            Some(&tracker2),
+            &tracker2,
+            None,
         )
         .await
         .expect("run 2 failed");
