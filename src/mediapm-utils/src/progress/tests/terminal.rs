@@ -6,10 +6,14 @@
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
 
-use super::super::{DimensionSource, ProgressDebugSink, ProgressTerminal, TestDimensionSource};
+use super::super::{
+    DimensionSource, ProgressDebugSink, ProgressTerminal, TestDimensionSource, TestTimeSource,
+    TimeSource,
+};
 
 /// Terminal dimensions used by every test in this module.  `capacity` is
 /// pinned to the same value: `InMemoryTerm::contents()` only reflects frames
@@ -62,8 +66,16 @@ impl Write for SharedVec {
 fn terminal_with_term(term: &InMemoryTerm, capacity: usize) -> ProgressTerminal {
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
+    // Pre-roll must be captured, not written to fd 2: `with_multi_progress`
+    // leaves the builder default (`console::Term::stderr()`), so without this
+    // every `screen().build()` below would emit ten newlines and cursor moves
+    // straight past libtest's capture.  A dedicated terminal also keeps those
+    // newlines out of the `contents()` assertions, which read `term` — the
+    // draw target — not this capture.
+    let pre_roll_capture = InMemoryTerm::new(ROWS, COLS);
     ProgressTerminal::builder()
         .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_pre_roll_capture(Box::new(pre_roll_capture))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .capacity(capacity)
         .with_ticker_enabled(false)
@@ -151,6 +163,7 @@ fn terminal_debug_sink_receives_screen_frames() {
     let sink = ProgressDebugSink::new(Box::new(capture.clone()));
     let terminal = ProgressTerminal::builder()
         .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_pre_roll_capture(Box::new(InMemoryTerm::new(ROWS, COLS)))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .capacity(ROWS as usize)
         .with_progress_debug_sink(sink)
@@ -160,4 +173,64 @@ fn terminal_debug_sink_receives_screen_frames() {
     screen.add_bar(1, "alpha").finish_success();
     screen.tick();
     assert!(!capture.as_string().is_empty(), "terminal debug sink received no frame records");
+}
+
+/// The debug snapshot must describe the frame that was just computed, not the
+/// previous one.
+///
+/// The snapshot reports `slots_timing[i].rate`, which the frame loop recomputes
+/// while syncing dirty slots.  Emitting the snapshot before that sync leaves
+/// `rate_bytes_per_sec` at `0` on the very first tick that moves a bar, so the
+/// JSONL stream reports no rate at all for that frame.
+#[test]
+fn terminal_debug_snapshot_reports_the_current_frame_rate() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
+    let ts = Arc::new(TestTimeSource::new());
+    let capture = SharedVec::default();
+    let sink = ProgressDebugSink::new(Box::new(capture.clone()));
+    let terminal = ProgressTerminal::builder()
+        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_pre_roll_capture(Box::new(InMemoryTerm::new(ROWS, COLS)))
+        .with_dim_source(dims as Arc<dyn DimensionSource>)
+        .with_time_source(Arc::clone(&ts) as Arc<dyn TimeSource>)
+        .capacity(ROWS as usize)
+        .with_progress_debug_sink(sink)
+        .with_ticker_enabled(false)
+        .build();
+
+    let screen = terminal.screen().build();
+    let bar = screen.add_bar(100, "alpha");
+    // Give the slot a measurable interval, then move it by a known amount:
+    // 10 bytes over 0.1 s is an instantaneous rate of 100 B/s.
+    ts.advance(Duration::from_millis(100));
+    bar.advance(10);
+    screen.tick();
+
+    let records = capture.as_string();
+    let last = records.lines().last().expect("at least one tick record");
+
+    // Every reserved slot reports a `rate_bytes_per_sec`, and only the bound one
+    // carries the rate this frame computed.  Take the maximum of the numeric
+    // fields so the assertion does not depend on slot ordering or on how many
+    // reserved slots the frame has; `null` does not parse and is skipped.
+    let max_of = |field: &str| -> f64 {
+        last.split(field)
+            .skip(1)
+            .filter_map(|rest| rest.split([',', '}']).next())
+            .filter_map(|raw| raw.parse::<f64>().ok())
+            .fold(0.0_f64, f64::max)
+    };
+
+    let rate = max_of("\"rate_bytes_per_sec\":");
+    assert!(
+        rate > 0.0,
+        "snapshot must report the rate the frame just computed, got {rate} in {last}"
+    );
+
+    // The same ordering drives ETA: with a live rate and a remaining total, the
+    // bound slot's `eta_secs` must be populated rather than `null`.
+    let eta = max_of("\"eta_secs\":");
+    assert!(eta > 0.0, "snapshot must report the ETA derived from that rate, got {eta} in {last}");
 }

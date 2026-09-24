@@ -51,11 +51,22 @@ struct TerminalInner {
     /// every screen's renderer, so tick numbering stays monotonic across a
     /// sync instead of restarting per phase.
     debug_sink: Option<Arc<ProgressDebugSink>>,
-    /// One-shot flag: has the first-draw pre-roll (newline scroll) been
-    /// performed?  True after the first frame renders.
+    /// One-shot flag: has this terminal's pre-roll (newline scroll) already
+    /// been written?
+    ///
+    /// Set by `TerminalInner::pre_roll_if_needed`, which `build_screen` calls
+    /// while creating the first screen — so it is `true` as soon as that screen
+    /// exists, not `true` only after the first frame draws. Later screens of
+    /// the same sync observe `true` and skip the scroll.
     pre_rolled: std::sync::atomic::AtomicBool,
-    /// Terminal to write pre-roll newlines to.  `None` in test mode
-    /// (user-provided [`MultiProgress`] via [`with_multi_progress`]).
+    /// Terminal to write pre-roll newlines to.
+    ///
+    /// Defaults to [`console::Term::stderr`]. `with_pre_roll_capture` replaces
+    /// it so a test can assert on the scroll instead of writing to fd 2 —
+    /// `with_multi_progress` does **not** change it, so a test that sets up a
+    /// capture [`MultiProgress`] must also install a pre-roll capture unless it
+    /// wants real stderr writes. `None` only for `ProgressTerminal::disabled`,
+    /// where `TerminalInner::pre_roll_if_needed` is a no-op.
     pre_roll_term: Option<Box<dyn TermLike>>,
 }
 
@@ -502,7 +513,17 @@ impl<'a> TerminalScreenBuilder<'a, HasOverall> {
     }
 }
 
-/// Internal: create a [`ManagedScreen`] on the given terminal.
+/// Internal: create the one live [`ManagedScreen`] on the given terminal.
+///
+/// The screen's renderer draws through the terminal's single [`MultiProgress`]
+/// and honours the terminal's [`WriteGate`], so every screen of a sync renders
+/// into the same draw target and frames are buffered as a unit. The screen also
+/// inherits the terminal's dimension source, time source and JSONL debug sink.
+///
+/// # Panics
+///
+/// Panics when a screen is already live on this terminal: two live screens
+/// would mean two renderers driving one [`MultiProgress`].
 fn build_screen(terminal: &ProgressTerminal, overall: Option<(String, u64)>) -> ManagedScreen {
     // Check that no screen is live.
     {

@@ -1009,100 +1009,101 @@ impl ProgressRenderer {
     /// Advance all progress bars by one frame.
     ///
     /// Recomputes the uniform alignment width, then redraws every visible
-    /// bar from its tracked source state.  Delegates entirely to
-    /// [`run_frame`](Self::run_frame) to guarantee exactly one draw per tick.
+    /// bar from its tracked source state. Delegates entirely to `run_frame`
+    /// to guarantee exactly one draw per tick.
     pub fn tick(&mut self) {
-        self.run_frame(|renderer| {
-            // Emit debug snapshot (if enabled) — all bar states are fresh
-            // from sync.  The snapshot reads SharedState directly, so the
-            // order relative to sync_slot does not matter.
-            if let Some(ref sink) = renderer.debug_sink {
-                let bars: Vec<DebugSlotState> = renderer
-                    .slots
-                    .iter()
-                    .enumerate()
-                    .map(|(i, slot)| {
-                        let (bound, snap) = match slot.source.borrow().as_ref() {
-                            Some(s) => (true, s.snapshot()),
-                            None => (
-                                false,
-                                TrackSnapshot {
-                                    position: 0,
-                                    total: 0,
-                                    label: String::new(),
-                                    prefix: String::new(),
-                                    prefix_components: PrefixComponents::default(),
-                                    suffix: String::new(),
-                                    suffix_components: SuffixComponents::default(),
-                                    status: TrackStatus::Active,
-                                    elapsed: Duration::ZERO,
-                                },
-                            ),
-                        };
-                        let rate = if bound && snap.status == TrackStatus::Active {
-                            renderer.slots_timing[i].rate
-                        } else {
-                            0.0
-                        };
-                        #[expect(
-                            clippy::cast_precision_loss,
-                            reason = "progress ETA math tolerates u64 to f64 precision loss"
-                        )]
-                        let eta = if bound
-                            && snap.status == TrackStatus::Active
-                            && snap.total > snap.position
-                            && renderer.slots_timing[i].rate > 0.0
-                        {
-                            Some(
-                                (snap.total - snap.position) as f64 / renderer.slots_timing[i].rate,
-                            )
-                        } else {
-                            None
-                        };
-                        DebugSlotState {
-                            slot: i,
-                            bound,
-                            label: snap.label.clone(),
-                            prefix: snap.prefix.clone(),
-                            position: snap.position,
-                            total: snap.total,
-                            status: format!("{:?}", snap.status),
-                            elapsed_secs: snap.elapsed.as_secs_f64(),
-                            rate_bytes_per_sec: rate,
-                            eta_secs: eta,
-                            suffix: snap.suffix.clone(),
-                            dirty: slot
-                                .source
-                                .borrow()
-                                .as_ref()
-                                .is_some_and(|s| s.dirty.load(Ordering::Acquire)),
-                        }
-                    })
-                    .collect();
-                let snapshot = DebugTickSnapshot {
-                    r#type: "tick".to_string(),
-                    tick: sink.tick_count.load(Ordering::Relaxed),
-                    elapsed_secs: renderer
-                        .time_source
-                        .now()
-                        .duration_since(sink.start)
-                        .as_secs_f64(),
-                    bars,
-                };
-                sink.emit(&snapshot);
-            }
-        });
+        self.run_frame();
     }
 
-    /// Execute a frame: suppress writes, run `mutate`, advance spinners,
-    /// draw once, then unsuppress. Guarantees exactly one terminal write.
+    /// Emit a JSONL snapshot of every slot's state to the configured debug sink.
     ///
-    /// `mutate` is called while the write gate is suppressed, so any
-    /// state changes it makes are accumulated without intermediate draws.
-    /// After `mutate` returns, spinners are advanced and a single draw
-    /// is triggered by opening the gate (indicatif draws on the next bar
-    /// operation while the gate is open).
-    pub(crate) fn run_frame(&mut self, mutate: impl FnOnce(&mut Self)) {
+    /// No-op when no sink is configured.  Called by
+    /// [`run_frame`](Self::run_frame) **after** the dirty slots are synced, so
+    /// `rate_bytes_per_sec` and `eta_secs` report the frame just computed
+    /// rather than the previous one.
+    fn emit_debug_snapshot(&self) {
+        if let Some(ref sink) = self.debug_sink {
+            let bars: Vec<DebugSlotState> = self
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(i, slot)| {
+                    let (bound, snap) = match slot.source.borrow().as_ref() {
+                        Some(s) => (true, s.snapshot()),
+                        None => (
+                            false,
+                            TrackSnapshot {
+                                position: 0,
+                                total: 0,
+                                label: String::new(),
+                                prefix: String::new(),
+                                prefix_components: PrefixComponents::default(),
+                                suffix: String::new(),
+                                suffix_components: SuffixComponents::default(),
+                                status: TrackStatus::Active,
+                                elapsed: Duration::ZERO,
+                            },
+                        ),
+                    };
+                    let rate = if bound && snap.status == TrackStatus::Active {
+                        self.slots_timing[i].rate
+                    } else {
+                        0.0
+                    };
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "progress ETA math tolerates u64 to f64 precision loss"
+                    )]
+                    let eta = if bound
+                        && snap.status == TrackStatus::Active
+                        && snap.total > snap.position
+                        && self.slots_timing[i].rate > 0.0
+                    {
+                        Some((snap.total - snap.position) as f64 / self.slots_timing[i].rate)
+                    } else {
+                        None
+                    };
+                    DebugSlotState {
+                        slot: i,
+                        bound,
+                        label: snap.label.clone(),
+                        prefix: snap.prefix.clone(),
+                        position: snap.position,
+                        total: snap.total,
+                        status: format!("{:?}", snap.status),
+                        elapsed_secs: snap.elapsed.as_secs_f64(),
+                        rate_bytes_per_sec: rate,
+                        eta_secs: eta,
+                        suffix: snap.suffix.clone(),
+                        dirty: slot
+                            .source
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|s| s.dirty.load(Ordering::Acquire)),
+                    }
+                })
+                .collect();
+            let snapshot = DebugTickSnapshot {
+                r#type: "tick".to_string(),
+                tick: sink.tick_count.load(Ordering::Relaxed),
+                elapsed_secs: self.time_source.now().duration_since(sink.start).as_secs_f64(),
+                bars,
+            };
+            sink.emit(&snapshot);
+        }
+    }
+
+    /// Execute one frame: suppress writes, recompute layout, handle resize,
+    /// sync every dirty slot (rate/ETA), emit the debug snapshot, advance
+    /// spinners and draw once, then unsuppress.
+    ///
+    /// Every write happens while the gate is suppressed except the final
+    /// draw, which is triggered by opening the gate (indicatif draws on the
+    /// next bar operation while the gate is open).
+    ///
+    /// This is the terminal path's single frame entry point; pre-roll is not
+    /// part of it (see [`finalize`](Self::finalize)).
+    pub(crate) fn run_frame(&mut self) {
         // Nesting guard: panic in debug builds if called re-entrantly.
         debug_assert!(!self.in_frame.get(), "run_frame called while already in a frame");
         self.in_frame.set(true);
@@ -1123,10 +1124,7 @@ impl ProgressRenderer {
             }
         }
 
-        // Step 4: Run caller's mutation (state changes, still suppressed).
-        mutate(self);
-
-        // Step 5: Sync all dirty slots to bars (still suppressed).
+        // Step 4: Sync all dirty slots to bars (still suppressed).
         for (i, slot) in self.slots.iter().enumerate() {
             if let Some(ref source) = *slot.source.borrow() {
                 let dirty = resized || source.dirty.swap(false, Ordering::AcqRel);
@@ -1180,6 +1178,14 @@ impl ProgressRenderer {
                 }
             }
         }
+
+        // Step 5: Emit the debug snapshot now that rate/ETA are current.
+        //
+        // This must come after Step 4, not before it: the snapshot reports
+        // `slots_timing[i].rate`, which Step 4 recomputes for every dirty
+        // slot, so emitting earlier would make `rate_bytes_per_sec` and
+        // `eta_secs` one frame stale on terminal screens.
+        self.emit_debug_snapshot();
 
         // Step 6: Advance spinners and draw once.
         // Open the gate — indicatif draws on the next bar operation.
@@ -1303,10 +1309,6 @@ impl ProgressRenderer {
         slot.bar.tick();
     }
 
-    /// Reserve the full terminal height before the first indicatif draw.
-    ///
-    /// Writes `rows` newlines to bypass [`BufferedTerm`] so they go directly
-    /// to the terminal, then moves the cursor back up `rows` lines. This
     /// Respond to terminal dimension changes since the last tick.
     ///
     /// Adjusts the slot capacity when height changes (prepending or
@@ -1389,10 +1391,20 @@ impl ProgressRenderer {
         if self.finalized.replace(true) {
             return;
         }
-        // Pre-roll is deliberately absent here: it belongs to the
-        // [`TerminalInner`] and fires when the first screen is built, long
-        // before any `finalize` call, so the scroll has always happened by
-        // the time the final frame draws.
+        // Pre-roll is deliberately absent here: the renderer no longer owns it.
+        //
+        // TRANSITIONAL — pre-roll now fires once per `ProgressTerminal`, from
+        // `build_screen`, before the first bar of the first screen draws. That
+        // covers every terminal-backed screen. The standalone `ProgressScreen`
+        // path still has four live production consumers (the workflow and
+        // materialization screens in `service.rs`, tool sync in
+        // `conductor_bridge/sync/mod.rs`, and materialization in
+        // `materializer/mod.rs`) which therefore lose pre-roll — existing
+        // terminal content is overwritten by their first frame instead of
+        // being scrolled into scrollback. Tasks 4 and 5 migrate those call
+        // sites onto `ProgressTerminal`; do not add a renderer-side pre-roll
+        // fallback to paper over the gap, because one pre-roll owner is the
+        // point of this refactor.
         // RAII guard: buffer OFF during final draw, re-enabled on drop.
         let _guard = self.gate.open();
         // Finish all bound bars that have reached a terminal state:
