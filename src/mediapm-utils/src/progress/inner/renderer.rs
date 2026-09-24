@@ -1617,6 +1617,24 @@ impl ProgressRenderer {
             }
         }
     }
+
+    /// Returns `true` if [`finalize`] has already been called.
+    pub(crate) fn is_finalized(&self) -> bool {
+        self.finalized.get()
+    }
+
+    /// Remove all bound bars from the [`MultiProgress`], committing them
+    /// into scrollback as retained lines.  After this call the bars are
+    /// retired (indicatif zombie) and will never be repainted.
+    ///
+    /// Safe to call multiple times — only the first call has any effect.
+    pub(crate) fn commit_bars(&self) {
+        for slot in &self.slots {
+            if slot.source.borrow().is_some() {
+                self.inner.remove(&slot.bar);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

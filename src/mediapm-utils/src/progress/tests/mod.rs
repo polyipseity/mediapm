@@ -27,5 +27,6 @@ mod ansi;
 mod components;
 mod recording;
 mod renderer;
+mod screen;
 mod state;
 mod terminal;

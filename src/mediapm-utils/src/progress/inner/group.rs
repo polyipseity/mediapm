@@ -354,6 +354,12 @@ impl ProgressGroup {
         let Some(ref renderer) = self.renderer else {
             return TrackedHandle::disabled();
         };
+        {
+            let locked = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if locked.is_finalized() {
+                panic!("add_bar called on a screen that is not the live screen");
+            }
+        }
         let state;
         {
             let mut locked = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -382,7 +388,9 @@ impl ProgressGroup {
     /// panicked while holding the lock).
     pub fn join(&self) {
         if let Some(ref renderer) = self.renderer {
-            renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finalize();
+            let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            r.finalize();
+            r.commit_bars();
         }
     }
 
@@ -473,7 +481,9 @@ impl Drop for ProgressGroup {
         // None (the renderer Arc is dropped right after this).
         self.ticker.take();
         if let Some(ref renderer) = self.renderer {
-            renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finalize();
+            let r = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            r.finalize();
+            r.commit_bars();
         }
     }
 }
