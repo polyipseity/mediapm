@@ -4,6 +4,14 @@
 //! objects whose payload is stored externally (immediately materialized to
 //! the blob store). `PutLarge` stores only `hash` + `content_len` with no
 //! inline data.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file must never import unversioned structs from outside `versions/`.
+//! - A `vX` module may reference only the most recent previous version module
+//!   for version-to-version migration.
+//! - Latest-version bridging to unversioned runtime structs is owned by
+//!   `versions/mod.rs`.
 
 use std::collections::BTreeSet;
 

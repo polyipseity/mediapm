@@ -5,6 +5,14 @@
 //! filename (`metadata-v1.json`), not by an internal version field.
 //! The `entries` field uses `#[serde(default)]` so old files
 //! (constraints-only) remain loadable.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file must never import unversioned structs from outside `versions/`.
+//! - A `vX` module may reference only the most recent previous version module,
+//!   and only for version-to-version isomorphism/migration.
+//! - Latest-version bridging to unversioned runtime structs is owned by
+//!   `versions/mod.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 

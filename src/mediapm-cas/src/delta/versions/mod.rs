@@ -9,6 +9,19 @@
 //! unversioned runtime state. Files outside `delta/versions/` interact with
 //! envelopes only through this module, never direct `versions::vX` imports.
 //! Version checks should always start checking from the latest version to ensure performance.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - `vX.rs` files must never import unversioned structs outside `versions/`.
+//! - A `vX` file may only reference the most recent previous version, and only
+//!   for version-to-version migration.
+//! - This `mod.rs` is the only place where latest version state is bridged to
+//!   unversioned runtime state.
+//! - Files outside `delta/versions/` and `index/versions/` must interact with
+//!   versioned envelopes only through each folder's `versions/mod.rs`, never
+//!   through direct `versions::vX` imports.
+//! - Do not directly re-export `versions::vX` structs/types from this module.
+//!   Expose unversioned APIs here and keep versioned internals encapsulated.
 
 use crate::delta::object::DeltaState;
 use crate::{CasError, HashParseError};
@@ -478,6 +491,72 @@ mod tests {
             production.contains("Version checks should always start checking from the latest version to ensure performance."),
             "{} must keep the latest-first version dispatch performance guard docstring",
             mod_file.display()
+        );
+    }
+
+    #[test]
+    /// Enforces the non-removable versions policy guard in every `versions/` directory.
+    ///
+    /// `versioned_files_keep_policy_guard_and_boundary_rules` pins the guard for
+    /// `src/delta/versions/` only, so the same deletion under `storage/wal/`,
+    /// `storage/blob_store/` or `storage/metadata_store/` stays invisible to the suite.
+    /// This test discovers the directories instead of naming them, so a new
+    /// `versions/` directory is covered as soon as it exists.
+    fn every_versions_dir_keeps_policy_guard_docstring() {
+        let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut rs_files = Vec::new();
+        collect_rs_files_recursive(&src_dir, &mut rs_files);
+
+        let mut guarded = Vec::new();
+        let mut discovered = Vec::new();
+        for path in &rs_files {
+            let Some(versions_dir) = path.parent() else {
+                continue;
+            };
+            if versions_dir.file_name().and_then(|name| name.to_str()) != Some("versions") {
+                continue;
+            }
+            // The parent module of `versions/` (`delta`, `wal`, `blob_store`, ...).
+            let Some(owner) = versions_dir
+                .parent()
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str())
+            else {
+                continue;
+            };
+            if !discovered.iter().any(|dir| dir == owner) {
+                discovered.push(owner.to_string());
+            }
+            guarded.push(path.clone());
+        }
+
+        assert!(!guarded.is_empty(), "no versions/ files found under {}", src_dir.display());
+        // A walker that silently stops descending would otherwise pass on an empty
+        // set, which is exactly how the guard-marker drift went unnoticed.
+        for expected in ["blob_store", "delta", "metadata_store", "wal"] {
+            assert!(
+                discovered.iter().any(|dir| dir == expected),
+                "versions/ directory '{expected}' was not discovered; discovered: {discovered:?}"
+            );
+        }
+
+        let mut missing = Vec::new();
+        for path in guarded {
+            let content = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("failed reading '{}': {err}", path.display()));
+            // Search the production portion only: this test lives inside
+            // `delta/versions/mod.rs`, so scanning that whole file would let the
+            // asserted literal satisfy itself and the guard could never fail.
+            let production = content
+                .split_once("#[cfg(test)]")
+                .map_or(content.as_str(), |(production, _tests)| production);
+            if !production.contains("## DO NOT REMOVE: versions policy guard") {
+                missing.push(path);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these files must include the non-removable versions policy guard docstring: {missing:#?}"
         );
     }
 }

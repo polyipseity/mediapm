@@ -3,6 +3,14 @@
 //! V1 is the initial journal format. Each journal segment carries an 8-byte
 //! header (`CASJNL` + version 1), followed by len-prefixed entries. The
 //! checkpoint file carries a `CASCKP` header + last position + integrity hash.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file must never import unversioned structs from outside `versions/`.
+//! - A `vX` module may reference only the most recent previous version module,
+//!   and only for version-to-version isomorphism/migration.
+//! - Latest-version bridging to unversioned runtime structs is owned by
+//!   `versions/mod.rs`.
 
 use std::collections::BTreeSet;
 
