@@ -95,6 +95,16 @@ fn assert_file_bytes(path: &std::path::Path, expected: &[u8], label: &str) -> Re
     }
 }
 
+/// Asserts every materialized artifact's bytes against the CAS payloads the
+/// hermetic seed stored.
+///
+/// The walk follows hierarchy order (video, subtitles, description, info,
+/// archive, thumbnails, links) so a missing or mis-projected file is reported
+/// under its own label rather than a generic tree diff.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the walk is one assert per artifact in hierarchy order, so extracting groups would separate each assertion from the ordering it validates"
+)]
 fn assert_materialized_content_matches_seeds(
     hierarchy_root: &std::path::Path,
 ) -> Result<(), String> {
@@ -186,34 +196,34 @@ fn assert_materialized_content_matches_seeds(
 
     // Links (sidecar)
     assert_file_bytes(
-        &media_folder.join("sidecars/links").join(&online_demo_sidecar_link_filename("url")),
+        &media_folder.join("sidecars/links").join(online_demo_sidecar_link_filename("url")),
         b"https://example.com/watch",
         "[link sidecar url]",
     )?;
     assert_file_bytes(
-        &media_folder.join("sidecars/links").join(&online_demo_sidecar_link_filename("webloc")),
+        &media_folder.join("sidecars/links").join(online_demo_sidecar_link_filename("webloc")),
         b"webloc-bytes",
         "[link sidecar webloc]",
     )?;
     assert_file_bytes(
-        &media_folder.join("sidecars/links").join(&online_demo_sidecar_link_filename("desktop")),
+        &media_folder.join("sidecars/links").join(online_demo_sidecar_link_filename("desktop")),
         b"desktop-bytes",
         "[link sidecar desktop]",
     )?;
 
     // Links (root projection)
     assert_file_bytes(
-        &media_folder.join(&online_demo_root_link_filename("url")),
+        &media_folder.join(online_demo_root_link_filename("url")),
         b"https://example.com/watch",
         "[link root url]",
     )?;
     assert_file_bytes(
-        &media_folder.join(&online_demo_root_link_filename("webloc")),
+        &media_folder.join(online_demo_root_link_filename("webloc")),
         b"webloc-bytes",
         "[link root webloc]",
     )?;
     assert_file_bytes(
-        &media_folder.join(&online_demo_root_link_filename("desktop")),
+        &media_folder.join(online_demo_root_link_filename("desktop")),
         b"desktop-bytes",
         "[link root desktop]",
     )?;

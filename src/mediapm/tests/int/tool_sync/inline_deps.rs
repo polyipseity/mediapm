@@ -586,7 +586,7 @@ async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), medi
     let state_bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state readable");
     let state: MediaPmState = serde_json::from_slice(&state_bytes).expect("valid state json");
     let mut tool_ids: Vec<_> = state.managed_tools.iter().map(|e| e.tool_id.as_str()).collect();
-    tool_ids.sort();
+    tool_ids.sort_unstable();
     tool_ids.dedup();
     assert_eq!(
         tool_ids.len(),

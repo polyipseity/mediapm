@@ -2205,6 +2205,13 @@ fn assert_sidecar_content_expectations(variant: &str, path: &Path) -> ExampleRes
     Ok(())
 }
 
+/// Asserts that a materialized link file carries the content shape its
+/// extension implies: `.url` an `InternetShortcut` block, `.webloc` a plist
+/// document, `.desktop` a desktop-entry group.
+#[expect(
+    clippy::too_many_lines,
+    reason = "each match arm is the complete content contract for one link format, so merging or extracting arms would separate a format's required markers from the extension that selects them"
+)]
 fn assert_link_file_content_format(path: &Path) -> ExampleResult<()> {
     let text = fs::read_to_string(path)?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -2392,7 +2399,7 @@ fn assert_tag_eq(
 ) -> ExampleResult<()> {
     let actual = tags.get(key).and_then(serde_json::Value::as_str).unwrap_or("");
     if actual != expected {
-        return Err(format!("[ffprobe] tag '{key}' expected '{expected}', got '{actual}'",).into());
+        return Err(format!("[ffprobe] tag '{key}' expected '{expected}', got '{actual}'").into());
     }
     Ok(())
 }
@@ -2513,7 +2520,7 @@ fn assert_tagged_media_metadata(path: &Path) -> ExampleResult<()> {
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     if nb_streams != 2 {
-        return Err(format!("[ffprobe] nb_streams expected 2, got '{nb_streams}'",).into());
+        return Err(format!("[ffprobe] nb_streams expected 2, got '{nb_streams}'").into());
     }
     let duration = payload
         .get("format")
@@ -2522,7 +2529,7 @@ fn assert_tagged_media_metadata(path: &Path) -> ExampleResult<()> {
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(0.0);
     if duration <= 0.0 {
-        return Err(format!("[ffprobe] duration expected positive, got '{duration}'",).into());
+        return Err(format!("[ffprobe] duration expected positive, got '{duration}'").into());
     }
     assert_video_stream_properties(&payload)?;
     assert_audio_stream_properties(&payload)?;
@@ -2553,7 +2560,7 @@ fn assert_untagged_media_metadata(path: &Path) -> ExampleResult<()> {
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     if nb_streams != 2 {
-        return Err(format!("[ffprobe] nb_streams expected 2, got '{nb_streams}'",).into());
+        return Err(format!("[ffprobe] nb_streams expected 2, got '{nb_streams}'").into());
     }
     let duration = payload
         .get("format")
@@ -2562,7 +2569,7 @@ fn assert_untagged_media_metadata(path: &Path) -> ExampleResult<()> {
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(0.0);
     if duration <= 0.0 {
-        return Err(format!("[ffprobe] duration expected positive, got '{duration}'",).into());
+        return Err(format!("[ffprobe] duration expected positive, got '{duration}'").into());
     }
     assert_video_stream_properties(&payload)?;
     assert_audio_stream_properties(&payload)?;
@@ -2571,10 +2578,9 @@ fn assert_untagged_media_metadata(path: &Path) -> ExampleResult<()> {
         .get("format")
         .and_then(|f| f.get("tags"))
         .and_then(serde_json::Value::as_object)
+        && tags.contains_key("REPLAYGAIN_TRACK_GAIN")
     {
-        if tags.contains_key("REPLAYGAIN_TRACK_GAIN") {
-            return Err("[ffprobe] untagged media should not have REPLAYGAIN_TRACK_GAIN tag".into());
-        }
+        return Err("[ffprobe] untagged media should not have REPLAYGAIN_TRACK_GAIN tag".into());
     }
     Ok(())
 }

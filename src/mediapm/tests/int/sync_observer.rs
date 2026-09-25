@@ -28,7 +28,7 @@ mod tests {
         }
     }
 
-    /// format_result_line produces the expected `icon op k=v` shape.
+    /// `format_result_line` produces the expected `icon op k=v` shape.
     #[test]
     fn format_result_line_matches_expected() {
         let line = format_result_line(
@@ -43,15 +43,15 @@ mod tests {
         assert!(line.contains("cached=2"));
     }
 
-    /// format_duration correctness for a known duration.
+    /// `format_duration` correctness for a known duration.
     #[test]
     fn format_duration_known_value() {
         let d = std::time::Duration::from_secs(42);
         assert_eq!(format_duration(d), "42s");
     }
 
-    /// CliSyncObserver renders the Tools phase line to stdout (capture via
-    /// format_result_line).
+    /// `CliSyncObserver` renders the Tools phase line to stdout (capture via
+    /// `format_result_line`).
     #[test]
     fn tools_phase_line_shape() {
         let s = ToolsSyncSummary {
@@ -77,7 +77,7 @@ mod tests {
         assert!(line.contains("updated=1"));
     }
 
-    /// CliSyncObserver renders the Workflow phase line with failure warning.
+    /// `CliSyncObserver` renders the Workflow phase line with failure warning.
     #[test]
     fn workflow_phase_line_with_failure() {
         let s = WorkflowSyncSummary { executed_instances: 3, cached_instances: 0, failed_steps: 1 };
@@ -96,7 +96,7 @@ mod tests {
         assert!(line.contains("failed=1"));
     }
 
-    /// CliSyncObserver renders the Materialization phase line.
+    /// `CliSyncObserver` renders the Materialization phase line.
     #[test]
     fn materialization_phase_line_shape() {
         let s = MaterializationSyncSummary {
@@ -125,7 +125,7 @@ mod tests {
         assert!(line.contains("skipped=3"));
     }
 
-    /// RecordingObserver collects phases in order.
+    /// `RecordingObserver` collects phases in order.
     #[test]
     fn recording_observer_collects_phases() {
         let reports = Arc::new(Mutex::new(Vec::new()));
@@ -158,7 +158,7 @@ mod tests {
         assert!(matches!(collected[2], SyncPhaseReport::Materialization(_)));
     }
 
-    /// SyncLibraryOptions::default() preserves pre-change behavior.
+    /// `SyncLibraryOptions::default()` preserves pre-change behavior.
     #[test]
     fn sync_library_options_default() {
         let opts = SyncLibraryOptions::default();
@@ -168,7 +168,7 @@ mod tests {
         assert!(opts.observer.is_none());
     }
 
-    /// StatusIcon variants produce distinct glyphs.
+    /// `StatusIcon` variants produce distinct glyphs.
     #[test]
     fn status_icon_glyphs_distinct() {
         let mut buf = String::new();

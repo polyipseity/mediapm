@@ -97,7 +97,7 @@ async fn main_cli() -> anyhow::Result<()> {
     };
     let base_paths = RuntimeBasePaths {
         workspace_root: cli.root.clone(),
-        mediapm_dir: cli_mediapm_dir.clone().map_or_else(|| cli.root.join(".mediapm"), |p| p),
+        mediapm_dir: cli_mediapm_dir.clone().unwrap_or_else(|| cli.root.join(".mediapm")),
     };
     let rt: MediaRuntimeStorage = MediaRuntimeStorage::from_boundary(&latest, &base_paths);
     let _passthrough_rt = rt.clone();
