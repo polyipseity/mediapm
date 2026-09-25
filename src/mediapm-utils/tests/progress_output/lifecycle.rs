@@ -762,12 +762,22 @@ fn overall_handle_progress_reaches_the_renderer() {
 /// the gate, so what the frame's survival rests on is decided there — see the
 /// harness module docs for what the gate changes.
 ///
-/// This is coverage of the production configuration rather than a gated-only
-/// discriminator: the ungated path captures the same grid at this geometry, so
-/// the two coincide while both mechanisms work, which is how the gated defect
-/// stayed green in this suite. The discriminating half is the commit's cursor
-/// advance, which exists only on the gated path and is pinned at the ops level
-/// by the `gated_*` tests in `src/mediapm-utils/src/progress/tests/screen.rs`.
+/// This is a **gated-only discriminator** at its assertion point, not merely
+/// coverage of the production configuration. Running the identical sequence on
+/// the ungated harness ([`mk_with_capacity`]) and asserting the grid below
+/// fails: the two diverge after the second `tick`, where the ungated path lets
+/// `finish_success`'s done-style draw reach the terminal (`⠏     beta
+/// █████████████████████  0/1 0s`) while the gate discards it and the frame
+/// keeps its active style (`⠹     beta ░░░░░░░░░░░░░░  0/1 0s 0/d`). What the
+/// geometry fixes — two screens at capacity 2, so both rows stay inside
+/// `InMemoryTerm`'s visible grid — is the exact rows asserted, not the
+/// discrimination.
+///
+/// An earlier revision of this doc claimed the ungated path captured the same
+/// grid here and called the test non-discriminating. That erratum is corrected
+/// rather than deleted because it is the dangerous direction: an understated
+/// test invites a future deletion as redundant, and this is the only
+/// integration-level exact-grid assertion on the production draw path.
 #[test]
 fn gated_two_screens_keep_the_committed_frame() {
     let (terminal, term) = mk_with_capacity_gated(H, W, 2);
