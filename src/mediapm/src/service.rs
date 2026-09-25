@@ -1052,22 +1052,10 @@ impl MediaPmService<FileSystemCas> {
 
     /// Runs a full library sync with optional tag-update checks.
     ///
-    /// This is the primary sync entrypoint:
-    /// 1. Ensures runtime env files and schemas are up-to-date.
-    /// 2. Syncs tools.
-    /// 3. Executes synthesized managed workflows through the conductor.
-    /// 4. Loads the mediapm document and state.
-    /// 5. Opens the filesystem CAS for materialization.
-    /// 6. Runs the materializer.
-    ///
     /// # Errors
     ///
-    /// Returns the first critical error encountered; non-fatal issues are
-    /// collected as warnings.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "orchestrates tool sync, workflow execution, and materialization in one entrypoint"
-    )]
+    /// Delegates to
+    /// [`sync_library_with_progress_overrides`](Self::sync_library_with_progress_overrides).
     pub async fn sync_library_with_tag_update_checks(
         &mut self,
         verify_materialization: bool,
@@ -1108,11 +1096,19 @@ impl MediaPmService<FileSystemCas> {
 
     /// Runs a full library sync through one caller-visible progress terminal.
     ///
-    /// This is the entry point every other library-sync method delegates to,
-    /// and the only one that accepts a [`SyncProgressOverrides`]. It exists
-    /// because `indicatif` is a dev-dependency of this crate: production code
-    /// cannot construct a `MultiProgress`, so this seam is the only way a test
-    /// can hand the sync the terminal whose frames it wants to observe.
+    /// This is the primary sync entrypoint and the one every other library-sync
+    /// method delegates to:
+    /// 1. Ensures runtime env files and schemas are up-to-date.
+    /// 2. Syncs tools.
+    /// 3. Executes synthesized managed workflows through the conductor.
+    /// 4. Loads the mediapm document and state.
+    /// 5. Opens the filesystem CAS for materialization.
+    /// 6. Runs the materializer.
+    ///
+    /// It is also the only entry point that accepts a [`SyncProgressOverrides`].
+    /// That seam exists because `indicatif` is a dev-dependency of this crate:
+    /// production code cannot construct a `MultiProgress`, so injecting a
+    /// terminal is the only way a test can observe the frames a sync draws.
     ///
     /// # Progress ownership
     ///
@@ -1363,5 +1359,63 @@ impl MediaPmService<InMemoryCas> {
         );
         let conductor = Conductor::new(runtime_storage, cas);
         Self::new(conductor, paths)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
+
+    use super::*;
+
+    /// `--no-progress` selects an inert terminal instead of a live one.
+    ///
+    /// The observable is the terminal's own liveness contract: a live terminal
+    /// hands the screen the overall handle it asked for, while
+    /// [`ProgressTerminal::disabled`] returns no-op handles that report no total
+    /// at all. A run that opened a live terminal and then ignored it — the shape
+    /// of the `--no-progress` defect — reports a driven total here.
+    #[test]
+    fn no_progress_selects_an_inert_terminal() {
+        let inert = sync_progress_terminal(SyncProgressOverrides::default(), true);
+        let (inert_screen, inert_overall) = inert.screen().with_overall("syncing tools", 1).build();
+        assert_eq!(
+            inert_overall.total(),
+            0,
+            "a suppressed sync must not open a live terminal with a driven overall bar"
+        );
+        inert_screen.join();
+    }
+
+    /// A caller-supplied terminal is used as given, even when suppression is
+    /// requested — and that supplies the control this file's other assertion
+    /// needs.
+    ///
+    /// Without it, `no_progress_selects_an_inert_terminal` would also pass if
+    /// the selection helper returned an inert terminal unconditionally, which
+    /// would silently suppress every sync.
+    #[test]
+    fn injected_terminal_is_used_as_given() {
+        // A live but silent terminal: its frames go to an in-memory grid and
+        // its pre-roll to a capture, so the test never writes to fd 2.
+        let injected = ProgressTerminal::builder()
+            .with_multi_progress(MultiProgress::with_draw_target(ProgressDrawTarget::term_like(
+                Box::new(InMemoryTerm::new(4, 80)),
+            )))
+            .with_ticker_enabled(false)
+            .with_pre_roll_capture(Box::new(InMemoryTerm::new(1, 1)))
+            .build();
+        let selected = sync_progress_terminal(
+            SyncProgressOverrides { terminal: Some(injected), no_progress: true },
+            true,
+        );
+        let (selected_screen, selected_overall) =
+            selected.screen().with_overall("syncing tools", 1).build();
+        assert_eq!(
+            selected_overall.total(),
+            1,
+            "an injected terminal must be used as given, not replaced by an inert one"
+        );
+        selected_screen.join();
     }
 }

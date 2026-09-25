@@ -1892,6 +1892,56 @@ mod tests {
         );
     }
 
+    /// The caller's pinned overall bar is driven by this phase, not left idle.
+    ///
+    /// The tool phase keeps its pinned `"syncing tools"` overall bar instead of
+    /// taking a child bar on the caller's screen, so it must adopt the handle
+    /// the caller built `with_overall` and set its total to the entry count.
+    /// A phase that ignored the handle would commit a permanently idle overall
+    /// bar — a bar the renderer draws from state nobody ever updates.
+    #[tokio::test]
+    async fn reconcile_desired_tools_drives_the_callers_overall_bar() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let state = MediaPmState::default();
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+        // The caller's own screen and overall handle, as the service supplies
+        // them: the overall bar starts at a placeholder total of 1 and must be
+        // re-totalled by the phase.
+        let (screen, overall) = RecordingProgressTracker::with_overall("syncing tools", 1);
+
+        // One desired tool, unresolvable, so the entry count is known without
+        // any network access (the resolve failure is a warning, not an error).
+        let mut desired = BTreeMap::new();
+        desired.insert(
+            "nonexistent-tool".to_string(),
+            serde_json::json!({ "version_spec": "latest" }),
+        );
+
+        let result = reconcile_desired_tools(
+            workspace_cas,
+            &paths,
+            &desired,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root.path()),
+            &screen,
+            Some(Arc::new(overall)),
+        )
+        .await;
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+
+        let ops = screen.ops();
+        assert!(
+            ops.iter().any(|op| matches!(op, ProgressOp::SetTotal { total: 1 })),
+            "the caller's `syncing tools` overall bar must be totalled to the tool count; \
+             got {ops:?}"
+        );
+    }
+
     #[tokio::test]
     async fn reconcile_desired_tools_with_override_does_not_touch_real_cache() {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();

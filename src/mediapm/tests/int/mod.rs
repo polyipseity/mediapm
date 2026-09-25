@@ -26,3 +26,5 @@ mod runtime_gitignore;
 mod state_persistence;
 /// Per-phase sync observer wiring and centralized output primitives.
 mod sync_observer;
+/// One-terminal-per-sync progress ownership across all three sync phases.
+mod sync_progress;
