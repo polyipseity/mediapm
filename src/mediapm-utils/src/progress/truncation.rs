@@ -19,7 +19,7 @@ use crate::progress::SuffixComponents;
 /// mediapm-utils never inspects the field layout — it only invokes these
 /// two methods at the single render push point.
 ///
-/// `truncate_suffix`(Self::truncate_suffix) receives the merged
+/// `truncate_suffix` (`Self::truncate_suffix`) receives the merged
 /// [`SuffixComponents`] so the client can render auto-derived fields
 /// (count/total, elapsed, rate, eta) alongside its own fields.  The
 /// width budget is the visible-char budget after subtracting ANSI
@@ -46,6 +46,7 @@ pub trait BarLabelTruncation: Send + Sync {
 /// This is the shared truncation primitive used by all three bar-label
 /// structs (`StepBarLabel`, `WorkerBarLabel`, `MaterializationBarLabel`).
 #[cfg(feature = "progress")]
+#[must_use]
 pub fn truncate_ordered(parts: &[String], max_width: usize) -> String {
     let mut kept: Vec<&String> = Vec::new();
     let mut width = 0usize;

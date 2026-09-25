@@ -162,9 +162,7 @@ impl Clone for RecordingTrackedHandle {
         Self {
             ops: Arc::clone(&self.ops),
             total: self.total,
-            start_time: RwLock::new(
-                self.start_time.read().expect("recording start_time lock").clone(),
-            ),
+            start_time: RwLock::new(*self.start_time.read().expect("recording start_time lock")),
             finished_elapsed: Arc::clone(&self.finished_elapsed),
         }
     }
