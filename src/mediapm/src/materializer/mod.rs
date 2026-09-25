@@ -204,8 +204,9 @@ pub async fn sync_hierarchy(
         bar
     } else {
         // Neither a screen nor an overall handle: the caller asked for no
-        // progress output. An inert handle draws nowhere, so the phase stays
-        // callable without progress and still adds no draw target.
+        // progress output. This handle has no render slot to draw into — it is
+        // never attached to a screen — so the phase stays callable without
+        // progress while adding no draw target of its own.
         Arc::new(ProgressBarHandle::disabled())
     };
 
