@@ -341,10 +341,10 @@ async fn pending_ops_deduplicates_concurrent_gets() {
     }
 }
 
-/// Concurrent put safety for FileSystemCas.
+/// Concurrent put safety for `FileSystemCas`.
 ///
 /// Exercises the real WAL journal, flock, and on-disk metadata under
-/// contention — the InMemory CAS path is already covered by
+/// contention — the `InMemory` CAS path is already covered by
 /// `concurrent_operations_many_hashes` and `concurrent_dedup_same_content`.
 #[tokio::test(flavor = "multi_thread")]
 async fn file_system_cas_concurrent_puts_are_safe() {
@@ -399,7 +399,7 @@ async fn file_system_cas_concurrent_puts_are_safe() {
     // Phase 3: WAL durability — flush then re-read.
     cas.run_maintenance_cycle().await.unwrap();
     let re_read_phase1 = cas.get(phase1_hashes[0]).await.unwrap();
-    assert_eq!(re_read_phase1, Bytes::from(format!("unique-payload-0")));
+    assert_eq!(re_read_phase1, Bytes::from("unique-payload-0"));
     let re_read_phase2 = cas.get(expected_phase2).await.unwrap();
     assert_eq!(re_read_phase2, shared_content);
 }

@@ -357,6 +357,12 @@ pub async fn resolve_tool_fetch(
 /// [`DownloadedSource.expected_size`] is set to the actual byte count
 /// (or `max(expected, actual)` if a HEAD-based estimate existed).
 ///
+/// # Panics
+///
+/// Panics if the parallel fetch phase yields fewer results than there are
+/// `SourceProducer::Fetch` entries, which indicates internal index accounting
+/// rather than a caller error.
+///
 /// # Errors
 ///
 /// Returns [`ConductorError`] when all URL candidates fail or I/O fails.
@@ -367,6 +373,8 @@ pub async fn fetch_tool_sources(
     domain: &str,
     progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<DownloadedSources, crate::error::ConductorError> {
+    type FetchResult = Result<(Vec<u8>, String), crate::error::ConductorError>;
+
     let total = fetch.sources.len() as u64;
 
     // Create per-item budget: each source gets its own item.
@@ -399,8 +407,6 @@ pub async fn fetch_tool_sources(
     if let Some(cb) = progress_cb.as_ref() {
         fire_progress(cb, ProviderPhase::Fetch, (0, total), &budget);
     }
-
-    type FetchResult = Result<(Vec<u8>, String), crate::error::ConductorError>;
 
     // Build futures for every Fetch source, each carrying its index and
     // owned URLs so the async block is self-contained.
