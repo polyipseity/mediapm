@@ -245,7 +245,7 @@ The built-in `semantic_truncate_prefix` path (used when no `BarLabelTruncation` 
 ## Test-only vs production output
 
 - **Raw `ProgressBar` tests** use the test-only `{elapsed_precise}` template, producing `[00:00:00]` format (bracketed, HH:MM:SS).
-- **`ProgressGroup` tests** use the production renderer, producing `0s` / `42s` / `1m35s` format via `format_elapsed` (compact, no brackets).
+- **`ProgressScreen` tests** use the production renderer, producing `0s` / `42s` / `1m35s` format via `format_elapsed` (compact, no brackets).
 - Worked examples below are labeled accordingly.
 
 ## Per-screen specs
@@ -433,7 +433,7 @@ These test files use `assert_eq!(term.contents(), concat!(...))` and ARE the rea
 
 ## Global toggle and auto-detection
 
-Progress is suppressed by passing `no_progress: true` or by constructing a `ProgressGroup::disabled()`. Progress bars are also automatically hidden when stderr is not a TTY (indicatif self-detects via `console::Term::stderr()`). The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress.
+Progress is suppressed by passing `no_progress: true` or by constructing a `ProgressScreen::disabled()`. Progress bars are also automatically hidden when stderr is not a TTY (indicatif self-detects via `console::Term::stderr()`). The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress.
 
 ## Spinner animation
 
@@ -442,10 +442,6 @@ Every progress bar uses a daemon ticker at 50 ms intervals, keeping the spinner 
 ## Library stack
 
 The styling stack uses `indicatif` 0.17 (`ProgressBar`, `MultiProgress`, `ProgressStyle`, `HumanBytes`, `HumanCount`) and `console` 0.15 (`Term::stderr().size()` for terminal width detection, `style()` for ANSI coloring). Do not add `owo-colors`, `colored`, `termion`, or other styling crates; `console::style()` is the single styling entry point.
-
-## Formatting helpers
-
-`format_bytes(u64) -> String` wraps `indicatif::HumanBytes` and produces output like `"650.23 MiB"` or `"1.24 GiB"`. `format_count(u64) -> String` wraps `indicatif::HumanCount` and produces output like `"1.2M"` or `"42"`. There is no `format_throughput` function; use `format_bytes(value) + "/s"` inline if throughput formatting is needed.
 
 ## Duration formatting
 
@@ -471,7 +467,7 @@ Every CLI command handler follows a consistent shape: perform the operation, pri
 | Module | Crate | Feature | Purpose |
 |---|---|---|---|
 | `mediapm_utils::report` | `mediapm-utils` | `report` | `StatusIcon`, `print_result`, `format_result_line`, `print_warning`, `print_hint`, `print_error`, `print_heading`, `print_status_report`, `format_duration` |
-| `mediapm_utils::progress` | `mediapm-utils` | `progress` | `ProgressGroup`, `TrackedHandle`, `format_bytes`, `format_count` |
+| `mediapm_utils::progress` | `mediapm-utils` | `progress` | `ProgressScreen`, `ProgressBarHandle`, `ProgressTerminal`, `ProgressScreenApi`, `ProgressBarApi`, `BarLabelTruncation`, `truncate_ordered` |
 | `mediapm_utils::progress` (always) | `mediapm-utils` | — | `DownloadProgressSnapshot`, `ProgressCallback` |
-| `mediapm::output::progress` | `mediapm` | — | `ProgressGroup`, `TrackedHandle`, `ProgressBarApi`, `ProgressGroupApi` re-exports |
+| `mediapm::output::progress` | `mediapm` | — | `ProgressScreen`, `ProgressBarHandle`, `ProgressBarApi`, `ProgressScreenApi`, `ProgressTerminal` re-exports |
 | `mediapm::output::report` | `mediapm` | — | Re-exports from `mediapm_utils::report` |
