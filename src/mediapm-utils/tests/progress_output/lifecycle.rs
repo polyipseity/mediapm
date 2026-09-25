@@ -140,8 +140,8 @@ fn finalized_screen_without_children_draws_only_the_overall() {
 ///
 /// `ProgressScreen` rather than `ProgressTerminal` is the type under test: the
 /// `no_progress` flag in `src/mediapm/src/service.rs` builds
-/// `ProgressScreen::disabled()` directly, while the terminal's disabled
-/// constructor — which hands out screens of this same type — is asserted by
+/// `ProgressTerminal::disabled()`, which hands out screens of this same
+/// type, while that terminal's disabled constructor is asserted by
 /// `progress::tests::terminal::disabled_terminal_is_inert`.
 #[test]
 fn disabled_screen_handles_report_no_total() {
