@@ -1449,17 +1449,23 @@ impl ProgressRenderer {
         // screen never drew.
         //
         // Known, accepted gap (public API only, cosmetic): a screen that binds
-        // a bar, draws it, then releases the handle leaves that frame on the
-        // terminal while `drew_frame` reads false at `finalize`, so the advance
-        // is skipped and the next screen reclaims the row. Reachable through
-        // the public builder with no overall bar, `dynamic_height(true)`, and a
-        // dimension source whose row count grows past the drawn slot and then
-        // shrinks back — the shrink evicts the drawn slot first and blank slots
-        // survive. No in-repo screen reaches it: every one that sets
-        // `dynamic_height(true)` passes `with_overall`, whose slot is still
-        // bound here. The consequence is a stale row of a bar this screen has
-        // already orphaned being reclaimed, which is why it is accepted rather
-        // than fixed. Any future fix must keep the never-bound case, which
+        // a bar, draws it, then has it evicted by a height shrink leaves that
+        // frame on the terminal while `drew_frame` reads false at `finalize`,
+        // so the advance is skipped and the next screen reclaims the row.
+        // Reachable through the public builder with no overall bar,
+        // `dynamic_height(true)`, and a dimension source whose row count grows
+        // past the drawn slot and then shrinks back — the shrink evicts from
+        // the top of the band, so the blank reserved slots above the drawn bar
+        // go first and the drawn bar is orphaned only once they are gone. No
+        // in-repo screen is measured to reach it: every production screen built
+        // from a dynamic-height terminal registers an overall bar
+        // (`mediapm-conductor/src/cli.rs:291`,
+        // `mediapm/src/service.rs:866`/`1221`/`1301`/`1423`), whose slot is
+        // still bound here, and the no-overall test screens that shrink their
+        // injected source never join with an empty band. The consequence is a
+        // stale row of a bar this screen has already orphaned being reclaimed,
+        // which is why it is accepted rather than fixed. Any future fix must
+        // keep the never-bound case, which
         // `gated_screen_without_bars_commits_nothing` pins.
         if drew_frame {
             self.gate.commit_frame();
