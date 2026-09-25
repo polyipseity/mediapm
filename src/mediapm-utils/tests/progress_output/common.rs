@@ -23,16 +23,20 @@
 //! gate, so frames are drawn by indicatif's own bar operations rather than by
 //! the terminal's buffered gate protocol.
 //!
-//! The two paths are **not** interchangeable, and what separates them is not
-//! the number of writes. The gate changes what indicatif *erases*: a draw it
+//! The two paths are **not** interchangeable, and the number of writes is not
+//! the only difference. The gate changes what indicatif *erases*: a draw it
 //! discards never reached the terminal, so the release that follows it erases
 //! from the position the terminal is really at rather than from the one the
-//! discarded draw's own accounting assumed. A committed frame therefore
-//! survives the next screen on the gated path for a reason of its own — the
-//! cursor advance the commit issues — and not because the ungated path's
-//! behaviour carries over. A test that must pin what production does builds
-//! through [`mk_with_capacity_gated`] instead of assuming that survival is a
-//! property of the frame content.
+//! discarded draw's own accounting assumed. It also changes what is *rendered*:
+//! a bar finished before that last released draw shows the done style (full bar,
+//! elapsed only) on the ungated path but the active style (empty bar, elapsed
+//! and rate) on the gated one, because the discarded draw is the one that would
+//! have applied the done style. A committed frame therefore survives the next
+//! screen on the gated path for a reason of its own — the cursor advance the
+//! commit issues — and not because the ungated path's behaviour carries over. A
+//! test that must pin what production does builds through
+//! [`mk_with_capacity_gated`] instead of assuming that survival is a property
+//! of the frame content.
 
 use std::sync::{Arc, Mutex};
 
