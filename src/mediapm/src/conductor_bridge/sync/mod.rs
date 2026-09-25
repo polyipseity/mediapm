@@ -105,7 +105,12 @@ enum EntryOutcome {
         /// Backfill entry for resolved-field population.
         backfill: ToolRegistryEntry,
         /// Tool record for `managed_tools` registration.
-        tool_record: ToolRegistryEntry,
+        ///
+        /// Boxed so this variant does not dominate the enum's size: both this
+        /// and `backfill` are full records, and this is the larger of the two
+        /// after clippy's field-size comparison. The indirection is uniform
+        /// (one allocation per successful skip) and the enum is private.
+        tool_record: Box<ToolRegistryEntry>,
     },
     /// Resolved and fetched with payload.
     Fetched {
@@ -316,7 +321,7 @@ async fn provision_entry(
                     resolved_version: metadata.resolved_version.clone(),
                     resolved_vcs_hash: metadata.resolved_vcs_hash.clone(),
                 };
-                let tool_record = ToolRegistryEntry {
+                let tool_record = Box::new(ToolRegistryEntry {
                     tool_id: tool_id.clone(),
                     version: human_readable_version,
                     canonical_version: expected_composite,
@@ -333,7 +338,7 @@ async fn provision_entry(
                     resolved_tag: metadata.resolved_tag,
                     resolved_version: metadata.resolved_version,
                     resolved_vcs_hash: metadata.resolved_vcs_hash,
-                };
+                });
                 return EntryOutcome::SkippedAfterResolve {
                     tool_id: tool_id.clone(),
                     key: key.clone(),
@@ -435,7 +440,7 @@ fn apply_entry_outcome(
             tool_runtimes.entry(key).or_insert(spec_runtime);
             provisioned_own_maps.insert(tool_id, own_map);
             report.resolved_field_backfills.push(backfill);
-            report.tool_records.push(tool_record);
+            report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
             pb.advance(1);
         }
