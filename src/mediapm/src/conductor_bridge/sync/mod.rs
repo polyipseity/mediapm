@@ -104,7 +104,7 @@ enum EntryOutcome {
         own_map: BTreeMap<String, String>,
         /// Backfill entry for resolved-field population.
         backfill: ToolRegistryEntry,
-        /// Tool record for managed_tools registration.
+        /// Tool record for `managed_tools` registration.
         tool_record: ToolRegistryEntry,
     },
     /// Resolved and fetched with payload.
@@ -115,7 +115,7 @@ enum EntryOutcome {
         is_builtin_code: bool,
         /// Whether the tool already existed in the generated doc.
         already_exists: bool,
-        /// The fetched payload (content_map NOT yet inlined with deps).
+        /// The fetched payload (`content_map` NOT yet inlined with deps).
         payload: FetchedToolPayload,
     },
     /// Resolved and fetched with no payload (builtin/launcher).
@@ -150,6 +150,14 @@ enum EntryOutcome {
 ///
 /// This function is fully async and takes only immutable references, so it
 /// can be called concurrently for parallel provisioning.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parameters are the distinct collaborators the pass reads (persisted state, generated document, live tool state, workspace CAS, tool cache, progress screen, recheck policy); gathering them into a struct would relocate the list without narrowing any borrow"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the first-skip check, the resolve, and the four outcome branches all borrow the same entry data; splitting them would re-derive the identity and version decisions and widen the borrow surface across helpers"
+)]
 async fn provision_entry(
     entry: &ProvisionEntry,
     state: &MediaPmState,
@@ -179,18 +187,15 @@ async fn provision_entry(
             entry.resolved_tag.as_deref(),
             entry.resolved_version.as_deref(),
             entry.resolved_vcs_hash.as_deref(),
-        ) {
-            if let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
-                && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map)
-                    .await
-            {
-                return EntryOutcome::Skipped {
-                    tool_id: tool_id.clone(),
-                    key: key.clone(),
-                    spec_runtime: spec.runtime.clone(),
-                    own_map: strip_inlined_deps_keys(&spec.runtime.content_map),
-                };
-            }
+        ) && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
+            && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map).await
+        {
+            return EntryOutcome::Skipped {
+                tool_id: tool_id.clone(),
+                key: key.clone(),
+                spec_runtime: spec.runtime.clone(),
+                own_map: strip_inlined_deps_keys(&spec.runtime.content_map),
+            };
         }
     }
 
@@ -217,18 +222,17 @@ async fn provision_entry(
             // Version validation.
             match &tool_req.version_spec {
                 ConfigVersionSpec::Exact(fields) => {
-                    if let Some(hash) = &fields.vcs_hash {
-                        if resolved_canonical_version != *hash
-                            && resolved_tag_value.as_deref() != Some(hash.as_str())
-                        {
-                            return EntryOutcome::ResolveError {
-                                tool_id: tool_id.clone(),
-                                error: MediaPmError::Workflow(format!(
-                                    "tool {tool_id}: requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {}",
-                                    resolved_tag_value.as_deref().unwrap_or("(none)")
-                                )),
-                            };
-                        }
+                    if let Some(hash) = &fields.vcs_hash
+                        && resolved_canonical_version != *hash
+                        && resolved_tag_value.as_deref() != Some(hash.as_str())
+                    {
+                        return EntryOutcome::ResolveError {
+                            tool_id: tool_id.clone(),
+                            error: MediaPmError::Workflow(format!(
+                                "tool {tool_id}: requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {}",
+                                resolved_tag_value.as_deref().unwrap_or("(none)")
+                            )),
+                        };
                     }
                     if let Some(tag) = &fields.tag
                         && resolved_tag_value.as_deref() != Some(tag.as_str())
@@ -292,8 +296,6 @@ async fn provision_entry(
                 }
             {
                 // Build the skip outcome.
-                let _metadata_cached = metadata.metadata_cached;
-                let _metadata_fetch_count = metadata.metadata_fetch_count;
                 let human_readable_version = metadata.human_readable_version.clone();
                 let key_and_spec = find_active_tool_spec(generated_doc, tool_id);
                 let (key, spec_runtime, own_map) = match key_and_spec {
@@ -387,6 +389,14 @@ async fn provision_entry(
 /// This is the ordered-merge half of the parallel provisioning design:
 /// outcomes are produced concurrently by [`provision_entry`], then applied
 /// sequentially in entry order here.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this is the ordered-merge half of the parallel provisioning design, so it deliberately takes every shared collection the merge can touch rather than hiding the merge surface behind accessors"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "each outcome variant's merge is a few lines and they are written in variant order to mirror the production order; extracting them would separate each merge from the invariant that only one variant applies per entry"
+)]
 fn apply_entry_outcome(
     entry: &ProvisionEntry,
     outcome: EntryOutcome,
@@ -1297,7 +1307,7 @@ pub(crate) async fn reconcile_desired_tools(
             &mut report,
             &mut live_state,
             &mut pruned_tools,
-            &inherited_env_vars,
+            inherited_env_vars,
             pb.as_ref(),
         );
     }
@@ -1343,7 +1353,7 @@ pub(crate) async fn reconcile_desired_tools(
             &mut report,
             &mut live_state,
             &mut pruned_tools,
-            &inherited_env_vars,
+            inherited_env_vars,
             pb.as_ref(),
         );
     }
@@ -1694,11 +1704,10 @@ mod tests {
 
         terminal.tick();
         let contents = term.contents();
-        let prune_line = contents
-            .lines()
-            .find(|line| line.contains("[prn]"))
-            .map(str::to_owned)
-            .unwrap_or_else(|| panic!("the `[prn]` bar must reach the display:\n{contents}"));
+        let prune_line = contents.lines().find(|line| line.contains("[prn]")).map_or_else(
+            || panic!("the `[prn]` bar must reach the display:\n{contents}"),
+            str::to_owned,
+        );
         // The bar renders `position/total`, so the whole count token is matched
         // rather than a `"/1"` substring: that substring also matches a bar
         // whose total is 100 (`1/100`), which would hide a wrong candidate
@@ -3821,13 +3830,13 @@ mod tests {
 
         // --- bar totals: [fch] = 3, [pro] = 3 for both tools ---
         for op in &add_bars {
-            if let ProgressOp::AddBar { label, total } = op {
-                if label.ends_with("[fch]") || label.ends_with("[pro]") {
-                    assert_eq!(
-                        *total, 3,
-                        "{label}: expected total 3 for plain-binary/launcher sources, got {total}"
-                    );
-                }
+            if let ProgressOp::AddBar { label, total } = op
+                && (label.ends_with("[fch]") || label.ends_with("[pro]"))
+            {
+                assert_eq!(
+                    *total, 3,
+                    "{label}: expected total 3 for plain-binary/launcher sources, got {total}"
+                );
             }
         }
     }
@@ -3836,6 +3845,10 @@ mod tests {
     /// `reconcile_desired_tools` twice with the same seeded cache must
     /// produce identical generated-document bytes and bar-operation multisets.
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the determinism contract is the comparison itself: both runs, the document-byte equality, and the bar-multiset equality must stay visible together so a future edit cannot quietly compare only one of the two artifacts"
+    )]
     async fn sync_parallel_fetch_is_deterministic() {
         let tmp1 = mediapm_utils::temp::artifact_dir().unwrap();
         let tmp2 = mediapm_utils::temp::artifact_dir().unwrap();

@@ -58,7 +58,7 @@ pub fn online_demo_media_folder_relative() -> String {
 /// Raw yt-dlp video id for the online demo Rick Astley URL.
 pub const ONLINE_DEMO_YT_DLP_VIDEO_ID: &str = "dQw4w9WgXcQ";
 
-/// Full YouTube URL for the online demo Rick Astley video.
+/// Full `YouTube` URL for the online demo Rick Astley video.
 pub const ONLINE_DEMO_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
 /// Yt-dlp provider title for the online demo (`%(title)s` in the managed output template).
@@ -251,8 +251,7 @@ fn glob_pattern_to_regex(pattern: &str) -> Result<Regex, String> {
     Regex::new(&regex).map_err(|error| format!("invalid glob pattern '{pattern}': {error}"))
 }
 
-/// Asserts that `bytes` starts with the WebVTT magic `WEBVTT` (ASCII) followed by a newline.
-#[must_use]
+/// Asserts that `bytes` starts with the `WebVTT` magic `WEBVTT` (ASCII) followed by a newline.
 pub fn assert_starts_with_webvtt(bytes: &[u8]) -> Result<(), String> {
     let expected = b"WEBVTT\n";
     if bytes.len() < expected.len() {
@@ -275,7 +274,6 @@ pub fn assert_starts_with_webvtt(bytes: &[u8]) -> Result<(), String> {
 ///
 /// Recognised signatures: JPEG `FF D8 FF`, PNG `89 50 4E 47`, WebP `RIFF????WEBP`,
 /// GIF `GIF8`, BMP `42 4D`.
-#[must_use]
 pub fn assert_valid_image_magic_bytes(path: &Path) -> Result<(), String> {
     let bytes =
         std::fs::read(path).map_err(|e| format!("read image file '{}': {e}", path.display()))?;
@@ -308,8 +306,7 @@ pub fn assert_valid_image_magic_bytes(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Asserts that `content` contains the online demo YouTube URL as a substring.
-#[must_use]
+/// Asserts that `content` contains the online demo `YouTube` URL as a substring.
 pub fn assert_content_contains_youtube_url(content: &str) -> Result<(), String> {
     if content.contains(ONLINE_DEMO_YOUTUBE_URL) {
         Ok(())
@@ -325,7 +322,6 @@ pub fn assert_content_contains_youtube_url(content: &str) -> Result<(), String> 
 /// Asserts that a JSON `ffprobe -print_format json -show_streams` payload contains at
 /// least one video stream and at least one audio stream.  Returns the video and audio
 /// stream indices for further assertions.
-#[must_use]
 pub fn assert_ffprobe_has_video_and_audio(
     payload: &serde_json::Value,
 ) -> Result<(usize, usize), String> {

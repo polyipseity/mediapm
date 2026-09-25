@@ -45,6 +45,7 @@ pub enum SyncPhaseReport {
 ///
 /// Uses `Default` to reproduce the behavior of the legacy
 /// `sync_library(verify)` signature with no observer.
+#[derive(Default)]
 pub struct SyncLibraryOptions {
     /// Verify materialized content by re-hashing committed files.
     pub verify_materialization: bool,
@@ -58,17 +59,6 @@ pub struct SyncLibraryOptions {
     pub observer: Option<Arc<dyn SyncPhaseObserver + Send + Sync>>,
 }
 
-impl Default for SyncLibraryOptions {
-    fn default() -> Self {
-        Self {
-            verify_materialization: false,
-            check_tag_updates: false,
-            no_progress: false,
-            observer: None,
-        }
-    }
-}
-
 /// Progress plumbing overrides for a library sync.
 ///
 /// [`MediaPmService::sync_library_with_progress_overrides`](crate::MediaPmService::sync_library_with_progress_overrides)
@@ -80,6 +70,7 @@ impl Default for SyncLibraryOptions {
 /// `terminal: None` means "the sync builds its own" — the production shape. A
 /// supplied terminal is used exactly as given, including when it is inert, and
 /// it takes precedence over both suppression flags.
+#[derive(Default)]
 pub struct SyncProgressOverrides {
     /// The terminal every phase of the sync renders through.
     pub terminal: Option<ProgressTerminal>,
@@ -89,10 +80,4 @@ pub struct SyncProgressOverrides {
     /// progress. Suppression is expressed by *not opening a live terminal*, not
     /// by opening one and ignoring it.
     pub no_progress: bool,
-}
-
-impl Default for SyncProgressOverrides {
-    fn default() -> Self {
-        Self { terminal: None, no_progress: false }
-    }
 }

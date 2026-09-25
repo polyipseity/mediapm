@@ -48,8 +48,8 @@ pub(crate) fn ensure_and_load_mediapm_document(
 /// Converts a `PathBuf` override into an `Option<PathBuf>`, mapping empty
 /// paths to `None` (use computed default).
 #[must_use]
-fn opt_path(path: &PathBuf) -> Option<PathBuf> {
-    if path.as_os_str().is_empty() { None } else { Some(path.clone()) }
+fn opt_path(path: &Path) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() { None } else { Some(path.to_path_buf()) }
 }
 
 /// Resolves effective paths for a given root, applying runtime storage

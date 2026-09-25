@@ -66,10 +66,6 @@ pub enum PlaylistFormat {
 
 /// Returns true when the serializer can omit the playlist format field.
 #[must_use]
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "read-only predicate; reference documents the non-consuming intent"
-)]
 pub fn playlist_format_is_default(format: &PlaylistFormat) -> bool {
     matches!(format, PlaylistFormat::M3u8)
 }
@@ -616,8 +612,9 @@ fn flatten_hierarchy_nodes_inner(
 ) -> Result<(), String> {
     for node in nodes {
         let effective_sanitize = match &node.sanitize_names {
-            None => parent_sanitize.unwrap_or(default_sanitize),
-            Some(SanitizeNamesConfig::Inherit) => parent_sanitize.unwrap_or(default_sanitize),
+            None | Some(SanitizeNamesConfig::Inherit) => {
+                parent_sanitize.unwrap_or(default_sanitize)
+            }
             Some(other) => other,
         };
 

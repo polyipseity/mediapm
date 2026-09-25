@@ -92,7 +92,7 @@ async fn run_demo() -> ExampleResult<()> {
 /// The terminal is returned alongside the options because it owns the screen's
 /// draw target: the caller must keep it alive for as long as the screen is in
 /// use. Without the `progress` feature there is no screen to own, so the
-/// second element is `()` and main() drops it immediately.
+/// second element is `()` and `main()` drops it immediately.
 #[cfg(feature = "progress")]
 fn run_options_with_progress() -> (RunWorkflowOptions, ProgressTerminal) {
     let terminal = ProgressTerminal::builder().build();

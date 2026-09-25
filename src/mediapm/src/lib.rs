@@ -749,11 +749,11 @@ pub fn merge_runtime_storage(
 /// `MediaRuntimeStorage` path fields are `PathBuf` (not `Option`), so an empty
 /// buffer is the "unset" sentinel: the override wins only when non-empty.
 #[must_use]
-fn pick_path(override_value: &PathBuf, config_value: &PathBuf) -> PathBuf {
+fn pick_path(override_value: &Path, config_value: &Path) -> PathBuf {
     if override_value.as_os_str().is_empty() {
-        config_value.clone()
+        config_value.to_path_buf()
     } else {
-        override_value.clone()
+        override_value.to_path_buf()
     }
 }
 

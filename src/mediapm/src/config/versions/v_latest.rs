@@ -107,11 +107,15 @@ pub struct MediaRuntimeStorageLatest {
 /// [`MediaRuntimeStorage`] model.
 ///
 /// Unset boundary path values map to an empty `PathBuf` so the override
-/// machinery (pick_path/opt_path/pathbuf_to_opt) treats them as "no
+/// machinery (`pick_path`/`opt_path`/`pathbuf_to_opt`) treats them as "no
 /// override" and the `MediaPmPaths::from_root` defaults win. Populating
 /// defaults here would redirect saves to a different path than the one
 /// `MediaPmPaths` exposes for reads.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the body is a single field-by-field mapping of the boundary model onto the resolved model; splitting it would scatter one mapping table across helpers and hide which boundary field feeds which resolved field"
+)]
 pub fn resolve_runtime_storage(
     latest: &MediaRuntimeStorageLatest,
     _base: &RuntimeBasePaths,

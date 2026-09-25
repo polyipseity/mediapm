@@ -661,12 +661,12 @@ async fn materialize_media_folder_entry(
                     "media '{media_id}' variant '{variant_name}': ZIP archive contained zero extractable files"
                 ));
             }
-            let (sub_ep, sub_en) = split_entry_path(relative_path);
+            let (sub_path, sub_name) = split_entry_path(relative_path);
             let file_bar = progress_group.clone().map(|pg| {
                 let sub = pg.add_bar(extracted.len() as u64, &format!("{variant_name} [wrt]"));
                 sub.set_truncation(Arc::new(MaterializationBarLabel {
-                    entry_path: sub_ep.to_string(),
-                    entry_name: sub_en.to_string(),
+                    entry_path: sub_path.to_string(),
+                    entry_name: sub_name.to_string(),
                     file_name: variant_name.clone(),
                     phase: "wrt".to_string(),
                     ..Default::default()

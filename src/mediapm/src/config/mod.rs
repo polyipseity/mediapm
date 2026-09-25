@@ -362,6 +362,7 @@ pub struct RuntimeBasePaths {
 }
 
 impl MediaRuntimeStorage {
+    #[must_use]
     pub fn from_boundary(
         latest: &MediaRuntimeStorageLatest,
         base: &RuntimeBasePaths,

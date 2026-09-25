@@ -367,6 +367,10 @@ pub async fn resolve_tool_fetch(
 ///
 /// Returns [`ConductorError`] when all URL candidates fail or I/O fails.
 #[cfg(feature = "tool-presets")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the parallel futures' MultiItemBudget accounting must stay with the progress snapshots that read it"
+)]
 pub async fn fetch_tool_sources(
     fetch: &ResolvedToolFetch,
     cache: &crate::cache_user_level::UserLevelCache,
