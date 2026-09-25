@@ -224,11 +224,14 @@ fn tracked_handle_elapsed_frozen_after_all_finish_methods() {
         ),
     ] {
         let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
+        let term = indicatif::InMemoryTerm::new(10, 80);
         let terminal = super::super::ProgressTerminal::builder()
             .with_time_source(
                 std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>
             )
+            .with_term_like(Box::new(term.clone()))
             .with_pre_roll_capture(super::pre_roll_capture())
+            .capacity(4)
             .build();
         let g = terminal.screen().build();
         let h = g.add_bar(100, &format!("{name}-bar"));
@@ -243,8 +246,12 @@ fn tracked_handle_elapsed_frozen_after_all_finish_methods() {
 
 #[test]
 fn progress_group_new_creates_handle() {
-    let terminal =
-        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .build();
     let g = terminal.screen().build();
     let h = g.add_bar(42, "child");
     assert!(h.total() > 0, "enabled handle must have total > 0");
@@ -253,8 +260,12 @@ fn progress_group_new_creates_handle() {
 
 #[test]
 fn progress_group_with_overall_creates_both() {
-    let terminal =
-        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .build();
     let (g, overall) = terminal.screen().with_overall("all", 100).build();
     assert_eq!(overall.total(), 100, "overall bar must have total == 100");
     let child = g.add_bar(50, "child");
@@ -288,16 +299,24 @@ fn recording_handle_multiple_advances_sum() {
 #[test]
 fn progress_group_join_and_clear_does_not_panic() {
     // Non-empty group
-    let terminal =
-        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .build();
     let g = terminal.screen().build();
     let _h = g.add_bar(10, "a");
     g.join();
     g.join_and_clear();
 
     // Empty group
-    let terminal =
-        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .build();
     let g = terminal.screen().build();
     g.join();
     g.join_and_clear();
@@ -332,8 +351,12 @@ fn recording_handle_finish_does_not_generate_clear() {
 #[test]
 fn progress_group_join_leaves_handles_intact() {
     // join() is a no-op — handles must still be usable afterward.
-    let terminal =
-        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .build();
     let g = terminal.screen().build();
     let h = g.add_bar(42, "child");
     h.advance(10);
@@ -347,8 +370,12 @@ fn progress_group_join_leaves_handles_intact() {
 fn progress_group_finish_success_and_error_preserve_group() {
     // Finish calls on a handle must preserve the total and the group must
     // remain functional (join() must not panic).
-    let terminal =
-        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .build();
     let g = terminal.screen().build();
     let h = g.add_bar(10, "test");
     h.finish_success();
@@ -506,8 +533,12 @@ fn progress_group_manager_finish_and_clear_via_tick_fn() {
     // finish_and_clear on a ProgressScreen-managed handle (bar=None,
     // tick_fn=Some) must still mark state as finished.
 
-    let terminal =
-        ProgressTerminal::builder().with_pre_roll_capture(super::pre_roll_capture()).build();
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .build();
     let (_group, overall) = terminal.screen().with_overall("all", 10).build();
     overall.finish_and_clear();
     let snap = overall.snapshot();
@@ -789,9 +820,12 @@ fn bar_color_code_success() {
 #[test]
 fn restart_clears_finished_status() {
     let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
+    let term = indicatif::InMemoryTerm::new(10, 80);
     let terminal = ProgressTerminal::builder()
         .with_time_source(ts as std::sync::Arc<dyn super::super::TimeSource>)
+        .with_term_like(Box::new(term.clone()))
         .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
         .build();
     let g = terminal.screen().build();
     let h = g.add_bar(100, "restart-bar");
