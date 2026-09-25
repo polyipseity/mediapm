@@ -66,7 +66,7 @@ pub use crate::api::ObjectMeta;
 
 /// A read-through view backed by Metadata + Blob + WAL fallback.
 ///
-/// Implements a three-layer lookup (MetadataStore for metadata, BlobStore for
+/// Implements a three-layer lookup (`MetadataStore` for metadata, `BlobStore` for
 /// payload bytes, Wal for not-yet-materialized entries). In-flight reads are
 /// deduplicated: concurrent `get` calls on the same hash share one lookup
 /// (see [`PendingOps`]).

@@ -225,7 +225,7 @@ fn elapsed_survives_orphan_reattach() {
     assert!(!orphaned.contains("worker"), "the shrunken grid orphans the worker: {orphaned:?}");
     assert_eq!(
         orphaned,
-        concat!("⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 5s 0/d"),
+        concat!("⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", "  0/5 5s 0/d"),
         "elapsed_survives_orphan_reattach/orphaned"
     );
 

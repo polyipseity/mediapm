@@ -173,11 +173,7 @@ fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
         !narrow.contains("already downloaded"),
         "the narrow frame does not render it: {narrow:?}"
     );
-    assert_eq!(
-        &narrow,
-        concat!(""),
-        "narrow_draw_target_does_not_render_an_oversize_custom_suffix/narrow"
-    );
+    assert_eq!(&narrow, "", "narrow_draw_target_does_not_render_an_oversize_custom_suffix/narrow");
     assert_eq!(
         &wide,
         concat!(
@@ -220,7 +216,7 @@ fn height_shrink_orphans_and_grow_reattaches() {
     assert!(!shrunk.contains("fetch"), "the child is evicted at one row: {shrunk:?}");
     assert_eq!(
         &shrunk,
-        concat!("⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"),
+        concat!("⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", "  0/10 0s 0/d"),
         "height_shrink_orphans_and_grow_reattaches/shrunk"
     );
 
@@ -523,7 +519,10 @@ fn height_sequence_without_overall() {
     let one_row = term.contents();
     assert_eq!(
         &one_row,
-        concat!("⠧     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d"),
+        concat!(
+            "⠧     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+            "  0/3 0s 0/d"
+        ),
         "height_sequence_without_overall/one_row"
     );
     assert!(one_row.contains("bar 1"), "the newest child keeps the only slot: {one_row:?}");

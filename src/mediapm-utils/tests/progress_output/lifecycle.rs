@@ -120,7 +120,10 @@ fn finalized_screen_without_children_draws_only_the_overall() {
     screen.join_and_clear();
     assert_eq!(
         &term.contents(),
-        concat!("⠏     overall ███████████████████████████████████████████████████  0/1 0s 0/d"),
+        concat!(
+            "⠏     overall ███████████████████████████████████████████████████",
+            "  0/1 0s 0/d"
+        ),
         "finalized_screen_without_children_draws_only_the_overall"
     );
 }
@@ -679,13 +682,17 @@ impl TermLike for PreRollRecorder {
         24
     }
 
+    /// Records an upward cursor move of `n` rows as a negative entry.
     fn move_cursor_up(&self, n: usize) -> std::io::Result<()> {
-        self.moves.lock().expect("recorder lock").push(-(n as i32));
+        let rows = i32::try_from(n).map_err(std::io::Error::other)?;
+        self.moves.lock().expect("recorder lock").push(-rows);
         Ok(())
     }
 
+    /// Records a downward cursor move of `n` rows as a positive entry.
     fn move_cursor_down(&self, n: usize) -> std::io::Result<()> {
-        self.moves.lock().expect("recorder lock").push(n as i32);
+        let rows = i32::try_from(n).map_err(std::io::Error::other)?;
+        self.moves.lock().expect("recorder lock").push(rows);
         Ok(())
     }
 

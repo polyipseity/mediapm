@@ -411,7 +411,10 @@ fn conductor_cli_step_progress_lifecycle() {
     screen.join();
     assert_eq!(
         &term.contents(),
-        concat!("⠏     steps ████████████████████████████████████████████████████████████  3/3 0s"),
+        concat!(
+            "⠏     steps ████████████████████████████████████████████████████████████",
+            "  3/3 0s"
+        ),
         "conductor_cli_step_progress_lifecycle/after_join"
     );
 }
