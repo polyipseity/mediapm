@@ -621,11 +621,11 @@ struct SlotCache {
     prefix: RefCell<String>,
     /// Cached `prefix_w` at last `set_style` call (style dedup).
     style_prefix_w: Cell<usize>,
-    /// Cached suffix_w at last set_style call (style dedup).
+    /// Cached `suffix_w` at last `set_style` call (style dedup).
     style_suffix_w: Cell<usize>,
-    /// Cached is_overall flag at last set_style call (style dedup).
+    /// Cached `is_overall` flag at last `set_style` call (style dedup).
     style_is_overall: Cell<bool>,
-    /// Last status code at last set_style call (style dedup).
+    /// Last status code at last `set_style` call (style dedup).
     style_status_code: Cell<u8>,
 }
 

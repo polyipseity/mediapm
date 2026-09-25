@@ -348,6 +348,7 @@ impl ProgressTerminal {
     ///
     /// Panics if a screen is already live — the caller must
     /// [`join`](ProgressScreen::join) or drop the current screen first.
+    #[must_use]
     pub fn screen(&self) -> TerminalScreenBuilder<'_, NoOverall> {
         TerminalScreenBuilder { terminal: self, overall: None, _state: PhantomData }
     }
@@ -432,7 +433,7 @@ impl<'a> TerminalScreenBuilder<'a, NoOverall> {
     }
 }
 
-impl<'a> TerminalScreenBuilder<'a, HasOverall> {
+impl TerminalScreenBuilder<'_, HasOverall> {
     /// Build a screen with the overall bar pinned at the bottom slot.
     ///
     /// Returns both the [`ProgressScreen`] and a [`ProgressBarHandle`] for the
@@ -486,12 +487,11 @@ fn build_screen(terminal: &ProgressTerminal, overall: Option<Arc<SharedState>>) 
     {
         let mut state =
             terminal.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.screen.is_some() {
-            panic!(
-                "ProgressTerminal already has a live screen; \
-                 join() or drop the current screen before creating a new one"
-            );
-        }
+        assert!(
+            state.screen.is_none(),
+            "ProgressTerminal already has a live screen; \
+             join() or drop the current screen before creating a new one"
+        );
         let id = ScreenId(state.next_id);
         state.next_id += 1;
 
@@ -619,9 +619,10 @@ impl ProgressScreen {
         }
         // Check live status first: a committed screen must panic rather than
         // fall through to the disabled path when its renderer is already gone.
-        if !self.is_live() {
-            panic!("ProgressScreen is not the live screen (already joined or dropped)");
-        }
+        assert!(
+            self.is_live(),
+            "ProgressScreen is not the live screen (already joined or dropped)"
+        );
         let Some(ref weak) = self.renderer else {
             return ProgressBarHandle::disabled();
         };

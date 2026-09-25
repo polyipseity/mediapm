@@ -89,7 +89,7 @@ fn term_terminal() -> (ProgressTerminal, InMemoryTerm) {
     (terminal, term)
 }
 
-/// join() commits the screen: contents are identical before and after a
+/// `join()` commits the screen: contents are identical before and after a
 /// later terminal tick, proving the retired bars are never repainted.
 #[test]
 fn join_commits_and_no_later_tick_repaints() {
