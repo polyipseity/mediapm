@@ -107,8 +107,8 @@ enum EntryOutcome {
         /// Tool record for `managed_tools` registration.
         ///
         /// Boxed so this variant does not dominate the enum's size: both this
-        /// and `backfill` are full records, and this is the larger of the two
-        /// after clippy's field-size comparison. The indirection is uniform
+        /// and `backfill` are full records of the same type, so boxing either
+        /// one clears `clippy::large_enum_variant`. The indirection is uniform
         /// (one allocation per successful skip) and the enum is private.
         tool_record: Box<ToolRegistryEntry>,
     },
