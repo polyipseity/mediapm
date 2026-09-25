@@ -1437,11 +1437,30 @@ impl ProgressRenderer {
         // nothing": the advance is not part of committing, it is compensation
         // for the draws the gate discarded while the frame was in progress (the
         // released draw walks the cursor to the frame's last row; a discarded
-        // one does not). A screen that bound no bar discarded nothing, because
-        // no draw ever reached the gate — every draw needs a bar, and the final
-        // draw above runs only for a bound slot. There is therefore no frame of
-        // this screen on the terminal and no cursor position inside one, so
-        // advancing writes a blank row the screen never drew.
+        // one does not).
+        //
+        // The condition is "a slot is bound NOW", which is what `drew_frame`
+        // measures above, and a bound slot does imply at least one released
+        // draw: `add_bar` writes the bar's first frame. It is not equivalent to
+        // "this screen left no frame on the terminal". The two coincide only
+        // for a screen that never bound a bar, where no draw reached the gate,
+        // so no frame of this screen is on the terminal and the cursor is not
+        // resting inside one; advancing there would write a blank row the
+        // screen never drew.
+        //
+        // Known, accepted gap (public API only, cosmetic): a screen that binds
+        // a bar, draws it, then releases the handle leaves that frame on the
+        // terminal while `drew_frame` reads false at `finalize`, so the advance
+        // is skipped and the next screen reclaims the row. Reachable through
+        // the public builder with no overall bar, `dynamic_height(true)`, and a
+        // dimension source whose row count grows past the drawn slot and then
+        // shrinks back — the shrink evicts the drawn slot first and blank slots
+        // survive. No in-repo screen reaches it: every one that sets
+        // `dynamic_height(true)` passes `with_overall`, whose slot is still
+        // bound here. The consequence is a stale row of a bar this screen has
+        // already orphaned being reclaimed, which is why it is accepted rather
+        // than fixed. Any future fix must keep the never-bound case, which
+        // `gated_screen_without_bars_commits_nothing` pins.
         if drew_frame {
             self.gate.commit_frame();
         }
