@@ -3,11 +3,6 @@
 //! The long-lived functional core is [`crate::delta::object::DeltaState`].
 //! Each wire version owns its exact byte layout, parse/validate/encode
 //! behavior, and `From` conversions to/from version-specific state types.
-//! `vX.rs` files must never import unversioned structs outside `versions/`,
-//! may reference only the most recent previous version (for migration), and
-//! this `mod.rs` is the only place where latest version state is bridged to
-//! unversioned runtime state. Files outside `delta/versions/` interact with
-//! envelopes only through this module, never direct `versions::vX` imports.
 //! Version checks should always start checking from the latest version to ensure performance.
 //!
 //! ## DO NOT REMOVE: versions policy guard
@@ -495,13 +490,16 @@ mod tests {
     }
 
     #[test]
-    /// Enforces the non-removable versions policy guard in every `versions/` directory.
+    /// Enforces the non-removable versions policy guard in every `versions/`
+    /// directory under this crate's `src/`.
     ///
     /// `versioned_files_keep_policy_guard_and_boundary_rules` pins the guard for
     /// `src/delta/versions/` only, so the same deletion under `storage/wal/`,
-    /// `storage/blob_store/` or `storage/metadata_store/` stays invisible to the suite.
+    /// `storage/blob_store/` or `storage/metadata_store/` stays invisible to that test.
     /// This test discovers the directories instead of naming them, so a new
-    /// `versions/` directory is covered as soon as it exists.
+    /// `versions/` directory under this crate's `src/` is covered as soon as it exists.
+    /// The scan root stays crate-local on purpose: covering the repo-wide marker
+    /// policy would need a workspace-wide scan root and a marker-name decision first.
     fn every_versions_dir_keeps_policy_guard_docstring() {
         let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut rs_files = Vec::new();
@@ -550,7 +548,7 @@ mod tests {
             let production = content
                 .split_once("#[cfg(test)]")
                 .map_or(content.as_str(), |(production, _tests)| production);
-            if !production.contains("## DO NOT REMOVE: versions policy guard") {
+            if !production.contains("//! ## DO NOT REMOVE: versions policy guard") {
                 missing.push(path);
             }
         }

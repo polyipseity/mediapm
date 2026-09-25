@@ -139,9 +139,9 @@ fn materializer_consumer_lifecycle() {
 /// Tool sync adds one bar per tool, finishing each in turn, with the overall bar
 /// pinned below them; the final frame collapses to the bound bars only.
 ///
-/// The overall bar is used as a layout anchor: its own progress cannot be driven
-/// through the handle the builder returns (see
-/// `lifecycle::overall_handle_progress_does_not_reach_the_renderer`).
+/// The overall bar is used as a layout anchor: this test leaves its progress
+/// undriven through the handle the builder returns (the handle does reach the
+/// renderer; see `lifecycle::overall_handle_progress_reaches_the_renderer`).
 #[test]
 fn tool_sync_consumer_lifecycle() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
