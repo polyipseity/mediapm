@@ -27,15 +27,32 @@ pub trait Migrate: Sized {
     fn version() -> u32;
 
     /// Decodes one JSON value into the runtime config model for this version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` cannot be decoded into this version's
+    /// runtime model.
     fn decode(value: Value) -> Result<Self, MediaPmError>;
 
     /// Encodes the runtime config model back into the JSON wire format for
     /// this version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the model cannot be encoded into this version's
+    /// wire format.
     fn encode(&self) -> Result<Value, MediaPmError>;
 }
 
 /// Decodes one mediapm document JSON value into the runtime model by
 /// inspecting the top-level `version` marker.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::ConfigValidation`] when the version marker cannot be
+/// extracted, [`MediaPmError::Workflow`] when the marker is unsupported, and
+/// the envelope's own decode error when the payload violates that version's
+/// contract.
 pub fn decode_mediapm_document_value(value: Value) -> Result<MediaPmDocument, MediaPmError> {
     let version = extract_version_field(&value)?;
 
@@ -51,6 +68,11 @@ pub fn decode_mediapm_document_value(value: Value) -> Result<MediaPmDocument, Me
 }
 
 /// Encodes one mediapm document to its latest stable wire format.
+///
+/// # Errors
+///
+/// Returns the V2 envelope's encode error when the document cannot be rendered
+/// into its wire format.
 pub fn encode_mediapm_document_value(doc: &MediaPmDocument) -> Result<Value, MediaPmError> {
     // Encode to the latest (V2) wire format.
     MediaPmDocumentEnvelopeV2::from(doc).encode()
@@ -58,8 +80,11 @@ pub fn encode_mediapm_document_value(doc: &MediaPmDocument) -> Result<Value, Med
 
 /// Extracts the numeric `version` field from one JSON value.
 ///
-/// Returns `MediaPmError::Workflow` when the version field is missing or
-/// not representable as `u64`.
+/// # Errors
+///
+/// Returns [`MediaPmError::ConfigValidation`] (MPM-E004) when the document has
+/// no top-level `version` field, or when that field is not a non-negative
+/// integer.
 pub fn extract_version_field(value: &Value) -> Result<u64, MediaPmError> {
     let version_value = value.get("version").ok_or_else(|| MediaPmError::ConfigValidation {
         code: "MPM-E004",
@@ -101,6 +126,12 @@ pub fn is_supported_version(version: u32) -> bool {
 /// the Nickel schema files: V1→V2 strips the legacy `state` payload (via the
 /// unified model's `From`), and V2→V1 bumps the version marker only (V1
 /// accepts stateless documents).
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::ConfigValidation`] when the document's version field
+/// cannot be extracted, and [`MediaPmError::Workflow`] when no migration edge
+/// connects the two versions or when a migration's decode/encode fails.
 pub fn migrate_to(requested_version: u32, document: Value) -> Result<Value, MediaPmError> {
     let version = extract_version_field(&document)?;
     if u64::from(requested_version) == version && is_supported_version(requested_version) {

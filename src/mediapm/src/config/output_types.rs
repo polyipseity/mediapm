@@ -224,6 +224,12 @@ pub fn default_yt_dlp_capture_kind_for_kind(kind: YtDlpOutputKind) -> OutputCapt
 ///
 /// yt-dlp steps use [`YtDlpOutputVariantConfig`]; all other tools use
 /// [`GenericOutputVariantConfig`].
+///
+/// # Errors
+///
+/// Returns the underlying `serde_json` decoding error, prefixed with the
+/// variant key and the owning tool name, when `value` does not match that
+/// tool's output-variant shape.
 #[allow(dead_code)]
 pub fn decode_output_variant_config(
     tool: &MediaStep,
@@ -244,6 +250,11 @@ pub fn decode_output_variant_config(
 }
 
 /// Decodes one output-variant policy object for workflow output persistence.
+///
+/// # Errors
+///
+/// Returns the same decoding failure as [`decode_output_variant_config`] when
+/// `value` does not match the tool's output-variant shape.
 #[allow(dead_code)]
 pub fn decode_output_variant_policy(
     tool: &MediaStep,
@@ -257,6 +268,14 @@ pub fn decode_output_variant_policy(
 }
 
 /// Resolves one step's effective variant-flow entries.
+///
+/// # Errors
+///
+/// Returns a message naming the offending entry when an output or input variant
+/// name is empty after trimming, when a source-ingest tool declares input
+/// variants, when a non-source-ingest tool declares no input variant, when
+/// `output_variants` is empty, or when the input and output counts cannot be
+/// paired.
 #[allow(dead_code)]
 pub fn resolve_step_variant_flow(step: &MediaStep) -> Result<Vec<ResolvedStepVariantFlow>, String> {
     for output in step.output_variants.keys() {

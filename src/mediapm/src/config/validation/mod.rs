@@ -17,6 +17,11 @@ mod sources;
 ///
 /// MUST be called after deserialization and before any document values are
 /// used for workflow generation.
+///
+/// # Errors
+///
+/// Returns the first failure reported by the source-level or hierarchy-level
+/// validation passes.
 pub fn validate_document(
     media: &BTreeMap<String, MediaSourceSpec>,
     hierarchy: &[HierarchyNode],

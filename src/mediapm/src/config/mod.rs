@@ -95,6 +95,12 @@ impl MaterializationMethod {
 }
 
 /// Deserializes a materialization method or named-object form from Nickel.
+///
+/// # Errors
+///
+/// Returns a deserialization error when the value is neither a materialization
+/// method name accepted by [`MaterializationMethod`] nor an object carrying a
+/// string `method` field.
 #[allow(dead_code)]
 pub fn deserialize_materialization_method<'de, D>(
     deserializer: D,
@@ -122,6 +128,12 @@ where
 }
 
 /// Deserializes the materialization preference order.
+///
+/// # Errors
+///
+/// Returns a deserialization error when an entry is neither a method-name
+/// string nor an object with a string `method` field, when the resulting list
+/// is empty, or when the list repeats a method.
 pub fn deserialize_materialization_preference_order<'de, D>(
     deserializer: D,
 ) -> Result<Vec<MaterializationMethod>, D::Error>

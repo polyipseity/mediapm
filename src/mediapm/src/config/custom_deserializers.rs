@@ -11,6 +11,12 @@ use serde_json::Value;
 use super::nickel_io::{parse_non_negative_integral_u32, parse_non_negative_integral_u64};
 
 /// Deserializes one non-negative integral number into `u64`.
+///
+/// # Errors
+///
+/// Returns a deserialization error when the value is not a non-negative
+/// integral number representable as `u64` (negative, fractional, non-numeric,
+/// or out of range).
 #[allow(dead_code)]
 pub fn deserialize_u64_from_number<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
@@ -31,6 +37,12 @@ where
 }
 
 /// Deserializes one non-negative integral number into `u32`.
+///
+/// # Errors
+///
+/// Returns a deserialization error when the value is not a non-negative
+/// integral number representable as `u32` (negative, fractional, non-numeric,
+/// or out of range).
 pub fn deserialize_u32_from_number<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: Deserializer<'de>,
@@ -60,6 +72,11 @@ where
 /// schema: empty is represented as `null` (`None`), never `""`. A JSON
 /// `""` value is invalid and rejected at load — stale state files are
 /// discarded and regenerated, never normalized.
+///
+/// # Errors
+///
+/// Returns a deserialization error when the value is the empty string; `null`
+/// decodes to `None` and every other string is accepted as-is.
 pub fn deserialize_optional_nonempty_string<'de, D>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error>

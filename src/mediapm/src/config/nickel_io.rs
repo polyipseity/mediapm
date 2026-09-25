@@ -10,6 +10,12 @@ use serde_json::Value;
 use crate::error::MediaPmError;
 
 /// Evaluates one Nickel source file at `path` to its exported JSON value.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when the Nickel program cannot be built
+/// or evaluated, and [`MediaPmError::ConfigValidation`] (MPM-E004) when the
+/// evaluated value cannot be rendered as JSON.
 pub fn evaluate_nickel_source_to_json(path: &Path) -> Result<Value, MediaPmError> {
     let mut program = ProgramBuilder::new()
         .add_path(path)

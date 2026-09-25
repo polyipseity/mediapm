@@ -309,6 +309,11 @@ impl<'de> Deserialize<'de> for HierarchyPath {
 }
 
 /// Deserializes hierarchy field values using array-of-nodes semantics.
+///
+/// # Errors
+///
+/// Returns a deserialization error when [`flatten_hierarchy_value`] rejects the
+/// value, which happens when it is not an array of node objects.
 #[allow(dead_code)]
 pub fn deserialize_hierarchy_node_list<'de, D>(
     deserializer: D,
@@ -321,6 +326,11 @@ where
 }
 
 /// Serializes hierarchy field values into array-of-nodes representation.
+///
+/// # Errors
+///
+/// Returns a serialization error when [`nest_hierarchy_value`] cannot encode
+/// the nodes, or when the encoded value cannot be written to `serializer`.
 #[allow(dead_code)]
 pub fn serialize_hierarchy_node_list<S>(
     hierarchy: &[HierarchyNode],
@@ -381,6 +391,11 @@ pub fn regex_variant_selector(pattern: &str) -> String {
 }
 
 /// Deserializes selector arrays that accept literal strings or regex objects.
+///
+/// # Errors
+///
+/// Returns a deserialization error when an entry is neither a literal string
+/// nor a well-formed regex-selector object.
 pub fn deserialize_variant_selector_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -422,6 +437,11 @@ where
 }
 
 /// Serializes selector arrays back to string-or-object wire representation.
+///
+/// # Errors
+///
+/// Returns a serialization error when the encoded selector array cannot be
+/// written to `serializer`.
 pub fn serialize_variant_selector_list<S>(
     selectors: &[String],
     serializer: S,
@@ -451,6 +471,14 @@ where
 ///   falls back to `default`.
 ///
 /// Returned variants are deduplicated preserving first-seen order.
+///
+/// # Errors
+///
+/// Returns a message naming the offending selector when a selector is empty
+/// after trimming, when a regex selector's pattern does not compile, when a
+/// regex selector matches no available variant and no `default` variant exists,
+/// or when a literal selector names no available variant and no `default`
+/// variant exists.
 pub fn expand_variant_selectors(
     selectors: &[String],
     available_variants: &BTreeSet<String>,
@@ -541,6 +569,12 @@ pub fn nest_hierarchy_value(hierarchy: &[HierarchyNode]) -> Result<Value, MediaP
 }
 
 /// Flattens hierarchy nodes into runtime entries with resolved paths.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] wrapping the first structural failure
+/// reported while flattening, which covers path, id, and media-reference
+/// validation.
 pub fn flatten_hierarchy_nodes_for_runtime(
     hierarchy: &[HierarchyNode],
 ) -> Result<Vec<FlattenedHierarchyEntry>, MediaPmError> {
@@ -736,6 +770,11 @@ fn validate_hierarchy_path_component(component: &str) -> Result<(), String> {
 
 /// Collects effective hierarchy-id → media-path mappings from a flattened
 /// hierarchy.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when one hierarchy id resolves to two
+/// different media paths.
 pub fn collect_playlist_media_index(
     flattened_hierarchy: &[FlattenedHierarchyEntry],
 ) -> Result<BTreeMap<String, Vec<String>>, MediaPmError> {

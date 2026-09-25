@@ -1043,6 +1043,11 @@ impl MediaPmService<FileSystemCas> {
     ///
     /// When an observer is provided, [`SyncPhaseReport`]s are delivered after
     /// each progress screen finishes.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to
+    /// [`sync_library_with_progress_overrides`](Self::sync_library_with_progress_overrides).
     pub async fn sync_library_with_options(
         &mut self,
         options: crate::SyncLibraryOptions,
@@ -1075,6 +1080,11 @@ impl MediaPmService<FileSystemCas> {
     }
 
     /// Runs a full library sync with optional tag-update checks and phase observer.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to
+    /// [`sync_library_with_progress_overrides`](Self::sync_library_with_progress_overrides).
     pub async fn sync_library_with_tag_update_checks_and_observer(
         &mut self,
         verify_materialization: bool,

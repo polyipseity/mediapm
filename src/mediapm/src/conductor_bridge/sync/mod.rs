@@ -894,22 +894,19 @@ fn build_provisioning_entries(
             entry.tool_id,
             serde_json::to_string(&entry.tool_requirement.version_spec).unwrap_or_default()
         );
-        match seen.get(&key) {
-            Some(&idx) => {
-                // Dep entries come first in the vec; if the existing entry is
-                // a dep and this is explicit, skip the explicit one.
-                if matches!(entry.kind, EntryKind::Explicit)
-                    && matches!(deduped[idx].kind, EntryKind::Dep)
-                {
-                    continue;
-                }
-                // Otherwise replace (dep replaces dep, explicit replaces explicit)
-                deduped[idx] = entry;
+        if let Some(&idx) = seen.get(&key) {
+            // Dep entries come first in the vec; if the existing entry is
+            // a dep and this is explicit, skip the explicit one.
+            if matches!(entry.kind, EntryKind::Explicit)
+                && matches!(deduped[idx].kind, EntryKind::Dep)
+            {
+                continue;
             }
-            None => {
-                seen.insert(key, deduped.len());
-                deduped.push(entry);
-            }
+            // Otherwise replace (dep replaces dep, explicit replaces explicit)
+            deduped[idx] = entry;
+        } else {
+            seen.insert(key, deduped.len());
+            deduped.push(entry);
         }
     }
 
