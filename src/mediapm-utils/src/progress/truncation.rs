@@ -144,6 +144,8 @@ fn visible_len(text: &str) -> usize {
 ///   from the tail, sparing protected ones while `max_width` is at or above
 ///   `floor`. Below the floor, protection lifts and the tail is dropped as
 ///   needed.
+/// * **Final drop** — a single segment that is still too wide is dropped as
+///   well, so the result is a whole-segment rendering or nothing at all.
 ///
 /// The ladder **never shaves**: no segment is ever cut at a character
 /// boundary. A segment is shown whole, shortened from the front, or absent —
@@ -167,6 +169,18 @@ fn visible_len(text: &str) -> usize {
 /// ];
 /// assert_eq!(fit_segments(&segs, 40, 12), "[wf] Music/Artist/Album/song.mkv");
 /// assert_eq!(fit_segments(&segs, 20, 12), "[wf] …Album/song.mkv");
+/// ```
+///
+/// # Degenerate widths
+///
+/// Below the width of a single segment the ladder yields an empty string
+/// rather than a clipped one:
+///
+/// ```
+/// # use mediapm_utils::progress::{Segment, fit_segments};
+/// let segs = vec![Segment::protected("[wf]")];
+/// assert_eq!(fit_segments(&segs, 4, 4), "[wf]");
+/// assert_eq!(fit_segments(&segs, 3, 4), "");
 /// ```
 #[cfg(feature = "progress")]
 #[must_use]
