@@ -2,12 +2,66 @@
 
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use bytes::Bytes;
+use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
 use mediapm::{MediaPmService, MediaRuntimeStorage};
 use mediapm_cas::CasApi;
 use mediapm_conductor::{NickelDocument, decode_document};
+use mediapm_utils::progress::{DimensionSource, ProgressTerminal, TestDimensionSource};
 use zip::write::FileOptions;
+
+/// Terminal height of a test-drawn terminal, in rows.
+const TEST_TERM_ROWS: u16 = 24;
+/// Terminal width of a test-drawn terminal, in columns.
+const TEST_TERM_COLS: u16 = 80;
+
+/// Builds a live [`ProgressTerminal`] whose draw target is an in-memory grid.
+///
+/// The default build targets the process's real stderr, so a test that lets a
+/// sync open its own terminal paints progress frames into the test log. This
+/// terminal keeps the production draw path — write gate, layout, style, join —
+/// but routes every byte into an [`InMemoryTerm`] the caller can inspect or
+/// drop. Pre-roll capture is given a second in-memory term because the default
+/// swaps only the pre-roll term and would still write to stderr.
+pub(crate) fn test_progress_terminal() -> ProgressTerminal {
+    let grid = InMemoryTerm::new(TEST_TERM_ROWS, TEST_TERM_COLS);
+    let dims = Arc::new(TestDimensionSource::new((TEST_TERM_ROWS, TEST_TERM_COLS)));
+    ProgressTerminal::builder()
+        .with_multi_progress(MultiProgress::with_draw_target(ProgressDrawTarget::term_like(
+            Box::new(grid),
+        )))
+        .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
+        .with_pre_roll_capture(Box::new(InMemoryTerm::new(TEST_TERM_ROWS, TEST_TERM_COLS)))
+        .with_ticker_enabled(false)
+        .capacity(TEST_TERM_ROWS as usize)
+        .build()
+}
+
+/// Runs a library sync with the given verification flag through an injected
+/// in-memory terminal.
+///
+/// Equivalent to [`MediaPmService::sync_library`] (same options, no observer)
+/// except that the sync renders into a memory grid instead of the real stderr,
+/// so its frames never reach the test log. The sync still runs every phase.
+pub(crate) async fn sync_library_with_test_terminal(
+    service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
+    verify_materialization: bool,
+) -> Result<mediapm::SyncSummary, mediapm::MediaPmError> {
+    service
+        .sync_library_with_progress_overrides(
+            mediapm::SyncLibraryOptions {
+                verify_materialization,
+                ..mediapm::SyncLibraryOptions::default()
+            },
+            mediapm::SyncProgressOverrides {
+                terminal: Some(test_progress_terminal()),
+                no_progress: false,
+            },
+        )
+        .await
+}
 
 /// Loads a `MediaPmDocument` from a persisted `mediapm.ncl` file.
 pub(crate) fn read_doc(path: &Path) -> mediapm::MediaPmDocument {

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::common::{seed_cas, service_at};
+use crate::common::{seed_cas, service_at, sync_library_with_test_terminal};
 use bytes::Bytes;
 use mediapm::{
     HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaPmService, MediaSourceSpec, MediaStep,
@@ -77,7 +77,7 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
     seed_and_add_import_source(&mut service, &uri, b"phase2 conductor execution fixture").await?;
     let media_id = media_id_from_uri(&uri);
 
-    let summary = service.sync_library(false).await?;
+    let summary = sync_library_with_test_terminal(&mut service, false).await?;
 
     // The managed import workflow executed: at least one conductor instance.
     assert!(
@@ -135,7 +135,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
         let uri = Url::parse("local:phase2-import").expect("url must parse");
         seed_and_add_import_source(&mut service, &uri, b"phase2 conductor execution fixture")
             .await?;
-        let summary = service.sync_library(false).await?;
+        let summary = sync_library_with_test_terminal(&mut service, false).await?;
         assert!(summary.executed_instances >= 1, "first sync should execute the import workflow");
         first_executed = summary.executed_instances;
         state_path = service.paths().conductor_state_config.clone();
@@ -146,7 +146,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
     // Second service on the same root: mediapm document and conductor state
     // persist across service instances; the impure import re-executes.
     let mut service = service_at(root.path(), None).await?;
-    let second_summary = service.sync_library(false).await?;
+    let second_summary = sync_library_with_test_terminal(&mut service, false).await?;
     assert!(
         second_summary.executed_instances >= 1,
         "second sync should execute the import workflow again"
@@ -190,7 +190,7 @@ async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::M
         let media_id = media_id_from_uri(&uri);
         service.add_media_source(&import_source_spec("x"), media_id.clone(), &uri, None, None)?;
 
-        let summary = service.sync_library(false).await?;
+        let summary = sync_library_with_test_terminal(&mut service, false).await?;
         assert!(
             summary.warnings.iter().any(|warning| warning.contains("failed step")),
             "the invalid-hash import step should produce a failed-step warning, got: {:?}",
@@ -244,7 +244,7 @@ async fn sync_populates_managed_files_from_conductor_state() -> Result<(), media
     });
     save_mediapm_document(&paths.mediapm_ncl, &document)?;
 
-    service.sync_library(false).await?;
+    sync_library_with_test_terminal(&mut service, false).await?;
 
     let state = load_mediapm_state_document(&paths.mediapm_state_json)?;
     assert!(

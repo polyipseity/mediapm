@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::common::{make_zip, seed_cas, service_at};
+use crate::common::{make_zip, seed_cas, service_at, sync_library_with_test_terminal};
 use bytes::Bytes;
 use mediapm::{
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaMetadataValue,
@@ -554,7 +554,7 @@ async fn demo_online_hierarchy_materialization_matches_golden_tree()
         })?;
     }
 
-    let summary = service.sync_library(false).await?;
+    let summary = sync_library_with_test_terminal(&mut service, false).await?;
     assert!(summary.materialized_paths > 0, "expected hierarchy materialization to write files");
 
     let hierarchy_root = service.resolve_effective_paths()?.hierarchy_root_dir;
