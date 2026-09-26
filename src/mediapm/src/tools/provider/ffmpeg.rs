@@ -42,7 +42,8 @@ pub(crate) async fn resolve_btbn_tag(
 ///
 /// # HTTP client policy
 ///
-/// Uses the process-wide shared client from [`crate::http_client`].
+/// Uses the process-wide shared client from
+/// [`mediapm_conductor::http::client::shared_no_redirect_http_client`].
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance (no redirect).
 ///

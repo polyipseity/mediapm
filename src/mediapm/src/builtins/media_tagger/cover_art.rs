@@ -573,7 +573,7 @@ pub(super) async fn collect_musicbrainz_cover_art(
 ///
 /// # HTTP client policy
 ///
-/// Uses the process-wide shared client from [`crate::http_client`].
+/// Uses the process-wide shared client from [`mediapm_conductor::http::client::shared_http_client`].
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 async fn fetch_cover_art_entries(
@@ -972,7 +972,7 @@ pub(super) fn select_cover_art_for_tag_embedding(
 ///
 /// # HTTP client policy
 ///
-/// Uses the process-wide shared client from [`crate::http_client`].
+/// Uses the process-wide shared client from [`mediapm_conductor::http::client::shared_http_client`].
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 pub(super) async fn persist_cover_art_slot_artifacts(
