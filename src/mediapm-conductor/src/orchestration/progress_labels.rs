@@ -133,8 +133,9 @@ impl WorkerBarLabel {
     /// protection lifts and the tail is dropped as a whole segment.
     pub const PREFIX_FLOOR: usize = 12;
 
-    /// Worker suffixes carry only free-form custom text, so no protected
-    /// segment applies and the floor is zero.
+    /// A worker carries no progress tally, so no suffix segment is protected
+    /// and the floor is zero. The auto-derived `elapsed`, `rate` and `eta`
+    /// still render ahead of an elastic `custom`.
     pub const SUFFIX_FLOOR: usize = 0;
 
     /// Build the prefix segments, most important first.
