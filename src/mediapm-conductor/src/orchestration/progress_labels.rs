@@ -13,16 +13,14 @@ use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit
 /// Truncation order for a per-step (real-progress) bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix marks `phase`, `status_marker`, and `completed`/`total` as
-/// protected and leads with them, so width pressure sheds the `tool` name
-/// first, then the version and identifiers, before the head. The `tool` name
-/// is elastic and is shortened from the front rather than dropped whole.
-/// The suffix repeats the tally, then `elapsed`, `rate`, `eta`, and an
-/// elastic `custom`.
+/// prefix leads with `phase`, `status_marker`, and `completed`/`total`, so
+/// width pressure sheds the `tool` name first, then the version and
+/// identifiers, before the head. The `tool` name is elastic and is shortened
+/// from the front rather than dropped whole. The suffix repeats the tally,
+/// then `elapsed`, `rate`, `eta`, and an elastic `custom`.
 ///
 /// The order is the whole mechanism. `fit_segments` drops from the tail
-/// unconditionally, so a field survives by ranking rather than by being
-/// marked protected, and the floor constants below change no output.
+/// unconditionally, so a field survives by its position in the list.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
 pub struct StepBarLabel {
@@ -50,39 +48,29 @@ pub struct StepBarLabel {
 
 #[cfg(feature = "progress")]
 impl StepBarLabel {
-    /// Recorded intent: the rendered width of the protected head,
-    /// `[wf] [F] 1/4`.
-    ///
-    /// `fit_segments` does not consult it, so it spares nothing. The head
-    /// sheds only because it leads the segment order.
-    pub const PREFIX_FLOOR: usize = 12;
-
-    /// Minimum suffix width at which the protected tally still fits.
-    pub const SUFFIX_FLOOR: usize = 3;
-
     /// Build the prefix segments, most important first.
     ///
-    /// The three protected segments lead, so width pressure sheds the
+    /// The three leading segments come first, so width pressure sheds the
     /// version and identifiers before the phase, status marker, or tally.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.phase.is_empty() {
-            segs.push(Segment::protected(format!("[{}]", self.phase)));
+            segs.push(Segment::keep(format!("[{}]", self.phase)));
         }
         if !self.status_marker.is_empty() {
-            segs.push(Segment::protected(format!("[{}]", self.status_marker)));
+            segs.push(Segment::keep(format!("[{}]", self.status_marker)));
         }
         if !self.completed.is_empty() && !self.total.is_empty() {
-            segs.push(Segment::protected(format!("{}/{}", self.completed, self.total)));
+            segs.push(Segment::keep(format!("{}/{}", self.completed, self.total)));
         }
         if !self.version.is_empty() {
-            segs.push(Segment::new_keep(format!("[{}]", self.version)));
+            segs.push(Segment::keep(format!("[{}]", self.version)));
         }
         if !self.workflow_id.is_empty() {
-            segs.push(Segment::new_keep(self.workflow_id.clone()));
+            segs.push(Segment::keep(self.workflow_id.clone()));
         }
         if !self.step_id.is_empty() {
-            segs.push(Segment::new_keep(self.step_id.clone()));
+            segs.push(Segment::keep(self.step_id.clone()));
         }
         if !self.tool.is_empty() {
             segs.push(Segment::elastic(format!("({})", self.tool)));
@@ -97,16 +85,16 @@ impl StepBarLabel {
     fn suffix_segments(&self, suffix: &SuffixComponents) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.completed.is_empty() && !self.total.is_empty() {
-            segs.push(Segment::protected(format!("{}/{}", self.completed, self.total)));
+            segs.push(Segment::keep(format!("{}/{}", self.completed, self.total)));
         }
         if !suffix.elapsed.is_empty() {
-            segs.push(Segment::new_keep(suffix.elapsed.clone()));
+            segs.push(Segment::keep(suffix.elapsed.clone()));
         }
         if let Some(ref rate) = suffix.rate {
-            segs.push(Segment::new_keep(rate.clone()));
+            segs.push(Segment::keep(rate.clone()));
         }
         if let Some(ref eta) = suffix.eta {
-            segs.push(Segment::new_keep(eta.clone()));
+            segs.push(Segment::keep(eta.clone()));
         }
         if !suffix.custom.is_empty() {
             segs.push(Segment::elastic(suffix.custom.clone()));
@@ -118,27 +106,23 @@ impl StepBarLabel {
 #[cfg(feature = "progress")]
 impl BarLabelTruncation for StepBarLabel {
     fn truncate_prefix(&self, max_width: usize) -> String {
-        fit_segments(&self.prefix_segments(), max_width, Self::PREFIX_FLOOR)
+        fit_segments(&self.prefix_segments(), max_width)
     }
 
     fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
-        fit_segments(&self.suffix_segments(suffix), max_width, Self::SUFFIX_FLOOR)
+        fit_segments(&self.suffix_segments(suffix), max_width)
     }
 }
 
 /// Truncation order for a worker-slot (activity) bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix marks `status_marker` and `activity` as protected and leads with
-/// them, so width pressure sheds the `tool` name first, then the
-/// identifiers, before the head. The `tool` name is elastic and is shortened
-/// from the front rather than dropped whole. A worker carries no workflow
-/// phase and no progress tally, so the suffix has no tally segment and its
-/// floor is recorded as zero; the auto-derived `elapsed`, `rate`, and `eta`
-/// still render, ahead of an elastic `custom`.
-///
-/// As with the step bar, the order is the mechanism and the floors change
-/// no output.
+/// prefix leads with `status_marker` and `activity`, so width pressure sheds
+/// the `tool` name first, then the identifiers, before the head. The `tool`
+/// name is elastic and is shortened from the front rather than dropped whole.
+/// A worker carries no workflow phase and no progress tally, so the suffix
+/// has no tally segment; the auto-derived `elapsed`, `rate`, and `eta` still
+/// render, ahead of an elastic `custom`.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
 pub struct WorkerBarLabel {
@@ -160,35 +144,23 @@ pub struct WorkerBarLabel {
 
 #[cfg(feature = "progress")]
 impl WorkerBarLabel {
-    /// Recorded intent: the rendered width of the protected head,
-    /// `[F] [active]`.
-    ///
-    /// `fit_segments` does not consult it, so it spares nothing. The head
-    /// sheds only because it leads the segment order.
-    pub const PREFIX_FLOOR: usize = 12;
-
-    /// A worker carries no progress tally, so no suffix segment is protected
-    /// and the floor is zero. The auto-derived `elapsed`, `rate` and `eta`
-    /// still render ahead of an elastic `custom`.
-    pub const SUFFIX_FLOOR: usize = 0;
-
     /// Build the prefix segments, most important first.
     ///
-    /// The two protected segments lead, so width pressure sheds the
+    /// The two leading segments come first, so width pressure sheds the
     /// identifiers and tool name before the status marker or activity.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.status_marker.is_empty() {
-            segs.push(Segment::protected(format!("[{}]", self.status_marker)));
+            segs.push(Segment::keep(format!("[{}]", self.status_marker)));
         }
         if !self.activity.is_empty() {
-            segs.push(Segment::protected(format!("[{}]", self.activity)));
+            segs.push(Segment::keep(format!("[{}]", self.activity)));
         }
         if !self.workflow_id.is_empty() {
-            segs.push(Segment::new_keep(self.workflow_id.clone()));
+            segs.push(Segment::keep(self.workflow_id.clone()));
         }
         if !self.step_id.is_empty() {
-            segs.push(Segment::new_keep(self.step_id.clone()));
+            segs.push(Segment::keep(self.step_id.clone()));
         }
         if !self.tool.is_empty() {
             segs.push(Segment::elastic(format!("({})", self.tool)));
@@ -205,18 +177,18 @@ impl WorkerBarLabel {
     /// mean it has no timing information: the renderer passes its merged
     /// [`SuffixComponents`] to `truncate_suffix`, and the auto-derived
     /// `elapsed`, `rate`, and `eta` fields arrive there. They are rendered
-    /// as `new_keep` so width pressure drops them whole rather than
+    /// as `Segment::keep` so width pressure drops them whole rather than
     /// shortening them. Only free-form `custom` text is elastic.
     fn suffix_segments(suffix: &SuffixComponents) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !suffix.elapsed.is_empty() {
-            segs.push(Segment::new_keep(suffix.elapsed.clone()));
+            segs.push(Segment::keep(suffix.elapsed.clone()));
         }
         if let Some(ref rate) = suffix.rate {
-            segs.push(Segment::new_keep(rate.clone()));
+            segs.push(Segment::keep(rate.clone()));
         }
         if let Some(ref eta) = suffix.eta {
-            segs.push(Segment::new_keep(eta.clone()));
+            segs.push(Segment::keep(eta.clone()));
         }
         if !suffix.custom.is_empty() {
             segs.push(Segment::elastic(suffix.custom.clone()));
@@ -228,10 +200,10 @@ impl WorkerBarLabel {
 #[cfg(feature = "progress")]
 impl BarLabelTruncation for WorkerBarLabel {
     fn truncate_prefix(&self, max_width: usize) -> String {
-        fit_segments(&self.prefix_segments(), max_width, Self::PREFIX_FLOOR)
+        fit_segments(&self.prefix_segments(), max_width)
     }
 
     fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
-        fit_segments(&Self::suffix_segments(suffix), max_width, Self::SUFFIX_FLOOR)
+        fit_segments(&Self::suffix_segments(suffix), max_width)
     }
 }

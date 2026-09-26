@@ -7,44 +7,42 @@
 
 use crate::progress::{Segment, Shrink, fit_segments, front_ellipsis};
 
-/// Protected: phase, status, tally. Elastic: tool. Keep: version, ids.
+/// Head: phase, status, tally. Elastic: tool. Keep: version, ids.
 fn step_segments() -> Vec<Segment> {
     vec![
-        Segment::protected("[wf]"),
-        Segment::protected("[F]"),
-        Segment::protected("1/4"),
-        Segment::new_keep("9.9.9"),
-        Segment::new_keep("default"),
-        Segment::new_keep("s5"),
+        Segment::keep("[wf]"),
+        Segment::keep("[F]"),
+        Segment::keep("1/4"),
+        Segment::keep("9.9.9"),
+        Segment::keep("default"),
+        Segment::keep("s5"),
         Segment::elastic("(mediapm-conductor-builtin-archive)"),
     ]
 }
 
-const STEP_FLOOR: usize = 12;
+/// Visible width of the leading `[wf]` segment. Widths below this can hold
+/// the head alone; widths at or above it leave room for further segments.
+const HEAD_WIDTH: usize = 12;
 
-/// Floor below the protected head's own width, so the head alone fills the
-/// budget at these widths. The test below passes it alongside `STEP_FLOOR`
-/// to cover both floor settings.
-const TIGHT_FLOOR: usize = 6;
+/// A width strictly below [`HEAD_WIDTH`], so the head alone fills the budget.
+const BELOW_HEAD: usize = 6;
 
-/// Verifies the protected head survives at two floor settings, across the
-/// widths where the head alone fills the budget and the widths where it fits
-/// alongside other segments.
+/// Verifies the leading head survives across the widths where it alone fills
+/// the budget and the widths where it fits alongside other segments.
 #[test]
-fn protected_head_survives_in_both_floor_regimes() {
-    // The protected head is exactly 12 columns wide, so the regimes are
-    // geometric: below its own width nothing can share the budget, at and
-    // above it the head fits with room left. Each loop passes a different
-    // floor, so the head is checked to survive at both settings. The outcome
-    // follows from segment order; the floor value does not change it.
-    for width in TIGHT_FLOOR..STEP_FLOOR {
-        let out = fit_segments(&step_segments(), width, TIGHT_FLOOR);
+fn head_survives_below_and_above_its_own_width() {
+    // The head is exactly 12 columns wide, so the two regimes are geometric:
+    // below its own width nothing can share the budget, at and above it the
+    // head fits with room left. Survival follows from the head's leading
+    // position in the segment list.
+    for width in BELOW_HEAD..HEAD_WIDTH {
+        let out = fit_segments(&step_segments(), width);
         assert!(out.contains("[wf]"), "phase lost at width {width}: {out:?}");
         assert!(out.chars().count() <= width, "overflowed at width {width}: {out:?}");
     }
 
-    for width in STEP_FLOOR..60 {
-        let out = fit_segments(&step_segments(), width, STEP_FLOOR);
+    for width in HEAD_WIDTH..60 {
+        let out = fit_segments(&step_segments(), width);
         assert!(out.contains("[wf]"), "phase lost at width {width}: {out:?}");
         assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
         assert!(out.contains("1/4"), "tally lost at width {width}: {out:?}");
@@ -61,15 +59,15 @@ fn output_length_is_monotonic_in_width() {
     // passing the loop vacuously.
     const WIDEST: usize = 60;
     let segments = step_segments();
-    let widest = fit_segments(&segments, WIDEST, STEP_FLOOR);
+    let widest = fit_segments(&segments, WIDEST);
     assert!(
         widest.contains("[wf]") && widest.contains("1/4"),
-        "widest probe lost protected content: {widest:?}"
+        "widest probe lost head content: {widest:?}"
     );
 
     let mut previous_len = widest.chars().count();
     for width in (0..WIDEST).rev() {
-        let out = fit_segments(&segments, width, STEP_FLOOR);
+        let out = fit_segments(&segments, width);
         let len = out.chars().count();
         assert!(len <= previous_len, "width {width} grew the line to {len} chars");
         previous_len = len;
@@ -84,26 +82,21 @@ fn output_is_never_a_fragment() {
     // shortened from the front. This is what spec rule 3 asks for, and it
     // is the assertion that fails if a shave is reintroduced.
     let segments = step_segments();
-    for floor in [TIGHT_FLOOR, STEP_FLOOR] {
-        for width in 0..60 {
-            let out = fit_segments(&segments, width, floor);
-            for token in out.split(' ').filter(|t| !t.is_empty()) {
-                let whole = segments.iter().any(|s| {
-                    if s.shrink != Shrink::FrontEllipsis {
-                        return token == s.text;
-                    }
-                    // A whole elastic segment, or a front-ellipsised one:
-                    // the token must be '…' plus a suffix of the segment.
-                    // `strip_prefix` is used rather than a byte slice
-                    // because '…' is three bytes wide.
-                    token == s.text
-                        || token.strip_prefix('…').is_some_and(|tail| s.text.ends_with(tail))
-                });
-                assert!(
-                    whole,
-                    "fragment {token:?} in output at width {width} floor {floor}: {out:?}"
-                );
-            }
+    for width in 0..60 {
+        let out = fit_segments(&segments, width);
+        for token in out.split(' ').filter(|t| !t.is_empty()) {
+            let whole = segments.iter().any(|s| {
+                if s.shrink != Shrink::FrontEllipsis {
+                    return token == s.text;
+                }
+                // A whole elastic segment, or a front-ellipsised one:
+                // the token must be '…' plus a suffix of the segment.
+                // `strip_prefix` is used rather than a byte slice
+                // because '…' is three bytes wide.
+                token == s.text
+                    || token.strip_prefix('…').is_some_and(|tail| s.text.ends_with(tail))
+            });
+            assert!(whole, "fragment {token:?} in output at width {width}: {out:?}");
         }
     }
 }
@@ -111,7 +104,7 @@ fn output_is_never_a_fragment() {
 #[test]
 fn result_never_exceeds_the_budget() {
     for width in 0..60 {
-        let out = fit_segments(&step_segments(), width, STEP_FLOOR);
+        let out = fit_segments(&step_segments(), width);
         assert!(out.chars().count() <= width, "width {width} overflowed: {out:?}");
     }
 }
@@ -119,10 +112,10 @@ fn result_never_exceeds_the_budget() {
 #[test]
 fn elastic_tool_name_shrinks_before_anything_is_dropped() {
     let segments = step_segments();
-    let full = fit_segments(&segments, 200, STEP_FLOOR);
+    let full = fit_segments(&segments, 200);
     assert!(full.contains("(mediapm-conductor-builtin-archive)"));
 
-    let shrunk = fit_segments(&segments, 40, STEP_FLOOR);
+    let shrunk = fit_segments(&segments, 40);
     assert!(shrunk.contains('…'), "elastic segment not front-ellipsised: {shrunk:?}");
     assert!(!shrunk.contains("mediapm-conductor"), "tool not shortened: {shrunk:?}");
     assert!(shrunk.contains("[wf]"), "phase lost while shrinking: {shrunk:?}");
@@ -131,17 +124,16 @@ fn elastic_tool_name_shrinks_before_anything_is_dropped() {
 }
 
 #[test]
-fn narrow_width_keeps_the_protected_head_whole() {
+fn narrow_width_keeps_the_leading_head_whole() {
     let segments = step_segments();
-    let at_head_width = fit_segments(&segments, STEP_FLOOR, STEP_FLOOR);
+    let at_head_width = fit_segments(&segments, HEAD_WIDTH);
     assert!(at_head_width.contains("[wf]"), "phase lost at the head's width: {at_head_width:?}");
 
-    let below_head_width = fit_segments(&segments, 4, STEP_FLOOR);
+    let below_head_width = fit_segments(&segments, 4);
     // With no shaving, a width too small for the whole head keeps the
     // highest-priority segment whole rather than clipping it. `[wf]` is
     // exactly four columns, so it is the one segment that fits here; the
-    // result is a consequence of its width and its leading position, not of
-    // any behaviour at the floor.
+    // result follows from its width and its leading position.
     assert_eq!(below_head_width, "[wf]");
 }
 
@@ -162,6 +154,6 @@ fn front_ellipsis_preserves_a_path_tail() {
 
 #[test]
 fn empty_input_yields_empty_output() {
-    assert_eq!(fit_segments(&[], 40, 12), "");
-    assert_eq!(fit_segments(&[Segment::protected("[wf]")], 0, 12), "");
+    assert_eq!(fit_segments(&[], 40), "");
+    assert_eq!(fit_segments(&[Segment::keep("[wf]")], 0), "");
 }

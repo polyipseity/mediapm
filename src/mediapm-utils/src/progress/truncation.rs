@@ -85,35 +85,21 @@ pub struct Segment {
     pub text: String,
     /// How this piece yields width.
     pub shrink: Shrink,
-    /// Marks this piece as protected. Protected pieces are never shortened.
-    ///
-    /// The flag does not spare the piece from dropping. [`fit_segments`]
-    /// drops from the tail unconditionally, so a protected piece is dropped
-    /// when the tail reaches it, at any width. Its position in the list is
-    /// what keeps it in the rendered prefix; the flag never does.
-    pub protected: bool,
 }
 
 #[cfg(feature = "progress")]
 impl Segment {
-    /// A protected piece: never shortened in the shrink phase, and never
-    /// eligible to become the elastic segment. Whether it survives a drop
-    /// depends on its position in the list, not on the flag.
+    /// A piece that is surrendered whole rather than shortened: it is
+    /// dropped when it cannot fit.
     #[must_use]
-    pub fn protected(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Keep, protected: true }
+    pub fn keep(text: impl Into<String>) -> Self {
+        Self { text: text.into(), shrink: Shrink::Keep }
     }
 
     /// An elastic piece: shortened from the front before anything is dropped.
     #[must_use]
     pub fn elastic(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::FrontEllipsis, protected: false }
-    }
-
-    /// A non-protected piece that is dropped whole rather than shortened.
-    #[must_use]
-    pub fn new_keep(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Keep, protected: false }
+        Self { text: text.into(), shrink: Shrink::FrontEllipsis }
     }
 }
 
@@ -168,31 +154,16 @@ fn visible_len(text: &str) -> usize {
 /// never a fragment. This is the property that separates it from the prefix
 /// cut it replaces.
 ///
-/// # `floor` and `Segment::protected` do not affect the result
-///
-/// `floor` and [`Segment::protected`] are accepted and recorded, but neither
-/// changes any output, for any input. A drop loop that spared a protected
-/// tail segment would be undone by the unguarded drop that follows it: at the
-/// point such a loop stops, the remainder is by definition still too wide and
-/// holds more than one segment, so the next loop pops that segment anyway.
-/// Dropping is therefore always available, and because it is never worse than
-/// shaving, the outcome is determined by segment order alone.
-///
-/// Rule 1 is delivered by ordering, and rule 3 by the absence of shaving.
-/// The two parameters describe *where* a caller intends the policy boundary
-/// to sit, so they document intent and leave room to make it binding, but
-/// today no input can distinguish them from the unconditional drop.
-///
 /// # Examples
 ///
 /// ```
 /// # use mediapm_utils::progress::{Segment, fit_segments};
 /// let segs = vec![
-///     Segment::protected("[wf]"),
+///     Segment::keep("[wf]"),
 ///     Segment::elastic("Music/Artist/Album/song.mkv"),
 /// ];
-/// assert_eq!(fit_segments(&segs, 40, 12), "[wf] Music/Artist/Album/song.mkv");
-/// assert_eq!(fit_segments(&segs, 20, 12), "[wf] …Album/song.mkv");
+/// assert_eq!(fit_segments(&segs, 40));
+/// assert_eq!(fit_segments(&segs, 20));
 /// ```
 ///
 /// # Degenerate widths
@@ -202,20 +173,16 @@ fn visible_len(text: &str) -> usize {
 ///
 /// ```
 /// # use mediapm_utils::progress::{Segment, fit_segments};
-/// let segs = vec![Segment::protected("[wf]")];
-/// assert_eq!(fit_segments(&segs, 4, 4), "[wf]");
-/// assert_eq!(fit_segments(&segs, 3, 4), "");
+/// let segs = vec![Segment::keep("[wf]")];
+/// assert_eq!(fit_segments(&segs, 4));
+/// assert_eq!(fit_segments(&segs, 3));
 /// ```
 #[cfg(feature = "progress")]
 #[must_use]
-pub fn fit_segments(segments: &[Segment], max_width: usize, floor: usize) -> String {
+pub fn fit_segments(segments: &[Segment], max_width: usize) -> String {
     if segments.is_empty() {
         return String::new();
     }
-    // `floor` and `Segment::protected` are recorded intent that cannot
-    // change the result; see the type-level note on this function. The
-    // parameter stays because it is public API and every label supplies it.
-    let _ = floor;
 
     let mut kept: Vec<Segment> = segments.to_vec();
 

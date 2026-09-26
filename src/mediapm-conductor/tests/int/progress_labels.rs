@@ -94,8 +94,13 @@ fn step_label_truncate_keeps_version() {
     assert!(!tight.contains("echo"), "tool should be shed at width 20: {tight:?}");
 }
 
+/// Visible width of the leading `[wf] [F] 1/4` head.
+const STEP_HEAD_WIDTH: usize = 12;
+/// Visible width of the leading `[F] [active]` head.
+const WORKER_HEAD_WIDTH: usize = 12;
+
 #[test]
-fn step_label_protected_head_survives_at_the_floor() {
+fn step_label_head_survives_across_narrow_widths() {
     let label = StepBarLabel {
         status_marker: "F".into(),
         workflow_id: "wf".into(),
@@ -106,7 +111,7 @@ fn step_label_protected_head_survives_at_the_floor() {
         completed: "1".into(),
         total: "4".into(),
     };
-    for width in StepBarLabel::PREFIX_FLOOR..=20 {
+    for width in STEP_HEAD_WIDTH..=20 {
         let out = label.truncate_prefix(width);
         assert!(out.contains("[wf]"), "phase lost at width {width}: {out:?}");
         assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
@@ -116,7 +121,7 @@ fn step_label_protected_head_survives_at_the_floor() {
 }
 
 #[test]
-fn worker_label_protected_head_survives_at_the_floor() {
+fn worker_label_head_survives_across_narrow_widths() {
     let label = WorkerBarLabel {
         status_marker: "F".into(),
         workflow_id: "wf".into(),
@@ -124,7 +129,7 @@ fn worker_label_protected_head_survives_at_the_floor() {
         tool: "echo@v1".into(),
         activity: "active".into(),
     };
-    for width in WorkerBarLabel::PREFIX_FLOOR..=20 {
+    for width in WORKER_HEAD_WIDTH..=20 {
         let out = label.truncate_prefix(width);
         assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
         assert!(out.contains("[active]"), "activity lost at width {width}: {out:?}");
@@ -135,7 +140,7 @@ fn worker_label_protected_head_survives_at_the_floor() {
 #[test]
 fn step_label_shrinks_tool_before_dropping_version() {
     // Under width pressure the elastic tool name is shortened first; only
-    // once it cannot shrink further is the version dropped. The protected
+    // once it cannot shrink further is the version dropped. The leading
     // head never yields.
     let label = StepBarLabel {
         status_marker: String::new(),
@@ -201,7 +206,7 @@ fn worker_suffix_keeps_auto_derived_timing_fields() {
 
 #[test]
 fn step_label_front_ellipsises_very_long_tool_name() {
-    // With every protected field empty the tool name is the only segment.
+    // With every head field empty the tool name is the only segment.
     // It must be shortened from the front, keeping the tail, not cut from
     // the front as the old implementation did.
     let label = StepBarLabel {
@@ -221,7 +226,7 @@ fn step_label_front_ellipsises_very_long_tool_name() {
 }
 
 #[test]
-fn step_suffix_keeps_the_protected_tally_and_timing_fields() {
+fn step_suffix_keeps_the_leading_tally_and_timing_fields() {
     // A step bar carries its own progress tally in the label struct, and the
     // renderer separately supplies auto-derived elapsed, rate and ETA in the
     // suffix argument. Both must reach the rendered suffix: the timing fields

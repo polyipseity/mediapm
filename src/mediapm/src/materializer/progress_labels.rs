@@ -11,13 +11,12 @@ use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit
 /// Truncation order for a materialization bar.
 ///
 /// Segments are ordered most important first and yield from the tail.
-/// Prefix: `phase` → `status_marker` (both marked protected) → `entry_name` →
-/// `file_name` (sub-bars only) → `entry_path` (elastic, shortened from the
-/// front so the directory tail survives).
+/// Prefix: `phase` → `status_marker` → `entry_name` → `file_name` (sub-bars
+/// only) → `entry_path` (elastic, shortened from the front so the directory
+/// tail survives).
 ///
 /// The order is the whole mechanism. `fit_segments` drops from the tail
-/// unconditionally, so a field survives by ranking rather than by being
-/// marked protected, and `PREFIX_FLOOR` changes no output.
+/// unconditionally, so a field survives by its position in the list.
 ///
 /// Materialization bars carry no version, no count/total, and no
 /// workflow/step identity.
@@ -37,26 +36,19 @@ pub(crate) struct MaterializationBarLabel {
 }
 
 impl MaterializationBarLabel {
-    /// Recorded intent: the rendered width of the protected head,
-    /// `[wrt] [F]`.
-    ///
-    /// `fit_segments` does not consult it, so it spares nothing. The head
-    /// sheds only because it leads the segment order.
-    pub(crate) const PREFIX_FLOOR: usize = 9;
-
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.phase.is_empty() {
-            segs.push(Segment::protected(format!("[{}]", self.phase)));
+            segs.push(Segment::keep(format!("[{}]", self.phase)));
         }
         if !self.status_marker.is_empty() {
-            segs.push(Segment::protected(format!("[{}]", self.status_marker)));
+            segs.push(Segment::keep(format!("[{}]", self.status_marker)));
         }
         if !self.entry_name.is_empty() {
-            segs.push(Segment::new_keep(self.entry_name.clone()));
+            segs.push(Segment::keep(self.entry_name.clone()));
         }
         if !self.file_name.is_empty() {
-            segs.push(Segment::new_keep(self.file_name.clone()));
+            segs.push(Segment::keep(self.file_name.clone()));
         }
         // Entry path is the directory portion and the only elastic segment:
         // shortened from the front so the tail adjacent to the filename
@@ -70,7 +62,7 @@ impl MaterializationBarLabel {
 
 impl BarLabelTruncation for MaterializationBarLabel {
     fn truncate_prefix(&self, max_width: usize) -> String {
-        fit_segments(&self.prefix_segments(), max_width, Self::PREFIX_FLOOR)
+        fit_segments(&self.prefix_segments(), max_width)
     }
 
     fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
@@ -107,12 +99,14 @@ mod tests {
         assert_eq!(name, "song.mkv");
     }
 
-    /// Every protected field survives the full floor band, and no width
+    /// Every leading field survives the width band, and no width
     /// overflows. Detects `entry_name` or `entry_path` being promoted ahead
     /// of `phase` or `status_marker`: such a reordering sheds the head at
     /// these widths and fails the first two assertions.
     #[test]
-    fn protected_head_survives_at_the_floor() {
+    fn head_survives_across_narrow_widths() {
+        /// Visible width of the leading `[wrt] [F]` head.
+        const HEAD_WIDTH: usize = 9;
         let label = MaterializationBarLabel {
             status_marker: "F".into(),
             entry_path: "Music/Artist/Album".into(),
@@ -120,7 +114,7 @@ mod tests {
             file_name: "cover.jpg".into(),
             phase: "wrt".into(),
         };
-        for width in MaterializationBarLabel::PREFIX_FLOOR..=18 {
+        for width in HEAD_WIDTH..=18 {
             let out = label.truncate_prefix(width);
             assert!(out.contains("[wrt]"), "phase lost at width {width}: {out:?}");
             assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
