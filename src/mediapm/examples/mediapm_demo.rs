@@ -74,12 +74,11 @@ use mediapm::{
     MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue, PlaylistFormat, PlaylistItemRef,
     SanitizeNamesConfig, ToolRequirement, TransformInputValue, VerifyStrategy, YtDlpOutputKind,
     YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
-    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
+    load_mediapm_state_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
-    NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, decode_document,
-    default_runtime_inherited_env_vars, encode_document,
+    NickelDocument, decode_document, default_runtime_inherited_env_vars, encode_document,
 };
 use same_file::is_same_file;
 use serde::Serialize;
@@ -694,81 +693,6 @@ fn configure_document_for_tools_only_precheck(workspace_root: &Path) -> ExampleR
     Ok(document.tools.len())
 }
 
-fn seed_old_synced_tools_state_for_update_precheck(
-    service: &MediaPmService<mediapm_cas::FileSystemCas>,
-) -> ExampleResult<()> {
-    service.refresh_runtime_configuration()?;
-
-    // The generated conductor document does not exist on a fresh workspace
-    // (it is first produced by a sync); start from an empty document so the
-    // stale-tool seed can be applied before the first sync runs.
-    let machine_path = service.paths().conductor_generated_ncl.clone();
-    let mut machine: NickelDocument = if machine_path.exists() {
-        decode_document(fs::read(&machine_path)?.as_slice())?
-    } else {
-        NickelDocument::default()
-    };
-    let lock = load_mediapm_state_document(&service.paths().mediapm_state_json)?;
-
-    for logical_tool_name in local_demo_tool_requirements().into_keys() {
-        if logical_tool_name.eq_ignore_ascii_case("import") {
-            continue;
-        }
-
-        let stale_payload = format!("stale-tool-payload::{logical_tool_name}");
-        let stale_hash = Hash::from_content(stale_payload.as_bytes());
-        // Generated-doc key follows the "{name}@{content_map_hash}" convention
-        // so prune logic treats the seeded entry as an old version of the tool.
-        let stale_tool_id = format!("{logical_tool_name}@{stale_hash}");
-        let stale_relative_path = format!("legacy/{logical_tool_name}/tool.bin");
-
-        // The seeded stale spec's content_map references `stale_hash`, and the
-        // generated doc's `content_map ⊆ external_data` invariant requires a
-        // matching entry for the pre-sync document to decode. Reconcile
-        // rebuilds external_data from scratch (DataUsageTracker), so this
-        // entry only satisfies the pre-sync invariant — it is replaced, not
-        // retained, once sync runs.
-        machine.external_data.insert(
-            stale_hash,
-            mediapm_conductor::ExternalDataEntry {
-                description: Some(format!("stale payload for {logical_tool_name}")),
-                save_mode: mediapm_conductor::OutputSaveMode::Saved,
-            },
-        );
-        // The seeded spec must carry the bare logical tool id as `name` so the
-        // reconcile's `already_exists` check (`spec.name == tool_id`) counts it
-        // as an update rather than an addition.
-        machine.tools.insert(
-            stale_tool_id.clone(),
-            ToolSpec {
-                name: logical_tool_name.clone(),
-                kind: ToolKindSpec::Executable {
-                    command: vec![format!("./{stale_relative_path}")],
-                    env_vars: BTreeMap::new(),
-                    success_codes: vec![0],
-                },
-                runtime: ToolRuntime {
-                    content_map: BTreeMap::from([(
-                        stale_relative_path.clone(),
-                        stale_hash.to_string(),
-                    )]),
-                    ..ToolRuntime::default()
-                },
-                ..ToolSpec::default()
-            },
-        );
-
-        // Stale generated-doc entries (above) force re-provision; managed_tools
-        // seeding is intentionally omitted so post-sync registry rows are not
-        // shadowed by stale canonical_version rows during workflow execution.
-    }
-
-    fs::write(&service.paths().conductor_generated_ncl, encode_document(machine)?)?;
-    save_mediapm_state_document(&service.paths().mediapm_state_json, &lock)?;
-
-    Ok(())
-}
-
 /// Pre-seeds GitHub metadata cache entries so tool-update precheck does not
 /// depend on live API responses during hermetic demo test runs. Callers must
 /// gate this behind [`example_isolation::uses_isolated_cache_root`]; the
@@ -825,6 +749,15 @@ async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> Exampl
     Ok(())
 }
 
+/// Runs the tools-update precheck: writes a tools-only document, syncs tools, and compares the
+/// reported update count against the number of declared tools.
+///
+/// The demo declares only `import`, a builtin, so this verifies that a tools-only sync runs and
+/// reports the expected count. It does **not** exercise stale-version detection: `import` is
+/// counted as updated because `register_missing_builtin_tools` pre-inserts it, not because an older
+/// version was found. The demo previously seeded a stale generated-doc entry per tool to force
+/// re-provision; that seed was removed with the fetched-payload tools, since it could no longer
+/// reach a non-`import` tool. Real tool-update behaviour is covered by the online path.
 async fn run_tools_update_precheck(
     service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
     workspace_root: &Path,
@@ -837,13 +770,16 @@ async fn run_tools_update_precheck(
     }
 
     let expected_updated_tools = configure_document_for_tools_only_precheck(workspace_root)?;
-    seed_old_synced_tools_state_for_update_precheck(service)?;
+    // The document was just rewritten, so reload it into the service before the precheck syncs.
+    service.refresh_runtime_configuration()?;
 
     let document = load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
     if !document.media.is_empty() || !document.hierarchy.is_empty() {
         return Err("tools-update precheck must start with empty media/hierarchy".into());
     }
 
+    // `import` is a builtin: it is reported as updated because builtins are registered up front,
+    // not because a stale version was detected. See this function's doc comment.
     let summary = service.sync_tools_with_tag_update_checks(false, false).await?;
     if summary.updated_tools != expected_updated_tools {
         return Err(format!(
