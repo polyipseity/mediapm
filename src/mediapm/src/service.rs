@@ -825,7 +825,10 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// real stderr. The default-overrides path — a
     /// [`SyncProgressOverrides::default()`] caller such as
     /// [`sync_tools`](Self::sync_tools) — is production behaviour and is
-    /// unchanged by this seam.
+    /// unchanged by this seam. The `overrides` parameter is the test/injection
+    /// seam itself: a test passes it to draw tool-sync progress into an
+    /// in-memory terminal, while every production caller arrives here with
+    /// the default overrides.
     ///
     /// `no_progress` is expressed the same way as in the library sync: the
     /// single terminal this method builds is inert, so a run that asked for no
