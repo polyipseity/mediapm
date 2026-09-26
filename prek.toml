@@ -110,3 +110,16 @@ hooks = [
     "pre-push",
   ] },
 ]
+
+# Documentation accuracy: fail the commit when `.agents/coverage-matrix.md`
+# cites an identifier that resolves to nothing in `src/` or `tests/`. The same
+# defect class -- hand-maintained cross-references with nothing checking that
+# their target exists -- has now recurred three times. Named distinctively so
+# it can be skipped independently: SKIP=check-doc-citations
+[[repos]]
+repo = "local"
+hooks = [
+  { id = "check-doc-citations", name = "check doc citations", entry = "bash scripts/check-doc-citations.sh", language = "system", pass_filenames = false, files = '^(src/.*\.rs|\.agents/coverage-matrix\.md)$', stages = [
+    "pre-commit",
+  ] },
+]
