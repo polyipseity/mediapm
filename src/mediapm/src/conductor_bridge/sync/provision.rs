@@ -1,10 +1,8 @@
 //! Tool payload provisioning — thin wrapper around conductor's 3-phase pipeline.
 //!
 //! Delegates to the mediapm [`provider`](crate::tools::provider) module for
-//! phase 1 (resolve), then to the conductor's
-//! [`fetch_tool_sources`](mediapm_conductor::tools::provider::fetch_tool_sources)
-//! for phase 2 (fetch) and
-//! [`process_tool_sources`](mediapm_conductor::tools::provider::process_tool_sources)
+//! phase 1 (resolve), then to the conductor's [`fetch_tool_sources`]
+//! for phase 2 (fetch) and [`process_tool_sources`]
 //! for phase 3 (extract → CAS import → content map). This module adapts
 //! the mediapm progress-bar API to the provider's callback-based progress
 //! reporting and converts error and result types.
