@@ -175,8 +175,17 @@ fn visible_len(text: &str) -> usize {
 ///   `floor`. Below the floor, protection lifts and the tail is dropped as
 ///   needed.
 ///
-/// The result never exceeds `max_width`: a final `chars().take` safety net
-/// applies, so layout safety never depends on the policy above.
+/// The ladder **never shaves**: no segment is ever cut at a character
+/// boundary. A segment is shown whole, shortened from the front, or absent —
+/// never a fragment. This is the property that separates it from the prefix
+/// cut it replaces.
+///
+/// Because dropping is always available and never worse than shaving, the
+/// outcome is determined by segment order. `floor` and [`Segment::protected`]
+/// express *where* the policy boundary sits; they do not, on their own,
+/// change any outcome for a label that keeps its protected segments at the
+/// head. Rule 1 is delivered by ordering, and rule 3 by the absence of
+/// shaving.
 ///
 /// # Examples
 ///
@@ -226,6 +235,13 @@ pub fn fit_segments(segments: &[Segment], max_width: usize, floor: usize) -> Str
         kept.pop();
     }
 
+    // Final drop — never shave. Rule 3: a segment is shown whole or absent,
+    // never clipped. A single segment still too wide is dropped too, so the
+    // result is always a whole-segment rendering.
+    while kept.len() > 1 && visible_len(&render(&kept)) > max_width {
+        kept.pop();
+    }
+
     let text = render(&kept);
-    if visible_len(&text) > max_width { text.chars().take(max_width).collect() } else { text }
+    if visible_len(&text) <= max_width { text } else { String::new() }
 }

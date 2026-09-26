@@ -5,7 +5,7 @@
 //! failure here means the fitting policy itself is broken, which the
 //! per-label tests would not localise.
 
-use crate::progress::{Segment, fit_segments, front_ellipsis};
+use crate::progress::{Segment, Shrink, fit_segments, front_ellipsis};
 
 /// Protected: phase, status, tally. Elastic: tool. Keep: version, ids.
 fn step_segments() -> Vec<Segment> {
@@ -22,24 +22,20 @@ fn step_segments() -> Vec<Segment> {
 
 const STEP_FLOOR: usize = 12;
 
-#[test]
-fn protected_fields_survive_at_and_above_the_floor() {
-    // Two regimes, because a floor set equal to the protected head's own
-    // width never binds: at and above it the head fits anyway, so protection
-    // is untestable there. TIGHT_FLOOR sits below the head's 12-column width,
-    // which is where protection actually decides the outcome.
-    const TIGHT_FLOOR: usize = 6;
+/// Floor below the protected head's own 12-column width, which is the only
+/// regime where protection changes any outcome.
+const TIGHT_FLOOR: usize = 6;
 
+#[test]
+fn protected_head_survives_in_both_floor_regimes() {
+    // Two regimes, because a floor set equal to the protected head's own
+    // width never binds: at and above it the head fits anyway, so the
+    // 12..60 loop below cannot detect a broken protection guard on its own.
+    // TIGHT_FLOOR sits below the head's width, where protection decides.
     for width in TIGHT_FLOOR..STEP_FLOOR {
         let out = fit_segments(&step_segments(), width, TIGHT_FLOOR);
-        assert!(out.starts_with("[wf]"), "phase not retained at width {width}: {out:?}");
-        // The head cannot fit whole, so it must be kept and clipped rather
-        // than dropped in favour of a narrower line that would have fitted.
-        assert_eq!(
-            out.chars().count(),
-            width,
-            "protected head dropped instead of clipped at width {width}: {out:?}"
-        );
+        assert!(out.contains("[wf]"), "phase lost at width {width}: {out:?}");
+        assert!(out.chars().count() <= width, "overflowed at width {width}: {out:?}");
     }
 
     for width in STEP_FLOOR..60 {
@@ -52,17 +48,58 @@ fn protected_fields_survive_at_and_above_the_floor() {
 
 #[test]
 fn output_length_is_monotonic_in_width() {
-    // The spec's property is "a narrower width never yields more text",
-    // i.e. length is non-decreasing as width grows. Two upward steps are
-    // designed, not incidental: at the floor protection switches on (the
-    // protected head returns), and above each dropped segment's threshold
-    // that segment re-enters whole before the next one is shortened.
-    let mut previous_len = 0usize;
-    for width in 0..60 {
-        let out = fit_segments(&step_segments(), width, STEP_FLOOR);
+    // The spec's property is "a narrower width never yields more text", so
+    // the budget is walked from widest to narrowest and each step must be no
+    // longer than the one before. Seeded from the real widest output rather
+    // than a magic number, with a content assertion on that seed: an
+    // implementation returning "" at every width would fail here instead of
+    // passing the loop vacuously.
+    const WIDEST: usize = 60;
+    let segments = step_segments();
+    let widest = fit_segments(&segments, WIDEST, STEP_FLOOR);
+    assert!(
+        widest.contains("[wf]") && widest.contains("1/4"),
+        "widest probe lost protected content: {widest:?}"
+    );
+
+    let mut previous_len = widest.chars().count();
+    for width in (0..WIDEST).rev() {
+        let out = fit_segments(&segments, width, STEP_FLOOR);
         let len = out.chars().count();
-        assert!(len >= previous_len, "width {width} shrank the line from {previous_len} to {len}");
+        assert!(len <= previous_len, "width {width} grew the line to {len} chars");
         previous_len = len;
+    }
+}
+
+#[test]
+fn output_is_never_a_fragment() {
+    // The property that separates this ladder from the prefix cut it
+    // replaces: no segment is ever cut at a character boundary. Every
+    // token in the output is either a whole segment, or an elastic segment
+    // shortened from the front. This is what spec rule 3 asks for, and it
+    // is the assertion that fails if a shave is reintroduced.
+    let segments = step_segments();
+    for floor in [TIGHT_FLOOR, STEP_FLOOR] {
+        for width in 0..60 {
+            let out = fit_segments(&segments, width, floor);
+            for token in out.split(' ').filter(|t| !t.is_empty()) {
+                let whole = segments.iter().any(|s| {
+                    if s.shrink != Shrink::FrontEllipsis {
+                        return token == s.text;
+                    }
+                    // A whole elastic segment, or a front-ellipsised one:
+                    // the token must be '…' plus a suffix of the segment.
+                    // `strip_prefix` is used rather than a byte slice
+                    // because '…' is three bytes wide.
+                    token == s.text
+                        || token.strip_prefix('…').is_some_and(|tail| s.text.ends_with(tail))
+                });
+                assert!(
+                    whole,
+                    "fragment {token:?} in output at width {width} floor {floor}: {out:?}"
+                );
+            }
+        }
     }
 }
 
@@ -95,7 +132,9 @@ fn below_the_floor_protection_lifts() {
     assert!(at_floor.contains("[wf]"), "phase lost at the floor: {at_floor:?}");
 
     let below = fit_segments(&segments, 4, STEP_FLOOR);
-    assert!(below.chars().count() <= 4, "below-floor output overflowed: {below:?}");
+    // With no shaving, a width too small for the whole head keeps the
+    // highest-priority segment whole rather than clipping it.
+    assert_eq!(below, "[wf]");
 }
 
 #[test]
