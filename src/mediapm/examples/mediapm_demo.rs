@@ -1,8 +1,14 @@
 //! Persistent `mediapm` demo producing inspectable artifacts.
 //!
-//! Demonstrates local ingest + transform flow: bundled MP4 fixture → CAS
-//! → `import -> ffmpeg -> rsgain -> media-tagger` pipeline.
+//! Demonstrates local ingest: bundled MP4 fixture → CAS → `import` → materialized
+//! hierarchy entry.
 //! Default sync enabled; the offline demo always runs a full sync.
+//!
+//! The demo deliberately runs one step. Its defining property is that it needs
+//! no network, so it cannot include tools that fetch payloads or make network
+//! lookups. Real-binary coverage of the transform and tagging stages lives
+//! behind the `MEDIAPM_RUN_ONLINE_SYNC` gate instead; see
+//! `.agents/instructions/example-execution-policy.instructions.md`.
 //!
 //! # Expected post-sync hierarchy
 //!
@@ -20,10 +26,9 @@
 //! media/
 //! ├── music videos/
 //! │   └── Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ]/
-//! │       ├── Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ].untagged.mp4   # variant video_untagged
-//! │       └── Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ].m4a            # variant audio (replaygain target)
+//! │       └── Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ].untagged.mp4   # variant video_untagged
 //! └── playlists/
-//!     └── local-demo.m3u8                                                                   # playlist, 2 entries → tagged audio leaf
+//!     └── local-demo.m3u8                                                                   # playlist, 2 entries → imported leaf
 //! ```
 //!
 //! ## Hierarchy config (`mediapm.ncl`)
@@ -31,13 +36,12 @@
 //! ```text
 //! music videos/                                           [Folder]
 //! └── ${artist} - ${title} [${id}]/                       [Folder, id=demo.local.dQw4w9WgXcQ.media_folder]
-//!     ├── ${artist} - ${title} [${id}].untagged${video_ext_untagged}   [Media, variant=video_untagged]
-//!     └── ${artist} - ${title} [${id}]${video_ext}                     [Media, variant=audio]
+//!     └── ${artist} - ${title} [${id}].untagged${video_ext_untagged}   [Media, variant=video_untagged]
 //! playlists/
-//! └── local-demo.m3u8                                     [Playlist, 2 shorthand ids → demo.local.dQw4w9WgXcQ]
+//! └── local-demo.m3u8                                     [Playlist, 2 shorthand ids → demo.local.dQw4w9WgXcQ.untagged]
 //! ```
 //!
-//! Resolved metadata: `video_ext_untagged` → `.mp4`, `video_ext` → `.m4a`.
+//! Resolved metadata: `video_ext_untagged` → `.mp4`.
 //!
 //! # Verification
 //!
@@ -65,13 +69,12 @@ use mediapm::config::{
     RuntimeVerificationConfigLatest,
 };
 use mediapm::{
-    AddInsertPosition, ConfigVersionSpec, GenericOutputVariantConfig, HierarchyNode,
-    HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue, MediaPmService,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue,
-    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRequirement, TransformInputValue,
-    VerifyStrategy, YtDlpOutputKind, YtDlpOutputVariantConfig, example_isolation,
-    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
-    save_mediapm_state_document,
+    AddInsertPosition, ConfigVersionSpec, HierarchyNode, HierarchyNodeKind, HierarchyPath,
+    MaterializationMethod, MediaMetadataValue, MediaPmService, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue, PlaylistFormat, PlaylistItemRef,
+    SanitizeNamesConfig, ToolRequirement, TransformInputValue, VerifyStrategy, YtDlpOutputKind,
+    YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
+    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -88,7 +91,6 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
 
 const DEMO_MEDIA_ID: &str = "demo.local.dQw4w9WgXcQ";
-const DEMO_PLAYLIST_TARGET_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ";
 const DEMO_UNTAGGED_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.untagged";
 const DEMO_MEDIA_FOLDER_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.media_folder";
 const DEMO_METADATA_TITLE: &str = "Never Gonna Give You Up";
@@ -130,12 +132,9 @@ struct DemoManifest {
     tool_update_precheck_updated_tools: usize,
     tool_update_precheck_added_tools: usize,
     materialization_preference_order: Vec<String>,
-    materialized_primary_path: String,
-    materialized_secondary_path: String,
-    materialized_primary_exists: bool,
-    materialized_secondary_exists: bool,
-    materialized_primary_hardlinked_to_cas: bool,
-    materialized_secondary_hardlinked_to_cas: bool,
+    materialized_path: String,
+    materialized_exists: bool,
+    materialized_hardlinked_to_cas: bool,
     sync_executed: bool,
     lock_managed_files_count: usize,
     lock_managed_tools_count: usize,
@@ -456,138 +455,30 @@ fn configure_document_for_local_tool_chain(
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
 
-    document.tools = BTreeMap::from([
-        (
-            "import".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-        (
-            "ffmpeg".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-        (
-            "rsgain".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::from([
-                    ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
-                    ("sd".to_string(), ConfigVersionSpec::Inherit),
-                ]),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-        (
-            "sd".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-        (
-            "media-tagger".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Inherit)]),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-    ]);
+    document.tools = local_demo_tool_requirements();
 
-    let steps = vec![
-        MediaStep {
-            tool: MediaStepTool::Import,
-            input_variants: Vec::new(),
-            output_variants: BTreeMap::from([(
-                "video_untagged".to_string(),
-                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
-                    kind: YtDlpOutputKind::Primary,
-                    ..Default::default()
-                }),
-            )]),
-            options: BTreeMap::from([
-                ("kind".to_string(), TransformInputValue::String(IMPORT_KIND_CAS_HASH.to_string())),
-                ("hash".to_string(), TransformInputValue::String(source_hash.to_string())),
-            ]),
-        },
-        MediaStep {
-            tool: MediaStepTool::Ffmpeg,
-            input_variants: vec!["video_untagged".to_string()],
-            output_variants: BTreeMap::from([(
-                "audio".to_string(),
-                OutputVariantValue::Generic(GenericOutputVariantConfig {
-                    kind: "primary".to_string(),
-                    extension: "m4a".to_string(),
-                    ..Default::default()
-                }),
-            )]),
-            options: BTreeMap::from([
-                ("vn".to_string(), TransformInputValue::String("true".to_string())),
-                ("container".to_string(), TransformInputValue::String("mp4".to_string())),
-            ]),
-        },
-        MediaStep {
-            tool: MediaStepTool::Rsgain,
-            input_variants: vec!["audio".to_string()],
-            output_variants: BTreeMap::from([(
-                "audio".to_string(),
-                OutputVariantValue::Generic(GenericOutputVariantConfig {
-                    kind: "output_content".to_string(),
-                    extension: "m4a".to_string(),
-                    ..Default::default()
-                }),
-            )]),
-            options: BTreeMap::from([(
-                "input_extension".to_string(),
-                TransformInputValue::String("m4a".to_string()),
-            )]),
-        },
-        MediaStep {
-            tool: MediaStepTool::MediaTagger,
-            input_variants: vec!["audio".to_string()],
-            output_variants: BTreeMap::from([(
-                "audio".to_string(),
-                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
-                    kind: YtDlpOutputKind::Primary,
-                    ..Default::default()
-                }),
-            )]),
-            options: BTreeMap::from([
-                (
-                    "recording_mbid".to_string(),
-                    TransformInputValue::String("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae".to_string()),
-                ),
-                ("release_mbid".to_string(), TransformInputValue::String(String::new())),
-                ("write_all_images".to_string(), TransformInputValue::String("false".to_string())),
-            ]),
-        },
-    ];
+    let steps = vec![MediaStep {
+        tool: MediaStepTool::Import,
+        input_variants: Vec::new(),
+        output_variants: BTreeMap::from([(
+            "video_untagged".to_string(),
+            OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Primary,
+                ..Default::default()
+            }),
+        )]),
+        options: BTreeMap::from([
+            ("kind".to_string(), TransformInputValue::String(IMPORT_KIND_CAS_HASH.to_string())),
+            ("hash".to_string(), TransformInputValue::String(source_hash.to_string())),
+        ]),
+    }];
 
     let configured_step_count = steps.len();
 
     document.media = BTreeMap::from([(
         DEMO_MEDIA_ID.to_string(),
         MediaSourceSpec {
-            description: "Local demo pipeline exercising import, ffmpeg, rsgain, and media-tagger"
-                .to_string(),
+            description: "Local demo pipeline exercising import".to_string(),
             title: DEMO_METADATA_TITLE.to_string(),
             artist: String::new(),
             metadata: BTreeMap::from([
@@ -623,38 +514,21 @@ fn configure_document_for_local_tool_chain(
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
         sanitize_names: Some(SanitizeNamesConfig::Inherit),
-        children: vec![
-            HierarchyNode {
-                path: HierarchyPath::from(
-                    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext_untagged}",
-                ),
-                kind: HierarchyNodeKind::Media,
-                id: Some(DEMO_UNTAGGED_HIERARCHY_ID.to_string()),
-                media_id: Some(DEMO_MEDIA_ID.to_string()),
-                variant: Some("video_untagged".to_string()),
-                variants: Vec::new(),
-                rename_files: Vec::new(),
-                format: PlaylistFormat::M3u8,
-                ids: Vec::new(),
-                sanitize_names: Some(SanitizeNamesConfig::Inherit),
-                children: Vec::new(),
-            },
-            HierarchyNode {
-                path: HierarchyPath::from(
-                    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}",
-                ),
-                kind: HierarchyNodeKind::Media,
-                id: Some(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
-                media_id: Some(DEMO_MEDIA_ID.to_string()),
-                variant: Some("audio".to_string()),
-                variants: Vec::new(),
-                rename_files: Vec::new(),
-                format: PlaylistFormat::M3u8,
-                ids: Vec::new(),
-                sanitize_names: Some(SanitizeNamesConfig::Inherit),
-                children: Vec::new(),
-            },
-        ],
+        children: vec![HierarchyNode {
+            path: HierarchyPath::from(
+                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext_untagged}",
+            ),
+            kind: HierarchyNodeKind::Media,
+            id: Some(DEMO_UNTAGGED_HIERARCHY_ID.to_string()),
+            media_id: Some(DEMO_MEDIA_ID.to_string()),
+            variant: Some("video_untagged".to_string()),
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::M3u8,
+            ids: Vec::new(),
+            sanitize_names: Some(SanitizeNamesConfig::Inherit),
+            children: Vec::new(),
+        }],
     }];
 
     document.hierarchy = vec![
@@ -692,8 +566,8 @@ fn configure_document_for_local_tool_chain(
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: vec![
-                    PlaylistItemRef::Shorthand(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
-                    PlaylistItemRef::Shorthand(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
+                    PlaylistItemRef::Shorthand(DEMO_UNTAGGED_HIERARCHY_ID.to_string()),
+                    PlaylistItemRef::Shorthand(DEMO_UNTAGGED_HIERARCHY_ID.to_string()),
                 ],
                 sanitize_names: Some(SanitizeNamesConfig::Inherit),
                 children: Vec::new(),
@@ -790,62 +664,24 @@ fn configure_document_for_local_tool_chain(
     Ok((document.tools.len(), configured_step_count))
 }
 
+/// Tool requirements for the offline demo.
+///
+/// Only `import` is declared. The demo's defining property is that it needs no
+/// network, and every other tool in the previous chain broke that: `ffmpeg`,
+/// `sd`, and `rsgain` fetch real payloads, and `media-tagger` is classified
+/// impure because it performs network lookups at run time (see
+/// `tools/workflows/media_tagger.rs`).
 fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
-    BTreeMap::from([
-        (
-            "import".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-        (
-            "ffmpeg".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-        (
-            "rsgain".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::from([
-                    ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
-                    ("sd".to_string(), ConfigVersionSpec::Inherit),
-                ]),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-        (
-            "sd".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-        (
-            "media-tagger".to_string(),
-            ToolRequirement {
-                version_spec: ConfigVersionSpec::Latest,
-                dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Inherit)]),
-                recheck_seconds: 0,
-                max_input_slots: 16,
-                max_output_slots: 4,
-            },
-        ),
-    ])
+    BTreeMap::from([(
+        "import".to_string(),
+        ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: BTreeMap::new(),
+            recheck_seconds: 0,
+            max_input_slots: 16,
+            max_output_slots: 4,
+        },
+    )])
 }
 
 fn configure_document_for_tools_only_precheck(workspace_root: &Path) -> ExampleResult<usize> {
@@ -1124,12 +960,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         .map(str::to_owned)
         .collect::<Vec<_>>();
 
-    let materialized_primary = effective_paths
-        .hierarchy_root_dir
-        .join("music videos")
-        .join(format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}]"))
-        .join(format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}].m4a"));
-    let materialized_secondary = effective_paths
+    let materialized = effective_paths
         .hierarchy_root_dir
         .join("music videos")
         .join(format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}]"))
@@ -1138,28 +969,15 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         ));
 
     let lock = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
-    let (materialized_primary_hardlinked_to_cas, materialized_secondary_hardlinked_to_cas) =
-        if maybe_summary.is_some() {
-            let hierarchy_root = &effective_paths.hierarchy_root_dir;
-            let cas = service.conductor().cas();
-            assert_materialized_output_hardlinked_to_cas(
-                cas,
-                hierarchy_root,
-                &lock,
-                &materialized_primary,
-            )
+    let materialized_hardlinked_to_cas = if maybe_summary.is_some() {
+        let hierarchy_root = &effective_paths.hierarchy_root_dir;
+        let cas = service.conductor().cas();
+        assert_materialized_output_hardlinked_to_cas(cas, hierarchy_root, &lock, &materialized)
             .await?;
-            assert_materialized_output_hardlinked_to_cas(
-                cas,
-                hierarchy_root,
-                &lock,
-                &materialized_secondary,
-            )
-            .await?;
-            (true, true)
-        } else {
-            (false, false)
-        };
+        true
+    } else {
+        false
+    };
 
     let manifest = DemoManifest {
         generated_unix_epoch_seconds: unix_timestamp_seconds(),
@@ -1180,12 +998,9 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         tool_update_precheck_added_tools: precheck_added_tools,
 
         materialization_preference_order,
-        materialized_primary_path: display_path(&materialized_primary),
-        materialized_secondary_path: display_path(&materialized_secondary),
-        materialized_primary_exists: materialized_primary.exists(),
-        materialized_secondary_exists: materialized_secondary.exists(),
-        materialized_primary_hardlinked_to_cas,
-        materialized_secondary_hardlinked_to_cas,
+        materialized_path: display_path(&materialized),
+        materialized_exists: materialized.exists(),
+        materialized_hardlinked_to_cas,
         sync_executed: maybe_summary.is_some(),
         lock_managed_files_count: lock.managed_files.len(),
         lock_managed_tools_count: lock.managed_tools.len(),
@@ -1258,13 +1073,13 @@ mod tests {
 
         assert_eq!(
             manifest_json.get("configured_tool_count").and_then(serde_json::Value::as_u64),
-            Some(5),
-            "demo should configure five managed tools including import"
+            Some(1),
+            "demo should configure the import tool"
         );
         assert_eq!(
             manifest_json.get("configured_step_count").and_then(serde_json::Value::as_u64),
-            Some(4),
-            "demo should configure four workflow steps including import"
+            Some(1),
+            "demo should configure a single import workflow step"
         );
         assert_eq!(
             manifest_json.get("tool_update_precheck_executed").and_then(serde_json::Value::as_bool),
@@ -1336,28 +1151,16 @@ mod tests {
             "full-sync demo run should execute sync_library"
         );
         assert_eq!(
-            manifest_json.get("materialized_primary_exists").and_then(serde_json::Value::as_bool),
+            manifest_json.get("materialized_exists").and_then(serde_json::Value::as_bool),
             Some(true),
-            "full-sync demo should materialize primary output"
-        );
-        assert_eq!(
-            manifest_json.get("materialized_secondary_exists").and_then(serde_json::Value::as_bool),
-            Some(true),
-            "full-sync demo should materialize secondary untagged output"
+            "full-sync demo should materialize the imported output"
         );
         assert_eq!(
             manifest_json
-                .get("materialized_primary_hardlinked_to_cas")
+                .get("materialized_hardlinked_to_cas")
                 .and_then(serde_json::Value::as_bool),
             Some(true),
-            "primary output should be hardlinked to CAS after ensure"
-        );
-        assert_eq!(
-            manifest_json
-                .get("materialized_secondary_hardlinked_to_cas")
-                .and_then(serde_json::Value::as_bool),
-            Some(true),
-            "secondary output should be hardlinked to CAS after ensure"
+            "materialized output should be hardlinked to CAS after ensure"
         );
         assert!(
             manifest_json
@@ -1387,11 +1190,6 @@ mod tests {
             "demo should not route local sample ingest through yt-dlp"
         );
         assert!(
-            !demo_config.contains("codec_copy = \"true\"")
-                && !demo_config.contains("map_metadata = \"0\""),
-            "demo should omit explicit ffmpeg defaults and rely on managed codec_copy/map_metadata defaults"
-        );
-        assert!(
             demo_config.contains("materialization_preference_order")
                 && demo_config.contains("\"hardlink\"")
                 && demo_config.contains("\"symlink\"")
@@ -1400,19 +1198,10 @@ mod tests {
             "demo runtime config should explicitly include default materialization order"
         );
         assert!(
-            !demo_config.contains("audio_codec = \"libmp3lame\""),
-            "demo ffmpeg step should avoid re-encode-specific codec settings"
-        );
-        assert!(
-            !demo_config.contains("strict_identification"),
-            "demo should rely on managed media-tagger input defaults for strict identification"
-        );
-        assert!(
             demo_config.contains("music videos")
                 && demo_config
                     .contains("${media.metadata.artist} - ${media.metadata.title} [${media.id}]")
                 && demo_config.contains("${media.id}")
-                && demo_config.contains("${media.metadata.video_ext}")
                 && demo_config.contains("${media.metadata.video_ext_untagged}"),
             "demo hierarchy output should use Jellyfin-style media-id layout with metadata-driven extensions"
         );
