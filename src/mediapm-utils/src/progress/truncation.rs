@@ -140,25 +140,28 @@ fn visible_len(text: &str) -> usize {
 /// * **Phase A (shrink)** — each [`Shrink::FrontEllipsis`] segment, from the
 ///   tail forward, is shortened by exactly the overage, never below
 ///   [`MIN_TAIL`], before the next one yields anything.
-/// * **Phase B (drop)** — once no segment can shrink further, segments drop
-///   from the tail, sparing protected ones while `max_width` is at or above
-///   `floor`. Below the floor, protection lifts and the tail is dropped as
-///   needed.
-/// * **Final drop** — once a single segment is all that remains and it is
-///   still too wide, the result is an empty string. The result is therefore
-///   always a whole-segment rendering or nothing at all.
+/// * **Phase B (drop)** — once no segment can shrink further, whole segments
+///   drop from the tail until the remainder fits or one segment is left.
 ///
 /// The ladder **never shaves**: no segment is ever cut at a character
 /// boundary. A segment is shown whole, shortened from the front, or absent —
 /// never a fragment. This is the property that separates it from the prefix
 /// cut it replaces.
 ///
-/// Because dropping is always available and never worse than shaving, the
-/// outcome is determined by segment order. `floor` and [`Segment::protected`]
-/// express *where* the policy boundary sits; they do not, on their own,
-/// change any outcome for a label that keeps its protected segments at the
-/// head. Rule 1 is delivered by ordering, and rule 3 by the absence of
-/// shaving.
+/// # `floor` and `Segment::protected` do not affect the result
+///
+/// `floor` and [`Segment::protected`] are accepted and recorded, but neither
+/// changes any output, for any input. A drop loop that spared a protected
+/// tail segment would be undone by the unguarded drop that follows it: at the
+/// point such a loop stops, the remainder is by definition still too wide and
+/// holds more than one segment, so the next loop pops that segment anyway.
+/// Dropping is therefore always available, and because it is never worse than
+/// shaving, the outcome is determined by segment order alone.
+///
+/// Rule 1 is delivered by ordering, and rule 3 by the absence of shaving.
+/// The two parameters describe *where* a caller intends the policy boundary
+/// to sit, so they document intent and leave room to make it binding, but
+/// today no input can distinguish them from the unconditional drop.
 ///
 /// # Examples
 ///
@@ -189,7 +192,11 @@ pub fn fit_segments(segments: &[Segment], max_width: usize, floor: usize) -> Str
     if segments.is_empty() {
         return String::new();
     }
-    let protect = max_width >= floor;
+    // `floor` and `Segment::protected` are recorded intent that cannot
+    // change the result; see the type-level note on this function. The
+    // parameter stays because it is public API and every label supplies it.
+    let _ = floor;
+
     let mut kept: Vec<Segment> = segments.to_vec();
 
     // Phase A — elastic segments yield width from the front, tail first.
@@ -209,22 +216,10 @@ pub fn fit_segments(segments: &[Segment], max_width: usize, floor: usize) -> Str
         kept[idx].text = front_ellipsis(&kept[idx].text, target);
     }
 
-    // Phase B — drop from the tail, sparing protected segments in force.
-    while kept.len() > 1 {
-        if visible_len(&render(&kept)) <= max_width {
-            break;
-        }
-        if protect && kept[kept.len() - 1].protected {
-            break;
-        }
-        kept.pop();
-    }
-
-    // Final drop — never shave. Rule 3: a segment is shown whole or absent,
-    // never clipped. This loop stops at one segment, so a lone segment that is
-    // still too wide is not popped here; the `text` check below yields the
-    // empty string for that case, and the result is always a whole-segment
-    // rendering.
+    // Phase B — drop whole segments from the tail until the remainder fits
+    // or one segment is left. A lone segment that is still too wide is not
+    // popped here; the `text` check below yields the empty string for that
+    // case, so the result is always a whole-segment rendering.
     while kept.len() > 1 && visible_len(&render(&kept)) > max_width {
         kept.pop();
     }
