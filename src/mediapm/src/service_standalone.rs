@@ -8,9 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::{
-    MediaPmDocument, MediaPmState, MediaRuntimeStorage, MediaStepTool, load_mediapm_document,
-};
+use crate::config::{MediaPmDocument, MediaPmState, MediaRuntimeStorage, load_mediapm_document};
 use crate::error::MediaPmError;
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 
@@ -85,40 +83,6 @@ pub fn resolve_effective_paths_for_root(
     MediaPmPaths::from_root(root_dir).with_overrides(&overrides)
 }
 
-/// Describes a managed workflow step target for invalidation.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub(crate) struct ManagedWorkflowStepTarget {
-    /// Media source id.
-    pub media_id: String,
-    /// Step index in the media source's step list.
-    pub step_index: usize,
-    /// The tool kind for this step.
-    pub tool: MediaStepTool,
-}
-
-/// Collects workflow step targets for a specific media step tool kind.
-#[must_use]
-#[allow(dead_code)]
-pub(crate) fn collect_workflow_step_targets_for_media_step(
-    document: &MediaPmDocument,
-    tool: MediaStepTool,
-) -> Vec<ManagedWorkflowStepTarget> {
-    let mut targets = Vec::new();
-    for (media_id, source) in &document.media {
-        for (step_index, step) in source.steps.iter().enumerate() {
-            if step.tool == tool {
-                targets.push(ManagedWorkflowStepTarget {
-                    media_id: media_id.clone(),
-                    step_index,
-                    tool: step.tool,
-                });
-            }
-        }
-    }
-    targets
-}
-
 /// Marks a media step for regeneration by clearing its variant hashes in
 /// the state.
 pub(crate) fn mark_media_step_for_regeneration(
@@ -145,8 +109,7 @@ pub(crate) fn remove_target_step_impure_timestamps(state: &mut MediaPmState, _to
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MediaStep;
-    use crate::config::{MediaSourceSpec, RuntimePathsConfig};
+    use crate::config::RuntimePathsConfig;
     use std::collections::BTreeMap;
 
     /// Ensures `registered_builtin_ids` returns expected builtins.
@@ -159,37 +122,6 @@ mod tests {
         assert!(ids.contains(&"export@v1".to_string()));
         assert!(ids.contains(&"archive@v1".to_string()));
         assert_eq!(ids.len(), 5);
-    }
-
-    /// Ensures `collect_workflow_step_targets_for_media_step` finds matching steps.
-    #[test]
-    fn collect_workflow_step_targets_finds_import_steps() {
-        let mut doc = MediaPmDocument::default();
-        doc.media.insert(
-            "test-source".to_string(),
-            MediaSourceSpec {
-                steps: vec![
-                    MediaStep {
-                        tool: MediaStepTool::Import,
-                        input_variants: Vec::new(),
-                        output_variants: BTreeMap::new(),
-                        options: BTreeMap::new(),
-                    },
-                    MediaStep {
-                        tool: MediaStepTool::Rsgain,
-                        input_variants: Vec::new(),
-                        output_variants: BTreeMap::new(),
-                        options: BTreeMap::new(),
-                    },
-                ],
-                ..MediaSourceSpec::default()
-            },
-        );
-
-        let targets = collect_workflow_step_targets_for_media_step(&doc, MediaStepTool::Import);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].media_id, "test-source");
-        assert_eq!(targets[0].step_index, 0);
     }
 
     /// Ensures `mark_media_step_for_regeneration` clears variant hashes.
