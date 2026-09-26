@@ -121,8 +121,8 @@ mod tests {
     }
 
     /// The elastic path is shortened from the front so the directory tail —
-    /// the part adjacent to the filename — survives, where the prefix cut
-    /// this replaces yielded the uninformative `Music/Artist/Al…` head.
+    /// the part adjacent to the filename — survives. It used to be dropped
+    /// whole, because it ranked last.
     #[test]
     fn entry_path_is_shortened_from_the_front() {
         let label = MaterializationBarLabel {
@@ -135,8 +135,7 @@ mod tests {
         let wide = label.truncate_prefix(80);
         assert!(wide.contains("Music/Artist/Album/1977"), "wide path missing: {wide:?}");
 
-        // Tight: the path must keep its tail, never its head. The old
-        // implementation prefix-cut, yielding `Music/Artist/Al…`.
+        // Tight: the path must keep its tail, never its head.
         let tight = label.truncate_prefix(20);
         assert!(tight.contains('…'), "path not front-ellipsised: {tight:?}");
         assert!(!tight.contains("Music/"), "path head retained instead of tail: {tight:?}");
@@ -160,9 +159,8 @@ mod tests {
 
     /// On sub-bars the extracted `file_name` outranks the directory path.
     ///
-    /// The previous version of this test asserted only on the wide case,
-    /// which passes trivially and did not test what its name claimed. This
-    /// version asserts on the tight case, where ordering actually bites.
+    /// The prior version's tight assertion was vacuous; this version
+    /// asserts on the tight case, where ordering actually bites.
     #[test]
     fn file_name_outranks_entry_path_on_sub_bars() {
         let label = MaterializationBarLabel {
