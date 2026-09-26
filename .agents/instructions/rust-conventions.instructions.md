@@ -148,7 +148,7 @@ When the full pipeline behavior changes (tool provisioning, sync orchestration, 
 
 ### Content map coverage
 
-For conductor executable `content_map` changes, cover both file and directory-ZIP semantics in tests. This includes explicit invalid ZIP failure paths (e.g., truncated or corrupt archive data), root-directory key (`./` on Unix, `.\\` on Windows) handling, and non-overwrite collision rejection when separate content map entries target the same output file path.
+For conductor executable `content_map` changes, cover both file and directory-ZIP semantics in tests. This includes explicit invalid ZIP failure paths (e.g., truncated or corrupt archive data), root-directory key (`./` on Unix, `.\` on Windows) handling, and non-overwrite collision rejection when separate content map entries target the same output file path.
 
 ### yt-dlp output-variant coverage
 
@@ -205,33 +205,3 @@ Avoid these known anti-patterns: bare one-line docs that repeat the function nam
 All CLI output primitives, progress bar architecture, per-screen summary formats, formatting helpers, duration formatting, the dependency boundary rule, and the output stream policy live in `progress-output.instructions.md`. Read that file before editing any CLI output code.
 
 The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress. The `--no-progress` flag or `ProgressGroup::disabled()` suppresses progress bars entirely.
-
-## Behavior change expectations
-
-### Atomic test updates
-
-Update or add tests in the same commit as a behavior change. Never change behavior without test updates: silent behavior changes are a quality regression. Update CLI and reporting docs if command output contracts change. This covers all behavior changes, however trivial: renaming a CLI flag, changing a default, altering error wording, or reordering output fields.
-
-### Demo update policy
-
-When the full pipeline behavior changes (tool provisioning, sync orchestration, materialization defaults), verify that both `mediapm_demo` and `mediapm_demo_online` still produce correct output. Update the demo examples if the expected output or timing profile has changed meaningfully. `mediapm_demo_online` is the authoritative end-to-end contract for the mediapm application: real-binary coverage of the transform and tagging stages lives behind the `MEDIAPM_RUN_ONLINE_SYNC` gate (see the three-level model in `example-execution-policy.instructions.md`), exercised by `online_sync_post_sync_dump`. `mediapm_demo` now covers the config-to-artifact path only, invoking no managed binary.
-
-### Content map coverage
-
-For conductor executable `content_map` changes, cover both file and directory-ZIP semantics in tests. This includes explicit invalid ZIP failure paths (e.g., truncated or corrupt archive data), root-directory key (`./` on Unix, `.\` on Windows) handling, and non-overwrite collision rejection when separate content map entries target the same output file path.
-
-### yt-dlp output-variant coverage
-
-For yt-dlp output-variant behavior changes, cover the object semantics of `kind` (default capture behavior), optional `capture_kind` override (`"file"` or `"folder"`), optional `langs` capture filtering (subtitle-family artifacts only), and the ownership boundary where downloader language selection remains the responsibility of step `options.sub_langs` (output-variant `langs` is a capture-filter hint, not a downloader setting).
-
-### Regex capture coverage
-
-For conductor regex capture behavior changes, assert `file_regex` exact-one matching (the pattern must match exactly one file) and `folder_regex` zero-to-many behavior (the pattern may match zero, one, or many folders, and zero-match is a valid success path).
-
-### Sidecar synchronization
-
-Keep `verify` and `gc` in sync with sidecar model updates. When the sidecar data model changes, update both verification and GC logic in the same commit. The sidecar model is the authoritative description of reachable data: verification confirms reachable data matches it, and GC removes data it does not reference. The two must agree on reachability.
-
-### State document and migration coverage
-
-When changing state document schemas or adding migration paths, add tests that verify round-trip serialization (write then read) for both the old and new schema versions. Test that migration from previous versions produces the expected current-version output. Verify that unknown fields in older persisted state are handled gracefully (either preserved or rejected with a clear error) per the crate's versioning policy.
