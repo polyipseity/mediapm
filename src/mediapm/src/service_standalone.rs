@@ -13,7 +13,6 @@ use crate::config::{
 };
 use crate::error::MediaPmError;
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
-use std::collections::BTreeMap;
 
 /// Returns the set of builtin tool ids known to the conductor bridge.
 #[must_use]
@@ -93,20 +92,6 @@ pub(crate) fn load_runtime_dotenv_for_root(root_dir: &Path) {
     crate::load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
 }
 
-/// Describes a rule for invalidating tool call instances.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub(crate) struct ToolInvalidationRule {
-    /// The tool id whose instances should be invalidated.
-    pub tool_id: String,
-    /// Optional step index to invalidate (None = all steps).
-    pub step_index: Option<usize>,
-    /// Optional expected variant hashes. When provided, an instance is
-    /// invalidated if its current hashes differ from these expected values.
-    #[allow(dead_code)]
-    pub expected_hashes: Option<BTreeMap<String, String>>,
-}
-
 /// Describes a managed workflow step target for invalidation.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -162,62 +147,6 @@ pub(crate) fn remove_target_step_impure_timestamps(state: &mut MediaPmState, _to
             step_state.last_impure_sync_at = None;
         }
     }
-}
-
-/// Builds invalidation rules from the given tool id, optional step index,
-/// and optional expected hashes.
-#[must_use]
-#[allow(dead_code)]
-pub(crate) fn build_tool_invalidation_rules(
-    tool_id: &str,
-    step_index: Option<usize>,
-    expected_hashes: Option<BTreeMap<String, String>>,
-) -> Vec<ToolInvalidationRule> {
-    vec![ToolInvalidationRule { tool_id: tool_id.to_string(), step_index, expected_hashes }]
-}
-
-/// Determines whether a conductor instance should be invalidated based on
-/// tool invalidation rules, current variant hashes, and impure TTL.
-///
-/// Invalidates when:
-/// - A matching rule's expected hashes differ from the current hashes, or
-/// - No rule's expected hashes match and the impure sync is past TTL.
-#[must_use]
-#[allow(dead_code)]
-pub(crate) fn should_invalidate_instance(
-    instance_tool_id: &str,
-    rules: &[ToolInvalidationRule],
-    variant_hashes: &BTreeMap<String, String>,
-    last_impure_sync_at: Option<&mediapm_utils::Timestamp>,
-    impure_ttl_secs: u64,
-) -> bool {
-    for rule in rules {
-        if rule.tool_id != instance_tool_id {
-            continue;
-        }
-        // When step_index is set, skip non-matching steps.
-        if rule.step_index.is_some() {
-            continue;
-        }
-        // If the rule carries expected hashes, compare with current hashes.
-        if let Some(expected) = &rule.expected_hashes {
-            if variant_hashes != expected {
-                return true;
-            }
-            // Hashes match — no invalidation needed from this rule.
-            return false;
-        }
-    }
-
-    // Fallback: impure TTL check.
-    if let Some(ts) = last_impure_sync_at {
-        let now = mediapm_utils::Timestamp::now().as_unix_secs();
-        if now.saturating_sub(ts.as_unix_secs()) > impure_ttl_secs {
-            return true;
-        }
-    }
-
-    false
 }
 
 #[cfg(test)]
