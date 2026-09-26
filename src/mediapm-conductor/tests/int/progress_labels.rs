@@ -7,7 +7,7 @@
 //! which is the elastic segment that shrinks first.
 
 use mediapm_conductor::orchestration::progress_labels::{StepBarLabel, WorkerBarLabel};
-use mediapm_utils::progress::BarLabelTruncation;
+use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents};
 
 #[test]
 fn worker_label_truncate_drops_completed_total_first() {
@@ -137,6 +137,33 @@ fn worker_label_front_ellipsises_very_long_tool_name() {
     };
     let tight = label.truncate_prefix(15);
     assert_eq!(tight, "[active] …imit)");
+}
+
+#[test]
+fn worker_suffix_keeps_auto_derived_timing_fields() {
+    // A worker slot has no progress tally of its own, but the renderer
+    // still supplies auto-derived elapsed, rate, and ETA in the suffix
+    // argument it passes to `truncate_suffix`. Those fields must survive:
+    // dropping them would silently remove timing information from every
+    // worker bar, which no other test in this file would catch.
+    let label = WorkerBarLabel {
+        status_marker: String::new(),
+        workflow_id: String::new(),
+        step_id: String::new(),
+        tool: String::new(),
+        activity: "active".into(),
+    };
+    let suffix = SuffixComponents {
+        elapsed: "1m 30s".into(),
+        rate: Some("2.1 MiB/s".into()),
+        eta: Some("00:45".into()),
+        custom: String::new(),
+        ..Default::default()
+    };
+    let out = label.truncate_suffix(80, &suffix);
+    assert!(out.contains("1m 30s"), "elapsed lost: {out:?}");
+    assert!(out.contains("2.1 MiB/s"), "rate lost: {out:?}");
+    assert!(out.contains("00:45"), "eta lost: {out:?}");
 }
 
 #[test]

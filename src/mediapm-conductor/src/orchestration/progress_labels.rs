@@ -112,8 +112,9 @@ impl BarLabelTruncation for StepBarLabel {
 /// Segments are ordered most important first and yield from the tail. The
 /// prefix protects `status_marker` and `activity`; the `tool` name is
 /// elastic and is shortened from the front before any earlier segment is
-/// dropped. A worker carries no workflow phase and no progress tally, so
-/// its suffix is elastic `custom` text alone and its floor is zero.
+/// dropped. A worker carries no workflow phase and no progress tally, so no
+/// suffix segment is protected and its floor is zero; the auto-derived
+/// `elapsed`, `rate`, and `eta` still render, ahead of an elastic `custom`.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
 pub struct WorkerBarLabel {
@@ -162,11 +163,23 @@ impl WorkerBarLabel {
 
     /// Build the suffix segments, most important first.
     ///
-    /// A worker slot has no progress of its own to report, so the elapsed
-    /// time, rate, and ETA auto-derived by the renderer are intentionally
-    /// not surfaced; only free-form `custom` text is rendered, as elastic.
+    /// A worker slot has no progress tally of its own, but that does not
+    /// mean it has no timing information: the renderer passes its merged
+    /// [`SuffixComponents`] to `truncate_suffix`, and the auto-derived
+    /// `elapsed`, `rate`, and `eta` fields arrive there. They are rendered
+    /// as `new_keep` so width pressure drops them whole rather than
+    /// shortening them. Only free-form `custom` text is elastic.
     fn suffix_segments(suffix: &SuffixComponents) -> Vec<Segment> {
         let mut segs = Vec::new();
+        if !suffix.elapsed.is_empty() {
+            segs.push(Segment::new_keep(suffix.elapsed.clone()));
+        }
+        if let Some(ref rate) = suffix.rate {
+            segs.push(Segment::new_keep(rate.clone()));
+        }
+        if let Some(ref eta) = suffix.eta {
+            segs.push(Segment::new_keep(eta.clone()));
+        }
         if !suffix.custom.is_empty() {
             segs.push(Segment::elastic(suffix.custom.clone()));
         }
