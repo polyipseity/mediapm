@@ -1,4 +1,20 @@
 //! `ProgressBarHandle`, `SharedState`, and `ProgressRenderer` (pure tracking + indicatif rendering).
+//!
+//! # Known coverage gap: the client-truncation ANSI reset
+//!
+//! When a bar carries a client-installed [`BarLabelTruncation`], the push
+//! point prefixes the client's string with `\x1b[0m` so colour from a
+//! preceding bar cannot bleed into it. **No test asserts that this reset is
+//! present.** Every route to the raw string is closed: `InMemoryTerm` strips
+//! ANSI from what it reports, the debug sink records no `prefix` field,
+//! `SlotCache::prefix` is private to this module, and [`visible_width`] cannot
+//! see a zero-width escape.
+//!
+//! The gap is deliberate. A missing reset causes a colour bleed, not a layout
+//! violation, and exposing the raw string purely so a test could observe four
+//! bytes of ANSI would permanently widen the internal API for a cosmetic
+//! guarantee. Anyone changing the wrapping below should know the property is
+//! unguarded, and weigh adding a seam if the consequence of a regression grows.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;

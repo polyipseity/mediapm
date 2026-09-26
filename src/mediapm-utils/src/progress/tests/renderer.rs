@@ -638,39 +638,6 @@ fn set_truncation_replaces_builtin_rendering() {
     assert!(!content.contains("20/200"), "built-in component render must be bypassed: {content:?}");
 }
 
-#[test]
-fn client_truncated_prefix_starts_with_ansi_reset() {
-    // Client-truncated prefixes must start with `\x1b[0m` (the same
-    // reset the built-in path always prepends).  Without it, the
-    // preceding bar's colour bleeds into the client text.
-    //
-    // InMemoryTerm strips ANSI escapes from its visible output, so we
-    // cannot check for the raw `\x1b[0m` bytes.  Instead verify the
-    // observable effect: the client prefix text is present and the
-    // built-in component render is bypassed.  The preceding colour
-    // bleed would cause garbled display, which the `\x1b[0m` prevents.
-    let term = indicatif::InMemoryTerm::new(10, 80);
-    let terminal = ProgressTerminal::builder()
-        .with_term_like(Box::new(term.clone()))
-        .with_pre_roll_capture(super::pre_roll_capture())
-        .capacity(4)
-        .with_ticker_enabled(false)
-        .build();
-    let group = terminal.screen().build();
-    let bar = group.add_bar(100, "test");
-
-    bar.set_truncation(Arc::new(FixedTruncation { prefix: "CLIENT", suffix: "SFX" }));
-    bar.set_position(20);
-    bar.set_total(200);
-
-    group.tick();
-    let content = term.contents();
-    // The visible text must contain the client prefix.
-    assert!(content.contains("CLIENT"), "client prefix missing: {content:?}");
-    assert!(content.contains("SFX"), "client suffix missing: {content:?}");
-    assert!(!content.contains("20/200"), "built-in component render must be bypassed: {content:?}");
-}
-
 // ---- Task 4: the width budget handed to client-defined truncation -----
 
 /// A truncation that *honours* its budget, unlike [`FixedTruncation`], and
@@ -918,8 +885,8 @@ fn client_truncated_prefix_fills_exactly_its_budget_and_fits_its_slot() {
     // The `\x1b[0m` reset the renderer prepends is zero-width, so it adds no
     // visible columns to the slot. The raw escape bytes are not observable
     // here because `InMemoryTerm` strips ANSI from what it reports; that the
-    // reset is present is covered by
-    // `client_truncated_prefix_starts_with_ansi_reset`.
+    // reset is present is asserted by no test, as recorded in the
+    // `inner::renderer` module documentation.
     const TERM_COLS: usize = 80;
 
     let components = budget_test_components();
