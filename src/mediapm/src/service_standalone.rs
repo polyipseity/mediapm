@@ -103,7 +103,7 @@ pub(crate) fn mark_media_step_for_regeneration(
 /// the sole call site passed a media id. The parameter is gone because an
 /// unused parameter is not part of the API, and keeping it under a `_`
 /// prefix hid the fact that the call site and the name disagreed.
-pub(crate) fn remove_target_step_impure_timestamps(state: &mut MediaPmState) {
+pub(crate) fn remove_all_step_impure_timestamps(state: &mut MediaPmState) {
     for step_state in state.workflow_states.values_mut() {
         if step_state.last_impure_sync_at.is_some() {
             step_state.last_impure_sync_at = None;
