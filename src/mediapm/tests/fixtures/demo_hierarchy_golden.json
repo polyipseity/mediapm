@@ -3,7 +3,6 @@
     "media_folder": "music videos/Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ]",
     "required_files": [
       "music videos/Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ].untagged.mp4",
-      "music videos/Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ]/Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ].m4a",
       "playlists/local-demo.m3u8"
     ],
     "required_nonempty_dirs": [],

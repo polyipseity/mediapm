@@ -1,8 +1,13 @@
 //! Golden hierarchy layout contract shared by demo examples and integration tests.
 //!
-//! Paths mirror `mediapm_demo` / `mediapm_demo_online` post-sync assertions. Human-readable
-//! expected trees are documented on those example modules. Machine checks use
-//! `tests/fixtures/demo_hierarchy_golden.json` and helpers in this module.
+//! Each block records one demo's post-sync tree, and the human-readable expected tree is
+//! documented on that example's module. The `online` block mirrors `mediapm_demo_online`.
+//! The `offline` block mirrors `mediapm_demo`, which since its fetched-payload tools were removed
+//! holds a single media leaf — the imported `video_untagged` file — plus the demo playlist; there
+//! is no tagged or replaygain-normalized leaf because no step produces one. Machine checks use
+//! `tests/fixtures/demo_hierarchy_golden.json` and helpers in this module; a materialization change
+//! updates the fixture and its consuming test in the same commit, per
+//! `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 //!
 //! ## Online link naming (two formats)
 //!
