@@ -1266,6 +1266,112 @@ mod tests {
         assert_eq!(retrieved, Some(payload), "payload must survive cross-domain GC");
     }
 
+    /// Exercises the prune path the background maintenance loop actually runs,
+    /// which [`background_maintenance_cross_index_preserves_blob`] claims to
+    /// cover but never does.
+    ///
+    /// That test hand-calls [`Cache::prune_expired_entries`], the
+    /// cooldown-gated entry point, while the loop calls
+    /// [`Cache::prune_expired_inner`] for every domain with no gate at all.
+    /// Driving the loop's own function is what makes the cross-domain
+    /// reference check an assertion about the background maintenance path
+    /// rather than about a foreground prune that happens to share its logic.
+    ///
+    /// It is also the one form of this test that cannot be decided by
+    /// scheduling. [`Cache::open`] spawns the loop and its first pass runs as
+    /// soon as the runtime first yields; against a zero-TTL content domain
+    /// that pass reclaims `key-a` without a cooldown gate, so whichever prune
+    /// reaches the index first removes the row and the other observes an empty
+    /// candidate set. Yielding once here, while the index is still empty, lets
+    /// the loop's spawn-time pass complete before this test stores anything,
+    /// so the row removal asserted below is unambiguously the one performed
+    /// here.
+    ///
+    /// The WAL is drained first for the same reason as in
+    /// [`prune_keeps_shared_payload_after_the_wal_is_drained`]: an undrained
+    /// payload is reconstructible from the WAL, so a reclaim would be masked.
+    ///
+    /// # What this test does not cover
+    ///
+    /// This is a contract-strengthening test, not the deterministic guard for
+    /// the intermittent failure in
+    /// [`background_maintenance_cross_index_preserves_blob`]. That test still
+    /// fails intermittently (1 run in 5 of the module, always on its
+    /// `removed_payloads` assertion), and the cause is neither this prune path
+    /// nor the CAS full-object immutability guard:
+    ///
+    /// - The reference set is built by [`collect_referenced_hashes_from_indexes`],
+    ///   which reads only the `*.json` files under the cache root, and
+    ///   [`load_index_file_sync`] returns an empty index for a missing file.
+    /// - [`write_index_file`] establishes a window in which the destination
+    ///   does not exist: it removes the index before persisting the temp file.
+    /// - `prune_expired_inner_core` performs that write for **every** domain on
+    ///   **every** pass, before its `expired_keys.is_empty()` early return, and
+    ///   the background loop passes over all domains with no cooldown gate.
+    ///
+    /// So a content-domain scan that overlaps any other domain's rewrite window
+    /// sees a live reference as absent and reclaims a payload that is still
+    /// indexed. The CAS guard cannot influence this: it only skips rewriting a
+    /// full blob that is already present, preserving its inode and mtime, and
+    /// the reclaim here is a well-formed `cas.delete` driven by a wrong
+    /// reference set. Observed: both this test and the flaky one pass with that
+    /// guard reverted.
+    ///
+    /// Forcing the overlap deterministically would need a hook inside
+    /// `write_index_file`, which is a product change rather than a test.
+    /// The deterministic guard for the inode mechanism lives at the CAS
+    /// boundary, in
+    /// `storage::blob_store::fs::tests::rewriting_an_existing_full_object_preserves_hardlink_identity`.
+    #[tokio::test]
+    async fn background_prune_path_preserves_a_blob_shared_with_another_domain() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open(
+            root.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "content".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 0,
+                },
+                CacheDomainConfig {
+                    domain: "metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 3600,
+                },
+            ],
+        )
+        .await
+        .expect("open cache");
+
+        // Let the loop's spawn-time pass run against the still-empty index.
+        tokio::task::yield_now().await;
+
+        let payload = b"cross-index-background-path".to_vec();
+        cache.store_bytes("content", "key-a", &payload).await;
+        cache.store_bytes("metadata", "key-b", &payload).await;
+        cache.cas.flush().await.expect("flush wal to committed blobs");
+
+        // The loop's own entry point: no cooldown gate, every domain.
+        let report = cache
+            .prune_expired_inner("content", super::now_unix_seconds())
+            .await
+            .expect("background prune path");
+        assert_eq!(
+            report.removed_entries, 1,
+            "the background prune path must reclaim the expired content row"
+        );
+        assert_eq!(report.removed_payloads, 0, "shared payload must not be reclaimed");
+        assert!(
+            cache.lookup_bytes("content", "key-a").await.is_none(),
+            "expired entry in content domain must be pruned"
+        );
+        assert_eq!(
+            cache.lookup_bytes("metadata", "key-b").await,
+            Some(payload),
+            "payload must survive cross-domain GC on the background prune path"
+        );
+    }
+
     /// Verifies that prune cooldown (24h) prevents re-pruning within the
     /// interval.
     #[tokio::test]
