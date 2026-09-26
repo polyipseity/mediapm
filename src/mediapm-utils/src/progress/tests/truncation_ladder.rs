@@ -22,16 +22,21 @@ fn step_segments() -> Vec<Segment> {
 
 const STEP_FLOOR: usize = 12;
 
-/// Floor below the protected head's own 12-column width, which is the only
-/// regime where protection changes any outcome.
+/// Floor below the protected head's own width, so the head alone fills the
+/// budget at these widths. The test below passes it alongside `STEP_FLOOR`
+/// to cover both floor settings.
 const TIGHT_FLOOR: usize = 6;
 
+/// Verifies the protected head survives at two floor settings, across the
+/// widths where the head alone fills the budget and the widths where it fits
+/// alongside other segments.
 #[test]
 fn protected_head_survives_in_both_floor_regimes() {
-    // Two regimes, because a floor set equal to the protected head's own
-    // width never binds: at and above it the head fits anyway, so the
-    // 12..60 loop below cannot detect a broken protection guard on its own.
-    // TIGHT_FLOOR sits below the head's width, where protection decides.
+    // The protected head is exactly 12 columns wide, so the regimes are
+    // geometric: below its own width nothing can share the budget, at and
+    // above it the head fits with room left. Each loop passes a different
+    // floor, so the head is checked to survive at both settings. The outcome
+    // follows from segment order; the floor value does not change it.
     for width in TIGHT_FLOOR..STEP_FLOOR {
         let out = fit_segments(&step_segments(), width, TIGHT_FLOOR);
         assert!(out.contains("[wf]"), "phase lost at width {width}: {out:?}");
