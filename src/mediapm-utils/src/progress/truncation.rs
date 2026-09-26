@@ -162,8 +162,8 @@ fn visible_len(text: &str) -> usize {
 ///     Segment::keep("[wf]"),
 ///     Segment::elastic("Music/Artist/Album/song.mkv"),
 /// ];
-/// assert_eq!(fit_segments(&segs, 40));
-/// assert_eq!(fit_segments(&segs, 20));
+/// assert_eq!(fit_segments(&segs, 40), "[wf] Music/Artist/Album/song.mkv");
+/// assert_eq!(fit_segments(&segs, 20), "[wf] …Album/song.mkv");
 /// ```
 ///
 /// # Degenerate widths
@@ -174,8 +174,8 @@ fn visible_len(text: &str) -> usize {
 /// ```
 /// # use mediapm_utils::progress::{Segment, fit_segments};
 /// let segs = vec![Segment::keep("[wf]")];
-/// assert_eq!(fit_segments(&segs, 4));
-/// assert_eq!(fit_segments(&segs, 3));
+/// assert_eq!(fit_segments(&segs, 4), "[wf]");
+/// assert_eq!(fit_segments(&segs, 3), "");
 /// ```
 #[cfg(feature = "progress")]
 #[must_use]
