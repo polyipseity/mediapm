@@ -815,12 +815,9 @@ async fn run_tools_update_precheck(
     }
 
     let expected_updated_tools = configure_document_for_tools_only_precheck(workspace_root)?;
-    // Loads dotenv files, creates the conductor runtime env files, and exports
-    // schemas. It does not reload the document — the line below re-reads it from
-    // disk — and the tool-sync path does not do this itself, so the call is
-    // retained from the precheck's previous seeding step rather than added.
-    service.refresh_runtime_configuration()?;
-
+    // The document is re-read from disk rather than taken from the service:
+    // the precheck only needs the written `mediapm.ncl` contents, and
+    // `sync_tools_with_tag_update_checks` re-reads the document itself.
     let document = load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
     if !document.media.is_empty() || !document.hierarchy.is_empty() {
         return Err("tools-update precheck must start with empty media/hierarchy".into());
@@ -910,7 +907,9 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     let (configured_tool_count, configured_step_count) =
         configure_document_for_local_tool_chain(&workspace_root, &source_hash_text)?;
 
-    ingest_service.refresh_runtime_configuration()?;
+    // No runtime refresh is needed here: `sync_library_with_options` performs
+    // the dotenv load, runtime env-file creation, and schema export itself as
+    // its first step, and in config-only mode nothing downstream reads them.
     if run_sync {
         clear_machine_workflows(&ingest_service.paths().conductor_generated_ncl)?;
     }
