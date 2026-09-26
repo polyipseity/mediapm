@@ -97,8 +97,13 @@ pub(crate) fn mark_media_step_for_regeneration(
     }
 }
 
-/// Removes impure timestamps for a specific tool from all media step states.
-pub(crate) fn remove_target_step_impure_timestamps(state: &mut MediaPmState, _tool_id: &str) {
+/// Removes impure timestamps from every media step state.
+///
+/// The previous signature took a `_tool_id` that the body never read, while
+/// the sole call site passed a media id. The parameter is gone because an
+/// unused parameter is not part of the API, and keeping it under a `_`
+/// prefix hid the fact that the call site and the name disagreed.
+pub(crate) fn remove_target_step_impure_timestamps(state: &mut MediaPmState) {
     for step_state in state.workflow_states.values_mut() {
         if step_state.last_impure_sync_at.is_some() {
             step_state.last_impure_sync_at = None;

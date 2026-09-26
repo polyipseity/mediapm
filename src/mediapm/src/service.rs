@@ -738,7 +738,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
 
         let (removed_instances, removed_generated_timestamps) = if invalidate_calls {
             mark_media_step_for_regeneration(&mut state, media_id, step_index);
-            remove_target_step_impure_timestamps(&mut state, media_id);
+            remove_target_step_impure_timestamps(&mut state);
             // TODO: collect actual removed instance ids and generated
             //       timestamps from the state entry after invalidation.
             (vec![format!("step:{step_index}")], vec![])
