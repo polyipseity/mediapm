@@ -14,6 +14,8 @@
 //! `http_decoupling_check.rs`, the same file `build.rs` includes, so the two
 //! consumers cannot disagree about what the rule is.
 
+use std::path::{Path, PathBuf};
+
 // `include!` is resolved relative to this file, so `../../` is the crate root.
 include!("../../http_decoupling_check.rs");
 
@@ -22,7 +24,7 @@ include!("../../http_decoupling_check.rs");
 ///
 /// A test that depends on the runner's working directory passes locally and
 /// fails under a different runner, which is worse than having no test at all.
-fn http_module_dir() -> std::path::PathBuf {
+fn http_module_dir() -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("http")
 }
 
@@ -44,8 +46,6 @@ fn render_violations(violations: &[DecouplingViolation]) -> String {
         .join("\n")
 }
 
-use std::path::{Path, PathBuf};
-
 /// Writes `contents` to `dir/name`, creating `dir` if needed.
 ///
 /// Used only by the scanner-behaviour tests below, which need a directory the
@@ -55,38 +55,44 @@ fn write_probe(dir: &Path, name: &str, contents: &str) {
     std::fs::write(dir.join(name), contents).expect("write probe file");
 }
 
-/// Creates a scratch directory for scanner-behaviour tests.
+/// Creates an owned scratch directory for scanner-behaviour tests.
 ///
-/// The real `src/http/` tree cannot be used for this: the build guard in
+/// Returns the [`tempfile::TempDir`] **owner**, not its path. Returning the
+/// path would drop the owner at the end of this statement, deleting the
+/// directory, and the caller would recreate it with `create_dir_all` and leave
+/// it with no cleanup owner — a `mediapm-artifact-*` tree orphaned in `$TMPDIR`
+/// on every run, which `scripts/run-all-tests.sh` fails the suite for.
+///
+/// The real `src/http/` tree cannot be used instead: the build guard in
 /// `build.rs` scans the same tree and panics during compilation, so the test
 /// binary never gets built and a violation there is reported as a *build*
-/// failure rather than a test failure. A synthetic directory exercises the
-/// same shared scanner with the guard out of the way.
-fn probe_dir() -> PathBuf {
-    mediapm_utils::temp::artifact_dir().expect("probe artifact dir").path().to_path_buf()
+/// failure rather than a test failure. A synthetic directory exercises the same
+/// shared scanner with the guard out of the way.
+fn probe_dir() -> tempfile::TempDir {
+    mediapm_utils::temp::artifact_dir().expect("probe artifact dir")
 }
 
 /// The scanner must detect both forbidden patterns, name the file and line, and
 /// report every violation rather than stopping at the first.
 ///
-/// This is the red case for the real-tree test above, made observable: the
+/// This is the red case for the real-tree test below, made observable: the
 /// detector is proven to fire on both conditions, and to accumulate both
 /// findings in one pass.
 #[test]
 fn scan_reports_both_forbidden_patterns_with_file_and_line() {
     let dir = probe_dir();
     write_probe(
-        &dir,
+        dir.path(),
         "a_crate_import.rs",
         "// header\nuse crate::http::client::shared_http_client;\n",
     );
     write_probe(
-        &dir,
+        dir.path(),
         "b_error_type.rs",
         "fn probe() -> u8 {\n    let _ = ConductorError;\n    0\n}\n",
     );
 
-    let violations = scan_http_decoupling_violations(&dir);
+    let violations = scan_http_decoupling_violations(dir.path());
     let rendered = render_violations(&violations);
 
     assert_eq!(
@@ -94,39 +100,52 @@ fn scan_reports_both_forbidden_patterns_with_file_and_line() {
         format!(
             "  {}:2: `use crate::` is forbidden in the HTTP module\n  {}:2: `ConductorError` is \
              forbidden in the HTTP module; use `HttpClientError` instead",
-            dir.join("a_crate_import.rs").display(),
-            dir.join("b_error_type.rs").display()
+            dir.path().join("a_crate_import.rs").display(),
+            dir.path().join("b_error_type.rs").display()
         ),
         "both conditions must be reported, sorted by path, with file and line"
     );
 }
 
-/// Lines the rule excludes must not produce violations even when they contain
-/// the forbidden substrings.
+/// The rule classifies on `line.trim()`, so leading whitespace must change
+/// nothing: an indented comment is still a comment, and an indented statement is
+/// still a statement.
 ///
-/// The real `src/http/` tree cannot exercise this branch: it has no violations
-/// to exclude, so without a synthetic case the exclusion rules would be
-/// asserted only in the passing direction.
+/// The real `src/http/` tree cannot exercise either direction. It contains no
+/// scanned violations, so it cannot show that a real one is caught; and it
+/// *does* contain `//`, `///` and `//!` lines mentioning `ConductorError` in its
+/// own prose — `client.rs` and `mod.rs` both document the contract by saying the
+/// module uses `HttpClientError` rather than `ConductorError` — so the real tree
+/// only passes at all because the comment exclusion is load-bearing. Dropping
+/// that exclusion makes the build guard reject the real tree, which is exactly
+/// why the real tree cannot be the fixture for this test.
 #[test]
-fn scan_ignores_blank_comment_and_attribute_lines() {
+fn scan_trims_lines_and_excludes_comments_but_catches_indented_code() {
     let dir = probe_dir();
-    write_probe(
-        &dir,
-        "mentions.rs",
-        "// use crate::foo\n\
-         /// names ConductorError in prose\n\
-         //! also mentions ConductorError\n\
-         \n\
-         #[cfg(feature = \"never\")]\n\
-         // use crate::bar is still just a comment\n",
-    );
+    // Line 7 is the only violation; lines 1-6 are all excluded forms.
+    let fixture = [
+        "// use crate::foo",
+        "/// names ConductorError in prose",
+        "//! also mentions ConductorError",
+        "",
+        "#[cfg(feature = \"never\")]",
+        "    // ConductorError, indented comment",
+        "    use crate::x;",
+    ]
+    .join("\n");
+    write_probe(dir.path(), "mentions.rs", &fixture);
 
-    let violations = scan_http_decoupling_violations(&dir);
+    let violations = scan_http_decoupling_violations(dir.path());
+    let rendered = render_violations(&violations);
 
-    assert!(
-        violations.is_empty(),
-        "comment, blank and attribute lines are excluded by the rule, but got:\n{}",
-        render_violations(&violations)
+    assert_eq!(
+        rendered,
+        format!(
+            "  {}:7: `use crate::` is forbidden in the HTTP module",
+            dir.path().join("mentions.rs").display()
+        ),
+        "only the indented statement on line 7 is a violation: every comment, blank and attribute \
+         line is excluded, including the indented comment on line 6"
     );
 }
 
@@ -134,9 +153,9 @@ fn scan_ignores_blank_comment_and_attribute_lines() {
 /// remains extractable into a standalone crate with no code changes.
 ///
 /// Asserting this as a test is what turns a build abort into a named,
-/// diagnosable failure. On the current tree the module is clean, so this test
-/// passes with no output; the red case is demonstrated in
-/// `.superpowers/sdd/phase3-plan-2026-09-26-open-items/r3-report.md`.
+/// diagnosable failure. On the current tree the module is clean of *scanned*
+/// violations, so this test passes with no output; the red case is demonstrated
+/// in `.superpowers/sdd/phase3-plan-2026-09-26-open-items/r3-report.md`.
 #[test]
 fn http_module_has_no_crate_internal_references() {
     let violations = scan_http_decoupling_violations(&http_module_dir());
