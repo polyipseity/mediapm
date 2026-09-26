@@ -132,7 +132,7 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// and builds an OS-conditional command-selector template.
 ///
 /// `group` provides 3 phase-agnostic progress bars per tool (res, fch,
-/// pro). Routes [`ProviderProgressSnapshot`] callbacks to the matching
+/// pro). Routes [`mediapm_utils::progress::ProviderProgressSnapshot`] callbacks to the matching
 /// bar by `snap.phase`. Item counters are displayed via `set_prefix_components`; byte
 /// counters drive bar position (`set_position`/`set_total`). The bridge does
 /// not interpret the meaning of items or bytes — it only relays the values
@@ -145,7 +145,7 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// `[pro]`.
 ///
 /// After phase 1 (resolve), a HEAD-prefetch step populates
-/// [`ResolvedSource.expected_size`] for each `Fetch`-producer source so
+/// [`ResolvedSource::expected_size`] for each `Fetch`-producer source so
 /// phase 2 progress bars start with an accurate byte total. Evermeet and
 /// getrelease URLs are skipped (dynamic endpoints).
 ///

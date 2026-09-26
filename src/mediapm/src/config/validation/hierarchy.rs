@@ -2,7 +2,7 @@
 //!
 //! Validates hierarchy structural invariants: media-id references, playlist
 //! target resolution, path ordering, and duplicate detection beyond the
-//! flattening constraints enforced in [`hierarchy_types`].
+//! flattening constraints enforced in [`crate::config::hierarchy_types`].
 
 #![allow(dead_code)]
 

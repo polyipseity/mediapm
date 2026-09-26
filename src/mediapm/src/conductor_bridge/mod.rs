@@ -4,8 +4,8 @@
 //! conductor tool specifications, runtime settings, and Nickel documents.
 //!
 //! It owns:
-//! - [`ToolSyncReport`] — output of one `mediapm tool sync` pass
-//! - [`reconcile_desired_tools`] — top-level async reconciliation entry point
+//! - [`sync::ToolSyncReport`] — output of one `mediapm tool sync` pass
+//! - [`sync::reconcile_desired_tools`] — top-level async reconciliation entry point
 //! - Document load/save helpers for generated and state documents
 //! - Runtime-storage path defaults
 //! - Tool-spec and runtime builders for managed executables

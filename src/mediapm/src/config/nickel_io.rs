@@ -126,7 +126,7 @@ pub fn save_mediapm_document(
 /// Tries the JSON path first. If missing, looks for a legacy `state.ncl`
 /// (derived by swapping the extension), evaluates it, migrates to JSON,
 /// writes the result, and deletes the `.ncl` file. Returns
-/// [`MediaPmState::default()`] when neither exists (first run or reset).
+/// [`crate::config::MediaPmState::default`] when neither exists (first run or reset).
 ///
 /// # Errors
 ///
@@ -190,7 +190,7 @@ pub fn save_mediapm_state_document(
     Ok(())
 }
 
-/// Merges runtime state into a [`MediaPmDocument`].
+/// Merges runtime state into a [`crate::config::MediaPmDocument`].
 ///
 /// Currently a no-op passthrough since the state document contains
 /// `ManagedWorkflowStepState` entries that are structurally incompatible with

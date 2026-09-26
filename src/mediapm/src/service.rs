@@ -1085,7 +1085,7 @@ impl MediaPmService<FileSystemCas> {
 
     /// Runs a full library sync with options and an optional phase observer.
     ///
-    /// When an observer is provided, [`SyncPhaseReport`]s are delivered after
+    /// When an observer is provided, [`SyncPhaseReport`](crate::SyncPhaseReport)s are delivered after
     /// each progress screen finishes.
     ///
     /// # Errors
