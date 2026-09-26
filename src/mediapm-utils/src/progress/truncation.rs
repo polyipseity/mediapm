@@ -147,7 +147,11 @@ fn visible_len(text: &str) -> usize {
 ///   than the overage, and the remainder can still be too wide when Phase A
 ///   ends.
 /// * **Phase B (drop)** — once no segment can shrink further, whole segments
-///   drop from the tail until the remainder fits or one segment is left.
+///   drop from the tail until the remainder fits or one segment is left. The
+///   leading segment is never popped, so a leading head group yields
+///   progressively rather than all at once: a step bar headed by
+///   `[wf] [F] 1/4` still renders `[wf] [F]` at width 11, and only `[wf]` at
+///   width 7.
 ///
 /// The ladder **never shaves**: no segment is ever cut at a character
 /// boundary. A segment is shown whole, shortened from the front, or absent —

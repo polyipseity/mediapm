@@ -52,6 +52,13 @@ impl StepBarLabel {
     ///
     /// The three leading segments come first, so width pressure sheds the
     /// version and identifiers before the phase, status marker, or tally.
+    ///
+    /// The version and the identifiers are `Keep` rather than `Elastic`
+    /// because shaving them destroys the only part that identifies them: a
+    /// front-shortened `[7.1]` renders as `…1]`, and a front-shortened
+    /// `default` as `…ult`. Neither names a version or a workflow. The tally
+    /// is pushed as a single `{completed}/{total}` segment, so it is atomic
+    /// by construction and never renders as a bare count.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.phase.is_empty() {
@@ -82,6 +89,13 @@ impl StepBarLabel {
     ///
     /// Free-form `custom` text is elastic so a long user string is
     /// shortened from the front rather than cut at its head.
+    ///
+    /// `elapsed`, `rate`, and `eta` are auto-derived: they reach this
+    /// builder only through the merged [`SuffixComponents`] the renderer
+    /// passes in, so a suffix that stopped reading them would strip timing
+    /// from every step bar. They are `Keep`, so width pressure drops them
+    /// whole rather than shortening them, and `eta` is rendered only when
+    /// `rate` is present.
     fn suffix_segments(&self, suffix: &SuffixComponents) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.completed.is_empty() && !self.total.is_empty() {
@@ -148,6 +162,12 @@ impl WorkerBarLabel {
     ///
     /// The two leading segments come first, so width pressure sheds the
     /// identifiers and tool name before the status marker or activity.
+    ///
+    /// The identifiers are `Keep` rather than `Elastic` because shaving them
+    /// destroys the only part that identifies them: a front-shortened
+    /// `default` renders as `…ult`, which names no workflow. The tool name is
+    /// the one elastic segment, because its parenthesised tail — the part that
+    /// names the tool — is the informative end.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.status_marker.is_empty() {
