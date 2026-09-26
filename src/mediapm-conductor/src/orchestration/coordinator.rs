@@ -675,7 +675,7 @@ where
     /// Runs conductor garbage collection on the orchestration state and CAS.
     ///
     /// CONDUCTOR GC — distinct from CAS GC.  Calls the three-phase
-    /// [`gc::run_conductor_gc`] which handles instance pruning, CAS orphan
+    /// [`crate::gc::run_conductor_gc`] which handles instance pruning, CAS orphan
     /// reclamation, and CAS metadata maintenance.
     pub(crate) async fn run_gc(
         &self,

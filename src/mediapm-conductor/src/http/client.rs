@@ -5,7 +5,7 @@
 //! This module is **fully self-contained**: it depends on external crates only
 //! (`reqwest`, `std`) and intentionally imports **nothing from `crate::`**.
 //! It defines its own error type [`HttpClientError`] rather than using
-//! [`ConductorError`].
+//! `ConductorError`.
 //!
 //! This design makes the module independently extractable into a standalone
 //! crate. If you ever need to share this client outside `mediapm-conductor`,
@@ -16,7 +16,7 @@
 //!
 //! The unit of encapsulation is [`HttpClientError`]. Every function returns
 //! this type. The caller in `crate::tools::provider` maps it to
-//! [`ConductorError`] at the call site, never inside this module.
+//! `ConductorError` at the call site, never inside this module.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -39,7 +39,7 @@ const REQUEST_TIMEOUT_ENV: &str = "MEDIAPM_HTTP_TIMEOUT_SECONDS";
 /// Errors produced by the HTTP client module.
 ///
 /// This is a self-contained error type that does **not** reference
-/// [`ConductorError`]. Callers map this to their own error domain at
+/// `ConductorError`. Callers map this to their own error domain at
 /// the call site.
 #[derive(Debug)]
 pub enum HttpClientError {

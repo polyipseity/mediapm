@@ -38,7 +38,8 @@ use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
 /// configuration loading.
 ///
 /// Runtime-only fields (concurrency, retries, `content_map`, env overrides)
-/// live inline on each [`ToolSpec`] via its [`ToolRuntime`] — there is no
+/// live inline on each [`ToolSpec`] via its
+/// [`ToolRuntime`](super::ToolRuntime) — there is no
 /// separate `tool_runtimes` map.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]

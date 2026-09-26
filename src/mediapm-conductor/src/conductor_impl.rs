@@ -164,7 +164,7 @@ where
 
     /// Returns the current orchestration state (from in-memory persistence).
     ///
-    /// Call [`ensure_persisted_state_loaded`] before this when the conductor
+    /// Call [`Self::ensure_persisted_state_loaded`] before this when the conductor
     /// may need to read or migrate a v1 state file from disk.
     ///
     /// # Errors
@@ -408,7 +408,7 @@ where
 
     /// Returns the merged unified configuration (compiled view).
     ///
-    /// This is the same merged document that [`run_workflow`] produces.
+    /// This is the same merged document that [`Self::run_workflow`] produces.
     ///
     /// # Errors
     ///

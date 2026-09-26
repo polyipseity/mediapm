@@ -16,7 +16,7 @@
 //!
 //! The unit of encapsulation is [`HttpClientError`]. Every function returns
 //! this type. The caller in `crate::tools::provider` maps it to
-//! [`ConductorError`] at the call site, never inside this module.
+//! `ConductorError` at the call site, never inside this module.
 
 pub mod client;
 pub use client::*;

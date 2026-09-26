@@ -115,7 +115,7 @@ pub struct Cache {
     bg_guard: Option<Arc<BackgroundMaintenanceGuard>>,
     /// Root directory this cache was opened at.
     ///
-    /// Used by [`Drop`](Drop) to skip the index flush when the root has been
+    /// Used by [`Drop`] to skip the index flush when the root has been
     /// removed while a handle is still alive: flushing would recreate the
     /// root as an index-only orphan directory.
     root: PathBuf,
@@ -177,7 +177,7 @@ async fn open_domain_setup(
 /// Takes the CAS store and domain map directly instead of a full [`Cache`]:
 /// the background prune task captures owned clones, so it never keeps a
 /// `Cache` alive past its owning scope. A lingering `Cache` clone would run
-/// its [`Drop`](Drop) index flush at teardown — after the owning `TempDir`
+/// its [`Drop`] index flush at teardown — after the owning `TempDir`
 /// already removed the directory — and `write_index_file`'s `create_dir_all`
 /// would recreate it as an index-only orphan under `$TMPDIR`. The [`Drop`]
 /// root-exists guard is the primary defense; this capture pattern avoids the
@@ -450,7 +450,7 @@ impl Cache {
     /// one domain.
     ///
     /// This method enforces [`PRUNE_INTERVAL_SECONDS`] cooldown between
-    /// successive calls per domain.  Use [`prune_expired_inner`] to bypass the
+    /// successive calls per domain.  Use [`Self::prune_expired_inner`] to bypass the
     /// cooldown.
     ///
     /// # Errors
@@ -491,7 +491,7 @@ impl Cache {
     /// Core prune logic without cooldown check, for one domain.
     ///
     /// Used by the background maintenance loop so background prunes do not
-    /// interfere with [`prune_expired_entries`] cooldown tracking.
+    /// interfere with [`Self::prune_expired_entries`] cooldown tracking.
     ///
     /// Synchronous filesystem I/O (index write, hash-refererence scan) is
     /// offloaded to [`tokio::task::spawn_blocking`] to avoid blocking the

@@ -11,7 +11,8 @@
 //!
 //! [`ProvisionCache::materialize`] deduplicates concurrent extraction of the
 //! same tool: the first caller drives extraction; subsequent callers wait on a
-//! [`Notify`] and retry the shared-lock fast path after extraction completes.
+//! [`Notify`](tokio::sync::Notify) and retry the shared-lock fast path after
+//! extraction completes.
 //!
 //! # Lock protocol
 //!

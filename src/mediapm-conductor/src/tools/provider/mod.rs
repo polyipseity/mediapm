@@ -321,7 +321,8 @@ pub(crate) mod sd;
 ///
 /// # Errors
 ///
-/// Returns [`ConductorError`] when the tool is unknown.
+/// Returns [`ConductorError`](crate::error::ConductorError) when the tool is
+/// unknown.
 #[cfg(feature = "tool-presets")]
 #[expect(clippy::unused_async, reason = "public async entrypoint kept for pipeline callers")]
 pub async fn resolve_tool_fetch(
@@ -354,7 +355,7 @@ pub async fn resolve_tool_fetch(
 /// (`agg_completed_bytes`) + the best lower bound for the current source
 /// (Content-Length if available, otherwise `downloaded_so_far`) + expected
 /// sizes for unstarted sources (`remaining_expected`).  After download,
-/// [`DownloadedSource.expected_size`] is set to the actual byte count
+/// [`DownloadedSource::expected_size`] is set to the actual byte count
 /// (or `max(expected, actual)` if a HEAD-based estimate existed).
 ///
 /// # Panics
@@ -365,7 +366,8 @@ pub async fn resolve_tool_fetch(
 ///
 /// # Errors
 ///
-/// Returns [`ConductorError`] when all URL candidates fail or I/O fails.
+/// Returns [`ConductorError`](crate::error::ConductorError) when all URL
+/// candidates fail or I/O fails.
 #[cfg(feature = "tool-presets")]
 #[expect(
     clippy::too_many_lines,
@@ -702,7 +704,7 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 /// the per-chunk extraction/repack callbacks above smoothly fill the bytes
 /// bar.
 ///
-/// Progress reporting uses [`DownloadedSource.expected_size`] for the
+/// Progress reporting uses [`DownloadedSource::expected_size`] for the
 /// aggregated byte total (falling back to `bytes.len()` when unset).  The
 /// total accounts for both compressed input bytes during extraction and
 /// decompressed bytes during repacking, keeping the progress bar smooth
@@ -720,7 +722,8 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 ///
 /// # Errors
 ///
-/// Returns [`ConductorError`] when extraction, packing, or CAS import fails.
+/// Returns [`ConductorError`](crate::error::ConductorError) when extraction,
+/// packing, or CAS import fails.
 #[cfg(feature = "tool-presets")]
 pub async fn process_tool_sources(
     downloaded: &DownloadedSources,
