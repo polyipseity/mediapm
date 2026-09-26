@@ -21,12 +21,11 @@ const SCRIPTS: [&str; 2] = ["clean-mediapm-temp.sh", "clean-mediapm-temp.ps1"];
 
 /// Script self-tests present in this crate's directory, gated for presence
 /// and the executable bit by [`script_files_exist_and_are_executable`].
-const TEST_SCRIPTS: [&str; 5] = [
+const TEST_SCRIPTS: [&str; 4] = [
     "test-clean-mediapm-temp.sh",
     "test-clean-mediapm-temp.ps1",
     "test-run-all-tests.sh",
     "test-run-all-tests.ps1",
-    "test-flake-hunt.sh",
 ];
 
 /// Fake managed-prefix dirs the janitor must remove.
@@ -292,39 +291,6 @@ fn pwsh_runner_self_test() {
         "pwsh",
         &["--version"],
         run_pwsh,
-    );
-}
-
-// Seeded pass/fail pair for `scripts/flake-hunt.sh`'s self-test
-// (`tests/scripts/test-flake-hunt.sh`).
-//
-// Neither test asserts anything about product code: both read
-// `MEDIAPM_FLAKE_HUNT_SEEDED`, so the harness has a deterministic clean run
-// and a deterministic failure to detect without introducing a real
-// regression into the suite. With the variable unset -- every ordinary gate
-// run -- both pass. The self-test sets it for its `seeded_failing_test`
-// invocation only; that run must report `FLAKE: ...seeded_failing_test` and
-// exit non-zero, while the `seeded_passing_test` run must exit zero.
-
-/// Clean probe: fails only when the self-test's opt-in variable is set, so it
-/// stands in for "a run where nothing went wrong".
-#[test]
-fn seeded_passing_test() {
-    assert!(
-        std::env::var("MEDIAPM_FLAKE_HUNT_SEEDED").is_err(),
-        "MEDIAPM_FLAKE_HUNT_SEEDED must be unset outside the flake-hunt self-test"
-    );
-}
-
-/// Failing probe: the mirror image of [`seeded_passing_test`], so the harness
-/// has a test that fails on demand rather than one that was broken on purpose.
-/// The self-test sets the variable for this one and filters to it by name, so
-/// the harness reports a failure that a real run of the gate would never see.
-#[test]
-fn seeded_failing_test() {
-    assert!(
-        std::env::var("MEDIAPM_FLAKE_HUNT_SEEDED").is_err(),
-        "seeded failure for flake-hunt.sh self-verification"
     );
 }
 
