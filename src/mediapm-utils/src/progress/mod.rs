@@ -47,7 +47,9 @@ pub use traits::{BarStyle, ProgressBarApi, ProgressScreenApi};
 #[cfg(feature = "progress")]
 mod truncation;
 #[cfg(feature = "progress")]
-pub use truncation::{BarLabelTruncation, truncate_ordered};
+pub use truncation::{
+    BarLabelTruncation, MIN_TAIL, Segment, Shrink, fit_segments, front_ellipsis, truncate_ordered,
+};
 
 // Recording types for test assertions (feature-gated)
 
