@@ -5,18 +5,17 @@
 //! order independently of the conductor's [`StepBarLabel`] and
 //! [`WorkerBarLabel`].
 
-use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents, truncate_ordered};
+use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit_segments};
 
 /// Truncation order for a materialization bar.
 ///
-/// Prefix order: `entry_path` (progressive) → `phase` (atomic) →
-/// `status_marker` (atomic) → `entry_name` (progressive) → `file_name`
-/// (progressive, sub-bars only) → fallback.
+/// Segments are ordered most important first and yield from the tail.
+/// Prefix: `phase` → `status_marker` (both protected) → `entry_name` →
+/// `file_name` (sub-bars only) → `entry_path` (elastic, shortened from the
+/// front so the directory tail survives).
 ///
-/// Materialization bars carry no version, no count/total, no workflow/step
-/// identity.  The `entry_path` (directory portion) is truncated first
-/// because losing leading path segments is least harmful; `entry_name`
-/// (basename) is preserved as long as possible.
+/// Materialization bars carry no version, no count/total, and no
+/// workflow/step identity.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MaterializationBarLabel {
     pub status_marker: String,
@@ -31,35 +30,39 @@ pub(crate) struct MaterializationBarLabel {
 }
 
 impl MaterializationBarLabel {
-    fn prefix_parts(&self) -> Vec<String> {
-        let mut parts = Vec::new();
-        // Entry name is most important — placed first so truncate_ordered
-        // keeps it longest (dropping trailing parts first).
-        if !self.entry_name.is_empty() {
-            parts.push(self.entry_name.clone());
-        }
-        if !self.file_name.is_empty() {
-            parts.push(self.file_name.clone());
+    /// Minimum prefix width at which the protected head still fits whole.
+    ///
+    /// Measured as the rendered width of `[wrt] [F]`. Below this width
+    /// protection lifts and the tail is dropped as a whole segment.
+    pub(crate) const PREFIX_FLOOR: usize = 9;
+
+    fn prefix_segments(&self) -> Vec<Segment> {
+        let mut segs = Vec::new();
+        if !self.phase.is_empty() {
+            segs.push(Segment::protected(format!("[{}]", self.phase)));
         }
         if !self.status_marker.is_empty() {
-            parts.push(format!("[{}]", self.status_marker));
+            segs.push(Segment::protected(format!("[{}]", self.status_marker)));
         }
-        if !self.phase.is_empty() {
-            parts.push(format!("[{}]", self.phase));
+        if !self.entry_name.is_empty() {
+            segs.push(Segment::new_keep(self.entry_name.clone()));
         }
-        // Entry path is least important — placed last so truncate_ordered
-        // drops it first under width pressure.
+        if !self.file_name.is_empty() {
+            segs.push(Segment::new_keep(self.file_name.clone()));
+        }
+        // Entry path is the directory portion and the only elastic segment:
+        // shortened from the front so the tail adjacent to the filename
+        // survives, rather than dropped whole.
         if !self.entry_path.is_empty() {
-            parts.push(self.entry_path.clone());
+            segs.push(Segment::elastic(self.entry_path.clone()));
         }
-        parts
+        segs
     }
 }
 
 impl BarLabelTruncation for MaterializationBarLabel {
     fn truncate_prefix(&self, max_width: usize) -> String {
-        let parts = self.prefix_parts();
-        truncate_ordered(&parts, max_width)
+        fit_segments(&self.prefix_segments(), max_width, Self::PREFIX_FLOOR)
     }
 
     fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
@@ -96,26 +99,69 @@ mod tests {
         assert_eq!(name, "song.mkv");
     }
 
+    /// Every protected field survives the full floor band, and no width
+    /// overflows. Detects `entry_name` or `entry_path` being promoted ahead
+    /// of `phase` or `status_marker`: such a reordering sheds the head at
+    /// these widths and fails the first two assertions.
     #[test]
-    fn truncate_drops_entry_path_first() {
+    fn protected_head_survives_at_the_floor() {
+        let label = MaterializationBarLabel {
+            status_marker: "F".into(),
+            entry_path: "Music/Artist/Album".into(),
+            entry_name: "song.mkv".into(),
+            file_name: "cover.jpg".into(),
+            phase: "wrt".into(),
+        };
+        for width in MaterializationBarLabel::PREFIX_FLOOR..=18 {
+            let out = label.truncate_prefix(width);
+            assert!(out.contains("[wrt]"), "phase lost at width {width}: {out:?}");
+            assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
+            assert!(out.chars().count() <= width, "overflowed at width {width}: {out:?}");
+        }
+    }
+
+    /// The phase tag outlives the elastic path, and `entry_name` outlives
+    /// the path too: both outrank the single elastic segment.
+    #[test]
+    fn protected_phase_survives_entry_path_pressure() {
         let label = MaterializationBarLabel {
             entry_path: "Music/Artist/Album".into(),
             entry_name: "song.mkv".into(),
             phase: "stg".into(),
             ..Default::default()
         };
-        let wide = label.truncate_prefix(80);
-        assert!(wide.contains("Music/Artist/Album"), "wide prefix missing entry_path: {wide:?}");
-        assert!(wide.contains("song.mkv"), "wide prefix missing entry_name: {wide:?}");
-
-        // Tight width: entry_path should be dropped first
         let tight = label.truncate_prefix(25);
-        assert!(!tight.contains("Music/Artist/Album"), "entry_path not dropped: {tight:?}");
-        assert!(tight.contains("song.mkv"), "entry_name dropped too early: {tight:?}");
+        assert!(tight.contains("[stg]"), "phase lost: {tight:?}");
+        assert!(tight.contains("song.mkv"), "entry_name lost: {tight:?}");
     }
 
+    /// The elastic path is shortened from the front so the directory tail —
+    /// the part adjacent to the filename — survives, where the prefix cut
+    /// this replaces yielded the uninformative `Music/Artist/Al…` head.
     #[test]
-    fn truncate_preserves_entry_name_over_path() {
+    fn entry_path_is_shortened_from_the_front() {
+        let label = MaterializationBarLabel {
+            entry_path: "Music/Artist/Album/1977".into(),
+            entry_name: "song.mkv".into(),
+            phase: "stg".into(),
+            ..Default::default()
+        };
+        // Wide enough for the full path, so nothing is shortened.
+        let wide = label.truncate_prefix(80);
+        assert!(wide.contains("Music/Artist/Album/1977"), "wide path missing: {wide:?}");
+
+        // Tight: the path must keep its tail, never its head. The old
+        // implementation prefix-cut, yielding `Music/Artist/Al…`.
+        let tight = label.truncate_prefix(20);
+        assert!(tight.contains('…'), "path not front-ellipsised: {tight:?}");
+        assert!(!tight.contains("Music/"), "path head retained instead of tail: {tight:?}");
+        assert!(tight.contains("song.mkv"), "entry_name lost: {tight:?}");
+    }
+
+    /// `entry_name` outranks the path: the long name survives while the
+    /// longer path is shortened and then surrendered whole.
+    #[test]
+    fn entry_name_outranks_entry_path() {
         let label = MaterializationBarLabel {
             entry_path: "very/long/path/segments".into(),
             entry_name: "important-file.mkv".into(),
@@ -123,23 +169,31 @@ mod tests {
             ..Default::default()
         };
         let tight = label.truncate_prefix(25);
-        // entry_name should survive even when entry_path must be dropped
         assert!(tight.contains("important-file.mkv"), "entry_name dropped: {tight:?}");
+        assert!(tight.contains("[cmt]"), "phase dropped: {tight:?}");
     }
 
+    /// On sub-bars the extracted `file_name` outranks the directory path.
+    ///
+    /// The previous version of this test asserted only on the wide case,
+    /// which passes trivially and did not test what its name claimed. This
+    /// version asserts on the tight case, where ordering actually bites.
     #[test]
-    fn sub_bar_file_name_truncated_last() {
+    fn file_name_outranks_entry_path_on_sub_bars() {
         let label = MaterializationBarLabel {
-            entry_path: "Music".into(),
+            entry_path: "Music/Artist/Album".into(),
             entry_name: "album".into(),
             file_name: "cover.jpg".into(),
             phase: "wrt".into(),
             ..Default::default()
         };
-        let tight = label.truncate_prefix(15);
-        assert!(!tight.is_empty(), "prefix must not be empty: {tight:?}");
-        // file_name is last in the truncation order, so it survives longest
         let wide = label.truncate_prefix(80);
-        assert!(wide.contains("cover.jpg"), "file_name missing: {wide:?}");
+        assert!(wide.contains("cover.jpg"), "file_name missing when wide: {wide:?}");
+
+        let tight = label.truncate_prefix(21);
+        assert!(tight.contains("[wrt]"), "phase lost: {tight:?}");
+        assert!(tight.contains("cover.jpg"), "file_name dropped before entry_path: {tight:?}");
+        assert!(!tight.contains("Music/"), "entry_path survived past file_name: {tight:?}");
+        assert!(tight.chars().count() <= 21, "overflowed: {tight:?}");
     }
 }
