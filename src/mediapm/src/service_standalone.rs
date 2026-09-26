@@ -171,14 +171,19 @@ pub(crate) fn load_or_default_conductor_state_document(
     Ok(mediapm_conductor::NickelDocument::default())
 }
 
-/// Saves a conductor state document to disk.
+/// Discards a conductor state document, writing nothing to disk.
 ///
-/// Retained as a no-op for standalone scaffolding: it writes nothing to
-/// disk. Conductor state is not persisted through this helper.
+/// Conductor runtime state is persisted as a Nickel document by
+/// [`save_conductor_generated_document`], which writes
+/// `mediapm.conductor.generated.ncl`. This helper ignores both arguments
+/// and is retained for standalone scaffolding.
 ///
 /// # Errors
 ///
 /// Infallible — returns `Ok(())`.
+///
+/// [`save_conductor_generated_document`]:
+///     crate::conductor_bridge::documents::save_conductor_generated_document
 #[allow(dead_code, clippy::unnecessary_wraps)]
 pub(crate) fn save_conductor_state_document(
     paths: &MediaPmPaths,
