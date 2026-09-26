@@ -757,7 +757,9 @@ async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> Exampl
 /// counted as updated because `register_missing_builtin_tools` pre-inserts it, not because an older
 /// version was found. The demo previously seeded a stale generated-doc entry per tool to force
 /// re-provision; that seed was removed with the fetched-payload tools, since it could no longer
-/// reach a non-`import` tool. Real tool-update behaviour is covered by the online path.
+/// reach a non-`import` tool. The demo no longer exercises stale-version re-provision, but the
+/// capability is not lost with it: `tests/int/tool_sync/composite.rs` covers stale canonical version
+/// to needs-sync in the default suite through the ungated `sync_logical_requires_sync_*` tests.
 async fn run_tools_update_precheck(
     service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
     workspace_root: &Path,
@@ -770,7 +772,10 @@ async fn run_tools_update_precheck(
     }
 
     let expected_updated_tools = configure_document_for_tools_only_precheck(workspace_root)?;
-    // The document was just rewritten, so reload it into the service before the precheck syncs.
+    // Loads dotenv files, creates the conductor runtime env files, and exports
+    // schemas. It does not reload the document — the line below re-reads it from
+    // disk — and the tool-sync path does not do this itself, so the call is
+    // retained from the precheck's previous seeding step rather than added.
     service.refresh_runtime_configuration()?;
 
     let document = load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
