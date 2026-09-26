@@ -117,6 +117,8 @@ Fitting uses `fit_segments` (shared from `mediapm_utils::progress`). Segments ar
 
 **Segment order alone determines the outcome.** `fit_segments` drops from the tail unconditionally, so a field survives by its position in the list. When designing a new label, rank the fields and mark the shrink behaviour (`Shrink::Keep` for whole, `Shrink::FrontEllipsis` for elastic).
 
+This file does not publish that ranking. The order, and the reasoning behind each segment's classification, live in the `prefix_segments` and `suffix_segments` bodies of `src/mediapm-conductor/src/orchestration/progress_labels.rs` (`StepBarLabel`, `WorkerBarLabel`) and `src/mediapm/src/materializer/progress_labels.rs` (`MaterializationBarLabel`). Read the code: it is the only source, and a transcription of it here could only ever disagree with it.
+
 ### Struct 1: `StepBarLabel` (conductor per-step bars)
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
@@ -133,34 +135,6 @@ Carries real-progress fields: version, completed/total, phase, workflow/step ide
 | `step_id` | Step identifier | `"s3"` |
 | `tool` | Conductor tool name | `"ffmpeg"` |
 
-**Prefix parts order** (first = kept longest under truncation):
-
-| Pos | Part | Rendered | Mode | Reasoning |
-|-----|------|----------|------|-----------|
-| 1 | `phase` | `[wf]` | Protected | Phase tag; survives while any segment can still shrink |
-| 2 | `status_marker` | `[F]`/`[W]` | Protected | Terminal state; paired with phase at the head |
-| 3 | `count/total` | `2/5` | Protected | Progress tally; never shown as a bare count |
-| 4 | `version` | `[7.1]` | Keep | Surrendered whole; `[7.1]` is not `…1]` |
-| 5 | `workflow_id` | `default` | Keep | Surrendered whole; a shaved `…ult` identifies nothing |
-| 6 | `step_id` | `s3` | Keep | Surrendered whole |
-| 7 | `tool` | `(ffmpeg)` | Elastic | Tool identity; shortened from the front, keeping the tail |
-
-The head yields below its own 12-column rendered width, because it is last in the list once the tail is dropped.
-
-**Prefix render shape:** `[phase] [marker] count/total [version] workflow_id step_id (tool)`
-
-**Suffix parts order** (first = kept longest under truncation):
-
-| Pos | Part | Mode | Reasoning |
-|-----|------|------|-----------|
-| 1 | `count/total` | Protected | Progress tally, from the label struct |
-| 2 | `elapsed` | Keep | Auto-derived by the renderer; surrendered whole |
-| 3 | `rate` | Keep | Auto-derived; surrendered whole |
-| 4 | `eta` | Keep | Auto-derived; surrendered whole |
-| 5 | `custom` | Elastic | Free-form client text; shortened from the front |
-
-The timing fields reach the suffix only through the component set the renderer passes, so a suffix that stopped reading them would strip timing from every step bar. `eta` renders only when `rate` is present.
-
 ### Struct 2: `WorkerBarLabel` (conductor worker-slot bars)
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
@@ -174,29 +148,6 @@ Carries activity flag only, with no workflow phase and no progress tally.
 | `step_id` | Step identifier | `"s5"` |
 | `tool` | Conductor tool name | `"echo"` |
 | `activity` | Current activity | `"active"` / `"idle"` |
-
-**Prefix parts order** (first = kept longest under truncation):
-
-| Pos | Part | Rendered | Mode | Reasoning |
-|-----|------|----------|------|-----------|
-| 1 | `status_marker` | `[F]`/`[W]` | Protected | Terminal state; survives while any segment can still shrink |
-| 2 | `activity` | `[active]`/`[idle]` | Protected | The worker's own state; paired with the marker at the head |
-| 3 | `workflow_id` | `default` | Keep | Surrendered whole; a shaved `…ult` identifies nothing |
-| 4 | `step_id` | `s5` | Keep | Surrendered whole |
-| 5 | `tool` | `(echo)` | Elastic | Tool identity; shortened from the front, keeping the tail |
-
-**Prefix render shape:** `[marker] [activity] workflow_id step_id (tool)`
-
-**Suffix parts order:**
-
-| Pos | Part | Mode | Reasoning |
-|-----|------|------|-----------|
-| 1 | `elapsed` | Keep | Auto-derived by the renderer; surrendered whole |
-| 2 | `rate` | Keep | Auto-derived; surrendered whole |
-| 3 | `eta` | Keep | Auto-derived; surrendered whole |
-| 4 | `custom` | Elastic | Free-form client text; shortened from the front |
-
-A worker bar has no tally of its own, so the suffix carries no tally segment; the timing fields still arrive through the component set the renderer passes and must not be dropped.
 
 ### Struct 3: `MaterializationBarLabel` (mediapm materialization bars)
 
@@ -212,18 +163,6 @@ Carries file-path identity and phase. No version, no count/total, no workflow/st
 | `file_name` | Extracted file basename (sub-bars only) | `"cover.jpg"` |
 | `phase` | Materialization phase tag | `"stg"` / `"vrf"` / `"cmt"` / `"wrt"` / `"mat"` |
 
-**Prefix parts order** (first = kept longest under truncation):
-
-| Pos | Part | Rendered | Mode | Reasoning |
-|-----|------|----------|------|-----------|
-| 1 | `phase` | `[stg]`/`[vrf]`/`[cmt]`/`[wrt]`/`[mat]` | Protected | Phase tag; survives while any segment can still shrink |
-| 2 | `status_marker` | `[F]`/`[W]` | Protected | Terminal state; paired with phase at the head |
-| 3 | `entry_name` | `song.mkv` | Keep | Basename, the most important identity; surrendered whole |
-| 4 | `file_name` | `cover.jpg` | Keep | Extracted filename on per-file write sub-bars |
-| 5 | `entry_path` | `Music/Artist/Album` | Elastic | The only elastic segment; shortened from the front, so the directory tail adjacent to the filename survives and the filename and immediate parent are retained |
-
-**Prefix render shape:** `[phase] [marker] entry_name entry_path` (with optional `file_name` between `entry_name` and `entry_path`).
-
 **Suffix:** None — `truncate_suffix` returns an empty string, as materialization bars set no suffix components.
 
 ### Why three structs instead of one
@@ -238,18 +177,9 @@ A single generic struct would either carry unused fields (polluting the API) or 
 
 ### Built-in `PrefixComponents` truncation order
 
-The built-in `semantic_truncate_prefix` path (used when no `BarLabelTruncation` is installed) follows this removal order:
+The built-in `semantic_truncate_prefix` path (used when no `BarLabelTruncation` is installed) does not fit through `fit_segments`: it shrinks some components progressively and drops others atomically. Its removal order is the normative spec on the function itself, in `src/mediapm-utils/src/progress/inner/components.rs`, which also records why `count` and `total` are stored separately but rendered and trimmed as one unit. Read it there rather than here.
 
-| Step | Component | Mode |
-|---|---|---|
-| 1 | `version` | Progressive (shrink chars one at a time) |
-| 2 | `count`/`total` | Atomic (removed together, never partial) |
-| 3 | `phase` | Atomic |
-| 4 | `marker` | Atomic (`[F]`/`[W]` removed before tool_name) |
-| 5 | `tool_name` | Progressive |
-| 6 | fallback | Hard truncate whatever remains |
-
-`count` and `total` are stored separately but rendered and trimmed as one unit (a bare count or bare total is never shown). The built-in path is used by Screen A (tool-sync) bars, which do not install `BarLabelTruncation`.
+The built-in path is used by Screen A (tool-sync) bars, which do not install `BarLabelTruncation`.
 
 ## Test-only vs production output
 
