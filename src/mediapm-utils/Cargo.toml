@@ -28,4 +28,8 @@ tempfile.workspace = true
 
 [dev-dependencies]
 indicatif = { workspace = true, features = ["in_memory"] }
+# Test-only: the in-crate `timestamp` unit test round-trips the unconditional
+# `serde` derive through `serde_json`. Library code never needs it, so it stays
+# optional in `[dependencies]` and is enabled here for test builds alone.
+serde_json.workspace = true
 tempfile.workspace = true
