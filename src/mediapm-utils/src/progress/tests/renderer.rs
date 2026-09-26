@@ -670,3 +670,212 @@ fn client_truncated_prefix_starts_with_ansi_reset() {
     assert!(content.contains("SFX"), "client suffix missing: {content:?}");
     assert!(!content.contains("20/200"), "built-in component render must be bypassed: {content:?}");
 }
+
+// ---- Task 4: the width budget handed to client-defined truncation -----
+
+/// A truncation that *honours* its budget, unlike [`FixedTruncation`], and
+/// records the budgets it is handed so the renderer's arithmetic can be
+/// asserted.
+///
+/// [`FixedTruncation`] returns fixed strings and ignores the budget, which
+/// proves the renderer calls the trait and uses its output verbatim. It
+/// cannot show that the budget is *correct*: a renderer that passed any
+/// width at all would satisfy it. This one returns a run of one character
+/// per column it was granted, so the rendered slot shows the granted width
+/// directly and each budget can be read back after a tick.
+struct BudgetTruncation {
+    seen_prefix: std::sync::Mutex<Option<usize>>,
+    seen_suffix: std::sync::Mutex<Option<usize>>,
+}
+
+impl BudgetTruncation {
+    /// Creates a recorder with no budget observed yet.
+    fn new() -> Self {
+        Self { seen_prefix: std::sync::Mutex::new(None), seen_suffix: std::sync::Mutex::new(None) }
+    }
+
+    /// Returns the prefix budget the renderer granted, or `None` if the
+    /// client branch never ran.
+    fn prefix_budget(&self) -> Option<usize> {
+        *self.seen_prefix.lock().expect("prefix budget poisoned")
+    }
+
+    /// Returns the suffix budget the renderer granted, or `None` if the
+    /// client branch never ran.
+    fn suffix_budget(&self) -> Option<usize> {
+        *self.seen_suffix.lock().expect("suffix budget poisoned")
+    }
+}
+
+impl crate::progress::BarLabelTruncation for BudgetTruncation {
+    fn truncate_prefix(&self, max_width: usize) -> String {
+        *self.seen_prefix.lock().expect("prefix budget poisoned") = Some(max_width);
+        "p".repeat(max_width)
+    }
+
+    fn truncate_suffix(
+        &self,
+        max_width: usize,
+        _suffix: &crate::progress::SuffixComponents,
+    ) -> String {
+        *self.seen_suffix.lock().expect("suffix budget poisoned") = Some(max_width);
+        "s".repeat(max_width)
+    }
+}
+
+/// The ANSI reset the renderer prepends to a client-truncated prefix.
+///
+/// The tests below use `ANSI_RESET.len()` for the width the renderer
+/// reserves for it, so the reserved width stays tied to the escape that
+/// actually gets prepended rather than to a hand-written `4`.
+const ANSI_RESET: &str = "\x1b[0m";
+
+/// The width the suffix slot settles at for a client-truncated bar.
+///
+/// The renderer reserves the width of the fully composed suffix — the
+/// auto-derived count, elapsed, rate and eta fields included — and clamps it
+/// to the suffix ceiling. That composed width clears the ceiling in every
+/// bar state exercised here (in progress, finished, and before any position
+/// is set), so the ceiling is the value a client is granted. A future change
+/// that made the composed suffix narrow enough to fall under the ceiling
+/// would show up as this test failing, which is the point of pinning it.
+const SUFFIX_SLOT: usize = 65;
+
+/// The prefix components the budget tests use, chosen so the rendered prefix
+/// is a distinctive 15 columns wide.
+fn budget_test_components() -> PrefixComponents {
+    PrefixComponents {
+        marker: String::new(),
+        tool_name: "tool".into(),
+        version: String::new(),
+        phase: "stg".into(),
+        count: "3".into(),
+        total: "10".into(),
+    }
+}
+
+/// The width the renderer measures the prefix at, derived from the same
+/// helper the renderer uses to build it, so the expectation never comes from
+/// the value under test.
+fn derived_prefix_width(components: &PrefixComponents) -> usize {
+    visible_width(&render_prefix_components(components, TrackStatus::Active))
+}
+
+/// A terminal, one bar, and a [`BudgetTruncation`] that records the budgets
+/// the renderer grants it.
+///
+/// The terminal is held alongside the screen because `screen()` borrows it:
+/// dropping the terminal tears the renderer down, and the client branch of
+/// the draw never runs.
+struct BudgetFixture {
+    /// The in-memory terminal the rendered frame is read back from.
+    term: indicatif::InMemoryTerm,
+    /// Owns the renderer. Never read; kept alive so draws still happen.
+    _terminal: ProgressTerminal,
+    /// The screen group, ticked to force a draw.
+    group: ProgressScreen,
+    /// Records the budgets the renderer granted the client.
+    recorder: Arc<BudgetTruncation>,
+}
+
+impl BudgetFixture {
+    /// Builds the fixture around a single bar carrying `components`.
+    fn new(components: PrefixComponents) -> Self {
+        let term = indicatif::InMemoryTerm::new(10, 80);
+        let terminal = ProgressTerminal::builder()
+            .with_term_like(Box::new(term.clone()))
+            .with_pre_roll_capture(super::pre_roll_capture())
+            .capacity(4)
+            .with_ticker_enabled(false)
+            .build();
+        let group = terminal.screen().build();
+        let bar = group.add_bar(100, "test");
+        bar.set_prefix_components(components);
+        let recorder = Arc::new(BudgetTruncation::new());
+        bar.set_truncation(Arc::clone(&recorder) as Arc<dyn crate::progress::BarLabelTruncation>);
+        Self { term, _terminal: terminal, group, recorder }
+    }
+
+    /// Forces one draw and returns the rendered frame.
+    fn tick(&self) -> String {
+        self.group.tick();
+        self.term.contents()
+    }
+}
+
+#[test]
+fn client_truncation_receives_prefix_width_minus_ansi_overhead() {
+    // The renderer measures the prefix at `visible_width(label) + 4`, where
+    // the 4 covers the ANSI reset it prepends, then hands the client
+    // `prefix_w - 4` at draw time. The two cancel, so a client is granted
+    // exactly the width of the prefix the renderer derived from the
+    // components it was given.
+    //
+    // The expected width is computed from the same public helper the renderer
+    // uses to build the prefix, never read back from the recorder, so this
+    // fails if the budget arithmetic changes.
+    let components = budget_test_components();
+    let expected = derived_prefix_width(&components);
+    let fixture = BudgetFixture::new(components);
+    fixture.tick();
+
+    assert_eq!(
+        fixture.recorder.prefix_budget(),
+        Some(expected),
+        "client prefix budget must equal the measured prefix width",
+    );
+}
+
+#[test]
+fn client_truncation_receives_full_suffix_width_with_no_ansi_subtraction() {
+    // The suffix is granted its slot in full. The prefix reserve does not
+    // apply here: the renderer prepends an ANSI reset to the prefix only, so
+    // subtracting a reserve from the suffix budget would silently cost the
+    // client four columns it is entitled to.
+    //
+    // The reserved width is `ANSI_RESET.len()`. Applying the subtraction
+    // here would grant `SUFFIX_SLOT - 4`, which the second assertion rules
+    // out directly.
+    let fixture = BudgetFixture::new(budget_test_components());
+    fixture.tick();
+
+    assert_eq!(
+        fixture.recorder.suffix_budget(),
+        Some(SUFFIX_SLOT),
+        "client suffix budget must be the full slot, with no ANSI reserve subtracted",
+    );
+    assert_ne!(
+        fixture.recorder.suffix_budget(),
+        Some(SUFFIX_SLOT - ANSI_RESET.len()),
+        "suffix budget must not be reduced by the prefix's ANSI reserve",
+    );
+}
+
+#[test]
+fn client_truncated_prefix_fills_exactly_its_budget_and_fits_its_slot() {
+    // Closes the loop from the granted budget to the rendered frame: the
+    // client returns one `p` per column it was granted, so the frame must
+    // show exactly the derived prefix width, and the drawn line must not
+    // overflow the terminal.
+    //
+    // The `\x1b[0m` reset the renderer prepends is zero-width, so it adds no
+    // visible columns to the slot. The raw escape bytes are not observable
+    // here because `InMemoryTerm` strips ANSI from what it reports; that the
+    // reset is present is covered by
+    // `client_truncated_prefix_starts_with_ansi_reset`.
+    const TERM_COLS: usize = 80;
+
+    let components = budget_test_components();
+    let expected = derived_prefix_width(&components);
+    let fixture = BudgetFixture::new(components);
+    let content = fixture.tick();
+
+    assert_eq!(
+        content.matches('p').count(),
+        expected,
+        "frame must show exactly the granted budget, one p per column: {content:?}",
+    );
+    for line in content.lines() {
+        assert!(visible_width(line) <= TERM_COLS, "rendered line overflows the terminal: {line:?}");
+    }
+}
