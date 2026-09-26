@@ -21,10 +21,21 @@ use crate::progress::SuffixComponents;
 ///
 /// `truncate_suffix` (`Self::truncate_suffix`) receives the merged
 /// [`SuffixComponents`] so the client can render auto-derived fields
-/// (count/total, elapsed, rate, eta) alongside its own fields.  The
-/// width budget is the visible-char budget after subtracting ANSI
-/// overhead (4 bytes for the leading `\x1b[0m` reset the renderer
-/// prepends).
+/// (count/total, elapsed, rate, eta) alongside its own fields.
+///
+/// # Width budgets
+///
+/// The two methods receive deliberately different budgets:
+///
+/// - [`truncate_prefix`](Self::truncate_prefix) receives the prefix slot
+///   **less** 4 bytes of ANSI overhead, because the renderer prepends the
+///   `\x1b[0m` reset that the returned string has to hold.
+/// - [`truncate_suffix`](Self::truncate_suffix) receives the **full** suffix
+///   slot. The renderer prepends no reset to the suffix, so nothing is
+///   subtracted from it.
+///
+/// Fill each method to the budget it is actually given. An implementation
+/// that assumes the suffix arrives pre-reduced under-fills it by four columns.
 #[cfg(feature = "progress")]
 pub trait BarLabelTruncation: Send + Sync {
     /// Return the rendered prefix string fitting within `max_width` visible
