@@ -1,5 +1,7 @@
 use super::seeded_three_tool_skip_service;
-use crate::common::{make_zip, read_generated_doc, service_with_cache};
+use crate::common::{
+    make_zip, read_generated_doc, service_with_cache, test_sync_progress_overrides,
+};
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
@@ -58,7 +60,9 @@ use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) = seeded_three_tool_skip_service().await?;
 
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     // The exact specs match the seeded resolved versions → all three tools
     // spec-skip; the inlined structure must survive intact.
@@ -116,7 +120,9 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
 async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) = seeded_three_tool_skip_service().await?;
 
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     let content = std::fs::read_to_string(&service.paths().env_generated_file)
         .expect("env file should be readable");
@@ -324,7 +330,9 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let mut service =
         provisioned_yt_dlp_with_deno(root.path(), cache_root.path(), deno_tag, deno_hash).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     // Generated doc: the requester's ACTIVE spec (name match + non-empty
     // content map — pruned stale keys keep the name with a cleared map).
@@ -459,7 +467,9 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
     std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
         .expect("write seeded state");
 
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     // Generated doc: yt-dlp's ACTIVE spec carries freshly inlined deno
     // payloads; deno's own map reflects the NEW zip contents.
@@ -550,7 +560,9 @@ async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), medi
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let mut service =
         provisioned_yt_dlp_with_deno(root.path(), cache_root.path(), deno_tag, deno_hash).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     let doc = read_generated_doc(&service);
     let deno_spec = doc
@@ -614,7 +626,9 @@ async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmE
     let cache1 = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let mut svc1 =
         provisioned_yt_dlp_with_deno(root1.path(), cache1.path(), deno_tag, deno_hash).await?;
-    let summary1 = svc1.sync_tools().await?;
+    let summary1 = svc1
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let doc1_bytes = std::fs::read(svc1.paths().conductor_generated_ncl.clone())
         .expect("generated doc readable");
 
@@ -623,7 +637,9 @@ async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmE
     let cache2 = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let mut svc2 =
         provisioned_yt_dlp_with_deno(root2.path(), cache2.path(), deno_tag, deno_hash).await?;
-    let summary2 = svc2.sync_tools().await?;
+    let summary2 = svc2
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let doc2_bytes = std::fs::read(svc2.paths().conductor_generated_ncl.clone())
         .expect("generated doc readable");
 

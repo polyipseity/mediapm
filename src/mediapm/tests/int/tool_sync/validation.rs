@@ -1,6 +1,6 @@
 use mediapm::{MediaRuntimeStorage, ToolRequirement};
 
-use crate::common::service_with_cache;
+use crate::common::{service_with_cache, test_sync_progress_overrides};
 
 // ---------------------------------------------------------------------------
 // Dependency validation integration tests
@@ -28,7 +28,9 @@ async fn sync_rejects_bad_dependency_key() {
         service_with_cache(runtime).await.expect("service creation");
 
     // Sync should fail with MPM-E001 and a suggestion.
-    let result = service.sync_tools().await;
+    let result = service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await;
     let Err(err) = result else {
         panic!("sync should fail with bad dep key, but succeeded");
     };
@@ -69,7 +71,9 @@ async fn sync_rejects_dep_key_not_in_known_types() {
     let (mut service, _root, _cache_root) =
         service_with_cache(runtime).await.expect("service creation");
 
-    let result = service.sync_tools().await;
+    let result = service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await;
     let Err(err) = result else {
         panic!("sync should fail with dep key not in known types, but succeeded");
     };
@@ -97,7 +101,9 @@ async fn sync_rejects_slot_field_on_non_ffmpeg() {
     let (mut service, _root, _cache_root) =
         service_with_cache(runtime).await.expect("service creation");
 
-    let result = service.sync_tools().await;
+    let result = service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await;
     let Err(err) = result else {
         panic!("sync should fail with slot field on non-ffmpeg tool, but succeeded");
     };
@@ -119,7 +125,9 @@ async fn sync_accepts_slot_field_on_ffmpeg() {
     let (mut service, _root, _cache_root) =
         service_with_cache(runtime).await.expect("service creation");
 
-    let result = service.sync_tools().await;
+    let result = service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await;
     assert!(result.is_ok(), "ffmpeg slot fields should be accepted: {:?}", result.err());
 }
 
@@ -136,7 +144,9 @@ async fn sync_accepts_recheck_seconds_on_any_tool() {
     let (mut service, _root, _cache_root) =
         service_with_cache(runtime).await.expect("service creation");
 
-    let result = service.sync_tools().await;
+    let result = service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await;
     assert!(
         result.is_ok(),
         "recheck_seconds on non-ffmpeg tool should be accepted: {:?}",

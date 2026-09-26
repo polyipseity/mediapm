@@ -39,6 +39,17 @@ pub(crate) fn test_progress_terminal() -> ProgressTerminal {
         .build()
 }
 
+/// Builds a [`SyncProgressOverrides`] whose terminal is an in-memory grid.
+///
+/// Passed to [`MediaPmService::sync_tools_with_progress_overrides`] by tests
+/// that call the tool sync directly. The sync still builds its screen, writes
+/// its frames and joins it — the frames just land in a [`InMemoryTerm`]
+/// instead of the test log, so the assertion set around the call is untouched
+/// while the log stays clean.
+pub(crate) fn test_sync_progress_overrides() -> mediapm::SyncProgressOverrides {
+    mediapm::SyncProgressOverrides { terminal: Some(test_progress_terminal()), no_progress: false }
+}
+
 /// Runs a library sync with the given verification flag through an injected
 /// in-memory terminal.
 ///

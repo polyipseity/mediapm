@@ -787,20 +787,61 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     ///
     /// # Errors
     ///
-    /// Delegates to [`sync_tools_from_document`](Self::sync_tools_from_document).
+    /// Delegates to
+    /// [`sync_tools_with_progress_overrides`](Self::sync_tools_with_progress_overrides).
     pub async fn sync_tools(&mut self) -> Result<ToolsSyncSummary, MediaPmError> {
-        self.sync_tools_with_tag_update_checks(false, false).await
+        self.sync_tools_with_progress_overrides(false, false, SyncProgressOverrides::default())
+            .await
     }
 
     /// Runs a full tool sync with optional tag-update checks.
     ///
     /// # Errors
     ///
-    /// Delegates to [`sync_tools_from_document`](Self::sync_tools_from_document).
+    /// Delegates to
+    /// [`sync_tools_with_progress_overrides`](Self::sync_tools_with_progress_overrides).
     pub async fn sync_tools_with_tag_update_checks(
         &mut self,
         check_tag_updates: bool,
         no_progress: bool,
+    ) -> Result<ToolsSyncSummary, MediaPmError> {
+        self.sync_tools_with_progress_overrides(
+            check_tag_updates,
+            no_progress,
+            SyncProgressOverrides::default(),
+        )
+        .await
+    }
+
+    /// Runs a full tool sync through one caller-visible progress terminal.
+    ///
+    /// This is the tool-sync counterpart of
+    /// [`sync_library_with_progress_overrides`](Self::sync_library_with_progress_overrides)
+    /// and the only tool-sync entry point that accepts a
+    /// [`SyncProgressOverrides`]. That seam exists because `indicatif` is a
+    /// dev-dependency of this crate: production code cannot construct a
+    /// `MultiProgress`, so injecting a terminal is the only way a test can
+    /// observe the frames a tool sync draws instead of letting them reach the
+    /// real stderr. The default-overrides path — a
+    /// [`SyncProgressOverrides::default()`] caller such as
+    /// [`sync_tools`](Self::sync_tools) — is production behaviour and is
+    /// unchanged by this seam.
+    ///
+    /// `no_progress` is expressed the same way as in the library sync: the
+    /// single terminal this method builds is inert, so a run that asked for no
+    /// progress opens no live terminal at all. An injected terminal takes
+    /// precedence over both `no_progress` and
+    /// [`SyncProgressOverrides::no_progress`]; see
+    /// [`sync_progress_terminal`].
+    ///
+    /// # Errors
+    ///
+    /// Delegates to [`sync_tools_from_document`](Self::sync_tools_from_document).
+    pub async fn sync_tools_with_progress_overrides(
+        &mut self,
+        check_tag_updates: bool,
+        no_progress: bool,
+        overrides: SyncProgressOverrides,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         let effective_paths = self.resolve_effective_paths()?;
         let merged = self.resolve_effective_runtime_storage()?;
@@ -813,7 +854,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         // This entry point owns its own sync, so it owns its own terminal.
         // Under `--no-progress` that terminal is inert: no live terminal is
         // opened for a run that asked for no progress output.
-        let terminal = sync_progress_terminal(SyncProgressOverrides::default(), no_progress);
+        let terminal = sync_progress_terminal(overrides, no_progress);
 
         self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, &terminal).await
     }

@@ -1,7 +1,7 @@
 use mediapm::{MediaRuntimeStorage, ToolRequirement};
 use mediapm_conductor::ToolKindSpec;
 
-use crate::common::{read_generated_doc, service_with_cache};
+use crate::common::{read_generated_doc, service_with_cache, test_sync_progress_overrides};
 
 // ---------------------------------------------------------------------------
 // Structural side-effect tests (no counter assertions)
@@ -12,7 +12,9 @@ use crate::common::{read_generated_doc, service_with_cache};
 async fn sync_empty_workspace_succeeds() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
-    let _summary = service.sync_tools().await?;
+    let _summary = service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     Ok(())
 }
 
@@ -21,7 +23,9 @@ async fn sync_empty_workspace_succeeds() -> Result<(), mediapm::MediaPmError> {
 async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let paths = service.paths();
     assert!(paths.runtime_root.exists(), "runtime root .mediapm/ should exist");
     assert!(paths.tools_dir.exists(), "tools/ directory should exist");
@@ -33,7 +37,9 @@ async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError>
 async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let state_path = &service.paths().mediapm_state_json;
     assert!(state_path.exists(), "state.json should exist");
     let content = std::fs::read_to_string(state_path).expect("state.json should be readable");
@@ -47,7 +53,9 @@ async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
 async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let generated_path = &service.paths().conductor_generated_ncl;
     assert!(generated_path.exists(), "conductor.generated.ncl should exist");
     let doc = read_generated_doc(&service);
@@ -60,7 +68,9 @@ async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> 
 async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let env_path = &service.paths().env_generated_file;
     assert!(env_path.exists(), ".env.generated should exist");
     let content = std::fs::read_to_string(env_path).expect("env file should be readable");
@@ -85,7 +95,9 @@ async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
 async fn sync_env_has_no_hash_in_names() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let env_path = &service.paths().env_generated_file;
     let content = std::fs::read_to_string(env_path).expect("env file should be readable");
     for line in content.lines() {
@@ -118,7 +130,9 @@ async fn sync_env_has_no_hash_in_names() -> Result<(), mediapm::MediaPmError> {
 async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let env_path = &service.paths().env_generated_file;
     let content = std::fs::read_to_string(env_path).expect("env file should be readable");
     for line in content.lines() {
@@ -158,7 +172,9 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
             .and_then(|p| std::fs::metadata(p.join("tools.json")).ok())
             .and_then(|m| m.modified().ok());
 
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let doc = read_generated_doc(&service);
     for id in &["echo@v1", "fs@v1", "import@v1", "export@v1", "archive@v1"] {
         let tool =
@@ -194,14 +210,18 @@ async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError
     let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     let env_path = service.paths().env_generated_file.clone();
     let content_after_first =
         std::fs::read_to_string(&env_path).expect("env file should be readable after first sync");
 
     // Second sync — media-tagger should be skipped (already at canonical version)
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let content_after_second =
         std::fs::read_to_string(&env_path).expect("env file should be readable after second sync");
 
@@ -223,10 +243,14 @@ async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError
 async fn sync_is_idempotent() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let state_after_first =
         std::fs::read(&service.paths().mediapm_state_json).expect("state.json should exist");
-    let _ = service.sync_tools().await?;
+    let _ = service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let state_after_second =
         std::fs::read(&service.paths().mediapm_state_json).expect("state.json should exist");
     assert_eq!(state_after_first, state_after_second, "state.json must be identical after re-sync");

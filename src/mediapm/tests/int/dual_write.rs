@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use crate::common::service_with_cache;
+use crate::common::{service_with_cache, test_sync_progress_overrides};
 use mediapm::{MediaRuntimeStorage, ToolRequirement};
 
 // ---------------------------------------------------------------------------
@@ -31,7 +31,10 @@ use mediapm::{MediaRuntimeStorage, ToolRequirement};
 async fn conductor_ncl_skips_write_when_unchanged() {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await.expect("create service");
-    service.sync_tools().await.expect("first sync");
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await
+        .expect("first sync");
     let generated_path = service.paths().conductor_generated_ncl.clone();
     let meta1 = std::fs::metadata(&generated_path).expect("generated file exists");
     let mtime1 = meta1.modified().expect("mtime after first sync");
@@ -41,7 +44,10 @@ async fn conductor_ncl_skips_write_when_unchanged() {
 
     // Second sync with identical inputs: generator file should NOT be
     // re-written because content hasn't changed.
-    service.sync_tools().await.expect("second sync");
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await
+        .expect("second sync");
     let meta2 = std::fs::metadata(&generated_path).expect("generated file exists");
     let mtime2 = meta2.modified().expect("mtime after second sync");
 
@@ -71,7 +77,10 @@ async fn regression_state_only_churn_does_not_touch_conductor_file() {
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let (mut service, _root, _cache_root) =
         service_with_cache(runtime).await.expect("create service");
-    service.sync_tools().await.expect("first sync");
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await
+        .expect("first sync");
 
     let generated_path = service.paths().conductor_generated_ncl.clone();
     let state_path = service.paths().mediapm_state_json.clone();
@@ -99,7 +108,10 @@ async fn regression_state_only_churn_does_not_touch_conductor_file() {
     // Second sync: media-tagger resolves again; its canonical_version is ""
     // (same as baseline), so payload hasn't changed. The generated NCL should
     // be byte-identical and mtime-unchanged.
-    service.sync_tools().await.expect("second sync");
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await
+        .expect("second sync");
 
     // Verify generated file: bytes and mtime unchanged.
     let after_generated =

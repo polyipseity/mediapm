@@ -10,7 +10,7 @@
 //! network availability); they assert the structural invariants of whatever
 //! entries were produced.
 
-use crate::common::{read_generated_doc, service_with_cache};
+use crate::common::{read_generated_doc, service_with_cache, test_sync_progress_overrides};
 use mediapm::MediaRuntimeStorage;
 use mediapm_conductor::{NickelDocument, ToolKindSpec};
 
@@ -21,7 +21,9 @@ use mediapm_conductor::{NickelDocument, ToolKindSpec};
 async fn synced_doc() -> Result<NickelDocument, mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     Ok(read_generated_doc(&service))
 }

@@ -1,6 +1,6 @@
 use mediapm::{MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement};
 
-use crate::common::service_with_cache;
+use crate::common::{service_with_cache, test_sync_progress_overrides};
 
 // ---------------------------------------------------------------------------
 // Composite canonical_version integration tests
@@ -29,7 +29,9 @@ async fn sync_stores_composite_canonical_version() -> Result<(), mediapm::MediaP
     let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
     let state: MediaPmState =
@@ -74,11 +76,15 @@ async fn sync_skip_triggers_on_unchanged_composite() -> Result<(), mediapm::Medi
     let state_path = service.paths().mediapm_state_json.clone();
 
     // First sync: media-tagger is provisioned
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let state_after_first = std::fs::read(&state_path).expect("state.json after first sync");
 
     // Second sync: media-tagger should be skipped (composite matches)
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     let state_after_second = std::fs::read(&state_path).expect("state.json after second sync");
 
     assert_eq!(

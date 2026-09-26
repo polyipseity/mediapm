@@ -7,7 +7,7 @@ use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::VersionSpecFields;
 
-use crate::common::service_with_cache;
+use crate::common::{service_with_cache, test_sync_progress_overrides};
 
 // ---------------------------------------------------------------------------
 // Pure-function logic tests
@@ -60,7 +60,9 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
         ToolRequirement::default(),
     );
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     let bytes = std::fs::read(&service.paths().mediapm_state_json)
         .expect("state.json should exist after sync");
@@ -128,7 +130,9 @@ async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmEr
     let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
-    let summary = service.sync_tools().await?;
+    let summary = service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
     assert_eq!(
         summary.pruned_tools, 0,
         "configured tools must not be pruned; pruned={}",
@@ -174,7 +178,9 @@ async fn sync_upgrades_v2_state_to_v3_format() -> Result<(), mediapm::MediaPmErr
     let state_path = service.paths().mediapm_state_json.clone();
     std::fs::write(&state_path, serde_json::to_string_pretty(&v2_state_json(false)).unwrap())
         .expect("write v2 state.json");
-    service.sync_tools().await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
 
     // After sync, state.json should be v3 format (array instead of map).
     let content = std::fs::read_to_string(&state_path).expect("read state.json after sync");
