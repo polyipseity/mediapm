@@ -4,7 +4,9 @@
 //! configuration) and per-tool workflow step synthesis under one folder
 //! module so callers reason about them in one place.
 //!
-//! - **Preset** — per-tool [`mediapm_conductor::ToolSpec`] / [`mediapm_conductor::ToolRuntime`] builders
+//! - **Preset** — per-tool
+//!   [`mediapm_conductor::ToolSpec`] / [`mediapm_conductor::ToolRuntime`]
+//!   builders
 //! - **Provider** — per-tool source definitions for the 3-phase pipeline
 //! - **Workflows** — step synthesis and shared spec helpers
 

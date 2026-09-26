@@ -138,7 +138,8 @@ pub(crate) struct ResolvedToolMetadata {
 ///
 /// # HTTP client policy
 ///
-/// Uses the process-wide shared client from [`mediapm_conductor::http::client::shared_http_client`].
+/// Uses the process-wide shared client from
+/// [`shared_http_client`](mediapm_conductor::http::client::shared_http_client).
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 ///
@@ -240,7 +241,8 @@ pub(crate) async fn resolve_latest_github_tag(
 ///
 /// # HTTP client policy
 ///
-/// Uses the process-wide shared client from [`mediapm_conductor::http::client::shared_http_client`].
+/// Uses the process-wide shared client from
+/// [`shared_http_client`](mediapm_conductor::http::client::shared_http_client).
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 ///

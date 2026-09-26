@@ -132,11 +132,12 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// and builds an OS-conditional command-selector template.
 ///
 /// `group` provides 3 phase-agnostic progress bars per tool (res, fch,
-/// pro). Routes [`mediapm_utils::progress::ProviderProgressSnapshot`] callbacks to the matching
-/// bar by `snap.phase`. Item counters are displayed via `set_prefix_components`; byte
-/// counters drive bar position (`set_position`/`set_total`). The bridge does
-/// not interpret the meaning of items or bytes — it only relays the values
-/// to the bar.
+/// pro). Routes
+/// [`mediapm_utils::progress::ProviderProgressSnapshot`] callbacks to the
+/// matching bar by `snap.phase`. Item counters are displayed via
+/// `set_prefix_components`; byte counters drive bar position
+/// (`set_position`/`set_total`). The bridge does not interpret the meaning
+/// of items or bytes — it only relays the values to the bar.
 ///
 /// Bar labels follow the format `{tool_id}{version_suffix} [{phase_abbr}]`
 /// where `version_suffix` is ` {human_readable_version}` when non-empty
@@ -372,7 +373,8 @@ pub(super) async fn fetch_and_import_tool_payload(
 
 /// # HTTP client policy
 ///
-/// Uses the process-wide shared client from [`mediapm_conductor::http::client::shared_http_client`].
+/// Uses the process-wide shared client from
+/// [`shared_http_client`](mediapm_conductor::http::client::shared_http_client).
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 ///

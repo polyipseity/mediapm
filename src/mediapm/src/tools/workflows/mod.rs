@@ -75,8 +75,9 @@ pub(crate) fn conductor_output_save_mode(config: OutputSaveConfig) -> OutputSave
 
 /// Resolves the managed conductor tool id for one media-step tool.
 ///
-/// Conductor matches workflow step `tool` by bare [`mediapm_conductor::ToolSpec`] name (the
-/// name-not-key contract), so the returned id is `spec.name` — never the
+/// Conductor matches workflow step `tool` by bare
+/// [`mediapm_conductor::ToolSpec`] name (the name-not-key contract), so the
+/// returned id is `spec.name` — never the
 /// generated-doc map key (`{name}@{hash}`). The import builtin resolves
 /// through the same lookup: registration inserts `"import@v1"` keyed with
 /// `name: "import"`.

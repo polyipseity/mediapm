@@ -198,7 +198,8 @@ pub(super) struct AcoustIdMatch {
 ///
 /// # HTTP client policy
 ///
-/// Uses the process-wide shared client from [`mediapm_conductor::http::client::shared_http_client`].
+/// Uses the process-wide shared client from
+/// [`shared_http_client`].
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 pub(super) async fn lookup_acoustid_match(

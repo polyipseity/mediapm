@@ -6,7 +6,8 @@
 //! - [`timestamp`] — `Timestamp` (Unix-epoch nanoseconds)
 //! - [`generated`] — `GENERATED_FILE_BANNER`, `prepend_banner`
 //! - [`temp`] — prefixed temp directories for tests, examples, and runtime
-//! - `report` — result-line formatting (`StatusIcon`, `print_result`, `format_duration`)
+//! - `report` — result-line formatting
+//!   (`StatusIcon`, `print_result`, `format_duration`)
 //!
 //! The `cli` feature enables `BuiltinCliArgs` and `parse_string_pairs`.
 //! The `report` feature enables the centralized output primitives in `report`.
