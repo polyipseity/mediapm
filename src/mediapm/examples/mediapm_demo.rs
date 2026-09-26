@@ -1027,7 +1027,15 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use mediapm::example_isolation::{self, IsolatedExampleRoots};
+    use mediapm::{ManagedFileRecord, MediaPmState};
+    use mediapm_cas::{CasApi, FileSystemCas};
+
+    use super::{
+        DEMO_LIBRARY_ROOT, DEMO_MEDIA_ID, DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE,
+        SAMPLE_AV_MP4_BYTES, is_same_file,
+    };
 
     /// Executes the documented example entry point via `main()` in full-sync mode.
     #[test]
@@ -1188,6 +1196,85 @@ mod tests {
                 && demo_config.contains("${media.metadata.video_ext_untagged}"),
             "demo hierarchy output should use Jellyfin-style media-id layout with metadata-driven extensions"
         );
+    }
+
+    /// Pins the demo's own hardlink verification against the single
+    /// interleaving that makes
+    /// `generate_demo_artifacts_writes_manifest_and_import_metadata`
+    /// intermittent.
+    ///
+    /// The manifest field `materialized_hardlinked_to_cas` is produced by
+    /// [`super::assert_materialized_output_hardlinked_to_cas`], which can only
+    /// fail when the store's background WAL consumer applies the `Put` that
+    /// created the blob *after* the materializer hardlinked it: the
+    /// write-tmp-then-rename commit installs a new inode and silently detaches
+    /// the link. Whether that drain lands inside the window between
+    /// `ensure_blob_materialized` and the verification is a scheduling
+    /// accident, so the end-to-end test above observes it only
+    /// intermittently and cannot be relied on to catch a regression.
+    ///
+    /// This test forces the window instead of waiting for it: the blob is
+    /// materialized and hardlinked first, the drain is then invoked
+    /// explicitly, and the demo's own verifier must still accept the result.
+    /// A CAS object is content-addressed and therefore immutable, so
+    /// re-applying the `Put` must not replace the blob's inode.
+    #[tokio::test]
+    async fn demo_hardlink_check_survives_a_later_wal_drain_of_the_same_blob() {
+        let _env_lock = example_isolation::lock_process_env();
+        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let cas = FileSystemCas::open(&root.path().join("store")).await.expect("open demo cas");
+
+        let hash = cas.put(Bytes::from_static(SAMPLE_AV_MP4_BYTES)).await.expect("put fixture");
+        assert!(
+            !cas.object_path_for_hash(hash).is_some_and(|path| path.is_file()),
+            "small puts stay WAL-only until a consumer materializes them, which is what lets the \
+             drain land after the hardlink instead of before it"
+        );
+
+        // Materialize and hardlink exactly as the demo's materialization does.
+        let hierarchy_root = root.path().join("media");
+        let entry_name =
+            format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}]");
+        let output_path = hierarchy_root
+            .join(DEMO_LIBRARY_ROOT)
+            .join(&entry_name)
+            .join(format!("{entry_name}.untagged.mp4"));
+        std::fs::create_dir_all(output_path.parent().expect("output parent"))
+            .expect("create hierarchy dir");
+        cas.ensure_blob_materialized(hash).await.expect("ensure blob materialized");
+        let blob = cas.object_path_for_hash(hash).expect("cas object path");
+        std::fs::hard_link(&blob, &output_path).expect("hardlink output from blob");
+        assert!(is_same_file(&blob, &output_path).expect("hardlink setup"), "hardlink setup");
+
+        let relative_path = super::managed_relative_path(&hierarchy_root, &output_path)
+            .expect("managed relative path");
+        let mut lock = MediaPmState::default();
+        lock.managed_files.insert(
+            relative_path.clone(),
+            ManagedFileRecord {
+                media_id: DEMO_MEDIA_ID.to_string(),
+                variant: "video_untagged".to_string(),
+                hash: hash.to_string(),
+            },
+        );
+
+        // Force the drain the store would otherwise perform on its own schedule,
+        // while the hardlink above is all that points at the blob's inode.
+        cas.bg_engine().run_wal_consumer().await.expect("drain wal");
+
+        super::assert_materialized_output_hardlinked_to_cas(
+            &cas,
+            &hierarchy_root,
+            &lock,
+            &output_path,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "the demo's own hardlink check must accept a blob whose Put was re-applied by a \
+                 later WAL drain: {error}"
+            )
+        });
     }
 
     /// Ensures artifact root stays stable for docs and scripts.
