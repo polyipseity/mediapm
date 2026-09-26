@@ -85,13 +85,6 @@ pub fn resolve_effective_paths_for_root(
     MediaPmPaths::from_root(root_dir).with_overrides(&overrides)
 }
 
-/// Loads runtime dotenv files for a given resolved root path.
-#[allow(dead_code)]
-pub(crate) fn load_runtime_dotenv_for_root(root_dir: &Path) {
-    let paths = MediaPmPaths::from_root(root_dir);
-    crate::load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-}
-
 /// Describes a managed workflow step target for invalidation.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
