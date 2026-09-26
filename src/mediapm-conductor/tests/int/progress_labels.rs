@@ -10,7 +10,7 @@ use mediapm_conductor::orchestration::progress_labels::{StepBarLabel, WorkerBarL
 use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents};
 
 #[test]
-fn worker_label_truncate_drops_completed_total_first() {
+fn worker_label_ignores_a_populated_tally_in_the_suffix() {
     let label = WorkerBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
@@ -18,29 +18,55 @@ fn worker_label_truncate_drops_completed_total_first() {
         tool: "echo@v1".into(),
         activity: "active".into(),
     };
-    // A worker bar has no progress tally by construction; the prefix must
-    // never contain a `c/t` segment even at a tight width.
-    let tight = label.truncate_prefix(8);
-    assert!(!tight.contains('/'), "worker prefix must not contain c/t: {tight:?}");
-    // At a comfortable width the activity marker is present and the tool
-    // name is parenthesized.
+    // A worker slot has no tally of its own. The renderer still offers one in
+    // the suffix components, so the label has to drop it deliberately rather
+    // than merely lack the field: this fails if `suffix_segments` ever starts
+    // emitting count/total.
+    let suffix = SuffixComponents {
+        count: "3".into(),
+        total: "10".into(),
+        elapsed: "2m 05s".into(),
+        ..Default::default()
+    };
+    let out = label.truncate_suffix(80, &suffix);
+    assert!(!out.contains("3/10"), "worker suffix must not carry a tally: {out:?}");
+    assert!(out.contains("2m 05s"), "worker suffix lost elapsed: {out:?}");
+
+    // The prefix carries the activity marker and the parenthesized tool name.
     let wide = label.truncate_prefix(80);
     assert!(wide.contains("[active]"), "worker prefix missing activity: {wide:?}");
     assert!(wide.contains("(echo@v1)"), "worker prefix missing tool: {wide:?}");
 }
 
 #[test]
-fn worker_label_idle_has_no_activity_marker() {
+fn worker_label_tight_prefix_keeps_the_activity_marker() {
+    let label = WorkerBarLabel {
+        status_marker: String::new(),
+        workflow_id: "wf".into(),
+        step_id: "s1".into(),
+        tool: "mediapm-conductor-builtin-archive".into(),
+        activity: "active".into(),
+    };
+    // Narrow enough that the tail has to go. The activity marker leads the
+    // order, so it survives and the tool name is shed.
+    let tight = label.truncate_prefix(10);
+    assert!(tight.contains("[active]"), "activity lost under pressure: {tight:?}");
+    assert!(!tight.contains("archive"), "tool should be shed at width 10: {tight:?}");
+}
+
+#[test]
+fn worker_label_idle_renders_its_activity_marker() {
     let label = WorkerBarLabel {
         status_marker: String::new(),
         workflow_id: String::new(),
         step_id: String::new(),
-        tool: "idle".into(),
+        tool: "archive".into(),
         activity: "idle".into(),
     };
+    // The tool name is deliberately not "idle", so it cannot stand in for the
+    // marker; the assertion is on the bracketed form the label renders.
     let prefix = label.truncate_prefix(40);
-    assert!(prefix.contains("idle"), "idle worker prefix missing label: {prefix:?}");
-    assert!(!prefix.contains('/'), "idle worker prefix must not contain c/t: {prefix:?}");
+    assert!(prefix.contains("[idle]"), "idle worker prefix missing activity marker: {prefix:?}");
 }
 
 #[test]
@@ -59,6 +85,13 @@ fn step_label_truncate_keeps_version() {
     assert!(prefix.contains("[1.2.3]"), "step prefix missing version: {prefix:?}");
     assert!(prefix.contains("1/4"), "step prefix missing progress tally: {prefix:?}");
     assert!(prefix.contains("[wf]"), "step prefix missing phase: {prefix:?}");
+
+    // The width-80 case above fits whole, so on its own it would still pass if
+    // truncation were removed. At 20 the tail is dropped and the version has
+    // to outrank the identifiers and the tool name to survive.
+    let tight = label.truncate_prefix(20);
+    assert!(tight.contains("[1.2.3]"), "version lost under truncation: {tight:?}");
+    assert!(!tight.contains("echo"), "tool should be shed at width 20: {tight:?}");
 }
 
 #[test]

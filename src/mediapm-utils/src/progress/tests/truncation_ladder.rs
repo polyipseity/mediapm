@@ -131,15 +131,18 @@ fn elastic_tool_name_shrinks_before_anything_is_dropped() {
 }
 
 #[test]
-fn below_the_floor_protection_lifts() {
+fn narrow_width_keeps_the_protected_head_whole() {
     let segments = step_segments();
-    let at_floor = fit_segments(&segments, STEP_FLOOR, STEP_FLOOR);
-    assert!(at_floor.contains("[wf]"), "phase lost at the floor: {at_floor:?}");
+    let at_head_width = fit_segments(&segments, STEP_FLOOR, STEP_FLOOR);
+    assert!(at_head_width.contains("[wf]"), "phase lost at the head's width: {at_head_width:?}");
 
-    let below = fit_segments(&segments, 4, STEP_FLOOR);
+    let below_head_width = fit_segments(&segments, 4, STEP_FLOOR);
     // With no shaving, a width too small for the whole head keeps the
-    // highest-priority segment whole rather than clipping it.
-    assert_eq!(below, "[wf]");
+    // highest-priority segment whole rather than clipping it. `[wf]` is
+    // exactly four columns, so it is the one segment that fits here; the
+    // result is a consequence of its width and its leading position, not of
+    // any behaviour at the floor.
+    assert_eq!(below_head_width, "[wf]");
 }
 
 #[test]
