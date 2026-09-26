@@ -2,8 +2,9 @@
 //!
 //! Validates that the conductor-owned label structs implement
 //! [`BarLabelTruncation`] with the correct field order: a worker bar never
-//! carries a `completed/total` progress tally, while a step bar keeps its
-//! `version` segment longer than the tool name under width pressure.
+//! carries a `completed/total` progress tally, while a step bar protects
+//! its phase, status marker, and progress tally ahead of the tool name,
+//! which is the elastic segment that shrinks first.
 
 use mediapm_conductor::orchestration::progress_labels::{StepBarLabel, WorkerBarLabel};
 use mediapm_utils::progress::BarLabelTruncation;
@@ -61,9 +62,48 @@ fn step_label_truncate_keeps_version() {
 }
 
 #[test]
-fn step_label_truncate_keeps_version_over_tool() {
-    // Under width pressure the version segment survives after the tool name
-    // is dropped (version precedes tool in the step order).
+fn step_label_protected_head_survives_at_the_floor() {
+    let label = StepBarLabel {
+        status_marker: "F".into(),
+        workflow_id: "wf".into(),
+        step_id: "s1".into(),
+        tool: "echo@v1".into(),
+        version: "9.9.9".into(),
+        phase: "wf".into(),
+        completed: "1".into(),
+        total: "4".into(),
+    };
+    for width in StepBarLabel::PREFIX_FLOOR..=20 {
+        let out = label.truncate_prefix(width);
+        assert!(out.contains("[wf]"), "phase lost at width {width}: {out:?}");
+        assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
+        assert!(out.contains("1/4"), "tally lost at width {width}: {out:?}");
+        assert!(out.chars().count() <= width, "overflowed at width {width}: {out:?}");
+    }
+}
+
+#[test]
+fn worker_label_protected_head_survives_at_the_floor() {
+    let label = WorkerBarLabel {
+        status_marker: "F".into(),
+        workflow_id: "wf".into(),
+        step_id: "s1".into(),
+        tool: "echo@v1".into(),
+        activity: "active".into(),
+    };
+    for width in WorkerBarLabel::PREFIX_FLOOR..=20 {
+        let out = label.truncate_prefix(width);
+        assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
+        assert!(out.contains("[active]"), "activity lost at width {width}: {out:?}");
+        assert!(out.chars().count() <= width, "overflowed at width {width}: {out:?}");
+    }
+}
+
+#[test]
+fn step_label_shrinks_tool_before_dropping_version() {
+    // Under width pressure the elastic tool name is shortened first; only
+    // once it cannot shrink further is the version dropped. The protected
+    // head never yields.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
@@ -75,14 +115,19 @@ fn step_label_truncate_keeps_version_over_tool() {
         total: "4".into(),
     };
     let tight = label.truncate_prefix(20);
-    assert!(tight.contains("[9.9.9]"), "version dropped before tool: {tight:?}");
-    assert!(!tight.contains("a-very-long-tool-name"), "tool name should drop first: {tight:?}");
+    assert!(tight.contains("[wf]"), "phase lost: {tight:?}");
+    assert!(tight.contains("1/4"), "tally lost: {tight:?}");
+    assert!(tight.contains("[9.9.9]"), "version dropped too early: {tight:?}");
+    assert!(!tight.contains("a-very-long-tool-name"), "tool not shortened: {tight:?}");
+    assert!(tight.chars().count() <= 20, "overflowed: {tight:?}");
 }
 
 #[test]
-fn worker_label_very_long_tool_name_hard_truncates() {
-    // When the first (tool) part alone exceeds max_width, it must be
-    // hard-truncated to fit rather than producing an empty prefix.
+fn worker_label_front_ellipsises_very_long_tool_name() {
+    // A tool name longer than the budget is shortened from the front, so
+    // the protected activity marker survives and the tool's tail is kept.
+    // This is the behaviour change from the old prefix cut, which kept the
+    // head `(a-very-long-t` and discarded the whole protected head.
     let label = WorkerBarLabel {
         status_marker: String::new(),
         workflow_id: String::new(),
@@ -91,20 +136,14 @@ fn worker_label_very_long_tool_name_hard_truncates() {
         activity: "active".into(),
     };
     let tight = label.truncate_prefix(15);
-    assert!(!tight.is_empty(), "prefix must not be empty: {tight:?}");
-    assert!(tight.len() <= 15, "prefix must fit: {:?} (len={})", tight, tight.len());
-    assert!(
-        tight.starts_with("(a-very-long-t"),
-        "prefix should start with truncated first part: {tight:?}"
-    );
+    assert_eq!(tight, "[active] …imit)");
 }
 
 #[test]
-fn step_label_very_long_tool_name_hard_truncates() {
-    // The step prefix order is version → completed/total → phase → marker
-    // → workflow → step → tool.  When tool is the first part AND exceeds
-    // max_width (e.g. when version/completed/phase are all empty), it must
-    // be hard-truncated.
+fn step_label_front_ellipsises_very_long_tool_name() {
+    // With every protected field empty the tool name is the only segment.
+    // It must be shortened from the front, keeping the tail, not cut from
+    // the front as the old implementation did.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: String::new(),
@@ -116,10 +155,7 @@ fn step_label_very_long_tool_name_hard_truncates() {
         total: String::new(),
     };
     let tight = label.truncate_prefix(20);
-    assert!(!tight.is_empty(), "prefix must not be empty: {tight:?}");
-    assert!(tight.len() <= 20, "prefix must fit: {:?} (len={})", tight, tight.len());
-    assert!(
-        tight.starts_with("(extremely-long-tool"),
-        "prefix should start with truncated first part: {tight:?}"
-    );
+    assert!(tight.starts_with('…'), "not front-ellipsised: {tight:?}");
+    assert!(tight.ends_with("limit)"), "tail not preserved: {tight:?}");
+    assert_eq!(tight.chars().count(), 20);
 }
