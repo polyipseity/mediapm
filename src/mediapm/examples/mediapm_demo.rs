@@ -350,10 +350,12 @@ fn output_is_hardlinked_to_cas_object(
 /// Describes how the CAS blob and the materialized output relate on disk.
 ///
 /// Reported in the "not hardlinked" failure message because the distinct
-/// readings name distinct bugs: different inodes mean the link was never made
-/// (or was replaced), while equal inodes with a different device would mean a
-/// mount boundary between the store and the hierarchy root. `nlink` separates
-/// "never linked" (`1`) from "linked and then broken" (`2` on the blob).
+/// readings name distinct bugs. Equal inodes on different devices would mean
+/// a mount boundary between the store and the hierarchy root. Two different
+/// inodes are ambiguous on their own and need `nlink` to separate them: when
+/// something replaced the *output* path, the blob keeps `nlink=2`; when
+/// something replaced the *blob* path, the orphaned inode the output still
+/// points at drops to `nlink=1` and the fresh blob file is also `nlink=1`.
 #[cfg(unix)]
 fn describe_linkage(cas_path: &Path, out_path: &Path) -> String {
     use std::os::unix::fs::MetadataExt;
