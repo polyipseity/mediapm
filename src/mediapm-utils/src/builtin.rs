@@ -1,7 +1,7 @@
 //! Shared builtin descriptor and CLI helpers for conductor builtin crates.
 //!
 //! [`describe`] and [`describe_json_compact`] are always available;
-//! [`BuiltinCliArgs`] and [`parse_string_pairs`] require the `cli` feature.
+//! `BuiltinCliArgs` and `parse_string_pairs` require the `cli` feature.
 
 use crate::StringMap;
 
