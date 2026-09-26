@@ -144,8 +144,9 @@ fn visible_len(text: &str) -> usize {
 ///   from the tail, sparing protected ones while `max_width` is at or above
 ///   `floor`. Below the floor, protection lifts and the tail is dropped as
 ///   needed.
-/// * **Final drop** — a single segment that is still too wide is dropped as
-///   well, so the result is a whole-segment rendering or nothing at all.
+/// * **Final drop** — once a single segment is all that remains and it is
+///   still too wide, the result is an empty string. The result is therefore
+///   always a whole-segment rendering or nothing at all.
 ///
 /// The ladder **never shaves**: no segment is ever cut at a character
 /// boundary. A segment is shown whole, shortened from the front, or absent —
@@ -220,8 +221,10 @@ pub fn fit_segments(segments: &[Segment], max_width: usize, floor: usize) -> Str
     }
 
     // Final drop — never shave. Rule 3: a segment is shown whole or absent,
-    // never clipped. A single segment still too wide is dropped too, so the
-    // result is always a whole-segment rendering.
+    // never clipped. This loop stops at one segment, so a lone segment that is
+    // still too wide is not popped here; the `text` check below yields the
+    // empty string for that case, and the result is always a whole-segment
+    // rendering.
     while kept.len() > 1 && visible_len(&render(&kept)) > max_width {
         kept.pop();
     }
