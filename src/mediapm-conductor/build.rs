@@ -1,3 +1,8 @@
+// The HTTP-module decoupling rule lives in exactly one place, shared with
+// `tests/int/http_decoupling.rs` via `include!` so the build guard and its
+// test cannot drift apart. See that file for the rule itself.
+include!("http_decoupling_check.rs");
+
 fn main() {
     build_utils::generate_completions("mediapm-conductor", &["src/cli.rs"]);
 
@@ -15,43 +20,13 @@ fn main() {
     // ---------------------------------------------------------------
     let http_dir = std::path::Path::new("src/http");
     if http_dir.exists() {
-        let mut failed = false;
-        for entry in std::fs::read_dir(http_dir).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "rs") {
-                continue;
-            }
-            let content = std::fs::read_to_string(&path).unwrap();
-            for (lineno, line) in content.lines().enumerate() {
-                let trimmed = line.trim();
-                // Skip comments and blank lines.
-                if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
-                    continue;
-                }
-                // Forbidden pattern 1: `use crate::` imports.
-                if trimmed.contains("use crate::") {
-                    println!(
-                        "cargo:error=decoupling violation in {}:{} — \
-                         `use crate::` is forbidden in the HTTP module",
-                        path.display(),
-                        lineno + 1
-                    );
-                    failed = true;
-                }
-                // Forbidden pattern 2: `ConductorError` references.
-                if trimmed.contains("ConductorError") {
-                    println!(
-                        "cargo:error=decoupling violation in {}:{} — \
-                         `ConductorError` is forbidden in the HTTP module; \
-                         use HttpClientError instead",
-                        path.display(),
-                        lineno + 1
-                    );
-                    failed = true;
-                }
-            }
+        let violations = scan_http_decoupling_violations(http_dir);
+        for violation in &violations {
+            let path = violation.path.as_str();
+            let line = violation.line;
+            let reason = violation.reason;
+            println!("cargo:error=decoupling violation in {path}:{line} — {reason}");
         }
-        assert!(!failed, "HTTP module decoupling violated — see errors above");
+        assert!(violations.is_empty(), "HTTP module decoupling violated — see errors above");
     }
 }

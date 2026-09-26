@@ -34,6 +34,10 @@ mod provision_domain_separation;
 /// workflow exits.
 mod runtime_tmp_lifecycle;
 
+/// Guard test for the `src/http/` decoupling invariant that `build.rs`
+/// otherwise only reports as a build abort.
+mod http_decoupling;
+
 /// Workflow progress screen `[wf]`: overall bar + per-step bars with
 /// `SetPrefixComponents`, `Advance`, and `FinishSuccess`/`FinishWarning`.
 mod workflow_progress;
