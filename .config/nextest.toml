@@ -30,6 +30,11 @@ max-progress-running = 4
 # Per-test timeout: kill a test that runs >60s with no output.
 # Leak detection: warn if a test doesn't clean up child processes within 100ms.
 [profile.default]
+# Collect every failure in one run. Without this the default profile stops
+# at the first failure, so a local full-suite run reports a truncated count
+# and a later failure is invisible. `retries` is deliberately not set here:
+# retrying locally would mask a flake instead of surfacing it.
+fail-fast = false
 slow-timeout = { period = "10s", terminate-after = 60 }
 leak-timeout = "100ms"
 
