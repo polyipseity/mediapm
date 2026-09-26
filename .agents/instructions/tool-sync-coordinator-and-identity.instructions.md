@@ -245,8 +245,6 @@ Lifecycle helpers:
 |---|---|
 | `load_conductor_generated_document(paths)` | Loads `paths.conductor_generated_ncl` |
 | `save_conductor_generated_document(paths, doc)` | Saves to `paths.conductor_generated_ncl` |
-| `load_conductor_state_document(paths)` | Loads `paths.conductor_state_config` |
-| `save_conductor_state_document(paths, doc)` | Saves to `paths.conductor_state_config` |
 
 ### Builtin registration
 
