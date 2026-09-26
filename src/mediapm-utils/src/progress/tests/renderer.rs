@@ -736,10 +736,11 @@ const ANSI_RESET: &str = "\x1b[0m";
 /// auto-derived count, elapsed, rate and eta fields included — and clamps it
 /// to the suffix ceiling. That composed width clears the ceiling in every
 /// bar state exercised here (in progress, finished, and before any position
-/// is set), so the ceiling is the value a client is granted. A future change
-/// that made the composed suffix narrow enough to fall under the ceiling
-/// would show up as this test failing, which is the point of pinning it.
-const SUFFIX_SLOT: usize = 65;
+/// is set), so the ceiling is what a client is granted. Referencing the
+/// constant rather than repeating its value means the assertion pins "the
+/// ceiling" instead of a snapshot of it, and a change to the ceiling shows
+/// up as this test failing rather than silently redefining both.
+const SUFFIX_SLOT: usize = MAX_SUFFIX_WIDTH;
 
 /// The prefix components the budget tests use, chosen so the rendered prefix
 /// is a distinctive 15 columns wide.
@@ -757,8 +758,34 @@ fn budget_test_components() -> PrefixComponents {
 /// The width the renderer measures the prefix at, derived from the same
 /// helper the renderer uses to build it, so the expectation never comes from
 /// the value under test.
+///
+/// Assumes an [`Active`] bar. Production renders with the slot's actual
+/// status, and `Failed` or `Warning` adds a coloured status marker whose
+/// brackets occupy visible width, so this returns too small a width for
+/// those. A failed-bar test must pass that status in rather than reuse this
+/// helper unchanged.
+///
+/// [`Active`]: TrackStatus::Active
 fn derived_prefix_width(components: &PrefixComponents) -> usize {
     visible_width(&render_prefix_components(components, TrackStatus::Active))
+}
+
+/// Prefix components wide enough that the measured prefix exceeds the prefix
+/// ceiling, so the slot clamps.
+///
+/// Renders as `ingest transcoder (ffmpeg) v2.10.0 [wf] 12/40`, 45 visible
+/// columns, against a ceiling of [`MAX_PREFIX_WIDTH`]. A step label of this
+/// shape is ordinary — a long workflow and tool name, a full version, and a
+/// three-digit progress tally.
+fn clamped_budget_test_components() -> PrefixComponents {
+    PrefixComponents {
+        marker: String::new(),
+        tool_name: "ingest transcoder (ffmpeg)".into(),
+        version: "v2.10.0".into(),
+        phase: "wf".into(),
+        count: "12".into(),
+        total: "40".into(),
+    }
 }
 
 /// A terminal, one bar, and a [`BudgetTruncation`] that records the budgets
@@ -805,15 +832,22 @@ impl BudgetFixture {
 
 #[test]
 fn client_truncation_receives_prefix_width_minus_ansi_overhead() {
-    // The renderer measures the prefix at `visible_width(label) + 4`, where
-    // the 4 covers the ANSI reset it prepends, then hands the client
-    // `prefix_w - 4` at draw time. The two cancel, so a client is granted
-    // exactly the width of the prefix the renderer derived from the
-    // components it was given.
+    // Unclamped regime: this prefix is 15 columns, so
+    // `visible_width + 4 = 19` sits inside the prefix ceiling and the two
+    // cancel — the client is granted exactly the width of the prefix the
+    // renderer derived from the components it was given.
     //
-    // The expected width is computed from the same public helper the renderer
-    // uses to build the prefix, never read back from the recorder, so this
-    // fails if the budget arithmetic changes.
+    // The invariant that holds in *both* regimes is narrower than the
+    // cancellation: the ANSI reserve is subtracted exactly once, at draw
+    // time, and never twice. Cancellation is what that produces while the
+    // slot is unclamped; once the prefix is wide enough to clamp, the
+    // reserve is still deducted but the remainder is the ceiling, not the
+    // measured width. The clamped half is covered by the sibling test
+    // `client_truncation_receives_clamped_prefix_width_minus_ansi_overhead`.
+    //
+    // The expected width is computed from the same public helper the
+    // renderer uses to build the prefix, never read back from the recorder,
+    // so this fails if the budget arithmetic changes.
     let components = budget_test_components();
     let expected = derived_prefix_width(&components);
     let fixture = BudgetFixture::new(components);
@@ -827,15 +861,43 @@ fn client_truncation_receives_prefix_width_minus_ansi_overhead() {
 }
 
 #[test]
-fn client_truncation_receives_full_suffix_width_with_no_ansi_subtraction() {
-    // The suffix is granted its slot in full. The prefix reserve does not
-    // apply here: the renderer prepends an ANSI reset to the prefix only, so
-    // subtracting a reserve from the suffix budget would silently cost the
-    // client four columns it is entitled to.
+fn client_truncation_receives_clamped_prefix_width_minus_ansi_overhead() {
+    // Clamped regime: this prefix is 45 visible columns, so
+    // `visible_width + 4` overruns the prefix ceiling and the slot is
+    // clamped to `MAX_PREFIX_WIDTH`. The client is granted the clamped slot
+    // with the ANSI reserve deducted once — the ceiling less the escape, not
+    // the ceiling, and not the measured width.
     //
-    // The reserved width is `ANSI_RESET.len()`. Applying the subtraction
-    // here would grant `SUFFIX_SLOT - 4`, which the second assertion rules
-    // out directly.
+    // This is the half of the contract the unclamped test cannot see. If the
+    // renderer deducted the reserve before clamping, or failed to deduct it
+    // at all, the two would be indistinguishable there and only this would
+    // notice.
+    let components = clamped_budget_test_components();
+    let measured = derived_prefix_width(&components);
+    assert!(
+        measured > MAX_PREFIX_WIDTH - ANSI_RESET.len(),
+        "fixture must exceed the clamp threshold, got {measured}",
+    );
+
+    let fixture = BudgetFixture::new(components);
+    fixture.tick();
+
+    assert_eq!(
+        fixture.recorder.prefix_budget(),
+        Some(MAX_PREFIX_WIDTH - ANSI_RESET.len()),
+        "clamped prefix budget must be the ceiling less the ANSI reserve",
+    );
+}
+
+#[test]
+fn client_truncation_receives_full_suffix_width_with_no_ansi_subtraction() {
+    // The suffix is granted its slot in full, and unlike the prefix it is
+    // granted the slot *unreduced*. The asymmetry is deliberate and is the
+    // point of the assertion: the renderer prepends an ANSI reset to the
+    // prefix only, so the reserve deducted from the prefix budget has no
+    // counterpart here. Were the subtraction applied to the suffix as well,
+    // the granted width would be `SUFFIX_SLOT - ANSI_RESET.len()` and this
+    // would fail.
     let fixture = BudgetFixture::new(budget_test_components());
     fixture.tick();
 
@@ -843,11 +905,6 @@ fn client_truncation_receives_full_suffix_width_with_no_ansi_subtraction() {
         fixture.recorder.suffix_budget(),
         Some(SUFFIX_SLOT),
         "client suffix budget must be the full slot, with no ANSI reserve subtracted",
-    );
-    assert_ne!(
-        fixture.recorder.suffix_budget(),
-        Some(SUFFIX_SLOT - ANSI_RESET.len()),
-        "suffix budget must not be reduced by the prefix's ANSI reserve",
     );
 }
 
