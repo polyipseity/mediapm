@@ -2,22 +2,29 @@
 //!
 //! Materialization bars carry file-path identity and phase tags. The
 //! [`MaterializationBarLabel`] struct owns its field names and truncation
-//! order independently of the conductor's [`StepBarLabel`] and
-//! [`WorkerBarLabel`].
+//! order independently of the conductor's `StepBarLabel` and
+//! `WorkerBarLabel`, which live in `mediapm-conductor` and are not visible
+//! to rustdoc from this crate.
 
 use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit_segments};
 
 /// Truncation order for a materialization bar.
 ///
 /// Segments are ordered most important first and yield from the tail.
-/// Prefix: `phase` → `status_marker` (both protected) → `entry_name` →
+/// Prefix: `phase` → `status_marker` (both marked protected) → `entry_name` →
 /// `file_name` (sub-bars only) → `entry_path` (elastic, shortened from the
 /// front so the directory tail survives).
+///
+/// The order is the whole mechanism. `fit_segments` drops from the tail
+/// unconditionally, so a field survives by ranking rather than by being
+/// marked protected, and `PREFIX_FLOOR` changes no output.
 ///
 /// Materialization bars carry no version, no count/total, and no
 /// workflow/step identity.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MaterializationBarLabel {
+    /// Terminal-state marker, rendered bracketed as `[F]` or `[W]`. Empty
+    /// when the entry has no status, in which case the segment is omitted.
     pub status_marker: String,
     /// Directory portion of hierarchy path, e.g. `"Music/Artist/Album"`.
     pub entry_path: String,
@@ -30,10 +37,11 @@ pub(crate) struct MaterializationBarLabel {
 }
 
 impl MaterializationBarLabel {
-    /// Minimum prefix width at which the protected head still fits whole.
+    /// Recorded intent: the rendered width of the protected head,
+    /// `[wrt] [F]`.
     ///
-    /// Measured as the rendered width of `[wrt] [F]`. Below this width
-    /// protection lifts and the tail is dropped as a whole segment.
+    /// `fit_segments` does not consult it, so it spares nothing. The head
+    /// sheds only because it leads the segment order.
     pub(crate) const PREFIX_FLOOR: usize = 9;
 
     fn prefix_segments(&self) -> Vec<Segment> {

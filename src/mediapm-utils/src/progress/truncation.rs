@@ -74,14 +74,20 @@ pub struct Segment {
     pub text: String,
     /// How this piece yields width.
     pub shrink: Shrink,
-    /// Protected pieces are spared by the drop phase while `max_width` is
-    /// at or above the label's floor. They are never shortened.
+    /// Marks this piece as protected. Protected pieces are never shortened.
+    ///
+    /// The flag does not spare the piece from dropping. [`fit_segments`]
+    /// drops from the tail unconditionally, so a protected piece is dropped
+    /// when the tail reaches it, at any width. Its position in the list is
+    /// what keeps it in the rendered prefix; the flag never does.
     pub protected: bool,
 }
 
 #[cfg(feature = "progress")]
 impl Segment {
-    /// A protected piece: never shortened, dropped only below the floor.
+    /// A protected piece: never shortened in the shrink phase, and never
+    /// eligible to become the elastic segment. Whether it survives a drop
+    /// depends on its position in the list, not on the flag.
     #[must_use]
     pub fn protected(text: impl Into<String>) -> Self {
         Self { text: text.into(), shrink: Shrink::Keep, protected: true }
@@ -138,8 +144,11 @@ fn visible_len(text: &str) -> usize {
 /// `segments` is ordered most important first and is walked from the tail.
 ///
 /// * **Phase A (shrink)** — each [`Shrink::FrontEllipsis`] segment, from the
-///   tail forward, is shortened by exactly the overage, never below
-///   [`MIN_TAIL`], before the next one yields anything.
+///   tail forward, is shortened by the overage before the next one yields
+///   anything. The shortening stops at [`MIN_TAIL`], so a segment whose
+///   overage exceeds its own length above that floor is shortened by less
+///   than the overage, and the remainder can still be too wide when Phase A
+///   ends.
 /// * **Phase B (drop)** — once no segment can shrink further, whole segments
 ///   drop from the tail until the remainder fits or one segment is left.
 ///

@@ -3,39 +3,58 @@
 //! mediapm-utils owns the render push point but not the field layout. The
 //! two structs here carry conductor's own semantically-named fields and
 //! implement [`BarLabelTruncation`] with their own order. A step bar
-//! (`StepBarLabel`) carries real-progress fields (`version`, `completed`/
-//! `total`, `phase`); a worker-slot bar (`WorkerBarLabel`) carries only an
-//! `activity` flag (`` `active` ``/`` `idle` ``) and never a workflow phase or progress
-//! tally.
+//! ([`StepBarLabel`]) carries real-progress fields (`version`,
+//! `completed`/`total`, `phase`); a worker-slot bar ([`WorkerBarLabel`])
+//! carries an `activity` marker (`active`/`idle`) alongside its identifiers
+//! and tool name, and never a workflow phase or progress tally.
 
 use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit_segments};
 
 /// Truncation order for a per-step (real-progress) bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix protects `phase`, `status_marker`, and `completed`/`total`; the
-/// `tool` name is elastic and is shortened from the front before any
-/// earlier segment is dropped. The suffix repeats the protected tally,
-/// then `elapsed`, `rate`, `eta`, and an elastic `custom`.
+/// prefix marks `phase`, `status_marker`, and `completed`/`total` as
+/// protected and leads with them, so width pressure sheds the `tool` name
+/// first, then the version and identifiers, before the head. The `tool` name
+/// is elastic and is shortened from the front rather than dropped whole.
+/// The suffix repeats the tally, then `elapsed`, `rate`, `eta`, and an
+/// elastic `custom`.
+///
+/// The order is the whole mechanism. `fit_segments` drops from the tail
+/// unconditionally, so a field survives by ranking rather than by being
+/// marked protected, and the floor constants below change no output.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
 pub struct StepBarLabel {
+    /// Terminal-state marker, rendered bracketed as `[F]` or `[W]`. Empty
+    /// when the step has no status, in which case the segment is omitted.
     pub status_marker: String,
+    /// Name of the workflow the step belongs to, e.g. `"default"`.
     pub workflow_id: String,
+    /// Step identifier within the workflow, e.g. `"s3"`.
     pub step_id: String,
+    /// Conductor tool name, rendered parenthesized as `(ffmpeg)`. The only
+    /// elastic prefix segment.
     pub tool: String,
+    /// Tool version, rendered bracketed as `[7.1]`.
     pub version: String,
+    /// Workflow phase tag, rendered bracketed as `[wf]`.
     pub phase: String,
+    /// Completed count for the progress tally. Rendered only when both it
+    /// and `total` are non-empty.
     pub completed: String,
+    /// Total count for the progress tally. Rendered only when both it and
+    /// `completed` are non-empty.
     pub total: String,
 }
 
 #[cfg(feature = "progress")]
 impl StepBarLabel {
-    /// Minimum prefix width at which the protected head still fits whole.
+    /// Recorded intent: the rendered width of the protected head,
+    /// `[wf] [F] 1/4`.
     ///
-    /// Measured as the rendered width of `[wf] [F] 1/4`. Below this width
-    /// protection lifts and the tail is dropped as a whole segment.
+    /// `fit_segments` does not consult it, so it spares nothing. The head
+    /// sheds only because it leads the segment order.
     pub const PREFIX_FLOOR: usize = 12;
 
     /// Minimum suffix width at which the protected tally still fits.
@@ -110,27 +129,42 @@ impl BarLabelTruncation for StepBarLabel {
 /// Truncation order for a worker-slot (activity) bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix protects `status_marker` and `activity`; the `tool` name is
-/// elastic and is shortened from the front before any earlier segment is
-/// dropped. A worker carries no workflow phase and no progress tally, so no
-/// suffix segment is protected and its floor is zero; the auto-derived
-/// `elapsed`, `rate`, and `eta` still render, ahead of an elastic `custom`.
+/// prefix marks `status_marker` and `activity` as protected and leads with
+/// them, so width pressure sheds the `tool` name first, then the
+/// identifiers, before the head. The `tool` name is elastic and is shortened
+/// from the front rather than dropped whole. A worker carries no workflow
+/// phase and no progress tally, so the suffix has no tally segment and its
+/// floor is recorded as zero; the auto-derived `elapsed`, `rate`, and `eta`
+/// still render, ahead of an elastic `custom`.
+///
+/// As with the step bar, the order is the mechanism and the floors change
+/// no output.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
 pub struct WorkerBarLabel {
+    /// Terminal-state marker, rendered bracketed as `[F]` or `[W]`. Empty
+    /// when the slot has no status, in which case the segment is omitted.
     pub status_marker: String,
+    /// Workflow the slot is executing, e.g. `"default"`. Empty unless the
+    /// slot is running a step.
     pub workflow_id: String,
+    /// Step the slot is executing, e.g. `"s5"`. Empty unless the slot is
+    /// running a step.
     pub step_id: String,
+    /// Conductor tool name, rendered parenthesized as `(echo)`. The only
+    /// elastic prefix segment.
     pub tool: String,
+    /// Worker state marker, rendered bracketed as `[active]` or `[idle]`.
     pub activity: String,
 }
 
 #[cfg(feature = "progress")]
 impl WorkerBarLabel {
-    /// Minimum prefix width at which the protected head still fits whole.
+    /// Recorded intent: the rendered width of the protected head,
+    /// `[F] [active]`.
     ///
-    /// Measured as the rendered width of `[F] [active]`. Below this width
-    /// protection lifts and the tail is dropped as a whole segment.
+    /// `fit_segments` does not consult it, so it spares nothing. The head
+    /// sheds only because it leads the segment order.
     pub const PREFIX_FLOOR: usize = 12;
 
     /// A worker carries no progress tally, so no suffix segment is protected
@@ -163,6 +197,9 @@ impl WorkerBarLabel {
     }
 
     /// Build the suffix segments, most important first.
+    ///
+    /// Takes no `&self`: a worker slot has no suffix fields of its own, so
+    /// nothing from the label can contribute to the suffix.
     ///
     /// A worker slot has no progress tally of its own, but that does not
     /// mean it has no timing information: the renderer passes its merged
