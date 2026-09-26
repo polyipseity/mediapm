@@ -186,3 +186,42 @@ fn step_label_front_ellipsises_very_long_tool_name() {
     assert!(tight.ends_with("limit)"), "tail not preserved: {tight:?}");
     assert_eq!(tight.chars().count(), 20);
 }
+
+#[test]
+fn step_suffix_keeps_the_protected_tally_and_timing_fields() {
+    // A step bar carries its own progress tally in the label struct, and the
+    // renderer separately supplies auto-derived elapsed, rate and ETA in the
+    // suffix argument. Both must reach the rendered suffix: the timing fields
+    // reach it only through that argument, so a `suffix_segments` that stopped
+    // reading them would silently strip timing from every step bar, and no
+    // other test in this file would catch it.
+    let label = StepBarLabel {
+        status_marker: String::new(),
+        workflow_id: String::new(),
+        step_id: String::new(),
+        tool: String::new(),
+        version: String::new(),
+        phase: String::new(),
+        completed: "3".into(),
+        total: "10".into(),
+    };
+    let suffix = SuffixComponents {
+        elapsed: "2m 05s".into(),
+        rate: Some("1.4 MiB/s".into()),
+        eta: Some("01:12".into()),
+        ..Default::default()
+    };
+
+    // Wide enough for every field: all four must be present.
+    let wide = label.truncate_suffix(80, &suffix);
+    assert!(wide.contains("3/10"), "tally lost: {wide:?}");
+    assert!(wide.contains("2m 05s"), "elapsed lost: {wide:?}");
+    assert!(wide.contains("1.4 MiB/s"), "rate lost: {wide:?}");
+    assert!(wide.contains("01:12"), "eta lost: {wide:?}");
+
+    // Too narrow for all four. Segments yield from the tail, so the tally
+    // leads the order and is the last one standing; the timing fields are
+    // surrendered whole rather than shaved, because none of them is elastic.
+    let tight = label.truncate_suffix(10, &suffix);
+    assert_eq!(tight, "3/10", "tight case must keep the leading tally whole: {tight:?}");
+}
