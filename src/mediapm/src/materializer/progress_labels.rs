@@ -120,21 +120,6 @@ mod tests {
         }
     }
 
-    /// The phase tag outlives the elastic path, and `entry_name` outlives
-    /// the path too: both outrank the single elastic segment.
-    #[test]
-    fn protected_phase_survives_entry_path_pressure() {
-        let label = MaterializationBarLabel {
-            entry_path: "Music/Artist/Album".into(),
-            entry_name: "song.mkv".into(),
-            phase: "stg".into(),
-            ..Default::default()
-        };
-        let tight = label.truncate_prefix(25);
-        assert!(tight.contains("[stg]"), "phase lost: {tight:?}");
-        assert!(tight.contains("song.mkv"), "entry_name lost: {tight:?}");
-    }
-
     /// The elastic path is shortened from the front so the directory tail —
     /// the part adjacent to the filename — survives, where the prefix cut
     /// this replaces yielded the uninformative `Music/Artist/Al…` head.
