@@ -2,7 +2,7 @@
 //!
 //! This module provides reusable functions used by [`MediaPmService`] that
 //! are not directly tied to the service struct's lifecycle, including
-//! document loading and invalidation rule building.
+//! document loading.
 //!
 //! [`MediaPmService`]: crate::service::MediaPmService
 

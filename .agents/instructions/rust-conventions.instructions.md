@@ -26,9 +26,9 @@ For workspace-crate integration tests under `src/*/tests/`, prefer one CAS-style
 
 ### Demo examples
 
-`mediapm_demo` and `mediapm_demo_online` validate the full pipeline end-to-end with real tool invocations. Run `mediapm_demo` before push, never during incremental development. `mediapm_demo` uses stream-copy (`codec_copy = "true"`) for fast local fixture execution. The online demo's full-sync path is human-gated to explicit `cargo run --example` runs (three-level run model in `example-execution-policy.instructions.md`). During development, prefer selective `cargo test -p <crate>` calls.
+`mediapm_demo` demonstrates the config-to-artifact path offline: its single `import` step provisions with no network, so it invokes no managed binary. `mediapm_demo_online` is the full-pipeline demonstration with real tool invocations, and its full-sync path is human-gated to explicit `cargo run --example` runs (three-level run model in `example-execution-policy.instructions.md`). Run `mediapm_demo` before push, never during incremental development. During development, prefer selective `cargo test -p <crate>` calls.
 
-Demos need external tools: `mediapm_demo` needs ffmpeg, rsgain, and media-tagger; `mediapm_demo_online` needs yt-dlp, ffmpeg, media-tagger, and network access. Use selective unit/integration tests during iteration.
+Demos need external tools: `mediapm_demo_online` needs yt-dlp, ffmpeg, media-tagger, and network access. `mediapm_demo` needs no managed binary, because the tools that fetch real payloads are exactly the ones it no longer declares. Use selective unit/integration tests during iteration.
 
 ### CI auto-detection in demos
 
@@ -44,7 +44,7 @@ When running full-sync demos, verify the following success indicators: all manag
 
 ### Timing expectations
 
-`mediapm_demo` (local transcode): approximately 5-15 seconds. `mediapm_demo_online` (yt-dlp + transcode): approximately 15-45 seconds, network-dependent. Repeated explicit runs reuse the real user-level tool download cache via `example_isolation::user_level_cache_root()`. For manual online demo runs, use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=600` and `env -u TMPDIR` as needed to extend the timeout.
+`mediapm_demo` (offline ingest): performs no managed-tool download, so its runtime is bounded by local CAS and hierarchy work rather than by tool fetches. `mediapm_demo_online` (yt-dlp + transcode): approximately 15-45 seconds, network-dependent. Repeated explicit runs reuse the real user-level tool download cache via `example_isolation::user_level_cache_root()`. For manual online demo runs, use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=600` and `env -u TMPDIR` as needed to extend the timeout.
 
 ## Required test qualities
 
@@ -144,7 +144,7 @@ Update or add tests in the same commit as a behavior change. Never change behavi
 
 ### Demo update policy
 
-When the full pipeline behavior changes (tool provisioning, sync orchestration, materialization defaults), verify that both `mediapm_demo` and `mediapm_demo_online` still produce correct output. Update the demo examples if the expected output or timing profile has changed meaningfully. The demos serve as the authoritative end-to-end contract for the mediapm application.
+When the full pipeline behavior changes (tool provisioning, sync orchestration, materialization defaults), verify that both `mediapm_demo` and `mediapm_demo_online` still produce correct output. Update the demo examples if the expected output or timing profile has changed meaningfully. `mediapm_demo_online` is the authoritative end-to-end contract for the mediapm application: real-binary coverage of the transform and tagging stages lives behind the `MEDIAPM_RUN_ONLINE_SYNC` gate (see the three-level model in `example-execution-policy.instructions.md`), exercised by `online_sync_post_sync_dump`. `mediapm_demo` now covers the config-to-artifact path only, invoking no managed binary.
 
 ### Content map coverage
 
@@ -214,7 +214,7 @@ Update or add tests in the same commit as a behavior change. Never change behavi
 
 ### Demo update policy
 
-When the full pipeline behavior changes (tool provisioning, sync orchestration, materialization defaults), verify that both `mediapm_demo` and `mediapm_demo_online` still produce correct output. Update the demo examples if the expected output or timing profile has changed meaningfully. The demos serve as the authoritative end-to-end contract for the mediapm application.
+When the full pipeline behavior changes (tool provisioning, sync orchestration, materialization defaults), verify that both `mediapm_demo` and `mediapm_demo_online` still produce correct output. Update the demo examples if the expected output or timing profile has changed meaningfully. `mediapm_demo_online` is the authoritative end-to-end contract for the mediapm application: real-binary coverage of the transform and tagging stages lives behind the `MEDIAPM_RUN_ONLINE_SYNC` gate (see the three-level model in `example-execution-policy.instructions.md`), exercised by `online_sync_post_sync_dump`. `mediapm_demo` now covers the config-to-artifact path only, invoking no managed binary.
 
 ### Content map coverage
 
