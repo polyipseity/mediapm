@@ -2,9 +2,10 @@
 //!
 //! Validates that the conductor-owned label structs implement
 //! [`BarLabelTruncation`] with the correct field order: a worker bar never
-//! carries a `completed/total` progress tally, while a step bar protects
-//! its phase, status marker, and progress tally ahead of the tool name,
-//! which is the elastic segment that shrinks first.
+//! carries a `completed/total` progress tally, while a step bar places its
+//! phase, status marker, and progress tally ahead of the tool name in the
+//! segment list, so they are the last to yield; the tool name is the elastic
+//! segment that shrinks first.
 
 use mediapm_conductor::orchestration::progress_labels::{StepBarLabel, WorkerBarLabel};
 use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents};
@@ -163,9 +164,9 @@ fn step_label_shrinks_tool_before_dropping_version() {
 #[test]
 fn worker_label_front_ellipsises_very_long_tool_name() {
     // A tool name longer than the budget is shortened from the front, so
-    // the protected activity marker survives and the tool's tail is kept.
-    // This is the behaviour change from the old prefix cut, which kept the
-    // head `(a-very-long-t` and discarded the whole protected head.
+    // the leading activity marker survives and the tool's tail is kept.
+    // This is the behaviour change from the old prefix cut, which kept
+    // the head `(a-very-long-t` and discarded the whole activity marker.
     let label = WorkerBarLabel {
         status_marker: String::new(),
         workflow_id: String::new(),

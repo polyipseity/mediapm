@@ -20,8 +20,10 @@ fn step_segments() -> Vec<Segment> {
     ]
 }
 
-/// Visible width of the leading `[wf]` segment. Widths below this can hold
-/// the head alone; widths at or above it leave room for further segments.
+/// Rendered width of the leading three-segment head, `[wf] [F] 1/4`. Below
+/// this the group cannot fit, so dropping from the tail reduces the output to
+/// `[wf]` alone; at or above it the whole group fits and the trailing
+/// segments are the ones that drop.
 const HEAD_WIDTH: usize = 12;
 
 /// A width strictly below [`HEAD_WIDTH`], so the head alone fills the budget.
@@ -31,10 +33,11 @@ const BELOW_HEAD: usize = 6;
 /// the budget and the widths where it fits alongside other segments.
 #[test]
 fn head_survives_below_and_above_its_own_width() {
-    // The head is exactly 12 columns wide, so the two regimes are geometric:
-    // below its own width nothing can share the budget, at and above it the
-    // head fits with room left. Survival follows from the head's leading
-    // position in the segment list.
+    // The head group is exactly 12 columns wide, so the two regimes are
+    // geometric: below its own width the tail drops away until only the
+    // phase tag remains, and at or above it the whole group fits with room
+    // left. Survival follows from the head's leading position in the
+    // segment list.
     for width in BELOW_HEAD..HEAD_WIDTH {
         let out = fit_segments(&step_segments(), width);
         assert!(out.contains("[wf]"), "phase lost at width {width}: {out:?}");
