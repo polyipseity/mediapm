@@ -308,6 +308,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hardlink_survives_later_wal_consumer_drain_of_the_same_blob() {
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();
+        let hash = cas.put(Bytes::from_static(b"drained-after-link")).await.unwrap();
+        assert!(
+            !cas.object_path_for_hash(hash).is_some_and(|p| p.is_file()),
+            "small puts stay WAL-only, so the materializer's ensure writes the blob itself"
+        );
+
+        let dest = dir.path().join("drained.bin");
+        let mut notices = Vec::new();
+        materialize_file_from_cas_with_order(
+            &cas,
+            hash,
+            &dest,
+            "drained.bin",
+            &[MaterializationMethod::Hardlink],
+            &mut notices,
+        )
+        .await
+        .unwrap();
+        let source = cas.object_path_for_hash(hash).expect("cas object path");
+        assert!(same_file::is_same_file(&source, &dest).expect("same_file check after link"));
+        assert!(notices.is_empty(), "hardlink must not fall back to a copying method");
+
+        // The store drains its own WAL in the background, so the same Put can
+        // be applied to the blob store long after the materializer hardlinked
+        // it. A CAS object is content-addressed and therefore immutable, so
+        // that re-application must not replace the blob's inode: doing so
+        // silently detaches every hardlink already made from it, and the
+        // materialized output keeps pointing at the orphaned inode.
+        cas.bg_engine().run_wal_consumer().await.expect("drain wal");
+
+        assert!(
+            same_file::is_same_file(&source, &dest).expect("same_file check after wal drain"),
+            "materialized output must stay hardlinked to its CAS blob after the store drains the \
+             Put that created the blob"
+        );
+    }
+
+    #[tokio::test]
     async fn hardlink_materialization_succeeds_with_spaces_in_destination_path() {
         let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let cas = FileSystemCas::open(&dir.path().join("cas")).await.unwrap();

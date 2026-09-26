@@ -347,6 +347,47 @@ fn output_is_hardlinked_to_cas_object(
     Ok(is_same_file(source_path, output_path)? && fs::read(source_path)? == fs::read(output_path)?)
 }
 
+/// Describes how the CAS blob and the materialized output relate on disk.
+///
+/// Reported in the "not hardlinked" failure message because the distinct
+/// readings name distinct bugs: different inodes mean the link was never made
+/// (or was replaced), while equal inodes with a different device would mean a
+/// mount boundary between the store and the hierarchy root. `nlink` separates
+/// "never linked" (`1`) from "linked and then broken" (`2` on the blob).
+#[cfg(unix)]
+fn describe_linkage(cas_path: &Path, out_path: &Path) -> String {
+    use std::os::unix::fs::MetadataExt;
+
+    match (fs::metadata(cas_path), fs::metadata(out_path)) {
+        (Ok(cas), Ok(out)) => format!(
+            "cas dev={} ino={} nlink={} | out dev={} ino={} nlink={}",
+            cas.dev(),
+            cas.ino(),
+            cas.nlink(),
+            out.dev(),
+            out.ino(),
+            out.nlink(),
+        ),
+        (cas, out) => format!(
+            "linkage stat failed: cas={} out={}",
+            cas.err().map_or_else(|| "ok".to_string(), |error| error.to_string()),
+            out.err().map_or_else(|| "ok".to_string(), |error| error.to_string()),
+        ),
+    }
+}
+
+/// Non-unix counterpart of [`describe_linkage`]: no portable inode identity
+/// API exists, so report the identity the platform does expose.
+#[cfg(not(unix))]
+fn describe_linkage(cas_path: &Path, out_path: &Path) -> String {
+    format!(
+        "cas len={:?} | out len={:?} | same_file={}",
+        fs::metadata(cas_path).map(|meta| meta.len()),
+        fs::metadata(out_path).map(|meta| meta.len()),
+        is_same_file(cas_path, out_path).unwrap_or(false),
+    )
+}
+
 async fn assert_materialized_output_hardlinked_to_cas(
     cas: &FileSystemCas,
     hierarchy_root: &Path,
@@ -396,9 +437,10 @@ async fn assert_materialized_output_hardlinked_to_cas(
 
     if !output_is_hardlinked_to_cas_object(&source_path, output_path)? {
         return Err(std::io::Error::other(format!(
-            "materialized output '{}' is not hardlinked to CAS object '{}'",
+            "materialized output '{}' is not hardlinked to CAS object '{}' [{}]",
             output_path.display(),
-            source_path.display()
+            source_path.display(),
+            describe_linkage(&source_path, output_path),
         ))
         .into());
     }

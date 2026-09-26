@@ -138,8 +138,29 @@ impl BlobStore for FileSystemBlobStore {
             ObjectEncoding::Full => hash_to_path(&self.root, &hash),
             ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
         };
-        Self::atomic_write(&path, &data).await?;
-        // Seed mtime for verify-on-read tracking.
+        // A full-encoding object is immutable once it exists: the path is
+        // derived from the hash, so an object already sitting there holds
+        // exactly these bytes. Rewriting it would not repair anything — the
+        // write-tmp-then-rename commit installs a NEW inode, silently
+        // detaching every hardlink already materialized from the old one
+        // (the hierarchy materializer hardlinks outputs straight from this
+        // path). The WAL consumer re-applies Put entries that a materializer
+        // may already have materialized, so an unguarded rewrite here is what
+        // breaks those links.
+        //
+        // Delta envelopes are deliberately excluded: they are a derived
+        // encoding the optimizer may legitimately re-encode against a
+        // different base, and nothing hardlinks them.
+        let already_materialized = matches!(encoding, ObjectEncoding::Full)
+            && fs::metadata(&path).await.is_ok_and(|meta| meta.is_file());
+        if !already_materialized {
+            Self::atomic_write(&path, &data).await?;
+        }
+        // Seed mtime for verify-on-read tracking. Runs on the skip path too:
+        // the object is present and its mtime is what the verify-on-read
+        // strategies compare against, and leaving it unrecorded would make a
+        // never-rewritten object look unverified and trigger a re-verify on
+        // every read.
         if let Ok(meta) = fs::metadata(&path).await {
             self.verify_evaluator.record_verification(&hash, meta.modified().ok());
         }
@@ -675,5 +696,99 @@ mod tests {
         assert_eq!(store.read(&hash).await.unwrap(), data);
         // Read 2: elapsed >= 0 → stale immediately.
         assert_eq!(store.read(&hash).await.unwrap(), data);
+    }
+
+    /// Reports whether two paths resolve to the same filesystem object.
+    ///
+    /// Hard-link identity is the CAS materialization contract, so the check
+    /// must be identity-based: comparing contents would not notice an object
+    /// that was replaced by a byte-identical file, which is exactly the
+    /// failure this guards.
+    #[cfg(unix)]
+    fn is_same_file(left: &Path, right: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+
+        match (std::fs::metadata(left), std::fs::metadata(right)) {
+            (Ok(left_meta), Ok(right_meta)) => {
+                left_meta.dev() == right_meta.dev() && left_meta.ino() == right_meta.ino()
+            }
+            _ => false,
+        }
+    }
+
+    /// Windows counterpart of the unix [`is_same_file`], using the volume
+    /// serial number plus file index as the object identity.
+    #[cfg(windows)]
+    fn is_same_file(left: &Path, right: &Path) -> bool {
+        use std::os::windows::fs::MetadataExt;
+
+        match (std::fs::metadata(left), std::fs::metadata(right)) {
+            (Ok(left_meta), Ok(right_meta)) => {
+                left_meta.volume_serial_number() == right_meta.volume_serial_number()
+                    && left_meta.file_index() == right_meta.file_index()
+            }
+            _ => false,
+        }
+    }
+
+    /// Regression test for the intermittent
+    /// `generate_demo_artifacts_writes_manifest_and_import_metadata` failure
+    /// ("materialized output is not hardlinked to CAS object"). Re-writing a
+    /// full-encoding object that already exists used to commit through
+    /// write-tmp-then-rename, which installs a new inode and silently detaches
+    /// every hardlink already made from the object. The WAL consumer performs
+    /// exactly such a redundant re-write when it drains a `Put` that a
+    /// materializer has already materialized.
+    #[tokio::test]
+    async fn rewriting_an_existing_full_object_preserves_hardlink_identity() {
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
+        let data = Bytes::from_static(b"immutable object");
+        let hash = Hash::from_content(&data);
+
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.unwrap();
+        let blob = hash_to_path(dir.path(), &hash);
+        let materialized = dir.path().join("materialized-output.bin");
+        std::fs::hard_link(&blob, &materialized).unwrap();
+        assert!(is_same_file(&blob, &materialized), "hard link setup");
+
+        // Same hash, same bytes: the object is already present and immutable.
+        store.write(hash, ObjectEncoding::Full, data).await.unwrap();
+
+        assert!(
+            is_same_file(&blob, &materialized),
+            "re-writing an existing full object must not replace its inode, because that \
+             detaches every hardlink materialized from it"
+        );
+        assert_eq!(store.read(&hash).await.unwrap(), Bytes::from_static(b"immutable object"));
+    }
+
+    /// Delta envelopes stay replaceable: they are a derived encoding the
+    /// optimizer may re-derive against a different base, and nothing hardlinks
+    /// them, so skipping the rewrite would freeze a stale encoding on disk.
+    #[tokio::test]
+    async fn rewriting_an_existing_delta_object_replaces_it() {
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
+        let hash = Hash::from_content(b"delta target");
+        let base = Hash::from_content(b"delta base");
+        let first = Bytes::from_static(b"first delta envelope");
+        let second = Bytes::from_static(b"second delta envelope");
+
+        store.write(hash, ObjectEncoding::Delta { base_hash: base }, first.clone()).await.unwrap();
+        store.write(hash, ObjectEncoding::Delta { base_hash: base }, second.clone()).await.unwrap();
+
+        let delta_path = hash_to_delta_path(dir.path(), &hash);
+        assert_eq!(std::fs::read(&delta_path).unwrap(), second.to_vec());
     }
 }
