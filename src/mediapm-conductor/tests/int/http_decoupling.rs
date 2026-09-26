@@ -154,8 +154,9 @@ fn scan_trims_lines_and_excludes_comments_but_catches_indented_code() {
 ///
 /// Asserting this as a test is what turns a build abort into a named,
 /// diagnosable failure. On the current tree the module is clean of *scanned*
-/// violations, so this test passes with no output; the red case is demonstrated
-/// in `.superpowers/sdd/phase3-plan-2026-09-26-open-items/r3-report.md`.
+/// violations, so this test passes with no output. The red case is covered by
+/// the two synthetic-fixture tests above, whose assertions are exact string
+/// matches on the rendered violations, so neither can pass vacuously.
 #[test]
 fn http_module_has_no_crate_internal_references() {
     let violations = scan_http_decoupling_violations(&http_module_dir());

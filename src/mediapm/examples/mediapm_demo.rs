@@ -494,7 +494,6 @@ fn configure_document_for_local_tool_chain(
                     "source".to_string(),
                     MediaMetadataValue::Literal(DEMO_METADATA_SOURCE_LITERAL.to_string()),
                 ),
-                ("video_ext".to_string(), MediaMetadataValue::Literal(".m4a".to_string())),
                 ("video_ext_untagged".to_string(), MediaMetadataValue::Literal(".mp4".to_string())),
             ]),
             variant_hashes: BTreeMap::new(),
