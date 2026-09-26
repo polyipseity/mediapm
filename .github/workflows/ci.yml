@@ -73,7 +73,7 @@ jobs:
   # feature in alphabetical order, then `--all-features`. The four crates with
   # no `[features]` section (`build-utils`, `cargo-bin`,
   # `mediapm-conductor-examples-concat-tool`, `mediapm-tests`) get only those
-  # two endpoints and therefore carry an empty `flags` value. Package order is
+  # two endpoints, so every row supplies at least one flag. Package order is
   # alphabetical.
   #
   # Interpretation caveats a reader must not skip:
@@ -173,8 +173,8 @@ jobs:
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606
 
-      # Unquoted so the empty `flags` of the featureless crates expands to no
-      # argument rather than an empty one.
+      # Unquoted so a future flagless row expands to no argument rather than
+      # an empty one; every current row supplies at least one flag.
       - name: Check feature combination
         run: cargo --locked check --package ${{ matrix.package }} ${{ matrix.flags }}
 
