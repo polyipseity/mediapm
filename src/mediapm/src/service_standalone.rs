@@ -156,43 +156,6 @@ pub(crate) fn mark_media_step_for_regeneration(
     }
 }
 
-/// Loads the conductor state document, returning a default if it doesn't
-/// exist.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError::Io`] if the file exists but cannot be read, or
-/// [`MediaPmError::Serialization`] if it cannot be parsed.
-#[allow(dead_code, clippy::unnecessary_wraps)]
-pub(crate) fn load_or_default_conductor_state_document(
-    paths: &MediaPmPaths,
-) -> Result<mediapm_conductor::NickelDocument, MediaPmError> {
-    let _ = paths;
-    Ok(mediapm_conductor::NickelDocument::default())
-}
-
-/// Discards a conductor state document, writing nothing to disk.
-///
-/// Conductor runtime state is persisted as a Nickel document by
-/// [`save_conductor_generated_document`], which writes
-/// `mediapm.conductor.generated.ncl`. This helper ignores both arguments
-/// and is retained for standalone scaffolding.
-///
-/// # Errors
-///
-/// Infallible — returns `Ok(())`.
-///
-/// [`save_conductor_generated_document`]:
-///     crate::conductor_bridge::documents::save_conductor_generated_document
-#[allow(dead_code, clippy::unnecessary_wraps)]
-pub(crate) fn save_conductor_state_document(
-    paths: &MediaPmPaths,
-    document: &mediapm_conductor::NickelDocument,
-) -> Result<(), MediaPmError> {
-    let _ = (paths, document);
-    Ok(())
-}
-
 /// Removes impure timestamps for a specific tool from all media step states.
 pub(crate) fn remove_target_step_impure_timestamps(state: &mut MediaPmState, _tool_id: &str) {
     for step_state in state.workflow_states.values_mut() {
