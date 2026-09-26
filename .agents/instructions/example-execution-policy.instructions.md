@@ -10,9 +10,9 @@ Each example under `src/*/examples/` must contain a `#[cfg(test)]` test that run
 
 ## Deterministic vs nondeterministic examples
 
-Nondeterministic examples (network, external services, managed-tool downloads) detect CI in the test that calls `main()`, never inside `main()`. This applies to all cache-using examples (`mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`, `mediapm_demo`, `mediapm_demo_online`); deterministic examples (the offline demo) run their full path in tests with no CI detection.
+Nondeterministic examples (network, external services, managed-tool downloads) detect CI in the test that calls `main()`, never inside `main()`. This applies to all cache-using examples that reach the network (`mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`, `mediapm_demo_online`); deterministic examples (the offline demo) run their full path in tests with no CI detection.
 
-- **Deterministic** (offline demo): always full path in tests (no reduced mode, no CI detection.
+- **Deterministic** (offline demo): always full path in tests (no reduced mode, no CI detection). Its single `import` step provisions with no network, so the full path is genuinely offline. The demo therefore covers no real managed binary: `ffmpeg`, `sd`, and `rsgain` fetch real payloads, and `media-tagger` is classified impure because it performs network lookups at run time, so none of them can appear in a demo whose defining property is that it needs no network. Real-binary coverage of the transform and tagging stages lives behind the `MEDIAPM_RUN_ONLINE_SYNC` gate (see the three-level model below), exercised by `online_sync_post_sync_dump`. Excluding them moved that coverage from the default suite, where it failed at payload fetch, to the opt-in gate, where it runs.
 - **Nondeterministic** (online demo) (three-level model:
   - **Level 1 (CI:)** `cargo test` with any of `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `DRONE` set → embedded test skips via `ci_mode_detected()`.
   - **Level 2 (harness outside CI:)** `cargo test`/`test-all`/pre-push (no CI env) → runs `main()` in a deterministic reduced mode (e.g. config-only) via documented env vars, never touching the network.
