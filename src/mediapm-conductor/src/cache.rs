@@ -1209,6 +1209,63 @@ mod tests {
         assert_eq!(retrieved, Some(payload), "payload must survive cross-domain GC");
     }
 
+    /// Pins the cross-domain payload-retention contract in the *drained*
+    /// state, which [`prune_cross_index_payload_gc_keeps_shared_references`]
+    /// only reaches by luck.
+    ///
+    /// `Cache::store_bytes` appends to the CAS WAL, so right after a store the
+    /// payload can still be reconstructed from the WAL even if a prune has
+    /// reclaimed the committed object. The racy test therefore passes for two
+    /// different reasons — the payload survived, or a later WAL replay
+    /// resurrected it — and cannot distinguish them. Draining the store up
+    /// front makes the committed blob the only copy, so `removed_payloads`
+    /// and the metadata lookup are statements about the prune decision alone.
+    ///
+    /// This is a contract-strengthening test, not the deterministic guard for
+    /// the intermittent failure: it passes with the CAS full-object
+    /// immutability guard reverted (observed), because the reclaim decision
+    /// there depends on a background-interleaving this test does not force.
+    /// The deterministic guard for that mechanism lives at the CAS boundary,
+    /// in
+    /// `storage::blob_store::fs::tests::rewriting_an_existing_full_object_preserves_hardlink_identity`.
+    #[tokio::test]
+    async fn prune_keeps_shared_payload_after_the_wal_is_drained() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open(
+            root.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "content".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: 0,
+                },
+                CacheDomainConfig {
+                    domain: "metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 3600,
+                },
+            ],
+        )
+        .await
+        .expect("open cache");
+
+        let payload = b"shared-payload-drained".to_vec();
+        cache.store_bytes("content", "key-a", &payload).await;
+        cache.store_bytes("metadata", "key-b", &payload).await;
+
+        // Force the background WAL consumer to commit both puts. After this
+        // the payload is a real CAS object, so a prune that deletes it is
+        // observable deterministically instead of racing a WAL replay.
+        cache.cas.flush().await.expect("flush wal to committed blobs");
+
+        let report = cache.prune_expired_entries("content").await.expect("prune content");
+        assert!(report.removed_entries >= 1, "key-a must be pruned");
+        assert_eq!(report.removed_payloads, 0, "shared payload must not be reclaimed");
+
+        let retrieved = cache.lookup_bytes("metadata", "key-b").await;
+        assert_eq!(retrieved, Some(payload), "payload must survive cross-domain GC");
+    }
+
     /// Verifies that prune cooldown (24h) prevents re-pruning within the
     /// interval.
     #[tokio::test]

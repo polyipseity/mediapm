@@ -3039,9 +3039,26 @@ mod tests {
     /// single future's index. Under `buffer_unordered(N)` several futures are
     /// in flight, so a per-future index would make the rendered `{n}/{total}`
     /// prefix oscillate backwards (e.g. `3/3` from a fast source, then `1/3`
-    /// from a slower one still streaming). This test hammers the reporting
-    /// helper from several threads and requires the emitted sequence to be
-    /// non-decreasing and to end at `total`.
+    /// from a slower one still streaming).
+    ///
+    /// # Why the endpoint assertion is on the maximum, not the last element
+    ///
+    /// [`fire_fetch_chunk_progress`] loads `completed` and *then* invokes the
+    /// callback, so the load and the resulting push into the collected vector
+    /// are not one atomic step. A thread that loads `2` and is descheduled
+    /// before its callback runs can therefore push `(2, total)` *after* a
+    /// thread that already pushed `(3, total)`, making the vector's last
+    /// element an arbitrary stale sample. Asserting on that last element made
+    /// this test fail on its own scheduling noise (measured 2/200 runs) with
+    /// no defect present.
+    ///
+    /// The endpoint property that actually holds — and that the counter bug
+    /// would break — is that some report observes every source as completed:
+    /// whichever thread performs the final `fetch_add` to `total` loads
+    /// `total` in the fire that follows it, so the maximum is pinned at
+    /// `total`. That is deterministic, and
+    /// [`fetch_items_counter_reports_the_completed_count_exactly`] pins the
+    /// load-to-snapshot mapping without any threads at all.
     #[test]
     fn fetch_items_counter_never_decreases_under_concurrent_reporting() {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -3083,17 +3100,60 @@ mod tests {
         // The per-thread contiguous blocks are monotone, but interleaving across
         // threads can place earlier snapshots after later ones in the collected
         // vec. Verify the weaker but correct invariant: every snapshot is within
-        // [0, total_sources] and the final value is total_sources.
-        let mut last_items = 0u64;
+        // [0, total_sources], and the highest value observed reaches
+        // total_sources (the final `fetch_add` is always followed by a fire
+        // that reads it, so the maximum is deterministic where the last
+        // collected element is not).
+        let mut max_items = 0u64;
         for (i, (items, total)) in all.iter().enumerate() {
             assert_eq!(*total, total_sources, "snapshot {i}: wrong total");
             assert!(
                 *items <= total_sources,
                 "snapshot {i}: items {items} exceeds total {total_sources}"
             );
-            last_items = *items;
+            max_items = max_items.max(*items);
         }
-        assert_eq!(last_items, total_sources, "final items count must reach total");
+        assert_eq!(max_items, total_sources, "some report must observe every source completed");
+    }
+
+    /// Deterministic counterpart to
+    /// [`fetch_items_counter_never_decreases_under_concurrent_reporting`]:
+    /// pins the exact `completed` count to `snapshot.items` mapping with no
+    /// threads involved, so a regression that reports a per-future index (or
+    /// any value other than the live completed count) fails on the first
+    /// mismatched step instead of depending on scheduler luck.
+    #[test]
+    fn fetch_items_counter_reports_the_completed_count_exactly() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let total_sources = 4u64;
+        let completed = AtomicU64::new(0);
+        let mut budget_inner = MultiItemBudget::new();
+        for _ in 0..total_sources {
+            budget_inner.add_item(0);
+        }
+        let budget = budget_inner;
+
+        let seen: Arc<std::sync::Mutex<Vec<(u64, u64)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cb: ProviderProgressCallback = Arc::new({
+            let seen = Arc::clone(&seen);
+            move |snap: ProviderProgressSnapshot| {
+                seen.lock().unwrap().push(snap.items);
+            }
+        });
+
+        for expected in 0..=total_sources {
+            fire_fetch_chunk_progress(&cb, &completed, total_sources, &budget);
+            assert_eq!(
+                *seen.lock().unwrap().last().expect("snapshot emitted"),
+                (expected, total_sources),
+                "snapshot must report the live completed count, never a per-future index"
+            );
+            if expected < total_sources {
+                completed.fetch_add(1, Ordering::AcqRel);
+            }
+        }
     }
 
     // ── buffer_unordered(0) regression test ──────────────────────────
