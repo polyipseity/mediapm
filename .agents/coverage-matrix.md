@@ -1,5 +1,6 @@
+# Coverage matrix
 
-### MultiItemBudget architecture
+## MultiItemBudget architecture
 
 | Spec item                                                                                                                                                                                | Test(s)                                                                                                                                                                                                                                                                                                                                                                                                                    | Status    |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -22,7 +23,7 @@
 | Deterministic spinner-cycle tests: disable daemon ticker AND use window-robust assertion (>= 2 distinct glyphs per bar across all snapshots, never exact first-vs-last glyph inequality) | `spinner_advances_per_cycle_for_all_bars`, `recycled_bar_spinner_animates` — why-comments document the root cause: indicatif `set_position` advances the tick counter through a real-wall-clock position rate limiter (`AtomicPosition::allow`), so per-iteration tick advance varies under parallel load; the glyph is `tick_counter mod 9` over a 10-char set                                                                                                                                                             | [covered] |
 | Regression: spinner-cycle tests stable under parallel load (20x loop, 8 test threads, 0 failures)                                                                                        | 20x stability loop: `cargo test -p mediapm-utils --features progress -- spinner_advances_per_cycle_for_all_bars recycled_bar_spinner_animates --test-threads=8` x 20 = 60 `test result: ok`, 0 failed (session 2026-08-02)                                                                                                                                                                                                                                                                                                  | [covered] |
 
-### Progress output exact-output matching
+## Progress output exact-output matching
 
 Integration tests in `tests/progress_output/` converted from substring/contains/count assertions to `assert_eq!(term.contents(), concat!(...))`; the rebuilt suite holds 85 tests across 8 files. Measured on this branch: `cargo nextest run -p mediapm-utils -p mediapm-cas -p mediapm-conductor --all-targets` reports 999 passed / 0 failed, and `cargo nextest run -p mediapm --lib` reports 399 passed / 0 failed. The inline unit suite under `src/mediapm-utils/src/progress/tests/` is the authority for the terminal, screen-commit, retention, and pre-roll contract (spec S1-S6 in `.pi/plans/plan-2026-09-24T092019.md`).
 
@@ -44,7 +45,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `progress/tests/state.rs` (unit) — handle and state semantics, elapsed, spinner cycles, slot restart    | 59 tests                                      | [covered] |
 | `progress/tests/terminal.rs` (unit) — one draw target, live-screen panic, disabled terminal, debug sink | 7 tests                                       | [covered] |
 
-### CasApi: `get()` delegates to `get_to_writer()`
+## CasApi: `get()` delegates to `get_to_writer()`
 
 | Spec item                                                                                         | Test(s)                                                                                                               | Status    |
 | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -54,7 +55,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `FileSystemCas::get()` delegates to `get_to_writer()` internally                                  | Already verified by `file_system_get_succeeds_above_wal_inline_limit` (no separate unit test for delegation mechanics) | [covered] |
 | `CasApi` section in `mediapm-cas/AGENTS.md` already documents the delegation                      | Section 10 of `src/mediapm-cas/AGENTS.md` — verified accurate, no change needed                                       | [covered] |
 
-### Reconstructed-bytes cache read path
+## Reconstructed-bytes cache read path
 
 | Spec item                                                                                                                                                                   | Test(s)                                                                                                                                                                                                                                                                                                                                                                                        | Status    |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -68,7 +69,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Budget refresh each maintenance cycle (after WAL consumer)                                                                                                                    | `read_path_consults_and_populates_cache` (asserts `max_bytes > 0` after `build_delta_pair` maintenance), `run_maintenance` budget-refresh block (compilation)                                                                                                                                                                                                                                   | [covered] |
 | Repeated reads of a delta-encoded object are cache hits (FileSystemCas with real bg consumer)                                                                                | `delta_cache_repeated_reads_work` (updated: 50-filler seeding + `hits >= 1`, `misses >= 1`, `entries == 1`, `cached_bytes == 4096`)                                                                                                                                                                                                                                                             | [covered] |
 
-### Media metadata caches (ffprobe + media-tagger)
+## Media metadata caches (ffprobe + media-tagger)
 
 | Spec item                                                                                                                              | Test(s)                                                                                                                                                                                                                                                                                                                                        | Status    |
 | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -80,7 +81,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | media-tagger synthesis injects the caller-provided `cache_dir` default into the `cache_dir` step input when the step sets none         | `build_media_tagger_metadata_inputs_default_cache_dir` (step no options → `cache_dir == "/workspace/cache/media_tagger"`)                                                                                                                                                                                                                      | [covered] |
 | a user-set `options.cache_dir` overrides the threaded workspace default                                                                 | `build_media_tagger_metadata_inputs_step_cache_dir_wins` (options `cache_dir=/user/cache` → `cache_dir == "/user/cache"`)                                                                                                                                                                                                                      | [covered] |
 
-### Global tool cache CLI (status + prune)
+## Global tool cache CLI (status + prune)
 
 | Spec item                                                                                                          | Test(s)                                                                                                                                                                                              | Status    |
 | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -90,7 +91,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `global_tool_cache_status` opens without background and reports the real summed entry count across both domains   | `global_tool_cache_status_reports_real_entry_count` (seeds 3 entries via `open_without_background` + `store_bytes`, asserts `entry_count == 3`)                                                      | [covered] |
 | `global_tool_cache_prune_expired` opens without background and removes expired entries, keeping fresh ones        | `global_tool_cache_prune_expired_removes_expired_entries` (backdates 2 entries, prunes, asserts `removed_entries >= 2`, `removed_payloads >= 2`, post-prune `entry_count == 1`)                       | [covered] |
 
-### Cache::lookup_bytes error handling
+## Cache::lookup_bytes error handling
 
 | Spec item                                                                             | Test(s)                                                                                | Status    |
 | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------- |
@@ -104,7 +105,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | --------- |
 | Pre-roll scrolls existing terminal content into scrollback (bug fix) | `pre_roll_with_existing_content_scrolls_it_away` — exact `concat!()` body matching + no-substring assertion | [covered] |
 
-### Single push point: `sync_snapshot_to_bar`
+## Single push point: `sync_snapshot_to_bar`
 
 | Spec item                                                                                              | Test(s)                                       | Status    |
 | ------------------------------------------------------------------------------------------------------ | --------------------------------------------- | --------- |
@@ -112,7 +113,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Custom suffix set via `set_suffix_components` survives `add_bar` of another bar (sync_slot delegation) | `sync_slot_preserves_custom_suffix_on_attach` | [covered] |
 | Cache guard is updated by delegate path (no stale-cache skip on next tick)                             | `sync_slot_preserves_custom_suffix_on_attach` | [covered] |
 
-### Metadata cache awareness on resolve bar
+## Metadata cache awareness on resolve bar
 
 | Spec item                                                                                   | Test(s)                                                                                                                                                                                                                     | Status    |
 | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -128,14 +129,14 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Skip bar uses raw `metadata_fetch_count` for bar total (0 = indeterminate)                  | `skip_bar_zero_metadata_fetch_count_uses_min_one` (total=0, pos=0, no cached message)                                                                                                                                       | [covered] |
 | Bare `"cached"` (without count) never appears in any resolve bar message                    | `resolve_bar_no_cached_message_when_not_cached`, `resolve_bar_cached_two_shows_cached_two` (also asserts bare absent)                                                                                                       | [covered] |
 
-### Content cache key: actual download URL
+## Content cache key: actual download URL
 
 | Spec item                                                              | Test(s)                                         | Status    |
 | ---------------------------------------------------------------------- | ----------------------------------------------- | --------- |
 | Cache key is actual URL used for download, not blindly `urls[0]`       | `fetch_cache_key_uses_actual_url_not_first_url` | [covered] |
 | Cache key survives first-URL cache miss — iterates all URLs for lookup | `fetch_cache_key_uses_actual_url_not_first_url` | [covered] |
 
-### Progress bar label format: shortened phases and version
+## Progress bar label format: shortened phases and version
 
 | Spec item                                                                                             | Test(s)                                                                                                       | Status    |
 | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------- |
@@ -146,7 +147,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Prune bar uses `[prn]`; omitted when there are no prune candidates; its total is the candidate count  | `prune_bar_reaches_the_display` (unit, `conductor_bridge/sync/mod.rs` — the drawn `[prn]` line carries the candidate total on a real draw target), `reconcile_desired_tools_registers_prune_bar_on_the_caller_screen` (bar registered on the caller's screen after the overall bar), `reconcile_desired_tools_records_progress_ops` (nothing to prune means no `[prn]` bar) | [covered] |
 | Fetch/process bars carry the phase tag (`[fch]`/`[pro]`) and version via `set_prefix_components`      | `sync_multi_tool_per_tool_bars_are_order_independent` (unit, `conductor_bridge/sync/mod.rs` — three bars per tool, `[res]`/`[fch]`/`[pro]`, with their totals); the version segment of the fetch/process prefix has no test: those bars are built inside the download callback, which no hermetic test reaches (`resolve_bar_label_includes_version` covers the resolve bar instead) | [partial] |
 
-### DirectoryLockGuard
+## DirectoryLockGuard
 
 | Spec item                                                             | Test(s)                                                                                                                    | Status    |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -158,7 +159,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | FileSystemCas symlink canonicalization (symlink → same dir detected)  | `file_system_cas_contention_with_canonical_symlink`                                                                        | [covered] |
 | FileSystemCas concurrent puts (distinct + identical payloads, WAL durability) | `file_system_cas_concurrent_puts_are_safe`                                                                    | [covered] |
 
-### Parallel tool provisioning
+## Parallel tool provisioning
 
 | Spec item                                                                                     | Test(s)                                                                          | Status    |
 | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------- |
@@ -172,7 +173,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Per-tool bar order-independence (sorted multiset of AddBar labels)                              | `sync_multi_tool_per_tool_bars_are_order_independent` (unit)                     | [covered] |
 | Env-var override for tool provisioning concurrency (MEDIAPM_TOOL_PROVISION_CONCURRENCY)          | `tool_provision_concurrency_env_override` (unit)                                 | [covered] |
 
-### Parallel source fetch
+## Parallel source fetch
 
 | Spec item                                                                                     | Test(s)                                                                          | Status    |
 | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------- |
@@ -186,7 +187,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Launcher-source path counts every source as completed                                   | `fetch_progress_monotonic_with_known_sizes` (unit)                               | [covered] |
 | Env-var override for source fetch concurrency (MEDIAPM_SOURCE_FETCH_CONCURRENCY)              | `source_fetch_concurrency_env_override` (unit)                                   | [covered] |
 
-### Process-phase content map
+## Process-phase content map
 
 | Spec item                                                                                     | Test(s)                                                                          | Status    |
 | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------- |
@@ -195,7 +196,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Archive source content map uses the `{os}/` key                                                | `process_position_never_exceeds_total_with_archive_entries` (unit)               | [covered] |
 | Binary source content map uses the `{os}/{filename}` key                                       | `process_single_source_binary_budget_advances_correct_item` (unit)               | [covered] |
 
-### Counting mechanism
+## Counting mechanism
 
 | Spec item                                                                                     | Test(s)                                                                          | Status    |
 | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -221,7 +222,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | ZIP extraction: all snapshots have position ≤ total, non-decreasing                           | `zip_position_never_exceeds_entry_total`                                                                                                                        | [covered] |
 | Unified sub-entry chunk policy: SUB_ENTRY_CHUNK = 65536                                       | All sub-entry tests pass at 64 KB threshold                                                                                                                     | [covered] |
 
-### Compress estimate improvement (Phase 1)
+## Compress estimate improvement (Phase 1)
 
 | Spec item                                                           | Test(s)                                                                                  | Status    |
 | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------- |
@@ -231,7 +232,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `resolve_format_and_filename` helper extracted from inline matching | (compiles — verified by existing tests)                                                  | [covered] |
 | Redundant `set_total` removed from `process_single_source`          | (compiles — verified by snapshot tests)                                                  | [covered] |
 
-### Progress callback threading (Phase 2)
+## Progress callback threading (Phase 2)
 
 | Spec item                                                                   | Test(s)                                                                                         | Status    |
 | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------- |
@@ -244,7 +245,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Fetch side callbacks deduplicated via `fire_progress`                       | `fetch_progress_uses_size_hint_bytes_when_expected_size_none`                                   | [covered] |
 | Progress snapsnots count >> source count (per-chunk rather than per-source) | `process_position_never_exceeds_total_with_archive_entries` (snapshot_count > entries count)    | [covered] |
 
-### Process-phase documentation
+## Process-phase documentation
 
 | Spec item                                                   | Test(s)                                                          | Status    |
 | ----------------------------------------------------------- | ---------------------------------------------------------------- | --------- |
@@ -253,7 +254,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Callback architecture docs updated with per-chunk threading | Doc comment in `process_tool_sources`                            | [covered] |
 | Coverage matrix updated                                     | This file                                                        | [covered] |
 
-### `.env.generated` env var names and paths
+## `.env.generated` env var names and paths
 
 | Spec item                                                                                                                | Test(s)                                                                                                                                                                  | Status    |
 | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
@@ -271,7 +272,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Provision-cache retain active set is conductor tool ids (mediapm-id set would prune every provisioned dir)               | `reconcile_retain_active_set_uses_conductor_tool_ids` (unit)                                                                                                             | [covered] |
 | Regression: conductor-keyed path structure, hash-free env names, dedup unaffected                                        | `sync_env_paths_use_conductor_tool_id` (integration), `write_generated_dotenv_env_names_hash_free_with_conductor_keys` (unit), all existing unit + integration tests     | [covered] |
 
-### Dual-write strategy (state.json always-write vs NCL change-detected)
+## Dual-write strategy (state.json always-write vs NCL change-detected)
 
 | Spec item                                                                                        | Test(s)                                                                                 | Status    |
 | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- | --------- |
@@ -285,7 +286,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | State write policy documented in state persistence spec                                          | `state-persistence.instructions.md` — "State write policy" section                      | [covered] |
 | `write_bytes_if_changed` as artifact gate documented in document I/O spec                        | `document-io-lifecycle.instructions.md` — `write_bytes_if_changed` bullet               | [covered] |
 
-### State.json format reality (JSON always-write, never Nickel)
+## State.json format reality (JSON always-write, never Nickel)
 
 | Spec item                                                                                                      | Test(s)                                                                                                                                                                                                                               | Status    |
 | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -296,7 +297,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Demo examples default to `.mediapm/state.json` (no stale `.ncl` override)                                      | `mediapm_demo` / `mediapm_demo_online` `main_is_exercised` (examples) — compile + run with `media_state_config: None` default                                                                                                         | [covered] |
 | State-only churn does not touch conductor file (format separation)                                             | `regression_state_only_churn_does_not_touch_conductor_file` (integration)                                                                                                                                                             | [covered] |
 
-### Provisioning pruning (generated doc + filesystem)
+## Provisioning pruning (generated doc + filesystem)
 
 | Spec item                                                                       | Test(s)                                                                                     | Status    |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------- |
@@ -306,7 +307,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `retain_only_tool_dirs` called after save to prune filesystem tool directories  | compilation check (import + call in reconcile)                                              | [covered] |
 | Pruning preserves keys for remaining tools (no false positives)                 | `reconcile_prunes_old_tool_version_from_generated_doc` (asserts new key exists after prune) | [covered] |
 
-### tool_runtimes keyed by conductor tool id
+## tool_runtimes keyed by conductor tool id
 
 | Spec item                                                                                                               | Test(s)                                                                                                                                      | Status    |
 | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -314,7 +315,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Skipped tools use `entry().or_insert()` to avoid overwrite                                                              | All skip-related env tests                                                                                                                   | [covered] |
 | `Ok(None)` path uses bare conductor `tool_id` key (equals plain id, no content map)                                     | All env generation tests                                                                                                                     | [covered] |
 
-### Active tool spec resolution (`find_active_tool_spec`)
+## Active tool spec resolution (`find_active_tool_spec`)
 
 | Spec item                                                                                              | Test(s)                                                                                               | Status    |
 | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- | --------- |
@@ -326,7 +327,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | Demo examples delegate to the same helper (resolution never diverges from reconcile contract)          | `find_managed_tool_spec` delegates to `mediapm::find_active_tool_spec` (compilation + example checks) | [covered] |
 | Helper re-exported from `mediapm` crate root for external consumers                                    | Compilation check (`mediapm::find_active_tool_spec` used by `mediapm_demo_online`)                    | [covered] |
 
-### Demo seed alignment (update-precheck seeds vs reconcile contract)
+## Demo seed alignment (update-precheck seeds vs reconcile contract)
 
 Both `mediapm_demo` and `mediapm_demo_online` seed a stale synced-tools state (generated doc + `state.json`) before the update-precheck sync. The why-comments in `seed_old_synced_tools_state_for_update_precheck` map each seeded field to the reconcile contract:
 
@@ -339,7 +340,7 @@ Both `mediapm_demo` and `mediapm_demo_online` seed a stale synced-tools state (g
 | `external_data[stale_hash]` entry                                              | Satisfies the generated doc's `content_map ⊆ external_data` invariant for the pre-sync document; reconcile rebuilds external_data from scratch via `DataUsageTracker`, so the seeded entry is replaced, not retained | `external_data_rebuilt_independently_from_tool_specs` (unit) — rebuild-from-scratch contract; pre-sync validity verified by the demo example tests that seed then sync       | [covered]                                                                                                          |
 | Whole seed drives update-precheck flow (skip-preference + prune + reprovision) | The seeded stale entry makes the update-precheck exercise the exact path a real stale install would: already_exists (name-match) → skip-preference (non-empty content_map) → prune-clear of old key → new key active | `generate_demo_artifacts_writes_manifest_and_import_metadata` (demo example test, full-sync)                        | [covered]                                                                                                          |
 
-### VersionSpec split (ConfigVersionSpec + VersionSpec)
+## VersionSpec split (ConfigVersionSpec + VersionSpec)
 
 | Spec item                                                                                                 | Test(s)                                                                                                                                                                                                                                              | Status    |
 | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -360,7 +361,7 @@ Both `mediapm_demo` and `mediapm_demo_online` seed a stale synced-tools state (g
 | `ToolRequirement` uses `ConfigVersionSpec` for `version_spec` and `dependencies`                          | ToolRequirement serde round-trip tests (serialization unchanged, type changed)                                                                                                                                                                       | [covered] |
 | `lib.rs` re-exports `VersionSpec` (clean, no Inherit) for public API                                      | Compilation check (examples import from `mediapm::VersionSpec`)                                                                                                                                                                                      | [covered] |
 
-### Error code catalog with crate-prefixed codes
+## Error code catalog with crate-prefixed codes
 
 | Spec item                                                                                               | Test(s)                                                                                                                                                                  | Status    |
 | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
@@ -379,7 +380,7 @@ Both `mediapm_demo` and `mediapm_demo_online` seed a stale synced-tools state (g
 | CAS error code catalog in `mediapm-cas/src/error.rs` module docs                                        | Manual review                                                                                                                                                            | [covered] |
 | CND error code catalog in `mediapm-conductor/src/error.rs` module docs                                  | Manual review                                                                                                                                                            | [covered] |
 
-### Composite canonical_version
+## Composite canonical_version
 
 | Spec item                                                                                                                               | Test(s)                                                                                                                                                                             | Status    |
 | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -393,7 +394,7 @@ Both `mediapm_demo` and `mediapm_demo_online` seed a stale synced-tools state (g
 | Spec doc in `tool-sync-coordinator-and-identity.instructions.md` — composite canonical section                                          | This file                                                                                                                                                                           | [covered] |
 | Coverage matrix updated                                                                                                                 | This file                                                                                                                                                                           | [covered] |
 
-### Content-map dep inlining (`deps/<mediapm_tool_id>/`)
+## Content-map dep inlining (`deps/<mediapm_tool_id>/`)
 
 | Spec item                                                                                                               | Test(s)                                                                                                                                                                                                                                                                                                                            | Status    |
 | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -406,7 +407,7 @@ Both `mediapm_demo` and `mediapm_demo_online` seed a stale synced-tools state (g
 | S6 — No companion env vars: `write_generated_dotenv` skips `deps/`-prefixed keys                                        | `write_generated_dotenv_skips_inlined_deps_keys` (unit, mediapm-conductor); `sync_env_has_no_deps_garbage` (integration — no `_DEPS`/`_COMPANIONS_` garbage lines)                                                                                                                                                                 | [covered] |
 | S6 — Inlined keys survive generated-doc round-trip; no `companions/` residue                                            | `sync_skip_preserves_inlined_deps` (integration — asserts no `companions/` keys)                                                                                                                                                                                                                                                   | [covered] |
 
-### Skip-path registration and warning-cache invariants
+## Skip-path registration and warning-cache invariants
 
 | Spec item                                                                                                                              | Test(s)                                                                                                                                                                  | Status    |
 | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
@@ -414,7 +415,7 @@ Both `mediapm_demo` and `mediapm_demo_online` seed a stale synced-tools state (g
 | `ToolSyncReport.tool_records` contract: every provisioned tool (Resolved OR Skip) contributes exactly one entry                        | `regression_skip_path_registers_managed_tool` (unit) + existing `reconcile_keys_tool_runtimes_by_conductor_tool_id` (asserts `tools_skipped == 1`)                       | [covered] |
 | Warning check resolves from the sync cache root (`logical_tool_requires_sync` uses `runtime_storage_overrides.cache_root_override`, passes `Some((&cache, "tool_metadata"))`) | `regression_warning_check_uses_sync_cache` (integration — ffmpeg seeded override cache, `logical_tool_requires_sync` returns `Ok(false)`)                              | [covered] |
 
-### Progress bar template spacing
+## Progress bar template spacing
 
 | Spec item                                                                                     | Test(s)                                                                                                                                      | Status    |
 | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -423,7 +424,7 @@ Both `mediapm_demo` and `mediapm_demo_online` seed a stale synced-tools state (g
 | `finish_slot` uses width-aware style functions (`apply_done/failed/overall_bar_style`)        | `success_child_with_overall_renders_full_bar`, `both_child_and_overall_finish_render_exactly`, `overall_failed_while_child_succeeded_renders_marker` (render.rs), `finalize_full_lifecycle_exact` (lifecycle.rs) | [covered] |
 | A draw target too narrow for the suffix overflows instead of truncating it (the bar field collapses, the suffix wraps onto a further line) | `narrow_draw_target_drops_the_bar` (resize.rs — a 20-column target drops the bar and puts `0s 0/d` on its own line), `narrow_draw_target_does_not_render_an_oversize_custom_suffix` | [covered] |
 
-### Source-data-based prefix and suffix truncation
+## Source-data-based prefix and suffix truncation
 
 | Spec item                                                                                                                                                                                                       | Test(s)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Status    |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -487,7 +488,7 @@ Both `mediapm_demo` and `mediapm_demo_online` seed a stale synced-tools state (g
 | StepCount prefix order: version → completed/total → phase → status_marker → workflow_id → step_id → tool → fallback | `step_label_truncate_keeps_version` (mediapm-conductor) | [covered] |
 | WorkerSpinner prefix order: workflow_id → step_id → tool → activity → status_marker → fallback (no version/completed/total/phase) | `worker_label_ignores_a_populated_tally_in_the_suffix` (mediapm-conductor) | [covered] |
 
-### Worker-slot progress mapping
+## Worker-slot progress mapping
 
 Worker-slot bars map a worker's runtime state onto a `TrackStatus` plus a prefix marker/tool_name. The mapping is client-defined (mediapm-conductor) and consumed by the minimal truncation API exposed by mediapm-utils.
 
@@ -516,7 +517,7 @@ Invariants:
 | After each successfully consumed step the worker returns to idle (Active), not Success                                                  | `worker_slot_label` `Idle | Succeeded` shared body returns `"idle"` tool_name + empty marker | [covered] |
 | Prefix `count/total` shown only when both item count and size count are available; worker idle bars omit it                             | `worker_label_ignores_a_populated_tally_in_the_suffix` (no completed/total in worker label); `idle_pc`/`dispatch_pc` omit count/total | [covered] |
 
-### TrackStatus simplification and warning `[W]` marker
+## TrackStatus simplification and warning `[W]` marker
 
 The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, leaving `Active`, `Success`, `Failed`, `Warning`. `Warning` (code 3) is a non-fatal terminal state that keeps the bar visible and renders a yellow `[W]` marker. `finish()`/`abandon()` were removed from `ProgressBarHandle`/`ProgressBarApi`; callers use `finish_success()`/`finish_error()`/`finish_warning()`/`finish_and_clear()`. The sync overall bar uses `finish_warning()` when `report.warnings` is non-empty (otherwise `finish_success()`), so non-fatal warnings surface as `[W]` instead of `[F]`. `finish_error_bars` skips already-finished bars so a later-phase failure does not retroactively mark succeeded bars as failed.
 
@@ -530,7 +531,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | Sync overall bar uses `finish_warning()` when warnings present, else `finish_success()`                                                 | `src/mediapm/src/conductor_bridge/sync/mod.rs` (reconcile_desired_tools) — verified by compilation + `cargo test -p mediapm`                                                                                                                | [covered] |
 | `finish_error_bars` skips already-finished bars (no retroactive failure)                                                                | `src/mediapm/src/conductor_bridge/sync/provision.rs` (finish_error_bars closure) — verified by compilation + `cargo test -p mediapm`                                                                                                        | [covered] |
 
-### Resolved tool metadata (`resolved_tag` / `resolved_version` / `resolved_vcs_hash`)
+## Resolved tool metadata (`resolved_tag` / `resolved_version` / `resolved_vcs_hash`)
 
 | Spec item                                                                                                                                                    | Test(s)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Status    |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -542,7 +543,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | Skip backfill: skipped entries get `None` resolved fields filled from fresh metadata, identity preserved                                                     | `sync_skip_backfills_resolved_fields` (integration — identity/version/content_map_hash/deployed_at preserved, `None` filled, `Some` untouched); unit: `apply_resolved_field_backfills_fills_none_fields_in_place`, `apply_resolved_field_backfills_never_overwrites_some`, `apply_resolved_field_backfills_noop_when_unchanged`, `apply_resolved_field_backfills_preserves_identity_fields`, `apply_resolved_field_backfills_no_matching_entry_ignored`, `apply_resolved_field_backfills_entry_not_in_backfills_unchanged` | [covered] |
 | `spec_matches_entry` takes `Option<&str>`; `Some` equality only, `None` never matches                                                                        | `spec_matches_none_never_matches`, `spec_matches_vcs_hash`, `spec_matches_tag`, `spec_matches_version`, `spec_matches_multi_field_all_must_match`, `spec_matches_latest_never`, `spec_matches_exact_string_no_semver`, `spec_matches_whitespace_not_normalized`, `spec_matches_unspecified_field_not_checked` (unit, mediapm-conductor); `sync_exact_version_spec_skips_when_stored_fields_match` (integration — latent bug regression: exact version/hash spec now skips when stored `Some` fields match)                 | [covered] |
 
-### Preexisting-failure fixes (session 2026-08-01)
+## Preexisting-failure fixes (session 2026-08-01)
 
 | Spec item                                                                                                                                             | Test(s)                                                                                                                                                       | Status    |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -561,7 +562,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | Online demo metadata resolves title/artist from tagged `video` variant with infojson fallbacks (not literal title workaround)                            | `mediapm_demo_online` compiles with `MediaMetadataValue::Variant` title binding; full tree validated by `main_is_exercised` outside CI                         | [covered] |
 | Pre-roll width expectation fix: existing terminal content scrolls into scrollback (pre-existing row above, re-verified)                               | `pre_roll_with_existing_content_scrolls_it_away` — exact `concat!()` body matching + no-substring assertion (see "Pre-roll" section)                          | [covered] |
 
-### CAS reuse and ffprobe diagnostic why-notes
+## CAS reuse and ffprobe diagnostic why-notes
 
 | Spec item                                                                                                                                                 | Test(s)                                                                                                                                          | Status    |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
@@ -569,7 +570,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | demo_online `summarize_store_sizes` takes the shared CAS handle instead of reopening the store root (same lock-contention rationale, why-comment inlined) | `mediapm_demo_online` `main_is_exercised` (config-only path) — compiles + runs; `stat()` semantics unchanged                                     | [covered] |
 | ffprobe cache wrapper (`fetch_local_source_metadata`) docstring mentions `-v error` diagnostic rationale                                                  | `try_fetch_local_source_metadata_with_ffprobe_surfaces_diagnostic` (unit, `src/mediapm/src/source_metadata.rs`) — regression guard               | [covered] |
 
-### Example main-execution policy
+## Example main-execution policy
 
 | Spec item                                                                                                                                                                    | Test(s)                                                                                                                                                                                                                                                                                                      | Status    |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
@@ -588,7 +589,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | Cache-using examples: explicit `cargo run --example` (Level 3) reuses the real user-level tool download cache (`<os-cache-dir>/mediapm/cache` via `example_isolation::user_level_cache_root()`), persisting downloaded tools across runs; embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT` | `user_level_cache_root_unset_uses_real_user_cache`, `user_level_cache_root_override_wins`, `uses_isolated_cache_root_true_when_env_set`, `uses_isolated_cache_root_false_when_unset` (unit, `example_isolation.rs`); `IsolatedExampleRoots::with_cache` in `mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`, `mediapm_demo`, `mediapm_demo_online` | [covered] |
 | Full-suite regression: workspace nextest green with offline full-sync demo tests enabled (online demo runs reduced mode in the suite, never full-sync)                                                                   | `cargo test-all` (nextest workspace `--all-targets --all-features --no-fail-fast`)                                                                                                                                                 | [covered] |
 
-### Example test isolation
+## Example test isolation
 
 | Spec item                                                                                                                                                | Test(s)                                                                                                                                                                                                         | Status    |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -600,7 +601,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | Demo CI race regression: `main_is_exercised` and sibling artifact test no longer race under CI=1                                                         | `CI=1 cargo nextest run -p mediapm --examples`: 33/33 PASS (previously raced on canonical `artifacts/demo` flock)                                                                                               | [covered] |
 | Temp role prefixes: `artifact_dir`, `cache_dir`, `runtime_dir_for_workspace`; `is_managed_path`; janitor temp-root single-prefix cleanup                                 | `mediapm_utils::temp` unit tests; `scripts/clean-mediapm-temp.sh --dry-run` / `scripts/clean-mediapm-temp.ps1 --dry-run`                                                                                                                                       | [covered] |
 
-### Conductor v2 schema strictness (S-A1..S-A8)
+## Conductor v2 schema strictness (S-A1..S-A8)
 
 | Spec item                                                                                                                                                                      | Test(s)                                                                                                                                                                                                                                                                                                                                                    | Status                                                                                                                                                                    |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -614,7 +615,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | S-A8 (S11): `migrate_v1_to_v2` output satisfies tightened envelope (omit-null rewrite: absent optionals omitted, never `null`)                                                 | `parity_v1_to_v2_migration_output_passes_tightened_envelope` (realistic v1 doc with `runtime.tool_configs`, builtin `builtin_id`, external_data; asserts ffmpeg `inherited_env_vars` carries `FFMPEG_HOME`, decode succeeds); `various_inputs_do_not_trigger_migrate_to_missing_def`, `minimal_document_does_not_trigger_migrate_to_missing_def` (R3 round-trips) | [covered]                                                                                                                                                                 |
 | Migration latent-bug fixes surfaced by S-A8: `tool_configs` read from `runtime` (not top level); builtin uses `name`+`builtin_id` (v1 shape); no `version = ""` on executables | covered by `parity_v1_to_v2_migration_output_passes_tightened_envelope` assertions (ffmpeg runtime carries `content_map`/`inherited_env_vars`/`max_retries`; echo builtin decodes with `builtin_id`); manual `nickel export` of `/tmp/phase1-migrate-check.ncl` — exit 0, zero nulls                                                                              | [covered]                                                                                                                                                                 |
 
-### Conductor v1 schema strictness (S-B1..S-B7)
+## Conductor v1 schema strictness (S-B1..S-B7)
 
 | Spec item                                                                                                                         | Test(s)                                                                                                                                                                                                                                                   | Status    |
 | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -629,7 +630,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | R1 (S-B2..S-B5): previously-untyped v1 runtime fields now rejected                                                                | `regression_v1_dyn_runtime_fields_no_longer_untyped` (documents the old untyped acceptance); `strict_v1_rejects_*` (4 tests)                                                                                                                              | [covered] |
 | R3 (S-B7): v1 decode fixtures round-trip through migration without `migrate_to` missing-def regressions                           | `various_inputs_do_not_trigger_migrate_to_missing_def`, `minimal_document_does_not_trigger_migrate_to_missing_def` (fixtures updated to top-level `tool_configs` in the same commit)                                                                      | [covered] |
 
-### Conductor rust strictness (S-D1..S-D4)
+## Conductor rust strictness (S-D1..S-D4)
 
 | Spec item                                                                                                                                                                                                                                    | Test(s)                                                                                                                                                                                                                                                                                                                             | Status    |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -642,7 +643,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | R2 (S-D1..S-D3): known-good conductor documents still decode after tightening (minimal `{ version = 2 }` + platform-runtime doc)                                                                                                             | `regression_valid_conductor_docs_still_round_trip` (minimal doc decodes with empty tools/workflows; platform-runtime doc preserves `retry_impure` and platform env vars)                                                                                                                                                            | [covered] |
 | Migration compatibility: v1→v2 `runtime_v2` emits only known platform keys, so deny attrs do not break migration                                                                                                                             | Full conductor suite green (S-A8 migration tests `parity_v1_to_v2_migration_output_passes_tightened_envelope`, R3 round-trip tests all pass)                                                                                                                                                                                               | [covered] |
 
-### Mediapm schema strictness (S-C1..S-C10)
+## Mediapm schema strictness (S-C1..S-C10)
 
 | Spec item                                                                                                                                                                                                                   | Test(s)                                                                                                                                                                                                                                                                                         | Status              |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
@@ -661,7 +662,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | R4 (S-C10): parity tests updated in-place, none weakened                                                                                                                                                                    | `parity_v1_nickel_schema_structure` (schema_sync.rs updated in same commit with strictness assertions replacing loose ones)                                                                                                                                                                            | [covered]           |
 | R5 (S-C1..S-C6, S-C8, S-C9): strictness guard module re-asserting serde/Nickel strictness properties                                                                                                                        | `tests/int/schema_strictness.rs` (13 `strict_*`, `mod_ncl_*` x 2, `parity_v1_ncl_exports_validator_and_envelope`, `parity_v1_ncl_evaluates_cleanly`, 2 `regression_*`, `json_schema_export_is_strict`)                                                                                                 | [covered]           |
 
-### Mediapm Rust strictness (S-E1..S-E4)
+## Mediapm Rust strictness (S-E1..S-E4)
 
 | Spec item                                                                                                                                                                                                                                                                              | Test(s)                                                                                                                                                                                                                                 | Status    |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -672,7 +673,7 @@ The `TrackStatus` enum was simplified: `Abandoned` and `Finished` were deleted, 
 | R1 (S-E2, S-E3): previously-accepted free-form `output_variants` values and unknown `verify_on_read` strings now rejected                                                                                                                                                              | `strict_output_variants_rejects_free_form_value`; `regression_verify_on_read_unknown_no_longer_ignored` (documents the old silent-ignore behavior, asserts the error now surfaces)                                                      | [covered] |
 | R2 (S-E2, S-E3): known-good typed shapes still decode after tightening                                                                                                                                                                                                                 | `strict_output_variants_accepts_ytdlp_and_generic_shapes` (round-trip of both variant kinds); `strict_verify_strategy_accepts_known_names` (round-trip of all four names); full `cargo test-pkg mediapm` green (444 passed / 3 skipped) | [covered] |
 
-### Regression requirements compliance (R1-R6)
+## Regression requirements compliance (R1-R6)
 
 Cross-cutting summary of the normative regression requirements (defined above in the "Regression requirements" section) and the per-phase evidence proving them:
 
@@ -685,7 +686,7 @@ Cross-cutting summary of the normative regression requirements (defined above in
 | R5 — Strictness guard module re-asserts strictness via serde behavior                                        | `tests/int/schema_strictness.rs` — 13 `strict_*`, `mod_ncl_*` x 2, `parity_v1_ncl_exports_validator_and_envelope`, `parity_v1_ncl_evaluates_cleanly`, 2 `regression_*`, `json_schema_export_is_strict` (unknown field / fractional number / unknown enum name each error)                                                                                                                                                                                                                                                                                                                                   | [covered] |
 | R6 — Naming convention for selective runs (`strict_*`, `regression_*`, `parity_*`)                           | All reject tests named `strict_*`; regression tests `regression_*`; parity tests `parity_*`; gates `cargo test-pkg <crate> strict_` / `regression_` / `parity_` run green (validated during per-phase test runs)                                                                                                                                                                                                                                                                                                                                                                                     | [covered] |
 
-### Mediapm config v2 (active) — `MediaPmState` dropped from config surface
+## Mediapm config v2 (active) — `MediaPmState` dropped from config surface
 
 v2 becomes the active mediapm config schema; state is managed separately via `state.json` and is not part of the v2 config surface. v1 keeps accepting the optional legacy `state` field. The two versioning policies (migration placement, strict version separation) are documented in `nickel.instructions.md` and `src/mediapm/AGENTS.md`.
 
@@ -706,7 +707,7 @@ v2 becomes the active mediapm config schema; state is managed separately via `st
 | Rust dispatch: `SUPPORTED_VERSIONS = &[1, 2]`, decode arm `2 =>`, real `migrate_to` edges                                              | Compilation check (`versions/mod.rs`); migration edges covered by `parity_v1_to_v2_migration_strips_state` / `parity_v2_to_v1_migration_bumps_version`                                                                                            | [covered]      |
 | Migration edges build fresh records (strip input `version` before merge) — no `MergeIncompatibleArgs`                                  | `parity_v1_to_v2_migration_strips_state`, `parity_v2_to_v1_migration_bumps_version` (both exercise the fixed edges through `mod.ncl` dispatch)                                                                                                    | [covered]      |
 
-### TMPDIR orphan elimination
+## TMPDIR orphan elimination
 
 `cargo test-all` no longer leaves `mediapm-artifact-*` / `mediapm-cache-*` dirs in `$TMPDIR`. Four root causes fixed at the source, plus a regression gate. Baseline was ~99 orphans/run (93 artifact + 6 cache).
 
@@ -718,7 +719,7 @@ v2 becomes the active mediapm config schema; state is managed separately via `st
 | Tests that mark files/dirs readonly inside a `TempDir` clean up via `remove_dir_all_with_retry` (plain `remove_dir_all` silently fails on readonly subtree, leaking the dir) | `readonly_directory` (materializer/commit.rs, ends with retry-helper cleanup); mirrors `remove_dir_all_with_retry_handles_readonly_tree` pattern in example tests                                                                                                                                                   | [covered] |
 | Regression gate: test suite fails if it left any mediapm temp dir behind                                                                                                    | `scripts/run-all-tests.sh` ends with `clean-mediapm-temp.sh --dry-run | grep -q 'would remove'` -> exit 1; full `cargo test-all` then dry-run reports 0 `would remove` lines                                                                                                                                       | [covered] |
 
-### Temp directory spec
+## Temp directory spec
 
 Canonical spec: `.agents/instructions/temp-directory-spec.instructions.md`. Rows below track the 8-phase implementation (spec doc, janitor self-tests, migration-glob nuke, unprefixed-tempdir nuke, runtime-tmp lifecycle fix, prefix-parity test, docs finalization, validation).
 
@@ -738,7 +739,7 @@ Canonical spec: `.agents/instructions/temp-directory-spec.instructions.md`. Rows
 | SIGKILL / crash leaves runtime tree; janitor reclaims it (documented manual behavior)                                                                                  | Documented in `temp-directory-spec.instructions.md` (Runtime tmp lifecycle); manual janitor run                                                                             | [covered] |
 | sh + ps1 parity documented (behavioral twins, same glob set, same output)                                                                                              | Documented in `temp-directory-spec.instructions.md` (Janitor contract)                                                                                                      | [covered] |
 
-### Media ZIP member extraction (root-level subtitle fix)
+## Media ZIP member extraction (root-level subtitle fix)
 
 | Spec item | Test(s) | Status |
 |-----------|---------|--------|
@@ -750,7 +751,7 @@ Canonical spec: `.agents/instructions/temp-directory-spec.instructions.md`. Rows
 | `ensure_managed_path_readonly` applied after writing extracted bytes | Called on `&target_path` after write, same as non-ZIP path | [covered] |
 | `MediaPmError::Workflow` used for CAS/ZIP extraction errors (not `MediaPmError::Io`) | Both `.map_err` blocks use `MediaPmError::Workflow(format!(...))` with descriptive context | [covered] |
 
-### .desktop Name= content rewrite (yt-dlp artifact cleanup)
+## .desktop Name= content rewrite (yt-dlp artifact cleanup)
 
 | Spec item | Test(s) | Status |
 |-----------|---------|--------|
@@ -763,7 +764,7 @@ Canonical spec: `.agents/instructions/temp-directory-spec.instructions.md`. Rows
 | Already-clean `Name=` lines pass through unchanged (no-op rewrite) | `regression_desktop_link_name_preserves_non_name_lines` (non-Name lines) + existing integration tests | [covered] |
 | `.url` and non-`.desktop` files not affected | Extension guard `.eq_ignore_ascii_case("desktop")` ensures only `.desktop` rewritten | [covered] |
 
-### deno permission wrapper (S-DENO-1..6)
+## deno permission wrapper (S-DENO-1..6)
 
 deno's process phase (`[pro]`) previously failed with `[W]` in the online demo: `wrap_deno_binary` hardcoded a flat `os_dir/deno` path, but the real deno GitHub release zip extracts to a nested per-OS subdirectory (`windows/deno.exe`, `darwin/deno`, `linux/deno`). `find_os_executable` correctly discovered the nested path, but the wrap renamed a non-existent flat binary → `ENOENT` → process `[W]` → deno never provisioned. The fix passes the discovered `exec_rel` into `wrap_deno_binary`, renames in the same directory, and writes the shim at the original path.
 
@@ -777,7 +778,7 @@ deno's process phase (`[pro]`) previously failed with `[W]` in the online demo: 
 | S-DENO-6 (regression guard): process phase yields a non-empty `content_map` keyed by OS label for the nested release layout             | `regression_deno_spec_present_after_process` (asserts `windows/` key present, entry non-empty, `exec_path == "windows/deno.exe"`)                                         | [covered] |
 | Spec contract documented in `src/mediapm-conductor/src/tools/provider/AGENTS.md` (deno permission wrapper contract)                    | Section "deno permission wrapper contract" (S-DENO-1..6)                                                                                                                 | [covered] |
 
-### OS-conditional selector flavors (companion dep path fix)
+## OS-conditional selector flavors (companion dep path fix)
 
 `build_os_conditional_selector` prepends `{os}/` to each value — correct for flat binary names but wrong for pre-qualified companion dep paths like `deps/ffmpeg/{os}/ffmpeg`. The fix introduces `build_raw_os_conditional_selector` which uses values as-is, and switches the two yt-dlp callers.
 
@@ -798,7 +799,7 @@ deno's process phase (`[pro]`) previously failed with `[W]` in the online demo: 
 | `build_os_conditional_selector` empty returns empty (no regression) | `os_selector_empty_returns_empty` | [covered] |
 | Spec documented in `src/mediapm/src/AGENTS.md` and `src/mediapm-conductor/src/tools/provider/AGENTS.md` | Sections "Companion dep path contract" and "OS-conditional selector flavors" | [covered] |
 
-### Script tests (root tests/ crate)
+## Script tests (root tests/ crate)
 
 Root-level cargo member `tests/` (package `mediapm-tests`) exercises the repository scripts — production janitors (`scripts/clean-mediapm-temp.sh`, `clean-mediapm-temp.ps1`) and self-tests (`tests/scripts/test-clean-mediapm-temp.sh`, `test-clean-mediapm-temp.ps1`; `tests/scripts/test-run-all-tests.sh`, `test-run-all-tests.ps1`) — by spawning them via `Command`, sandboxing temp dirs via child-scoped env (`TMPDIR`/`TMP`/`TEMP`), normalizing CRLF, and skipping with a printed reason when the interpreter is absent.
 
@@ -813,7 +814,7 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the reposit
 | Static: all six scripts exist, executable bit on unix                                                                                        | static script-existence test                 | [covered] |
 | Windows CI job runs ONLY the script tests (no full-suite parity)                                                                             | `windows` job in `.github/workflows/ci.yml`  | [covered] |
 
-### Progress terminal and screen ownership (S1-S6)
+## Progress terminal and screen ownership (S1-S6)
 
 Spec: `.pi/plans/plan-2026-09-24T092019.md`, section "Spec". One `ProgressTerminal` per sync owns the `MultiProgress`, the write gate, the ticker, and the one-shot pre-roll; a `ProgressScreen` is a handle for exactly one live screen inside it, and `join()` commits that screen's frame into scrollback.
 
@@ -838,7 +839,7 @@ Spec: `.pi/plans/plan-2026-09-24T092019.md`, section "Spec". One `ProgressTermin
 | `--no-progress` selects an inert terminal (F39): unit half                                                                                                                                                                | `no_progress_selects_an_inert_terminal`, `injected_terminal_is_used_as_given` (unit, `src/mediapm/src/service.rs`)                                                                                                                                                                                                                                                                                                                                                                     | [partial] |
 | `--no-progress` end-to-end: a real `--no-progress` CLI run draws no frame on stderr, and no panic string appears in the captured streams                                                                                  | (no test — the two unit tests above assert terminal selection, not the absence of drawn frames)                                                                                                                                                                                                                                                                                                                                                                                        | [missing] |
 
-### Conductor workflow progress screen (`[wf]`)
+## Conductor workflow progress screen (`[wf]`)
 
 | Spec item                                                                                                     | Test(s)                                                                                | Status    |
 | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------- |
@@ -853,7 +854,7 @@ Spec: `.pi/plans/plan-2026-09-24T092019.md`, section "Spec". One `ProgressTermin
 | Per-step bars finish before overall bar (level-loop ordering guarantee)                                       | coordinator.rs code structure (sequential `for` over `handles` before overall finish) | [covered] |
 | Workflow screen unit tests with `RecordingProgressTracker`                                                    | `single_step_success_progress_ops`, `two_step_same_level_success_progress_ops`, `two_step_sequential_levels_progress_ops`, `three_step_same_level_progress_ops`, `no_progress_group_succeeds_silently`, `retry_then_succeed_progress_ops`, `retry_exhausted_progress_ops`, `overall_bar_suffix_status_list` (15 tests in `tests/int/workflow_progress.rs`, including four `regression_*` worker-invariant tests) | [covered] |
 
-### Mediapm materialization progress screen (`[mat]`/`[stg]`/`[vrf]`/`[cmt]`)
+## Mediapm materialization progress screen (`[mat]`/`[stg]`/`[vrf]`/`[cmt]`)
 
 | Spec item                                                                                                     | Test(s)                                                                                | Status    |
 | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------- |
@@ -868,7 +869,7 @@ Spec: `.pi/plans/plan-2026-09-24T092019.md`, section "Spec". One `ProgressTermin
 | `SyncSharedState.verify_materialization` wired into blake3 re-hash verification after materialization         | `refactor(conductor): wire verify_materialization flag` commit — materializer/mod.rs  | [covered] |
 | Materialization screen unit tests with `RecordingProgressTracker`                                             | `sync_hierarchy_with_single_media_produces_progress_ops`, `sync_hierarchy_with_empty_hierarchy_no_progress_ops` (2 tests, `src/mediapm/src/materializer/mod.rs`)                                                                                                                        | [covered] |
 
-### Progress label shrink ladder (Phase 2)
+## Progress label shrink ladder (Phase 2)
 
 Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. One shared ladder (`fit_segments`) in `mediapm-utils`; each label supplies its own segment order and shrink kinds. The three labels are the only consumers.
 
@@ -889,7 +890,7 @@ Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. On
 | A worker bar suffix carries the auto-derived timing fields despite owning no tally | `worker_suffix_keeps_auto_derived_timing_fields` | [covered] |
 | The client-truncation `\x1b[0m` reset is present | no test - every route to the raw string is closed (`InMemoryTerm` strips ANSI, the debug sink records no `prefix` field, `SlotCache::prefix` is private to `inner`, `visible_width` cannot see a zero-width escape). Recorded in the `inner::renderer` module documentation; a seam was declined because a missing reset is a colour bleed, not a layout violation | [missing] |
 
-### Demo online content verification (e2e exact bytes + live demo resilient checks)
+## Demo online content verification (e2e exact bytes + live demo resilient checks)
 
 | Spec item | Test(s) | Status |
 |-----------|---------|--------|
@@ -915,7 +916,7 @@ Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. On
 | Live demo `assert_eq_field` / `assert_tag_eq` shared helpers for ffprobe stream/tag field comparison | Used by video/audio/tag assertion functions | [covered] |
 | Demo hierarchy golden fixture: no content fields (content checks stay in code, not JSON) | `demo_hierarchy_golden.json` contains structural layout only; content verification is code-only | [covered] |
 
-### Stage 3: mediapm.ncl config format hardening (no-Option policy, optional sanitize_names, grouped runtime, v2 direct, conductor parity)
+## Stage 3: mediapm.ncl config format hardening (no-Option policy, optional sanitize_names, grouped runtime, v2 direct, conductor parity)
 
 | Spec item | Test(s) | Status |
 | --- | --- | --- |
