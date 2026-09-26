@@ -1299,18 +1299,18 @@ mod tests {
                 ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() },
                 ProgressOp::SetTotal { total: 1 },
                 ProgressOp::SetTruncation {
-                    prefix: "materializing [mat]".into(),
+                    prefix: "[mat] materializing".into(),
                     suffix: String::new(),
                 },
                 // Per-entry bar: staging.
                 ProgressOp::AddBar { total: 3, label: "test_file [stg]".into() },
                 ProgressOp::SetTruncation {
-                    prefix: "test_file [stg]".into(),
+                    prefix: "[stg] test_file".into(),
                     suffix: String::new(),
                 },
                 // Per-entry bar: verify phase (set before hash resolution).
                 ProgressOp::SetTruncation {
-                    prefix: "test_file [vrf]".into(),
+                    prefix: "[vrf] test_file".into(),
                     suffix: String::new(),
                 },
                 // Skipped: advance(1) on entry_bar + FinishWarning.
