@@ -13,17 +13,18 @@
 //! - Files outside `versions/` must reach versioned symbols only through
 //!   `versions/mod.rs`, never through a direct `versions::vX` path.
 //!
-//! ## Known deviation: `aux: AuxData`
+//! ## `aux: AuxData` is the historical V1 shape
 //!
-//! This envelope types `aux` as the *current* unversioned [`AuxData`] rather
-//! than a version-local `AuxDataV1`. That is a boundary violation, and it is
-//! deliberate until the V1-era aux shape is known: the tree does not record
-//! what a V1 envelope's aux block looked like before the Hash-keyed instance
-//! redesign, and guessing a shape would risk making a real V1 document
-//! unreadable. Correcting it needs the historical shape, not a decision.
-//! Until then, do not "fix" this by mirroring today's `AuxData` into a local
-//! struct: that would freeze today's shape under a version name and make the
-//! drift permanent instead of visible.
+//! This envelope types `aux` as [`AuxData`] rather than a version-local
+//! `AuxDataV1`, and that is confirmed correct, not a pending deviation:
+//! `AuxData` as it is typed today *is* the shape a V1 envelope's aux block
+//! always had. V2 introduced the version-local `AuxDataV2` because V2 really
+//! did change the wire shape; V1 predates that change, so the runtime type
+//! and the V1 wire shape coincide.
+//!
+//! Re-typing this field into a version-local copy would be wrong on both
+//! counts: it would duplicate a type that has no V2-era variant, and it would
+//! invite a future edit of [`AuxData`] to silently rewrite the V1 wire format.
 
 use std::collections::BTreeMap;
 
