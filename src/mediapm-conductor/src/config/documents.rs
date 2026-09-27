@@ -20,13 +20,10 @@ use std::path::PathBuf;
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
-use super::versions::v_latest::{
-    ConductorRuntimeConfigLatest, NICKEL_VERSION_LATEST, NickelEnvelopeLatest, OutputPolicyLatest,
-    WorkflowSpecLatest,
-};
 use super::{
-    ConductorRuntimeConfig, ToolKindSpec, ToolSpec, WorkflowSpec,
-    default_runtime_inherited_env_vars,
+    ConductorRuntimeConfig, ConductorRuntimeConfigLatest, NICKEL_VERSION_LATEST,
+    NickelEnvelopeLatest, OutputPolicyLatest, ToolKindSpec, ToolSpec, WorkflowSpec,
+    WorkflowSpecLatest, default_runtime_inherited_env_vars,
 };
 use crate::error::ConductorError;
 use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
@@ -508,7 +505,7 @@ mod tests {
 
     use super::*;
     use crate::config::ToolRuntime;
-    use crate::config::versions::v_latest::{
+    use crate::config::{
         ExternalDataEntryLatest, ToolKindLatest, ToolRuntimeLatest, ToolSpecLatest,
         WorkflowStepSpecLatest,
     };

@@ -11,6 +11,29 @@
 //! - No `PlatformInheritedEnvVars` — simplified to a single flat map.
 //! - No `fp-library` optics; versioning follows `mediapm-cas` pattern.
 
+/// Re-exports of the active `*Latest` boundary family.
+///
+/// `config/` modules reach the versioned boundary types through these names
+/// rather than through a `versions::v_latest` path, so `versions/` keeps a
+/// single entry surface and a new version file does not force a path rewrite
+/// across its siblings. `config/mod.rs` is the sanctioned owner of this
+/// boundary: it resolves `*Latest` into the option-free resolved types.
+pub(crate) use versions::v_latest::{
+    ConductorRuntimeConfigLatest, NICKEL_VERSION_LATEST, NickelEnvelopeLatest, OutputPolicyLatest,
+    WorkflowSpecLatest,
+};
+
+/// Boundary types re-exported for tests only.
+///
+/// These are reached by test modules that build wire envelopes directly; no
+/// production path outside `config/` names them, so re-exporting them
+/// unconditionally would only add unused-import warnings.
+#[cfg(test)]
+pub(crate) use versions::v_latest::{
+    ExternalDataEntryLatest, ToolKindLatest, ToolRuntimeLatest, ToolSpecLatest,
+    WorkflowStepSpecLatest,
+};
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

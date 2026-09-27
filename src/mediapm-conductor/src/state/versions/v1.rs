@@ -1,7 +1,29 @@
 //! V1 wire format for orchestration state persistence.
 //!
-//! This module owns the V1 envelope and instance-ref types. It must not import
-//! unversioned runtime state from `super::super`.
+//! This module owns the V1 envelope and instance-ref types.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file must never import unversioned structs from outside `versions/`
+//!   beyond the resolved runtime model it is declared to bridge.
+//! - A `vX` module may reference only the most recent previous version module,
+//!   and only for version-to-version migration.
+//! - Latest-version bridging to unversioned runtime structs is owned by
+//!   `versions/mod.rs`.
+//! - Files outside `versions/` must reach versioned symbols only through
+//!   `versions/mod.rs`, never through a direct `versions::vX` path.
+//!
+//! ## Known deviation: `aux: AuxData`
+//!
+//! This envelope types `aux` as the *current* unversioned [`AuxData`] rather
+//! than a version-local `AuxDataV1`. That is a boundary violation, and it is
+//! deliberate until the V1-era aux shape is known: the tree does not record
+//! what a V1 envelope's aux block looked like before the Hash-keyed instance
+//! redesign, and guessing a shape would risk making a real V1 document
+//! unreadable. Correcting it needs the historical shape, not a decision.
+//! Until then, do not "fix" this by mirroring today's `AuxData` into a local
+//! struct: that would freeze today's shape under a version name and make the
+//! drift permanent instead of visible.
 
 use std::collections::BTreeMap;
 

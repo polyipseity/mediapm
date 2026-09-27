@@ -9,6 +9,15 @@
 //!   unversioned runtime state.
 //! - Consumers outside `state/versions/` must use only the APIs
 //!   re-exported from this module, never `versions::v<N>` directly.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - Version dispatch lives here, not in any caller. Adding a version is a new
+//!   `vN.rs` plus a new arm in the decoders below.
+//! - Do not directly re-export `versions::vX` structs or paths as public API;
+//!   expose unversioned functions and keep versioned internals encapsulated.
+//! - Never delete a read path for a version that could exist in a CAS blob or
+//!   a state JSON on disk. Both V1 and V2 remain readable.
 
 use crate::error::ConductorError;
 use crate::state::{AuxData, ConductorState, HashedValueRecord, InstanceAux, ToolCallInstance};

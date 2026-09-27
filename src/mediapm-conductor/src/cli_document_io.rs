@@ -39,7 +39,7 @@ pub(crate) fn load_document(path: &Path) -> Result<NickelDocument, ConductorErro
 /// any Nickel evaluation or version‑migration error.
 pub(crate) fn load_document_envelope(
     path: &Path,
-) -> Result<crate::config::versions::v_latest::NickelEnvelopeLatest, ConductorError> {
+) -> Result<crate::config::NickelEnvelopeLatest, ConductorError> {
     let bytes = std::fs::read(path).map_err(|source| ConductorError::Io {
         operation: "reading config document".to_string(),
         path: path.to_path_buf(),
@@ -81,7 +81,7 @@ pub(crate) fn save_document(path: &Path, document: &NickelDocument) -> Result<()
 /// outgoing document always wins (explicit beats implicit).
 fn preserve_readable_fields(
     outgoing: &mut NickelDocument,
-    old: &crate::config::versions::v_latest::NickelEnvelopeLatest,
+    old: &crate::config::NickelEnvelopeLatest,
 ) {
     for (hash, old_entry) in &old.external_data {
         if let Some(entry) =
@@ -111,7 +111,7 @@ mod tests {
     use mediapm_cas::Hash;
 
     use super::*;
-    use crate::config::versions::v_latest::{
+    use crate::config::{
         ConductorRuntimeConfigLatest, NICKEL_VERSION_LATEST, NickelEnvelopeLatest,
     };
 
@@ -138,7 +138,7 @@ mod tests {
         let mut env = envelope();
         env.external_data.insert(
             hash,
-            crate::config::versions::v_latest::ExternalDataEntryLatest {
+            crate::config::ExternalDataEntryLatest {
                 hash: Some(hash),
                 description: Some("original description".to_string()),
                 save_mode: None,
@@ -151,7 +151,7 @@ mod tests {
         let mut rebuilt_env = envelope();
         rebuilt_env.external_data.insert(
             hash,
-            crate::config::versions::v_latest::ExternalDataEntryLatest {
+            crate::config::ExternalDataEntryLatest {
                 hash: Some(hash),
                 description: None,
                 save_mode: None,
@@ -175,7 +175,7 @@ mod tests {
         let path = dir.path().join("conductor.ncl");
 
         let mut env = envelope();
-        env.workflows.push(crate::config::versions::v_latest::WorkflowSpecLatest {
+        env.workflows.push(crate::config::WorkflowSpecLatest {
             name: "w".to_string(),
             display_name: Some("Human name".to_string()),
             description: Some("Human description".to_string()),
@@ -187,7 +187,7 @@ mod tests {
 
         // Rebuilt document: same workflow name, human fields lost (None).
         let mut rebuilt_env = envelope();
-        rebuilt_env.workflows.push(crate::config::versions::v_latest::WorkflowSpecLatest {
+        rebuilt_env.workflows.push(crate::config::WorkflowSpecLatest {
             name: "w".to_string(),
             display_name: None,
             description: None,
@@ -213,7 +213,7 @@ mod tests {
         let mut env = envelope();
         env.external_data.insert(
             hash,
-            crate::config::versions::v_latest::ExternalDataEntryLatest {
+            crate::config::ExternalDataEntryLatest {
                 hash: Some(hash),
                 description: Some("old description".to_string()),
                 save_mode: None,
@@ -225,7 +225,7 @@ mod tests {
         let mut new_env = envelope();
         new_env.external_data.insert(
             hash,
-            crate::config::versions::v_latest::ExternalDataEntryLatest {
+            crate::config::ExternalDataEntryLatest {
                 hash: Some(hash),
                 description: Some("new description".to_string()),
                 save_mode: None,
@@ -250,7 +250,7 @@ mod tests {
         let mut env = envelope();
         env.external_data.insert(
             Hash::from_content(b"payload"),
-            crate::config::versions::v_latest::ExternalDataEntryLatest {
+            crate::config::ExternalDataEntryLatest {
                 hash: None,
                 description: None,
                 save_mode: None,

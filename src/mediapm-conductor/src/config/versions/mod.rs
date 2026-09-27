@@ -6,6 +6,21 @@
 //! - This module bridges between persisted wire formats and runtime config
 //!   types. Do not import unversioned config types directly from version modules.
 //! - The latest bridge is in `v_latest.rs`.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - Version dispatch is Nickel: `mod.ncl` owns `current_version`,
+//!   `supported_versions`, and `migrate_to`, and each `vN.ncl` owns the
+//!   migration into itself. Do not re-introduce a parallel Rust dispatcher
+//!   over the same versions.
+//! - `v_latest.rs` owns the active `*Latest` boundary family; `config/mod.rs`
+//!   owns only the resolved (option-free) types and delegates through
+//!   `from_boundary`.
+//! - Do not directly re-export `vX` wire structs as public API; expose
+//!   unversioned functions and keep versioned internals encapsulated.
+//! - `resolve_version_contract` is the registry: a version this build cannot
+//!   name a contract file for must be an error, never a fallback to the
+//!   newest contract.
 
 pub(crate) mod v_latest;
 
@@ -17,10 +32,6 @@ use super::nickel_io::{evaluate_document_source, migrate_document_source_to_vers
 pub(crate) const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
 /// Source of the v2 Nickel contract.
 pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
-
-/// Active version marker for conductor Nickel documents.
-#[expect(dead_code)]
-pub(crate) const NICKEL_VERSION: u32 = v_latest::NICKEL_VERSION_LATEST;
 
 /// Fixed embedded migration helper module.
 pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
@@ -38,13 +49,6 @@ pub(super) fn resolve_version_contract(
             v_latest::NICKEL_VERSION_LATEST
         ))),
     }
-}
-
-/// Returns the latest supported config schema version.
-#[must_use]
-#[expect(dead_code)]
-pub(crate) const fn latest_config_version() -> u32 {
-    v_latest::NICKEL_VERSION_LATEST
 }
 
 // ---------------------------------------------------------------------------
@@ -135,36 +139,4 @@ pub(crate) fn decode_document_envelope(
 /// migration output violates the v1 envelope contract.
 pub fn validate_v1_document(source: &str) -> Result<serde_json::Value, ConductorError> {
     migrate_document_source_to_version(source, 1, "configuration document")
-}
-
-/// Evaluates one Nickel source through the full migration pipeline and returns
-/// the compiled `NickelDocument`.
-///
-/// This is the primary configuration loading entry point: it reads the version
-/// marker, applies migrations, validates against the target schema, and
-/// deserializes into the runtime config type.
-pub(crate) fn compile_configuration_source(
-    source: &str,
-) -> Result<crate::config::NickelDocument, ConductorError> {
-    let envelope: v_latest::NickelEnvelopeLatest =
-        evaluate_document_source(source, "configuration document")?;
-    let marker = envelope.version;
-    if marker != v_latest::NICKEL_VERSION_LATEST {
-        return Err(ConductorError::Workflow(format!(
-            "expected configuration document version {} but found {marker}",
-            v_latest::NICKEL_VERSION_LATEST,
-        )));
-    }
-
-    let doc: crate::config::NickelDocument = envelope.into();
-    doc.validate_external_data_invariant()?;
-    Ok(doc)
-}
-
-/// Evaluates one Nickel source through the full migration pipeline for
-/// validation side effects, discarding the result.
-#[expect(dead_code)]
-pub(crate) fn evaluate_configuration_source(source: &str) -> Result<(), ConductorError> {
-    let _ = compile_configuration_source(source)?;
-    Ok(())
 }

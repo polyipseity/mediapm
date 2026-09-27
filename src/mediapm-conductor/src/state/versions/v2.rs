@@ -185,16 +185,20 @@ pub(crate) fn derive_instance_key_v2(
 // ---------------------------------------------------------------------------
 // V1 → V2 migration
 // ---------------------------------------------------------------------------
+
 // Migration from vX to vX+1 lives in the vX+1 module.  This function
 // converts a CAS-backed V1 envelope into a V2 inline state by fetching
 // each instance blob from CAS and assembling the flat JSON payload.
 
 /// Legacy V2 resolved input key-value pair (pre-redesign shape).
+///
+/// Accept-and-discard: the redesigned V2 instance carries no resolved-input
+/// record, so a legacy blob must parse with these fields present and then
+/// drop them. [`legacy_instance_into_v2`] never reads them, which is what the
+/// migration's documented one-way guarantee means.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LegacyResolvedInputV2 {
-    #[allow(dead_code)]
     key: String,
-    #[allow(dead_code)]
     value: String,
 }
 
@@ -212,18 +216,26 @@ struct LegacyOutputRefV2 {
 /// vectors with per-output save modes and an inline GC clock. Only used to
 /// decode V1-envelope instance blobs during migration; the redesign
 /// converts these records into the Hash-keyed shape with aux metadata.
+///
+/// ## Accept-and-discard fields
+///
+/// `inputs` (and through it `LegacyResolvedInputV2`'s `key`/`value`),
+/// `worker_index`, `executed`, and `rematerialized` are parsed so a legacy
+/// CAS blob still deserializes, and then dropped. The V2 redesign replaced
+/// them with values a legacy blob cannot supply: `materialized_inputs` and
+/// `env_vars` (empty), `executed_at` (zero), and output materialized flags
+/// (rebuilt from the legacy per-output save modes).
+/// [`legacy_instance_into_v2`] is where that substitution happens, and it is
+/// the documented one-way guarantee of this migration — nothing the new schema
+/// can use is lost, and nothing is read back out of these fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LegacyToolCallInstanceV2 {
     instance_key: String,
     tool_id: String,
-    #[allow(dead_code)]
     inputs: Vec<LegacyResolvedInputV2>,
     outputs: Vec<LegacyOutputRefV2>,
-    #[allow(dead_code)]
     worker_index: usize,
-    #[allow(dead_code)]
     executed: bool,
-    #[allow(dead_code)]
     rematerialized: bool,
     /// Conductor GC last-referenced-at clock.
     #[serde(default)]
