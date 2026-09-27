@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 
 use bytes::Bytes;
 
+use super::v1::WalEntryV1;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -33,7 +34,28 @@ pub(crate) enum WalEntryV2 {
     Constraint { target: Hash, bases: BTreeSet<Hash> },
 }
 
-/// Magic prefix for journal segment files (same as V1).
+/// V1 → V2 entry migration.
+///
+/// The two formats share a byte layout for every variant V1 can express, so
+/// this is a total, lossless variant-for-variant mapping: V1 has no `PutLarge`
+/// and cannot produce one, and V2 gains no new information from a V1 entry.
+/// The migration is deliberately one-way — this `From` is the only V1 → V2
+/// edge, and it is total because no V1 entry is unrepresentable in V2.
+impl From<WalEntryV1> for WalEntryV2 {
+    fn from(v1: WalEntryV1) -> Self {
+        match v1 {
+            WalEntryV1::Put { hash, data } => WalEntryV2::Put { hash, data },
+            WalEntryV1::Delete { hash } => WalEntryV2::Delete { hash },
+            WalEntryV1::Constraint { target, bases } => WalEntryV2::Constraint { target, bases },
+        }
+    }
+}
+
+/// Magic prefix for journal segment files.
+///
+/// Identical to [`super::v1::JOURNAL_MAGIC`]. The magic deliberately does not
+/// discriminate formats: the header's 2-byte version field does, and that is
+/// the value [`super::decode_header`] returns for dispatch.
 pub(crate) const JOURNAL_MAGIC: [u8; 6] = *b"CASJNL";
 /// Current journal segment format version.
 pub(crate) const JOURNAL_VERSION: u16 = 2;
@@ -56,7 +78,10 @@ pub(crate) const MAX_JOURNAL_VERSION: u16 = 2;
 
 impl WalEntryV2 {
     /// Encode a journal entry into bytes at the given position.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "payload lengths are bounded by the in-memory Bytes the caller already holds; a payload over u32::MAX cannot be represented in this on-disk layout, which is a documented limit of the V2 format"
+    )]
     pub(crate) fn encode(&self, pos: u64) -> Vec<u8> {
         match self {
             WalEntryV2::Put { hash, data } => {

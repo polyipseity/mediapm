@@ -122,9 +122,15 @@ impl ActiveSegment {
         let mut buf = Vec::new();
         file_for_read.read_to_end(&mut buf).await.map_err(CasError::Io)?;
 
-        // Skip header (8 bytes) and parse entries.
+        // Skip header (8 bytes) and parse entries. The header's version
+        // field selects the codec, so an existing segment written by an older
+        // build is read with the decoder that matches it.
         let first_pos = if buf.len() > format::HEADER_LEN {
-            let (_, pos, _) = format::decode_entry(&buf[format::HEADER_LEN..])?;
+            let mut header = [0u8; format::HEADER_LEN];
+            header.copy_from_slice(&buf[..format::HEADER_LEN]);
+            let version =
+                format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)?;
+            let (_, pos, _) = format::decode_entry(&buf[format::HEADER_LEN..], version)?;
             pos
         } else {
             WalPosition::ZERO
@@ -347,8 +353,9 @@ impl FileWal {
             }
             let mut header = [0u8; format::HEADER_LEN];
             header.copy_from_slice(&buf[..format::HEADER_LEN]);
-            format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)?;
-            for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+            let version =
+                format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)?;
+            for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..], version) {
                 let (pos, entry) = result?;
                 if pos > checkpoint_pos {
                     Self::apply_entry_to_pending(
@@ -402,9 +409,10 @@ impl FileWal {
         // Verify header.
         let mut header = [0u8; format::HEADER_LEN];
         header.copy_from_slice(&buf[..format::HEADER_LEN]);
-        format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)?;
+        let version =
+            format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)?;
 
-        let entries = format::decode_entries(&buf[format::HEADER_LEN..])?;
+        let entries = format::decode_entries(&buf[format::HEADER_LEN..], version)?;
         let range = entries.first().zip(entries.last()).map(|((fp, _), (lp, _))| (*fp, *lp));
         Ok((entries, range))
     }
@@ -589,12 +597,12 @@ impl Wal for FileWal {
             }
             let mut header = [0u8; format::HEADER_LEN];
             header.copy_from_slice(&buf[..format::HEADER_LEN]);
-            if format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
-                .is_err()
-            {
+            let Ok(version) =
+                format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
+            else {
                 continue;
-            }
-            for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+            };
+            for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..], version) {
                 let Ok((epos, entry)) = result else {
                     continue;
                 };
@@ -612,12 +620,13 @@ impl Wal for FileWal {
         {
             let mut header = [0u8; format::HEADER_LEN];
             header.copy_from_slice(&buf[..format::HEADER_LEN]);
-            if format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
-                .is_err()
+            // A corrupt header means this segment is not ours; skip it
+            // rather than failing the whole recovery scan.
+            if let Ok(version) =
+                format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
             {
-                // Skip active segment if header is corrupt.
-            } else {
-                for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+                for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..], version)
+                {
                     let Ok((epos, entry)) = result else {
                         break;
                     };
@@ -698,12 +707,12 @@ impl Wal for FileWal {
             }
             let mut header = [0u8; format::HEADER_LEN];
             header.copy_from_slice(&buf[..format::HEADER_LEN]);
-            if format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
-                .is_err()
-            {
+            let Ok(version) =
+                format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
+            else {
                 continue;
-            }
-            for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+            };
+            for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..], version) {
                 let Ok((epos, entry)) = result else {
                     continue;
                 };
@@ -720,12 +729,13 @@ impl Wal for FileWal {
         {
             let mut header = [0u8; format::HEADER_LEN];
             header.copy_from_slice(&buf[..format::HEADER_LEN]);
-            if format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
-                .is_err()
+            // A corrupt header means this segment is not ours; skip it
+            // rather than failing the whole recovery scan.
+            if let Ok(version) =
+                format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)
             {
-                // Skip active segment if header is corrupt.
-            } else {
-                for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..]) {
+                for result in format::decode_entries_streaming(&buf[format::HEADER_LEN..], version)
+                {
                     let Ok((epos, entry)) = result else {
                         break;
                     };

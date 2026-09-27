@@ -38,10 +38,30 @@ pub(crate) struct CheckpointV1 {
     pub(crate) last_position: u64,
 }
 
-/// Magic prefix for journal segment files.
-#[expect(dead_code)]
+/// Magic prefix for V1 journal segment files.
+///
+/// Byte-identical to [`super::v2::JOURNAL_MAGIC`]. The magic deliberately does
+/// not discriminate journal formats; the 2-byte version field in the segment
+/// header does, and that is what the dispatcher routes on.
+///
+/// Only the round-trip test needs this constant: production never writes a V1
+/// segment, so it writes V2's. It is kept so the test can assert the two
+/// magics are byte-identical rather than assuming it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "production writes V2 segments only; V1's own magic is retained so the round-trip test can build a real V1 segment and assert the two magics match"
+    )
+)]
 pub(crate) const JOURNAL_MAGIC: [u8; 6] = *b"CASJNL";
-/// Current journal segment format version.
+
+/// V1 journal segment format version.
+///
+/// This is the value V1 writes into the 8-byte segment header, and the value
+/// [`super::decode_header`] hands back so the dispatcher routes the segment's
+/// entries to [`WalEntryV1::decode`]. The magic prefix is deliberately not
+/// repeated here: it is identical across versions and cannot discriminate.
 pub(crate) const JOURNAL_VERSION: u16 = 1;
 
 /// Magic prefix for checkpoint files.
@@ -64,8 +84,21 @@ pub(crate) const MAX_JOURNAL_VERSION: u16 = 1;
 
 impl WalEntryV1 {
     /// Encode a journal entry into bytes at the given position.
-    #[expect(dead_code)]
-    #[allow(clippy::cast_possible_truncation)]
+    ///
+    /// Only reached from the round-trip test and the V1 → V2 migration proof:
+    /// the running system writes [`super::v2::JOURNAL_VERSION`] segments, so
+    /// no V1 segment is ever produced. See the round-trip test in `mod.rs`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the running system writes V2 segments; the V1 encoder exists so the V1 round-trip test can produce a V1 journal to decode"
+        )
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "payload lengths are bounded by the in-memory Bytes the caller already holds; a payload over u32::MAX cannot be represented in this on-disk layout, which is a documented limit of the V1 format"
+    )]
     pub(crate) fn encode(&self, pos: u64) -> Vec<u8> {
         match self {
             WalEntryV1::Put { hash, data } => {
@@ -105,10 +138,12 @@ impl WalEntryV1 {
         }
     }
 
-    /// Decode a single journal entry from bytes.
+    /// Decode a single V1 journal entry from bytes.
     ///
-    /// Returns `(entry, position, bytes_consumed)`.
-    #[expect(dead_code)]
+    /// Returns `(entry, position, bytes_consumed)`. A V1 entry has no
+    /// `PutLarge` variant, so `op_type == 3` is rejected here; that rejection
+    /// is the only observable difference between the V1 and V2 entry decoders,
+    /// and the segment header's version field is what routes to this one.
     pub(crate) fn decode(buf: &[u8]) -> Result<(Self, u64, usize), CasError> {
         if buf.len() < 8 + 34 + 1 + 4 {
             return Err(CasError::corrupt_object(
@@ -207,7 +242,7 @@ impl WalEntryV1 {
 impl CheckpointV1 {
     /// Encode a checkpoint file (header + body).
     pub(crate) fn encode(last_position: u64) -> Vec<u8> {
-        let header = encode_header(CHECKPOINT_MAGIC, JOURNAL_VERSION);
+        let header = super::encode_header(CHECKPOINT_MAGIC, JOURNAL_VERSION);
         let last_pos_bytes = last_position.to_le_bytes();
         let mut buf = Vec::with_capacity(8 + 8 + 32);
         buf.extend_from_slice(&header);
@@ -229,7 +264,7 @@ impl CheckpointV1 {
         // Verify header
         let mut header = [0u8; 8];
         header.copy_from_slice(&buf[..8]);
-        decode_header(header, CHECKPOINT_MAGIC, MAX_JOURNAL_VERSION)?;
+        super::decode_header(header, CHECKPOINT_MAGIC, MAX_JOURNAL_VERSION)?;
 
         // Verify integrity hash
         let body_end = 8 + 8; // header + last_position
@@ -245,35 +280,4 @@ impl CheckpointV1 {
             })?);
         Ok(pos)
     }
-}
-
-/// Encode an 8-byte header: 6-byte magic + 2-byte LE version.
-pub(crate) fn encode_header(magic: [u8; 6], version: u16) -> [u8; 8] {
-    let mut buf = [0u8; 8];
-    buf[..6].copy_from_slice(&magic);
-    buf[6..8].copy_from_slice(&version.to_le_bytes());
-    buf
-}
-
-/// Decode and validate an 8-byte header.
-///
-/// Returns the decoded version on success.
-pub(crate) fn decode_header(
-    buf: [u8; 8],
-    expected_magic: [u8; 6],
-    max_version: u16,
-) -> Result<u16, CasError> {
-    if buf[..6] != expected_magic {
-        return Err(CasError::corrupt_object(format!(
-            "expected magic {expected_magic:02x?}, got {:02x?}",
-            &buf[..6]
-        )));
-    }
-    let version = u16::from_le_bytes([buf[6], buf[7]]);
-    if version == 0 || version > max_version {
-        return Err(CasError::corrupt_object(format!(
-            "unsupported version {version} (max {max_version})"
-        )));
-    }
-    Ok(version)
 }
