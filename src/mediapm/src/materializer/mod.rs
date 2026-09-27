@@ -338,11 +338,16 @@ fn sanitize_and_validate_hierarchy_paths(
 ) -> Result<(), MediaPmError> {
     let default_replacements = commit::default_sanitize_replacements();
     for entry in flattened.iter_mut() {
-        entry.path_components = commit::sanitize_and_validate_components(
-            &entry.path_components,
-            &entry.entry.sanitize_names,
-            &default_replacements,
-        )?;
+        // `FlattenedHierarchyEntry::path_components` is declared `Vec<String>`
+        // in the `config` module, outside the `PathComponent` migration's
+        // scope, so the parsed components are serialized back into it. Every
+        // value written here came from `PathComponent::parse`.
+        entry.path_components =
+            commit::components_to_strings(&commit::sanitize_and_validate_components(
+                &entry.path_components,
+                &entry.entry.sanitize_names,
+                &default_replacements,
+            )?);
     }
     Ok(())
 }
@@ -663,7 +668,24 @@ async fn materialize_media_folder_entry(
     let mut variant_hashes = BTreeMap::new();
 
     for variant_name in &selected_variants {
-        let variant_path = target_path.join(variant_name);
+        // A variant name is a second untrusted join on this path: it reaches
+        // `target_path.join(...)` and then `tokio::fs::write`, and it can
+        // carry a separator or `..` because it is a free-form key in the
+        // source's `variant_hashes` map rather than a validated hierarchy
+        // component. Parsing it through `PathComponent` closes the same class
+        // of write-outside-the-target-folder bug the ZIP member path had.
+        let variant_path = commit::join_path_components(
+            &commit::parse_relative_path_components(
+                Path::new(variant_name),
+                &commit::SanitizePolicy::disabled(),
+            )
+            .map_err(|error| {
+                MediaPmError::Workflow(format!(
+                    "media '{media_id}': refusing unsafe variant name '{variant_name}': {error}"
+                ))
+            })?,
+        );
+        let variant_path = target_path.join(variant_path);
 
         let payload = match resolve_variant_source_bytes(
             lookup,
@@ -715,6 +737,21 @@ async fn materialize_media_folder_entry(
             });
             for (file_rel_path, content) in extracted {
                 let file_rel_path = normalize_yt_dlp_sandbox_zip_member_path(&file_rel_path);
+                // The extracted member name is untrusted archive data, and
+                // this is the join that writes it to disk. Parsing it through
+                // `PathComponent` is the same contract the hierarchy path
+                // uses, so a traversal component cannot reach the join even if
+                // the archive-shape normalizer above is later loosened.
+                let file_rel_path = commit::join_path_components(
+                    &commit::parse_relative_path_components(
+                        &file_rel_path,
+                        &commit::SanitizePolicy::disabled(),
+                    )
+                    .map_err(|error| MediaPmError::Workflow(format!(
+                        "media '{media_id}' variant '{variant_name}': refusing extracted ZIP member '{}': {error}",
+                        file_rel_path.to_string_lossy()
+                    )))?,
+                );
                 let file_target = target_path.join(&file_rel_path);
                 let file_relative = format!(
                     "{relative_path}/{}",
