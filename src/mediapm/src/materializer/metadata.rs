@@ -193,7 +193,15 @@ pub(super) async fn resolve_materialized_path_components(
         return Ok(entry.path_components.clone());
     }
 
-    let media_id = entry.entry.media_id.trim();
+    // No trim: the media id is used exactly as it was declared. A padded id
+    // was a second spelling — this lookup trimmed it, `materializer::resolve`
+    // did not — and both spellings are now rejected upstream by
+    // `config::hierarchy_types::validate_media_id`, which runs on every
+    // hierarchy-bound id in the flatten walk and on every key of the
+    // `media` map in the workflow-synthesis reconcile. The `is_empty` check
+    // below stays: it reports a template placeholder on an entry that binds
+    // no media, not a spelling problem.
+    let media_id = entry.entry.media_id.as_str();
     if media_id.is_empty() {
         return Err(MediaPmError::Workflow(format!(
             "hierarchy path '{}' contains template placeholders but entry has no media_id",
