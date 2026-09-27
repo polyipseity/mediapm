@@ -75,7 +75,6 @@ pub fn shared_http_client() -> Result<&'static Client, &'static HttpClientError>
 }
 
 /// Process-wide shared no-redirect `reqwest::Client` initialization state.
-#[allow(dead_code)]
 static SHARED_NO_REDIRECT_HTTP_CLIENT: OnceLock<Result<Client, HttpClientError>> = OnceLock::new();
 
 /// Returns the process-wide shared async HTTP client that does **not** follow
@@ -86,7 +85,6 @@ static SHARED_NO_REDIRECT_HTTP_CLIENT: OnceLock<Result<Client, HttpClientError>>
 /// # Errors
 ///
 /// Returns an error if the process-wide `reqwest::Client` fails to build.
-#[allow(dead_code)]
 pub fn shared_no_redirect_http_client() -> Result<&'static Client, &'static HttpClientError> {
     match SHARED_NO_REDIRECT_HTTP_CLIENT.get_or_init(|| build_shared_http_client(false)) {
         Ok(client) => Ok(client),
