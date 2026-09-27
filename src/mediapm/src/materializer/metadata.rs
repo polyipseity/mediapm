@@ -12,7 +12,9 @@ use mediapm_conductor::{ConductorState, NickelDocument};
 use regex::Regex;
 
 use crate::config::MediaPmDocument;
-use crate::config::hierarchy_types::{FlattenedHierarchyEntry, HierarchyFolderRenameRule};
+use crate::config::hierarchy_types::{
+    FlattenedHierarchyEntry, HierarchyFolderRenameRule, HierarchyPathComponents,
+};
 use crate::config::output_types::{GenericOutputVariantConfig, OutputVariantValue};
 use crate::config::source_types::{
     MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate, MediaSourceSpec,
@@ -184,13 +186,28 @@ pub(super) async fn resolve_interpolated_folder_rename_rules(
 }
 
 /// Resolves hierarchy path templates for one flattened entry.
+///
+/// `template_components` is the entry's [`HierarchyPathComponents::Template`]
+/// payload. The result is still `Template`: interpolated values come from tag
+/// metadata, ffprobe output, and upstream sources, none of which the user
+/// controls, so nothing here has been through
+/// [`crate::path_component::PathComponent::parse`] yet.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when the entry holds a placeholder and
+/// binds no media id, or names a media id the document does not define.
 pub(super) async fn resolve_materialized_path_components(
     entry: &FlattenedHierarchyEntry,
+    template_components: &[String],
     document: &MediaPmDocument,
     lookup_context: &MaterializationLookupContext,
 ) -> Result<Vec<String>, MediaPmError> {
-    if entry.path_components.iter().all(|component| !component.contains("${")) {
-        return Ok(entry.path_components.clone());
+    // A path with no placeholder needs no metadata lookup, and an entry that
+    // binds a media id the document does not define is not this function's
+    // error to raise.
+    if template_components.iter().all(|component| !component.contains("${")) {
+        return Ok(template_components.to_vec());
     }
 
     // No trim: the media id is used exactly as it was declared. A padded id
@@ -215,8 +232,8 @@ pub(super) async fn resolve_materialized_path_components(
         ))
     })?;
 
-    let mut resolved_components = Vec::with_capacity(entry.path_components.len());
-    for component in &entry.path_components {
+    let mut resolved_components = Vec::with_capacity(template_components.len());
+    for component in template_components {
         let resolved = if component.contains("${") {
             interpolate_path_template(component, media_id, source, lookup_context).await?
         } else {
@@ -229,15 +246,26 @@ pub(super) async fn resolve_materialized_path_components(
 }
 
 /// Resolves hierarchy path templates across flattened hierarchy entries.
+///
+/// The variant answers whether there is anything to do. Only a `Template`
+/// entry can hold a placeholder; a `Resolved` entry has been through
+/// [`crate::path_component::PathComponent::parse`] already, and its text has
+/// no placeholder left in it.
 pub(super) async fn resolve_flattened_entry_paths(
     flattened: &mut [FlattenedHierarchyEntry],
     document: &MediaPmDocument,
     lookup_context: &MaterializationLookupContext,
 ) -> Result<(), MediaPmError> {
     for entry in flattened {
-        if entry.path_components.iter().any(|component| component.contains("${")) {
-            entry.path_components =
-                resolve_materialized_path_components(entry, document, lookup_context).await?;
+        if let HierarchyPathComponents::Template(template_components) = &entry.path_components {
+            let resolved = resolve_materialized_path_components(
+                entry,
+                template_components,
+                document,
+                lookup_context,
+            )
+            .await?;
+            entry.path_components = HierarchyPathComponents::Template(resolved);
         }
     }
     Ok(())

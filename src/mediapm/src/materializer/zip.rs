@@ -30,7 +30,7 @@
 //! 2. [`normalize_zip_entry_relative_path`] rejects a surviving `..`
 //!    component explicitly, and
 //! 3. [`apply_entry_rename_rules`] re-parses the **final** path through
-//!    [`commit::PathComponent`], because a user-configured regex replacement
+//!    [`PathComponent`], because a user-configured regex replacement
 //!    runs *after* stage 2 and can emit `/`, `\`, or `..` that no earlier
 //!    stage ever saw.
 
@@ -45,9 +45,8 @@ use zip::read::ZipFile;
 
 use crate::config::hierarchy_types::HierarchyFolderRenameRule;
 use crate::error::MediaPmError;
-use crate::materializer::commit::{
-    PathComponent, SanitizePolicy, join_path_components, parse_relative_path_components,
-};
+use crate::materializer::commit::{join_path_components, parse_relative_path_components};
+use crate::path_component::{PathComponent, SanitizePolicy};
 
 /// A compiled folder rename rule with a cached [`Regex`].
 #[derive(Debug, Clone)]

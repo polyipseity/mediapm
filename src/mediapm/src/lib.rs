@@ -27,6 +27,7 @@ pub(crate) mod hierarchy;
 pub(crate) mod materializer;
 pub(crate) mod metadata_cache;
 pub mod output;
+pub(crate) mod path_component;
 pub(crate) mod paths;
 pub(crate) mod service;
 pub(crate) mod service_standalone;

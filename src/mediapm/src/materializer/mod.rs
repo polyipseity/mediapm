@@ -21,13 +21,14 @@ use tracing::{info, warn};
 
 use self::progress_labels::{MaterializationBarLabel, split_entry_path};
 use crate::config::hierarchy_types::{
-    FlattenedHierarchyEntry, HierarchyEntryKind, PlaylistItemRef, collect_playlist_media_index,
-    expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
+    FlattenedHierarchyEntry, HierarchyEntryKind, HierarchyPathComponents, PlaylistItemRef,
+    collect_playlist_media_index, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
 };
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
 use crate::output::progress::{ProgressBarApi, ProgressBarHandle, ProgressScreenApi};
+use crate::path_component::SanitizePolicy;
 use crate::paths::MediaPmPaths;
 use crate::tools::workflows::{
     resolve_ffmpeg_slot_limits, resolve_media_variant_output_binding_with_limits,
@@ -322,6 +323,12 @@ pub async fn sync_hierarchy(
 /// rejected entry never reaches staging, verification, or commit and no
 /// partially-validated path is ever written.
 ///
+/// The entry's components change variant here. Before this call they are
+/// untrusted text; after it they are values that cannot exist without a
+/// successful [`crate::path_component::PathComponent::parse`]. An entry that
+/// arrives already `Resolved` has been through the chain, which is what makes
+/// a second sync pass a no-op rather than a re-parse.
+///
 /// Validating all entries (not only templated ones) is deliberate: the
 /// config-level reserved-character check in `config::hierarchy_types` does not
 /// reject `.` or `..`, so a statically declared `..` component would otherwise
@@ -338,13 +345,12 @@ fn sanitize_and_validate_hierarchy_paths(
 ) -> Result<(), MediaPmError> {
     let default_replacements = commit::default_sanitize_replacements();
     for entry in flattened.iter_mut() {
-        // `FlattenedHierarchyEntry::path_components` is declared `Vec<String>`
-        // in the `config` module, outside the `PathComponent` migration's
-        // scope, so the parsed components are serialized back into it. Every
-        // value written here came from `PathComponent::parse`.
+        let HierarchyPathComponents::Template(template_components) = &entry.path_components else {
+            continue;
+        };
         entry.path_components =
-            commit::components_to_strings(&commit::sanitize_and_validate_components(
-                &entry.path_components,
+            HierarchyPathComponents::Resolved(commit::sanitize_and_validate_components(
+                template_components,
                 &entry.entry.sanitize_names,
                 &default_replacements,
             )?);
@@ -677,7 +683,7 @@ async fn materialize_media_folder_entry(
         let variant_path = commit::join_path_components(
             &commit::parse_relative_path_components(
                 Path::new(variant_name),
-                &commit::SanitizePolicy::disabled(),
+                &SanitizePolicy::disabled(),
             )
             .map_err(|error| {
                 MediaPmError::Workflow(format!(
@@ -745,7 +751,7 @@ async fn materialize_media_folder_entry(
                 let file_rel_path = commit::join_path_components(
                     &commit::parse_relative_path_components(
                         &file_rel_path,
-                        &commit::SanitizePolicy::disabled(),
+                        &SanitizePolicy::disabled(),
                     )
                     .map_err(|error| MediaPmError::Workflow(format!(
                         "media '{media_id}' variant '{variant_name}': refusing extracted ZIP member '{}': {error}",
@@ -879,7 +885,7 @@ async fn materialize_playlist_entry(
             )));
         };
 
-        let media_relative_path = path_components.join("/");
+        let media_relative_path = path_components.display();
         let resolved =
             resolve_playlist_target_relative_path(relative_path, &media_relative_path, path_mode);
         rendered_entries.push(RenderedPlaylistEntry {
