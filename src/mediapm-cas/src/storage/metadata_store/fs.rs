@@ -7,8 +7,9 @@
 //! mutation flushes only its hash's directory — O(N/D) I/O instead of O(N).
 //!
 //! Snapshot files use a versioned filename (`metadata-v1.json`) so future format
-//! changes are detectable and migratable. See [`LATEST_METADATA_FORMAT`] and
-//! [`METADATA_FORMAT_NAMES`].
+//! changes are detectable and migratable. This module holds no version
+//! knowledge of its own: it consumes the names and codecs from
+//! [`versions`](super::versions), which owns the ladder.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -21,22 +22,8 @@ use super::super::blob_store::BlobStore;
 use super::super::blob_store::FileSystemBlobStore;
 use super::super::wal::Wal;
 use super::mem::InMemoryMetadataStore;
-use super::versions;
+use super::versions::{self, LATEST_METADATA_FORMAT, METADATA_FORMAT_NAMES};
 use super::{MetadataEntry, MetadataStore};
-
-/// The per-directory metadata filename written on flush (latest format).
-///
-/// When bumping the format, update this name and add the old name to
-/// [`METADATA_FORMAT_NAMES`] so old files are still readable on open.
-/// Must be the first element of [`METADATA_FORMAT_NAMES`].
-const LATEST_METADATA_FORMAT: &str = "metadata-v1.json";
-
-/// All known per-directory metadata filenames, newest-first.
-///
-/// [`rebuild_from_wal`] scans all of them so both current and legacy
-/// format files are loaded during startup. Add old format names here
-/// when changing `LATEST_METADATA_FORMAT`.
-const METADATA_FORMAT_NAMES: &[&str] = &[LATEST_METADATA_FORMAT];
 
 /// In-memory metadata with per-directory persistent snapshots.
 ///

@@ -6,6 +6,10 @@
 //! The `entries` field uses `#[serde(default)]` so old files
 //! (constraints-only) remain loadable.
 //!
+//! This module owns two things: the V1 codec (`parse_v1_snapshot` /
+//! `serialize_v1_snapshot`) and the V1 → current migration hook
+//! (`migrate_v1_to_current`) that a future `v2.rs` would replace.
+//!
 //! ## DO NOT REMOVE: versions policy guard
 //!
 //! - This file must never import unversioned structs from outside `versions/`.
@@ -131,4 +135,49 @@ pub(crate) fn serialize_v1_snapshot(
     }
 
     serde_json::to_vec_pretty(&file).map_err(|e| CasError::Io(std::io::Error::other(e)))
+}
+
+/// Migrate a snapshot decoded from the V1 format into the current snapshot model.
+///
+/// V1 is the newest format this build implements, so the migration is the
+/// identity today. The hook exists so the ladder has exactly one place where
+/// "carry an old snapshot forward" is written: a V2 cannot change the V1
+/// struct (the V1 loader must keep reading V1 files byte-for-byte as they
+/// were written), so the difference between the two shapes has to live in a
+/// function that sees both.
+///
+/// ## What a real V1 → V2 migration would have to do
+///
+/// - **Renamed, re-typed, or regrouped fields**: read [`SnapshotFile`] and emit
+///   the V2 struct. This is the only function allowed to know both shapes.
+/// - **New required data with no V1 source**: the snapshot cannot supply it,
+///   and inventing a value would fabricate metadata that later verification
+///   would contradict. The field must be optional, or the file must be
+///   re-derived from the WAL
+///   (`MetadataStore::rebuild_from_wal` replays the same facts) before this
+///   migration runs.
+/// - **Dropped or narrowed data**: the caller deletes the superseded file once
+///   this returns `Ok`, which is why
+///   [`METADATA_FORMAT_NAMES`](super::METADATA_FORMAT_NAMES) keeps the old
+///   name readable for exactly as long as the migration may still need it.
+/// - **A version this build does not know**: unreachable from here.
+///   [`migrate_snapshot_to_current`](super::migrate_snapshot_to_current)
+///   rejects an unregistered version before it reaches this function, so a
+///   `metadata-v2.json` written by a newer build is an error on this build
+///   rather than a V1 parse.
+///
+/// # Errors
+///
+/// Cannot fail while V1 is the current format; the signature is fallible
+/// because the rewrite a V2 introduces is not, and the dispatch in
+/// `versions/mod.rs` calls every version through the one fallible seam rather
+/// than special-casing the newest.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the migration seam must be fallible before it is fallible in fact: a V2 rewrite \
+              that can reject a snapshot it cannot rewrite would otherwise force a signature \
+              change on every caller at exactly the moment the ladder is being extended"
+)]
+pub(crate) fn migrate_v1_to_current(snapshot: SnapshotData) -> Result<SnapshotData, CasError> {
+    Ok(snapshot)
 }
