@@ -42,11 +42,12 @@ struct HandleToken;
 ///
 /// The background consumer holds an owned `Arc` to the store, so it can
 /// outlive the caller's handle; dropping the last handle cancels it and closes
-/// the store's [`CasIoGate`], which waits for every already-dispatched
+/// the store's internal mutation gate, which waits for every already-dispatched
 /// file-system mutation and refuses new ones. After the last handle drops, no
 /// code path can recreate anything under the store's directory — which is
 /// what makes it safe for the owner of that directory (a test's `TempDir`, for
-/// example) to remove it straight after the handle. See [`crate::io_gate`].
+/// example) to remove it straight after the handle. See the crate's `io_gate`
+/// module for the contract and why `Drop` can rely on it.
 pub struct FileSystemCas {
     store: Arc<CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>>,
     bg_guard: Arc<BackgroundMaintenanceGuard>,
@@ -74,9 +75,9 @@ impl Drop for FileSystemCas {
     ///
     /// A clone dropping while another handle is alive must not close the
     /// store, so the work is gated on this being the only remaining handle.
-    /// Both steps are synchronous: `cancel` requests the abort and
-    /// [`CasIoGate::close`] waits for the blocking-pool work the aborted task
-    /// already dispatched, which abort alone would not cover.
+    /// Both steps are synchronous: `cancel` requests the abort and closing the
+    /// mutation gate waits for the blocking-pool work the aborted task already
+    /// dispatched, which abort alone would not cover.
     fn drop(&mut self) {
         if Arc::strong_count(&self.handles) == 1 {
             self.bg_guard.cancel();
@@ -180,7 +181,8 @@ impl FileSystemCas {
     /// Dropping the last handle already does both of these things; `close` is
     /// for callers that want the guarantee *before* the handle goes out of
     /// scope, or that want the consumer to be observed as fully stopped rather
-    /// than merely aborted.
+    /// than merely aborted. It consumes the handle, so no clone can keep
+    /// writing into a store the caller has already retired.
     pub async fn close(self) {
         self.bg_guard.shutdown().await;
         self.io_gate.close();

@@ -29,8 +29,9 @@ use crate::verify::VerifyEvaluator;
 /// hash. All methods are safe for concurrent access.
 ///
 /// Every step that can create a directory entry runs under a lease from the
-/// store's [`CasIoGate`], so closing the gate quiesces the tree (see
-/// [`crate::io_gate`]).
+/// store's internal mutation gate, so closing that gate quiesces the tree. See
+/// the crate's `io_gate` module for the contract and why `Drop` can rely on
+/// it.
 #[derive(Clone, Debug)]
 pub struct FileSystemBlobStore {
     root: PathBuf,

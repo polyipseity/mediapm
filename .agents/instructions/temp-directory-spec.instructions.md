@@ -52,6 +52,17 @@ RAII `TempDir` owners must be bound to a local for the full scope that needs the
 - Self-test scripts (`tests/scripts/test-clean-mediapm-temp.sh` / `.ps1`, `tests/scripts/test-run-all-tests.sh` / `.ps1`) are driven by the root `tests/` crate (package `mediapm-tests`) via `cargo --locked test-pkg mediapm-tests` (cargo/nextest), not invoked directly from `run-all-tests.*`.
 - Janitor sandbox self-match gotcha: the Rust janitor tests (`tests/scripts/mod.rs`) seed fake dirs in a nested `scope` subdir of a `mediapm-`-prefixed sandbox — the sandbox root must carry the managed prefix so a leaked sandbox is reclaimed by the janitor/orphan gate, but `find -maxdepth 1 -name 'mediapm-*'` would match the root itself; the nested `scope` basename dodges the glob, and the janitor is pointed at `scope` via the child-scoped `TMPDIR`.
 
+## Why a CAS temp root is safe to remove
+
+A `mediapm-artifact-*` root holding a `mediapm-cas` store may be removed the moment the last `FileSystemCas` handle drops, with no sleep, retry, or explicit close at the call site. `FileSystemCas::drop` cancels the background WAL consumer and closes the store's mutation gate (`mediapm_cas::io_gate`): the gate blocks until every already-dispatched file-system mutation has finished and refuses every later one, so no `create_dir_all` can resurrect a removed tree. The write-after-teardown fingerprint this prevents is a leaked root holding exactly one blob object, one `metadata-v1.json`, one `checkpoint`, or an empty `blobs/v1/blake3/ab/cd/` chain.
+
+Two rules keep that guarantee true when editing the CAS:
+
+- Lease every operation that can create a directory entry (directory creation, file creation, write-plus-rename pairs) through `CasIoGate::run`. A write through an already-open file handle and a read cannot resurrect a removed tree, so they need no lease. Never hold a lease across an `.await` — take and release it inside the blocking closure, or `close` can deadlock on a `current_thread` runtime.
+- The gate closes on the **last** handle only (an `Arc` token counted in `Drop`), so a dropped clone never closes the store out from under a sibling handle.
+
+Test harnesses must not rely on tuple-binding order for this. `mediapm-cas`'s `common::open_file_cas` returns a `FileCasFixture` whose field order makes the store drop before its `TempDir`; a `(TempDir, FileSystemCas)` tuple makes the same guarantee a convention each call site has to remember.
+
 ## Regression gate contract
 
 - `scripts/run-all-tests.sh` ends with a dry-run gate: `clean-mediapm-temp.sh --dry-run | grep -q 'would remove'` -> exit 1. Any leftover managed dir fails the suite. CI-covered (ubuntu-latest).
