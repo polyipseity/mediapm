@@ -1,6 +1,6 @@
 # `provider/` — Managed tool provider source descriptors
 
-Per-OS source URL definitions for the 6 managed tools (`ffmpeg`, `yt-dlp`, `deno`, `rsgain`, `media-tagger`, `sd`). Each file defines platform-specific download URLs consumed by `provider::mod::resolve_tool_fetch()`.
+Per-OS source URL definitions for the 6 managed tools with presets (`ffmpeg`, `yt-dlp`, `deno`, `rsgain`, `media-tagger`, `sd`) plus the launcher-only `import` builtin, which `resolve_tool_fetch()` dispatches at `mod.rs` but which has no preset module. Each file defines platform-specific download URLs consumed by `provider::mod::resolve_tool_fetch()`.
 
 ## size_hint_bytes policy
 

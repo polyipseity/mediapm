@@ -7,7 +7,7 @@ Media orchestration facade over `mediapm-cas` and `mediapm-conductor`: media lib
 ```text
 lib.rs                     — Re-exports, SyncSummary, ToolsSyncSummary, global cache ops
 main.rs                    — CLI dispatch (clap): sync, tool, media, hierarchy, cas, conductor
-error.rs                   — MediaPmError: 6 variants (see error-taxonomy.instructions.md)
+error.rs                   — MediaPmError: 7 variants (see error-taxonomy.instructions.md)
 output/                    — CLI formatting + progress: mod.rs (print_sync_summary), observer.rs (CliSyncObserver), progress.rs (ProgressScreen re-exports)
 util.rs                    — first_non_empty_json_string helper
 global.rs                  — MediaPmGlobalPaths, MEDIAPM_GIT_HASH
@@ -25,14 +25,19 @@ example_isolation.rs       — Example/test temp dirs, MEDIAPM_EXAMPLE_* env, cl
   hierarchy_types.rs       —   HierarchyNode (ordered array), flattening, playlist, SanitizeNamesConfig
   output_types.rs          —   OutputVariantValue (YtDlp | Generic), OutputCaptureKind, OutputSaveConfig
   nickel_io.rs             —   .ncl eval, load/save/merge documents
-  versions/                —   Schema version dispatch (mod.rs + v1.rs + v2.rs + .ncl)
+  versions/                —   Nickel schema boundary (mod.rs, mod.ncl, v_latest.rs, document.rs, v1.ncl, v2.ncl)
   validation/              —   Cross-field validation (mod.rs, hierarchy.rs, sources.rs)
+state/                    — MediaPmState serialization + version dispatch
+  mod.rs                   —   Public state persistence surface (ser, versions)
+  ser.rs                   —   to_json_value/from_json_value, legacy .ncl migration
+  versions/                —   State wire formats and dispatch (mod.rs + v1.rs + v2.rs + v3.rs)
+sync_report.rs            — SyncObserver trait, per-phase reports, sync options
+demo_hierarchy_spec.rs    — Demo hierarchy golden layout contract (see demo-hierarchy-golden.instructions.md)
 
 conductor_bridge/          — Conductor integration
   mod.rs                   —   ToolSyncReport, reconcile_desired_tools
   constants.rs             —   Input/output key constants, tool IDs, slot limits
   documents.rs             —   Load/save conductor NCL documents
-  runtime_storage.rs       —   RuntimeStoragePaths resolution
   util.rs                  —   Shared helpers
   sync/                    —   Tool reconciliation (provision, tool_config, content_import, lifecycle)
   tool_runtime/            —   ToolSpec/ToolRuntime builders, option tokens, template, launcher
@@ -44,13 +49,15 @@ materializer/              — CAS→filesystem materialization
   metadata.rs              —   Template/metadata resolution
   resolve.rs               —   Source/variant hash resolution, existence checks
   playlist.rs              —   Playlist generation (M3U8, PLS, XSPF, WPL, ASX)
+  progress_labels.rs       —   MaterializationBarLabel truncation order (see progress-output.instructions.md)
   zip.rs                   —   ZIP folder extraction
 
 tools/                     — Managed tool preset/provider + workflow synthesis
   mod.rs                   —   Module router, is_known_tool_id()
+  dependency.rs            —   DependencyTypes role flags, known_dependency_type() (see preset-dispatch.instructions.md)
   downloader.rs            —   ToolDownloadCache type alias (re-exports from conductor)
   preset/                  —   ToolSpec/ToolRuntime builders: deno, ffmpeg, media_tagger, rsgain, sd, yt_dlp
-  provider/                —   Source descriptors (URLs per OS): deno, ffmpeg, media_tagger, rsgain, sd, yt_dlp
+  provider/                —   Source descriptors (URLs per OS): deno, ffmpeg, import, media_tagger, rsgain, sd, yt_dlp
   workflows/               —   Step synthesis: ffmpeg, media_tagger, rsgain, yt_dlp, yt_dlp_inputs
 
 builtins/                  — Native tool implementations
@@ -68,7 +75,7 @@ builtins/                  — Native tool implementations
 | `MediaRuntimeStorage` | `config/mod.rs` | Runtime path overrides (config, CLI, env) |
 | `MediaPmPaths` | `paths.rs` | Resolved canonical path bundle for one workspace root |
 | `MediaPmGlobalPaths` | `global.rs` | User-level cache (`<os-cache>/mediapm/cache/`) |
-| `MediaPmError` | `error.rs` | Error taxonomy (6 variants) |
+| `MediaPmError` | `error.rs` | Error taxonomy (7 variants) |
 | `HierarchyNode` | `config/hierarchy_types.rs` | Ordered node-array hierarchy with recursive children |
 
 ## Config Document Model
@@ -121,8 +128,8 @@ MediaPM creates `Conductor`, passes grouped runtime-storage paths so volatile wr
 
 | Conductor path | MediaPM default |
 | --- | --- |
-| `conductor_dir` | `<mediapm_dir>` |
-| `conductor_state_config` | `<mediapm_dir>/state.conductor.ncl` |
+| `conductor_dir` | `<mediapm_dir>` (= `runtime_root`, default `{root_dir}/.mediapm`) |
+| `conductor_state_config` | `<mediapm_dir>/state.conductor.json` (overrides the conductor default `state.json`; `paths.rs:87`, `paths.rs:175`) |
 | `cas_store_dir` | `<mediapm_dir>/store` |
 | `conductor_tmp_dir` | `<mediapm_dir>/tmp` |
 | `conductor_schema_dir` | `<mediapm_dir>/config/conductor` |
@@ -132,7 +139,7 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
 ## Managed Tool Provisioning
 
-6 managed tools: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`. See `.agents/instructions/provider-dispatch.instructions.md` (per-OS source descriptors, URL resolution, `resolve_latest_github_tag`), `.agents/instructions/preset-dispatch.instructions.md` (preset spec builders, defaults), and `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` (provisioning pipeline, paths, `FetchedToolPayload` shape) for details.
+6 managed tools carry a preset and a workflow module: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`. A seventh, `import`, reaches `resolve_tool_fetch` (`tools/provider/import.rs`, a launcher-only builtin source-ingest tool with no preset and no workflow module, so it is absent from `is_known_tool_id` and from `apply_preset`). See `.agents/instructions/provider-dispatch.instructions.md` (per-OS source descriptors, URL resolution, `resolve_latest_github_tag`), `.agents/instructions/preset-dispatch.instructions.md` (preset spec builders, defaults), and `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` (provisioning pipeline, paths, `FetchedToolPayload` shape) for details.
 
 **User-level cache**: `<os-cache-dir>/mediapm/cache/` (7-day eviction) — shared download cache distinct from workspace tool cache.
 
