@@ -203,17 +203,29 @@ pub struct FlattenedHierarchyEntry {
 impl FlattenedHierarchyEntry {
     /// Joins the entry's components into one `/`-separated string.
     ///
-    /// This is config-boundary text, and the flatten walk is the only place
-    /// that wants it: it compares one entry's components against another's to
-    /// report two nodes that declared the same path, and the metadata
-    /// resolver names a path in the error it raises for a placeholder on an
-    /// entry that binds no media. `pub(crate)` because nobody outside this
-    /// crate can make that text safe, and the materializer is the only stage
-    /// that can.
-    #[must_use]
-    pub(crate) fn path_str(&self) -> String {
+    /// Config-boundary text. The flatten walk compares one entry's components
+    /// against another's to report two nodes that declared the same path, and
+    /// [`missing_media_id_path_error`] builds the one error a caller outside
+    /// this module needs. Nothing else should reach the text, so the method is
+    /// private to this module rather than `pub(crate)`: a `String` handed out
+    /// could be joined onto a path, whereas an error cannot be.
+    fn path_str(&self) -> String {
         self.path_components.join("/")
     }
+}
+
+/// Builds the error for a declared path that still holds a template
+/// placeholder while the entry binds no media id.
+///
+/// This exists so [`FlattenedHierarchyEntry::path_str`] can stay private. The
+/// caller needs the path text to say which path failed, but it does not need
+/// the text for anything else, and exporting the finished error is a smaller
+/// thing to hand out than the unvalidated path.
+pub(crate) fn missing_media_id_path_error(entry: &FlattenedHierarchyEntry) -> MediaPmError {
+    MediaPmError::Workflow(format!(
+        "hierarchy path '{}' contains template placeholders but entry has no media_id",
+        entry.path_str()
+    ))
 }
 
 /// One flattened hierarchy entry whose path components have met the parser.

@@ -12,7 +12,9 @@ use mediapm_conductor::{ConductorState, NickelDocument};
 use regex::Regex;
 
 use crate::config::MediaPmDocument;
-use crate::config::hierarchy_types::{FlattenedHierarchyEntry, HierarchyFolderRenameRule};
+use crate::config::hierarchy_types::{
+    FlattenedHierarchyEntry, HierarchyFolderRenameRule, missing_media_id_path_error,
+};
 use crate::config::output_types::{GenericOutputVariantConfig, OutputVariantValue};
 use crate::config::source_types::{
     MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate, MediaSourceSpec,
@@ -220,10 +222,7 @@ pub(super) async fn resolve_materialized_path_components(
     // no media, not a spelling problem.
     let media_id = entry.entry.media_id.as_str();
     if media_id.is_empty() {
-        return Err(MediaPmError::Workflow(format!(
-            "hierarchy path '{}' contains template placeholders but entry has no media_id",
-            entry.path_str()
-        )));
+        return Err(missing_media_id_path_error(entry));
     }
 
     let source = document.media.get(media_id).ok_or_else(|| {
