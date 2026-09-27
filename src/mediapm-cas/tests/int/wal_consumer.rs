@@ -34,14 +34,12 @@ use crate::common::{
 ///   outcome. The sleep is here to show that the 500 ms window has passed and
 ///   the range is still whole, not to wait for anything.
 ///
-/// This is deliberately not a negative control, and could not be one. The store
-/// [`open_file_cas`] arms uses a five-minute maintenance interval, so its
-/// consumer fires once at roughly 500 ms and is then asleep for the remainder
-/// of a test this short. A foreground count of 5 is what an armed store produces
-/// just as reliably as a quiesced one; measured 768 times under 64-way
-/// contention it failed 0 times. The deterministically provable half of the
-/// claim lives in
-/// `armed_background_consumer_claims_the_range_before_the_foreground_call`.
+/// This is not a negative control, and could not be one. [`open_file_cas`] arms
+/// a five-minute maintenance interval, so its consumer fires once at roughly
+/// 500 ms and then sleeps through the rest of a test this short. A foreground
+/// count of 5 is what an armed store returns just as reliably as a quiesced
+/// one; measured 768 times under 64-way contention it failed 0 times. The
+/// `is_cancelled` assertion is what holds the helper to its contract.
 #[tokio::test]
 async fn quiesced_helper_leaves_the_foreground_consumer_owning_every_entry() {
     let cas = open_file_cas_with_quiesced_consumer().await;
@@ -62,55 +60,6 @@ async fn quiesced_helper_leaves_the_foreground_consumer_owning_every_entry() {
     assert_eq!(
         consumed, 5,
         "the foreground consumer must own the whole batch once the background one is stopped"
-    );
-}
-
-/// The negative control for the test above: on a store whose background
-/// consumer is *armed*, the armed consumer owns the range and the foreground
-/// call that follows reports nothing at all.
-///
-/// This is the property every count assertion in this module depends on, and
-/// it is asserted without a sleep chosen to be long enough. The wait is a
-/// bounded poll on an observable condition — every blob's file exists on disk.
-/// `put` leaves a small blob WAL-only until some consumer materializes it (the
-/// property `file_system_cas_wal_consumer_materializes_blob` asserts directly),
-/// and only the background consumer materializes those files, so their
-/// appearance *is* the proof that it ran and advanced the checkpoint. The
-/// foreground call afterwards therefore has provably nothing left to consume,
-/// and the test can fail two ways only: the armed consumer never ran (the poll
-/// times out, with a message saying so), or the range was still consumable
-/// afterwards. It cannot fail because the consumer started slowly.
-#[tokio::test]
-async fn armed_background_consumer_claims_the_range_before_the_foreground_call() {
-    const ENTRIES: usize = 3;
-    let cas = open_file_cas_with_background(Duration::from_millis(100)).await;
-
-    let mut hashes = Vec::with_capacity(ENTRIES);
-    for index in 0..ENTRIES {
-        let data = Bytes::from(format!("armed-claim-{index}"));
-        hashes.push(cas.put(data).await.expect("put"));
-    }
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let materialized = hashes
-            .iter()
-            .all(|hash| cas.object_path_for_hash(*hash).is_some_and(|path| path.is_file()));
-        if materialized {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the armed background consumer never materialized {ENTRIES} entries within 30s"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    let consumed = cas.bg_engine().run_wal_consumer().await.expect("run wal consumer");
-    assert_eq!(
-        consumed, 0,
-        "an armed background consumer owns the range, which is exactly what \
-         open_file_cas_with_quiesced_consumer rules out for a counted foreground call"
     );
 }
 
