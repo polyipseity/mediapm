@@ -1363,4 +1363,161 @@ mod tests {
             "\nops mismatch — expected [mat] overall + [stg]→[vrf] skip path",
         );
     }
+
+    /// Builds a one-media-entry document whose hierarchy path is `path`.
+    fn single_media_document(media_id: &str, path: HierarchyPath) -> MediaPmDocument {
+        MediaPmDocument {
+            media: BTreeMap::from([(
+                media_id.to_string(),
+                MediaSourceSpec {
+                    steps: vec![MediaStep {
+                        tool: MediaStepTool::Import,
+                        input_variants: vec![],
+                        output_variants: BTreeMap::from([(
+                            "default".into(),
+                            OutputVariantValue::Generic(GenericOutputVariantConfig {
+                                kind: "primary".to_string(),
+                                ..Default::default()
+                            }),
+                        )]),
+                        options: BTreeMap::new(),
+                    }],
+                    ..MediaSourceSpec::default()
+                },
+            )]),
+            hierarchy: vec![HierarchyNode {
+                path,
+                kind: HierarchyNodeKind::Media,
+                id: None,
+                media_id: Some(media_id.to_string()),
+                variant: Some("default".into()),
+                variants: vec![],
+                rename_files: vec![],
+                format: PlaylistFormat::M3u8,
+                ids: vec![],
+                sanitize_names: Some(SanitizeNamesConfig::Inherit),
+                children: vec![],
+            }],
+            ..MediaPmDocument::default()
+        }
+    }
+
+    /// Opens a CAS under the workspace runtime root for a `sync_hierarchy` call.
+    async fn open_hierarchy_cas(paths: &MediaPmPaths) -> FileSystemCas {
+        let cas_root = paths.runtime_root.join("store");
+        tokio::fs::create_dir_all(&cas_root).await.unwrap();
+        FileSystemCas::open(&cas_root).await.unwrap()
+    }
+
+    /// End-to-end negative control for hierarchy path validation on the
+    /// materializer commit path.
+    ///
+    /// A statically declared `..` component survives the config-level
+    /// reserved-character check (`.` is not reserved), so it reaches
+    /// `sync_hierarchy`. Before the validation chain was wired in, the entry
+    /// was processed and its `hierarchy_root/..` target — one level *above*
+    /// the library root — was accepted, so this test fails on that tree.
+    ///
+    /// The guarantee protected here: a rejected component aborts the sync
+    /// before any worker starts, so no staging bar is created and nothing is
+    /// written outside the hierarchy root.
+    #[tokio::test]
+    async fn regression_sync_hierarchy_rejects_parent_traversal_component() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+
+        let document = single_media_document("src1", HierarchyPath::simple(".."));
+        let mut state = MediaPmState::default();
+        let conductor_state = ConductorState::new_empty();
+        let generated_doc = NickelDocument::default();
+
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        let result = sync_hierarchy(
+            &paths,
+            &document,
+            &mut state,
+            &cas,
+            true,
+            &conductor_state,
+            &generated_doc,
+            Some(Arc::new(recording.clone())),
+            Some(Arc::new(overall)),
+        )
+        .await;
+
+        let Err(error) = result else {
+            panic!(
+                "sync_hierarchy accepted a '..' path component, which would commit outside the hierarchy root"
+            );
+        };
+        assert!(
+            error.to_string().contains("must not be '.' or '..'"),
+            "unexpected rejection reason: {error}"
+        );
+        assert_eq!(
+            recording.ops(),
+            vec![ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() }],
+            "rejection must precede the overall-bar setup and every entry worker, \
+             so no per-entry staging bar was ever created"
+        );
+    }
+
+    /// End-to-end proof that the *sanitized* component — not the raw
+    /// interpolated one — is what the commit path uses.
+    ///
+    /// The media id `a/b` is an unvalidated `media` map key, and
+    /// `${media.id}` interpolation is how externally sourced text first
+    /// reaches a hierarchy path component. Before the chain was wired in, the
+    /// per-entry staging bar was labelled `a/b [stg]`, i.e. the separator
+    /// survived into a path component that `hierarchy_root.join(...)` would
+    /// split. The effective `SanitizeNamesConfig` for this entry resolves to
+    /// `Enabled` (the flattening default), so the separator is rewritten to
+    /// `_` and the commit path sees `a_b`.
+    #[tokio::test]
+    async fn regression_sync_hierarchy_sanitizes_interpolated_path_component() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+
+        let document = single_media_document("a/b", HierarchyPath::simple("${media.id}"));
+        let mut state = MediaPmState::default();
+        let conductor_state = ConductorState::new_empty();
+        let generated_doc = NickelDocument::default();
+
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        let result = sync_hierarchy(
+            &paths,
+            &document,
+            &mut state,
+            &cas,
+            true,
+            &conductor_state,
+            &generated_doc,
+            Some(Arc::new(recording.clone())),
+            Some(Arc::new(overall)),
+        )
+        .await;
+
+        assert!(result.is_ok(), "sanitization must not fail the sync: {result:?}");
+        assert_eq!(
+            recording.ops(),
+            vec![
+                ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() },
+                ProgressOp::SetTotal { total: 1 },
+                ProgressOp::SetTruncation {
+                    prefix: "[mat] materializing".into(),
+                    suffix: String::new(),
+                },
+                ProgressOp::AddBar { total: 3, label: "a_b [stg]".into() },
+                ProgressOp::SetTruncation { prefix: "[stg] a_b".into(), suffix: String::new() },
+                ProgressOp::SetTruncation { prefix: "[vrf] a_b".into(), suffix: String::new() },
+                ProgressOp::Advance { delta: 1 },
+                ProgressOp::FinishWarning,
+                ProgressOp::Advance { delta: 1 },
+                ProgressOp::FinishSuccess,
+            ],
+            "the interpolated separator must be sanitized out of the committed path",
+        );
+    }
 }
