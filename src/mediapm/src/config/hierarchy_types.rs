@@ -860,6 +860,13 @@ pub(crate) fn validate_media_ids(document: &MediaPmDocument) -> Result<(), Media
 /// Validates one hierarchy path component for disallowed characters and
 /// Unicode normalization form.
 ///
+/// The reserved-character set is
+/// [`crate::materializer::commit::is_rejected_char`], the same predicate the
+/// sanitizer rewrites from and the same one [`validate_media_id`] refuses on.
+/// Restating the characters here is what let the config-level rule and the
+/// sanitizer drift apart, so the predicate is called and only the message is
+/// local.
+///
 /// # Errors
 ///
 /// Returns a distinct message per cause: `reserved character '<ch>'` for a
@@ -873,13 +880,10 @@ fn validate_hierarchy_path_component(component: &str) -> Result<(), MediaPmError
     }
 
     for ch in component.chars() {
-        match ch {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => {
-                return Err(MediaPmError::Workflow(format!(
-                    "hierarchy path component '{component}' contains reserved character '{ch}'"
-                )));
-            }
-            _ => {}
+        if is_rejected_char(ch) {
+            return Err(MediaPmError::Workflow(format!(
+                "hierarchy path component '{component}' contains reserved character '{ch}'"
+            )));
         }
     }
 
@@ -1148,6 +1152,116 @@ mod tests {
     fn check_nfd_source_rejects_nfc() {
         let err = check_nfd_source(&["caf\u{e9}"]).unwrap_err();
         assert!(err.to_string().contains("must be NFD-normalized"));
+    }
+
+    /// Characters probed by the reserved-set agreement tests.
+    ///
+    /// The whole ASCII range is swept so the agreement is checked against
+    /// near misses (`#`, `%`, `!`, `+`, …) and not only against the nine
+    /// characters the set actually contains — a second copy that *grew* is the
+    /// drift this test exists to catch. The non-ASCII entries confirm the
+    /// agreement survives components the NFD check rejects for an unrelated
+    /// reason, so those characters must read as "not reserved" on both sides.
+    const RESERVED_SET_PROBE: &[char] = &[
+        '\0',
+        '\t',
+        '!',
+        '#',
+        '%',
+        '&',
+        '\'',
+        '(',
+        ')',
+        '*',
+        '+',
+        ',',
+        '-',
+        '.',
+        '/',
+        '0',
+        '9',
+        ':',
+        ';',
+        '<',
+        '=',
+        '>',
+        '?',
+        '@',
+        'A',
+        'Z',
+        '[',
+        '\\',
+        ']',
+        '^',
+        '_',
+        '`',
+        'a',
+        'q',
+        '{',
+        '|',
+        '}',
+        '~',
+        '\u{7F}',
+        '\u{a0}',
+        '\u{e9}',
+        '\u{301}',
+        '\u{2192}',
+        '\u{1d11e}',
+    ];
+
+    /// The config-level component rule and the materializer's reserved-set
+    /// predicate decide the same question for the same character.
+    ///
+    /// Both spellings of the rule refuse a component carrying a character that
+    /// the sanitizer would rewrite to `_`: the materializer at
+    /// `PathComponent::parse`, and the config boundary here. When they were two
+    /// literals, adding a character to one and not the other let a config
+    /// declare a path that the same sync then rewrote to a different spelling
+    /// — the same identity split the media-id rule refuses. Sweeping the probe
+    /// set both ways is what makes the test a drift *detector* rather than a
+    /// restatement of today's set: a character added to either side alone
+    /// breaks the equality.
+    #[test]
+    fn config_component_reserved_set_agrees_with_is_rejected_char() {
+        for &ch in RESERVED_SET_PROBE {
+            let component = format!("a{ch}b");
+            let rejected_as_reserved = validate_hierarchy_path_component(&component)
+                .is_err_and(|err| err.to_string().contains("reserved character"));
+            assert_eq!(
+                rejected_as_reserved,
+                is_rejected_char(ch),
+                "config validator and is_rejected_char disagree on {ch:?} (U+{:04X}); \
+                 component {component:?} was{} rejected as reserved",
+                u32::from(ch),
+                if rejected_as_reserved { "" } else { " not" },
+            );
+        }
+    }
+
+    /// The nine characters the reserved set is documented to contain are
+    /// refused by the config boundary, and the shared predicate agrees.
+    ///
+    /// This is the direction the sweep cannot cover. The sweep only proves the
+    /// two sides *agree*; if a character were dropped from both, they would
+    /// still agree and the sweep would stay green. This test pins the
+    /// documented membership from the outside, so a removal from either side
+    /// fails here, and it also checks the rejection message names the character
+    /// so a user can see which one broke the component.
+    #[test]
+    fn config_component_rejects_every_documented_reserved_character() {
+        const DOCUMENTED: &[char] = &['<', '>', ':', '"', '|', '?', '*', '/', '\\'];
+        for &ch in DOCUMENTED {
+            assert!(
+                is_rejected_char(ch),
+                "is_rejected_char dropped the documented character {ch:?}"
+            );
+            let err = validate_hierarchy_path_component(&format!("a{ch}b"))
+                .expect_err("a documented reserved character must be refused");
+            assert!(
+                err.to_string().contains(&format!("reserved character '{ch}'")),
+                "the rejection must name the offending character; got: {err}"
+            );
+        }
     }
 
     /// Builds the minimal media node the media-id rules are exercised on.

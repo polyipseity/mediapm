@@ -305,7 +305,9 @@ fn clear_directory_writable(path: &Path) -> Result<(), MediaPmError> {
 ///
 /// Mirrors the character set rejected by `is_rejected_char`, so
 /// [`SanitizeNamesConfig::Enabled`] rewrites exactly the characters that
-/// would otherwise fail validation.
+/// would otherwise fail validation. `sanitized_reserved_chars_match_is_rejected_char`
+/// pins the two literals together, because "rewrite under `Enabled`, reject
+/// under `Disabled`" is a contract that only holds while they agree.
 pub(super) const SANITIZED_RESERVED_CHARS: [char; 9] =
     ['<', '>', ':', '"', '|', '?', '*', '/', '\\'];
 
@@ -553,11 +555,13 @@ fn check_component(component: &str) -> Result<(), MediaPmError> {
 /// can never anchor outside the hierarchy root. `.` and `..` are rejected by
 /// [`check_component`] before this predicate is consulted.
 ///
-/// `pub(crate)` because it is the **single** definition of the set: the
-/// config-level media-id rule in
-/// `crate::config::hierarchy_types::validate_media_id` calls it rather than
-/// restating the characters, so a second copy can never drift from the
-/// sanitizer that would have rewritten them.
+/// `pub(crate)` because it is the **shared** definition of the set: the
+/// config-level rules in `crate::config::hierarchy_types` — the media-id rule
+/// and the hierarchy-component rule — call it rather than restating the
+/// characters, so neither can drift from the sanitizer that would have
+/// rewritten them. [`SANITIZED_RESERVED_CHARS`] carries the same nine
+/// characters for the rewrite map; a unit test pins the pair so neither copy
+/// can move alone.
 ///
 /// The set is deliberately **platform-independent**. `<`, `>`, `:`, `"`, `|`,
 /// `?`, and `*` are legal filename characters on Linux and macOS, but they are
@@ -583,6 +587,33 @@ fn is_control_char(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The replacement source and the rejection predicate are two literals of
+    /// the same nine characters, and this pins them together.
+    ///
+    /// [`default_sanitize_replacements`] builds the rewrite map from
+    /// [`SANITIZED_RESERVED_CHARS`] while [`is_rejected_char`] answers the
+    /// reject question as a separate `matches!`, so the "rewrite under
+    /// `Enabled`, reject under `Disabled`" contract holds only while the two
+    /// agree. The sweep covers ASCII and near misses in both directions: a
+    /// character added to either literal alone is a component the sanitizer
+    /// rewrites and the reject policy accepts, or one it refuses and never
+    /// rewrites.
+    #[test]
+    fn sanitized_reserved_chars_match_is_rejected_char() {
+        for ch in '\0'..=char::from(u8::MAX) {
+            assert_eq!(
+                SANITIZED_RESERVED_CHARS.contains(&ch),
+                is_rejected_char(ch),
+                "SANITIZED_RESERVED_CHARS and is_rejected_char disagree on {ch:?} (U+{:04X})",
+                u32::from(ch),
+            );
+        }
+        // The predicate is the shared definition for the config boundary, so it
+        // must not be empty: an empty set would make both literals agree while
+        // rejecting nothing at all.
+        assert!(SANITIZED_RESERVED_CHARS.iter().all(|&ch| is_rejected_char(ch)));
+    }
 
     #[test]
     fn parse_valid_path_component() {
