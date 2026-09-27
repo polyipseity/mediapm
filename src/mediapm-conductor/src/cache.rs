@@ -1317,9 +1317,10 @@ mod tests {
     /// reference set. Observed: both this test and the flaky one pass with that
     /// guard reverted.
     ///
-    /// Forcing the overlap deterministically would need a hook inside
-    /// `write_index_file`, which is a product change rather than a test.
-    /// The deterministic guard for the inode mechanism lives at the CAS
+    /// The deterministic guard for that mechanism is
+    /// [`index_rewrite_never_hides_a_live_reference_from_the_prune_scan`],
+    /// which forces the rewrite window instead of hoping to land in it. The
+    /// deterministic guard for the inode mechanism lives at the CAS
     /// boundary, in
     /// `storage::blob_store::fs::tests::rewriting_an_existing_full_object_preserves_hardlink_identity`.
     #[tokio::test]
@@ -1369,6 +1370,129 @@ mod tests {
             cache.lookup_bytes("metadata", "key-b").await,
             Some(payload),
             "payload must survive cross-domain GC on the background prune path"
+        );
+    }
+
+    /// Pins the invariant that rewriting an index never leaves its
+    /// destination file absent, because the prune reference scan reads only
+    /// the `*.json` files under the cache root and reads a missing file as an
+    /// empty index.
+    ///
+    /// # Why the window is reachable in production
+    ///
+    /// [`prune_expired_inner_core`] Phase 2 rewrites the index of **every**
+    /// domain on **every** pass, before its `expired_keys.is_empty()` early
+    /// return, and the background maintenance loop walks all domains with no
+    /// cooldown gate. Phase 3's [`collect_referenced_hashes_from_indexes`]
+    /// then decides which expired payloads are unreferenced, and Phase 4
+    /// issues a `cas.delete` for each. When the only surviving reference to
+    /// a payload lives in the domain whose index is being rewritten at that
+    /// moment, a rewrite that is not a single atomic replacement makes the
+    /// scan read a live reference as absent, and the prune deletes a payload
+    /// that is still indexed.
+    ///
+    /// # How the overlap is forced
+    ///
+    /// A rewriting thread performs the other domain's Phase 2 write back to
+    /// back while a scanning thread runs the real Phase 3 scan for the whole
+    /// rewrite window. The reference under assertion lives *only* in the file
+    /// the writer rewrites, so the scan can miss it only while that file is
+    /// missing, never because of anything else. This is the same "drive the
+    /// racing operation explicitly instead of waiting for it" shape as
+    /// `hardlink_survives_later_wal_consumer_drain_of_the_same_blob` in
+    /// `mediapm`'s `materializer/file_ops.rs`: no sleeps, and the scan is
+    /// required to have sampled while the writer was still running, so the
+    /// race cannot pass vacuously.
+    #[test]
+    fn index_rewrite_never_hides_a_live_reference_from_the_prune_scan() {
+        /// Safety valve for the rewriting thread. It stops as soon as the
+        /// scanning thread is done, so a scan that fails early cannot leave
+        /// the rewriting thread running.
+        const MAX_REWRITES: u64 = 4096;
+        /// Scans still taken after the writer finished, so a writer that
+        /// outran the scanner cannot leave the race unobserved.
+        const MIN_SCANS: usize = 8;
+
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let content_path = root.path().join("tools.json");
+        let metadata_path = root.path().join("tool_metadata.json");
+
+        // The expired content row is already gone from the content index by
+        // the time Phase 3 scans, so the payload's only surviving reference
+        // is the metadata row — exactly the production shape.
+        let live_hash = Hash::from_bytes([42u8; 32]).to_string();
+        let content_index = super::CacheIndex {
+            version: super::INDEX_VERSION,
+            last_prune_unix_seconds: 1,
+            entries: std::collections::BTreeMap::from([(
+                "unrelated-key".to_string(),
+                super::CacheIndexEntry {
+                    hash: Hash::from_bytes([7u8; 32]).to_string(),
+                    last_access_unix_seconds: 1,
+                },
+            )]),
+        };
+        let metadata_index = super::CacheIndex {
+            version: super::INDEX_VERSION,
+            last_prune_unix_seconds: 1,
+            entries: std::collections::BTreeMap::from([(
+                "live-key".to_string(),
+                super::CacheIndexEntry { hash: live_hash.clone(), last_access_unix_seconds: 1 },
+            )]),
+        };
+        super::write_index_file(&content_path, &content_index).expect("seed content index");
+        super::write_index_file(&metadata_path, &metadata_index).expect("seed metadata index");
+
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (missed, scans, scans_during_rewrites) = std::thread::scope(|scope| {
+            let writer_path = metadata_path.clone();
+            let stop_flag = &stop;
+            let writer = scope.spawn(move || {
+                let mut round: u64 = 1;
+                while round <= MAX_REWRITES && !stop_flag.load(Ordering::Relaxed) {
+                    let mut index = metadata_index.clone();
+                    // Vary the bytes so every round really replaces the
+                    // destination instead of rewriting identical content.
+                    index.last_prune_unix_seconds = round;
+                    super::write_index_file(&writer_path, &index)
+                        .expect("rewrite the metadata index");
+                    round += 1;
+                }
+            });
+
+            let mut missed = 0usize;
+            let mut scans = 0usize;
+            let mut scans_during_rewrites = 0usize;
+            while !writer.is_finished() || scans < MIN_SCANS {
+                let references = super::collect_referenced_hashes_from_indexes(root.path());
+                scans += 1;
+                if !writer.is_finished() {
+                    scans_during_rewrites += 1;
+                }
+                if !references.contains(&live_hash) {
+                    missed += 1;
+                }
+            }
+            stop.store(true, Ordering::Relaxed);
+            writer.join().expect("index rewriting thread");
+            (missed, scans, scans_during_rewrites)
+        });
+
+        assert!(
+            scans_during_rewrites > 0,
+            "the prune scan never sampled while an index rewrite was in flight, so the race \
+             window was not exercised ({scans} scans, {scans_during_rewrites} of them during a \
+             rewrite)"
+        );
+        assert_eq!(
+            missed, 0,
+            "an index rewrite must replace its destination atomically: {missed} of {scans} prune \
+             scans could not see the live reference, so the prune would issue a cas.delete for a \
+             payload that is still indexed"
+        );
+        assert!(
+            super::collect_referenced_hashes_from_indexes(root.path()).contains(&live_hash),
+            "the live reference must be readable once every rewrite has landed"
         );
     }
 
