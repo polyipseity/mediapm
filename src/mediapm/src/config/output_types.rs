@@ -158,7 +158,6 @@ pub enum OutputVariantValue {
 }
 
 /// Simplified output variant policy used by workflow persistence.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputVariantPolicyConfig {
     /// Whether this variant's outputs are persisted.
@@ -188,7 +187,6 @@ impl From<&YtDlpOutputVariantConfig> for OutputVariantPolicyConfig {
 }
 
 /// Resolved per-step input/output variant mapping.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedStepVariantFlow {
     /// Input variant name consumed by one generated step.
@@ -199,7 +197,6 @@ pub struct ResolvedStepVariantFlow {
 
 /// Returns the default [`OutputCaptureKind`] for a generic output kind label.
 #[must_use]
-#[allow(dead_code)]
 pub fn default_generic_capture_kind_for_kind(kind: &str) -> OutputCaptureKind {
     match kind {
         "subtitles" | "thumbnails" | "chapters" | "links" => OutputCaptureKind::Folder,
@@ -209,7 +206,6 @@ pub fn default_generic_capture_kind_for_kind(kind: &str) -> OutputCaptureKind {
 
 /// Returns the default [`OutputCaptureKind`] for a yt-dlp output kind.
 #[must_use]
-#[allow(dead_code)]
 pub fn default_yt_dlp_capture_kind_for_kind(kind: YtDlpOutputKind) -> OutputCaptureKind {
     match kind {
         YtDlpOutputKind::Subtitles
@@ -230,7 +226,6 @@ pub fn default_yt_dlp_capture_kind_for_kind(kind: YtDlpOutputKind) -> OutputCapt
 /// Returns the underlying `serde_json` decoding error, prefixed with the
 /// variant key and the owning tool name, when `value` does not match that
 /// tool's output-variant shape.
-#[allow(dead_code)]
 pub fn decode_output_variant_config(
     tool: &MediaStep,
     variant_key: &str,
@@ -255,7 +250,6 @@ pub fn decode_output_variant_config(
 ///
 /// Returns the same decoding failure as [`decode_output_variant_config`] when
 /// `value` does not match the tool's output-variant shape.
-#[allow(dead_code)]
 pub fn decode_output_variant_policy(
     tool: &MediaStep,
     variant_key: &str,
@@ -276,7 +270,6 @@ pub fn decode_output_variant_policy(
 /// variants, when a non-source-ingest tool declares no input variant, when
 /// `output_variants` is empty, or when the input and output counts cannot be
 /// paired.
-#[allow(dead_code)]
 pub fn resolve_step_variant_flow(step: &MediaStep) -> Result<Vec<ResolvedStepVariantFlow>, String> {
     for output in step.output_variants.keys() {
         let output = output.trim();
