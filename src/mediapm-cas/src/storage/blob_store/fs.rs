@@ -13,7 +13,7 @@ use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::BlobStore;
-use super::versions::{hash_to_delta_path, hash_to_path};
+use super::versions::{CURRENT_BLOB_PATH_VERSION, hash_to_delta_path, hash_to_path};
 use crate::api::{ObjectEncoding, VerifyTriggerStrategy};
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -89,7 +89,9 @@ impl FileSystemBlobStore {
     /// Auxiliary files live in the hash's fan-out parent directory so they
     /// share the same 2‑level prefix layout as object blobs but without
     /// the trailing hex leaf:
-    /// `<root>/v1/blake3/ab/cd/<name>`
+    /// `<root>/<current-layout>/blake3/ab/cd/<name>`, where the layout segment
+    /// is [`CURRENT_BLOB_PATH_VERSION`] — a literal here would be a third
+    /// statement of which layout this store uses.
     fn aux_path(&self, hash: &Hash, name: &str) -> PathBuf {
         let blob_path = hash_to_path(&self.root, hash);
         // parent is `root/v1/blake3/ab/cd/`
@@ -401,7 +403,7 @@ impl BlobStore for FileSystemBlobStore {
     }
 
     async fn all_aux(&self, name: &str) -> Result<Vec<Bytes>, CasError> {
-        let fanout_root = self.root.join("v1").join("blake3");
+        let fanout_root = self.root.join(CURRENT_BLOB_PATH_VERSION).join("blake3");
         let mut results = Vec::new();
 
         let mut level1 = match fs::read_dir(&fanout_root).await {
