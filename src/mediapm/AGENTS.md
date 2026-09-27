@@ -8,9 +8,8 @@ Media orchestration facade over `mediapm-cas` and `mediapm-conductor`: media lib
 lib.rs                     — Re-exports, SyncSummary, ToolsSyncSummary, global cache ops
 main.rs                    — CLI dispatch (clap): sync, tool, media, hierarchy, cas, conductor
 error.rs                   — MediaPmError: 6 variants (see error-taxonomy.instructions.md)
-output.rs                  — CLI formatting (print_sync_summary)
+output/                    — CLI formatting + progress: mod.rs (print_sync_summary), observer.rs (CliSyncObserver), progress.rs (ProgressScreen re-exports)
 util.rs                    — first_non_empty_json_string helper
-http_client.rs             — Shared reqwest::Client (OnceLock)
 global.rs                  — MediaPmGlobalPaths, MEDIAPM_GIT_HASH
 paths.rs                   — MediaPmPaths (17 fields), MediaPmPathOverrides
 source_metadata.rs         — Local-source ffprobe probes + conductor CAS root
@@ -18,7 +17,6 @@ hierarchy.rs               — Hierarchy node mutation
 metadata_cache.rs          — JSON metadata cache, TTL-based expiry
 service.rs                 — MediaPmService<Cas> orchestration
 service_standalone.rs      — Standalone helpers (document loading, path resolution)
-test_util.rs               — Shared test Tokio runtime
 example_isolation.rs       — Example/test temp dirs, MEDIAPM_EXAMPLE_* env, cleanup (see example-temp-isolation.instructions.md)
   mod.rs                   —   MediaPmDocument, MediaPmState, MediaRuntimeStorage, re-exports
   defaults.rs              —   Constants (version=2, slot limits, cache TTLs, materialization order)
@@ -79,10 +77,12 @@ Four-document system, all with explicit top-level `version`:
 
 | Document | Default path | Owner | Purpose |
 | --- | --- | --- | --- |
-| `mediapm.ncl` | `<root>/mediapm.ncl` | User | Declares media, hierarchy, tools, runtime |
-| `<mediapm_dir>/conductor.ncl` | Generated | Conductor user intent + workflow defs | |
-| `<mediapm_dir>/conductor.generated.ncl` | Machine | Tool registry, resolved hashes | |
-| `<mediapm_dir>/state.json` | Machine | Per-media workflow state, managed files, hashes | |
+| `mediapm.ncl` | `<root>/mediapm.ncl` (`paths.mediapm_ncl`) | User | Declares media, hierarchy, tools, runtime |
+| `mediapm.conductor.ncl` | `<root>/mediapm.conductor.ncl` (`paths.conductor_user_ncl`) | User | Conductor user intent + workflow defs; never a reconcile save target |
+| `mediapm.conductor.generated.ncl` | `<root>/mediapm.conductor.generated.ncl` (`paths.conductor_generated_ncl`) | Machine | Tool registry, resolved hashes |
+| `state.json` | `<runtime_root>/state.json` (`paths.mediapm_state_json`; `<runtime_root>` defaults to `<root>/.mediapm`) | Machine | Per-media workflow state, managed files, hashes |
+
+The two conductor documents sit at the workspace root, not under `<mediapm_dir>`: `MediaPmPathOverrides.mediapm_dir` only moves `runtime_root` (`paths.rs`). Only the conductor-path overrides (`conductor_config`, `conductor_generated_config`, `conductor_state_config`, `conductor_schema_dir`) relocate those documents, each resolved relative to the `mediapm.ncl` parent directory.
 
 Config schema versioning (see `.agents/instructions/nickel.instructions.md` for the migration placement and strict version separation policies):
 
@@ -201,10 +201,13 @@ Follow this spec-first, test-first workflow:
 
 Every `ToolRegistryEntry` has a non-optional `canonical_version` (`String`). The semantic kind (VCS hash vs version) is fixed per tool at code-writing time:
 
-- **Builtin tools** (media-tagger): `MEDIAPM_GIT_HASH` (compile-time constant from `build.rs`).
-- **GitHub-release tools** (yt-dlp, ffmpeg, deno, rsgain, sd): the resolved tag name verbatim.
+- **Builtin launchers** (media-tagger, import): `MEDIAPM_GIT_HASH`, the compile-time constant emitted by `build.rs`.
+- **GitHub-release tools** (yt-dlp, deno, rsgain, sd): the resolved upstream commit hash, not the tag.
+- **ffmpeg**: the composite `"{autobuild_tag}+evermeet-{evermeet_version}"`; its two sources have no single commit hash, so neither a version nor a VCS hash identifies the artifact set.
 
-Skip logic: when `reconcile_desired_tools` finds the same `canonical_version` in `state.managed_tools` with a non-empty `content_map_hash`, provisioning is skipped for that tool. The `Ok(None)` branch still populates `canonical_version` from the resolved value. `canonical_version` defaults to `""` via `#[serde(default)]` for backward-compat with old state files.
+What the provider resolves is only the tool's own segment. The value persisted in `ToolRegistryEntry.canonical_version` is a **composite**: `compute_composite_canonical_version()` appends one `;{dep_id}:{dep_own_version}` segment per SameStep dependency, sorted by dep id, so a dep's version change re-provisions the requester. Dep segments are non-transitive — each carries the dep's own first segment, never the dep's own composite — and a tool with no SameStep deps stores the bare provider value unchanged. Skip detection compares the composite, not the bare value.
+
+Skip logic: when `reconcile_desired_tools` finds an entry in `state.managed_tools` whose composite `canonical_version` equals the freshly computed one and whose `content_map_hash` is non-empty, provisioning is skipped for that tool. The `Ok(None)` branch still populates `canonical_version` from the resolved value. `canonical_version` defaults to `""` via `#[serde(default)]` for backward-compat with old state files.
 
 ## Cache Architecture (Three-Tier)
 
