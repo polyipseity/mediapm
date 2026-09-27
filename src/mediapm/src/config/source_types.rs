@@ -171,17 +171,9 @@ pub enum TransformInputValue {
 
 /// Resolves one option key to a scalar string value when present.
 #[must_use]
-#[allow(dead_code)]
 pub fn step_option_scalar<'a>(step: &'a MediaStep, key: &str) -> Option<&'a str> {
     match step.options.get(key) {
         Some(TransformInputValue::String(value)) => Some(value.as_str()),
         _ => None,
     }
-}
-
-/// Returns true when one option key currently stores a scalar value.
-#[must_use]
-#[allow(dead_code)]
-pub fn has_step_option_scalar(step: &MediaStep, key: &str) -> bool {
-    step_option_scalar(step, key).is_some()
 }

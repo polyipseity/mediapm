@@ -308,41 +308,6 @@ impl<'de> Deserialize<'de> for HierarchyPath {
     }
 }
 
-/// Deserializes hierarchy field values using array-of-nodes semantics.
-///
-/// # Errors
-///
-/// Returns a deserialization error when [`flatten_hierarchy_value`] rejects the
-/// value, which happens when it is not an array of node objects.
-#[allow(dead_code)]
-pub fn deserialize_hierarchy_node_list<'de, D>(
-    deserializer: D,
-) -> Result<Vec<HierarchyNode>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Value::deserialize(deserializer)?;
-    flatten_hierarchy_value(value).map_err(serde::de::Error::custom)
-}
-
-/// Serializes hierarchy field values into array-of-nodes representation.
-///
-/// # Errors
-///
-/// Returns a serialization error when [`nest_hierarchy_value`] cannot encode
-/// the nodes, or when the encoded value cannot be written to `serializer`.
-#[allow(dead_code)]
-pub fn serialize_hierarchy_node_list<S>(
-    hierarchy: &[HierarchyNode],
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let encoded = nest_hierarchy_value(hierarchy).map_err(serde::ser::Error::custom)?;
-    encoded.serialize(serializer)
-}
-
 /// Wire representation for one variant selector entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]

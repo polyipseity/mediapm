@@ -18,10 +18,6 @@ use mediapm_conductor::cache::{Cache, CacheDomainConfig};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::error::ConductorError;
 
-/// User-agent string sent in HTTP requests by mediapm tools/downloaders.
-#[allow(dead_code)]
-pub const MEDIAPM_USER_AGENT: &str = concat!("mediapm/", env!("CARGO_PKG_VERSION"));
-
 /// Git hash of the mediapm build, embedded at compile time.
 /// Used as the canonical version for builtin tools (media-tagger).
 /// Empty (`""`) when git was unavailable at build time.

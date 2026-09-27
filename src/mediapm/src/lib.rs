@@ -882,47 +882,7 @@ pub(crate) fn conductor_run_workflow_options(
     }
 }
 
-/// Derives a fallback local title from one source path.
-#[must_use]
-#[allow(dead_code)]
-pub(crate) fn local_default_title(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(|| path.display().to_string(), |value| value.to_string_lossy().to_string())
-}
-
-/// Builds default description for one local media source.
-#[allow(dead_code)]
-#[must_use]
-pub(crate) fn build_local_default_description(path: &Path, title: &str, artist: &str) -> String {
-    let file_name = local_default_title(path);
-    let mut lines = vec![format!("file: {file_name}")];
-    lines.push(format!("title: {title}"));
-    lines.push(format!("artist: {artist}"));
-    lines.join("\n")
-}
-
-/// Resolves one local file extension value with a leading dot.
-///
-/// Missing extensions fall back to `.bin` so hierarchy interpolation keys can
-#[allow(dead_code)]
-/// remain defined for all local sources added through `media add --preset local`.
-#[must_use]
-pub(crate) fn local_extension_with_dot(path: &Path) -> String {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| ".bin".to_string(), |value| format!(".{value}"))
-}
-
 /// Builds default managed transform chain for one local-source CAS hash.
-///
-/// The generated chain keeps local ingest semantics aligned with
-/// `media add --preset local` defaults:
-#[allow(dead_code)]
-/// `import -> media-tagger -> rsgain`, while reusing one stable variant key
-/// across the full pipeline.
-#[must_use]
 pub(crate) fn local_source_default_steps(
     hash_text: &str,
     recording_mbid: Option<&str>,

@@ -16,8 +16,9 @@ use super::nickel_io::{parse_non_negative_integral_u32, parse_non_negative_integ
 ///
 /// Returns a deserialization error when the value is not a non-negative
 /// integral number representable as `u64` (negative, fractional, non-numeric,
-/// or out of range).
-#[allow(dead_code)]
+/// or out of range). Wired by name from a `#[serde(deserialize_with = ...)]`
+/// attribute, so the generated call is invisible to the compiler's
+/// reachability analysis.
 pub fn deserialize_u64_from_number<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,

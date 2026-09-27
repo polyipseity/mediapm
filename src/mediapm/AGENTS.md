@@ -11,7 +11,7 @@ error.rs                   — MediaPmError: 6 variants (see error-taxonomy.inst
 output.rs                  — CLI formatting (print_sync_summary)
 util.rs                    — first_non_empty_json_string helper
 http_client.rs             — Shared reqwest::Client (OnceLock)
-global.rs                  — MediaPmGlobalPaths, MEDIAPM_USER_AGENT
+global.rs                  — MediaPmGlobalPaths, MEDIAPM_GIT_HASH
 paths.rs                   — MediaPmPaths (17 fields), MediaPmPathOverrides
 source_metadata.rs         — Online/local metadata probes
 hierarchy.rs               — Hierarchy node mutation

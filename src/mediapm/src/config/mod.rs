@@ -56,16 +56,6 @@ use mediapm_conductor::tools::provider::ConfigVersionSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// Constants for default materialization methods used in the preferences list.
-#[allow(dead_code)]
-pub const MATERIALIZE_HARDLINK: &str = "hardlink";
-#[allow(dead_code)]
-pub const MATERIALIZE_SYMLINK: &str = "symlink";
-#[allow(dead_code)]
-pub const MATERIALIZE_REFLINK: &str = "reflink";
-#[allow(dead_code)]
-pub const MATERIALIZE_COPY: &str = "copy";
-
 /// Supported file materialization methods in preference order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -91,39 +81,6 @@ impl MaterializationMethod {
             Self::Reflink => "reflink",
             Self::Copy => "copy",
         }
-    }
-}
-
-/// Deserializes a materialization method or named-object form from Nickel.
-///
-/// # Errors
-///
-/// Returns a deserialization error when the value is neither a materialization
-/// method name accepted by [`MaterializationMethod`] nor an object carrying a
-/// string `method` field.
-#[allow(dead_code)]
-pub fn deserialize_materialization_method<'de, D>(
-    deserializer: D,
-) -> Result<MaterializationMethod, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Value::deserialize(deserializer)?;
-
-    match &value {
-        Value::String(_name) => serde_json::from_value(value).map_err(serde::de::Error::custom),
-        Value::Object(obj) => {
-            let method_name = obj.get("method").and_then(|v| v.as_str()).ok_or_else(|| {
-                serde::de::Error::custom(
-                    "materialization preference objects must have a 'method' string field",
-                )
-            })?;
-            serde_json::from_value(Value::String(method_name.to_string()))
-                .map_err(serde::de::Error::custom)
-        }
-        _ => Err(serde::de::Error::custom(
-            "materialization preference must be a string (method name) or object with 'method'",
-        )),
     }
 }
 
