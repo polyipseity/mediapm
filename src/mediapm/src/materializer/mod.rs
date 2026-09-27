@@ -1159,7 +1159,7 @@ mod tests {
         HierarchyNode, HierarchyNodeKind, HierarchyPath, PlaylistFormat, SanitizeNamesConfig,
     };
     use crate::config::source_types::{MediaSourceSpec, MediaStep, MediaStepTool};
-    use crate::config::{GenericOutputVariantConfig, OutputVariantValue};
+    use crate::config::{GenericOutputVariantConfig, MediaMetadataValue, OutputVariantValue};
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
     use std::path::Path;
 
@@ -1446,6 +1446,32 @@ mod tests {
         FileSystemCas::open(&cas_root).await.unwrap()
     }
 
+    /// Builds a one-media-entry document whose source declares `metadata_key` as
+    /// `metadata_value`, in addition to the shape [`single_media_document`]
+    /// builds.
+    ///
+    /// The metadata-carrying form exists because a media id is no longer a
+    /// legal route for unvalidated text into a path component:
+    /// `config::hierarchy_types::validate_media_id` rejects a separator at the
+    /// config boundary, so `${media.id}` can no longer reach the sanitizing
+    /// stage. `${media.metadata.<key>}` is the interpolation that still carries
+    /// text the user does not control, and therefore the one the sanitizing
+    /// stage must normalize.
+    fn single_media_document_with_metadata(
+        media_id: &str,
+        metadata_key: &str,
+        metadata_value: &str,
+        path: HierarchyPath,
+    ) -> MediaPmDocument {
+        let mut document = single_media_document(media_id, path);
+        let source = document.media.get_mut(media_id).unwrap();
+        source.metadata.insert(
+            metadata_key.to_string(),
+            MediaMetadataValue::Literal(metadata_value.to_string()),
+        );
+        document
+    }
+
     /// End-to-end negative control for hierarchy path validation on the
     /// materializer commit path.
     ///
@@ -1504,21 +1530,33 @@ mod tests {
     /// End-to-end proof that the *sanitized* component — not the raw
     /// interpolated one — is what the commit path uses.
     ///
-    /// The media id `a/b` is an unvalidated `media` map key, and
-    /// `${media.id}` interpolation is how externally sourced text first
-    /// reaches a hierarchy path component. Before the chain was wired in, the
-    /// per-entry staging bar was labelled `a/b [stg]`, i.e. the separator
-    /// survived into a path component that `hierarchy_root.join(...)` would
-    /// split. The effective `SanitizeNamesConfig` for this entry resolves to
-    /// `Enabled` (the flattening default), so the separator is rewritten to
-    /// `_` and the commit path sees `a_b`.
+    /// A metadata value is text the user does not control (a tag, an ffprobe
+    /// string, an upstream title), and `${media.metadata.<key>}` interpolation
+    /// is how it first reaches a hierarchy path component. Before the chain was
+    /// wired in, the per-entry staging bar was labelled with the raw
+    /// `AC/DC [stg]`, i.e. the separator survived into a path component that
+    /// `hierarchy_root.join(...)` would split. The effective
+    /// `SanitizeNamesConfig` for this entry resolves to `Enabled` (the
+    /// flattening default), so the separator is rewritten to `_` and the commit
+    /// path sees `AC_DC`.
+    ///
+    /// The `${media.id}` route this test originally used is no longer a case:
+    /// `config::hierarchy_types::validate_media_id` rejects a separator in a
+    /// media id at the config boundary, because an id is the user's own key and
+    /// splitting it between the state and the disk is an identity split rather
+    /// than a spelling the materializer may fix.
     #[tokio::test]
     async fn regression_sync_hierarchy_sanitizes_interpolated_path_component() {
         let root = mediapm_utils::temp::artifact_dir().unwrap();
         let paths = MediaPmPaths::from_root(root.path());
         let cas = open_hierarchy_cas(&paths).await;
 
-        let document = single_media_document("a/b", HierarchyPath::simple("${media.id}"));
+        let document = single_media_document_with_metadata(
+            "src1",
+            "artist",
+            "AC/DC",
+            HierarchyPath::simple("${media.metadata.artist}"),
+        );
         let mut state = MediaPmState::default();
         let conductor_state = ConductorState::new_empty();
         let generated_doc = NickelDocument::default();
@@ -1547,9 +1585,9 @@ mod tests {
                     prefix: "[mat] materializing".into(),
                     suffix: String::new(),
                 },
-                ProgressOp::AddBar { total: 3, label: "a_b [stg]".into() },
-                ProgressOp::SetTruncation { prefix: "[stg] a_b".into(), suffix: String::new() },
-                ProgressOp::SetTruncation { prefix: "[vrf] a_b".into(), suffix: String::new() },
+                ProgressOp::AddBar { total: 3, label: "AC_DC [stg]".into() },
+                ProgressOp::SetTruncation { prefix: "[stg] AC_DC".into(), suffix: String::new() },
+                ProgressOp::SetTruncation { prefix: "[vrf] AC_DC".into(), suffix: String::new() },
                 ProgressOp::Advance { delta: 1 },
                 ProgressOp::FinishWarning,
                 ProgressOp::Advance { delta: 1 },

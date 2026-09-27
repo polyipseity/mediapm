@@ -641,6 +641,7 @@ fn flatten_hierarchy_nodes_inner(
                 let media_id = node.media_id.clone().ok_or_else(|| {
                     MediaPmError::Workflow("media node must define media_id".into())
                 })?;
+                validate_media_id(&media_id)?;
                 let variant = node.variant.clone().ok_or_else(|| {
                     MediaPmError::Workflow("media node must define variant".into())
                 })?;
@@ -663,6 +664,7 @@ fn flatten_hierarchy_nodes_inner(
                 let media_id = node.media_id.clone().ok_or_else(|| {
                     MediaPmError::Workflow("media_folder node must define media_id".into())
                 })?;
+                validate_media_id(&media_id)?;
 
                 output.push(FlattenedHierarchyEntry {
                     path_components: resolved_components.clone(),
@@ -733,6 +735,80 @@ pub(crate) fn check_nfd_source(components: &[&str]) -> Result<(), MediaPmError> 
             )));
         }
     }
+    Ok(())
+}
+
+/// Validates one user-authored media id at the config boundary.
+///
+/// A `media` map key is a single identity with three consumers: it is
+/// interpolated into `${media.id}` path templates, it keys
+/// `state.workflow_states`, and it is carried in every `ManagedFileRecord`.
+/// A shape that one of those consumers rewrites is therefore an identity split,
+/// not a cosmetic problem — a key `a/b` reaches disk as `a_b` while the state
+/// records `a/b`, and no later join between the two finds the file.
+///
+/// The rules below are exactly the shapes that break that identity:
+///
+/// - **empty** — names no source to join against.
+/// - **control character** — reaches log lines unescaped and has no filename
+///   spelling on any platform.
+/// - **leading or trailing whitespace** — one lookup trims the id before
+///   joining it against the `media` map (`materializer::metadata`) and another
+///   does not (`materializer::resolve`), so a padded id resolves on one path
+///   and not the other.
+/// - **path separator** — re-splits into extra path components on the way to
+///   disk while the state keeps the unsplit spelling.
+/// - **`.` or `..`** — the traversal components, which
+///   [`validate_hierarchy_path_component`] does not reject on its own.
+///
+/// Rejection, not sanitization, is the correct policy here for the same reason
+/// [`check_nfd_source`] rejects: the key is user-authored, so the user can
+/// spell it correctly. The materializer's
+/// [`crate::materializer::sanitize_and_validate_hierarchy_paths`] still
+/// *normalizes* the components that carry metadata the user does not control —
+/// the two stages are complementary, and this is the earlier one.
+///
+/// The id is rendered with [`str::escape_debug`] in every message, so a
+/// control character is reported as a code point instead of being written into
+/// the log line that carries the diagnostic.
+///
+/// # Errors
+///
+/// Returns a distinct [`MediaPmError::Workflow`] per rule, naming the offending
+/// id and the rule it violates.
+pub(crate) fn validate_media_id(media_id: &str) -> Result<(), MediaPmError> {
+    if media_id.is_empty() {
+        return Err(MediaPmError::Workflow("media id must be non-empty".to_string()));
+    }
+
+    let escaped = media_id.escape_debug().to_string();
+
+    for ch in media_id.chars() {
+        if ch.is_control() {
+            return Err(MediaPmError::Workflow(format!(
+                "media id '{escaped}' contains the control character U+{:04X}",
+                u32::from(ch)
+            )));
+        }
+        if matches!(ch, '/' | '\\') {
+            return Err(MediaPmError::Workflow(format!(
+                "media id '{escaped}' contains the path separator '{ch}'"
+            )));
+        }
+    }
+
+    if media_id.trim() != media_id {
+        return Err(MediaPmError::Workflow(format!(
+            "media id '{escaped}' has leading or trailing whitespace"
+        )));
+    }
+
+    if media_id == "." || media_id == ".." {
+        return Err(MediaPmError::Workflow(format!(
+            "media id '{escaped}' must not be '.' or '..'"
+        )));
+    }
+
     Ok(())
 }
 
@@ -1027,6 +1103,137 @@ mod tests {
     fn check_nfd_source_rejects_nfc() {
         let err = check_nfd_source(&["caf\u{e9}"]).unwrap_err();
         assert!(err.to_string().contains("must be NFD-normalized"));
+    }
+
+    /// Builds the minimal media node the media-id rules are exercised on.
+    ///
+    /// Only `media_id` varies; the path component is a plain, already-valid
+    /// literal so a rejection can only come from the media id itself.
+    fn media_node_with_id(media_id: &str) -> HierarchyNode {
+        HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("video"),
+            media_id: Some(media_id.to_string()),
+            variant: Some("hq".to_string()),
+            ..base_node()
+        }
+    }
+
+    /// Flattens a media node bound to `media_id` and returns the rejection
+    /// message, failing the test when the boundary accepted the id.
+    fn media_id_rejection(media_id: &str) -> String {
+        flatten_hierarchy_nodes_for_runtime(&[media_node_with_id(media_id)])
+            .map(|flattened| {
+                panic!(
+                    "media id '{media_id}' must be rejected at the config boundary, got {} entr(y/ies)",
+                    flattened.len()
+                )
+            })
+            .unwrap_err()
+            .to_string()
+    }
+
+    /// Asserts the rejection names the offending id and the violated rule.
+    fn assert_media_id_rejected(media_id: &str, rule: &str) {
+        let message = media_id_rejection(media_id);
+        assert!(
+            message.contains(&media_id.escape_debug().to_string()),
+            "the rejection must name the offending media id '{media_id}'; got: {message}"
+        );
+        assert!(
+            message.contains(rule),
+            "the rejection must state the violated rule '{rule}'; got: {message}"
+        );
+    }
+
+    /// A media id carrying a path separator is rejected.
+    ///
+    /// The id is interpolated into `${media.id}` path templates, so a
+    /// separator here is the one spelling that reaches a filesystem join while
+    /// the state keys keep the unsplit form: the same media written to disk as
+    /// `a_b` and recorded in `workflow_states` as `a/b`.
+    #[test]
+    fn strict_media_id_rejects_path_separator() {
+        assert_media_id_rejected("a/b", "path separator");
+    }
+
+    /// The Windows separator form is rejected by the same rule as `/`.
+    #[test]
+    fn strict_media_id_rejects_backslash_separator() {
+        assert_media_id_rejected("a\\b", "path separator");
+    }
+
+    /// A media id that *is* a path traversal component is rejected.
+    #[test]
+    fn strict_media_id_rejects_dotdot() {
+        assert_media_id_rejected("..", "must not be '.' or '..'");
+    }
+
+    /// A media id that is the current-directory component is rejected too.
+    #[test]
+    fn strict_media_id_rejects_dot() {
+        assert_media_id_rejected(".", "must not be '.' or '..'");
+    }
+
+    /// A media id carrying a control character is rejected, and the rejection
+    /// reports the code point rather than embedding the raw character — the
+    /// raw form would split the log line that carries the message.
+    #[test]
+    fn strict_media_id_rejects_control_character() {
+        let message = media_id_rejection("a\nb");
+        assert!(
+            message.contains("control character U+000A"),
+            "the rejection must name the control code point; got: {message}"
+        );
+        assert!(
+            !message.contains('\n'),
+            "the rejection must not embed the raw control character; got: {message:?}"
+        );
+    }
+
+    /// A media id with leading whitespace is rejected.
+    ///
+    /// This is the rule that closes the trim asymmetry: one lookup trims the
+    /// id before joining it against the `media` map and another does not, so a
+    /// padded id resolves on one path and not the other.
+    #[test]
+    fn strict_media_id_rejects_leading_whitespace() {
+        assert_media_id_rejected(" vid1", "leading or trailing whitespace");
+    }
+
+    /// A media id with trailing whitespace is rejected by the same rule.
+    #[test]
+    fn strict_media_id_rejects_trailing_whitespace() {
+        assert_media_id_rejected("vid1 ", "leading or trailing whitespace");
+    }
+
+    /// An empty media id is rejected; it names no source to join against.
+    #[test]
+    fn strict_media_id_rejects_empty() {
+        let message = media_id_rejection("");
+        assert!(
+            message.contains("media id must be non-empty"),
+            "the empty-id rejection must state the rule; got: {message}"
+        );
+    }
+
+    /// An ordinary media id is accepted, so the rule rejects only the shapes
+    /// that break identity and not the ids the tree already uses.
+    #[test]
+    fn media_id_accepts_plain_id() {
+        let flattened = flatten_hierarchy_nodes_for_runtime(&[media_node_with_id("vid1")])
+            .expect("a plain media id must stay accepted");
+        assert_eq!(flattened[0].entry.media_id, "vid1");
+    }
+
+    /// A dotted media id stays accepted: the rule targets the traversal
+    /// components `.` and `..` as whole ids, not any id containing a dot.
+    #[test]
+    fn media_id_accepts_dotted_id() {
+        let flattened =
+            flatten_hierarchy_nodes_for_runtime(&[media_node_with_id("youtube.dQw4w9WgXcQ")])
+                .expect("the demo's dotted media id must stay accepted");
+        assert_eq!(flattened[0].entry.media_id, "youtube.dQw4w9WgXcQ");
     }
 
     #[test]
