@@ -1248,4 +1248,42 @@ mod tests {
         .expect_err("unknown ConductorRuntimeConfigLatest field must be rejected");
         assert!(format!("{err}").contains("bogus_field"));
     }
+
+    /// Documents that a boundary `ConductorRuntimeConfigLatest` with
+    /// `retry_impure: None` resolves to `false` and an empty platform env
+    /// config through the `From` impl (no `Option` leaks into the resolved type).
+    #[test]
+    fn conductor_runtime_config_from_latest_none_retry_impure_false() {
+        let latest = ConductorRuntimeConfigLatest {
+            environment: RuntimePlatformEnvConfigLatest::default(),
+            retry_impure: None,
+        };
+        let cfg: crate::config::ConductorRuntimeConfig = latest.into();
+        assert!(!cfg.retry_impure);
+        assert!(cfg.environment.platform_inherited_env_vars.windows.is_empty());
+        assert!(cfg.environment.platform_inherited_env_vars.linux.is_empty());
+        assert!(cfg.environment.platform_inherited_env_vars.macos.is_empty());
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Documents that the `SaveMode` to `SaveModeLatest` conversion is lossless
+        /// in both directions: this boundary has no `From` impl, so the mapping is
+        /// written out here to pin the variant correspondence.
+        #[test]
+        fn save_mode_conversion_roundtrip(mode: SaveMode) {
+            let latest: SaveModeLatest = match mode {
+                SaveMode::True => SaveModeLatest::True,
+                SaveMode::False => SaveModeLatest::False,
+                SaveMode::Full => SaveModeLatest::Full,
+            };
+            let back = match latest {
+                SaveModeLatest::True => SaveMode::True,
+                SaveModeLatest::False => SaveMode::False,
+                SaveModeLatest::Full => SaveMode::Full,
+            };
+            prop_assert_eq!(mode, back, "SaveMode roundtrip failed for mode={:?}", mode);
+        }
+    }
 }

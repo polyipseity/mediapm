@@ -12,7 +12,7 @@ use tokio::sync::OnceCell;
 use crate::api::{
     ConductorApi, RunSummary, RunWorkflowOptions, RuntimeDiagnostics, RuntimeStoragePaths,
 };
-use crate::config::documents::{NickelDocument, SourceDocument, merge_documents};
+use crate::config::documents::NickelDocument;
 use crate::config::versions;
 use crate::error::ConductorError;
 use crate::orchestration::node::ConductorActorClient;
@@ -220,14 +220,7 @@ where
         // Check for duplicate tool name across ALL existing configs (merged view).
         let config_paths = discover_config_paths(self.storage_paths());
         if !config_paths.is_empty() {
-            let source_docs: Vec<SourceDocument> = config_paths
-                .into_iter()
-                .map(|path| {
-                    let envelope = crate::cli_document_io::load_document_envelope(&path)?;
-                    Ok(SourceDocument { path, envelope })
-                })
-                .collect::<Result<Vec<_>, ConductorError>>()?;
-            let merged = merge_documents(&source_docs)?;
+            let merged = versions::merge_document_sources(&config_paths)?;
             if merged.tools.contains_key(name) {
                 return Err(ConductorError::Workflow(format!(
                     "tool '{name}' already exists in a config document"
@@ -470,15 +463,7 @@ fn load_unified_config(
 ) -> Result<UnifiedNickelDocument, ConductorError> {
     let config_paths = discover_config_paths(storage_paths);
 
-    let source_docs: Vec<SourceDocument> = config_paths
-        .into_iter()
-        .map(|path| {
-            let envelope = crate::cli_document_io::load_document_envelope(&path)?;
-            Ok(SourceDocument { path, envelope })
-        })
-        .collect::<Result<Vec<_>, ConductorError>>()?;
-
-    let merged = merge_documents(&source_docs)?;
+    let merged = versions::merge_document_sources(&config_paths)?;
     Ok(merged.to_unified())
 }
 

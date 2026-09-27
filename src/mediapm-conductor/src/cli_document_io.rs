@@ -27,27 +27,6 @@ pub(crate) fn load_document(path: &Path) -> Result<NickelDocument, ConductorErro
     crate::config::versions::decode_document(&bytes)
 }
 
-/// Loads the raw latest-schema wire envelope from a `.ncl` file path.
-///
-/// Unlike [`load_document`], this applies NO boundary defaults, preserving
-/// which fields were explicitly written in the source document.  Used by
-/// multi-document merging (explicit beats implicit).
-///
-/// # Errors
-///
-/// Returns [`ConductorError::Io`] when the file cannot be read, or wraps
-/// any Nickel evaluation or version‑migration error.
-pub(crate) fn load_document_envelope(
-    path: &Path,
-) -> Result<crate::config::NickelEnvelopeLatest, ConductorError> {
-    let bytes = std::fs::read(path).map_err(|source| ConductorError::Io {
-        operation: "reading config document".to_string(),
-        path: path.to_path_buf(),
-        source,
-    })?;
-    crate::config::versions::decode_document_envelope(&bytes)
-}
-
 /// Saves a `NickelDocument` to a `.ncl` file.
 ///
 /// Encodes the document through the latest‑schema envelope and writes the
@@ -63,9 +42,9 @@ pub(crate) fn load_document_envelope(
 /// any encoding error.
 pub(crate) fn save_document(path: &Path, document: &NickelDocument) -> Result<(), ConductorError> {
     let mut outgoing = document.clone();
-    if let Ok(old) = load_document_envelope(path) {
-        preserve_readable_fields(&mut outgoing, &old);
-    }
+    // A missing, unreadable, or unparseable previous file simply means there
+    // are no human-readable fields to carry forward; the save itself proceeds.
+    let _ = crate::config::versions::restore_readable_fields(&mut outgoing, path);
     let bytes = crate::config::versions::encode_document(outgoing)?;
     std::fs::write(path, &bytes).map_err(|source| ConductorError::Io {
         operation: "writing config document".to_string(),
@@ -74,55 +53,35 @@ pub(crate) fn save_document(path: &Path, document: &NickelDocument) -> Result<()
     })
 }
 
-/// Copies human-readable fields from the old wire envelope onto the outgoing
-/// document for entries that already exist there; fresh entries keep `None`.
-///
-/// Only fills fields that are currently `None` — an explicit value in the
-/// outgoing document always wins (explicit beats implicit).
-fn preserve_readable_fields(
-    outgoing: &mut NickelDocument,
-    old: &crate::config::NickelEnvelopeLatest,
-) {
-    for (hash, old_entry) in &old.external_data {
-        if let Some(entry) =
-            outgoing.external_data.get_mut(hash).filter(|entry| entry.description.is_none())
-        {
-            entry.description.clone_from(&old_entry.description);
-        }
-    }
-    for old_workflow in &old.workflows {
-        if let Some(new_workflow) =
-            outgoing.workflows.iter_mut().find(|w| w.name == old_workflow.name)
-        {
-            if new_workflow.display_name.is_none() {
-                new_workflow.display_name.clone_from(&old_workflow.display_name);
-            }
-            if new_workflow.description.is_none() {
-                new_workflow.description.clone_from(&old_workflow.description);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use mediapm_cas::Hash;
 
     use super::*;
-    use crate::config::{
-        ConductorRuntimeConfigLatest, NICKEL_VERSION_LATEST, NickelEnvelopeLatest,
-    };
+    use crate::config::{ExternalDataEntry, WorkflowSpec};
+    use crate::state::OutputSaveMode;
 
-    /// Builds an empty latest-schema wire envelope.
-    fn envelope() -> NickelEnvelopeLatest {
-        NickelEnvelopeLatest {
-            version: NICKEL_VERSION_LATEST,
-            tools: BTreeMap::new(),
-            workflows: Vec::new(),
-            external_data: BTreeMap::new(),
-            runtime: ConductorRuntimeConfigLatest::default(),
+    /// Builds a resolved document with no tools, workflows, or external data.
+    fn empty_document() -> NickelDocument {
+        NickelDocument::default()
+    }
+
+    /// Builds a resolved external-data entry.
+    fn external_data(description: Option<&str>) -> ExternalDataEntry {
+        ExternalDataEntry {
+            description: description.map(ToOwned::to_owned),
+            save_mode: OutputSaveMode::Saved,
+        }
+    }
+
+    /// Builds a resolved workflow with the given human-readable fields.
+    fn workflow(display_name: Option<&str>, description: Option<&str>) -> WorkflowSpec {
+        WorkflowSpec {
+            name: "w".to_string(),
+            display_name: display_name.map(ToOwned::to_owned),
+            description: description.map(ToOwned::to_owned),
+            impure: false,
+            steps: Vec::new(),
         }
     }
 
@@ -135,29 +94,13 @@ mod tests {
         let path = dir.path().join("conductor.ncl");
         let hash = Hash::from_content(b"payload");
 
-        let mut env = envelope();
-        env.external_data.insert(
-            hash,
-            crate::config::ExternalDataEntryLatest {
-                hash: Some(hash),
-                description: Some("original description".to_string()),
-                save_mode: None,
-            },
-        );
-        let first: NickelDocument = env.into();
+        let mut first = empty_document();
+        first.external_data.insert(hash, external_data(Some("original description")));
         save_document(&path, &first).unwrap();
 
         // Rebuilt document: same hash, description lost (None).
-        let mut rebuilt_env = envelope();
-        rebuilt_env.external_data.insert(
-            hash,
-            crate::config::ExternalDataEntryLatest {
-                hash: Some(hash),
-                description: None,
-                save_mode: None,
-            },
-        );
-        let rebuilt: NickelDocument = rebuilt_env.into();
+        let mut rebuilt = empty_document();
+        rebuilt.external_data.insert(hash, external_data(None));
         save_document(&path, &rebuilt).unwrap();
 
         let loaded = load_document(&path).unwrap();
@@ -174,27 +117,13 @@ mod tests {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let path = dir.path().join("conductor.ncl");
 
-        let mut env = envelope();
-        env.workflows.push(crate::config::WorkflowSpecLatest {
-            name: "w".to_string(),
-            display_name: Some("Human name".to_string()),
-            description: Some("Human description".to_string()),
-            impure: false,
-            steps: Vec::new(),
-        });
-        let first: NickelDocument = env.into();
+        let mut first = empty_document();
+        first.workflows.push(workflow(Some("Human name"), Some("Human description")));
         save_document(&path, &first).unwrap();
 
         // Rebuilt document: same workflow name, human fields lost (None).
-        let mut rebuilt_env = envelope();
-        rebuilt_env.workflows.push(crate::config::WorkflowSpecLatest {
-            name: "w".to_string(),
-            display_name: None,
-            description: None,
-            impure: false,
-            steps: Vec::new(),
-        });
-        let rebuilt: NickelDocument = rebuilt_env.into();
+        let mut rebuilt = empty_document();
+        rebuilt.workflows.push(workflow(None, None));
         save_document(&path, &rebuilt).unwrap();
 
         let loaded = load_document(&path).unwrap();
@@ -210,28 +139,12 @@ mod tests {
         let path = dir.path().join("conductor.ncl");
         let hash = Hash::from_content(b"payload");
 
-        let mut env = envelope();
-        env.external_data.insert(
-            hash,
-            crate::config::ExternalDataEntryLatest {
-                hash: Some(hash),
-                description: Some("old description".to_string()),
-                save_mode: None,
-            },
-        );
-        let first: NickelDocument = env.into();
+        let mut first = empty_document();
+        first.external_data.insert(hash, external_data(Some("old description")));
         save_document(&path, &first).unwrap();
 
-        let mut new_env = envelope();
-        new_env.external_data.insert(
-            hash,
-            crate::config::ExternalDataEntryLatest {
-                hash: Some(hash),
-                description: Some("new description".to_string()),
-                save_mode: None,
-            },
-        );
-        let new_doc: NickelDocument = new_env.into();
+        let mut new_doc = empty_document();
+        new_doc.external_data.insert(hash, external_data(Some("new description")));
         save_document(&path, &new_doc).unwrap();
 
         let loaded = load_document(&path).unwrap();
@@ -247,16 +160,8 @@ mod tests {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let path = dir.path().join("fresh.ncl");
 
-        let mut env = envelope();
-        env.external_data.insert(
-            Hash::from_content(b"payload"),
-            crate::config::ExternalDataEntryLatest {
-                hash: None,
-                description: None,
-                save_mode: None,
-            },
-        );
-        let doc: NickelDocument = env.into();
+        let mut doc = empty_document();
+        doc.external_data.insert(Hash::from_content(b"payload"), external_data(None));
         save_document(&path, &doc).unwrap();
 
         let loaded = load_document(&path).unwrap();

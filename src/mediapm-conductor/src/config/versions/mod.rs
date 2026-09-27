@@ -13,16 +13,24 @@
 //!   `supported_versions`, and `migrate_to`, and each `vN.ncl` owns the
 //!   migration into itself. Do not re-introduce a parallel Rust dispatcher
 //!   over the same versions.
-//! - `v_latest.rs` owns the active `*Latest` boundary family; `config/mod.rs`
-//!   owns only the resolved (option-free) types and delegates through
-//!   `from_boundary`.
-//! - Do not directly re-export `vX` wire structs as public API; expose
-//!   unversioned functions and keep versioned internals encapsulated.
+//! - `v_latest.rs` owns the active `*Latest` boundary family. This module is
+//!   the ONLY bridge between that family and the resolved (option-free) types
+//!   in `config/mod.rs`: [`from_boundary`] (read direction), [`into_boundary`]
+//!   (encode direction), and [`merge_document_sources`] (multi-document load +
+//!   merge) all live here. `config/mod.rs` names no version path at all.
+//! - This module MAY import from `v_latest`, but MUST NOT re-export any
+//!   versioned symbol outside `versions/`. A re-export would let an outside
+//!   caller name a `*Latest` type, which is the leak these entry points exist
+//!   to close.
 //! - `resolve_version_contract` is the registry: a version this build cannot
 //!   name a contract file for must be an error, never a fallback to the
 //!   newest contract.
 
 pub(crate) mod v_latest;
+
+mod merge;
+
+use std::path::{Path, PathBuf};
 
 use crate::error::ConductorError;
 
@@ -52,6 +60,107 @@ pub(super) fn resolve_version_contract(
 }
 
 // ---------------------------------------------------------------------------
+// Boundary entry points
+//
+// These are the ONLY way to cross between the `*Latest` wire family and the
+// resolved runtime types. None of them names a `*Latest` type in its
+// signature, so a caller outside `versions/` cannot construct one to pass in.
+// ---------------------------------------------------------------------------
+
+/// Resolves a raw Nickel document source into the runtime config document.
+///
+/// This is the read-direction boundary entry point: it parses (evaluating the
+/// source through the versioned migration pipeline) and then resolves boundary
+/// defaults in one step, so the caller never handles a `*Latest` value. The
+/// `content_map` subset `external_data` invariant is enforced before the
+/// resolved document is returned.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Serialization`] when the source is not valid
+/// UTF-8 or Nickel evaluation/migration fails, and
+/// [`ConductorError::Workflow`] when the resolved document violates the
+/// `content_map` subset `external_data` invariant.
+pub(crate) fn from_boundary(source: &str) -> Result<crate::config::NickelDocument, ConductorError> {
+    let envelope: v_latest::NickelEnvelopeLatest =
+        evaluate_document_source(source, "configuration document")?;
+    let doc: crate::config::NickelDocument = envelope.into();
+    doc.validate_external_data_invariant()?;
+    Ok(doc)
+}
+
+/// Converts a runtime config document into the latest-schema wire envelope.
+///
+/// This is the encode-direction boundary entry point: the `From` bridges in
+/// `v_latest` apply boundary defaults, so the conversion is driven from inside
+/// `versions/` and the caller never names the `*Latest` type it receives.
+///
+/// The caller is responsible for validating the `content_map` subset
+/// `external_data` invariant first (see [`encode_document`]).
+pub(crate) fn into_boundary(
+    document: crate::config::NickelDocument,
+) -> v_latest::NickelEnvelopeLatest {
+    document.into()
+}
+
+/// Returns the schema version marker of the active boundary family.
+///
+/// Replaces direct use of the `NICKEL_VERSION_LATEST` constant outside
+/// `versions/`, so the marker is read through the version module rather than
+/// imported from it.
+pub(crate) fn latest_version() -> u32 {
+    v_latest::NICKEL_VERSION_LATEST
+}
+
+/// Loads, merges, and resolves every configuration document at `paths`.
+///
+/// This is the multi-document entry point. Merging is presence-preserving
+/// (explicit beats implicit) and therefore operates on the raw wire envelope,
+/// so it lives in [`merge`]. Routing load and merge through a single call
+/// keeps [`merge::SourceDocument`] — and the `*Latest` type it wraps —
+/// unnameable from outside `versions/`.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Io`] when a document cannot be read,
+/// [`ConductorError::Serialization`] when a document is not valid UTF-8 or
+/// fails Nickel evaluation/migration, and [`ConductorError::Workflow`] when
+/// the merged documents conflict or violate the `content_map` subset
+/// `external_data` invariant.
+pub(crate) fn merge_document_sources(
+    paths: &[PathBuf],
+) -> Result<crate::config::NickelDocument, ConductorError> {
+    let sources = paths
+        .iter()
+        .map(|path| merge::load_source(path.as_path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    merge::merge_documents(&sources)
+}
+
+/// Restores human-readable fields from the document previously written at
+/// `previous_path` onto `outgoing`.
+///
+/// `external_data` descriptions and workflow `display_name`/`description` are
+/// not derivable from the resolved document, so re-saving a rebuilt document
+/// would otherwise drop them. Only fields that are currently `None` on
+/// `outgoing` are filled: an explicit outgoing value always wins.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Io`] when the previous document cannot be read,
+/// and [`ConductorError::Serialization`] when it is not valid UTF-8 or fails
+/// Nickel evaluation/migration. Callers that treat an absent or unreadable
+/// previous document as "nothing to preserve" should discard this error.
+pub(crate) fn restore_readable_fields(
+    outgoing: &mut crate::config::NickelDocument,
+    previous_path: &Path,
+) -> Result<(), ConductorError> {
+    let previous = merge::load_source(previous_path)?;
+    merge::preserve_readable_fields(outgoing, &previous.envelope);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Document encoding / decoding (inlined from the removed iso.rs)
 // ---------------------------------------------------------------------------
 
@@ -70,7 +179,7 @@ pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8
     // save), preventing silent production of an invalid document that would
     // fail on the next decode.
     document.validate_external_data_invariant()?;
-    let envelope: v_latest::NickelEnvelopeLatest = document.into();
+    let envelope = into_boundary(document);
     let bytes =
         mediapm_utils::nickel::render_document_as_nickel(&envelope, "configuration document")
             .map_err(ConductorError::Serialization)?;
@@ -94,9 +203,10 @@ pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8
 /// Returns [`ConductorError`] when the bytes are not valid UTF-8, Nickel
 /// evaluation fails, or the document does not match the expected schema.
 pub fn decode_document(bytes: &[u8]) -> Result<crate::config::NickelDocument, ConductorError> {
-    let doc: crate::config::NickelDocument = decode_document_envelope(bytes)?.into();
-    doc.validate_external_data_invariant()?;
-    Ok(doc)
+    let source = std::str::from_utf8(bytes).map_err(|err| {
+        ConductorError::Serialization(format!("document source is not valid UTF-8: {err}"))
+    })?;
+    from_boundary(source)
 }
 
 /// Decodes bytes through the embedded Nickel migration wrapper into the raw

@@ -30,8 +30,11 @@ use serde_json::Value;
 
 use crate::error::ConductorError;
 
-use super::NICKEL_VERSION_LATEST;
-use super::versions::{MOD_NCL_SOURCE, V1_NCL_SOURCE, V2_NCL_SOURCE, resolve_version_contract};
+use super::versions::MOD_NCL_SOURCE;
+use super::versions::V1_NCL_SOURCE;
+use super::versions::V2_NCL_SOURCE;
+use super::versions::latest_version;
+use super::versions::resolve_version_contract;
 
 /// Cache key: (source hash, requested version).
 type EvalCacheKey = (blake3::Hash, u32);
@@ -208,7 +211,7 @@ pub(super) fn evaluate_document_source<T>(
 where
     T: DeserializeOwned + Serialize,
 {
-    migrate_document_source_to_version(source, NICKEL_VERSION_LATEST, document_kind)
+    migrate_document_source_to_version(source, latest_version(), document_kind)
 }
 
 #[cfg(test)]
