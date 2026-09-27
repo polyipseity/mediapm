@@ -431,10 +431,26 @@ impl MediaTaggerHttpCache {
             format!("writing temporary media-tagger cache index '{}'", temp_file.path().display())
         })?;
 
-        if path.exists() {
-            let _ = fs::remove_file(path);
-        }
-
+        // Replace the destination with one rename, with no `remove_file` first.
+        //
+        // `NamedTempFile::persist` is the atomic replace-the-destination
+        // operation on every supported platform: it resolves to `rename(2)` on
+        // Unix, and on Windows to `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`
+        // — the same flag `std::fs::rename` passes there, so overwriting an
+        // existing index needs no pre-removal on Windows either. The temp file
+        // is created in the destination's own directory, so the rename never
+        // crosses a filesystem boundary and cannot fail with `EXDEV`. See the
+        // `2ed8dfb5` commit message for the full derivation.
+        //
+        // Removing the destination beforehand opens a window in which
+        // `media-tagger.json` does not exist, and the file's only reader,
+        // `load_media_tagger_cache_index` (reached solely from
+        // `MediaTaggerHttpCache::new`), maps a missing file to an empty
+        // index. A cache constructed inside that window starts with no rows,
+        // re-downloads what it wants, and its first `upsert_index_entry`
+        // persists an index built from that empty map — erasing every row the
+        // file held and orphaning their CAS payloads under `store/`. Guarded
+        // by `index_rewrite_never_hides_a_live_row_from_a_fresh_cache_reader`.
         temp_file
             .persist(path)
             .map_err(|error| error.error)
@@ -1106,4 +1122,156 @@ pub(super) async fn download_cover_art_bytes(
     let payload = bytes.to_vec();
     let _ = cache.write_cover_art_bytes(url, &payload).await;
     Ok(Some(payload))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    /// Pins the invariant that rewriting the media-tagger cache index never
+    /// leaves its destination file absent, because the only reader of that
+    /// file treats a missing file as an empty index.
+    ///
+    /// # Who reads the file
+    ///
+    /// [`MediaTaggerHttpCache`] loads `media-tagger.json` exactly once, in
+    /// [`MediaTaggerHttpCache::new`], through
+    /// [`load_media_tagger_cache_index`], which maps both a missing and a
+    /// malformed file to [`MediaTaggerCacheIndex::default`] — an index with
+    /// no rows. Every later lookup in `read_json_payload` /
+    /// `read_bytes_payload` is served from the mutex-guarded in-memory index
+    /// that `new` populated, so no *other* file read exists. The reader that
+    /// this test drives is therefore precisely a cache instance constructed
+    /// while another instance is rewriting the file.
+    ///
+    /// # Why a lost row is data loss, not a miss
+    ///
+    /// A cache constructed on an empty index re-downloads every payload it
+    /// wants and then calls `upsert_index_entry`, which persists an index
+    /// built from that empty in-memory map. The rows the other instance had
+    /// already published are erased from the file, and their CAS payloads
+    /// under `store/` are left unreferenced. So one construction that lands
+    /// inside the rewrite window does not merely cost one cache miss: it
+    /// discards every row the cache held.
+    ///
+    /// # Reachability
+    ///
+    /// The default `cache_dir` (`<runtime>/cache/media_tagger`) is covered by
+    /// the workspace conductor CAS directory lock that `MediaPmService` holds
+    /// for its whole lifetime, so a second `mediapm` process on the same
+    /// workspace cannot reach a write. The step option `cache_dir` is
+    /// user-overridable, though, and two workspaces pointed at one shared
+    /// media-tagger cache root hold different CAS locks. The writer below is
+    /// that second instance, and it is the same `write_index_file` a real
+    /// instance calls from `upsert_index_entry` and `remove_index_entry`.
+    ///
+    /// # How the overlap is forced
+    ///
+    /// A rewriting thread performs the index write back to back while a
+    /// constructing thread builds a fresh cache for the whole rewrite window,
+    /// which is the same "drive the racing operation explicitly instead of
+    /// waiting for it" shape as
+    /// `index_rewrite_never_hides_a_live_reference_from_the_prune_scan` in
+    /// `mediapm-conductor`'s `cache.rs`: no sleeps, and the reader is required
+    /// to have sampled while the writer was still running, so the race cannot
+    /// pass vacuously.
+    #[test]
+    fn index_rewrite_never_hides_a_live_row_from_a_fresh_cache_reader() {
+        /// Safety valve for the rewriting thread. It stops as soon as the
+        /// constructing thread is done, so a reader that fails early cannot
+        /// leave the rewriting thread running.
+        const MAX_REWRITES: u64 = 4096;
+        /// Constructions still taken after the writer finished, so a writer
+        /// that outran the reader cannot leave the race unobserved.
+        const MIN_READS: usize = 8;
+
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let writer_cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(60),
+        );
+
+        // The live row lives only in this file, so a reader can miss it only
+        // while the file is missing, never because of anything else.
+        let live_key =
+            MediaTaggerHttpCache::cache_key("caa-images", "https://example.test/live.jpg");
+        let live_index = MediaTaggerCacheIndex {
+            version: MEDIA_TAGGER_CACHE_INDEX_VERSION,
+            entries: BTreeMap::from([(
+                live_key.clone(),
+                MediaTaggerCacheIndexEntry {
+                    hash: Hash::from_bytes([9u8; 32]).to_string(),
+                    fetched_unix_seconds: 1,
+                },
+            )]),
+        };
+        writer_cache.write_index_file(&live_index).expect("seed live index");
+
+        let stop = AtomicBool::new(false);
+        let (missed, reads, reads_during_rewrites) = std::thread::scope(|scope| {
+            let stop_flag = &stop;
+            let writer_key = live_key.clone();
+            let writer = scope.spawn(move || {
+                let mut round: u64 = 1;
+                while round <= MAX_REWRITES && !stop_flag.load(Ordering::Relaxed) {
+                    let mut index = live_index.clone();
+                    // Vary the bytes so every round really replaces the
+                    // destination instead of rewriting identical content.
+                    if let Some(row) = index.entries.get_mut(&writer_key) {
+                        row.fetched_unix_seconds = round;
+                    }
+                    writer_cache.write_index_file(&index).expect("rewrite the cache index");
+                    round += 1;
+                }
+            });
+
+            let mut missed = 0usize;
+            let mut reads = 0usize;
+            let mut reads_during_rewrites = 0usize;
+            while !writer.is_finished() || reads < MIN_READS {
+                let reader = MediaTaggerHttpCache::new(
+                    Some(root.path().to_path_buf()),
+                    CacheExpiryPolicy::from_seconds(60),
+                );
+                reads += 1;
+                if !writer.is_finished() {
+                    reads_during_rewrites += 1;
+                }
+                let loaded = reader.index.lock().expect("reader index lock");
+                if !loaded.entries.contains_key(&live_key) {
+                    missed += 1;
+                }
+            }
+            stop.store(true, Ordering::Relaxed);
+            writer.join().expect("index rewriting thread");
+            (missed, reads, reads_during_rewrites)
+        });
+
+        assert!(
+            reads_during_rewrites > 0,
+            "the reader never sampled while an index rewrite was in flight, so the race window was \
+             not exercised ({reads} reads, {reads_during_rewrites} of them during a rewrite)"
+        );
+        assert_eq!(
+            missed, 0,
+            "an index rewrite must replace its destination atomically: {missed} of {reads} fresh \
+             cache constructions could not see the live row, and the first persist from such a \
+             cache erases every row the file held"
+        );
+        let final_reader = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(60),
+        );
+        assert!(
+            final_reader
+                .index
+                .lock()
+                .expect("final reader index lock")
+                .entries
+                .contains_key(&live_key),
+            "the live row must be readable once every rewrite has landed"
+        );
+    }
 }
