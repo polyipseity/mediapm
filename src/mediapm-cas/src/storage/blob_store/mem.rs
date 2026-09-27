@@ -23,7 +23,16 @@ use super::BlobStore;
 pub struct InMemoryBlobStore {
     data: Arc<DashMap<Hash, (Bytes, ObjectEncoding)>>,
     aux: Arc<DashMap<(Hash, String), Bytes>>,
-    #[allow(dead_code)]
+    // WHY: the store records the strategies its constructor was handed, and
+    // nothing reads them back. That is the documented contract of this type
+    // (see the docs above): in-memory data cannot be corrupted between write
+    // and read, so there is nothing for a trigger strategy to guard. The field
+    // is kept so the construction surface stays parallel with
+    // `FileSystemBlobStore::create`, which does consult its strategies.
+    #[expect(
+        dead_code,
+        reason = "recorded for construction parity with the filesystem blob store, but never consulted: in-memory blobs cannot be externally corrupted"
+    )]
     verify_strategies: Vec<VerifyTriggerStrategy>,
 }
 

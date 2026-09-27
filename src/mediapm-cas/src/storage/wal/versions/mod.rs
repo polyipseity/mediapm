@@ -73,7 +73,6 @@ pub(crate) fn decode_entries(buf: &[u8]) -> Result<Vec<(WalPosition, WalEntry)>,
 /// Yields `(position, entry)` tuples from the wire format. Returns
 /// `CasError::CorruptObject` on malformed data. After yielding an error,
 /// the iterator terminates (does not try to resync).
-#[allow(dead_code)]
 pub(crate) fn decode_entries_streaming(
     buf: &[u8],
 ) -> impl Iterator<Item = Result<(WalPosition, WalEntry), CasError>> + '_ {

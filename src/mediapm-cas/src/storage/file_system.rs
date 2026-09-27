@@ -177,7 +177,6 @@ impl FileSystemCas {
 
     /// Test-only: returns a reference to the background maintenance guard.
     #[must_use]
-    #[allow(dead_code)]
     pub fn bg_guard_ref(&self) -> &Arc<BackgroundMaintenanceGuard> {
         &self.bg_guard
     }
