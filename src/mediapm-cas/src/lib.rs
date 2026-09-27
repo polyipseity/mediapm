@@ -39,6 +39,7 @@ pub mod defaults;
 pub(crate) mod delta;
 pub mod error;
 pub mod hash;
+pub(crate) mod io_gate;
 pub mod storage;
 pub(crate) mod verify;
 

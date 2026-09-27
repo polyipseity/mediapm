@@ -326,8 +326,7 @@ impl Cache {
                 tokio::time::sleep(Duration::from_secs(CACHE_PRUNE_INTERVAL_SECONDS)).await;
             }
         });
-        cache.bg_guard =
-            Some(Arc::new(BackgroundMaintenanceGuard { cancelled, handle: Some(handle) }));
+        cache.bg_guard = Some(Arc::new(BackgroundMaintenanceGuard::new(cancelled, handle)));
         Ok(cache)
     }
 
@@ -859,8 +858,7 @@ impl Cache {
                 tokio::time::sleep(Duration::from_secs(maintenance_interval_seconds)).await;
             }
         });
-        cache.bg_guard =
-            Some(Arc::new(BackgroundMaintenanceGuard { cancelled, handle: Some(handle) }));
+        cache.bg_guard = Some(Arc::new(BackgroundMaintenanceGuard::new(cancelled, handle)));
         Ok(cache)
     }
 
@@ -906,8 +904,7 @@ impl Cache {
                 tokio::time::sleep(Duration::from_secs(maintenance_interval_seconds)).await;
             }
         });
-        cache.bg_guard =
-            Some(Arc::new(BackgroundMaintenanceGuard { cancelled, handle: Some(handle) }));
+        cache.bg_guard = Some(Arc::new(BackgroundMaintenanceGuard::new(cancelled, handle)));
         Ok(cache)
     }
 }

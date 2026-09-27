@@ -18,6 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::CasError;
 use crate::hash::Hash;
+use crate::io_gate::CasIoGate;
 
 use super::versions as format;
 use super::{PendingState, Wal, WalEntry, WalPosition};
@@ -27,17 +28,20 @@ struct Checkpoint {
     path: PathBuf,
     /// Cached last-consumed position (also persisted to disk).
     last_pos: AtomicU64,
+    /// Store-lifetime gate; the checkpoint write is a leased mutation because
+    /// it recreates `<cas_dir>/checkpoint` when its directory still exists.
+    io_gate: Arc<CasIoGate>,
 }
 
 impl Checkpoint {
     /// Load checkpoint from disk, or start at ZERO.
-    async fn load(path: PathBuf) -> Result<Self, CasError> {
+    async fn load(path: PathBuf, io_gate: Arc<CasIoGate>) -> Result<Self, CasError> {
         let last_pos = match tokio::fs::read(&path).await {
             Ok(buf) => format::decode_checkpoint(&buf)?.as_u64(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
             Err(e) => return Err(CasError::Io(e)),
         };
-        Ok(Self { path, last_pos: AtomicU64::new(last_pos) })
+        Ok(Self { path, last_pos: AtomicU64::new(last_pos), io_gate })
     }
 
     /// Return the last consumed position.
@@ -48,10 +52,18 @@ impl Checkpoint {
     /// Persist a new position atomically.
     async fn persist(&self, pos: WalPosition) -> Result<(), CasError> {
         let data = format::encode_checkpoint(pos);
-        // Atomic write: write to .tmp, then rename.
+        // Atomic write: write to .tmp, then rename. Staging and the rename
+        // share one lease so a gate close cannot split the pair and leave a
+        // committed checkpoint behind after the store's directory is removed.
         let tmp_path = self.path.with_extension("tmp");
-        tokio::fs::write(&tmp_path, &data).await.map_err(CasError::Io)?;
-        tokio::fs::rename(&tmp_path, &self.path).await.map_err(CasError::Io)?;
+        let final_path = self.path.clone();
+        self.io_gate
+            .run(move || {
+                std::fs::write(&tmp_path, &data)?;
+                std::fs::rename(&tmp_path, &final_path)
+            })
+            .await
+            .map_err(CasError::Io)?;
         self.last_pos.store(pos.as_u64(), Ordering::SeqCst);
         Ok(())
     }
@@ -89,19 +101,23 @@ struct ActiveSegment {
 
 impl ActiveSegment {
     /// Create a new active segment file, writing the header.
-    async fn create(path: &PathBuf) -> Result<Self, CasError> {
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .append(true)
-            .open(path)
+    ///
+    /// Leased: the open creates `journal/active.seg` and writes its header, so
+    /// it is a mutation that can recreate a removed store directory.
+    async fn create(path: &Path, io_gate: &Arc<CasIoGate>) -> Result<Self, CasError> {
+        let header = format::encode_header(format::JOURNAL_MAGIC, format::JOURNAL_VERSION);
+        let path_for_create = path.to_path_buf();
+        let std_file = io_gate
+            .run(move || {
+                let mut file =
+                    std::fs::OpenOptions::new().create(true).append(true).open(&path_for_create)?;
+                std::io::Write::write_all(&mut file, &header)?;
+                file.sync_data()?;
+                Ok(file)
+            })
             .await
             .map_err(CasError::Io)?;
-
-        // Write header (8 bytes: magic + version).
-        let header = format::encode_header(format::JOURNAL_MAGIC, format::JOURNAL_VERSION);
-        file.write_all(&header).await.map_err(CasError::Io)?;
-        file.sync_data().await.map_err(CasError::Io)?;
+        let file = tokio::fs::File::from_std(std_file);
 
         Ok(Self { file, first_pos: WalPosition::ZERO, bytes_written: 0 })
     }
@@ -196,6 +212,8 @@ struct FileWalInner {
     journal_dir: PathBuf,
     /// Checkpoint manager.
     checkpoint: Checkpoint,
+    /// Store-lifetime gate shared with the rest of the owning store.
+    io_gate: Arc<CasIoGate>,
     /// Maximum segment size before sealing (in bytes).
     max_segment_size: u64,
     /// Serializes write operations to the active segment.
@@ -233,7 +251,29 @@ impl FileWal {
         Self::create_with_max_size(cas_dir, Self::DEFAULT_MAX_SEGMENT_SIZE).await
     }
 
-    /// Create or open a file-based journal with a custom max segment size.
+    /// Create or open a file-based journal with a custom max segment size,
+    /// with its own mutation gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::Io`] if the journal directory cannot be created
+    /// or if segment files cannot be read.
+    /// Returns [`CasError::CorruptObject`] if segment files have an invalid
+    /// format.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an entry path has no valid file name (should not happen
+    /// for entries returned by `read_dir`).
+    pub async fn create_with_max_size(
+        cas_dir: PathBuf,
+        max_segment_size: u64,
+    ) -> Result<Self, CasError> {
+        Self::create_gated(cas_dir, max_segment_size, Arc::new(CasIoGate::new())).await
+    }
+
+    /// Create or open a file-based journal, sharing `io_gate` with the rest of
+    /// the owning store so closing that gate quiesces the journal too.
     ///
     /// # Errors
     ///
@@ -250,16 +290,17 @@ impl FileWal {
         clippy::too_many_lines,
         reason = "wal recovery pipeline is a single sequential flow; splitting it would obscure ordering invariants"
     )]
-    pub async fn create_with_max_size(
+    pub(crate) async fn create_gated(
         cas_dir: PathBuf,
         max_segment_size: u64,
+        io_gate: Arc<CasIoGate>,
     ) -> Result<Self, CasError> {
         let journal_dir = cas_dir.join("journal");
         tokio::fs::create_dir_all(&journal_dir).await.map_err(CasError::Io)?;
 
         // Load checkpoint.
         let checkpoint_path = cas_dir.join("checkpoint");
-        let checkpoint = Checkpoint::load(checkpoint_path).await?;
+        let checkpoint = Checkpoint::load(checkpoint_path, Arc::clone(&io_gate)).await?;
         let checkpoint_pos = checkpoint.position();
 
         // Scan and collect sealed segments, and the active segment.
@@ -334,7 +375,7 @@ impl FileWal {
         let active = if let Some(path) = active_path {
             ActiveSegment::open(&path).await?
         } else {
-            ActiveSegment::create(&ActiveSegment::path(&journal_dir)).await?
+            ActiveSegment::create(&ActiveSegment::path(&journal_dir), &io_gate).await?
         };
 
         // Build pending state from checkpoint forward (streaming, one segment at a time).
@@ -383,6 +424,7 @@ impl FileWal {
             inner: Arc::new(FileWalInner {
                 journal_dir,
                 checkpoint,
+                io_gate,
                 max_segment_size,
                 write_lock: tokio::sync::Mutex::new(JournalWriterState { active: Some(active) }),
                 sealed: Mutex::new(sealed),
@@ -485,7 +527,8 @@ impl FileWal {
         inner.sealed.lock().unwrap().push(sealed_seg);
 
         // Create new active segment.
-        let new_active = ActiveSegment::create(&ActiveSegment::path(&inner.journal_dir)).await?;
+        let new_active =
+            ActiveSegment::create(&ActiveSegment::path(&inner.journal_dir), &inner.io_gate).await?;
         state.active = Some(new_active);
 
         Ok(())

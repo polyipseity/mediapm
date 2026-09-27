@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -17,6 +18,7 @@ use super::versions::{CURRENT_BLOB_PATH_VERSION, hash_to_delta_path, hash_to_pat
 use crate::api::{ObjectEncoding, VerifyTriggerStrategy};
 use crate::error::CasError;
 use crate::hash::Hash;
+use crate::io_gate::CasIoGate;
 use crate::verify::VerifyEvaluator;
 
 /// Filesystem-backed [`BlobStore`] with hash-derived directory layout.
@@ -25,14 +27,21 @@ use crate::verify::VerifyEvaluator;
 /// `.diff` suffix (delta envelope). Writes use a temp file + rename for
 /// crash-safe commits; reads verify the content hash matches the stored
 /// hash. All methods are safe for concurrent access.
+///
+/// Every step that can create a directory entry runs under a lease from the
+/// store's [`CasIoGate`], so closing the gate quiesces the tree (see
+/// [`crate::io_gate`]).
 #[derive(Clone, Debug)]
 pub struct FileSystemBlobStore {
     root: PathBuf,
     verify_evaluator: VerifyEvaluator,
+    /// Store-lifetime gate. Clones share it, so closing it through any handle
+    /// covers the whole store.
+    io_gate: Arc<CasIoGate>,
 }
 
 impl FileSystemBlobStore {
-    /// Create a new blob store rooted at `root`.
+    /// Create a new blob store rooted at `root`, with its own mutation gate.
     ///
     /// # Errors
     ///
@@ -43,8 +52,22 @@ impl FileSystemBlobStore {
         root: PathBuf,
         verify_strategies: Vec<VerifyTriggerStrategy>,
     ) -> Result<Self, CasError> {
+        Self::create_gated(root, verify_strategies, Arc::new(CasIoGate::new())).await
+    }
+
+    /// Create a new blob store rooted at `root`, sharing `io_gate` with the
+    /// rest of the owning store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::Io`] if the root directory cannot be created.
+    pub(crate) async fn create_gated(
+        root: PathBuf,
+        verify_strategies: Vec<VerifyTriggerStrategy>,
+        io_gate: Arc<CasIoGate>,
+    ) -> Result<Self, CasError> {
         fs::create_dir_all(&root).await.map_err(CasError::Io)?;
-        Ok(Self { root, verify_evaluator: VerifyEvaluator::new(&verify_strategies) })
+        Ok(Self { root, verify_evaluator: VerifyEvaluator::new(&verify_strategies), io_gate })
     }
 
     /// Convenience: create a store with no integrity verification.
@@ -68,20 +91,31 @@ impl FileSystemBlobStore {
     }
 
     /// Ensure the parent directory for a hash exists.
+    ///
+    /// Leased, because `create_dir_all` is exactly the step that resurrects a
+    /// store directory after its owner removed it.
     async fn ensure_parent(&self, hash: &Hash) -> Result<(), CasError> {
         let path = hash_to_path(&self.root, hash);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await.map_err(CasError::Io)?;
-        }
-        Ok(())
+        let Some(parent) = path.parent().map(Path::to_path_buf) else {
+            return Ok(());
+        };
+        self.io_gate.run(move || std::fs::create_dir_all(&parent)).await.map_err(CasError::Io)
     }
 
     /// Write bytes atomically to a path: temp file then rename.
-    async fn atomic_write(path: &Path, data: &[u8]) -> Result<(), CasError> {
+    ///
+    /// Staging and the rename share one lease so the pair cannot be split by a
+    /// gate close: a refused staging write never reaches the rename.
+    async fn atomic_write(&self, path: &Path, data: Bytes) -> Result<(), CasError> {
         let tmp_path = path.with_extension("tmp");
-        fs::write(&tmp_path, data).await.map_err(CasError::Io)?;
-        fs::rename(&tmp_path, path).await.map_err(CasError::Io)?;
-        Ok(())
+        let final_path = path.to_path_buf();
+        self.io_gate
+            .run(move || {
+                std::fs::write(&tmp_path, &data)?;
+                std::fs::rename(&tmp_path, &final_path)
+            })
+            .await
+            .map_err(CasError::Io)
     }
 
     /// Derive the auxiliary-file path for `hash` with the given `name`.
@@ -156,7 +190,7 @@ impl BlobStore for FileSystemBlobStore {
         let already_materialized = matches!(encoding, ObjectEncoding::Full)
             && fs::metadata(&path).await.is_ok_and(|meta| meta.is_file());
         if !already_materialized {
-            Self::atomic_write(&path, &data).await?;
+            self.atomic_write(&path, data.clone()).await?;
         }
         // Seed mtime for verify-on-read tracking. Runs on the skip path too:
         // the object is present and its mtime is what the verify-on-read
@@ -236,8 +270,16 @@ impl BlobStore for FileSystemBlobStore {
         };
         let tmp_path = path.with_extension("tmp");
 
-        // Write to temp file in 64 KiB chunks while incrementally hashing
-        let mut tmp_file = fs::File::create(&tmp_path).await.map_err(CasError::Io)?;
+        // Write to temp file in 64 KiB chunks while incrementally hashing.
+        // Only file creation needs a lease: the writes below go through this
+        // open handle, so they cannot recreate a removed tree.
+        let tmp_path_for_create = tmp_path.clone();
+        let created = self
+            .io_gate
+            .run(move || std::fs::File::create(&tmp_path_for_create))
+            .await
+            .map_err(CasError::Io)?;
+        let mut tmp_file = fs::File::from_std(created);
         let mut hasher = blake3::Hasher::new();
         let mut buf = vec![0u8; Self::stream_buffer_size()];
         loop {
@@ -323,12 +365,24 @@ impl BlobStore for FileSystemBlobStore {
         // Use a dedicated temp dir to avoid partial-file collisions.
         static STREAM_COUNTER: AtomicU64 = AtomicU64::new(0);
         let tmp_dir = self.root.join(".tmp");
-        fs::create_dir_all(&tmp_dir).await.map_err(CasError::Io)?;
+        let tmp_dir_for_create = tmp_dir.clone();
+        self.io_gate
+            .run(move || std::fs::create_dir_all(&tmp_dir_for_create))
+            .await
+            .map_err(CasError::Io)?;
         let ts = mediapm_utils::Timestamp::now().as_unix_nanos();
         let tmp_name = format!("stream-{ts}-{}", STREAM_COUNTER.fetch_add(1, Ordering::Relaxed));
         let tmp_path = tmp_dir.join(tmp_name);
 
-        let mut tmp_file = fs::File::create(&tmp_path).await.map_err(CasError::Io)?;
+        let created = self
+            .io_gate
+            .run({
+                let tmp_path = tmp_path.clone();
+                move || std::fs::File::create(&tmp_path)
+            })
+            .await
+            .map_err(CasError::Io)?;
+        let mut tmp_file = fs::File::from_std(created);
         let mut hasher = blake3::Hasher::new();
         let mut buf = vec![0u8; Self::stream_buffer_size()];
         let mut total: u64 = 0;
@@ -372,10 +426,13 @@ impl BlobStore for FileSystemBlobStore {
             )));
         }
         let path = self.aux_path(hash, name);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await.map_err(CasError::Io)?;
+        if let Some(parent) = path.parent().map(Path::to_path_buf) {
+            self.io_gate
+                .run(move || std::fs::create_dir_all(&parent))
+                .await
+                .map_err(CasError::Io)?;
         }
-        Self::atomic_write(&path, &data).await
+        self.atomic_write(&path, data).await
     }
 
     async fn read_aux(&self, hash: &Hash, name: &str) -> Result<Bytes, CasError> {

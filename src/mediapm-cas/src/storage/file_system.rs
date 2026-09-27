@@ -17,7 +17,16 @@ use crate::background::BackgroundMaintenanceGuard;
 use crate::defaults;
 use crate::error::CasError;
 use crate::hash::Hash;
+use crate::io_gate::CasIoGate;
 use crate::storage::metadata_store::MetadataEntry;
+
+/// Marker for the set of live [`FileSystemCas`] handles.
+///
+/// Only `FileSystemCas` values hold this, never the stores it owns, so
+/// [`Arc::strong_count`] is exactly the number of live handles to the store.
+/// That is what lets [`Drop`] tell the last handle from a clone.
+#[derive(Debug)]
+struct HandleToken;
 
 /// File-system backed CAS store.
 ///
@@ -28,10 +37,24 @@ use crate::storage::metadata_store::MetadataEntry;
 ///
 /// Spawns a background WAL consumer on open to periodically materialize
 /// WAL entries into blob + metadata.
+///
+/// # Teardown
+///
+/// The background consumer holds an owned `Arc` to the store, so it can
+/// outlive the caller's handle; dropping the last handle cancels it and closes
+/// the store's [`CasIoGate`], which waits for every already-dispatched
+/// file-system mutation and refuses new ones. After the last handle drops, no
+/// code path can recreate anything under the store's directory — which is
+/// what makes it safe for the owner of that directory (a test's `TempDir`, for
+/// example) to remove it straight after the handle. See [`crate::io_gate`].
 pub struct FileSystemCas {
     store: Arc<CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>>,
     bg_guard: Arc<BackgroundMaintenanceGuard>,
     dir_lock: Arc<DirectoryLockGuard>,
+    /// Mutation gate shared with the WAL and blob store.
+    io_gate: Arc<CasIoGate>,
+    /// Shared by every clone of this handle, and by nothing else.
+    handles: Arc<HandleToken>,
 }
 
 impl Clone for FileSystemCas {
@@ -40,6 +63,24 @@ impl Clone for FileSystemCas {
             store: self.store.clone(),
             bg_guard: self.bg_guard.clone(),
             dir_lock: self.dir_lock.clone(),
+            io_gate: Arc::clone(&self.io_gate),
+            handles: Arc::clone(&self.handles),
+        }
+    }
+}
+
+impl Drop for FileSystemCas {
+    /// Quiesce the store when the **last** handle drops.
+    ///
+    /// A clone dropping while another handle is alive must not close the
+    /// store, so the work is gated on this being the only remaining handle.
+    /// Both steps are synchronous: `cancel` requests the abort and
+    /// [`CasIoGate::close`] waits for the blocking-pool work the aborted task
+    /// already dispatched, which abort alone would not cover.
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.handles) == 1 {
+            self.bg_guard.cancel();
+            self.io_gate.close();
         }
     }
 }
@@ -71,9 +112,24 @@ impl FileSystemCas {
         verify_strategies: Vec<VerifyTriggerStrategy>,
         bg_interval: Duration,
     ) -> Result<Self, CasError> {
-        let wal = FileWal::create(dir.to_path_buf()).await?;
+        // One gate for the whole store: the WAL, the blob store, and the
+        // metadata store (which writes through the blob store) all lease
+        // against it, so closing it quiesces every file-system mutation the
+        // store can issue without a live handle.
+        let io_gate = Arc::new(CasIoGate::new());
+        let wal = FileWal::create_gated(
+            dir.to_path_buf(),
+            FileWal::DEFAULT_MAX_SEGMENT_SIZE,
+            Arc::clone(&io_gate),
+        )
+        .await?;
         let start_pos = wal.consumed_position().await;
-        let blob = FileSystemBlobStore::create(dir.join("blobs"), verify_strategies).await?;
+        let blob = FileSystemBlobStore::create_gated(
+            dir.join("blobs"),
+            verify_strategies,
+            Arc::clone(&io_gate),
+        )
+        .await?;
         let metadata = FileSystemMetadataStore::new(blob.clone());
         metadata.rebuild_from_wal(&wal).await?;
         let store = Arc::new(CasStore::new(wal, metadata, blob, start_pos, defaults::CACHE_TTL));
@@ -99,13 +155,35 @@ impl FileSystemCas {
                 tokio::time::sleep(bg_interval).await;
             }
         });
-        let guard = BackgroundMaintenanceGuard { cancelled, handle: Some(handle) };
+        let guard = BackgroundMaintenanceGuard::new(cancelled, handle);
 
         // Acquire exclusive directory lock (intra-process then inter-process).
         // The lock is held for the full CAS lifetime via Arc sharing.
         let dir_lock = Arc::new(DirectoryLockGuard::lock(dir).await?);
 
-        Ok(Self { store, bg_guard: Arc::new(guard), dir_lock })
+        Ok(Self {
+            store,
+            bg_guard: Arc::new(guard),
+            dir_lock,
+            io_gate,
+            handles: Arc::new(HandleToken),
+        })
+    }
+
+    /// Deterministically stop background maintenance and quiesce the store.
+    ///
+    /// Awaits the background WAL consumer so it has actually stopped, then
+    /// closes the mutation gate so no file-system write it dispatched is still
+    /// running. When this returns, the store's directory is inert: nothing can
+    /// add to it, so the caller may remove it immediately.
+    ///
+    /// Dropping the last handle already does both of these things; `close` is
+    /// for callers that want the guarantee *before* the handle goes out of
+    /// scope, or that want the consumer to be observed as fully stopped rather
+    /// than merely aborted.
+    pub async fn close(self) {
+        self.bg_guard.shutdown().await;
+        self.io_gate.close();
     }
 
     /// Open or create a file-system CAS store at `dir` with the given

@@ -724,8 +724,7 @@ where
                 tokio::time::sleep(Duration::from_secs(interval_secs)).await;
             }
         });
-        self.background_gc_guard =
-            Some(BackgroundMaintenanceGuard { cancelled, handle: Some(handle) });
+        self.background_gc_guard = Some(BackgroundMaintenanceGuard::new(cancelled, handle));
     }
 
     /// Deterministically tears down actor-owned resources: the background GC
@@ -737,16 +736,12 @@ where
     /// `self.cas`, which is released when the coordinator state drops on
     /// actor stop.
     pub(crate) async fn shutdown(&mut self) -> Result<(), ConductorError> {
-        if let Some(mut guard) = self.background_gc_guard.take()
-            && let Some(handle) = guard.handle.take()
-        {
-            guard.cancelled.store(true, Ordering::SeqCst);
-            handle.abort();
-            // Awaiting the aborted handle is deterministic: the task
-            // future is dropped at the next poll (releasing its CAS
-            // clone) and the JoinHandle then resolves with
+        if let Some(guard) = self.background_gc_guard.take() {
+            // `shutdown` sets the cooperative flag, aborts the task, and
+            // awaits the handle, so the task future is dropped (releasing its
+            // CAS clone) and the `JoinHandle` resolves with
             // `JoinError::Cancelled`.
-            let _ = handle.await;
+            guard.shutdown().await;
         }
         for worker in std::mem::take(&mut self.workers) {
             let _ = worker.stop_and_wait(None, Some(std::time::Duration::from_secs(5))).await;
