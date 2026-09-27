@@ -138,44 +138,6 @@ pub(crate) fn save_conductor_generated_document(
     save_conductor_document(&paths.conductor_generated_ncl, document, "conductor generated NCL")
 }
 
-/// One row of tool metadata for `mediapm tool list` output.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub(crate) struct ConductorToolRow {
-    /// Tool name (e.g. "yt-dlp").
-    pub(crate) name: String,
-    /// Tool version label.
-    pub(crate) version: String,
-    /// Whether this tool is managed by mediapm.
-    pub(crate) managed: bool,
-}
-
-/// Lists registered tool specs from the conductor generated document.
-pub(crate) fn list_tools(paths: &MediaPmPaths) -> Result<Vec<ConductorToolRow>, MediaPmError> {
-    let doc = load_conductor_generated_document(paths)?;
-    let tools = &doc.tools;
-
-    let mut rows: Vec<ConductorToolRow> = tools
-        .keys()
-        .map(|key| {
-            // Parse "{name}@{hash}" format. Bare keys (no '@hash') use the
-            // key as the name with an empty version.
-            if let Some(at_pos) = key.rfind('@') {
-                let (name, version) = key.split_at(at_pos);
-                ConductorToolRow {
-                    name: name.to_string(),
-                    version: version[1..].to_string(), // skip '@'
-                    managed: true,
-                }
-            } else {
-                ConductorToolRow { name: key.clone(), version: String::new(), managed: true }
-            }
-        })
-        .collect();
-    rows.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(rows)
-}
-
 /// Registers missing builtin tool definitions into the generated document.
 pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {
     for builtin in tools::ALL_BUILTINS {

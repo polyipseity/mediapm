@@ -137,14 +137,6 @@ Format: `"{name}@{blake3(content_map_json)}"`
 - **Orphaned on version change**: new payload → new content_map → new hash → new key. The old `"{name}@{old_hash}"` entry remains in the generated document until the next garbage collection pass.
 - **Bare keys for no-payload tools**: tools that don't fetch a payload (no provider sources, or internal launchers) use bare `"{name}"`. These entries are always overwritten in-place.
 
-### Key parsing in `list_tools`
-
-In `list_tools()` (`documents.rs`), keys are parsed by splitting on the last `@`:
-
-- `key.rfind('@')` splits `"{name}@{version}"` into `(name, version)`.
-- Bare keys (no `@`) use the entire key as `name` with an empty `version` string.
-- This parsing is used for `mediapm tool list` output.
-
 ### Hash domain
 
 - The hash covers only the content_map JSON, not the tool binary bytes or any other metadata.
@@ -262,4 +254,3 @@ Lifecycle helpers:
 
 - `write_bytes_if_changed` gates all NCL saves. State JSON does not use this gate (see state-persistence spec).
 - Builtin tools are re-registered every sync (idempotent `insert`).
-- `list_tools` key parsing uses `rfind('@')` to handle tool names containing `@`.

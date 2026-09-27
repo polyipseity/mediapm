@@ -18,7 +18,7 @@ use mediapm_conductor::{Conductor, RuntimeStoragePaths};
 use url::Url;
 
 use crate::conductor_bridge::documents::{
-    ConductorToolRow, list_tools, load_conductor_generated_document, load_conductor_user_document,
+    load_conductor_generated_document, load_conductor_user_document,
 };
 use crate::conductor_bridge::sync::{
     apply_resolved_field_backfills, open_workspace_cas_store, reconcile_desired_tools,
@@ -641,17 +641,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
 
         save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
         Ok(removed)
-    }
-
-    /// Lists registered tools from the conductor generated document.
-    ///
-    /// # Errors
-    ///
-    /// Delegates to [`list_tools`].
-    #[allow(dead_code)]
-    pub(crate) fn list_tools(&self) -> Result<Vec<ConductorToolRow>, MediaPmError> {
-        let effective_paths = self.resolve_effective_paths()?;
-        list_tools(&effective_paths)
     }
 
     /// Adds one tool requirement to the document and saves it.
