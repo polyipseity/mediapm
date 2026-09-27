@@ -1,12 +1,17 @@
 //! Path validation, readonly enforcement, and filesystem helpers.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+#[cfg(test)]
+use std::collections::BTreeMap;
+
+#[cfg(test)]
 use unicode_normalization::UnicodeNormalization;
 
+#[cfg(test)]
 use crate::config::hierarchy_types::SanitizeNamesConfig;
+
 use crate::error::MediaPmError;
 
 /// Removes one path recursively when it is a directory, or as one file otherwise.
@@ -273,7 +278,11 @@ fn clear_directory_writable(path: &Path) -> Result<(), MediaPmError> {
 /// a joined path string, so `/` and `\` within a component are properly
 /// replaced rather than consumed as structural separators.
 #[must_use]
-#[allow(dead_code)]
+/// Applies a character replacement map to one path component.
+///
+/// Compiled only under `cfg(test)`: the path-validation chain below has no
+/// production entry point, so a release build never sanitizes a component.
+#[cfg(test)]
 pub(super) fn sanitize_path_component(
     component: &str,
     replacements: &BTreeMap<char, char>,
@@ -285,7 +294,11 @@ pub(super) fn sanitize_path_component(
 ///
 /// This is the first NFD check — applied at the config level before any
 /// template placeholders are resolved.
-#[allow(dead_code)]
+/// Rejects a path whose components are not already NFD-normalized.
+///
+/// Compiled only under `cfg(test)`: the path-validation chain below has no
+/// production entry point, so a release build never runs this check.
+#[cfg(test)]
 pub(super) fn check_nfd_source(components: &[String]) -> Result<(), MediaPmError> {
     for component in components {
         let component_nfd = component.nfd().collect::<String>();
@@ -307,7 +320,9 @@ pub(super) fn check_nfd_source(components: &[String]) -> Result<(), MediaPmError
 /// - Must be Unicode NFD normalized (with a distinct message from the source check)
 ///
 /// Returns the validated components (consume-then-return for pipeline chaining).
-#[allow(dead_code)]
+/// Compiled only under `cfg(test)`: the path-validation chain has no production
+/// entry point, so a release build never runs these checks.
+#[cfg(test)]
 pub(super) fn validate_components(components: &[String]) -> Result<Vec<String>, MediaPmError> {
     for component in components {
         if component.is_empty() {
@@ -348,7 +363,11 @@ pub(super) fn validate_components(components: &[String]) -> Result<Vec<String>, 
 /// # Errors
 ///
 /// Delegates to [`validate_components`] when any component fails validation.
-#[allow(dead_code)]
+///
+/// Compiled only under `cfg(test)`: this is the chain's only entry point and it
+/// has no production caller, so a release build never validates or sanitizes
+/// hierarchy path components.
+#[cfg(test)]
 pub(super) fn sanitize_and_validate_components(
     components: &[String],
     sanitize_names: &SanitizeNamesConfig,
@@ -375,15 +394,11 @@ pub(super) fn sanitize_and_validate_components(
 }
 
 /// Returns whether one character is forbidden by cross-platform filename rules.
-#[allow(dead_code)]
+///
+/// Compiled only under `cfg(test)`: sole caller is [`validate_components`].
+#[cfg(test)]
 fn is_rejected_char(ch: char) -> bool {
     matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\')
-}
-
-/// Returns current Unix epoch timestamp in seconds.
-#[allow(dead_code)]
-pub(super) fn now_unix_seconds() -> u64 {
-    mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
 #[cfg(test)]

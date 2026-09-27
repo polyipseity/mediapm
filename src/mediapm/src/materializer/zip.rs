@@ -17,13 +17,9 @@ use crate::error::MediaPmError;
 /// A compiled folder rename rule with a cached [`Regex`].
 #[derive(Debug, Clone)]
 pub(super) struct CompiledFolderRenameRule {
-    /// Original pattern string (for diagnostics).
-    #[allow(dead_code)]
-    pub(super) pattern: String,
     /// Replacement string template.
     pub(super) replacement: String,
     /// Compiled regex for pattern matching.
-    #[allow(dead_code)]
     pub(super) regex: Regex,
 }
 
@@ -96,11 +92,7 @@ pub(super) fn compile_hierarchy_folder_rename_rules(
             MediaPmError::Workflow(format!("invalid folder rename pattern '{}': {e}", rule.pattern))
         })?;
 
-        compiled.push(CompiledFolderRenameRule {
-            pattern: rule.pattern.clone(),
-            replacement: rule.replacement.clone(),
-            regex,
-        });
+        compiled.push(CompiledFolderRenameRule { replacement: rule.replacement.clone(), regex });
     }
 
     Ok(compiled)

@@ -61,7 +61,6 @@ impl MaterializationLookupContext {
 }
 
 /// Resolves one [`MediaMetadataValue`] to a concrete string.
-#[allow(dead_code)]
 pub(super) async fn resolve_metadata_value(
     value: &MediaMetadataValue,
     media_id: &str,
@@ -373,7 +372,6 @@ fn extract_metadata_key_from_media_bytes_via_ffprobe(
     Ok(extract_metadata_key_from_json(&json, metadata_key))
 }
 
-#[allow(dead_code)]
 fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option<String> {
     if let Some(value) = extract_metadata_key_from_json_direct(json, key) {
         return Some(value);
@@ -437,7 +435,6 @@ fn lookup_json_string_key(
         .map(ToString::to_string)
 }
 
-#[allow(dead_code)]
 fn apply_metadata_regex_transform(value: &str, transform: &MediaMetadataRegexTransform) -> String {
     match Regex::new(&transform.pattern) {
         Ok(re) => re.replace_all(value, transform.replacement.as_str()).to_string(),
@@ -445,7 +442,6 @@ fn apply_metadata_regex_transform(value: &str, transform: &MediaMetadataRegexTra
     }
 }
 
-#[allow(dead_code)]
 fn collect_metadata_placeholder_keys(template: &str) -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     let mut cursor = 0usize;

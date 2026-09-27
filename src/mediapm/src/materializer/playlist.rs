@@ -23,7 +23,6 @@ pub(super) enum PlaylistEntryPathMode {
     /// Relative path mode (default).
     Relative,
     /// Absolute path mode.
-    #[allow(dead_code)]
     Absolute,
 }
 
@@ -81,19 +80,6 @@ pub(super) fn resolve_playlist_target_relative_path(
 
             relative
         }
-    }
-}
-
-/// Returns a human-readable label for one playlist format.
-#[must_use]
-#[allow(dead_code)]
-pub(super) fn playlist_format_label(format: PlaylistFormat) -> &'static str {
-    match format {
-        PlaylistFormat::M3u8 => "M3U8",
-        PlaylistFormat::Pls => "PLS",
-        PlaylistFormat::Xspf => "XSPF",
-        PlaylistFormat::Wpl => "WPL",
-        PlaylistFormat::Asx => "ASX",
     }
 }
 
