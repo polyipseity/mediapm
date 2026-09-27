@@ -203,7 +203,8 @@ impl MetadataStore for FileSystemMetadataStore {
         // This transparently handles both current and legacy format files.
         for name in METADATA_FORMAT_NAMES {
             for bytes in self.blob_store.all_aux(name).await? {
-                let (persisted_constraints, persisted_entries) = versions::load_from_bytes(&bytes)?;
+                let (persisted_constraints, persisted_entries) =
+                    versions::load_named_from_bytes(name, &bytes)?;
                 for (target, bases) in persisted_constraints {
                     self.inner.set_constraint(target, bases).await?;
                 }
