@@ -39,6 +39,7 @@ Per-crate `AGENTS.md` holds detailed invariants and contracts.
 - Content identity is BLAKE3 hash; objects stored under `.mediapm/objects/blake3/<0..2>/<2..4>/<4..>`.
 - CAS object files are immutable once imported and persisted as read-only.
 - Sidecar paths derived from canonical URI digest under `.mediapm/media/<media-id>/media.json`.
+- A user-authored `media` map key is one identity with three consumers — `${media.id}` path interpolation, the `state.workflow_states` key, and every `ManagedFileRecord.media_id` — so `config::hierarchy_types::validate_media_id` **rejects** at the config boundary (from `flatten_hierarchy_nodes_inner`, beside `validate_hierarchy_path_component`) any id that is empty, carries a control character, has leading or trailing whitespace, contains a path separator, or *is* `.`/`..`. Rejecting rather than sanitizing is the policy for the same reason as the NFD rule: the key is the user's to spell correctly, and a sanitized spelling would put `a_b` on disk while the state kept `a/b`. The message is rendered with `escape_debug` and names the code point of a control character, so a diagnostic never splits the log line carrying it.
 - Preserve `original.original_variant_hash` semantics and `edits` lineage references.
 - Keep schema version explicit (`schema_version`) and migrations sequential.
 
