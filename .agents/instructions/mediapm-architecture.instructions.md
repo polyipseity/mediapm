@@ -53,7 +53,7 @@ Per-crate `AGENTS.md` holds detailed invariants and contracts.
 
 - Respect configured method order (hardlink → symlink → reflink → copy by default) with deterministic fallback reasons.
 - Use stage → verify → commit semantics with staging under effective `.mediapm/tmp` and atomic commit into library roots.
-- Materializer path validation enforces NFD-only filenames.
+- Materializer path validation enforces NFD-only filenames: `sync_hierarchy` runs `materializer::commit::sanitize_and_validate_components` over every resolved entry after metadata interpolation and before any entry worker starts, so `.`/`..` components and unrewritten separators are rejected rather than committed.
 - `rename_files` replacement strings are sanitized with the configured replacement map.
 
 ## Cache policy

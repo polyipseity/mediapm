@@ -1448,7 +1448,8 @@ mod tests {
 
         let Err(error) = result else {
             panic!(
-                "sync_hierarchy accepted a '..' path component, which would commit outside the hierarchy root"
+                "sync_hierarchy accepted a '..' path component, which would commit \
+                 outside the hierarchy root"
             );
         };
         assert!(
