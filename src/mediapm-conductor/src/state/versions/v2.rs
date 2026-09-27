@@ -7,6 +7,17 @@
 //! content-addressed instance-key derivation, and the V1→V2 migration
 //! function (migration from vX to vX+1 always belongs to the vX+1 module).
 //! It must not import unversioned runtime state from `super::super`.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file must never import unversioned structs from outside `versions/`
+//!   beyond the resolved runtime model it is declared to bridge.
+//! - A `vX` module may reference only the most recent previous version module,
+//!   and only for version-to-version migration.
+//! - Latest-version bridging to unversioned runtime structs is owned by
+//!   `versions/mod.rs`.
+//! - Files outside `versions/` must reach versioned symbols only through
+//!   `versions/mod.rs`, never through a direct `versions::vX` path.
 
 use std::collections::BTreeMap;
 

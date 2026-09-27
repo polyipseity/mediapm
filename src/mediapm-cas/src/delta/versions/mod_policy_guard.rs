@@ -6,6 +6,10 @@
 //! path, no versioned type leaks past the boundary, and `mod.rs` neither
 //! re-exports `vX` symbols nor loses its latest-first dispatch note.
 //!
+//! The guard-marker check reaches every workspace member, not just this crate:
+//! the scan root and member set are derived from the workspace manifest so a new
+//! member is covered without editing this file.
+//!
 //! ## DO NOT REMOVE: versions policy guard
 //!
 //! - `vX.rs` files must never import unversioned structs outside `versions/`.
@@ -83,8 +87,9 @@ fn extract_version_module_refs(content: &str) -> Vec<u32> {
     refs
 }
 
-/// Recursively collects Rust source files under `dir`.
-fn collect_rs_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Recursively collects Rust source files under `dir`, skipping directories
+/// whose name is in `excluded`.
+fn collect_rs_files_recursive_excluding(dir: &Path, excluded: &[&str], out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir)
         .unwrap_or_else(|err| panic!("failed to read source dir '{}': {err}", dir.display()))
     {
@@ -93,11 +98,229 @@ fn collect_rs_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
         });
         let path = entry.path();
         if path.is_dir() {
-            collect_rs_files_recursive(&path, out);
+            let name = path.file_name().and_then(|name| name.to_str());
+            if name.is_some_and(|name| excluded.contains(&name)) {
+                continue;
+            }
+            collect_rs_files_recursive_excluding(&path, excluded, out);
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             out.push(path);
         }
     }
+}
+
+/// Recursively collects Rust source files under `dir`.
+fn collect_rs_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+    collect_rs_files_recursive_excluding(dir, &[], out);
+}
+
+/// Directories never worth scanning: build output and VCS metadata.
+const SCAN_EXCLUDED_DIRS: &[&str] = &["target", ".git"];
+
+/// The single non-removable marker literal every `versions/` file must carry in
+/// its production portion.
+///
+/// One marker name for the whole workspace is the decision this test rests on.
+/// `//! ## DO NOT REMOVE: versions policy guard` is what all 23 `versions/`
+/// files already carry verbatim, and a scan that accepted more than one spelling
+/// (bare `##`, `////` block form, a per-crate variant) would let a file satisfy
+/// the policy with the wrong marker. A single literal is also what makes the
+/// negative control meaningful: delete this exact line anywhere and the suite goes
+/// red.
+const VERSIONS_POLICY_GUARD_MARKER: &str = "//! ## DO NOT REMOVE: versions policy guard";
+
+/// Locates the workspace root by walking up from this crate's manifest dir.
+///
+/// The scan root is derived, never configured: the first ancestor whose
+/// `Cargo.toml` declares a `[workspace]` table is the root, so the test follows
+/// a moved or renamed workspace without edits. Anything else would have to be
+/// a hardcoded path that rots.
+fn find_workspace_root() -> PathBuf {
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    loop {
+        let manifest = dir.join("Cargo.toml");
+        if manifest.is_file()
+            && let Ok(text) = fs::read_to_string(&manifest)
+            && text.lines().any(|line| line.trim() == "[workspace]")
+        {
+            return dir;
+        }
+        assert!(
+            dir.pop(),
+            "no ancestor of '{}' declares a [workspace] table",
+            env!("CARGO_MANIFEST_DIR")
+        );
+    }
+}
+
+/// Extracts the body of the `[table]` TOML table: its lines up to the next
+/// table header.
+fn toml_table_body<'a>(manifest: &'a str, table: &str) -> &'a str {
+    let header = format!("[{table}]");
+    let start = manifest
+        .lines()
+        .position(|line| line.trim() == header)
+        .unwrap_or_else(|| panic!("workspace manifest has no `{header}` table"));
+    let rest = &manifest[start + 1..];
+    let end_line = rest
+        .lines()
+        .position(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with('[') && trimmed.ends_with(']')
+        })
+        .unwrap_or_else(|| rest.lines().count());
+    let byte_end: usize = rest.lines().take(end_line).map(|line| line.len() + 1).sum();
+    &rest[..byte_end]
+}
+
+/// Parses a TOML array body into its quoted string elements, ignoring `#`
+/// comments and supporting escapes.
+fn parse_toml_string_array(body: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut chars = body.chars();
+    let mut current = String::new();
+    let mut in_string = false;
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            match ch {
+                '"' => {
+                    in_string = false;
+                    values.push(std::mem::take(&mut current));
+                }
+                '\\' => {
+                    if let Some(escaped) = chars.next() {
+                        current.push(escaped);
+                    }
+                }
+                other => current.push(other),
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '#' => {
+                for skipped in chars.by_ref() {
+                    if skipped == '\n' {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!in_string, "unterminated string in TOML array: {body}");
+    values
+}
+
+/// Returns the workspace member crate roots declared by the root manifest.
+///
+/// Two declaration sources are unioned, matching Cargo's own membership rules:
+/// the `members` list of the `[workspace]` table, and every `path = "…"` entry
+/// anywhere in the manifest (a path dependency inside the workspace directory is
+/// automatically a member, whether or not it is repeated in `members`).
+///
+/// Glob and brace patterns are rejected rather than ignored: a pattern this
+/// parser cannot expand would silently under-cover exactly the crates the test
+/// exists to protect, and a loud failure is the honest outcome.
+///
+/// Scope: only the root manifest is read. A crate that becomes a member solely
+/// through a *member's* path dependency is not claimed here, so
+/// `workspace_member_set_matches_the_filesystem` fails loudly in that case and
+/// the derivation gets extended, rather than the scan quietly narrowing.
+fn workspace_member_roots(workspace_root: &Path) -> Vec<PathBuf> {
+    let manifest_path = workspace_root.join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|err| panic!("failed reading '{}': {err}", manifest_path.display()));
+
+    let members_body = toml_table_body(&manifest, "workspace");
+    let members_start = members_body
+        .lines()
+        .position(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("members") && trimmed.contains('=')
+        })
+        .map_or_else(
+            || panic!("workspace manifest has no `members` key"),
+            |index| {
+                let offset: usize =
+                    members_body.lines().take(index).map(|line| line.len() + 1).sum();
+                &members_body[offset..]
+            },
+        );
+    let array_start = members_start
+        .find('[')
+        .unwrap_or_else(|| panic!("`members` in '{}' is not an array", manifest_path.display()));
+    let array_end = members_start[array_start..].find(']').map_or_else(
+        || panic!("`members` array in '{}' is unterminated", manifest_path.display()),
+        |offset| array_start + offset,
+    );
+    let mut declared = parse_toml_string_array(&members_start[array_start + 1..array_end]);
+
+    // Auto-included path dependencies: `name = { path = "…" }` entries.
+    for (_, tail) in manifest.match_indices("path") {
+        let tail = &tail["path".len()..];
+        let Some(tail) = tail.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        if let Some(value) =
+            parse_toml_string_array(&format!("\"{}\"", tail.trim())).into_iter().next()
+        {
+            declared.push(value);
+        }
+    }
+
+    assert!(!declared.is_empty(), "no workspace members parsed from '{}'", manifest_path.display());
+
+    let mut roots: Vec<PathBuf> = declared
+        .iter()
+        .map(|entry| {
+            assert!(
+                !entry.contains(['*', '?', '{']),
+                "member pattern '{entry}' in '{}' needs glob support in \
+                 workspace_member_roots; refusing to under-cover it silently",
+                manifest_path.display()
+            );
+            workspace_root.join(entry)
+        })
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Returns the directories of every `Cargo.toml` under `root`, excluding build
+/// output and VCS metadata.
+fn discovered_manifest_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut manifests = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)
+            .unwrap_or_else(|err| panic!("failed to read '{}': {err}", dir.display()))
+        {
+            let path = entry
+                .unwrap_or_else(|err| panic!("failed reading entry in '{}': {err}", dir.display()))
+                .path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path.file_name().and_then(|name| name.to_str());
+            if name.is_some_and(|name| SCAN_EXCLUDED_DIRS.contains(&name)) {
+                continue;
+            }
+            if path.join("Cargo.toml").is_file() {
+                manifests.push(path.clone());
+            }
+            stack.push(path);
+        }
+    }
+    manifests.sort();
+    manifests
+}
+
+/// Returns `true` when `path` sits directly inside a directory named `versions`.
+fn is_versions_dir_member(path: &Path) -> bool {
+    path.parent().and_then(Path::file_name).and_then(|name| name.to_str()) == Some("versions")
 }
 
 /// Returns `true` when `path` is inside one of the versions directories.
@@ -261,68 +484,132 @@ fn versions_mod_keeps_latest_first_dispatch_docstring() {
 }
 
 #[test]
-/// Enforces the non-removable versions policy guard in every `versions/`
-/// directory under this crate's `src/`.
+/// Keeps the derived member set honest: every `Cargo.toml` on disk is a member,
+/// and every declared member exists.
 ///
-/// `versioned_files_keep_policy_guard_and_boundary_rules` pins the guard for
-/// `src/delta/versions/` only, so the same deletion under `storage/wal/`,
-/// `storage/blob_store/` or `storage/metadata_store/` stays invisible to that test.
-/// This test discovers the directories instead of naming them, so a new
-/// `versions/` directory under this crate's `src/` is covered as soon as it exists.
-/// The scan root stays crate-local on purpose: covering the repo-wide marker
-/// policy would need a workspace-wide scan root and a marker-name decision first.
-fn every_versions_dir_keeps_policy_guard_docstring() {
-    let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut rs_files = Vec::new();
-    collect_rs_files_recursive(&src_dir, &mut rs_files);
+/// This is the anti-rot guard for the scan below. A hardcoded crate list would
+/// silently drop a newly added crate from `every_versions_dir_keeps_policy_guard_docstring`,
+/// which is the failure mode that let nine `versions/` files go unmarked; deriving
+/// the set from the workspace manifest only helps if the derivation is itself
+/// checked against the filesystem.
+fn workspace_member_set_matches_the_filesystem() {
+    let workspace_root = find_workspace_root();
+    let members = workspace_member_roots(&workspace_root);
 
-    let mut guarded = Vec::new();
-    let mut discovered = Vec::new();
-    for path in &rs_files {
-        let Some(versions_dir) = path.parent() else {
-            continue;
-        };
-        if versions_dir.file_name().and_then(|name| name.to_str()) != Some("versions") {
-            continue;
-        }
-        // The parent module of `versions/` (`delta`, `wal`, `blob_store`, ...).
-        let Some(owner) =
-            versions_dir.parent().and_then(|dir| dir.file_name()).and_then(|name| name.to_str())
-        else {
-            continue;
-        };
-        if !discovered.iter().any(|dir| dir == owner) {
-            discovered.push(owner.to_string());
-        }
-        guarded.push(path.clone());
-    }
-
-    assert!(!guarded.is_empty(), "no versions/ files found under {}", src_dir.display());
-    // A walker that silently stops descending would otherwise pass on an empty
-    // set, which is exactly how the guard-marker drift went unnoticed.
-    for expected in ["blob_store", "delta", "metadata_store", "wal"] {
+    for member in &members {
         assert!(
-            discovered.iter().any(|dir| dir == expected),
-            "versions/ directory '{expected}' was not discovered; discovered: {discovered:?}"
+            member.join("Cargo.toml").is_file(),
+            "member '{}' declared in '{}' has no Cargo.toml",
+            member.display(),
+            workspace_root.join("Cargo.toml").display()
         );
     }
+
+    let on_disk = discovered_manifest_dirs(&workspace_root);
+    let unclaimed: Vec<_> = on_disk.iter().filter(|dir| !members.contains(dir)).collect();
+    assert!(
+        unclaimed.is_empty(),
+        "these crates sit inside the workspace but are not covered by \
+         workspace_member_roots, so their versions/ files would escape the \
+         policy-guard scan: {unclaimed:#?}"
+    );
+}
+
+#[test]
+/// Enforces the non-removable versions policy guard in every `versions/`
+/// directory of every workspace member.
+///
+/// `versioned_files_keep_policy_guard_and_boundary_rules` pins the guard for
+/// `src/delta/versions/` only, and the previous revision of this test reached no
+/// further than `mediapm-cas/src/`, leaving all nine `versions/` files in
+/// `mediapm` and `mediapm-conductor` unenforced: a marker could be deleted from
+/// any of them with the suite green.
+///
+/// Two decisions make the wider scan trustworthy:
+///
+/// - **Scan root**: derived, not configured. [`find_workspace_root`] walks up to
+///   the nearest `[workspace]` manifest and [`workspace_member_roots`] reads that
+///   manifest's `members` list plus its path dependencies, so a new member is
+///   covered the moment it is declared and nothing can rot silently.
+///   `workspace_member_set_matches_the_filesystem` fails if a crate appears on
+///   disk that the derivation does not claim.
+/// - **Marker name**: one literal, [`VERSIONS_POLICY_GUARD_MARKER`], already
+///   carried verbatim by every `versions/` file in the workspace. Accepting more
+///   than one spelling would let a file satisfy the policy with the wrong marker
+///   and would make the negative control ambiguous.
+///
+/// Coverage is cross-checked by a second, independent walk of the whole workspace
+/// root: any `versions/` file the member-derived scan missed fails here, so a
+/// derivation bug cannot masquerade as full coverage.
+fn every_versions_dir_keeps_policy_guard_docstring() {
+    let workspace_root = find_workspace_root();
+    let members = workspace_member_roots(&workspace_root);
+    let this_crate = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let mut guarded = Vec::new();
+    let mut covered_crates: Vec<PathBuf> = Vec::new();
+    for member in &members {
+        let src_dir = member.join("src");
+        if !src_dir.is_dir() {
+            continue;
+        }
+        let mut rs_files = Vec::new();
+        collect_rs_files_recursive(&src_dir, &mut rs_files);
+
+        let before = guarded.len();
+        guarded.extend(rs_files.into_iter().filter(|path| is_versions_dir_member(path)));
+        if guarded.len() > before {
+            covered_crates.push(member.clone());
+        }
+    }
+
+    assert!(
+        !guarded.is_empty(),
+        "no versions/ files found under workspace root {}",
+        workspace_root.display()
+    );
+    // A scan that silently degenerated to this crate alone would leave the nine
+    // `mediapm` / `mediapm-conductor` files unchecked, which is exactly the
+    // regression this test was widened to prevent.
+    assert!(
+        covered_crates.iter().any(|member| member != &this_crate),
+        "the policy-guard scan covered only this crate ({}); it must reach every \
+         workspace member",
+        this_crate.display()
+    );
+
+    // Independent whole-root walk: nothing under any `versions/` directory may
+    // escape the member-derived set.
+    let mut root_walk = Vec::new();
+    collect_rs_files_recursive_excluding(&workspace_root, SCAN_EXCLUDED_DIRS, &mut root_walk);
+    let uncovered: Vec<_> = root_walk
+        .into_iter()
+        .filter(|path| is_versions_dir_member(path) && !guarded.contains(path))
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "these versions/ files are inside the workspace but outside every \
+         scanned member: {uncovered:#?}"
+    );
 
     let mut missing = Vec::new();
     for path in guarded {
         let content = fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("failed reading '{}': {err}", path.display()));
         // Search the production portion only: this test lives inside
-        // `delta/versions/mod.rs`, so scanning that whole file would let the
-        // asserted literal satisfy itself and the guard could never fail.
+        // `delta/versions/`, so scanning a whole file that restates the marker
+        // would let the asserted literal satisfy itself and the guard could
+        // never fail. A file with no `#[cfg(test)]` module is checked in full.
         let production = content
             .split_once("#[cfg(test)]")
             .map_or(content.as_str(), |(production, _tests)| production);
-        if !production.contains("//! ## DO NOT REMOVE: versions policy guard") {
+        if !production.contains(VERSIONS_POLICY_GUARD_MARKER) {
             missing.push(path);
         }
     }
     assert!(
         missing.is_empty(),
-        "these files must include the non-removable versions policy guard docstring: {missing:#?}"
+        "these files must include the non-removable versions policy guard \
+         docstring ('{VERSIONS_POLICY_GUARD_MARKER}'): {missing:#?}"
     );
 }
