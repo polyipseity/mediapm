@@ -60,44 +60,23 @@ jobs:
           cargo --locked fmt-check
           cargo --locked build-all
 
-  # Feature matrix: one `cargo check` per crate across its feature combinations.
+  # Feature matrix: one `cargo check` per crate per feature combination.
   #
-  # The matrix below is transcribed from the measured design-input artifact
-  # `.superpowers/sdd/plan-2026-09-24T142910/task-ci-matrix-design-input.md`,
-  # which read all 13 member manifests on `main` (HEAD `905d93bc`). It covers
-  # 13 crates and 46 probes. Because it is a transcription, it MUST be
-  # regenerated whenever a crate gains or loses a feature; otherwise the matrix
-  # silently stops covering the new feature.
+  # Regenerate when a crate gains or loses a feature, or the matrix quietly
+  # stops covering it. Order within a package: `--no-default-features`, each
+  # single feature alphabetically, then `--all-features`. Crates with no
+  # `[features]` section get those two endpoints only. Packages alphabetical.
   #
-  # Ordering, within each package: `--no-default-features`, then each single
-  # feature in alphabetical order, then `--all-features`. The four crates with
-  # no `[features]` section (`build-utils`, `cargo-bin`,
-  # `mediapm-conductor-examples-concat-tool`, `mediapm-tests`) get only those
-  # two endpoints, so every row supplies at least one flag. Package order is
-  # alphabetical.
+  # Three things a reader will otherwise get wrong:
   #
-  # Interpretation caveats a reader must not skip:
-  #
-  # 1. `--no-default-features` is NOT an all-features-off build for `mediapm`
-  #    or `mediapm-conductor`. The root manifest declares the `mediapm-utils`
-  #    dependency with `default-features = false`, but `src/mediapm/Cargo.toml`
-  #    forces `["nickel", "progress", "report"]` and
-  #    `src/mediapm-conductor/Cargo.toml` forces `["nickel"]`, so those members
-  #    still build `mediapm-utils` with features on. The only truly minimal
-  #    `mediapm-utils` build is the one obtained by probing `mediapm-utils`
-  #    itself; do not over-trust the `mediapm` and `mediapm-conductor`
-  #    `--no-default-features` rows for that crate.
-  # 2. Eight bin targets declare `required-features = ["cli"]`, so cargo
-  #    silently skips those binaries whenever `cli` is off. Every non-`cli`
-  #    probe therefore gives no bin coverage; that is expected, not a failure.
-  # 3. Known blind spot: a bare `cargo check` does not compile test targets. It
-  #    would not have caught a defect that only shows up in a `#[cfg(test)]`
-  #    module needing an optional dependency that is otherwise unreachable (one
-  #    real instance of that class). Adding `--all-targets` would close the
-  #    gap, but dev-dependency feature unification would then mask a genuinely
-  #    missing optional dependency by enabling it for every probe, weakening
-  #    the lib-level signal. The trade-off was considered and the minimal
-  #    lib-level probe was chosen deliberately.
+  # 1. `--no-default-features` is not a minimal build of `mediapm-utils` via
+  #    `mediapm` or `mediapm-conductor`. Both force features on regardless.
+  #    Only probing `mediapm-utils` directly gives a minimal build.
+  # 2. Eight bin targets need `required-features = ["cli"]`, so cargo skips
+  #    them on every probe without it. Expected, not a failure.
+  # 3. No `--all-targets`, so `#[cfg(test)]` code depending on an optional
+  #    dependency goes unchecked. Adding it would unify dev-dependency
+  #    features across all probes and mask a genuinely missing dependency.
   feature-matrix:
     name: "Feature Matrix: ${{ matrix.package }} ${{ matrix.flags }}"
     runs-on: ubuntu-latest
