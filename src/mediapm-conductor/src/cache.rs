@@ -666,6 +666,10 @@ fn collect_referenced_hashes_from_indexes(cache_root: &Path) -> BTreeSet<String>
 }
 
 /// Writes one index envelope to disk with replace-on-rename semantics.
+///
+/// The replacement is a single atomic rename: readers observe either the
+/// previous index or the new one, never a missing file. See the comment at
+/// the persist call below for why that holds on every supported platform.
 fn write_index_file(index_path: &Path, index: &CacheIndex) -> Result<(), ConductorError> {
     let parent = index_path.parent().ok_or_else(|| {
         ConductorError::Workflow(format!(
@@ -693,9 +697,28 @@ fn write_index_file(index_path: &Path, index: &CacheIndex) -> Result<(), Conduct
             source,
         }
     })?;
-    if index_path.exists() {
-        let _ = fs::remove_file(index_path);
-    }
+    // Replace the destination with one rename, with no `remove_file` first.
+    //
+    // `NamedTempFile::persist` is the atomic replace-the-destination
+    // operation on every supported platform: it resolves to `rename(2)` on
+    // Unix, and on Windows to `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`
+    // — which is exactly the flag `tempfile`'s Windows `persist` passes, and
+    // the one `std::fs::rename` passes there too. So overwriting an existing
+    // index needs no pre-removal to work on Windows, and the temp file is
+    // created in the destination's own directory, so the rename never crosses
+    // a filesystem boundary and cannot fail with `EXDEV`.
+    //
+    // Removing the destination beforehand would open a window in which the
+    // index file does not exist, and `collect_referenced_hashes_from_indexes`
+    // reads only the `*.json` files under the cache root, with
+    // `load_index_file_sync` mapping a missing file to an empty index. A prune
+    // scan overlapping that window sees a live reference as absent and issues
+    // a `cas.delete` for a payload that is still indexed. The window is
+    // reachable in normal operation, not only under a foreground prune:
+    // `prune_expired_inner_core` rewrites the index of every domain on every
+    // pass, before its `expired_keys.is_empty()` early return, and the
+    // background maintenance loop walks all domains with no cooldown gate.
+    // Guarded by `index_rewrite_never_hides_a_live_reference_from_the_prune_scan`.
     temp_file.persist(index_path).map_err(|error| ConductorError::Io {
         operation: "replacing cache index".to_string(),
         path: index_path.to_path_buf(),
@@ -1293,35 +1316,17 @@ mod tests {
     ///
     /// # What this test does not cover
     ///
-    /// This is a contract-strengthening test, not the deterministic guard for
-    /// the intermittent failure in
-    /// [`background_maintenance_cross_index_preserves_blob`]. That test still
-    /// fails intermittently (1 run in 5 of the module, always on its
-    /// `removed_payloads` assertion), and the cause is neither this prune path
-    /// nor the CAS full-object immutability guard:
-    ///
-    /// - The reference set is built by [`collect_referenced_hashes_from_indexes`],
-    ///   which reads only the `*.json` files under the cache root, and
-    ///   [`load_index_file_sync`] returns an empty index for a missing file.
-    /// - [`write_index_file`] establishes a window in which the destination
-    ///   does not exist: it removes the index before persisting the temp file.
-    /// - `prune_expired_inner_core` performs that write for **every** domain on
-    ///   **every** pass, before its `expired_keys.is_empty()` early return, and
-    ///   the background loop passes over all domains with no cooldown gate.
-    ///
-    /// So a content-domain scan that overlaps any other domain's rewrite window
-    /// sees a live reference as absent and reclaims a payload that is still
-    /// indexed. The CAS guard cannot influence this: it only skips rewriting a
-    /// full blob that is already present, preserving its inode and mtime, and
-    /// the reclaim here is a well-formed `cas.delete` driven by a wrong
-    /// reference set. Observed: both this test and the flaky one pass with that
-    /// guard reverted.
-    ///
-    /// The deterministic guard for that mechanism is
-    /// [`index_rewrite_never_hides_a_live_reference_from_the_prune_scan`],
-    /// which forces the rewrite window instead of hoping to land in it. The
-    /// deterministic guard for the inode mechanism lives at the CAS
-    /// boundary, in
+    /// This test pins the prune path's own decision, not the durability of the
+    /// reference set that decision reads. That set is built by
+    /// [`collect_referenced_hashes_from_indexes`], which reads only the
+    /// `*.json` files under the cache root and reads a missing file as an
+    /// empty index, so it is correct only while every index file is present: a
+    /// scan overlapping the rewrite of another domain's index would see a live
+    /// reference as absent and reclaim a payload that is still indexed. That
+    /// invariant belongs to the writer, and its deterministic guard is
+    /// [`index_rewrite_never_hides_a_live_reference_from_the_prune_scan`]. The
+    /// unrelated CAS full-object immutability guard has its own deterministic
+    /// guard at the CAS boundary, in
     /// `storage::blob_store::fs::tests::rewriting_an_existing_full_object_preserves_hardlink_identity`.
     #[tokio::test]
     async fn background_prune_path_preserves_a_blob_shared_with_another_domain() {
