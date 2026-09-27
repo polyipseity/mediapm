@@ -39,13 +39,19 @@ impl DependencyTypes {
     }
 
     /// Whether the cross-step role is set.
-    #[allow(dead_code)] // used by unit tests only
+    ///
+    /// Compiled only under `cfg(test)`: the only callers are this module's
+    /// `dependency_types_*` unit tests.
+    #[cfg(test)]
     pub(crate) const fn contains_cross_step(self) -> bool {
         self.cross_step
     }
 
     /// Combine two flag sets (union).
-    #[allow(dead_code)] // used by unit tests only
+    ///
+    /// Compiled only under `cfg(test)`: the only caller is this module's
+    /// `dependency_types_combined_contains_both` unit test.
+    #[cfg(test)]
     pub(crate) const fn combine(self, other: Self) -> Self {
         Self {
             same_step: self.same_step || other.same_step,
@@ -58,7 +64,6 @@ impl DependencyTypes {
 ///
 /// Returns `None` if the tool or dependency is unknown.
 #[must_use]
-#[allow(dead_code)]
 pub(crate) fn known_dependency_type(tool_id: &str, dep_id: &str) -> Option<DependencyTypes> {
     known_dependency_type_for_tool(tool_id).and_then(|types| types.get(dep_id).copied())
 }

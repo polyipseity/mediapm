@@ -37,12 +37,6 @@ pub(super) fn write_bytes_if_changed(
     write_bytes(path, bytes, operation)
 }
 
-/// Returns current Unix timestamp in seconds.
-#[allow(dead_code)]
-pub(super) fn now_unix_seconds() -> u64 {
-    mediapm_utils::Timestamp::now().as_unix_secs()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

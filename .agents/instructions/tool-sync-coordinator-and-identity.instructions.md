@@ -247,8 +247,6 @@ Lifecycle helpers:
 | Function | Purpose |
 |---|---|
 | `is_builtin_source_ingest_requirement(tool_name)` | True for builtin `import` (special content-ingestion handling) |
-| `is_hash_in_tool_content_maps(hash, doc)` | Checks if a hash is still referenced by any tool content map |
-| `lock_registry_version(cas, tool_id, identity)` | Stores a deterministic CAS marker `registry-locks/{tool_id}/{identity}` |
 
 ### Document I/O invariants
 

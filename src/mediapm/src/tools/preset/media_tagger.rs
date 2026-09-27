@@ -11,7 +11,6 @@ use crate::tools::workflows;
 
 /// Returns the known `DependencyTypes` for each dependency of media-tagger.
 #[must_use]
-#[allow(dead_code)]
 pub(crate) fn dependency_types() -> BTreeMap<&'static str, DependencyTypes> {
     BTreeMap::from([("ffmpeg", DependencyTypes::CROSS_STEP)])
 }

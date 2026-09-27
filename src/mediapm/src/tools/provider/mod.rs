@@ -48,8 +48,12 @@ pub(crate) struct MetadataCacheTracker<'a> {
 
 impl<'a> MetadataCacheTracker<'a> {
     /// Creates a new tracker wrapping the given cache and domain.
+    ///
+    /// Compiled only under `cfg(test)`: the production call site uses
+    /// [`Self::with_policy`] to pick up a recheck policy, so this
+    /// always-`UseCached` shortcut has no non-test caller.
     #[must_use]
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn new(inner: &'a Cache, domain: &str) -> Self {
         Self {
             inner,
