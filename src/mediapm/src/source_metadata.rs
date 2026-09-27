@@ -1,9 +1,12 @@
-//! Source metadata resolution for online and local media sources.
+//! Local media source metadata resolution.
 //!
-//! This module provides utilities for fetching and resolving metadata from
-//! local files (via `ffprobe`), along with parsing helpers that extract
-//! structured metadata from tool outputs. Online (`yt-dlp`) metadata resolution
-//! survives only as `#[cfg(test)]` coverage: no production path fetches it.
+//! This module owns the `ffprobe`-backed probe that reads metadata for a
+//! local file, the cache-backed wrapper the `add_local_source_*` service API
+//! calls, and the conductor CAS store root resolver.
+//!
+//! There is no online-source probe here. Online `${media.metadata.*}` values
+//! are resolved during materialization from the yt-dlp `info.json` sidecar
+//! held in CAS, by `materializer::metadata::resolve_variant_metadata_key`.
 
 use std::path::Path;
 use std::process::Command;
@@ -15,41 +18,6 @@ use crate::metadata_cache::MetadataCache;
 use crate::paths::MediaPmPaths;
 use crate::util::first_non_empty_json_string;
 
-/// Metadata extracted from an online source.
-///
-/// Compiled only under `cfg(test)`: its sole constructor is
-/// [`parse_online_source_metadata`], whose only caller is this module's
-/// `#[cfg(test)]` suite. No production path resolves online-source metadata.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[cfg(test)]
-pub(crate) struct OnlineSourceMetadata {
-    /// Human-readable title.
-    pub title: String,
-    /// Human-readable artist.
-    pub artist: String,
-    /// Human-readable description.
-    pub description: String,
-}
-
-/// Resolved metadata for a newly added online source.
-///
-/// Compiled only under `cfg(test)`: its sole constructor is
-/// [`resolve_online_source_metadata_for_add`], whose only caller is this
-/// module's `#[cfg(test)]` suite. No production path resolves online-source
-/// metadata.
-#[derive(Debug, Clone)]
-#[cfg(test)]
-pub(crate) struct ResolvedOnlineSourceMetadata {
-    /// Human-readable title.
-    pub title: String,
-    /// Human-readable description.
-    pub description: String,
-    /// Human-readable artist.
-    pub artist: String,
-    /// Non-fatal warning message (if any).
-    pub warning: Option<String>,
-}
-
 /// Metadata extracted from a local file.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LocalSourceMetadata {
@@ -59,43 +27,6 @@ pub(crate) struct LocalSourceMetadata {
     pub artist: String,
     /// Human-readable description (may be empty).
     pub description: String,
-}
-
-/// Parses `yt-dlp --dump-json` output into an [`OnlineSourceMetadata`].
-///
-/// Compiled only under `cfg(test)`: no production caller supplies
-/// `yt-dlp --dump-json` output, because the fetch entry point that did
-/// (`try_fetch_online_source_metadata_with_yt_dlp`) has no caller either.
-#[must_use]
-#[cfg(test)]
-pub(crate) fn parse_online_source_metadata(value: &Value) -> OnlineSourceMetadata {
-    let title = first_non_empty_json_string(value, &["title", "fulltitle", "webpage_url"])
-        .unwrap_or_else(|| "Untitled".to_string());
-    let artist = first_non_empty_json_string(value, &["uploader", "channel", "creator"])
-        .unwrap_or_else(|| "Unknown".to_string());
-    let description =
-        first_non_empty_json_string(value, &["description", "synopsis"]).unwrap_or_default();
-
-    OnlineSourceMetadata { title, artist, description }
-}
-
-/// Resolves raw yt-dlp metadata into a clean [`ResolvedOnlineSourceMetadata`].
-///
-/// Compiled only under `cfg(test)`: no production path resolves online-source
-/// metadata, so this mapping is exercised solely by this module's test suite.
-#[must_use]
-#[cfg(test)]
-pub(crate) fn resolve_online_source_metadata_for_add(
-    yt_dlp_metadata: &Value,
-    warning: Option<String>,
-) -> ResolvedOnlineSourceMetadata {
-    let parsed = parse_online_source_metadata(yt_dlp_metadata);
-    ResolvedOnlineSourceMetadata {
-        title: parsed.title,
-        description: parsed.description,
-        artist: parsed.artist,
-        warning,
-    }
 }
 
 /// Fetches metadata for a local file using `ffprobe`.
@@ -237,43 +168,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Ensures parsing valid yt-dlp JSON extracts title, artist, and description.
-    #[test]
-    fn parse_online_source_metadata_extracts_fields() {
-        let input = json!({
-            "title": "Test Video",
-            "uploader": "Test Channel",
-            "description": "A test video description"
-        });
-        let metadata = parse_online_source_metadata(&input);
-        assert_eq!(metadata.title, "Test Video");
-        assert_eq!(metadata.artist, "Test Channel");
-        assert_eq!(metadata.description, "A test video description");
-    }
-
-    /// Ensures fallback to alternative yt-dlp keys works.
-    #[test]
-    fn parse_online_source_metadata_falls_back_alternative_keys() {
-        let input = json!({
-            "fulltitle": "Fallback Title",
-            "channel": "Channel Name"
-        });
-        let metadata = parse_online_source_metadata(&input);
-        assert_eq!(metadata.title, "Fallback Title");
-        assert_eq!(metadata.artist, "Channel Name");
-    }
-
-    /// Ensures missing description yields an empty string.
-    #[test]
-    fn parse_online_source_metadata_missing_description_is_empty() {
-        let input = json!({
-            "title": "No Description",
-            "uploader": "Uploader"
-        });
-        let metadata = parse_online_source_metadata(&input);
-        assert_eq!(metadata.description, "");
-    }
-
     /// Ensures ffprobe JSON with format tags is parsed correctly.
     #[test]
     fn parse_local_source_metadata_from_ffprobe_json_extracts_fields() {
@@ -328,69 +222,6 @@ mod tests {
         assert_eq!(metadata.artist, "Unknown");
     }
 
-    /// Ensures `resolve_online_source_metadata_for_add` maps fields correctly.
-    #[test]
-    fn resolve_online_source_metadata_for_add_maps_fields() {
-        let input = json!({
-            "title": "Resolved Title",
-            "uploader": "Resolved Uploader",
-            "description": "Resolved description."
-        });
-        let resolved = resolve_online_source_metadata_for_add(&input, None);
-        assert_eq!(resolved.title, "Resolved Title");
-        assert_eq!(resolved.artist, "Resolved Uploader");
-        assert_eq!(resolved.description, "Resolved description.");
-        assert!(resolved.warning.is_none());
-    }
-
-    #[test]
-    fn empty_json_object_returns_defaults() {
-        let input = json!({});
-        let metadata = parse_online_source_metadata(&input);
-        assert_eq!(metadata.title, "Untitled");
-        assert_eq!(metadata.artist, "Unknown");
-        assert_eq!(metadata.description, "");
-    }
-
-    #[test]
-    fn extra_fields_ignored() {
-        let input = json!({
-            "title": "Video",
-            "uploader": "Channel",
-            "extra_field": "should be ignored",
-            "another_extra": 42
-        });
-        let metadata = parse_online_source_metadata(&input);
-        assert_eq!(metadata.title, "Video");
-        assert_eq!(metadata.artist, "Channel");
-        assert_eq!(metadata.description, "");
-    }
-
-    #[test]
-    fn nested_description_extracted() {
-        // Live streams may include nested objects; the top-level `description`
-        // field is still extracted correctly.
-        let input = json!({
-            "title": "Live Stream",
-            "uploader": "Channel",
-            "description": "A description for a live stream",
-            "live_status": "is_live",
-            "concurrent_view_count": 1234
-        });
-        let metadata = parse_online_source_metadata(&input);
-        assert_eq!(metadata.description, "A description for a live stream");
-    }
-
-    #[test]
-    fn both_fulltitle_and_title_prefers_title() {
-        let input = json!({
-            "title": "Actual Title",
-            "fulltitle": "Full Title"
-        });
-        let metadata = parse_online_source_metadata(&input);
-        assert_eq!(metadata.title, "Actual Title");
-    }
-
     #[test]
     fn ffprobe_json_without_format_tags_returns_defaults() {
         let input = json!({
@@ -440,18 +271,5 @@ mod tests {
         .expect("cached fetch succeeds");
         assert_eq!(probe_calls, 1, "second fetch must hit the cache, not probe");
         assert_eq!(second.title, metadata.title);
-    }
-
-    #[test]
-    fn resolve_with_warning_passes_through() {
-        let input = json!({
-            "title": "Video",
-            "uploader": "Channel",
-            "description": "Desc"
-        });
-        let resolved =
-            resolve_online_source_metadata_for_add(&input, Some("warning message".to_string()));
-        assert_eq!(resolved.title, "Video");
-        assert_eq!(resolved.warning, Some("warning message".to_string()));
     }
 }
