@@ -196,7 +196,7 @@ async fn prune_expired_inner_core(
     // All domain_state borrows are dropped before any await so the
     // resulting Future is Send (required by tokio::spawn background
     // loop).
-    let (_cutoff, index_path, expired_keys, expired_hashes, index_snapshot) = {
+    let (_cutoff, index_path, expired_keys, expired_hashes) = {
         let domain_state = domains
             .get(domain)
             .ok_or_else(|| ConductorError::Workflow(format!("unknown cache domain '{domain}'")))?;
@@ -218,18 +218,43 @@ async fn prune_expired_inner_core(
                 index.entries.remove(key);
             }
         }
-        let index_snapshot = index.clone();
-        // domain_state and index (MutexGuard) dropped here.
-        (cutoff, index_path, expired_keys, expired_hashes, index_snapshot)
+        // domain_state and index (MutexGuard) dropped here. The snapshot is
+        // deliberately *not* taken here: Phase 2 re-reads the live index
+        // under the same lock it writes under.
+        (cutoff, index_path, expired_keys, expired_hashes)
     };
 
-    // ── Phase 2: persist mutated index via spawn_blocking ──
-    // Clone index_path before move into closure; the original is
-    // still needed below for cache_root resolution.
-    let write_path = index_path.clone();
-    tokio::task::spawn_blocking(move || write_index_file(&write_path, &index_snapshot))
-        .await
-        .map_err(|e| ConductorError::Workflow(format!("prune index join error: {e}")))??;
+    // ── Phase 2: persist the mutated index via spawn_blocking ──
+    //
+    // The write happens while the domain's index mutex is held, and the mutex
+    // is taken *and released inside the closure* so no `MutexGuard` ever
+    // crosses the `.await` below. That is what makes two writers to one
+    // domain impossible to order wrongly: whoever holds the mutex snapshots
+    // and writes as one step, so the next writer to take the mutex both sees
+    // the previous write's rows and cannot be overtaken by it.
+    //
+    // Releasing the mutex before the write instead (as this phase once did)
+    // let a background pass publish a snapshot older than a concurrent
+    // `store_bytes` that had already persisted a newer one, which erased a
+    // live row from the file. Phase 3 then scans the file, legitimately does
+    // not find that row's hash, and Phase 4 reclaims a payload the cache
+    // still references. Guarded by
+    // `concurrent_index_persists_publish_in_mutation_order`.
+    //
+    // The file I/O still runs on a blocking thread, so holding the mutex
+    // across it never blocks a tokio worker thread.
+    let write_state = domains
+        .get(domain)
+        .ok_or_else(|| ConductorError::Workflow(format!("unknown cache domain '{domain}'")))?
+        .clone();
+    tokio::task::spawn_blocking(move || {
+        let index = write_state.index.lock().map_err(|_| {
+            ConductorError::Internal("locking cache index mutex failed".to_string())
+        })?;
+        write_index_file(&write_state.index_path, &index)
+    })
+    .await
+    .map_err(|e| ConductorError::Workflow(format!("prune index join error: {e}")))??;
 
     if expired_keys.is_empty() {
         return Ok(CachePruneReport::default());
@@ -440,7 +465,10 @@ impl Cache {
         };
         entry.last_access_unix_seconds = now;
 
-        // Persist if throttle allows. MutexGuard drops before I/O.
+        // Persist if throttle allows. The MutexGuard stays held across the
+        // write so this persist cannot be overtaken by, or overtake, another
+        // writer to the same domain — see
+        // `concurrent_index_persists_publish_in_mutation_order`.
         if should_persist && let Err(e) = write_index_file(&domain_state.index_path, &index) {
             tracing::warn!("cache touch persist failed for domain {domain}: {e}");
         }
@@ -512,17 +540,16 @@ impl Cache {
         let Some(domain_state) = self.domains.get(domain) else {
             return;
         };
-        let (path, index_clone) = {
-            let Ok(mut index) = domain_state.index.lock() else {
-                return;
-            };
-            let removed = index.entries.remove(key);
-            if removed.is_none() {
-                return;
-            }
-            (domain_state.index_path.clone(), index.clone())
-        }; // MutexGuard dropped here
-        if let Err(e) = write_index_file(&path, &index_clone) {
+        let Ok(mut index) = domain_state.index.lock() else {
+            return;
+        };
+        if index.entries.remove(key).is_none() {
+            return;
+        }
+        // Persist under the index mutex so this write cannot be overtaken by,
+        // or overtake, another writer to the same domain — see
+        // `concurrent_index_persists_publish_in_mutation_order`.
+        if let Err(e) = write_index_file(&domain_state.index_path, &index) {
             tracing::warn!("cache index remove persist failed for domain {domain}: {e}");
         }
     }
@@ -533,28 +560,32 @@ impl Cache {
         let Some(domain_state) = self.domains.get(domain) else {
             return;
         };
-        let (path, index_clone, should_persist) = {
-            let Ok(mut index) = domain_state.index.lock() else {
-                return;
-            };
-            let now = now_unix_seconds();
-            let hash_text = hash.to_string();
-            let mut should_persist = true;
-            if let Some(existing) = index.entries.get_mut(key) {
-                let hash_changed = existing.hash != hash_text;
-                existing.hash = hash_text;
-                let elapsed = now.saturating_sub(existing.last_access_unix_seconds);
-                existing.last_access_unix_seconds = now;
-                should_persist = hash_changed || elapsed >= TOUCH_PERSIST_INTERVAL_SECONDS;
-            } else {
-                index.entries.insert(
-                    key.to_string(),
-                    CacheIndexEntry { hash: hash_text, last_access_unix_seconds: now },
-                );
-            }
-            (domain_state.index_path.clone(), index.clone(), should_persist)
-        }; // MutexGuard dropped here
-        if should_persist && let Err(e) = write_index_file(&path, &index_clone) {
+        let Ok(mut index) = domain_state.index.lock() else {
+            return;
+        };
+        let now = now_unix_seconds();
+        let hash_text = hash.to_string();
+        let mut should_persist = true;
+        if let Some(existing) = index.entries.get_mut(key) {
+            let hash_changed = existing.hash != hash_text;
+            existing.hash = hash_text;
+            let elapsed = now.saturating_sub(existing.last_access_unix_seconds);
+            existing.last_access_unix_seconds = now;
+            should_persist = hash_changed || elapsed >= TOUCH_PERSIST_INTERVAL_SECONDS;
+        } else {
+            index.entries.insert(
+                key.to_string(),
+                CacheIndexEntry { hash: hash_text, last_access_unix_seconds: now },
+            );
+        }
+        // Persist under the index mutex so this write cannot be overtaken by,
+        // or overtake, another writer to the same domain. Snapshotting the
+        // index and writing it after releasing the mutex let a background
+        // prune pass publish a state older than a concurrent `store_bytes`
+        // that had already persisted a newer one, erasing a live row from the
+        // file the prune's own reference scan reads — see
+        // `concurrent_index_persists_publish_in_mutation_order`.
+        if should_persist && let Err(e) = write_index_file(&domain_state.index_path, &index) {
             tracing::warn!("cache index persist failed for domain {domain}: {e}");
         }
     }
@@ -746,14 +777,15 @@ impl Drop for Cache {
             _ => return,
         }
         for (domain, state) in &self.domains {
-            let (path, index) = {
-                let Ok(guard) = state.index.lock() else {
-                    tracing::warn!("cache domain {domain} mutex poisoned on drop, skipping");
-                    continue;
-                };
-                (state.index_path.clone(), guard.clone())
-            }; // MutexGuard dropped here
-            if let Err(e) = write_index_file(&path, &index) {
+            // The guard stays held across the write so the teardown flush
+            // cannot publish a state older than a persist that is still in
+            // flight for the same domain — see
+            // `concurrent_index_persists_publish_in_mutation_order`.
+            let Ok(guard) = state.index.lock() else {
+                tracing::warn!("cache domain {domain} mutex poisoned on drop, skipping");
+                continue;
+            };
+            if let Err(e) = write_index_file(&state.index_path, &guard) {
                 tracing::warn!("cache domain {domain} flush on drop failed: {e}");
             }
         }
@@ -887,6 +919,7 @@ mod tests {
         TOUCH_PERSIST_INTERVAL_SECONDS,
     };
     use mediapm_cas::{CasApi, FileSystemCas, Hash, VerifyTriggerStrategy};
+    use std::collections::BTreeSet;
     use std::str::FromStr;
     use std::sync::atomic::Ordering;
 
@@ -1301,14 +1334,21 @@ mod tests {
     /// rather than about a foreground prune that happens to share its logic.
     ///
     /// It is also the one form of this test that cannot be decided by
-    /// scheduling. [`Cache::open`] spawns the loop and its first pass runs as
-    /// soon as the runtime first yields; against a zero-TTL content domain
-    /// that pass reclaims `key-a` without a cooldown gate, so whichever prune
-    /// reaches the index first removes the row and the other observes an empty
-    /// candidate set. Yielding once here, while the index is still empty, lets
-    /// the loop's spawn-time pass complete before this test stores anything,
-    /// so the row removal asserted below is unambiguously the one performed
-    /// here.
+    /// scheduling. The background loop is an actor whose first pass runs
+    /// whenever the runtime first yields, so the test drives the loop's own
+    /// function, [`Cache::prune_expired_inner`], directly against a cache
+    /// opened with [`Cache::open_without_background`]. That is the same entry
+    /// point the loop calls, with the same absence of a cooldown gate, and it
+    /// is decided by this test rather than by a background task's timing.
+    ///
+    /// The previous form opened the background loop and then waited with a
+    /// single `tokio::task::yield_now()`. That wait is not a wait: one yield
+    /// cannot drain a pass that awaits `spawn_blocking` once per domain, so
+    /// whether the spawn-time pass had already consumed the row depended on
+    /// how many domains the cache had and on blocking-thread scheduling. The
+    /// row removal asserted below was therefore sometimes performed by the
+    /// loop and sometimes here, which is the ambiguity this test exists to
+    /// remove.
     ///
     /// The WAL is drained first for the same reason as in
     /// [`prune_keeps_shared_payload_after_the_wal_is_drained`]: an undrained
@@ -1323,15 +1363,18 @@ mod tests {
     /// empty index, so it is correct only while every index file is present: a
     /// scan overlapping the rewrite of another domain's index would see a live
     /// reference as absent and reclaim a payload that is still indexed. That
-    /// invariant belongs to the writer, and its deterministic guard is
-    /// [`index_rewrite_never_hides_a_live_reference_from_the_prune_scan`]. The
+    /// invariant belongs to the writer, and its deterministic guards are
+    /// [`index_rewrite_never_hides_a_live_reference_from_the_prune_scan`] (the
+    /// file must always be present) and
+    /// [`concurrent_index_persists_publish_in_mutation_order`] (a persist must
+    /// never publish a state older than one already published). The
     /// unrelated CAS full-object immutability guard has its own deterministic
     /// guard at the CAS boundary, in
     /// `storage::blob_store::fs::tests::rewriting_an_existing_full_object_preserves_hardlink_identity`.
     #[tokio::test]
     async fn background_prune_path_preserves_a_blob_shared_with_another_domain() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
-        let cache = Cache::open(
+        let cache = Cache::open_without_background(
             root.path(),
             &[
                 CacheDomainConfig {
@@ -1348,9 +1391,6 @@ mod tests {
         )
         .await
         .expect("open cache");
-
-        // Let the loop's spawn-time pass run against the still-empty index.
-        tokio::task::yield_now().await;
 
         let payload = b"cross-index-background-path".to_vec();
         cache.store_bytes("content", "key-a", &payload).await;
@@ -1498,6 +1538,144 @@ mod tests {
         assert!(
             super::collect_referenced_hashes_from_indexes(root.path()).contains(&live_hash),
             "the live reference must be readable once every rewrite has landed"
+        );
+    }
+
+    /// Pins the invariant that an index persist publishes its snapshot in
+    /// mutation order, so a writer can never replace the file with a state
+    /// older than one another writer already published.
+    ///
+    /// # Why a stale publish is data loss
+    ///
+    /// [`prune_expired_inner_core`] decides what to reclaim from the *file*,
+    /// not from the in-memory index: Phase 3 reads every `*.json` under the
+    /// cache root through [`collect_referenced_hashes_from_indexes`], and
+    /// Phase 4 issues a `cas.delete` for each expired hash the scan does not
+    /// find. A persist that lands an older snapshot therefore deletes a row
+    /// that is still live in memory, the scan that follows legitimately does
+    /// not see that row's hash, and the prune reclaims a payload the cache
+    /// still points at. This is reachable without any window in which the file
+    /// is absent: the background maintenance loop calls
+    /// `prune_expired_inner_core` for every domain with no cooldown gate,
+    /// while foreground `store_bytes` persists the same domain concurrently.
+    ///
+    /// # How the overlap is forced
+    ///
+    /// [`Cache::touch_index_entry`] is the persist every foreground
+    /// `store_bytes` routes through, and it is a plain synchronous call, so
+    /// several writer threads drive it directly against one domain. Each
+    /// writer inserts a key nothing else inserts, so the published key set is
+    /// monotonically growing in mutation order and any shrink is an
+    /// out-of-order publish. The observer reads the file only, so every
+    /// sample is a complete published state — `write_index_file` replaces the
+    /// destination with one atomic rename. This is the same "drive the racing
+    /// operation explicitly instead of waiting for it" shape as
+    /// `index_rewrite_never_hides_a_live_reference_from_the_prune_scan` and
+    /// `hardlink_survives_later_wal_consumer_drain_of_the_same_blob` in
+    /// `mediapm`'s `materializer/file_ops.rs`: no sleeps, and the run is
+    /// bounded so it terminates even when an assertion fails.
+    ///
+    /// The writers contend for the domain's index mutex, so their writes
+    /// overlap in time and the last rename to land is decided by the
+    /// filesystem rather than by mutation order. With the mutex released
+    /// before the write, the earlier snapshot renaming last is the common case
+    /// rather than a rare one, which is what makes the negative control
+    /// reliable.
+    #[tokio::test]
+    async fn concurrent_index_persists_publish_in_mutation_order() {
+        /// Persists each writer thread performs. The loop is bounded so the
+        /// test terminates even when an assertion fails.
+        const ROUNDS: u64 = 150;
+        /// Writers running at once. One writer cannot reorder anything, so
+        /// the count is what makes the race possible at all.
+        const WRITERS: u64 = 3;
+        /// Samples still taken after the writers finished, so a writer that
+        /// outran the observer cannot leave the race unobserved.
+        const MIN_OBSERVATIONS: usize = 8;
+        const DOMAIN: &str = "content";
+
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        // No background loop: this test drives the persist path directly, so
+        // nothing else competes for the same index file.
+        let cache = Cache::open_without_background(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: DOMAIN.to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache");
+        let index_path = root.path().join("tools.json");
+
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (shrinks, observations, observations_while_writing) = std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for writer in 0..WRITERS {
+                let cache = &cache;
+                let stop_flag = &stop;
+                handles.push(scope.spawn(move || {
+                    for round in 0..ROUNDS {
+                        if stop_flag.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        // A key only this writer inserts, so the published key
+                        // set grows with every persist and never shrinks on
+                        // its own.
+                        let key = format!("writer-{writer}-key-{round}");
+                        let hash = Hash::from_bytes(
+                            [u8::try_from((writer * ROUNDS + round) % 251).unwrap_or(0); 32],
+                        );
+                        cache.touch_index_entry(DOMAIN, &key, hash);
+                    }
+                }));
+            }
+
+            let mut published = BTreeSet::new();
+            let mut shrinks = 0usize;
+            let mut observations = 0usize;
+            let mut observations_while_writing = 0usize;
+            while observations < MIN_OBSERVATIONS || handles.iter().any(|h| !h.is_finished()) {
+                let on_disk: BTreeSet<String> =
+                    super::load_index_file_sync(&index_path).entries.into_keys().collect();
+                observations += 1;
+                if handles.iter().any(|h| !h.is_finished()) {
+                    observations_while_writing += 1;
+                }
+                if !published.is_subset(&on_disk) {
+                    shrinks += 1;
+                }
+                published = on_disk;
+            }
+            stop.store(true, Ordering::Relaxed);
+            (shrinks, observations, observations_while_writing)
+        });
+
+        assert!(
+            observations_while_writing > 0,
+            "the observer never sampled while a writer was still persisting, so the race was not \
+             exercised ({observations} observations, {observations_while_writing} of them during \
+             a write)"
+        );
+        assert_eq!(
+            shrinks, 0,
+            "an index persist must publish under the domain index mutex: {shrinks} of \
+             {observations} samples saw a previously published row disappear from the file, so a \
+             prune scan running over that state reclaims a payload the cache still references"
+        );
+
+        let expected: BTreeSet<String> = (0..WRITERS)
+            .flat_map(|writer| (0..ROUNDS).map(move |round| format!("writer-{writer}-key-{round}")))
+            .collect();
+        let published: BTreeSet<String> =
+            super::load_index_file_sync(&index_path).entries.into_keys().collect();
+        let lost: Vec<&String> = expected.difference(&published).collect();
+        assert!(
+            lost.is_empty(),
+            "the persisted index must carry every row the in-memory index holds, but {} rows are \
+             missing: {lost:?}",
+            lost.len()
         );
     }
 
