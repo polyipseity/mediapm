@@ -207,6 +207,88 @@ async fn refused_media_id_leaves_no_state_row_under_either_spelling()
     Ok(())
 }
 
+/// Media key no hierarchy node binds, carrying a splitting shape.
+///
+/// The document also carries a valid, *referenced* media id, so the test fails
+/// only when the unreferenced key is what the sync chokes on.
+const UNREFERENCED_SPLITTING_MEDIA_ID_PLACEHOLDER: &str = "orphan/b";
+
+/// Seeds CAS, saves a document whose hierarchy binds only [`MEDIA_ID`] while
+/// `media` also carries `unreferenced_id`, and runs one library sync.
+///
+/// The unreferenced key never reaches the hierarchy walk, so the only
+/// production code that observes it is the workflow-synthesis boundary that
+/// iterates the whole `media` map. The workspace [`TempDir`] is returned rather
+/// than its path so the caller keeps it alive.
+#[allow(dead_code)]
+async fn sync_unreferenced_media_id(
+    unreferenced_id: &str,
+) -> Result<
+    (Result<mediapm::SyncSummary, mediapm::MediaPmError>, tempfile::TempDir),
+    mediapm::MediaPmError,
+> {
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let mut service = service_at(root.path(), None).await?;
+    let hash = seed_cas(&service, Bytes::from_static(PAYLOAD), "media identity variant").await?;
+    let cas = service.conductor().cas().clone();
+    cas.ensure_blob_materialized(hash).await.map_err(|source| {
+        mediapm::MediaPmError::Workflow(format!("ensure blob materialized: {source}"))
+    })?;
+
+    let mut document =
+        document_with_media_id(MEDIA_ID, &hash.to_string(), SanitizeNamesConfig::Enabled);
+    document.media.insert(
+        unreferenced_id.to_string(),
+        MediaSourceSpec {
+            variant_hashes: BTreeMap::from([(VARIANT.to_string(), hash.to_string())]),
+            steps: Vec::new(),
+            ..MediaSourceSpec::default()
+        },
+    );
+    save_mediapm_document(&service.paths().mediapm_ncl, &document)?;
+    let outcome = sync_library_with_test_terminal(&mut service, false).await;
+    drop(service);
+    Ok((outcome, root))
+}
+
+/// A media key **no hierarchy node binds** is still refused.
+///
+/// The hierarchy walk is not an all-keys boundary: it validates a media id only
+/// once a node binds it, so an orphaned key never passed the config boundary
+/// even though the workflow synthesizer iterates the whole `media` map and
+/// turns every key into a `media/{id}` workflow whose name reaches log lines.
+/// This is the test that pins that gap shut.
+#[allow(dead_code)]
+#[tokio::test]
+async fn sync_rejects_unreferenced_media_id_with_splitting_shape()
+-> Result<(), mediapm::MediaPmError> {
+    let (outcome, root) =
+        sync_unreferenced_media_id(UNREFERENCED_SPLITTING_MEDIA_ID_PLACEHOLDER).await?;
+
+    let error = outcome.as_ref().err().unwrap_or_else(|| {
+        panic!(
+            "an unreferenced media id '{UNREFERENCED_SPLITTING_MEDIA_ID_PLACEHOLDER}' must be \
+             refused, got {outcome:?}"
+        )
+    });
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains(UNREFERENCED_SPLITTING_MEDIA_ID_PLACEHOLDER),
+        "the error must name the unreferenced media id; got: {rendered}"
+    );
+    assert!(
+        rendered.contains("path separator"),
+        "the error must state the violated rule; got: {rendered}"
+    );
+
+    assert!(
+        !root.path().join("orphan_b").exists(),
+        "the refused unreferenced media id must leave no materialized tree under its sanitized \
+         spelling"
+    );
+    Ok(())
+}
+
 /// An ordinary media id is accepted and the sync succeeds.
 ///
 /// Guards the rule against over-rejection: only the shapes that break identity

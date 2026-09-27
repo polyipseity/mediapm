@@ -31,6 +31,7 @@ use mediapm_conductor::{
 use crate::conductor_bridge::documents::save_conductor_generated_document;
 use crate::conductor_bridge::sync::find_active_tool_spec;
 pub(crate) use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
+use crate::config::hierarchy_types::validate_media_ids;
 use crate::config::output_types::{ResolvedStepVariantFlow, resolve_step_variant_flow};
 use crate::config::source_types::step_option_scalar;
 use crate::config::{
@@ -535,6 +536,15 @@ fn build_media_workflow_plan_with_limits(
     media_tagger_cache_dir: &Path,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
     let mut plan = MediaWorkflowPlan::default();
+
+    // All-keys boundary for the media-id rules. The loop below turns *every*
+    // `document.media` key into a `media/{id}` workflow name, whether or not a
+    // hierarchy node binds it, so this is the one place on this path that
+    // observes an unreferenced key. `config::hierarchy_types::validate_media_id`
+    // alone does not cover that case: the hierarchy walk only sees a key once a
+    // node binds it. Validated up front, so an offending key fails the whole
+    // reconcile instead of leaving a partially synthesized plan behind.
+    validate_media_ids(document)?;
 
     for (media_id, source) in &document.media {
         let mut workflow = WorkflowSpec {

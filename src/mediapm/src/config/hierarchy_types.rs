@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::MediaPmDocument;
 use crate::error::MediaPmError;
 use crate::materializer::commit::is_rejected_char;
 
@@ -831,6 +832,28 @@ pub(crate) fn validate_media_id(media_id: &str) -> Result<(), MediaPmError> {
         )));
     }
 
+    Ok(())
+}
+
+/// Validates **every** key of a document's `media` map.
+///
+/// [`validate_media_id`] on its own is not an all-keys boundary: the hierarchy
+/// walk in [`flatten_hierarchy_nodes_inner`] sees a key only once a node binds
+/// it, so a `media` entry no hierarchy node references never passed through
+/// it. Such a key is still real — the workflow synthesizer turns *every*
+/// `document.media` key into a `media/{id}` workflow, so its spelling reaches
+/// the conductor document and the log lines around it without ever having
+/// been checked. This is the boundary that closes that hole, and it runs from
+/// the same production path that consumes the keys.
+///
+/// # Errors
+///
+/// Returns the first [`validate_media_id`] failure, in the map's sorted key
+/// order so the diagnostic is deterministic for a given document.
+pub(crate) fn validate_media_ids(document: &MediaPmDocument) -> Result<(), MediaPmError> {
+    for media_id in document.media.keys() {
+        validate_media_id(media_id)?;
+    }
     Ok(())
 }
 
