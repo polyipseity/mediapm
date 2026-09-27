@@ -1,10 +1,18 @@
-//! Sync-prevention tests for the mediapm Nickel schema (`v1.ncl`, `v2.ncl`).
+//! Nickel schema sync-prevention tests for the mediapm schema (`v1.ncl`, `v2.ncl`).
 //!
-//! These tests validate that the V1 and V2 Nickel schema definitions stay in
-//! sync with the Rust deserialization types (`MediaPmDocument`,
-//! `MediaPmDocumentEnvelopeV1`, `MediaPmDocumentEnvelopeV2`).  If the Rust
-//! structs gain or lose fields, the Nickel schema must be updated
-//! correspondingly, and these tests force that update to be deliberate.
+//! These tests pin the shape the live `mediapm.ncl` decoder actually depends
+//! on, from both sides of the boundary:
+//!
+//! - the Rust runtime model `MediaPmDocument` (the type every `mediapm.ncl`
+//!   resolves to), and
+//! - the `v1.ncl` / `v2.ncl` contract sources themselves.
+//!
+//! The versioned contracts and every migration live in Nickel, not Rust (see
+//! `src/config/versions/mod.rs` for why). The third test,
+//! `parity_rust_side_owns_no_migration_dispatcher`, pins that: if a Rust
+//! decode/migrate mirror of the Nickel ladder is ever re-introduced, it will
+//! have to be justified against a live caller rather than drift silently
+//! beside the Nickel one.
 
 use mediapm::MediaPmDocument;
 
@@ -146,4 +154,49 @@ fn parity_v2_nickel_schema_structure() {
         !schema.contains("V1 ="),
         "v2.ncl must NOT define any *V1 contract names (strict version separation)"
     );
+}
+
+/// Pins that the versioned contracts and the migrations live in Nickel, and
+/// that no Rust-side dispatcher mirrors them.
+///
+/// Every `mediapm.ncl` on disk is read through `mod.ncl`'s `migrate_to`, so a
+/// second Rust implementation of the same ladder would have no caller while
+/// still looking like a supported format. This test fails if one reappears.
+#[test]
+fn parity_rust_side_owns_no_migration_dispatcher() {
+    let mod_source = include_str!("../../src/config/versions/mod.rs");
+    let v1_ncl = include_str!("../../src/config/versions/v1.ncl");
+    let v2_ncl = include_str!("../../src/config/versions/v2.ncl");
+    let registry_ncl = include_str!("../../src/config/versions/mod.ncl");
+
+    // The Nickel registry must remain the dispatcher: it owns the supported
+    // set, the current version, and both migration edges.
+    assert!(registry_ncl.contains("migrate_to = migrate_to_fn"), "mod.ncl must own migrate_to");
+    assert!(
+        registry_ncl.contains("migrate_v1_to_v2"),
+        "v2.ncl's migration must be reachable through the registry"
+    );
+    assert!(v2_ncl.contains("migrate_v1_to_v2"), "v2.ncl must own the migration INTO v2");
+    assert!(v1_ncl.contains("migrate_v2_to_v1"), "v1.ncl must own the migration INTO v1");
+
+    // The Rust side must carry no version-dispatch surface.
+    for forbidden in
+        ["decode_mediapm_document_value", "encode_mediapm_document_value", "trait Migrate"]
+    {
+        assert!(
+            !mod_source.contains(forbidden),
+            "Rust must not mirror the Nickel migration ladder; '{forbidden}' reappeared in \
+             config/versions/mod.rs"
+        );
+    }
+
+    // And no per-version Rust wire envelopes: only the active `*Latest`
+    // boundary family remains, in v_latest.rs.
+    for forbidden in ["MediaPmDocumentEnvelopeV1", "MediaPmDocumentEnvelopeV2"] {
+        assert!(
+            !mod_source.contains(forbidden),
+            "per-version Rust wire envelopes were removed with the Rust ladder; '{forbidden}' \
+             reappeared"
+        );
+    }
 }

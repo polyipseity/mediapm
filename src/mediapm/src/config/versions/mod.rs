@@ -1,156 +1,40 @@
-//! Versioned document migration and envelope dispatch.
+//! Nickel schema registry for persisted `mediapm.ncl` documents.
 //!
-//! This module manages the version marker dispatch for serialized
-//! `mediapm.ncl` documents.  The `Migrate` trait defines the decode/encode
-//! contract that each supported schema version must implement.
+//! ## Where the version ladder lives
+//!
+//! The migration ladder for `mediapm.ncl` is **Nickel**, not Rust. The
+//! versioned contracts are `v1.ncl` and `v2.ncl`; `mod.ncl` is the registry
+//! that owns `current_version`, `supported_versions`, and the `migrate_to`
+//! dispatch. Each version file owns the migration *into* itself
+//! (`v2.ncl` exports `migrate_v1_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`)
+//! and `mod.ncl` only dispatches.
+//!
+//! This module exposes the Rust-side surface of that Nickel ladder: it writes
+//! the embedded `.ncl` sources into a scratch workspace, evaluates a contract
+//! or an expression against them, and hands back the resulting JSON. There is
+//! deliberately no Rust `decode`/`migrate_to` mirror of the Nickel ladder —
+//! two implementations of the same migrations would drift, and the Nickel one
+//! is the one every `mediapm.ncl` on disk has actually passed through.
+//!
+//! The one Rust type that remains is the `*Latest` boundary family in
+//! `v_latest.rs`, which carries `Option` on user-optional fields and is
+//! resolved into the option-free `MediaRuntimeStorage` by
+//! `MediaRuntimeStorage::from_boundary`.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - Version dispatch lives in `mod.ncl`; do not re-introduce a parallel Rust
+//!   dispatcher over the same versions.
+//! - `v_latest.rs` owns the active boundary types; `config/mod.rs` owns only
+//!   the resolved (option-free) types and delegates through `from_boundary`.
+//! - Do not directly re-export `vX` wire structs from this module; expose
+//!   unversioned functions and keep versioned internals encapsulated.
 
-#![allow(dead_code)]
+pub mod v_latest;
 
 use serde_json::Value;
 
 use crate::error::MediaPmError;
-
-mod v1;
-mod v2;
-pub mod v_latest;
-
-use super::MediaPmDocument;
-use v1::MediaPmDocumentEnvelopeV1;
-use v2::MediaPmDocumentEnvelopeV2;
-
-/// Version-aware migration contract for config document types.
-///
-/// Types that implement `Migrate` for a particular schema version can
-/// decode from older-wire JSON and encode back to the same wire format.
-pub trait Migrate: Sized {
-    /// The numeric schema version this implementation handles.
-    fn version() -> u32;
-
-    /// Decodes one JSON value into the runtime config model for this version.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `value` cannot be decoded into this version's
-    /// runtime model.
-    fn decode(value: Value) -> Result<Self, MediaPmError>;
-
-    /// Encodes the runtime config model back into the JSON wire format for
-    /// this version.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model cannot be encoded into this version's
-    /// wire format.
-    fn encode(&self) -> Result<Value, MediaPmError>;
-}
-
-/// Decodes one mediapm document JSON value into the runtime model by
-/// inspecting the top-level `version` marker.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError::ConfigValidation`] when the version marker cannot be
-/// extracted, [`MediaPmError::Workflow`] when the marker is unsupported, and
-/// the envelope's own decode error when the payload violates that version's
-/// contract.
-pub fn decode_mediapm_document_value(value: Value) -> Result<MediaPmDocument, MediaPmError> {
-    let version = extract_version_field(&value)?;
-
-    match version {
-        1 => MediaPmDocumentEnvelopeV1::decode(value).map(MediaPmDocument::from),
-        2 => MediaPmDocumentEnvelopeV2::decode(value).map(MediaPmDocument::from),
-        // Latest version is always rust-backed; versions beyond that are
-        // unsupported.
-        _ => Err(MediaPmError::Workflow(format!(
-            "unsupported mediapm document schema version {version}",
-        ))),
-    }
-}
-
-/// Encodes one mediapm document to its latest stable wire format.
-///
-/// # Errors
-///
-/// Returns the V2 envelope's encode error when the document cannot be rendered
-/// into its wire format.
-pub fn encode_mediapm_document_value(doc: &MediaPmDocument) -> Result<Value, MediaPmError> {
-    // Encode to the latest (V2) wire format.
-    MediaPmDocumentEnvelopeV2::from(doc).encode()
-}
-
-/// Extracts the numeric `version` field from one JSON value.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError::ConfigValidation`] (MPM-E004) when the document has
-/// no top-level `version` field, or when that field is not a non-negative
-/// integer.
-pub fn extract_version_field(value: &Value) -> Result<u64, MediaPmError> {
-    let version_value = value.get("version").ok_or_else(|| MediaPmError::ConfigValidation {
-        code: "MPM-E004",
-        context: "document version extraction".to_string(),
-        detail: "missing 'version' field in document".to_string(),
-        suggestion: "ensure the document has a top-level 'version' field".to_string(),
-    })?;
-
-    super::nickel_io::normalize_version_field_to_u64(version_value).ok_or_else(|| {
-        MediaPmError::ConfigValidation {
-            code: "MPM-E004",
-            context: "document version extraction".to_string(),
-            detail: format!(
-                "'version' field value '{version_value}' is not a non-negative integer",
-            ),
-            suggestion: "use a non-negative integer for the 'version' field".to_string(),
-        }
-    })
-}
-
-/// Numeric schema versions supported by the mediapm registry (mirrors
-/// `mod.ncl`'s `SupportedVersion` / `supported_versions`).
-pub const SUPPORTED_VERSIONS: &[u32] = &[1, 2];
-
-/// The current (latest) supported schema version (mirrors `mod.ncl`'s
-/// `current_version`).
-pub const CURRENT_VERSION: u32 = 2;
-
-/// Predicate mirroring `mod.ncl`'s `SupportedVersion`.
-#[must_use]
-pub fn is_supported_version(version: u32) -> bool {
-    SUPPORTED_VERSIONS.contains(&version)
-}
-
-/// Migrates one mediapm document JSON value to the requested version,
-/// mirroring `mod.ncl`'s `migrate_to` dispatch.
-///
-/// Each version envelope owns its edges, matching the placement policy in
-/// the Nickel schema files: V1→V2 strips the legacy `state` payload (via the
-/// unified model's `From`), and V2→V1 bumps the version marker only (V1
-/// accepts stateless documents).
-///
-/// # Errors
-///
-/// Returns [`MediaPmError::ConfigValidation`] when the document's version field
-/// cannot be extracted, and [`MediaPmError::Workflow`] when no migration edge
-/// connects the two versions or when a migration's decode/encode fails.
-pub fn migrate_to(requested_version: u32, document: Value) -> Result<Value, MediaPmError> {
-    let version = extract_version_field(&document)?;
-    if u64::from(requested_version) == version && is_supported_version(requested_version) {
-        return Ok(document);
-    }
-    match (version, requested_version) {
-        (1, 2) => {
-            let model = MediaPmDocument::from(MediaPmDocumentEnvelopeV1::decode(document)?);
-            MediaPmDocumentEnvelopeV2::from(&model).encode()
-        }
-        (2, 1) => {
-            let model = MediaPmDocument::from(MediaPmDocumentEnvelopeV2::decode(document)?);
-            MediaPmDocumentEnvelopeV1::from(&model).encode()
-        }
-        _ => Err(MediaPmError::Workflow(format!(
-            "no migration edge between mediapm document versions {version} and {requested_version}",
-        ))),
-    }
-}
 
 /// Writes one versioned schema file, its sibling version modules, and a
 /// `document | v{version}.<contract_name>` wrapper into a fresh temp

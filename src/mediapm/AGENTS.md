@@ -86,9 +86,10 @@ Four-document system, all with explicit top-level `version`:
 
 Config schema versioning (see `.agents/instructions/nickel.instructions.md` for the migration placement and strict version separation policies):
 
-- v2 is the active config version (`CURRENT_VERSION = 2`). Its envelope drops `MediaPmState` entirely; state is managed separately via `state.json` and is not part of the v2 config surface.
-- v1 remains readable as legacy: its envelope keeps the optional `state` field, so stateful v1 documents still load and migrate to v2 (which strips `state`).
+- v2 is the active config version (`mod.ncl` `current_version = 2`). Its contract drops `MediaPmState` entirely; state is managed separately via `state.json` and is not part of the v2 config surface.
+- v1 remains readable as legacy: its contract keeps the optional `state` field, so stateful v1 documents still load and migrate to v2 (which strips `state`).
 - Each version file owns the migration INTO that version (`v2.ncl` exports `migrate_v1_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`); `mod.ncl` only dispatches via `migrate_to`. Version files are self-contained and never mix `*V1`/`*V2` contract names.
+- The ladder is Nickel only. `src/config/versions/` carries the embedded `.ncl` sources, the `*Latest` boundary types in `v_latest.rs`, and the contract-evaluation helpers; it deliberately holds no Rust `decode`/`migrate_to` mirror of the ladder, because every `mediapm.ncl` on disk is read through `mod.ncl`.
 
 ## CLI Overview
 

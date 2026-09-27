@@ -8,8 +8,9 @@ mod online_sync_post_sync_dump;
 /// Nickel schema strictness tests (S-C1..S-C10) — validates the strict
 /// closed-contract surface of `v1.ncl`/`mod.ncl` and the exported JSON schema.
 mod schema_strictness;
-/// Nickel schema sync-prevention tests — validates v1.ncl stays in sync
-/// with `MediaPmDocument` / `MediaPmDocumentEnvelopeV1` Rust types.
+/// Nickel schema sync-prevention tests — pins the live Nickel contract
+/// sources against the `MediaPmDocument` Rust runtime model they resolve to,
+/// and pins that no Rust migration dispatcher mirrors the Nickel ladder.
 mod schema_sync;
 // CAUTION: This is tool-sync integration (MediaPmService::sync_tools()).
 // Do NOT put workflow-sync or state-sync tests here.

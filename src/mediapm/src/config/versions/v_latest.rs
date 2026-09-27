@@ -6,6 +6,18 @@
 //! types here (rather than in `config/mod.rs`) mirrors the conductor
 //! convention: `config/mod.rs` owns resolved types only; version-specific
 //! types and `From` bridges live under `versions/`.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file is the only Rust carrier of the active schema's wire shape. The
+//!   versioned *contracts* and every migration are in `v2.ncl`; this file must
+//!   never grow a second migration implementation.
+//! - `MediaRuntimeStorage::from_boundary` is the one place the boundary family
+//!   is resolved into the option-free resolved model; it lives in
+//!   `config/mod.rs` and delegates here.
+//! - Do not add fields here that `v2.ncl` does not also declare. A field the
+//!   Nickel contract rejects and the Rust boundary accepts is a document that
+//!   validates in one pipeline and fails in the other.
 
 use std::collections::BTreeMap;
 
