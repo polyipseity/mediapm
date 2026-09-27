@@ -55,8 +55,18 @@ pub(crate) struct V1Envelope {
     pub(crate) content_len: u64,
     /// Encoded payload length.
     pub(crate) payload_len: u64,
-    /// Envelope checksum (read in test-only [`encode()`] path).
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// Envelope checksum, populated only by the test-only encode path.
+    ///
+    /// The V1 writer emitted a checksum that no reader verifies — the V1
+    /// decoder treats the payload as authoritative — so production never
+    /// needs the field, while the round-trip test does.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "accept-only: the V1 decoder does not verify the checksum, so the field exists solely for the round-trip test that re-encodes and compares it"
+        )
+    )]
     pub(crate) checksum: u32,
     /// VCDIFF payload bytes.
     pub(crate) payload: Vec<u8>,
