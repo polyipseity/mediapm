@@ -342,12 +342,6 @@ fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-/// Returns `true` when `byte` cannot continue an identifier, so the token
-/// ending at `index` is a whole path segment.
-fn is_segment_end(bytes: &[u8], index: usize) -> bool {
-    !bytes.get(index).copied().is_some_and(is_identifier_byte)
-}
-
 /// Returns `Some(count)` when a raw string literal starts at `start`, and
 /// `count` is the number of `#` padding its terminator.
 ///
@@ -499,40 +493,113 @@ fn code_only_projection(content: &str) -> String {
     out
 }
 
-/// Returns the end offset of a version module segment starting at `start`, or
-/// `None` when the segment is not one.
+/// Returns `true` when a whole identifier is a version module name.
 ///
 /// A version module is `v` plus decimal digits (`v1`, `v2`, `v3`) or `v_`
 /// plus a lowercase word (`v_latest`). That shape covers every version module
 /// in the workspace and any `_`-suffixed sibling added later, while refusing
 /// the unversioned siblings the same directories legitimately contain
 /// (`versions::mod`, `versions::merge`, `versions::mod_policy_guard`) and
-/// unrelated identifiers that merely begin with `v` (`versions::validate`).
+/// unrelated identifiers that merely begin with `v` (`versions::validate`,
+/// `v1beta`).
+///
+/// The whole identifier has to match, so callers pass a maximal identifier run
+/// rather than a prefix of one.
+fn is_version_module_name(name: &str) -> bool {
+    let Some(tail) = name.strip_prefix('v') else {
+        return false;
+    };
+    if !tail.is_empty() && tail.bytes().all(|byte| byte.is_ascii_digit()) {
+        return true;
+    }
+    match tail.strip_prefix('_') {
+        Some(word) => !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_lowercase()),
+        None => false,
+    }
+}
+
+/// Returns the end offset of the identifier starting at `start`, or `None`
+/// when that identifier is not a version module name.
 fn version_module_segment_end(bytes: &[u8], start: usize) -> Option<usize> {
-    if bytes.get(start) != Some(&b'v') {
-        return None;
-    }
-    let mut index = start + 1;
-
-    let digits = index;
-    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+    let mut index = start;
+    while bytes.get(index).copied().is_some_and(is_identifier_byte) {
         index += 1;
     }
-    if index > digits {
-        return is_segment_end(bytes, index).then_some(index);
-    }
+    let name = std::str::from_utf8(&bytes[start..index]).ok()?;
+    is_version_module_name(name).then_some(index)
+}
 
-    if bytes.get(index) == Some(&b'_') {
-        index += 1;
-        let word = index;
-        while bytes.get(index).is_some_and(u8::is_ascii_lowercase) {
-            index += 1;
-        }
-        if index > word {
-            return is_segment_end(bytes, index).then_some(index);
+/// Splits a use-tree group body on its top-level commas.
+///
+/// Depth counting keeps a comma inside a nested group from splitting its
+/// parent, so the recursion in [`braced_group_names_version_module`] always
+/// sees whole items.
+fn split_top_level_commas(body: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (offset, byte) in body.bytes().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                items.push(&body[start..offset]);
+                start = offset + 1;
+            }
+            _ => {}
         }
     }
+    items.push(&body[start..]);
+    items
+}
 
+/// Returns `true` when a single use-tree item names a version module.
+///
+/// The item's leading identifier is the whole name, so `v1`, `v1 as one`, and
+/// `v1::Thing` all name the version module, while `v1beta`, `self`, `*`, and
+/// `other::v1` do not: the last one names a `v1` that does not live directly
+/// under `versions/`.
+fn item_names_version_module(item: &str) -> bool {
+    let name: String =
+        item.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
+    is_version_module_name(&name)
+}
+
+/// Returns `true` when a braced use-tree group names a version module.
+///
+/// This is the spelling a "the segment after `versions::` is a version module"
+/// check cannot see. `use crate::x::versions::{v1, save_snapshot};` puts a
+/// version module *inside a group*, and the unversioned entry points an author
+/// is supposed to import live at the same path, so the braced form is the one
+/// an author reaches for first and the one a direct-form-only detector lets
+/// through. Conversely `versions::{self, save_snapshot}` names only unversioned
+/// entry points and must stay clean, which is why every item is inspected
+/// instead of the group being reported wholesale.
+fn braced_group_names_version_module(group: &str) -> bool {
+    let Some(body) = group.strip_prefix('{').and_then(|body| body.strip_suffix('}')) else {
+        return false;
+    };
+    split_top_level_commas(body)
+        .into_iter()
+        .map(str::trim)
+        .any(|item| braced_group_names_version_module(item) || item_names_version_module(item))
+}
+
+/// Returns the braced group whose `{` sits at `open`, up to its matching `}`.
+fn braced_group_at(code: &str, open: usize) -> Option<&str> {
+    let mut depth = 0usize;
+    for (offset, byte) in code.as_bytes()[open..].iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&code[open..=open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
     None
 }
 
@@ -545,6 +612,11 @@ fn version_module_segment_end(bytes: &[u8], start: usize) -> Option<usize> {
 ///
 /// `versions` must be a whole path segment, so `delta::versions::v1` and
 /// `super::versions::v2` are found while `my_versions::v1` is not.
+///
+/// Both spellings of a version module after `versions::` are reported: the
+/// direct one (`versions::v1::Thing`, `versions::v1;`, `versions::v1 as
+/// one;`) and the braced one (`versions::{v1, save_snapshot}`), which the
+/// direct-only form of this check missed entirely.
 fn code_references_to_version_module(code: &str) -> Vec<(usize, String)> {
     const VERSIONS: &[u8] = b"versions";
     let bytes = code.as_bytes();
@@ -556,10 +628,18 @@ fn code_references_to_version_module(code: &str) -> Vec<(usize, String)> {
             && (index == 0 || !is_identifier_byte(bytes[index - 1]))
         {
             let separator = index + VERSIONS.len();
-            if bytes[separator..].starts_with(b"::")
-                && let Some(end) = version_module_segment_end(bytes, separator + 2)
-            {
-                found.push((index, code[index..end].to_string()));
+            if bytes[separator..].starts_with(b"::") {
+                let after = separator + 2;
+                // The braced spelling is checked first: its group text is the
+                // actionable report, and `version_module_segment_end` could not
+                // match it anyway, because the segment after `::` is `{`.
+                if let Some(group) = braced_group_at(code, after)
+                    && braced_group_names_version_module(group)
+                {
+                    found.push((index, code[index..after + group.len()].to_string()));
+                } else if let Some(end) = version_module_segment_end(bytes, after) {
+                    found.push((index, code[index..end].to_string()));
+                }
             }
         }
         index += 1;
@@ -675,6 +755,14 @@ fn non_versions_files_never_name_leaked_versioned_types() {
 /// A `versions::<version-module>` path in **code**: `versions::v1`,
 /// `versions::v_latest`, `super::versions::v2`, and fully-qualified forms
 /// such as `crate::config::versions::v_latest::Type`.
+///
+/// The braced spelling counts too, because it is the one a direct-segment
+/// check cannot see and the one an author writes first — the unversioned entry
+/// points have to be imported from the same path in the same `use`:
+/// `use crate::x::versions::{v1, save_snapshot};` and
+/// `use crate::x::versions::v1;` are both reported. A braced group that names
+/// only unversioned entry points, `versions::{self, save_snapshot}`, is the
+/// compliant spelling and stays clean.
 ///
 /// Prose is not a violation. Doc comments restating the rule are mandatory
 /// (see [`VERSIONS_POLICY_GUARD_MARKER`]) and the policy files themselves
@@ -815,6 +903,82 @@ mod code_projection_tests {
         assert_eq!(references(source), None);
     }
 
+    /// A braced use tree may carry a version module. The direct-segment check
+    /// cannot see this spelling at all, and it is the one an author writes
+    /// first, because the unversioned entry points have to come from the same
+    /// path in the same `use`.
+    #[test]
+    fn braced_use_trees_carry_version_modules() {
+        for (source, expected) in [
+            ("use crate::x::versions::{v1, save_snapshot};", "versions::{v1, save_snapshot}"),
+            ("use crate::x::versions::v1;", "versions::v1"),
+            ("use crate::x::versions::v_latest::Thing;", "versions::v_latest"),
+            ("use crate::x::versions::{v_latest};", "versions::{v_latest}"),
+            ("use crate::x::versions::{v1 as one};", "versions::{v1 as one}"),
+            ("use crate::x::versions::v1 as one;", "versions::v1"),
+            ("use crate::x::versions::{save_snapshot, v1};", "versions::{save_snapshot, v1}"),
+            (
+                "use crate::x::versions::{v1, {v_latest, merge}};",
+                "versions::{v1, {v_latest, merge}}",
+            ),
+            ("use crate::x::versions::v1::Thing as Other;", "versions::v1"),
+        ] {
+            assert_eq!(
+                references(source).as_deref(),
+                Some(expected),
+                "expected `{expected}` to be reported in: {source}"
+            );
+        }
+    }
+
+    /// A braced group naming only unversioned entry points is the compliant
+    /// spelling the policy *asks* for, and it is what the real tree contains.
+    /// Reporting it would make the guard cry wolf on correct code, so this is
+    /// the positive control the braced rule has to earn.
+    #[test]
+    fn braced_use_trees_of_unversioned_entry_points_are_clean() {
+        for source in [
+            "use crate::config::versions::{self, resolve_runtime_storage};",
+            "use crate::config::versions::{self, save_to_vec, load_named_from_bytes};",
+            "use crate::delta::versions::{decode_delta_state, encode_delta_state};",
+            "use super::versions::{CURRENT_BLOB_PATH_VERSION, hash_to_path};",
+            "use crate::config::versions::{mod, merge};",
+            "use crate::config::versions::*;",
+            "use crate::config::versions::{{self, merge}};",
+            "use crate::config::versions::{other::v1, self};",
+        ] {
+            assert_eq!(references(source), None, "must not be reported: {source}");
+        }
+    }
+
+    /// The name predicate is shared by the direct and the braced path, so its
+    /// accept/refuse split is pinned directly rather than only through the
+    /// two callers.
+    #[test]
+    fn version_module_names_are_pinned() {
+        for name in ["v1", "v2", "v42", "v_latest", "v_next"] {
+            assert!(super::is_version_module_name(name), "must be a version module: {name}");
+        }
+        for name in [
+            "",
+            "v",
+            "vv",
+            "validate",
+            "v1beta",
+            "v_",
+            "v_Latest",
+            "v_latest2",
+            "v_latest_extra",
+            "mod",
+            "merge",
+            "self",
+            "save_to_vec",
+            "*",
+        ] {
+            assert!(!super::is_version_module_name(name), "must not be a version module: {name}");
+        }
+    }
+
     /// A raw string may contain unescaped quotes; the projection must not stop
     /// at the first one and start scanning the rest as code.
     #[test]
@@ -885,6 +1049,7 @@ mod code_projection_tests {
             "use crate::config::versions::validate_v1_document;",
             "use my_versions::v1::Thing;",
             "use crate::config::versions::v1beta::Thing;",
+            "use crate::config::versions::{v1beta, v_latest_extra, v_nextThing};",
         ] {
             assert_eq!(references(source), None, "must not be reported: {source}");
         }
