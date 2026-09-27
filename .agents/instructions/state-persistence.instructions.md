@@ -153,6 +153,13 @@ resolved commit hash as canonical version; ffmpeg uses the composite
 mediapm build-time git hash. The `resolved_*` provenance fields are separate
 and informational; they never participate in skip/update decisions.
 
+What is described above is the provider-resolved segment only. The value
+persisted in `ToolRegistryEntry.canonical_version` is a composite that also
+carries the tool's SameStep dependency segments; see
+`tool-sync-coordinator-and-identity.instructions.md` ("Composite
+canonical_version") for the format, the non-transitive rule, and
+`compute_composite_canonical_version()`.
+
 ## State write policy
 
 `state.json` is written unconditionally via `std::fs::write` after every sync
