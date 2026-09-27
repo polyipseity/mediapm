@@ -17,8 +17,9 @@
 //!      `env.<VAR>`, `*<token>`, or `inputs.<name>`.
 //! 4. Apply chained post-processing selectors (`:zip`, `:file`, `:folder`)
 //!    from right to left.
-//! 5. Resolve and stringify (for [`resolve_template`]) or preserve as bytes
-//!    (for [`resolve_content`]).
+//! 5. Resolve and stringify for [`resolve_template`]; references that resolve
+//!    to binary (`:zip`, `:file`, `:folder` selectors) stay as
+//!    `ResolvedValue::Bytes`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -249,7 +250,12 @@ pub async fn resolve_template<C: mediapm_cas::CasApi + Send + Sync>(
 /// For references that resolve to binary (`external_data`, zip members, unpack
 /// tokens), the raw bytes are returned. For string values, UTF-8 encoding
 /// is used.
-#[cfg_attr(not(test), expect(dead_code))]
+///
+/// Test-only: the byte-resolution behaviour this entry point exposes is live
+/// in production through the `:zip`, `:file`, and `:folder` selectors in
+/// `resolve_parsed_reference`, but no production caller needs a top-level
+/// byte-oriented template resolution, so it is exercised by tests only.
+#[cfg(test)]
 pub async fn resolve_content<C: mediapm_cas::CasApi + Send + Sync>(
     template: &str,
     ctx: &TemplateContext<'_, C>,

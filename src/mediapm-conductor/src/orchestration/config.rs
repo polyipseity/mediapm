@@ -8,6 +8,9 @@
 pub(crate) const ENV_WORKER_POOL_SIZE: &str = "MEDIAPM_CONDUCTOR_WORKER_POOL_SIZE";
 
 /// Environment override key for scheduler EWMA alpha.
+///
+/// Test-only: the EWMA alpha knob has no production consumer in this crate.
+#[cfg(test)]
 pub(crate) const ENV_SCHEDULER_EWMA_ALPHA: &str = "MEDIAPM_CONDUCTOR_SCHEDULER_EWMA_ALPHA";
 
 /// Environment override key for conductor RPC timeout in seconds.
@@ -42,12 +45,16 @@ pub(crate) fn default_worker_pool_size() -> usize {
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from).max(1))
 }
 
-/// Returns the EWMA alpha used by the adaptive scheduler.
+/// Returns the EWMA alpha, clamped to `(0.0, 1.0]` when a valid env value is
+/// provided; otherwise falls back to [`crate::defaults::DEFAULT_EWMA_ALPHA`].
 ///
-/// Clamped to `(0.0, 1.0]` when a valid env value is provided; otherwise
-/// falls back to [`crate::defaults::DEFAULT_EWMA_ALPHA`].
+/// Test-only: the EWMA alpha has no production consumer in this crate. This
+/// function and its env override previously carried a `dead_code`
+/// suppression justified as "used by the adaptive scheduler", but no
+/// adaptive scheduler exists in the conductor and nothing outside the tests
+/// reads this value.
+#[cfg(test)]
 #[must_use]
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn scheduler_ewma_alpha() -> f64 {
     let v = env_parse_or::<f64>(ENV_SCHEDULER_EWMA_ALPHA, crate::defaults::DEFAULT_EWMA_ALPHA);
     if (0.0..=1.0).contains(&v) && v > 0.0 { v } else { crate::defaults::DEFAULT_EWMA_ALPHA }

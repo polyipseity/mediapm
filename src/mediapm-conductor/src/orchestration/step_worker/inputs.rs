@@ -5,7 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use mediapm_cas::CasApi;
 
 use crate::error::ConductorError;
-use crate::orchestration::protocol::{StepExecutionRequest, StepOutputs, find_tool_by_name};
+use crate::orchestration::protocol::{StepExecutionRequest, find_tool_by_name};
+// Test-only: `StepOutputs` is referenced solely by the legacy
+// `resolve_step_output_refs` shim and its tests.
+#[cfg(test)]
+use crate::orchestration::protocol::StepOutputs;
 use crate::state::ResolvedInput;
 
 use super::template::{TemplateContext, resolve_template};
@@ -72,7 +76,11 @@ pub(super) async fn resolve_step_inputs<C: CasApi + Send + Sync>(
 ///
 /// Uses regex-based substitution to remain synchronous and runtime-independent.
 /// The async [`resolve_step_inputs`] entry point uses the full template engine.
-#[cfg_attr(not(test), expect(dead_code))]
+///
+/// Test-only: superseded by that engine's own `step_output.` handling in
+/// [`super::template`], which every production path goes through. This shim
+/// is retained so the legacy substitution contract stays covered by tests.
+#[cfg(test)]
 pub(super) fn resolve_step_output_refs(
     value: &str,
     step_outputs: &StepOutputs,
