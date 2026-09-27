@@ -10,6 +10,8 @@ Centralizes filesystem path layout for all mediapm state, config, and cache dire
 
 ## `MediaPmPaths` fields
 
+The struct declares exactly 15 fields (`paths.rs:41-73`); the cache directories below are **method outputs**, not fields, and are listed separately.
+
 | Field                     | Default                                      | Purpose                                                                                                                                   |
 | ------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `root_dir`                | workspace root                               | Top-level workspace directory                                                                                                             |
@@ -27,10 +29,18 @@ Centralizes filesystem path layout for all mediapm state, config, and cache dire
 | `mediapm_tmp_dir`         | `$TMPDIR/mediapm-runtime-{16hex}/`           | MediaPM staging tmp                                                                                                                       |
 | `hierarchy_root_dir`      | `{root_dir}`                                 | Materialized media library root                                                                                                           |
 | `tools_dir`               | `{runtime_root}/tools/`                      | Tool-content unpack directory; subdirs are `<sanitize_tool_id(conductor_tool_id)>/payload/` and `.env.generated` paths mirror that layout |
-| `cache/`                  | `{runtime_root}/cache/`                      | Cache root                                                                                                                                |
-| `cache/store/`            | `{runtime_root}/cache/store/`                | Shared cache store (CAS)                                                                                                                  |
-| `cache/yt-dlp/`           | `{runtime_root}/cache/yt-dlp/`               | yt-dlp cache                                                                                                                              |
-| `cache/mediapm/`          | `{runtime_root}/cache/mediapm/`              | MediaPM metadata cache                                                                                                                    |
+
+## Cache directory methods
+
+These are `MediaPmPaths` methods, not struct fields — each derives from `runtime_root` and none can be overridden.
+
+| Method                                | Output                                 | Purpose                     | Source        |
+| ------------------------------------- | -------------------------------------- | --------------------------- | ------------- |
+| `workspace_cache_dir()`               | `{runtime_root}/cache/`                | Cache root                  | `paths.rs:110` |
+| `workspace_cache_store_dir()`         | `{runtime_root}/cache/store/`          | Shared cache store (CAS)    | `paths.rs:116` |
+| `workspace_yt_dlp_cache_dir()`        | `{runtime_root}/cache/yt-dlp/`         | yt-dlp cache                | `paths.rs:122` |
+| `workspace_media_tagger_cache_dir()`  | `{runtime_root}/cache/media_tagger/`   | media-tagger cache          | `paths.rs:128` |
+| `workspace_mediapm_cache_dir()`       | `{runtime_root}/cache/mediapm/`        | MediaPM metadata cache      | `paths.rs:134` |
 
 ## `MediaPmPathOverrides` resolution rules
 
@@ -47,12 +57,14 @@ Override fields come from `MediaRuntimeStorage` in `mediapm.ncl`:
 {runtime_root}/cache/
   store/            # Shared CAS store (tool payloads)
   yt-dlp/           # yt-dlp download cache
-  mediapm/           # MediaPM metadata cache
+  media_tagger/     # media-tagger cache
+  mediapm/          # MediaPM metadata cache
 ```
 
 ## Key invariants
 
 - `tools_dir` always lives under `runtime_root`, never under workspace root directly.
+- The cache subdirectories are method outputs, so no `mediapm.ncl` override can relocate them.
 - `conductor_tmp_dir` and `mediapm_tmp_dir` use OS temp dir with a workspace-hashed `mediapm-runtime-{16hex}` name, not `runtime_root` (see `temp-directory-spec.instructions.md`).
 - Per-step conductor sandboxes live under `{conductor_tmp_dir}/sandbox/` and are removed after each `run_workflow` (see `temp-directory-spec.instructions.md`).
 - Schema export is optional — `schema_export_dir: None` disables it.

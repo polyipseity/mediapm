@@ -11,13 +11,14 @@ error.rs                   — MediaPmError: 7 variants (see error-taxonomy.inst
 output/                    — CLI formatting + progress: mod.rs (print_sync_summary), observer.rs (CliSyncObserver), progress.rs (ProgressScreen re-exports)
 util.rs                    — first_non_empty_json_string helper
 global.rs                  — MediaPmGlobalPaths, MEDIAPM_GIT_HASH
-paths.rs                   — MediaPmPaths (17 fields), MediaPmPathOverrides
+paths.rs                   — MediaPmPaths (15 fields), MediaPmPathOverrides
 source_metadata.rs         — Local-source ffprobe probes + conductor CAS root
 hierarchy.rs               — Hierarchy node mutation
 metadata_cache.rs          — JSON metadata cache, TTL-based expiry
 service.rs                 — MediaPmService<Cas> orchestration
 service_standalone.rs      — Standalone helpers (document loading, path resolution)
 example_isolation.rs       — Example/test temp dirs, MEDIAPM_EXAMPLE_* env, cleanup (see example-temp-isolation.instructions.md)
+config/                    — Document/config model: types, serde defaults, Nickel I/O, schema versions
   mod.rs                   —   MediaPmDocument, MediaPmState, MediaRuntimeStorage, re-exports
   defaults.rs              —   Constants (version=2, slot limits, cache TTLs, materialization order)
   custom_deserializers.rs  —   Serde helpers (f64→u64, option strings)
@@ -132,8 +133,10 @@ MediaPM creates `Conductor`, passes grouped runtime-storage paths so volatile wr
 | `conductor_state_config` | `<mediapm_dir>/state.conductor.json` (overrides the conductor default `state.json`; `paths.rs:87`, `paths.rs:175`) |
 | `cas_store_dir` | `<mediapm_dir>/store` |
 | `conductor_tmp_dir` | `<mediapm_dir>/tmp` |
-| `conductor_schema_dir` | `<mediapm_dir>/config/conductor` |
+| `conductor_schema_dir` | `<mediapm_dir>/schemas` (conductor default, `mediapm-conductor/src/defaults.rs:16`, joined in `mediapm-conductor/src/api.rs:55`) |
 | `conductor_tools_dir` | `<mediapm_dir>/tools` |
+
+Every row but `conductor_state_config` is the conductor's own default from `mediapm-conductor/src/defaults.rs`, because mediapm builds `RuntimeStoragePaths::new(&runtime_root).with_config_paths(...)` (`src/mediapm/src/service.rs:1059`, and `:1414` for the in-memory service) and never applies the conductor's `PathOverrides` — conductor code reads only `conductor_tmp_dir` off that struct (`mediapm-conductor/src/conductor_impl.rs:61`), and the conductor schema export mediapm performs writes to `MediaPmPaths.conductor_schema_dir` = `<mediapm_dir>/config/conductor/` (`src/mediapm/src/paths.rs:89`, read at `service.rs:783`, written by `export_mediapm_nickel_config_schemas` at `src/mediapm/src/lib.rs:573`), not to `<mediapm_dir>/schemas`.
 
 Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
