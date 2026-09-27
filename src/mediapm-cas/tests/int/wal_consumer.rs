@@ -213,3 +213,39 @@ async fn file_system_cas_background_maintenance_guard_cancels_on_drop() {
         "bg_guard must be cancelled after FileSystemCas drop"
     );
 }
+
+/// Two WAL consumers draining the same unconsumed range must not collide.
+///
+/// `FileSystemCas::open` arms a background consumer, and any foreground
+/// `flush` / `run_maintenance_cycle` runs on the same engine. Both read the
+/// checkpoint before either has advanced it (it only advances at the end of a
+/// batch), so without mutual exclusion they replay the *same* entries at the
+/// same time. The blob and metadata stores stage every write through a
+/// deterministic `<path>.tmp` name, so the two replays fight over one staging
+/// file: the first rename consumes it and the second fails with `NotFound`,
+/// turning a background task into a foreground error.
+///
+/// The invariant is that the range is consumed *at most* once, so the two
+/// reported counts can never exceed the number of WAL entries. They may fall
+/// short of it: the background consumer this store arms at open may claim
+/// part of the range, which is the same correct behaviour seen from a third
+/// angle.
+#[tokio::test]
+async fn concurrent_wal_consumers_never_double_consume_a_range() {
+    const ENTRIES: u64 = 24;
+    let (_dir, cas) = open_file_cas().await;
+
+    for index in 0..ENTRIES {
+        cas.put(Bytes::from(format!("concurrent-replay-{index}"))).await.expect("put");
+    }
+
+    let (first, second) =
+        tokio::join!(cas.bg_engine().run_wal_consumer(), cas.bg_engine().run_wal_consumer());
+    let consumed = first.expect("first consumer must not fail")
+        + second.expect("second consumer must not fail");
+    assert!(
+        consumed <= ENTRIES,
+        "concurrent consumers consumed {consumed} entries for a {ENTRIES}-entry WAL: \
+         the same range was replayed twice"
+    );
+}

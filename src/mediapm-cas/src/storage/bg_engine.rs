@@ -39,6 +39,22 @@ pub struct BackgroundEngine<J: Wal, M: MetadataStore, B: BlobStore> {
     blob: B,
     read_view: Arc<dyn ReadView>,
     checkpoint: AtomicU64,
+    /// Serializes WAL replay across every consumer sharing this store.
+    ///
+    /// The background consumer spawned by [`FileSystemCas`](super::file_system::FileSystemCas)
+    /// and a foreground [`CasStore::flush`](super::store::CasStore::flush)
+    /// or `run_maintenance_cycle` can be scheduled at the same instant, and
+    /// both would otherwise replay the *same* entry range: the checkpoint is
+    /// only advanced at the end of a batch, so neither sees the other's
+    /// progress. Two concurrent replays are not merely redundant — they
+    /// collide, because [`BlobStore::write`] and the metadata snapshot share
+    /// a deterministic `<path>.tmp` staging name, so one replay's rename
+    /// consumes the staging file the other is about to rename and the loser
+    /// fails with `NotFound`. See [`run_wal_consumer`](Self::run_wal_consumer).
+    ///
+    /// Shared through [`Arc`] so [`Clone`] copies participate in the same
+    /// critical section rather than each running an independent replay.
+    consume_lock: Arc<tokio::sync::Mutex<()>>,
     cancelled: Arc<AtomicBool>,
     /// Shared reconstructed-bytes cache (see `reconstructed_cache` module;
     /// spec `src/mediapm-cas/AGENTS.md` §5.6). `None` when caching is
@@ -65,6 +81,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             blob,
             read_view,
             checkpoint: AtomicU64::new(start_pos.as_u64()),
+            consume_lock: Arc::new(tokio::sync::Mutex::new(())),
             cancelled: Arc::new(AtomicBool::new(false)),
             reconstructed_cache,
         }
@@ -73,12 +90,29 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     /// Drain the WAL consumer once: drain WAL entries into Blob +
     /// Metadata, advancing checkpoint after each entry.
     ///
+    /// Replay is exclusive per store: the call holds [`Self::consume_lock`]
+    /// for its whole body, so a background consumer and a foreground
+    /// `flush` / `run_maintenance_cycle` drain the same range one after the
+    /// other instead of interleaving. The second caller observes the
+    /// advanced checkpoint and returns `0` — replaying an already-consumed
+    /// range is unnecessary work, and while entries are individually
+    /// idempotent the *batch* is not: a `Put` replayed after maintenance
+    /// has advanced the same hash to a delta encoding would otherwise
+    /// regress that newer state.
+    ///
+    /// The lock is a leaf guard: it must not be held across any call that
+    /// re-enters this method, because [`tokio::sync::Mutex`] is not
+    /// reentrant. [`run_maintenance`](Self::run_maintenance) and
+    /// [`drain_all`](Self::drain_all) call this method and therefore must
+    /// acquire the lock through it only, never directly.
+    ///
     /// # Errors
     ///
     /// Delegates to the WAL and metadata store operations.
     ///
     /// Returns the number of entries consumed.
     pub async fn run_wal_consumer(&self) -> Result<u64, CasError> {
+        let _replay_guard = self.consume_lock.lock().await;
         let committed = self.wal.committed_position().await;
         let ckpt = WalPosition::from_u64(self.checkpoint.load(Ordering::SeqCst));
 
@@ -113,23 +147,39 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                 }
                 match entry {
                     WalEntry::Put { hash, data } => {
-                        // Write payload to Blob as Full.
+                        // Write payload to Blob as Full. Idempotent: a
+                        // full-encoding object is immutable once present, so
+                        // the blob store skips an existing one.
                         self.blob.write(*hash, ObjectEncoding::Full, data.clone()).await?;
-                        // Preserve existing constraint bases, if any.
-                        let existing_bases = self.metadata.get_constraint(hash).await?;
-                        self.metadata
-                            .put(
-                                *hash,
-                                MetadataEntry {
-                                    len: data.len() as u64,
-                                    encoding: ObjectEncoding::Full,
-                                },
-                            )
-                            .await?;
-                        // Re-apply constraint bases (constraint is stored separately
-                        // from metadata, so we must explicitly set it after put).
-                        if !existing_bases.is_empty() {
-                            self.metadata.set_constraint(*hash, existing_bases).await?;
+                        // A `Put` entry is materialized at most once. The
+                        // WAL carries a per-entry position but no per-object
+                        // generation, so "the entry is absent" is the only
+                        // monotonicity signal available: content addressing
+                        // makes `len` identical for an entry that is already
+                        // materialized, and the only field a later event can
+                        // have advanced is `encoding` (maintenance rewriting
+                        // the object as a delta against one of its bases).
+                        // Writing `Full` unconditionally would regress that
+                        // newer state, so an existing entry is left alone —
+                        // which also keeps a replay from resurrecting
+                        // constraint bases that `prune_targets` dropped.
+                        if self.metadata.get(hash).await?.is_none() {
+                            // Preserve existing constraint bases, if any.
+                            let existing_bases = self.metadata.get_constraint(hash).await?;
+                            self.metadata
+                                .put(
+                                    *hash,
+                                    MetadataEntry {
+                                        len: data.len() as u64,
+                                        encoding: ObjectEncoding::Full,
+                                    },
+                                )
+                                .await?;
+                            // Re-apply constraint bases (constraint is stored separately
+                            // from metadata, so we must explicitly set it after put).
+                            if !existing_bases.is_empty() {
+                                self.metadata.set_constraint(*hash, existing_bases).await?;
+                            }
                         }
                     }
                     WalEntry::PutLarge { hash, content_len: _ } => {
@@ -449,8 +499,144 @@ where
             blob: self.blob.clone(),
             read_view: self.read_view.clone(),
             checkpoint: AtomicU64::new(self.checkpoint.load(Ordering::SeqCst)),
+            consume_lock: self.consume_lock.clone(),
             cancelled: self.cancelled.clone(),
             reconstructed_cache: self.reconstructed_cache.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for WAL replay invariants.
+    //!
+    //! These pin the two properties `run_wal_consumer` must hold when a
+    //! replay is driven by a source other than the engine's own checkpoint
+    //! (a restart from an un-checkpointed position, a cloned engine, or a
+    //! background consumer that overlaps a foreground `flush`).
+
+    use std::time::Duration;
+
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::api::{CasApi, CasMaintenanceApi, ConstraintApi};
+    use crate::storage::blob_store::InMemoryBlobStore;
+    use crate::storage::in_memory::InMemoryCas;
+    use crate::storage::metadata_store::InMemoryMetadataStore;
+    use crate::storage::store::CasStore;
+    use crate::storage::wal::InMemoryWal;
+
+    /// Store type assembled from fresh in-memory backends, exposed so tests
+    /// can rebuild a second [`CasStore`] over the *same* shared components.
+    type MemStore = CasStore<InMemoryWal, InMemoryMetadataStore, InMemoryBlobStore>;
+
+    /// Builds a store plus clones of the three shared backends. Every
+    /// in-memory backend is `Arc`-backed, so the clones observe the same WAL
+    /// and the same metadata — that sharing is what makes a second engine
+    /// over them a faithful stand-in for a restart.
+    fn shared_mem_store() -> (MemStore, InMemoryWal, InMemoryMetadataStore, InMemoryBlobStore) {
+        let wal = InMemoryWal::new();
+        let metadata = InMemoryMetadataStore::new();
+        let blob = InMemoryBlobStore::new();
+        let store = CasStore::new(
+            wal.clone(),
+            metadata.clone(),
+            blob.clone(),
+            WalPosition::ZERO,
+            Duration::ZERO,
+        );
+        (store, wal, metadata, blob)
+    }
+
+    /// Two contents where the target is a small edit of the base, so the
+    /// optimizer's VCDIFF is meaningfully smaller and the target is
+    /// genuinely rewritten as a delta.
+    fn similar_content_pair(fill: u8, marker: &[u8]) -> (Bytes, Bytes) {
+        let base = Bytes::from(vec![fill; 4096]);
+        let mut target = vec![fill; 2048];
+        target.extend_from_slice(marker);
+        target.extend_from_slice(&vec![fill; 2048 - marker.len()]);
+        (base, Bytes::from(target))
+    }
+
+    /// Replaying a `Put` must not regress an encoding a later event advanced.
+    ///
+    /// A `Put` entry is materialized once, but nothing in the WAL makes its
+    /// application exclusive: the same hash can be committed twice (identical
+    /// content yields the same hash, so two `put()` calls append two `Put`
+    /// entries), and a background consumer can replay an entry whose earlier
+    /// application has since been overtaken by the optimizer. Writing the
+    /// metadata entry unconditionally reset a delta-encoded object back to
+    /// `Full`, discarding the optimizer's work and racing a concurrent
+    /// `stat`. Replay is therefore required to be idempotent on the metadata
+    /// side: content addressing makes `len` identical for an entry that is
+    /// already present, and the only field a later event can have advanced is
+    /// `encoding`, so "the entry is absent" is the correct condition for
+    /// materializing.
+    #[tokio::test]
+    async fn put_replay_preserves_a_newer_delta_encoding() {
+        let (store, wal, metadata, _blob) = shared_mem_store();
+        let cas = InMemoryCas(store);
+        let (base_content, target_content) = similar_content_pair(b'B', b"WAL_REPLAY");
+
+        let base = cas.put(base_content).await.unwrap();
+        let target = cas.put(target_content.clone()).await.unwrap();
+        cas.set_constraint(target, [base].into()).await.unwrap();
+        cas.run_maintenance_cycle().await.unwrap();
+
+        let entry = metadata.get(&target).await.unwrap().expect("target must be materialized");
+        assert!(
+            matches!(entry.encoding, ObjectEncoding::Delta { .. }),
+            "precondition: optimizer must have rewritten the target as a delta, got {:?}",
+            entry.encoding
+        );
+
+        // A second `Put` entry for the same hash, as a re-commit of identical
+        // content appends. Nothing about the content changed, so the
+        // delta encoding the optimizer already wrote must survive.
+        wal.append(WalEntry::Put { hash: target, data: target_content }).await.unwrap();
+        let consumed = cas.0.bg_engine().run_wal_consumer().await.unwrap();
+        assert_eq!(consumed, 1, "the appended Put entry must be the one replayed");
+
+        let after = metadata.get(&target).await.unwrap().expect("target still materialized");
+        assert!(
+            matches!(after.encoding, ObjectEncoding::Delta { .. }),
+            "replaying an applied Put regressed the encoding to {:?}",
+            after.encoding
+        );
+        assert_eq!(after.len, entry.len, "replay must not change the recorded length");
+    }
+
+    /// Two consumers sharing one store must not each consume the same range.
+    ///
+    /// Replay batches are not independent: overlapping consumers race on the
+    /// shared `<path>.tmp` staging files (so one replay's rename deletes the
+    /// file the other is about to rename, failing it with `NotFound`) and on
+    /// the checkpoint (which only advances at the end of a batch, so neither
+    /// sees the other's progress). The background consumer spawned by
+    /// `FileSystemCas::open` and a foreground `run_maintenance_cycle` are
+    /// scheduled on the *same* engine, which is what this joins.
+    /// [`BackgroundEngine::consume_lock`] makes the range exclusive, so the
+    /// reported entry counts of two concurrent runs sum to at most the number
+    /// of entries in the WAL.
+    #[tokio::test]
+    async fn concurrent_consumers_never_double_consume_a_range() {
+        let (store, _wal, _metadata, _blob) = shared_mem_store();
+        let cas = InMemoryCas(store);
+        for index in 0..8u8 {
+            cas.put(Bytes::from(vec![index; 128])).await.unwrap();
+        }
+
+        let (first, second) = tokio::join!(
+            cas.0.bg_engine().run_wal_consumer(),
+            cas.0.bg_engine().run_wal_consumer()
+        );
+        let consumed = first.expect("first consumer") + second.expect("second consumer");
+        assert!(consumed > 0, "at least one consumer must drain the WAL");
+        assert!(
+            consumed <= 8,
+            "entry counts {consumed} exceed the 8 WAL entries: the same range was consumed twice"
+        );
     }
 }
