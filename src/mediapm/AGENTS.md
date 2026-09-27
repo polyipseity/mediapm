@@ -210,7 +210,7 @@ See `.agents/instructions/cache-and-http.instructions.md` for the three-tier cac
 
 ## Materialization
 
-Direct CAS→output-path writes; no staging commit. Materialized paths marked read-only after sync. Link fallback order configurable in `runtime.materialization_preference_order` (default: hardlink → symlink → reflink → copy). NFD filenames enforced; reserved path chars rejected. ZIP extraction under `<mediapm_dir>/tmp/`.
+Direct CAS→output-path writes; no staging commit. Materialized paths marked read-only after sync. Link fallback order configurable in `runtime.materialization_preference_order` (default: hardlink → symlink → reflink → copy). NFD filenames enforced at two stages: config-declared components are rejected when not NFD-normalized, resolved components (which carry interpolated metadata) are normalized instead. Reserved path chars rejected. ZIP extraction under `<mediapm_dir>/tmp/`.
 
 The rendered materialization progress screen (`[mat]`/`[stg]`/`[vrf]`/`[cmt]` phases) is documented in `.agents/instructions/progress-output.instructions.md` (Screen C).
 
