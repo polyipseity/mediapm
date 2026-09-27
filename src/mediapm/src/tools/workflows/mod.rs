@@ -8,8 +8,6 @@
 //! mediapm document, and persists the result into the conductor generated
 //! document (adding only the external-data refs those workflows consume).
 
-#![allow(dead_code)]
-
 pub(crate) mod deno;
 pub(crate) mod ffmpeg;
 pub(crate) mod media_tagger;
@@ -46,16 +44,9 @@ pub(crate) use variant_binding::resolve_media_variant_output_binding_with_limits
 /// Prefix for managed workflow names synthesized by mediapm.
 pub(crate) const MANAGED_WORKFLOW_PREFIX: &str = "mediapm.media.";
 
-/// Prefix for managed external data descriptions.
-pub(crate) const MANAGED_EXTERNAL_DESCRIPTION_PREFIX: &str = "managed external data:";
-
 /// Logical output name for source-ingest primary results.
 pub(crate) const OUTPUT_PRIMARY: &str = "primary";
-/// Logical output name for import result (CAS hash pointer).
-pub(crate) const OUTPUT_IMPORT_RESULT: &str = "result";
 
-/// Logical input name for source URI.
-pub(crate) const INPUT_SOURCE_URL: &str = "source_url";
 /// Logical input name for import kind selection.
 pub(crate) const INPUT_IMPORT_KIND: &str = "kind";
 /// Input name for the import builtin's CAS hash param (`kind=cas_hash`).
@@ -178,13 +169,6 @@ pub(crate) fn managed_workflow_name(media_id: &str) -> String {
 
 /// Returns the default source-URI input binding for a media step.
 ///
-/// `MediaSourceSpec` carries no URI field, so the default binding is empty;
-/// the actual URI comes from the step `uri` option when present.
-#[must_use]
-pub(crate) fn source_uri_input(_source: &MediaSourceSpec) -> (String, String) {
-    (INPUT_SOURCE_URL.to_string(), String::new())
-}
-
 /// Option keys never forwarded as raw tool inputs.
 ///
 /// These are reserved for per-tool synthesizer handling: source-URI
@@ -210,29 +194,6 @@ pub(crate) fn step_option_input_bindings(step: &MediaStep) -> Vec<(String, Strin
         .collect()
 }
 
-/// Returns true when the given output-variant config has folder-like capture.
-#[must_use]
-pub(crate) fn variant_is_folder_capture(config: &OutputVariantValue) -> bool {
-    match config {
-        OutputVariantValue::Generic(g) => {
-            matches!(g.capture_kind, Some(OutputCaptureKind::Folder))
-        }
-        OutputVariantValue::YtDlp(y) => matches!(
-            y.kind,
-            crate::config::YtDlpOutputKind::Subtitles
-                | crate::config::YtDlpOutputKind::Thumbnails
-                | crate::config::YtDlpOutputKind::Chapters
-                | crate::config::YtDlpOutputKind::Links
-        ),
-    }
-}
-
-/// Prefix delegated step ids with the source media id to avoid collisions.
-#[must_use]
-pub(crate) fn qualify_step_id(source_id: &str, suffix: &str) -> String {
-    format!("{source_id}.{suffix}")
-}
-
 /// Resolves ffmpeg slot limits from the mediapm document's ffmpeg tool
 /// requirement, falling back to config defaults when ffmpeg is not declared.
 #[must_use]
@@ -245,28 +206,6 @@ pub(crate) fn resolve_ffmpeg_slot_limits(document: &MediaPmDocument) -> FfmpegSl
         |requirement| (requirement.max_input_slots, requirement.max_output_slots),
     );
     crate::conductor_bridge::tool_runtime::resolve_ffmpeg_slot_limits(max_input, max_output)
-}
-
-/// Builds per-output persistence overrides for one step output variant.
-///
-/// The generic binding name equals the variant key; per-tool naming
-/// differences (yt-dlp output kinds, ffmpeg indexed slots) are handled by
-/// the per-tool synthesizers.
-///
-/// # Errors
-///
-/// Returns `MediaPmError::Workflow` when the variant is not declared.
-pub(crate) fn step_output_policy_overrides(
-    output_variants: &BTreeMap<String, OutputVariantValue>,
-    output_variant: &str,
-) -> Result<BTreeMap<String, OutputCaptureSpec>, MediaPmError> {
-    let value = output_variants.get(output_variant).ok_or_else(|| {
-        MediaPmError::Workflow(format!(
-            "missing output variant '{output_variant}' while resolving output policy"
-        ))
-    })?;
-    let capture_spec = variant_to_output_capture_spec(output_variant, value);
-    Ok(BTreeMap::from([(output_variant.to_string(), capture_spec)]))
 }
 
 /// One variant-source producer binding available to downstream steps.
@@ -585,20 +524,6 @@ pub(crate) struct MediaWorkflowPlan {
     pub(crate) workflows: BTreeMap<String, WorkflowSpec>,
     /// Desired managed external-data refs keyed by CAS hash identity.
     pub(crate) external_data: BTreeMap<Hash, ExternalDataEntry>,
-}
-
-/// Builds the full managed workflow/external-data plan from `mediapm` config.
-#[cfg(test)]
-fn build_media_workflow_plan(
-    document: &MediaPmDocument,
-    generated_doc: &NickelDocument,
-) -> Result<MediaWorkflowPlan, MediaPmError> {
-    build_media_workflow_plan_with_limits(
-        document,
-        generated_doc,
-        FfmpegSlotLimits::default(),
-        Path::new(""),
-    )
 }
 
 /// Builds the full managed workflow/external-data plan from `mediapm` config

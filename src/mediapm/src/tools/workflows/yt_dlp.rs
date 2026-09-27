@@ -2,8 +2,6 @@
 //!
 //! Produces the conductor workflow step for one `yt-dlp` media download step.
 
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{

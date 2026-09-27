@@ -25,20 +25,6 @@ const YT_DLP_COMMENTS_ARTIFACTS: &str = "yt_dlp_comments_artifacts";
 
 /// Decodes a yt-dlp variant config from raw JSON [`serde_json::Value`].
 ///
-/// Falls back to a generic variant decoding when the value is not structured
-/// as a yt-dlp-specific variant object.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when the variant value cannot be decoded as either
-/// a yt-dlp or generic variant config.
-pub(crate) fn decode_yt_dlp_output_variant_config(
-    value: serde_json::Value,
-) -> Result<OutputVariantValue, MediaPmError> {
-    serde_json::from_value::<OutputVariantValue>(value)
-        .map_err(|e| MediaPmError::Serialization(format!("failed to decode yt-dlp variant: {e}")))
-}
-
 /// Step output binding pointing to another step's output by name and optional
 /// zip member.
 #[derive(Debug, Clone, PartialEq, Eq)]

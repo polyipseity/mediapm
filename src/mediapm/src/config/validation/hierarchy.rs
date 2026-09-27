@@ -4,8 +4,6 @@
 //! target resolution, path ordering, and duplicate detection beyond the
 //! flattening constraints enforced in [`crate::config::hierarchy_types`].
 
-#![allow(dead_code)]
-
 use std::collections::BTreeSet;
 
 use crate::error::MediaPmError;

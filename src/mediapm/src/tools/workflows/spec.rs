@@ -4,7 +4,6 @@
 //! helpers, and template-literal utilities consumed by each per-tool
 //! workflow module. No tool-specific constants live here.
 
-#![allow(dead_code)]
 // TODO: Step-synthesis template helpers are unused until Stream A is wired.
 
 use std::collections::BTreeMap;
@@ -101,24 +100,6 @@ pub(crate) fn command_option_tokens_for_tool(
         .iter()
         .flat_map(|input_name| option_tokens_for_input(input_name, token_specs))
         .collect()
-}
-
-/// Escapes a literal string value for use inside conductor NCL templates.
-#[must_use]
-pub(crate) fn escape_template_literal(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%")
-}
-
-/// Resolves a sandbox-relative path from a tool command's `content_map` entry.
-#[must_use]
-pub(crate) fn resolve_sandbox_path(content_map_key: &str) -> String {
-    format!("inputs/{content_map_key}")
-}
-
-/// Removes sandbox path prefix from a fully qualified sandbox path.
-#[must_use]
-pub(crate) fn strip_sandbox_prefix(path: &str) -> &str {
-    path.strip_prefix("inputs/").unwrap_or(path)
 }
 
 /// Builds a full [`ToolSpec`] and [`ToolRuntime`] from per-tool parts.

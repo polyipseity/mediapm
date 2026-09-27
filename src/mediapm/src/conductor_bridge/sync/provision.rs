@@ -63,26 +63,28 @@ pub(super) enum PreResolveOutcome {
     /// Tool should be fetched and imported normally.
     Resolved(ResolvedToolFetch, ResolvedToolMetadata),
     /// Tool is already provisioned at the given canonical version (skip).
-    #[expect(
-        dead_code,
-        reason = "constructed only in tests; production skip path returns EntryOutcome::Skipped directly"
+    // WHY: production code destructures this variant in
+    // `fetch_and_import_tool_payload` to render the skipped-tool resolve bar,
+    // but nothing in the production call graph constructs it — the reconcile
+    // loop's version-matched skip returns `EntryOutcome::Skipped` before it
+    // reaches here. Only the unit tests below build a `Skip`, so `dead_code`
+    // reports the variant as never constructed even though its match arms are
+    // live. Deleting it would mean deleting those arms, i.e. removing the
+    // documented skip-bar rendering path.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "matched by production skip-bar rendering but constructed only in tests; the production skip path returns EntryOutcome::Skipped earlier"
+        )
     )]
     Skip {
-        /// Tool identifier.
-        name: String,
         /// Human-readable version string (informational only).
         human_readable_version: String,
-        /// Canonical version that was already provisioned.
-        version: String,
         /// Whether the version/tag lookups were served from metadata cache.
         metadata_cached: bool,
         /// Number of individual version/tag lookups performed (e.g., ffmpeg = 2, all others = 1).
         metadata_fetch_count: u32,
-        /// Resolved provenance fields from the provider (`None` when the
-        /// provider has no value). Carried so skipped tools can be backfilled.
-        resolved_tag: Option<String>,
-        resolved_version: Option<String>,
-        resolved_vcs_hash: Option<String>,
     },
 }
 
@@ -834,14 +836,9 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let outcome = PreResolveOutcome::Skip {
-            name: "test-tool".to_string(),
             human_readable_version: String::new(),
-            version: "v1.0.0".to_string(),
             metadata_cached: true,
             metadata_fetch_count: 1,
-            resolved_tag: None,
-            resolved_version: None,
-            resolved_vcs_hash: None,
         };
         let result =
             fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
@@ -887,14 +884,9 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let outcome = PreResolveOutcome::Skip {
-            name: "test-tool".to_string(),
             human_readable_version: String::new(),
-            version: "v1.0.0".to_string(),
             metadata_cached: false,
             metadata_fetch_count: 1,
-            resolved_tag: None,
-            resolved_version: None,
-            resolved_vcs_hash: None,
         };
         let result =
             fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
@@ -1083,14 +1075,9 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let outcome = PreResolveOutcome::Skip {
-            name: "test-tool".to_string(),
             human_readable_version: "v1.0.0".to_string(),
-            version: "v1.0.0".to_string(),
             metadata_cached: true,
             metadata_fetch_count: 2,
-            resolved_tag: None,
-            resolved_version: None,
-            resolved_vcs_hash: None,
         };
         let result =
             fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
@@ -1146,14 +1133,9 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
         let outcome = PreResolveOutcome::Skip {
-            name: "test-tool".to_string(),
             human_readable_version: String::new(),
-            version: "v1.0.0".to_string(),
             metadata_cached: false,
             metadata_fetch_count: 0,
-            resolved_tag: None,
-            resolved_version: None,
-            resolved_vcs_hash: None,
         };
         let result =
             fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;
@@ -1385,14 +1367,9 @@ mod tests {
     async fn skip_bar_label_includes_version() {
         let (cas, cache, tracker, _tmp) = label_setup().await;
         let outcome = PreResolveOutcome::Skip {
-            name: "test-tool".to_string(),
             human_readable_version: "v7.1".to_string(),
-            version: "v7.1".to_string(),
             metadata_cached: false,
             metadata_fetch_count: 1,
-            resolved_tag: None,
-            resolved_version: None,
-            resolved_vcs_hash: None,
         };
         let result =
             fetch_and_import_tool_payload(&cas, "test-tool", &cache, &tracker, outcome).await;

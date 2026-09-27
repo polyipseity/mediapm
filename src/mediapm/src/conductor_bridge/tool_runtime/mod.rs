@@ -3,11 +3,6 @@
 //! This module dispatches [`ToolSpec`] and [`ToolRuntime`] construction to
 //! per-tool workflow modules. It also defines the shared [`FfmpegSlotLimits`]
 //! type used by the ffmpeg spec builder and the sync pipeline.
-//!
-//! Sub-modules:
-//! - [`template`] — command-template validation and platform-path extraction
-
-pub(crate) mod template;
 
 use std::collections::BTreeMap;
 
