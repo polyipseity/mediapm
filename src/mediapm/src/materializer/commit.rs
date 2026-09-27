@@ -313,31 +313,6 @@ pub(super) fn sanitize_path_component(
     component.chars().map(|ch| replacements.get(&ch).copied().unwrap_or(ch)).collect()
 }
 
-/// Checks that source path components are NFD-normalized before resolution.
-///
-/// This is the first NFD check — applied at the config level before any
-/// template placeholders are resolved.
-/// Rejects a path whose components are not already NFD-normalized.
-///
-/// This is a *source-level* pre-check: it rejects a config-declared component
-/// in a non-NFD form before template placeholders are resolved. It stays
-/// `cfg(test)`-gated because the materializer entry point normalizes instead
-/// of rejecting (see [`sanitize_and_validate_components`]), and promoting this
-/// helper to a config-load error is a separate user-visible policy change for
-/// existing NFC-spelled hierarchy declarations.
-#[cfg(test)]
-pub(super) fn check_nfd_source(components: &[String]) -> Result<(), MediaPmError> {
-    for component in components {
-        let component_nfd = component.nfd().collect::<String>();
-        if component_nfd != *component {
-            return Err(MediaPmError::Workflow(format!(
-                "source path component '{component}' must be NFD-normalized"
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// Validates resolved and sanitized path components against mediapm invariants.
 ///
 /// Rules per component:
@@ -345,6 +320,19 @@ pub(super) fn check_nfd_source(components: &[String]) -> Result<(), MediaPmError
 /// - Must not be `.` or `..`
 /// - Must not contain forbidden characters (`<`, `>`, `:`, `"`, `|`, `?`, `*`, `/`, `\`)
 /// - Must be Unicode NFD normalized (with a distinct message from the source check)
+///
+/// The NFD rule is defence in depth, not the primary check: every production
+/// caller reaches this function through [`sanitize_and_validate_components`],
+/// which NFD-normalizes each component first, so a non-NFD component is
+/// rewritten rather than rejected. The branch fires only when a component
+/// arrives here without that preceding normalization — a direct call, or a
+/// future caller that skips the chain. Keep it: it is what makes the committed
+/// path NFD regardless of the route a component took to get here.
+///
+/// Config-declared components are a separate, earlier stage: they are rejected
+/// for non-NFD spelling by
+/// [`crate::config::hierarchy_types::check_nfd_source`], because a user can fix
+/// a declaration but not the metadata interpolated into it later.
 ///
 /// Returns the validated components (consume-then-return for pipeline chaining).
 ///
@@ -526,21 +514,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, vec!["a_b".to_string()]);
-    }
-
-    #[test]
-    fn check_nfd_source_passes_nfd() {
-        // "e\u{0301}" is NFD-normalized (e + combining acute accent).
-        let components = vec!["e\u{0301}normal".to_string()];
-        let result = check_nfd_source(&components);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn check_nfd_source_rejects_nfc() {
-        let components = vec!["caf\u{00e9}".to_string()];
-        let err = check_nfd_source(&components).unwrap_err();
-        assert!(err.to_string().contains("must be NFD-normalized"));
     }
 
     #[test]

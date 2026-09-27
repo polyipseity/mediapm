@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::error::MediaPmError;
 
@@ -550,8 +551,7 @@ pub fn flatten_hierarchy_nodes_for_runtime(
         None,
         &SanitizeNamesConfig::Enabled,
         &mut flattened,
-    )
-    .map_err(MediaPmError::Workflow)?;
+    )?;
 
     let mut seen_paths = BTreeMap::<(String, String), Vec<usize>>::new();
     let mut seen_hierarchy_ids = BTreeMap::<String, String>::new();
@@ -608,7 +608,7 @@ fn flatten_hierarchy_nodes_inner(
     parent_sanitize: Option<&SanitizeNamesConfig>,
     default_sanitize: &SanitizeNamesConfig,
     output: &mut Vec<FlattenedHierarchyEntry>,
-) -> Result<(), String> {
+) -> Result<(), MediaPmError> {
     for node in nodes {
         let effective_sanitize = match &node.sanitize_names {
             None | Some(SanitizeNamesConfig::Inherit) => {
@@ -638,14 +638,12 @@ fn flatten_hierarchy_nodes_inner(
                 )?;
             }
             HierarchyNodeKind::Media => {
-                let media_id = node
-                    .media_id
-                    .clone()
-                    .ok_or_else(|| "media node must define media_id".to_string())?;
-                let variant = node
-                    .variant
-                    .clone()
-                    .ok_or_else(|| "media node must define variant".to_string())?;
+                let media_id = node.media_id.clone().ok_or_else(|| {
+                    MediaPmError::Workflow("media node must define media_id".into())
+                })?;
+                let variant = node.variant.clone().ok_or_else(|| {
+                    MediaPmError::Workflow("media node must define variant".into())
+                })?;
 
                 output.push(FlattenedHierarchyEntry {
                     path_components: resolved_components.clone(),
@@ -662,10 +660,9 @@ fn flatten_hierarchy_nodes_inner(
                 });
             }
             HierarchyNodeKind::MediaFolder => {
-                let media_id = node
-                    .media_id
-                    .clone()
-                    .ok_or_else(|| "media_folder node must define media_id".to_string())?;
+                let media_id = node.media_id.clone().ok_or_else(|| {
+                    MediaPmError::Workflow("media_folder node must define media_id".into())
+                })?;
 
                 output.push(FlattenedHierarchyEntry {
                     path_components: resolved_components.clone(),
@@ -713,24 +710,59 @@ fn flatten_hierarchy_nodes_inner(
     Ok(())
 }
 
-/// Validates one hierarchy path component for disallowed characters.
-fn validate_hierarchy_path_component(component: &str) -> Result<(), String> {
+/// Rejects hierarchy path components that are not Unicode NFD-normalized.
+///
+/// This is the config-level NFD check, and the first of the two stages in the
+/// NFD contract. It runs on the components exactly as the user declared them
+/// in `mediapm.ncl`, before any `${...}` template placeholder is resolved, and
+/// it *rejects* rather than normalizes: a declared component is user-authored,
+/// so the user can spell it in NFD and fix the document. The materializer's
+/// post-resolution stage
+/// (`crate::materializer::sanitize_and_validate_hierarchy_paths`) instead
+/// *normalizes*, because by then the components also carry tag metadata,
+/// ffprobe output, and upstream values the user does not control.
+///
+/// Rejection is reported per component with a message distinct from the
+/// reserved-character rejection in [`validate_hierarchy_path_component`], so a
+/// user can tell the two causes apart.
+pub(crate) fn check_nfd_source(components: &[&str]) -> Result<(), MediaPmError> {
+    for component in components {
+        if component.nfd().collect::<String>() != *component {
+            return Err(MediaPmError::Workflow(format!(
+                "hierarchy path component '{component}' must be NFD-normalized"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validates one hierarchy path component for disallowed characters and
+/// Unicode normalization form.
+///
+/// # Errors
+///
+/// Returns a distinct message per cause: `reserved character '<ch>'` for a
+/// cross-platform-illegal character, and the [`check_nfd_source`] message for a
+/// component that is not NFD-normalized.
+fn validate_hierarchy_path_component(component: &str) -> Result<(), MediaPmError> {
     if component.is_empty() {
-        return Err("hierarchy path components must be non-empty".to_string());
+        return Err(MediaPmError::Workflow(
+            "hierarchy path components must be non-empty".to_string(),
+        ));
     }
 
     for ch in component.chars() {
         match ch {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => {
-                return Err(format!(
+                return Err(MediaPmError::Workflow(format!(
                     "hierarchy path component '{component}' contains reserved character '{ch}'"
-                ));
+                )));
             }
             _ => {}
         }
     }
 
-    Ok(())
+    check_nfd_source(&[component])
 }
 
 /// Collects effective hierarchy-id → media-path mappings from a flattened
@@ -911,6 +943,90 @@ mod tests {
         }];
         let err = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap_err();
         assert!(err.to_string().contains("media node must define media_id"));
+    }
+
+    /// A config-declared component in NFC is rejected: the hierarchy
+    /// declaration is user-authored, so the user can spell it in NFD and
+    /// fix the document. The rejection must name the NFD cause, not the
+    /// reserved-character cause.
+    #[test]
+    fn flatten_rejects_nfc_config_path_component() {
+        // "Café" in NFC (\u{00e9}) is not NFD-normalized; its NFD form is
+        // "Cafe\u{301}" (e + combining acute accent).
+        let nodes = vec![HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("Caf\u{00e9}"),
+            media_id: Some("vid1".into()),
+            variant: Some("hq".into()),
+            ..base_node()
+        }];
+        let err = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap_err();
+        assert!(
+            err.to_string().contains("must be NFD-normalized"),
+            "unexpected rejection reason: {err}"
+        );
+    }
+
+    /// The same component spelled in NFD is accepted, so the config-level
+    /// check is a normalization requirement and not a blanket non-ASCII ban.
+    #[test]
+    fn flatten_accepts_nfd_config_path_component() {
+        let nodes = vec![HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("Cafe\u{301}"),
+            media_id: Some("vid1".into()),
+            variant: Some("hq".into()),
+            ..base_node()
+        }];
+        let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path_components, vec!["Cafe\u{301}".to_string()]);
+    }
+
+    /// The two config-level rejection causes stay distinguishable: a reserved
+    /// character and a non-NFD spelling of the same component must not report
+    /// the same message, so a user can tell which rule their config broke.
+    #[test]
+    fn config_component_rejection_messages_are_distinguishable() {
+        let node = |path: &str| HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple(path),
+            media_id: Some("vid1".into()),
+            variant: Some("hq".into()),
+            ..base_node()
+        };
+
+        let reserved = flatten_hierarchy_nodes_for_runtime(&[node("Caf\u{00e9}<")])
+            .expect_err("reserved character must be rejected")
+            .to_string();
+        assert!(reserved.contains("reserved character '<'"), "unexpected message: {reserved}");
+        assert!(
+            !reserved.contains("NFD-normalized"),
+            "reserved-character rejection must not claim an NFD cause: {reserved}"
+        );
+
+        let nfd = flatten_hierarchy_nodes_for_runtime(&[node("Caf\u{00e9}")])
+            .expect_err("NFC spelling must be rejected")
+            .to_string();
+        assert!(nfd.contains("must be NFD-normalized"), "unexpected message: {nfd}");
+        assert!(
+            !nfd.contains("reserved character"),
+            "NFD rejection must not claim a reserved-character cause: {nfd}"
+        );
+    }
+
+    /// A component already spelled in NFD passes the config-level check.
+    #[test]
+    fn check_nfd_source_passes_nfd() {
+        // "e\u{301}" is NFD-normalized (e + combining acute accent).
+        assert!(check_nfd_source(&["e\u{301}normal"]).is_ok());
+    }
+
+    /// A component spelled in NFC is rejected with the NFD-specific message.
+    #[test]
+    fn check_nfd_source_rejects_nfc() {
+        let err = check_nfd_source(&["caf\u{e9}"]).unwrap_err();
+        assert!(err.to_string().contains("must be NFD-normalized"));
     }
 
     #[test]
