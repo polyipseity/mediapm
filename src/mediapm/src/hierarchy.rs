@@ -15,32 +15,16 @@ use crate::{AddInsertPosition, MediaHierarchyPreset};
 pub(crate) const HIERARCHY_MEDIA_ROOT_TEMPLATE: &str = "media_root";
 /// Media root template key for yt-dlp hierarchy presets.
 pub(crate) const HIERARCHY_YT_DLP_MEDIA_ROOT_TEMPLATE: &str = "media_root_ytdlp";
-/// Tagged media file template key for local-file hierarchy.
-#[allow(dead_code)]
-pub(crate) const HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE: &str = "tagged_media_file";
 /// Album folder template key for local-file hierarchy.
 pub(crate) const HIERARCHY_ALBUM_FOLDER_TEMPLATE: &str = "album_folder";
 /// Artist folder template key for local-file hierarchy.
 pub(crate) const HIERARCHY_ARTIST_FOLDER_TEMPLATE: &str = "artist_folder";
 /// yt-dlp playlist extractor template key.
 pub(crate) const HIERARCHY_YT_DLP_PLAYLIST_EXTRACTOR: &str = "yt_dlp_playlist_extractor";
-/// yt-dlp media entry template key.
-#[allow(dead_code)]
-pub(crate) const HIERARCHY_YT_DLP_MEDIA_ENTRY: &str = "yt_dlp_media_entry";
 /// Media folder template key (for multi-variant entries).
 pub(crate) const HIERARCHY_MEDIA_FOLDER_TEMPLATE: &str = "media_folder_entry";
 /// Media file template key (for single-variant entries).
 pub(crate) const HIERARCHY_MEDIA_FILE_TEMPLATE: &str = "media_file_entry";
-
-/// Returns the hierarchy preset node id for a given preset kind.
-#[must_use]
-#[allow(dead_code)]
-pub(crate) fn hierarchy_preset_node_id(preset: MediaHierarchyPreset) -> &'static str {
-    match preset {
-        MediaHierarchyPreset::Local => HIERARCHY_MEDIA_ROOT_TEMPLATE,
-        MediaHierarchyPreset::YtDlpChannel => HIERARCHY_YT_DLP_MEDIA_ROOT_TEMPLATE,
-    }
-}
 
 /// Returns the sort id used for comparing hierarchy preset nodes.
 #[must_use]
@@ -49,15 +33,6 @@ pub(crate) fn hierarchy_preset_sort_id(preset: MediaHierarchyPreset) -> &'static
         MediaHierarchyPreset::Local => "01",
         MediaHierarchyPreset::YtDlpChannel => "02",
     }
-}
-
-/// Compares two hierarchy node ids for ordering.
-///
-/// Returns `std::cmp::Ordering` based on the numeric prefix or string comparison.
-#[must_use]
-#[allow(dead_code)]
-pub(crate) fn compare_hierarchy_ids(a: &str, b: &str) -> std::cmp::Ordering {
-    a.cmp(b)
 }
 
 /// Builds a hierarchy preset node for the given preset kind.
@@ -175,13 +150,6 @@ pub(crate) fn local_hierarchy_media_children() -> Vec<HierarchyNode> {
     vec![hierarchy_media_file_node(None)]
 }
 
-/// Builds the default children for a yt-dlp media hierarchy entry.
-#[must_use]
-#[allow(dead_code)]
-pub(crate) fn yt_dlp_hierarchy_media_children() -> Vec<HierarchyNode> {
-    vec![hierarchy_media_folder_node(None)]
-}
-
 /// Inserts a hierarchy preset node into an existing hierarchy.
 ///
 /// The node is inserted based on the provided position. The hierarchy
@@ -267,8 +235,13 @@ pub(crate) fn remove_hierarchy_nodes_by_media_id(
 }
 
 /// Checks if a hierarchy contains a node with the given id.
+///
+/// Compiled only under `cfg(test)`: its sole caller is this module's
+/// `hierarchy_contains_node_id_finds_existing_node`, so a production build has
+/// no reader for it. Gating the item to its caller removes the need for a
+/// `dead_code` suppression, which rustc would otherwise have to swallow.
 #[must_use]
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn hierarchy_contains_node_id(hierarchy: &[HierarchyNode], node_id: &str) -> bool {
     hierarchy.iter().any(|node| {
         if node.id.as_deref() == Some(node_id) {
@@ -280,44 +253,6 @@ pub(crate) fn hierarchy_contains_node_id(hierarchy: &[HierarchyNode], node_id: &
             hierarchy_contains_node_id(&node.children, node_id)
         }
     })
-}
-
-/// Normalizes the hierarchy folder root path based on the given preset.
-#[must_use]
-#[allow(dead_code)]
-pub(crate) fn normalize_hierarchy_folder_root(
-    path: &str,
-    preset: Option<MediaHierarchyPreset>,
-) -> String {
-    match preset {
-        Some(MediaHierarchyPreset::Local) => {
-            if path.contains("Artists") {
-                path.to_string()
-            } else {
-                format!("{{01 {}}}", path.trim_start_matches('{').trim_end_matches('}'))
-            }
-        }
-        Some(MediaHierarchyPreset::YtDlpChannel) => {
-            if path.contains("YouTube") {
-                path.to_string()
-            } else {
-                format!("{{02 {}}}", path.trim_start_matches('{').trim_end_matches('}'))
-            }
-        }
-        None => path.to_string(),
-    }
-}
-
-/// Returns the default hierarchy folder root path for the given preset.
-#[must_use]
-#[allow(dead_code)]
-pub(crate) fn default_hierarchy_folder_root_for_preset(
-    preset: MediaHierarchyPreset,
-) -> &'static str {
-    match preset {
-        MediaHierarchyPreset::Local => "{01 Artists}",
-        MediaHierarchyPreset::YtDlpChannel => "{02 YouTube}",
-    }
 }
 
 #[cfg(test)]
