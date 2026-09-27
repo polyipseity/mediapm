@@ -11,6 +11,18 @@
 //! Human-readable fields (`external_data` descriptions, workflow
 //! `display_name`/`description`) are never merged or compared across
 //! documents.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file is envelope-shaped by necessity, not by convenience: merging
+//!   runs on the presence-preserving wire envelope, so it lives inside
+//!   `versions/` where that type is nameable. No unversioned struct is
+//!   declared here.
+//! - `super::merge_document_sources` is the only way in from outside
+//!   `versions/`; a caller outside must never reach `SourceDocument`,
+//!   `MergeState`, or `merge_documents` directly.
+//! - Do not re-export anything from this file. A re-export would move a
+//!   versioned symbol back out of the boundary these entry points protect.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
