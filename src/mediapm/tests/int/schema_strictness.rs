@@ -8,7 +8,6 @@
 
 use serde_json::{Value, json};
 
-use mediapm::config::MediaRuntimeStorageLatest;
 use mediapm::{
     MediaPmDocument, MediaRuntimeStorage, MediaStep, OutputVariantValue, ToolRegistryEntry,
     VerifyStrategy, apply_v1_contract, apply_v2_contract, evaluate_mod_ncl_expression,
@@ -956,14 +955,18 @@ fn strict_output_variants_accepts_ytdlp_and_generic_shapes() {
 
 /// S-E3: all four CAS strategy names must decode and round-trip to the same
 /// `snake_case` wire names.
+///
+/// The boundary type is reached through `MediaPmDocument::runtime` rather than
+/// named directly: the boundary family is not publicly nameable, and a field
+/// access exercises the same serde surface a real document load does.
 #[test]
 fn strict_verify_strategy_accepts_known_names() {
-    let rt: MediaRuntimeStorageLatest = serde_json::from_value(json!({
-        "verification": { "verify_on_read": ["always", "modified", "sample", "stale"] },
+    let document: MediaPmDocument = serde_json::from_value(json!({
+        "runtime": { "verification": { "verify_on_read": ["always", "modified", "sample", "stale"] } },
     }))
     .expect("all CAS strategy names must decode");
     assert_eq!(
-        *rt.verification.verify_on_read.as_ref().unwrap(),
+        *document.runtime.verification.verify_on_read.as_ref().expect("verify_on_read is present"),
         vec![
             VerifyStrategy::Always,
             VerifyStrategy::Modified,
@@ -971,9 +974,9 @@ fn strict_verify_strategy_accepts_known_names() {
             VerifyStrategy::Stale,
         ]
     );
-    let back = serde_json::to_value(&rt).expect("runtime storage must serialize");
+    let back = serde_json::to_value(&document).expect("document must serialize");
     assert_eq!(
-        back["verification"]["verify_on_read"],
+        back["runtime"]["verification"]["verify_on_read"],
         json!(["always", "modified", "sample", "stale"])
     );
 }

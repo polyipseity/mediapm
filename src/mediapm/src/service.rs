@@ -23,6 +23,7 @@ use crate::conductor_bridge::documents::{
 use crate::conductor_bridge::sync::{
     apply_resolved_field_backfills, open_workspace_cas_store, reconcile_desired_tools,
 };
+use crate::config::versions;
 use crate::config::{
     MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStepTool, RuntimeBasePaths,
     ToolRequirement, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
@@ -222,7 +223,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             workspace_root: self.paths.root_dir.clone(),
             mediapm_dir: effective_paths.runtime_root.clone(),
         };
-        let resolved_doc_runtime = MediaRuntimeStorage::from_boundary(&doc.runtime, &base_paths);
+        let resolved_doc_runtime = versions::resolve_runtime_storage(&doc.runtime, &base_paths);
         Ok(merge_runtime_storage(&resolved_doc_runtime, &self.runtime_storage_overrides))
     }
 

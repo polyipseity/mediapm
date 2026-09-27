@@ -61,6 +61,10 @@ pub struct RuntimeMaterializationConfigLatest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the three field names are the v2.ncl contract's `verify_on_read` keys; renaming them to satisfy the lint would break schema/Rust parity, and the shared prefix is what makes them read as one group"
+)]
 pub struct RuntimeVerificationConfigLatest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_on_read: Option<Vec<VerifyStrategy>>,

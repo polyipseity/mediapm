@@ -29,7 +29,7 @@ Every versioned config/state surface follows the same shape, regardless of trans
 - Inside `versions/vX.rs`, do **not** import unversioned structs from outside `versions/`.
 - A `versions/vX.rs` file may reference only the immediately previous version module (e.g. `v3` → `v2`), and only for version-to-version isomorphism/migration.
 - Implement latest-version ↔ unversioned-struct isomorphism in `versions/mod.rs`, not in individual `vX.rs` files.
-- Files outside `versions/` interact with versioned symbols through `versions/mod.rs` only; do not import `versions::vX` directly.
+- Files outside `versions/` interact with versioned symbols through `versions/mod.rs` only; do not import `versions::vX` directly. This is enforced mechanically: `no_file_outside_versions_references_a_version_module_path` in `src/mediapm-cas/src/delta/versions/mod_policy_guard.rs` scans every workspace member and fails on any such path in code, so a reintroduced leak is caught by the suite rather than by a reviewer's `git grep`. Doc comments and string literals that *describe* the rule are not violations — the guard projects each file onto its code first.
 - In `versions/mod.rs`, do not re-export `versions::vX` structs as public API; expose unversioned wrapper functions/constants.
 - Files outside `versions/` keep their own unversioned runtime data structures and call into `versions/mod.rs` only when encoding/decoding persisted or wire versioned formats.
 - Prefer unversioned facade APIs in aggregate modules (e.g. `index/mod.rs`) so siblings (e.g. `index/db.rs`) do not import `versions` paths directly.

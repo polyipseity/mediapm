@@ -14,8 +14,15 @@
 //! | [`source_types`] | Media source, step, and tool types |
 //! | [`hierarchy_types`] | Hierarchy node, path, and flattening utilities |
 //! | [`nickel_io`] | Evaluate `.ncl` files to JSON, render terms, state I/O |
-//! | [`versions`] | Schema version dispatch and V1 document envelope types |
+//! | [`versions`] | The `mediapm.ncl` document model, schema version dispatch, and the `*Latest` boundary types |
 //! | [`validation`] | Cross-field document validation |
+//!
+//! This module holds the resolved (option-free) types only. The wire-shaped
+//! document ([`MediaPmDocument`], re-exported from [`versions`]) and the active
+//! `*Latest` boundary family it carries live under [`versions`], and the two
+//! are connected solely by the unversioned entry points
+//! [`versions::resolve_runtime_storage`] and [`versions::runtime_boundary`].
+//! This module names no `versions::v` path and re-exports no versioned symbol.
 
 pub mod custom_deserializers;
 pub mod defaults;
@@ -43,11 +50,14 @@ pub use source_types::{
     MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate,
     MediaMetadataVariantBinding, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
 };
-pub use versions::v_latest::{
-    MediaRuntimeStorageLatest, RuntimeCachingConfigLatest, RuntimeEnvironmentConfigLatest,
-    RuntimeLifecycleConfigLatest, RuntimeMaterializationConfigLatest, RuntimePathsConfigLatest,
-    RuntimeVerificationConfigLatest,
-};
+/// Top-level mediapm document deserialized from `mediapm.ncl`.
+///
+/// Re-exported from [`versions`], which owns it: the document carries the
+/// active `*Latest` boundary value on its `runtime` field, so it is
+/// wire-shaped and belongs beside the boundary types. The name is unversioned,
+/// so naming it from here is not a boundary leak — naming a `versions::vX`
+/// path would be, and this module does neither.
+pub use versions::MediaPmDocument;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -330,16 +340,6 @@ pub struct RuntimeBasePaths {
     pub mediapm_dir: PathBuf,
 }
 
-impl MediaRuntimeStorage {
-    #[must_use]
-    pub fn from_boundary(
-        latest: &MediaRuntimeStorageLatest,
-        base: &RuntimeBasePaths,
-    ) -> MediaRuntimeStorage {
-        versions::v_latest::resolve_runtime_storage(latest, base)
-    }
-}
-
 /// Managed tool version and dependency requirements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -394,65 +394,6 @@ impl ToolRequirement {
     #[must_use]
     pub const fn metadata_recheck_seconds(&self) -> u64 {
         self.recheck_seconds
-    }
-}
-
-/// Top-level mediapm document deserialized from `mediapm.ncl`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MediaPmDocument {
-    /// Schema version marker.
-    #[serde(default = "defaults::default_mediapm_document_version")]
-    pub version: u32,
-    /// Media source entries keyed by unique id.
-    #[serde(default)]
-    pub media: BTreeMap<String, source_types::MediaSourceSpec>,
-    /// Hierarchy declaration.
-    #[serde(default)]
-    pub hierarchy: Vec<hierarchy_types::HierarchyNode>,
-    /// Managed tool requirement declarations keyed by tool id.
-    #[serde(default)]
-    pub tools: BTreeMap<String, ToolRequirement>,
-    /// Runtime configuration overrides.
-    #[serde(default)]
-    pub runtime: MediaRuntimeStorageLatest,
-    /// Legacy `state` payload accepted for V1 documents.
-    ///
-    /// State is managed separately via `state.json`; the V2 schema drops this
-    /// field, so it is accepted on read for legacy documents and never
-    /// emitted on V2 writes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state: Option<MediaPmState>,
-}
-
-impl Default for MediaPmDocument {
-    fn default() -> Self {
-        Self {
-            version: defaults::MEDIAPM_DOCUMENT_VERSION,
-            media: BTreeMap::new(),
-            hierarchy: Vec::new(),
-            tools: BTreeMap::new(),
-            runtime: MediaRuntimeStorageLatest::default(),
-            state: None,
-        }
-    }
-}
-
-impl MediaPmDocument {
-    /// Normalizes string fields (trimming whitespace).
-    pub fn normalize(&mut self) {
-        for source in self.media.values_mut() {
-            let trimmed = source.description.trim().to_string();
-            source.description = trimmed;
-            let trimmed = source.title.trim().to_string();
-            source.title = trimmed;
-            let trimmed = source.artist.trim().to_string();
-            source.artist = trimmed;
-        }
-        // Remove tool entries that are Latest with no explicit dependencies.
-        self.tools.retain(|_, tool_req| {
-            tool_req.version_spec != ConfigVersionSpec::Latest || !tool_req.dependencies.is_empty()
-        });
     }
 }
 
@@ -587,66 +528,5 @@ impl MediaPmState {
                 || entry.resolved_version.is_some()
                 || entry.resolved_vcs_hash.is_some()
         });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn from_boundary_resolves_none_paths_to_empty_not_fabricated() {
-        let latest = MediaRuntimeStorageLatest::default();
-        let resolved = MediaRuntimeStorage::from_boundary(
-            &latest,
-            &RuntimeBasePaths {
-                workspace_root: PathBuf::from("/w"),
-                mediapm_dir: PathBuf::from("/m"),
-            },
-        );
-
-        assert_eq!(resolved.paths.mediapm_dir, PathBuf::new());
-        assert_eq!(resolved.paths.hierarchy_root_dir, PathBuf::new());
-        assert_eq!(resolved.paths.mediapm_state_config, PathBuf::new());
-        assert_eq!(resolved.paths.conductor_config, PathBuf::new());
-        assert_eq!(resolved.paths.conductor_generated_config, PathBuf::new());
-        assert_eq!(resolved.paths.conductor_state_config, PathBuf::new());
-        assert_eq!(resolved.paths.conductor_schema_dir, PathBuf::new());
-        assert_eq!(resolved.paths.mediapm_schema_dir, PathBuf::new());
-        assert_eq!(resolved.paths.env_file, PathBuf::new());
-        assert_eq!(resolved.paths.env_generated_file, PathBuf::new());
-
-        assert!(!resolved.retry_impure);
-        assert_eq!(resolved.path_sanitization, SanitizeNamesConfig::default());
-    }
-
-    #[test]
-    fn from_boundary_resolves_none_scalars_to_defaults() {
-        let latest = MediaRuntimeStorageLatest::default();
-        let resolved = MediaRuntimeStorage::from_boundary(
-            &latest,
-            &RuntimeBasePaths {
-                workspace_root: PathBuf::from("/w"),
-                mediapm_dir: PathBuf::from("/m"),
-            },
-        );
-
-        assert_eq!(
-            resolved.materialization.materialization_preference_order,
-            defaults::default_materialization_preference_order()
-        );
-        assert_eq!(
-            resolved.verification.verify_on_read_sample_denominator,
-            defaults::default_verify_on_read_sample_denominator()
-        );
-        assert_eq!(
-            resolved.caching.reconstructed_cache_ttl_seconds,
-            defaults::default_reconstructed_cache_ttl_seconds()
-        );
-        assert_eq!(
-            resolved.lifecycle.instance_ttl_seconds,
-            defaults::default_instance_ttl_seconds()
-        );
-        assert_eq!(resolved.environment.profiler_enabled, defaults::default_profiler_enabled());
     }
 }
