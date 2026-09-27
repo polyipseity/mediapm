@@ -252,10 +252,11 @@ impl ValidatedHierarchyEntry {
 
     /// Renders the validated path as one `/`-separated relative string.
     ///
-    /// Display text for progress labels, managed-file keys, the stale-path
-    /// set, and playlist bodies. The materializer still builds the path it
-    /// writes to disk from the components themselves, so nothing downstream
-    /// has to trust this rendering.
+    /// A thin wrapper over [`render_relative_path`], kept as a method so a
+    /// read site has one spelling for "this entry's path as text". The
+    /// materializer still builds the path it writes to disk from the
+    /// components themselves, so nothing downstream has to trust the
+    /// rendering.
     #[must_use]
     pub(crate) fn relative_path_text(&self) -> String {
         render_relative_path(&self.path)
