@@ -12,7 +12,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::MediaPmDocument;
 use crate::error::MediaPmError;
-use crate::path_component::{PathComponent, is_rejected_char};
+use crate::path_component::{PathComponent, is_rejected_char, render_relative_path};
 
 /// Filename sanitization policy for hierarchy entries.
 ///
@@ -181,47 +181,19 @@ pub struct HierarchyEntry {
     pub sanitize_names: SanitizeNamesConfig,
 }
 
-/// The path components of one flattened hierarchy entry, in one of two states.
-///
-/// The entry starts as user-declared text from `mediapm.ncl`, with its
-/// `${...}` placeholders unresolved, and is materialized from values that
-/// have been through [`crate::path_component::PathComponent::parse`]. A
-/// single `Vec<String>` holds both, and a reader then has to guess whether a
-/// value met the parser, which is the substring scan this enum replaces.
-///
-/// `Template` is untrusted text and takes any `String`. `Resolved` holds
-/// components that cannot exist without a successful parse, and has no
-/// constructor: a caller that wants a validated value calls the parser.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum HierarchyPathComponents {
-    /// User-declared or metadata-interpolated text, not yet validated.
-    Template(Vec<String>),
-    /// Components that have passed `PathComponent::parse`.
-    Resolved(Vec<PathComponent>),
-}
-
-impl HierarchyPathComponents {
-    /// Joins the components into one relative path string with `/` separators.
-    ///
-    /// This is the only way back to plain text. It renders both states,
-    /// because callers need a display path before sanitization (a
-    /// duplicate-path error) and after it (a playlist target).
-    #[must_use]
-    pub(crate) fn display(&self) -> String {
-        match self {
-            Self::Template(components) => components.join("/"),
-            Self::Resolved(components) => {
-                components.iter().map(ToString::to_string).collect::<Vec<String>>().join("/")
-            }
-        }
-    }
-}
-
 /// One flattened hierarchy entry and its path components.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlattenedHierarchyEntry {
-    /// Path components from root to this entry, template or resolved.
-    pub(crate) path_components: HierarchyPathComponents,
+    /// Path components from root to this entry, as text.
+    ///
+    /// These are the components the user declared, `${...}` placeholders and
+    /// all, or the same components after metadata interpolation pulled tag
+    /// values and ffprobe output into them. Nothing here has met
+    /// [`crate::path_component::PathComponent::parse`], and the field type
+    /// says so: it is `Vec<String>`, and no crate-local conversion turns a
+    /// `String` here into a `PathComponent`. A read site that needs a safe path
+    /// holds a `ValidatedHierarchyEntry` instead.
+    pub(crate) path_components: Vec<String>,
     /// Optional stable hierarchy id.
     pub hierarchy_id: Option<String>,
     /// Runtime entry payload.
@@ -229,10 +201,64 @@ pub struct FlattenedHierarchyEntry {
 }
 
 impl FlattenedHierarchyEntry {
-    /// Joins path components into one relative path string.
+    /// Joins the entry's components into one `/`-separated string.
+    ///
+    /// This is config-boundary text, and the flatten walk is the only place
+    /// that wants it: it compares one entry's components against another's to
+    /// report two nodes that declared the same path, and the metadata
+    /// resolver names a path in the error it raises for a placeholder on an
+    /// entry that binds no media. `pub(crate)` because nobody outside this
+    /// crate can make that text safe, and the materializer is the only stage
+    /// that can.
     #[must_use]
-    pub fn path_str(&self) -> String {
-        self.path_components.display()
+    pub(crate) fn path_str(&self) -> String {
+        self.path_components.join("/")
+    }
+}
+
+/// One flattened hierarchy entry whose path components have met the parser.
+///
+/// This is what every read site holds. The materializer's sanitize step
+/// produces it and nothing else does. [`FlattenedHierarchyEntry`] carries
+/// `Vec<String>`, so a read site typed on [`ValidatedHierarchyEntry`] cannot be
+/// handed raw text even by accident, and the raw-text type never gets past the
+/// sanitizer to reach a `PathBuf::join`. Neither half depends on a reader
+/// remembering to check anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValidatedHierarchyEntry {
+    /// Validated components, root first.
+    pub(crate) path: Vec<PathComponent>,
+    /// Optional stable hierarchy id, carried through for playlist resolution.
+    pub(crate) hierarchy_id: Option<String>,
+    /// Runtime entry payload, unchanged from the flattened entry.
+    pub(crate) entry: HierarchyEntry,
+}
+
+impl ValidatedHierarchyEntry {
+    /// Builds a validated entry from components that met the parser.
+    ///
+    /// `pub(crate)` because the sanitizer lives in `materializer`. The
+    /// argument type is the real constraint: a caller cannot pass a `String`
+    /// here, and `PathComponent` has no constructor outside
+    /// [`crate::path_component::PathComponent::parse`] either, so the only way
+    /// to obtain one of these is to have parsed the text first.
+    pub(crate) fn new(
+        path: Vec<PathComponent>,
+        hierarchy_id: Option<String>,
+        entry: HierarchyEntry,
+    ) -> Self {
+        Self { path, hierarchy_id, entry }
+    }
+
+    /// Renders the validated path as one `/`-separated relative string.
+    ///
+    /// Display text for progress labels, managed-file keys, the stale-path
+    /// set, and playlist bodies. The materializer still builds the path it
+    /// writes to disk from the components themselves, so nothing downstream
+    /// has to trust this rendering.
+    #[must_use]
+    pub(crate) fn relative_path_text(&self) -> String {
+        render_relative_path(&self.path)
     }
 }
 
@@ -685,7 +711,7 @@ fn flatten_hierarchy_nodes_inner(
                 })?;
 
                 output.push(FlattenedHierarchyEntry {
-                    path_components: HierarchyPathComponents::Template(resolved_components.clone()),
+                    path_components: resolved_components.clone(),
                     hierarchy_id: node.id.clone(),
                     entry: HierarchyEntry {
                         kind: HierarchyEntryKind::Media,
@@ -705,7 +731,7 @@ fn flatten_hierarchy_nodes_inner(
                 validate_media_id(&media_id)?;
 
                 output.push(FlattenedHierarchyEntry {
-                    path_components: HierarchyPathComponents::Template(resolved_components.clone()),
+                    path_components: resolved_components.clone(),
                     hierarchy_id: node.id.clone(),
                     entry: HierarchyEntry {
                         kind: HierarchyEntryKind::MediaFolder,
@@ -720,7 +746,7 @@ fn flatten_hierarchy_nodes_inner(
             }
             HierarchyNodeKind::Playlist => {
                 output.push(FlattenedHierarchyEntry {
-                    path_components: HierarchyPathComponents::Template(resolved_components.clone()),
+                    path_components: resolved_components.clone(),
                     hierarchy_id: node.id.clone(),
                     entry: HierarchyEntry {
                         kind: HierarchyEntryKind::Playlist,
@@ -929,17 +955,18 @@ fn validate_hierarchy_path_component(component: &str) -> Result<(), MediaPmError
 /// Collects effective hierarchy-id → media-path mappings from a flattened
 /// hierarchy.
 ///
-/// The value keeps the [`HierarchyPathComponents`] variant rather than a
-/// rendered string, so a caller that has already sanitized its entries
-/// receives the same validated state the entry carries.
+/// The value keeps the [`PathComponent`]s rather than a rendered string, so a
+/// caller that has already sanitized its entries receives the same validated
+/// state the entry carries and a playlist body cannot reintroduce a separator
+/// the components do not have.
 ///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Workflow`] when one hierarchy id resolves to two
 /// different media paths.
 pub(crate) fn collect_playlist_media_index(
-    flattened_hierarchy: &[FlattenedHierarchyEntry],
-) -> Result<BTreeMap<String, HierarchyPathComponents>, MediaPmError> {
+    flattened_hierarchy: &[ValidatedHierarchyEntry],
+) -> Result<BTreeMap<String, Vec<PathComponent>>, MediaPmError> {
     let mut index = BTreeMap::new();
 
     for flattened_entry in flattened_hierarchy {
@@ -951,15 +978,15 @@ pub(crate) fn collect_playlist_media_index(
             continue;
         };
 
-        if let Some(previous_path_components) =
-            index.insert(hierarchy_id.to_string(), flattened_entry.path_components.clone())
-            && previous_path_components != flattened_entry.path_components
+        if let Some(previous_path) =
+            index.insert(hierarchy_id.to_string(), flattened_entry.path.clone())
+            && previous_path != flattened_entry.path
         {
             return Err(MediaPmError::Workflow(format!(
                 "hierarchy id '{}' resolves to multiple media paths ('{}' and '{}')",
                 hierarchy_id,
-                previous_path_components.display(),
-                flattened_entry.path_str()
+                render_relative_path(&previous_path),
+                flattened_entry.relative_path_text()
             )));
         }
     }
@@ -971,12 +998,22 @@ pub(crate) fn collect_playlist_media_index(
 mod tests {
     use super::*;
 
-    /// Builds the `Template` state a flattened entry carries before the
-    /// materializer parses its components.
-    fn template_components(components: &[&str]) -> HierarchyPathComponents {
-        HierarchyPathComponents::Template(
-            components.iter().map(|component| (*component).to_string()).collect(),
-        )
+    /// Splits a `/`-separated path into the declared component text a flattened
+    /// entry carries before the materializer parses it.
+    fn template_components(path: &str) -> Vec<String> {
+        path.split('/').map(String::from).collect()
+    }
+
+    /// Parses a `/`-separated path into the components a validated entry
+    /// carries. The reject-everything policy keeps the comparison about the
+    /// path's own spelling, with no rewriting in the way.
+    fn resolved_components(path: &str) -> Vec<PathComponent> {
+        path.split('/')
+            .map(|component| {
+                PathComponent::parse(component, &crate::path_component::SanitizePolicy::disabled())
+            })
+            .collect::<Result<Vec<PathComponent>, MediaPmError>>()
+            .expect("the component under test must be a legal one")
     }
 
     fn base_node() -> HierarchyNode {
@@ -1012,7 +1049,7 @@ mod tests {
         }];
         let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].path_components, template_components(&["video"]));
+        assert_eq!(result[0].path_components, template_components("video"));
         assert_eq!(result[0].entry.media_id, "vid1");
         assert_eq!(result[0].entry.variants, vec!["1080p".to_string()]);
         assert_eq!(result[0].entry.kind, HierarchyEntryKind::Media);
@@ -1029,7 +1066,7 @@ mod tests {
         }];
         let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].path_components, template_components(&["folder"]));
+        assert_eq!(result[0].path_components, template_components("folder"));
         assert_eq!(result[0].entry.media_id, "mf1");
         assert_eq!(result[0].entry.variants, vec!["v1".to_string(), "v2".to_string()]);
         assert_eq!(result[0].entry.kind, HierarchyEntryKind::MediaFolder);
@@ -1059,8 +1096,8 @@ mod tests {
         }];
         let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].path_components, template_components(&["series", "ep1"]));
-        assert_eq!(result[1].path_components, template_components(&["series", "ep2"]));
+        assert_eq!(result[0].path_components, template_components("series/ep1"));
+        assert_eq!(result[1].path_components, template_components("series/ep2"));
     }
 
     #[test]
@@ -1086,7 +1123,7 @@ mod tests {
         }];
         let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].path_components, template_components(&["a", "b", "c"]));
+        assert_eq!(result[0].path_components, template_components("a/b/c"));
     }
 
     #[test]
@@ -1150,7 +1187,7 @@ mod tests {
         }];
         let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].path_components, template_components(&["Cafe\u{301}"]));
+        assert_eq!(result[0].path_components, template_components("Cafe\u{301}"));
     }
 
     /// The two config-level rejection causes stay distinguishable: a reserved
@@ -1494,7 +1531,7 @@ mod tests {
         }];
         let result = flatten_hierarchy_nodes_for_runtime(&nodes).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].path_components, template_components(&["a", "b", "c"]));
+        assert_eq!(result[0].path_components, template_components("a/b/c"));
     }
 
     #[test]
@@ -1573,9 +1610,9 @@ mod tests {
         assert_eq!(result, vec!["1080p", "720p"]);
     }
 
-    fn media_entry(path: &str, hierarchy_id: &str, media_id: &str) -> FlattenedHierarchyEntry {
-        FlattenedHierarchyEntry {
-            path_components: template_components(&path.split('/').collect::<Vec<_>>()),
+    fn media_entry(path: &str, hierarchy_id: &str, media_id: &str) -> ValidatedHierarchyEntry {
+        ValidatedHierarchyEntry {
+            path: resolved_components(path),
             hierarchy_id: Some(hierarchy_id.to_string()),
             entry: HierarchyEntry {
                 kind: HierarchyEntryKind::Media,
@@ -1589,9 +1626,9 @@ mod tests {
         }
     }
 
-    fn non_media_entry(path: &str) -> FlattenedHierarchyEntry {
-        FlattenedHierarchyEntry {
-            path_components: template_components(&path.split('/').collect::<Vec<_>>()),
+    fn non_media_entry(path: &str) -> ValidatedHierarchyEntry {
+        ValidatedHierarchyEntry {
+            path: resolved_components(path),
             hierarchy_id: None,
             entry: HierarchyEntry {
                 kind: HierarchyEntryKind::Playlist,
@@ -1616,7 +1653,7 @@ mod tests {
         let entries = vec![media_entry("videos/clip", "clip1", "media1")];
         let result = collect_playlist_media_index(&entries).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result["clip1"], template_components(&["videos", "clip"]));
+        assert_eq!(result["clip1"], resolved_components("videos/clip"));
     }
 
     #[test]
@@ -1635,7 +1672,7 @@ mod tests {
         ];
         let result = collect_playlist_media_index(&entries).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result["clip1"], template_components(&["videos", "clip"]));
+        assert_eq!(result["clip1"], resolved_components("videos/clip"));
     }
 
     #[test]

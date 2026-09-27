@@ -12,9 +12,7 @@ use mediapm_conductor::{ConductorState, NickelDocument};
 use regex::Regex;
 
 use crate::config::MediaPmDocument;
-use crate::config::hierarchy_types::{
-    FlattenedHierarchyEntry, HierarchyFolderRenameRule, HierarchyPathComponents,
-};
+use crate::config::hierarchy_types::{FlattenedHierarchyEntry, HierarchyFolderRenameRule};
 use crate::config::output_types::{GenericOutputVariantConfig, OutputVariantValue};
 use crate::config::source_types::{
     MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate, MediaSourceSpec,
@@ -187,11 +185,13 @@ pub(super) async fn resolve_interpolated_folder_rename_rules(
 
 /// Resolves hierarchy path templates for one flattened entry.
 ///
-/// `template_components` is the entry's [`HierarchyPathComponents::Template`]
-/// payload. The result is still `Template`: interpolated values come from tag
+/// `template_components` is the entry's declared or interpolated component
+/// text. The result is still that text: interpolated values come from tag
 /// metadata, ffprobe output, and upstream sources, none of which the user
 /// controls, so nothing here has been through
-/// [`crate::path_component::PathComponent::parse`] yet.
+/// [`crate::path_component::PathComponent::parse`] yet. Parsing is the
+/// materializer's next step, and only that step turns the text into something a
+/// read site may hold.
 ///
 /// # Errors
 ///
@@ -247,26 +247,24 @@ pub(super) async fn resolve_materialized_path_components(
 
 /// Resolves hierarchy path templates across flattened hierarchy entries.
 ///
-/// The variant answers whether there is anything to do. Only a `Template`
-/// entry can hold a placeholder; a `Resolved` entry has been through
-/// [`crate::path_component::PathComponent::parse`] already, and its text has
-/// no placeholder left in it.
+/// The result is written back as component text, which is the only shape a
+/// [`FlattenedHierarchyEntry`] holds. This stage never produces validated
+/// components; that is `super::sanitize_and_validate_hierarchy_paths`, and the
+/// value it returns is the one read sites are given.
 pub(super) async fn resolve_flattened_entry_paths(
     flattened: &mut [FlattenedHierarchyEntry],
     document: &MediaPmDocument,
     lookup_context: &MaterializationLookupContext,
 ) -> Result<(), MediaPmError> {
     for entry in flattened {
-        if let HierarchyPathComponents::Template(template_components) = &entry.path_components {
-            let resolved = resolve_materialized_path_components(
-                entry,
-                template_components,
-                document,
-                lookup_context,
-            )
-            .await?;
-            entry.path_components = HierarchyPathComponents::Template(resolved);
-        }
+        let resolved = resolve_materialized_path_components(
+            entry,
+            &entry.path_components,
+            document,
+            lookup_context,
+        )
+        .await?;
+        entry.path_components = resolved;
     }
     Ok(())
 }

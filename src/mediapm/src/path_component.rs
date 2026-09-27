@@ -136,6 +136,23 @@ impl fmt::Display for PathComponent {
     }
 }
 
+/// Renders validated components as one `/`-separated relative path.
+///
+/// Display text for progress labels, managed-file keys, the stale-path set,
+/// and playlist bodies. The argument type is the point: there is no
+/// `&str`-accepting form, so the only values a caller can render are
+/// components that met [`PathComponent::parse`], and the rendered string
+/// describes the same safe path the components do.
+///
+/// The materializer builds the path it writes to disk from the components
+/// themselves (`materializer::commit::join_path_components`). Rendering a
+/// validated component cannot reintroduce a separator, because a component
+/// holding one could not have been parsed in the first place.
+#[must_use]
+pub(crate) fn render_relative_path(components: &[PathComponent]) -> String {
+    components.iter().map(ToString::to_string).collect::<Vec<String>>().join("/")
+}
+
 /// Checks one already-normalized component against the invariants that have
 /// no fix: non-empty, not `.` or `..`, no forbidden characters, and NFD.
 ///

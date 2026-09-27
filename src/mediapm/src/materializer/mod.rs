@@ -21,14 +21,14 @@ use tracing::{info, warn};
 
 use self::progress_labels::{MaterializationBarLabel, split_entry_path};
 use crate::config::hierarchy_types::{
-    FlattenedHierarchyEntry, HierarchyEntryKind, HierarchyPathComponents, PlaylistItemRef,
+    FlattenedHierarchyEntry, HierarchyEntryKind, PlaylistItemRef, ValidatedHierarchyEntry,
     collect_playlist_media_index, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
 };
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
 use crate::output::progress::{ProgressBarApi, ProgressBarHandle, ProgressScreenApi};
-use crate::path_component::SanitizePolicy;
+use crate::path_component::{SanitizePolicy, render_relative_path};
 use crate::paths::MediaPmPaths;
 use crate::tools::workflows::{
     resolve_ffmpeg_slot_limits, resolve_media_variant_output_binding_with_limits,
@@ -116,8 +116,11 @@ struct SyncSharedState {
     hierarchy_root: PathBuf,
     /// CAS store reference.
     cas: FileSystemCas,
-    /// Flattened hierarchy for stale-path scanning.
-    flattened: Vec<FlattenedHierarchyEntry>,
+    /// Flattened hierarchy for stale-path scanning, in validated form.
+    ///
+    /// Only the validated shape is stored, so the playlist index built from it
+    /// cannot yield an unvalidated component either.
+    flattened: Vec<ValidatedHierarchyEntry>,
     /// Whether to CAS-verify materialized outputs after writing.
     verify_materialization: bool,
 }
@@ -172,11 +175,11 @@ pub async fn sync_hierarchy(
         ffmpeg_slot_limits,
     );
     metadata::resolve_flattened_entry_paths(&mut flattened, document, &lookup_context).await?;
-    sanitize_and_validate_hierarchy_paths(&mut flattened)?;
+    let validated = sanitize_and_validate_hierarchy_paths(flattened)?;
     let shared = Arc::new(SyncSharedState {
         hierarchy_root: hierarchy_root.clone(),
         cas: cas.clone(),
-        flattened: flattened.clone(),
+        flattened: validated.clone(),
         verify_materialization,
     });
 
@@ -189,7 +192,7 @@ pub async fn sync_hierarchy(
     // defect the one-terminal-per-sync contract removes.
     let pb: Arc<dyn ProgressBarApi> = if let Some(bar) = overall_bar {
         // Caller owns the overall bar — set the real entry count.
-        bar.set_total(flattened.len() as u64);
+        bar.set_total(validated.len() as u64);
         bar.set_truncation(Arc::new(MaterializationBarLabel {
             phase: "mat".to_string(),
             entry_name: "materializing".to_string(),
@@ -197,7 +200,7 @@ pub async fn sync_hierarchy(
         }));
         bar
     } else if let Some(ref pg) = progress_group {
-        let bar = pg.add_bar(flattened.len() as u64, "materializing [mat]");
+        let bar = pg.add_bar(validated.len() as u64, "materializing [mat]");
         bar.set_truncation(Arc::new(MaterializationBarLabel {
             phase: "mat".to_string(),
             entry_name: "materializing".to_string(),
@@ -215,7 +218,7 @@ pub async fn sync_hierarchy(
     let mut join_set = tokio::task::JoinSet::new();
     let document_arc = Arc::new(document.clone());
 
-    for entry in &flattened {
+    for entry in &validated {
         let entry = entry.clone();
         let document = document_arc.clone();
         let shared = shared.clone();
@@ -294,7 +297,7 @@ pub async fn sync_hierarchy(
         state.managed_files.remove(&stale);
     }
 
-    let stale_result = remove_stale_paths(hierarchy_root, &flattened, &desired_managed_paths)?;
+    let stale_result = remove_stale_paths(hierarchy_root, &validated, &desired_managed_paths)?;
     report.removed_paths = stale_result.0;
     report.removed_empty_dirs = stale_result.1;
 
@@ -310,7 +313,7 @@ pub async fn sync_hierarchy(
 }
 
 /// Sanitizes and validates every flattened hierarchy entry's path components,
-/// writing the accepted components back in place.
+/// returning the entries in their validated form.
 ///
 /// This is the production entry point of the chain in
 /// [`commit`]: NFD normalization, reserved-character sanitization (when the
@@ -323,16 +326,20 @@ pub async fn sync_hierarchy(
 /// rejected entry never reaches staging, verification, or commit and no
 /// partially-validated path is ever written.
 ///
-/// The entry's components change variant here. Before this call they are
-/// untrusted text; after it they are values that cannot exist without a
-/// successful [`crate::path_component::PathComponent::parse`]. An entry that
-/// arrives already `Resolved` has been through the chain, which is what makes
-/// a second sync pass a no-op rather than a re-parse.
+/// Consuming the flattened entries and returning
+/// [`ValidatedHierarchyEntry`]s is what enforces this. The unvalidated text
+/// has no way to reach a read site: the workers, the stale scan, and the
+/// playlist index are all typed on the returned value, and that value's path
+/// components cannot be built except through
+/// [`crate::path_component::PathComponent::parse`]. Writing the parsed
+/// components back into the flattened entries instead would leave every read
+/// site reading a field that may or may not hold parsed text, which is the
+/// guess this function exists to remove.
 ///
-/// Validating all entries (not only templated ones) is deliberate: the
-/// config-level reserved-character check in `config::hierarchy_types` does not
-/// reject `.` or `..`, so a statically declared `..` component would otherwise
-/// commit outside the library root.
+/// Every entry goes through the parser, whether or not it holds a
+/// placeholder: the config-level reserved-character check in
+/// `config::hierarchy_types` does not reject `.` or `..`, so a statically
+/// declared `..` component would otherwise commit outside the library root.
 ///
 /// # Errors
 ///
@@ -341,21 +348,24 @@ pub async fn sync_hierarchy(
 /// component. Failing the whole sync is intentional: a hierarchy that cannot
 /// produce a safe path has no correct partial materialization.
 fn sanitize_and_validate_hierarchy_paths(
-    flattened: &mut [FlattenedHierarchyEntry],
-) -> Result<(), MediaPmError> {
+    flattened: Vec<FlattenedHierarchyEntry>,
+) -> Result<Vec<ValidatedHierarchyEntry>, MediaPmError> {
     let default_replacements = commit::default_sanitize_replacements();
-    for entry in flattened.iter_mut() {
-        let HierarchyPathComponents::Template(template_components) = &entry.path_components else {
-            continue;
-        };
-        entry.path_components =
-            HierarchyPathComponents::Resolved(commit::sanitize_and_validate_components(
-                template_components,
-                &entry.entry.sanitize_names,
+    flattened
+        .into_iter()
+        .map(|flattened_entry| {
+            let path = commit::sanitize_and_validate_components(
+                &flattened_entry.path_components,
+                &flattened_entry.entry.sanitize_names,
                 &default_replacements,
-            )?);
-    }
-    Ok(())
+            )?;
+            Ok(ValidatedHierarchyEntry::new(
+                path,
+                flattened_entry.hierarchy_id,
+                flattened_entry.entry,
+            ))
+        })
+        .collect()
 }
 
 /// Materialises one flattened hierarchy entry from CAS content to the
@@ -370,14 +380,16 @@ fn sanitize_and_validate_hierarchy_paths(
     reason = "hierarchy dispatch consolidates variant-specific staging and progress tracking"
 )]
 async fn prepare_hierarchy_entry(
-    entry: &FlattenedHierarchyEntry,
+    entry: &ValidatedHierarchyEntry,
     document: &MediaPmDocument,
     shared: &SyncSharedState,
     lookup: &MaterializationLookupContext,
     progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
-    let relative_path = entry.path_str();
-    let target_path = shared.hierarchy_root.join(&relative_path);
+    let relative_path = entry.relative_path_text();
+    // The join takes the parsed components, not the rendered string above, so
+    // there is no `&str` here for a caller to hand unvalidated text to.
+    let target_path = shared.hierarchy_root.join(commit::join_path_components(&entry.path));
 
     // Per-entry phase bar: stage → verify → commit. Owned by mediapm (not the
     // conductor), so it carries the `[stg]`/`[vrf]`/`[cmt]` phase tags.
@@ -634,7 +646,7 @@ async fn materialize_file_entry(
     reason = "media-folder materialization handles folder variants and rename rules inline"
 )]
 async fn materialize_media_folder_entry(
-    entry: &FlattenedHierarchyEntry,
+    entry: &ValidatedHierarchyEntry,
     source: &MediaSourceSpec,
     media_id: &str,
     target_path: &Path,
@@ -850,7 +862,7 @@ async fn materialize_media_folder_entry(
 /// Generates a playlist file from the media entries referenced by a playlist
 /// hierarchy node.
 async fn materialize_playlist_entry(
-    entry: &FlattenedHierarchyEntry,
+    entry: &ValidatedHierarchyEntry,
     _document: &MediaPmDocument,
     target_path: &Path,
     relative_path: &str,
@@ -885,7 +897,7 @@ async fn materialize_playlist_entry(
             )));
         };
 
-        let media_relative_path = path_components.display();
+        let media_relative_path = render_relative_path(path_components);
         let resolved =
             resolve_playlist_target_relative_path(relative_path, &media_relative_path, path_mode);
         rendered_entries.push(RenderedPlaylistEntry {
@@ -963,11 +975,11 @@ fn is_relative_path_under_prefix(relative_path: &str, prefix: &str) -> bool {
 /// Returns `(removed_paths, removed_empty_dirs)`.
 fn remove_stale_paths(
     hierarchy_root: &Path,
-    current_entries: &[FlattenedHierarchyEntry],
+    current_entries: &[ValidatedHierarchyEntry],
     managed_paths: &BTreeSet<String>,
 ) -> Result<(usize, usize), MediaPmError> {
     let current_paths: BTreeSet<String> =
-        current_entries.iter().map(FlattenedHierarchyEntry::path_str).collect();
+        current_entries.iter().map(ValidatedHierarchyEntry::relative_path_text).collect();
 
     let mut removed_paths = 0usize;
     let mut removed_empty_dirs = 0usize;
@@ -1600,6 +1612,48 @@ mod tests {
                 ProgressOp::FinishSuccess,
             ],
             "the interpolated separator must be sanitized out of the committed path",
+        );
+    }
+
+    /// The sanitizer returns parsed components, and the returned entry renders
+    /// the sanitized spelling rather than the declared one.
+    ///
+    /// `sanitize_and_validate_hierarchy_paths` is the only producer of
+    /// `ValidatedHierarchyEntry`, so this is the seam the whole type split
+    /// stands on: if it returned the declared text, every read site downstream
+    /// would be joining an unvalidated string. A reserved character is injected
+    /// into the flattened entry directly, because the config boundary refuses
+    /// one in a declared component and the end-to-end rewriting of an
+    /// interpolated one is already covered by
+    /// `regression_sync_hierarchy_sanitizes_interpolated_path_component`.
+    #[test]
+    fn sanitize_and_validate_hierarchy_paths_returns_parsed_components() {
+        let document = single_media_document("src1", HierarchyPath::simple("album"));
+        let mut flattened = flatten_hierarchy_nodes_for_runtime(&document.hierarchy).unwrap();
+        flattened[0].path_components = vec!["AC/DC".to_string()];
+
+        let validated = sanitize_and_validate_hierarchy_paths(flattened).unwrap();
+        assert_eq!(validated.len(), 1);
+        assert_eq!(validated[0].relative_path_text(), "AC_DC");
+    }
+
+    /// A component the parser refuses fails the sanitizer, and therefore the
+    /// whole sync, before any worker starts.
+    ///
+    /// `..` is the case the config boundary deliberately lets through: it is
+    /// not a reserved character, so `validate_hierarchy_path_component`
+    /// accepts it, and the materializer is the only stage that refuses it. If
+    /// the split had let the unvalidated entry through, this sync would commit
+    /// one level above the library root.
+    #[test]
+    fn sanitize_and_validate_hierarchy_paths_rejects_parent_traversal_component() {
+        let document = single_media_document("src1", HierarchyPath::simple(".."));
+        let flattened = flatten_hierarchy_nodes_for_runtime(&document.hierarchy).unwrap();
+        let err = sanitize_and_validate_hierarchy_paths(flattened)
+            .expect_err("a '..' component must fail the sanitizer");
+        assert!(
+            err.to_string().contains("must not be '.' or '..'"),
+            "unexpected rejection reason: {err}"
         );
     }
 }
