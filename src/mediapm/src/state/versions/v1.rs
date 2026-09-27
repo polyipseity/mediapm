@@ -3,6 +3,17 @@
 //! Both the pre-rewrite wrapper format (`state` key with nested payload) and
 //! the post-rewrite flat format are handled here. V1 is never written by the
 //! current code — these types exist solely for migration-on-read.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file must never import unversioned structs from outside `versions/`
+//!   beyond the resolved runtime model it is declared to bridge.
+//! - A `vX` module may reference only the most recent previous version module,
+//!   and only for version-to-version migration.
+//! - Latest-version bridging to unversioned runtime structs is owned by
+//!   `versions/mod.rs`.
+//! - Files outside `versions/` must reach versioned symbols only through
+//!   `versions/mod.rs`, never through a direct `versions::vX` path.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,9 +25,13 @@ use crate::error::MediaPmError;
 
 /// V1 state envelope wrapper (old Nickel-sourced format with `state` key).
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub(super) struct MediaPmStateV1Envelope {
-    /// Schema version marker.
+    /// Schema version marker. Accepted so the wrapper parses; the V1 reader
+    /// dispatches on the caller's extracted marker, so the value is not read.
+    #[expect(
+        dead_code,
+        reason = "accept-and-discard: the version marker is read by versions/mod.rs dispatch before the envelope is decoded, so re-reading it here would duplicate the check"
+    )]
     pub(super) version: u32,
     /// Nested state payload.
     pub(super) state: MediaPmStateV1Payload,
@@ -24,8 +39,13 @@ pub(super) struct MediaPmStateV1Envelope {
 
 /// V1 state payload (inside the `state` key, or directly at top level for
 /// flat map format).
+///
+/// `tool_registry`, `active_tools`, and `last_materialized_state_hash` are
+/// accepted-and-discarded: V2 dropped all three, and no runtime state is
+/// derived from them. They are destructured once, by name, in
+/// [`from_v1_payload`] so the discard is stated in code rather than left
+/// implicit in a partial move.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub(super) struct MediaPmStateV1Payload {
     /// Managed files as a path→record map.
     #[serde(default)]
@@ -46,7 +66,6 @@ pub(super) struct MediaPmStateV1Payload {
 
 /// V1 managed file record (same fields as [`ManagedFileRecord`]).
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub(super) struct ManagedFileRecordV1 {
     /// Media source id.
     pub(super) media_id: String,
@@ -57,8 +76,17 @@ pub(super) struct ManagedFileRecordV1 {
 }
 
 /// V1 tool registry entry (pre-rewrite format).
+///
+/// Every field is accepted so a V1 document parses, and every field is
+/// discarded by the V1 → V2 migration: the V2 format replaced `tool_registry`
+/// with a `managed_tools` map whose provenance this format does not carry.
+/// The value is read once, by name, in [`from_v1_payload`] purely to make that
+/// discard explicit and compiler-checked, never to produce output.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "accept-and-discard: these fields exist so a V1 document deserializes, and the V1→V2 migration drops tool_registry wholesale (V2 replaced it with a managed_tools map this format cannot populate). No runtime state is derived from them."
+)]
 pub(super) struct ToolRegistryRecordV1 {
     /// Tool name.
     pub(super) name: String,
@@ -74,7 +102,6 @@ pub(super) struct ToolRegistryRecordV1 {
 
 /// V1 managed workflow step state (with history vec).
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub(super) struct ManagedWorkflowStepStateV1 {
     /// Pre-seeded CAS hash pointers keyed by variant name.
     #[serde(default)]
@@ -89,7 +116,6 @@ pub(super) struct ManagedWorkflowStepStateV1 {
 
 /// V1 impure sync timestamp.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub(super) struct MediaPmImpureTimestampV1 {
     /// Seconds since Unix epoch.
     pub(super) utc_epoch_seconds: u64,
@@ -121,9 +147,21 @@ pub(crate) fn from_v1_json_value(value: Value) -> Result<MediaPmState, MediaPmEr
 
 /// Converts a [`MediaPmStateV1Payload`] into [`MediaPmState`].
 fn from_v1_payload(payload: MediaPmStateV1Payload) -> MediaPmState {
+    // Destructure in full: the three fields V2 dropped are bound here so the
+    // discard is explicit and the compiler proves the struct is fully
+    // accounted for. If a future version ever needs one, this is the place it
+    // stops being dropped. The bindings are unused by construction — the
+    // names carry the intent.
+    let MediaPmStateV1Payload {
+        managed_files,
+        tool_registry: _discarded_tool_registry,
+        active_tools: _discarded_active_tools,
+        workflow_states,
+        last_materialized_state_hash: _discarded_materialized_state_hash,
+    } = payload;
+
     // Map managed files (same key-value structure).
-    let managed_files: BTreeMap<String, ManagedFileRecord> = payload
-        .managed_files
+    let managed_files: BTreeMap<String, ManagedFileRecord> = managed_files
         .into_iter()
         .map(|(key, record)| {
             (
@@ -138,8 +176,7 @@ fn from_v1_payload(payload: MediaPmStateV1Payload) -> MediaPmState {
         .collect();
 
     // Convert workflow_states from Vec<T> to T (take last entry per vec).
-    let workflow_states: BTreeMap<String, ManagedWorkflowStepState> = payload
-        .workflow_states
+    let workflow_states: BTreeMap<String, ManagedWorkflowStepState> = workflow_states
         .into_iter()
         .map(|(key, mut vec)| {
             let state = if vec.is_empty() {
@@ -158,7 +195,6 @@ fn from_v1_payload(payload: MediaPmStateV1Payload) -> MediaPmState {
         })
         .collect();
 
-    // tool_registry, active_tools, last_materialized_state_hash are dropped.
     MediaPmState {
         version: crate::config::defaults::MEDIAPM_STATE_VERSION,
         managed_files,

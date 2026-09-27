@@ -1,8 +1,8 @@
 //! State persistence and migration.
 //!
-//! Public serialization API is in [`ser`] (thin delegation layer over
-//! [`versions`] submodules). Version-specific wire formats for V1 and V2
-//! live in [`versions::v1`] and [`versions::v2`].
+//! Public serialization API is in [`ser`], a thin delegation layer over
+//! [`versions`]. `versions/` owns version dispatch and the per-version wire
+//! formats; callers outside it never name a version module directly.
 
 pub mod ser;
 pub mod versions;

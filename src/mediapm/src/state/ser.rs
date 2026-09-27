@@ -1,8 +1,9 @@
 //! Public serialization API for [`MediaPmState`].
 //!
-//! Thin delegation layer over [`super::versions`] submodules. Wire-format
-//! structs, V1 migration logic, and V2 encode/decode all live in
-//! `versions/v1.rs` and `versions/v2.rs`.
+//! Thin delegation layer over [`super::versions`]. Version dispatch, the
+//! wire-format structs, and the V1/V2 read paths all live behind the
+//! `versions` module boundary; this layer deliberately names no `vX` path so
+//! that the supported version set has exactly one home.
 
 use serde_json::Value;
 
@@ -19,36 +20,24 @@ use super::versions;
 /// Returns [`MediaPmError::Workflow`] if the version is unsupported, or
 /// [`MediaPmError::Serialization`] if deserialization fails.
 pub fn from_json_value(value: Value) -> Result<MediaPmState, MediaPmError> {
-    let version = versions::extract_state_version_field(&value)?;
-
-    match version {
-        1 => versions::v1::from_v1_json_value(value),
-        2 => versions::v3::from_v2_into_v3(value),
-        3 => versions::v3::from_v3_json_value(value),
-        v => Err(MediaPmError::Workflow(format!("unsupported mediapm state schema version {v}"))),
-    }
+    versions::from_json_value(value)
 }
 
-/// Encodes one [`MediaPmState`] into a [`Value`] (V3 format).
-///
-/// Always produces V3 output regardless of input version.
+/// Encodes one [`MediaPmState`] into a [`Value`] in the current wire format.
 ///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Serialization`] if serialization fails.
 pub fn to_json_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
-    versions::v3::to_v3_json_value(state)
+    versions::to_json_value(state)
 }
 
-/// Migrates one [`Value`] from old Nickel format into a [`MediaPmState`].
-///
-/// Accepts both V1 wrapper and flat post-rewrite formats. Delegates to
-/// `versions::v1::from_v1_json_value` which handles all V1 shapes.
+/// Migrates one legacy Nickel-format [`Value`] into a [`MediaPmState`].
 ///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Workflow`] if the format is unrecognized, or
 /// [`MediaPmError::Serialization`] if deserialization fails.
 pub fn migrate_from_old_nickel(value: Value) -> Result<MediaPmState, MediaPmError> {
-    versions::v1::from_v1_json_value(value)
+    versions::migrate_from_old_nickel(value)
 }

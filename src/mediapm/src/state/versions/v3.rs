@@ -1,13 +1,29 @@
-//! V3 wire format for state persistence.
+//! V3 wire format for state persistence — the format every write emits.
 //!
-//! V3 replaces the V2 BTreeMap-based `managed_tools` with a flat Vec.
-//! V2→V3 migration is one-way forward — we never write V2 format.
+//! V3 replaces the V2 `BTreeMap`-based `managed_tools` with a flat `Vec` and
+//! makes `content_map_hash` non-optional. The V2 → V3 migration is one-way
+//! forward: this module decodes V2 through the canonical
+//! [`super::v2::MediaPmStateV2`] wire type and then advances through
+//! [`MediaPmStateV3`], so no other module re-declares the V2 shape.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file must never import unversioned structs from outside `versions/`
+//!   beyond the resolved runtime model it is declared to bridge.
+//! - A `vX` module may reference only the most recent previous version module,
+//!   and only for version-to-version migration. The `super::v2` reference
+//!   below is that single permitted edge.
+//! - Latest-version bridging to unversioned runtime structs is owned by
+//!   `versions/mod.rs`.
+//! - Files outside `versions/` must reach versioned symbols only through
+//!   `versions/mod.rs`, never through a direct `versions::vX` path.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::v2::{MediaPmStateV2, ToolRegistryEntryV2};
 use crate::config::{ManagedFileRecord, ManagedWorkflowStepState, MediaPmState, ToolRegistryEntry};
 use crate::error::MediaPmError;
 
@@ -27,8 +43,25 @@ pub(super) struct MediaPmStateV3 {
     pub(super) workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
 }
 
+/// Resolves a decoded [`MediaPmStateV3`] into the unversioned runtime model.
+///
+/// This is the V3 wire-type → runtime isomorphism. It is the only place the
+/// V3 envelope is unwrapped, and it stamps the runtime version marker rather
+/// than echoing the wire value.
+pub(super) fn resolve_v3(v3: MediaPmStateV3) -> MediaPmState {
+    let mut deduped_tools = dedup_managed_tools(v3.managed_tools);
+    deduped_tools.sort_by_key(|b| std::cmp::Reverse(b.deployed_at));
+
+    MediaPmState {
+        version: crate::config::defaults::MEDIAPM_STATE_VERSION,
+        managed_files: v3.managed_files,
+        managed_tools: deduped_tools,
+        workflow_states: v3.workflow_states,
+    }
+}
+
 /// Encodes a [`MediaPmState`] as a V3 JSON [`Value`].
-pub(crate) fn to_v3_json_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
+pub(super) fn to_v3_json_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
     let mut deduped_tools = dedup_managed_tools(state.managed_tools.clone());
     deduped_tools.sort_by_key(|b| std::cmp::Reverse(b.deployed_at));
     let v3 = MediaPmStateV3 {
@@ -43,96 +76,63 @@ pub(crate) fn to_v3_json_value(state: &MediaPmState) -> Result<Value, MediaPmErr
 }
 
 /// Decodes a V3 JSON [`Value`] into [`MediaPmState`].
-pub(crate) fn from_v3_json_value(value: Value) -> Result<MediaPmState, MediaPmError> {
+pub(super) fn from_v3_json_value(value: Value) -> Result<MediaPmState, MediaPmError> {
     let v3: MediaPmStateV3 = serde_json::from_value(value)
         .map_err(|e| MediaPmError::Serialization(format!("failed to decode V3 state: {e}")))?;
-
-    let mut deduped_tools = dedup_managed_tools(v3.managed_tools);
-    deduped_tools.sort_by_key(|b| std::cmp::Reverse(b.deployed_at));
-
-    Ok(MediaPmState {
-        version: crate::config::defaults::MEDIAPM_STATE_VERSION,
-        managed_files: v3.managed_files,
-        managed_tools: deduped_tools,
-        workflow_states: v3.workflow_states,
-    })
+    Ok(resolve_v3(v3))
 }
 
-/// V2-compatible wire format for reading old state files (used by V3 bridge only).
+/// Advances one canonical V2 wire value into the V3 wire shape.
 ///
-/// Old V2 state files store `content_map_hash` as `Option<String>` and do NOT
-/// contain a `tool_id` field inside the entry — the tool id is the `BTreeMap` key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ToolRegistryEntryV2Bridge {
-    pub version: String,
-    #[serde(default)]
-    pub canonical_version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_map_hash: Option<String>,
-    #[serde(default)]
-    pub deployed_at: u64,
-    #[serde(
-        default,
-        deserialize_with = "crate::config::custom_deserializers::deserialize_optional_nonempty_string"
-    )]
-    pub resolved_tag: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "crate::config::custom_deserializers::deserialize_optional_nonempty_string"
-    )]
-    pub resolved_version: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "crate::config::custom_deserializers::deserialize_optional_nonempty_string"
-    )]
-    pub resolved_vcs_hash: Option<String>,
-}
-
-/// V2-compatible `MediaPmState` for reading old state files.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MediaPmStateV2Bridge {
-    pub version: u32,
-    #[serde(default)]
-    pub managed_files: BTreeMap<String, ManagedFileRecord>,
-    #[serde(default)]
-    pub managed_tools: BTreeMap<String, ToolRegistryEntryV2Bridge>,
-    #[serde(default)]
-    pub workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
-}
-
-/// Bridges a V2 JSON [`Value`] (BTreeMap-based `managed_tools`) into V3
-/// [`MediaPmState`].
-///
-/// This is needed when a V2 state file is loaded — we read it as V2 format
-/// then convert to the V3 native type.
-pub(crate) fn from_v2_into_v3(value: Value) -> Result<MediaPmState, MediaPmError> {
-    let v2: MediaPmStateV2Bridge = serde_json::from_value(value).map_err(|e| {
-        MediaPmError::Serialization(format!("failed to decode V2 state for V3 bridge: {e}"))
-    })?;
-
+/// This is the version-to-version isomorphism: the `managed_tools` map key
+/// becomes the entry's `tool_id`, the nullable V2 `content_map_hash` becomes
+/// the V3 non-optional field (missing maps to the empty string, matching the
+/// V3 field's documented backward-compatible default), and the epoch-seconds
+/// `deployed_at` becomes a [`mediapm_utils::Timestamp`].
+fn advance_v2_to_v3(v2: MediaPmStateV2) -> MediaPmStateV3 {
     let managed_tools: Vec<ToolRegistryEntry> = v2
         .managed_tools
         .into_iter()
-        .map(|(tool_id, entry)| ToolRegistryEntry {
-            tool_id,
-            version: entry.version,
-            canonical_version: entry.canonical_version,
-            content_map_hash: entry.content_map_hash.unwrap_or_default(),
-            deployed_at: mediapm_utils::Timestamp::from_unix_secs(entry.deployed_at),
-            resolved_tag: entry.resolved_tag,
-            resolved_version: entry.resolved_version,
-            resolved_vcs_hash: entry.resolved_vcs_hash,
-        })
+        .map(|(tool_id, entry)| tool_entry_from_v2(tool_id, entry))
         .collect();
 
-    let deduped_tools = dedup_managed_tools(managed_tools);
-
-    Ok(MediaPmState {
-        version: crate::config::defaults::MEDIAPM_STATE_VERSION,
+    MediaPmStateV3 {
+        version: 3,
         managed_files: v2.managed_files,
-        managed_tools: deduped_tools,
+        managed_tools,
         workflow_states: v2.workflow_states,
-    })
+    }
+}
+
+/// Converts one canonical V2 tool entry into its V3 counterpart.
+fn tool_entry_from_v2(tool_id: String, entry: ToolRegistryEntryV2) -> ToolRegistryEntry {
+    ToolRegistryEntry {
+        tool_id,
+        version: entry.version,
+        canonical_version: entry.canonical_version,
+        content_map_hash: entry.content_map_hash.unwrap_or_default(),
+        deployed_at: mediapm_utils::Timestamp::from_unix_secs(entry.deployed_at),
+        resolved_tag: entry.resolved_tag,
+        resolved_version: entry.resolved_version,
+        resolved_vcs_hash: entry.resolved_vcs_hash,
+    }
+}
+
+/// Migrates a V2 JSON [`Value`] forward into the V3 runtime model.
+///
+/// Migration is one-way: V2 documents are read, never written back. The path
+/// is deliberately `Value` → [`MediaPmStateV2`] → [`MediaPmStateV3`] →
+/// [`MediaPmState`] so that V2's shape is stated exactly once (in
+/// [`super::v2`]) and V3's resolution rules apply to migrated state as they do
+/// to natively-written state.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Serialization`] when the value is not a valid V2
+/// document.
+pub(super) fn from_v2_into_v3(value: Value) -> Result<MediaPmState, MediaPmError> {
+    let v2 = super::v2::from_v2_json_value(value)?;
+    Ok(resolve_v3(advance_v2_to_v3(v2)))
 }
 
 /// Deduplicate `managed_tools` Vec by `(tool_id, canonical_version)`.
@@ -235,8 +235,12 @@ mod tests {
 
         let state = from_v2_into_v3(v2_json).expect("v2→v3 bridge");
         assert_eq!(state.managed_tools.len(), 2);
-        assert_eq!(state.managed_tools[0].tool_id, "ffmpeg");
-        assert_eq!(state.managed_tools[1].tool_id, "yt-dlp");
+        // V2 orders `managed_tools` by map key, but the resolved V3 shape
+        // orders by newest deploy first — the same order a natively-written
+        // V3 document produces, so a migrated state and a fresh one are
+        // indistinguishable downstream.
+        assert_eq!(state.managed_tools[0].tool_id, "yt-dlp");
+        assert_eq!(state.managed_tools[1].tool_id, "ffmpeg");
         assert_eq!(state.version, 3);
     }
 
