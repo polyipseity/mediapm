@@ -415,8 +415,8 @@ fn strict_v1_accepts_valid_legacy_document() {
     let doc = validate_v1_document(REALISTIC_V1_DOC).expect("realistic v1 doc must validate");
     let obj = doc.as_object().expect("v1 doc must be an object");
     // The Rust deserialization path yields floats for integral Nickel
-    // numbers (see `read_document_version_marker`'s as_u64/as_f64
-    // fallback), so compare via `as_f64`.
+    // numbers (see `evaluate_main_file_as`'s `T::deserialize` of the
+    // evaluated Nickel value), so compare via `as_f64`.
     assert_eq!(obj["version"].as_f64(), Some(1.0));
     assert!(obj.contains_key("tool_configs"), "envelope must carry top-level tool_configs");
     let tc = obj["tool_configs"].as_object().expect("tool_configs must be a map");

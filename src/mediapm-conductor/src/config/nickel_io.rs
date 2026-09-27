@@ -14,7 +14,6 @@
 //! # Cache discipline
 //!
 //! - `eval_cache`: (`source_hash`, version) → JSON value for migrated/decode results
-//! - `eval_source_value_cache`: `source_hash` → JSON value for schema-agnostic metadata inspection
 
 use std::collections::HashMap;
 use std::fs;
@@ -41,12 +40,6 @@ type EvalCacheKey = (blake3::Hash, u32);
 /// In-memory cache for `migrate_document_source_to_version` results.
 fn eval_cache() -> &'static Mutex<HashMap<EvalCacheKey, Value>> {
     static CACHE: OnceLock<Mutex<HashMap<EvalCacheKey, Value>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// In-memory cache for `evaluate_document_source_value` results.
-fn eval_source_value_cache() -> &'static Mutex<HashMap<blake3::Hash, Value>> {
-    static CACHE: OnceLock<Mutex<HashMap<blake3::Hash, Value>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -129,129 +122,6 @@ fn scratch_workspace_dir() -> std::io::Result<tempfile::TempDir> {
         }
     }
     mediapm_utils::temp::artifact_dir()
-}
-
-/// Evaluates one raw Nickel document source and returns its exported value.
-///
-/// This helper is intentionally schema-agnostic and is used for metadata
-/// inspection tasks such as top-level field/key validation.
-///
-/// Results are cached by source text hash to avoid re-evaluating unchanged
-/// documents across repeated inspection calls.
-fn evaluate_document_source_value(
-    source: &str,
-    document_kind: &str,
-) -> Result<Value, ConductorError> {
-    let cache_key = blake3::hash(source.as_bytes());
-    {
-        let cache = eval_source_value_cache();
-        let guard = cache.lock().unwrap();
-        if let Some(cached) = guard.get(&cache_key) {
-            return Ok(cached.clone());
-        }
-    }
-
-    // Per-evaluation scratch workspace: the `TempDir` guard removes the
-    // directory on success AND on the `?` error paths below. The previous
-    // explicit cleanup ran only on success, so a failed evaluation leaked
-    // the scratch files.
-    let workspace = scratch_workspace_dir().map_err(|source| ConductorError::Io {
-        operation: "creating Nickel workspace for source value evaluation".to_string(),
-        path: std::env::temp_dir(),
-        source,
-    })?;
-
-    let input_path = workspace.path().join("document_input.ncl");
-    let wrapper_path = workspace.path().join("inspect_document.ncl");
-
-    write_nickel_file(
-        &input_path,
-        source,
-        "writing temporary Nickel input document for metadata inspection",
-    )?;
-
-    let wrapper_source = "import \"document_input.ncl\"\n".to_string();
-    write_nickel_file(
-        &wrapper_path,
-        &wrapper_source,
-        "writing temporary Nickel metadata inspection wrapper",
-    )?;
-
-    let result: Value = evaluate_main_file_as(
-        &wrapper_path,
-        &format!("evaluating {document_kind} source metadata"),
-    )?;
-
-    let cache = eval_source_value_cache();
-    let mut guard = cache.lock().unwrap();
-    guard.insert(cache_key, result.clone());
-    drop(guard);
-
-    Ok(result)
-}
-
-/// Parses and validates the explicit top-level `version` marker from one
-/// conductor Nickel source document.
-///
-/// All conductor configuration documents must carry an explicit numeric
-/// `version` field.
-pub(super) fn read_document_version_marker(
-    source: &str,
-    document_kind: &str,
-) -> Result<u32, ConductorError> {
-    let value = evaluate_document_source_value(source, document_kind)?;
-    let object = value.as_object().ok_or_else(|| {
-        ConductorError::Workflow(format!(
-            "{document_kind} must evaluate to one record with a top-level 'version' field"
-        ))
-    })?;
-
-    let version_value = object.get("version").ok_or_else(|| {
-        ConductorError::Workflow(format!(
-            "{document_kind} must define a top-level numeric 'version' field"
-        ))
-    })?;
-
-    let marker_u64 = if let Some(version) = version_value.as_u64() {
-        version
-    } else if let Some(version) = version_value.as_f64() {
-        if !version.is_finite() || version.fract() != 0.0 || version < 0.0 {
-            return Err(ConductorError::Workflow(format!(
-                "{document_kind} top-level 'version' must be a non-negative integer"
-            )));
-        }
-
-        format!("{version:.0}").parse::<u64>().map_err(|_| {
-            ConductorError::Workflow(format!(
-                "{document_kind} top-level 'version' value {version} exceeds supported range"
-            ))
-        })?
-    } else {
-        return Err(ConductorError::Workflow(format!(
-            "{document_kind} top-level 'version' must be numeric"
-        )));
-    };
-
-    let marker = u32::try_from(marker_u64).map_err(|_| {
-        ConductorError::Workflow(format!(
-            "{document_kind} top-level 'version' value {marker_u64} exceeds supported range"
-        ))
-    })?;
-
-    resolve_version_contract(marker, document_kind)?;
-    Ok(marker)
-}
-
-/// Determines one in-memory migration target by reading the document version
-/// marker and selecting the latest compatible version.
-#[expect(dead_code)]
-pub(super) fn latest_version_for_source(
-    source: &str,
-    document_kind: &str,
-) -> Result<u32, ConductorError> {
-    let version = read_document_version_marker(source, document_kind)?;
-    resolve_version_contract(version, document_kind)?;
-    Ok(version)
 }
 
 /// Evaluates one document source through the embedded Nickel migration wrapper
@@ -419,22 +289,6 @@ mod tests {
                 "configuration document",
             );
             assert!(decoded.is_err(), "syntax-broken doc must fail decode");
-        });
-    }
-
-    #[test]
-    fn inspect_success_leaves_no_artifact_dir() {
-        assert_no_artifact_dir_leak(|| {
-            let value = evaluate_document_source_value(MINIMAL_V2_DOC, "configuration document");
-            assert!(value.is_ok(), "minimal v2 doc must inspect: {value:?}");
-        });
-    }
-
-    #[test]
-    fn inspect_error_leaves_no_artifact_dir() {
-        assert_no_artifact_dir_leak(|| {
-            let value = evaluate_document_source_value(BROKEN_DOC, "configuration document");
-            assert!(value.is_err(), "syntax-broken doc must fail inspection");
         });
     }
 }
