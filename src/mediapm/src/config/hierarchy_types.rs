@@ -11,6 +11,7 @@ use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::error::MediaPmError;
+use crate::materializer::commit::is_rejected_char;
 
 /// Filename sanitization policy for hierarchy entries.
 ///
@@ -758,6 +759,11 @@ pub(crate) fn check_nfd_source(components: &[&str]) -> Result<(), MediaPmError> 
 ///   and not the other.
 /// - **path separator** — re-splits into extra path components on the way to
 ///   disk while the state keeps the unsplit spelling.
+/// - **reserved filename character** — rewritten to `_` by the sanitizer on
+///   every platform, so the on-disk spelling is never the spelling the state
+///   keeps. The set is [`crate::materializer::commit::is_rejected_char`], the
+///   same predicate the sanitizer uses, so the rule and the rewrite cannot
+///   drift apart.
 /// - **`.` or `..`** — the traversal components, which
 ///   [`validate_hierarchy_path_component`] does not reject on its own.
 ///
@@ -767,6 +773,14 @@ pub(crate) fn check_nfd_source(components: &[&str]) -> Result<(), MediaPmError> 
 /// [`crate::materializer::sanitize_and_validate_hierarchy_paths`] still
 /// *normalizes* the components that carry metadata the user does not control —
 /// the two stages are complementary, and this is the earlier one.
+///
+/// The reserved-character rule is **platform-independent**, matching the
+/// sanitizer it must stay in step with. A `media` key of `a:b` is a legal
+/// filename on Linux and macOS and is still refused everywhere, because the
+/// sanitizer rewrites it to `a_b` on every platform and a rule that only
+/// fired on Windows would let the library be written under two spellings by
+/// the same config. The cost is that an id legal on the developer's platform
+/// must be respelled; the alternative costs a split library.
 ///
 /// The id is rendered with [`str::escape_debug`] in every message, so a
 /// control character is reported as a code point instead of being written into
@@ -793,6 +807,14 @@ pub(crate) fn validate_media_id(media_id: &str) -> Result<(), MediaPmError> {
         if matches!(ch, '/' | '\\') {
             return Err(MediaPmError::Workflow(format!(
                 "media id '{escaped}' contains the path separator '{ch}'"
+            )));
+        }
+        // `is_rejected_char` also covers `/` and `\`, but the separator rule
+        // above runs first in the same loop, so a separator reports the
+        // separator rule and only the remaining characters can land here.
+        if is_rejected_char(ch) {
+            return Err(MediaPmError::Workflow(format!(
+                "media id '{escaped}' contains the reserved character '{ch}'"
             )));
         }
     }
@@ -1161,6 +1183,42 @@ mod tests {
     #[test]
     fn strict_media_id_rejects_backslash_separator() {
         assert_media_id_rejected("a\\b", "path separator");
+    }
+
+    /// A media id carrying a reserved filename character is rejected, under a
+    /// message distinct from the path-separator one.
+    ///
+    /// `a:b` is a perfectly legal filename on Linux and on macOS, so nothing
+    /// about the character itself forces a rejection. What forces it is that
+    /// the sanitizer rewrites it: under `sanitize_names = Enabled` the id
+    /// reaches disk as `a_b` while the state keeps `a:b`, which is the same
+    /// identity split a separator causes, reached by a different character.
+    /// The rule is therefore platform-independent, matching
+    /// `crate::materializer::commit::is_rejected_char` — see that
+    /// predicate's rationale — and a media id legal on one platform is refused
+    /// on all of them rather than splitting on the platforms that sanitize it.
+    #[test]
+    fn strict_media_id_rejects_reserved_character() {
+        assert_media_id_rejected("a:b", "reserved character");
+    }
+
+    /// The reserved-character message is distinguishable from the
+    /// path-separator message for the same offending character class.
+    ///
+    /// Both rules are checked in the same loop over the id's characters, so a
+    /// user who typed one of them needs the diagnostic to say which one fired.
+    #[test]
+    fn strict_media_id_reserved_character_message_differs_from_separator_message() {
+        let separator = media_id_rejection("a/b");
+        let reserved = media_id_rejection("a:b");
+        assert!(
+            separator.contains("path separator") && !separator.contains("reserved character"),
+            "the separator rejection must name only its own rule; got: {separator}"
+        );
+        assert!(
+            reserved.contains("reserved character") && !reserved.contains("path separator"),
+            "the reserved-character rejection must name only its own rule; got: {reserved}"
+        );
     }
 
     /// A media id that *is* a path traversal component is rejected.

@@ -552,7 +552,21 @@ fn check_component(component: &str) -> Result<(), MediaPmError> {
 /// can never re-split into extra path components, and an absolute component
 /// can never anchor outside the hierarchy root. `.` and `..` are rejected by
 /// [`check_component`] before this predicate is consulted.
-fn is_rejected_char(ch: char) -> bool {
+///
+/// `pub(crate)` because it is the **single** definition of the set: the
+/// config-level media-id rule in
+/// `crate::config::hierarchy_types::validate_media_id` calls it rather than
+/// restating the characters, so a second copy can never drift from the
+/// sanitizer that would have rewritten them.
+///
+/// The set is deliberately **platform-independent**. `<`, `>`, `:`, `"`, `|`,
+/// `?`, and `*` are legal filename characters on Linux and macOS, but they are
+/// illegal on Windows, and `SANITIZED_RESERVED_CHARS` rewrites them on *every*
+/// platform. A platform-dependent rule would therefore agree with the
+/// filesystem on the host running it and disagree with the sanitizer that
+/// actually produces the on-disk spelling — which is the identity split the
+/// media-id rule exists to prevent. Matching the sanitizer is the priority.
+pub(crate) fn is_rejected_char(ch: char) -> bool {
     matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\')
 }
 

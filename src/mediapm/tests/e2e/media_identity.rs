@@ -7,12 +7,18 @@
 //! The config boundary therefore *rejects* such an id instead of sanitizing
 //! it, because the key is the user's to spell correctly.
 //!
-//! The two guarantees pinned here:
+//! The three guarantees pinned here:
 //!
 //! 1. A media id that cannot survive one spelling is refused with an error that
 //!    names both the id and the rule, and nothing is written under the
-//!    sanitized spelling either.
-//! 2. An accepted media id keeps **one** spelling across the materialized path
+//!    sanitized spelling either. The same assertion runs for every splitting
+//!    shape, because a path separator and a reserved character are the *same*
+//!    defect reached by a different character.
+//! 2. A media key that **no hierarchy node binds** is refused at the same
+//!    boundary. The hierarchy walk only sees a key once a node binds it, so the
+//!    all-keys observation lives at the workflow-synthesis boundary, which
+//!    iterates the whole `media` map.
+//! 3. An accepted media id keeps **one** spelling across the materialized path
 //!    and the state keys, which is the invariant the rejection exists to
 //!    protect.
 
@@ -28,9 +34,16 @@ use mediapm::{
 /// Media id of the accepted source, and the folder its id materializes as.
 const MEDIA_ID: &str = "vid1";
 
-/// Media id whose `/` is the identity-splitting case: unsplit it is a
-/// `workflow_states` key, sanitized it is a single path component.
-const SPLITTING_MEDIA_ID: &str = "a/b";
+/// Every id shape that splits into two spellings, with the rule it is refused
+/// under and the on-disk spelling the sanitizer would have produced.
+///
+/// `a/b` splits by re-splitting into extra path components; `a:b` splits by
+/// being rewritten to `a_b` by the reserved-character replacement map. Both end
+/// in the same `a_b` on disk with the raw spelling still in the state, so both
+/// run through the same assertions — a fix that covers only one of them leaves
+/// the defect reachable.
+const SPLITTING_MEDIA_IDS: [(&str, &str, &str); 2] =
+    [("a/b", "path separator", "a_b"), ("a:b", "reserved character", "a_b")];
 
 /// Hierarchy path template that puts the media id itself in the materialized
 /// path, so the disk spelling of the id is observable on disk.
@@ -117,35 +130,43 @@ fn read_synced_state(
     load_mediapm_state_document(&root.join(".mediapm").join("state.json"))
 }
 
-/// A media id carrying a path separator is refused, the error names the id and
+/// A media id carrying a splitting shape is refused, the error names the id and
 /// the rule, and nothing is written under the sanitized spelling either.
 ///
 /// Sanitization is enabled on purpose: that is the configuration in which the
 /// pre-fix run wrote `a_b/track.mp4` to disk while the state key stayed `a/b`.
+/// The loop covers the path separator and the reserved character because the
+/// sanitized spelling is the same string for both, so a single assertion over
+/// both inputs is the whole identity-splitting contract.
 #[tokio::test]
-async fn sync_rejects_media_id_with_path_separator_and_writes_nothing()
+async fn sync_rejects_media_id_with_splitting_shape_and_writes_nothing()
 -> Result<(), mediapm::MediaPmError> {
-    let (outcome, root) = sync_media_id(SPLITTING_MEDIA_ID, SanitizeNamesConfig::Enabled).await?;
+    for (media_id, rule, sanitized_spelling) in SPLITTING_MEDIA_IDS {
+        let (outcome, root) = sync_media_id(media_id, SanitizeNamesConfig::Enabled).await?;
 
-    let error = outcome.as_ref().err().unwrap_or_else(|| {
-        panic!("media id '{SPLITTING_MEDIA_ID}' must be refused, got {outcome:?}")
-    });
-    let rendered = error.to_string();
-    assert!(
-        rendered.contains(SPLITTING_MEDIA_ID),
-        "the error must name the offending media id; got: {rendered}"
-    );
-    assert!(
-        rendered.contains("path separator"),
-        "the error must state the violated rule; got: {rendered}"
-    );
+        let error = outcome
+            .as_ref()
+            .err()
+            .unwrap_or_else(|| panic!("media id '{media_id}' must be refused, got {outcome:?}"));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(media_id),
+            "the error must name the offending media id; got: {rendered}"
+        );
+        assert!(
+            rendered.contains(rule),
+            "the error for '{media_id}' must state the violated rule '{rule}'; got: {rendered}"
+        );
 
-    let sanitized = root.path().join("a_b").join("track.mp4");
-    assert!(
-        !sanitized.exists(),
-        "the refused media id must not be written under its sanitized spelling: '{}' exists",
-        sanitized.display()
-    );
+        let sanitized = root.path().join(sanitized_spelling).join("track.mp4");
+        assert!(
+            !sanitized.exists(),
+            "the refused media id '{media_id}' must not be written under its sanitized \
+             spelling '{}': '{}' exists",
+            sanitized_spelling,
+            sanitized.display()
+        );
+    }
     Ok(())
 }
 
@@ -155,28 +176,34 @@ async fn sync_rejects_media_id_with_path_separator_and_writes_nothing()
 /// splitting id, the sync succeeded with `workflow_states` keyed by the raw
 /// `a/b` while the library root held `a_b/track.mp4`. A refusal is only
 /// meaningful if the unsplit and the sanitized spelling both leave nothing
-/// behind to be joined against later.
+/// behind to be joined against later. Parameterized over the same splitting
+/// shapes, because the state half is where both of them split.
 #[tokio::test]
 async fn refused_media_id_leaves_no_state_row_under_either_spelling()
 -> Result<(), mediapm::MediaPmError> {
-    let (outcome, root) = sync_media_id(SPLITTING_MEDIA_ID, SanitizeNamesConfig::Enabled).await?;
-    assert!(outcome.is_err(), "the splitting media id must be refused, got {outcome:?}");
+    for (media_id, _rule, sanitized_spelling) in SPLITTING_MEDIA_IDS {
+        let (outcome, root) = sync_media_id(media_id, SanitizeNamesConfig::Enabled).await?;
+        assert!(
+            outcome.is_err(),
+            "the splitting media id '{media_id}' must be refused, got {outcome:?}"
+        );
 
-    let state = read_synced_state(root.path())?;
-    let state_keys: Vec<&String> = state.workflow_states.keys().collect();
-    assert!(
-        state_keys.is_empty(),
-        "a refused media id must leave no workflow_states row, got {state_keys:?}"
-    );
-    assert!(
-        state.managed_files.is_empty(),
-        "a refused media id must leave no managed_files row, got {:?}",
-        state.managed_files.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        !root.path().join("a_b").exists() && !root.path().join("a").exists(),
-        "a refused media id must leave no materialized tree under either spelling"
-    );
+        let state = read_synced_state(root.path())?;
+        let state_keys: Vec<&String> = state.workflow_states.keys().collect();
+        assert!(
+            state_keys.is_empty(),
+            "a refused media id must leave no workflow_states row, got {state_keys:?}"
+        );
+        assert!(
+            state.managed_files.is_empty(),
+            "a refused media id must leave no managed_files row, got {:?}",
+            state.managed_files.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !root.path().join(sanitized_spelling).exists() && !root.path().join(media_id).exists(),
+            "a refused media id must leave no materialized tree under either spelling"
+        );
+    }
     Ok(())
 }
 
