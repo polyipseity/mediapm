@@ -350,7 +350,7 @@ async fn pending_ops_deduplicates_concurrent_gets() {
 async fn file_system_cas_concurrent_puts_are_safe() {
     use mediapm_cas::api::CasMaintenanceApi;
 
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
     let task_count = 16;
 
     // Phase 1: concurrent puts of distinct payloads.

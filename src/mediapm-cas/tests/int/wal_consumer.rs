@@ -18,7 +18,7 @@ use crate::common::{artifact_dir, open_file_cas, open_file_cas_with_background};
 /// have an on-disk blob file.
 #[tokio::test]
 async fn file_system_cas_wal_consumer_materializes_blob() {
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
 
     let data = Bytes::from_static(b"wal-materialize-test");
     let hash = cas.put(data.clone()).await.expect("put");
@@ -38,7 +38,7 @@ async fn file_system_cas_wal_consumer_materializes_blob() {
 /// batch).
 #[tokio::test]
 async fn file_system_cas_wal_consumer_processes_batches() {
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
 
     // Put entries in two batches to verify consumer processes all.
     for i in 0..5 {
@@ -111,7 +111,7 @@ async fn file_system_cas_reopen_and_consume_wal() {
 /// — second call consumes 0 entries.
 #[tokio::test]
 async fn file_system_cas_wal_consumer_multiple_cycles() {
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
 
     cas.put(Bytes::from_static(b"first")).await.expect("put first");
     cas.put(Bytes::from_static(b"second")).await.expect("put second");
@@ -133,7 +133,7 @@ async fn file_system_cas_wal_consumer_multiple_cycles() {
 /// an explicit `run_wal_consumer()` call.
 #[tokio::test]
 async fn file_system_cas_background_task_materializes_blob() {
-    let (_dir, cas) = open_file_cas_with_background(Duration::from_millis(100)).await;
+    let cas = open_file_cas_with_background(Duration::from_millis(100)).await;
 
     let payload = Bytes::from_static(b"background-test-data");
     let hash = cas.put(payload.clone()).await.expect("put data");
@@ -182,7 +182,7 @@ async fn file_system_cas_background_task_survives_reopen() {
 /// so the blob is never materialized on disk (the two entries cancel out).
 #[tokio::test]
 async fn file_system_cas_background_task_deletes_through_wal() {
-    let (_dir, cas) = open_file_cas_with_background(Duration::from_millis(100)).await;
+    let cas = open_file_cas_with_background(Duration::from_millis(100)).await;
 
     let payload = Bytes::from_static(b"delete-through-wal");
     let hash = cas.put(payload.clone()).await.expect("put data");
@@ -201,7 +201,7 @@ async fn file_system_cas_background_task_deletes_through_wal() {
 /// when the `FileSystemCas` handle is dropped.
 #[tokio::test]
 async fn file_system_cas_background_maintenance_guard_cancels_on_drop() {
-    let (_dir, cas) = open_file_cas_with_background(Duration::from_millis(100)).await;
+    let cas = open_file_cas_with_background(Duration::from_millis(100)).await;
 
     // Clone the cancelled flag from the guard (via test accessor).
     let cancelled = cas.bg_guard_ref().cancelled.clone();
@@ -233,7 +233,7 @@ async fn file_system_cas_background_maintenance_guard_cancels_on_drop() {
 #[tokio::test]
 async fn concurrent_wal_consumers_never_double_consume_a_range() {
     const ENTRIES: u64 = 24;
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
 
     for index in 0..ENTRIES {
         cas.put(Bytes::from(format!("concurrent-replay-{index}"))).await.expect("put");

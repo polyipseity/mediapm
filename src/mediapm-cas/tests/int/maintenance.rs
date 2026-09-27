@@ -324,7 +324,7 @@ async fn optimize_idempotent() {
 /// Uses `FileSystemCas` so we can inspect the filesystem directly.
 #[tokio::test]
 async fn stale_diff_removed_after_delta_to_full_promotion() {
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
 
     // Two similar large buffers so VCDIFF delta makes sense.
     let (base_content, target_content) = similar_content_pair(b'A', b"CHANGED");
@@ -380,7 +380,7 @@ async fn stale_diff_removed_after_delta_to_full_promotion() {
 /// Uses `FileSystemCas` so that background engine operations are real.
 #[tokio::test]
 async fn delta_cache_repeated_reads_work() {
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
 
     // Seed fillers so the reconstructed-bytes cache budget (10 % of store
     // bytes) admits the 4096-byte entries: 52 × 4096 = 212 992 bytes →

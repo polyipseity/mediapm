@@ -175,10 +175,10 @@ async fn prune_all_bases_leaves_empty_entry() {
 /// false`, so constraints are WAL-only until consumed.
 #[tokio::test]
 async fn get_constraint_wal_fallback_before_consumption() {
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
 
-    let base = put_static(&cas, b"base").await;
-    let target = put_static(&cas, b"target").await;
+    let base = put_static(&*cas, b"base").await;
+    let target = put_static(&*cas, b"target").await;
 
     // set_constraint writes to WAL. With FileSystemMetadataStore (SYNC_MATERIALIZE =
     // false), it does NOT write to index yet.

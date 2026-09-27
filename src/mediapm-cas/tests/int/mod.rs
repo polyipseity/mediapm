@@ -6,5 +6,6 @@ mod in_memory;
 mod maintenance;
 mod read_view;
 mod reconstructed_cache;
+mod store_teardown;
 mod streaming_large;
 mod wal_consumer;

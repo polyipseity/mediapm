@@ -69,11 +69,11 @@ async fn file_system_cas_contention_with_flock_barrier() {
 /// must both be able to operate concurrently without contention errors.
 #[tokio::test]
 async fn file_system_cas_concurrent_clones_no_contention() {
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
     let cas_clone = cas.clone();
 
     let handle1 = tokio::spawn(async move {
-        put_static(&cas, b"from-clone-a").await;
+        put_static(&*cas, b"from-clone-a").await;
     });
 
     let handle2 = tokio::spawn(async move {

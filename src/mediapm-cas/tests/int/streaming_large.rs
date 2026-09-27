@@ -114,7 +114,7 @@ async fn in_memory_large_object_get_to_writer_works() {
 #[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn file_system_large_object_get_to_writer_works() {
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
     #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xFEu8; SIZE_65MIB as usize];
     let expected_hash = Hash::from_content(&data);
@@ -134,7 +134,7 @@ async fn file_system_large_object_get_to_writer_works() {
 #[cfg(feature = "large-tests")]
 #[tokio::test]
 async fn file_system_get_succeeds_above_wal_inline_limit() {
-    let (_dir, cas) = open_file_cas().await;
+    let cas = open_file_cas().await;
     let data = vec![0xFEu8; usize::try_from(SIZE_65MIB).expect("65 MiB fits usize")];
     let expected_hash = Hash::from_content(&data);
     let hash = cas.put(Bytes::from(data.clone())).await.unwrap();
