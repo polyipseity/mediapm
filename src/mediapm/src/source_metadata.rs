@@ -1,14 +1,14 @@
 //! Source metadata resolution for online and local media sources.
 //!
 //! This module provides utilities for fetching and resolving metadata from
-//! online sources (via `yt-dlp`) and local files (via `ffprobe`), along with
-//! parsing helpers that extract structured metadata from tool outputs.
+//! local files (via `ffprobe`), along with parsing helpers that extract
+//! structured metadata from tool outputs. Online (`yt-dlp`) metadata resolution
+//! survives only as `#[cfg(test)]` coverage: no production path fetches it.
 
 use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
-use url::Url;
 
 use crate::error::MediaPmError;
 use crate::metadata_cache::MetadataCache;
@@ -16,8 +16,12 @@ use crate::paths::MediaPmPaths;
 use crate::util::first_non_empty_json_string;
 
 /// Metadata extracted from an online source.
-#[allow(dead_code)]
+///
+/// Compiled only under `cfg(test)`: its sole constructor is
+/// [`parse_online_source_metadata`], whose only caller is this module's
+/// `#[cfg(test)]` suite. No production path resolves online-source metadata.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg(test)]
 pub(crate) struct OnlineSourceMetadata {
     /// Human-readable title.
     pub title: String,
@@ -28,8 +32,13 @@ pub(crate) struct OnlineSourceMetadata {
 }
 
 /// Resolved metadata for a newly added online source.
-#[allow(dead_code)]
+///
+/// Compiled only under `cfg(test)`: its sole constructor is
+/// [`resolve_online_source_metadata_for_add`], whose only caller is this
+/// module's `#[cfg(test)]` suite. No production path resolves online-source
+/// metadata.
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub(crate) struct ResolvedOnlineSourceMetadata {
     /// Human-readable title.
     pub title: String,
@@ -52,40 +61,13 @@ pub(crate) struct LocalSourceMetadata {
     pub description: String,
 }
 
-/// Fetches metadata for an online source URI using `yt-dlp`.
-///
-/// Returns the raw JSON metadata from `yt-dlp --dump-json` as a
-/// `serde_json::Value`.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError::Workflow`] if `yt-dlp` is unavailable or returns
-/// a non-zero exit code.
-#[allow(dead_code)]
-pub(crate) fn try_fetch_online_source_metadata_with_yt_dlp(
-    uri: &Url,
-    yt_dlp_command: &str,
-) -> Result<Value, MediaPmError> {
-    let output = Command::new(yt_dlp_command)
-        .args(["--dump-json", "--no-download", "--skip-download"])
-        .arg(uri.as_str())
-        .output()
-        .map_err(|e| {
-            MediaPmError::Workflow(format!("failed to execute yt-dlp for metadata fetch: {e}"))
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(MediaPmError::Workflow(format!("yt-dlp metadata fetch failed: {stderr}")));
-    }
-
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| MediaPmError::Workflow(format!("failed to parse yt-dlp JSON output: {e}")))
-}
-
 /// Parses `yt-dlp --dump-json` output into an [`OnlineSourceMetadata`].
+///
+/// Compiled only under `cfg(test)`: no production caller supplies
+/// `yt-dlp --dump-json` output, because the fetch entry point that did
+/// (`try_fetch_online_source_metadata_with_yt_dlp`) has no caller either.
 #[must_use]
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn parse_online_source_metadata(value: &Value) -> OnlineSourceMetadata {
     let title = first_non_empty_json_string(value, &["title", "fulltitle", "webpage_url"])
         .unwrap_or_else(|| "Untitled".to_string());
@@ -97,24 +79,12 @@ pub(crate) fn parse_online_source_metadata(value: &Value) -> OnlineSourceMetadat
     OnlineSourceMetadata { title, artist, description }
 }
 
-/// Fetches and resolves online source metadata, returning a
-/// [`ResolvedOnlineSourceMetadata`].
-///
-/// # Errors
-///
-/// Returns [`MediaPmError::Workflow`] if the metadata fetch fails.
-#[allow(dead_code)]
-pub(crate) fn fetch_online_source_metadata(
-    uri: &Url,
-    yt_dlp_command: &str,
-) -> Result<ResolvedOnlineSourceMetadata, MediaPmError> {
-    let raw = try_fetch_online_source_metadata_with_yt_dlp(uri, yt_dlp_command)?;
-    Ok(resolve_online_source_metadata_for_add(&raw, None))
-}
-
 /// Resolves raw yt-dlp metadata into a clean [`ResolvedOnlineSourceMetadata`].
+///
+/// Compiled only under `cfg(test)`: no production path resolves online-source
+/// metadata, so this mapping is exercised solely by this module's test suite.
 #[must_use]
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn resolve_online_source_metadata_for_add(
     yt_dlp_metadata: &Value,
     warning: Option<String>,
