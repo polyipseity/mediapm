@@ -22,7 +22,7 @@ Every versioned config/state surface follows the same shape, regardless of trans
 
 **INVARIANT — each version envelope keeps its OWN shape.** Old versions are BRIDGED to the latest boundary through the unified model (`MediaPmDocument`), NEVER reshaped to mirror the latest version's grouping. A V1 envelope type (e.g. `MediaRuntimeStorageV1`) is a distinct flat wire shape converting to/from `MediaRuntimeStorageLatest` via `From` impls. Do not replace a V1 envelope type with the grouped resolved type, and do not push V2's sub-record grouping into V1's contract.
 
-**File placement — version-specific types and their `From` bridges live INSIDE the version file** (`versions/v1.rs`, `versions/v_latest.rs`), never in shared `config/mod.rs`. `config/mod.rs` holds only the resolved (option-free) types and a thin `from_boundary` delegation; the active `*Latest` family belongs in `versions/v_latest.rs`.
+**File placement — version-specific types and their `From` bridges live INSIDE the version file** (`versions/v1.rs`, `versions/v_latest.rs`), never in shared `config/mod.rs`. `config/mod.rs` holds only the resolved (option-free) types; the active `*Latest` family belongs in `versions/v_latest.rs`. The boundary entry points (`from_boundary`, `into_boundary`, and the multi-document merge entry point) live in `versions/mod.rs`, which may import from `v_latest` but must not re-export versioned symbols outside `versions/`; `config/mod.rs` names no versioned type in either direction.
 
 ## Strict `versions/` boundary policy
 
