@@ -7,18 +7,119 @@ use bytes::Bytes;
 
 use mediapm_cas::api::CasApi;
 
-use crate::common::{artifact_dir, open_file_cas, open_file_cas_with_background};
+use crate::common::{
+    artifact_dir, open_file_cas, open_file_cas_with_background,
+    open_file_cas_with_quiesced_consumer,
+};
 
 // ---------------------------------------------------------------------------
 // FileSystemCas WAL-consumption regression tests
 // ---------------------------------------------------------------------------
+
+/// The quiesce must leave the foreground call as the store's *only* consumer,
+/// even once the armed consumer's 500 ms initial delay has fully elapsed.
+///
+/// The two assertions split by what each one can actually detect, and the split
+/// is the point:
+///
+/// - `is_cancelled()` is the discriminating one. It reads `false` the instant
+///   [`open_file_cas`] returns and `true` the instant
+///   [`open_file_cas_with_quiesced_consumer`] returns, so a helper that quietly
+///   stopped quiescing fails here directly, with no schedule having to conspire
+///   with it first.
+/// - The batch count is the behavioural consequence that every other count
+///   assertion in this module leans on. It cannot fail on timing grounds
+///   because the consumer task has been *joined*, not merely flagged: a joined
+///   task never wakes, so the length of the sleep below does not affect the
+///   outcome. The sleep is here to show that the 500 ms window has passed and
+///   the range is still whole, not to wait for anything.
+///
+/// This is deliberately not a negative control, and could not be one. The store
+/// [`open_file_cas`] arms uses a five-minute maintenance interval, so its
+/// consumer fires once at roughly 500 ms and is then asleep for the remainder
+/// of a test this short. A foreground count of 5 is what an armed store produces
+/// just as reliably as a quiesced one; measured 768 times under 64-way
+/// contention it failed 0 times. The deterministically provable half of the
+/// claim lives in
+/// `armed_background_consumer_claims_the_range_before_the_foreground_call`.
+#[tokio::test]
+async fn quiesced_helper_leaves_the_foreground_consumer_owning_every_entry() {
+    let cas = open_file_cas_with_quiesced_consumer().await;
+
+    assert!(
+        cas.bg_guard_ref().is_cancelled(),
+        "the helper must return with the background WAL consumer stopped"
+    );
+
+    // Past the armed consumer's 500 ms initial delay.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    for i in 0..5 {
+        cas.put(Bytes::from(format!("quiesced-batch-{i}"))).await.expect("put");
+    }
+    let consumed = cas.bg_engine().run_wal_consumer().await.expect("run wal consumer");
+
+    assert_eq!(
+        consumed, 5,
+        "the foreground consumer must own the whole batch once the background one is stopped"
+    );
+}
+
+/// The negative control for the test above: on a store whose background
+/// consumer is *armed*, the armed consumer owns the range and the foreground
+/// call that follows reports nothing at all.
+///
+/// This is the property every count assertion in this module depends on, and
+/// it is asserted without a sleep chosen to be long enough. The wait is a
+/// bounded poll on an observable condition — every blob's file exists on disk.
+/// `put` leaves a small blob WAL-only until some consumer materializes it (the
+/// property `file_system_cas_wal_consumer_materializes_blob` asserts directly),
+/// and only the background consumer materializes those files, so their
+/// appearance *is* the proof that it ran and advanced the checkpoint. The
+/// foreground call afterwards therefore has provably nothing left to consume,
+/// and the test can fail two ways only: the armed consumer never ran (the poll
+/// times out, with a message saying so), or the range was still consumable
+/// afterwards. It cannot fail because the consumer started slowly.
+#[tokio::test]
+async fn armed_background_consumer_claims_the_range_before_the_foreground_call() {
+    const ENTRIES: usize = 3;
+    let cas = open_file_cas_with_background(Duration::from_millis(100)).await;
+
+    let mut hashes = Vec::with_capacity(ENTRIES);
+    for index in 0..ENTRIES {
+        let data = Bytes::from(format!("armed-claim-{index}"));
+        hashes.push(cas.put(data).await.expect("put"));
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let materialized = hashes
+            .iter()
+            .all(|hash| cas.object_path_for_hash(*hash).is_some_and(|path| path.is_file()));
+        if materialized {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the armed background consumer never materialized {ENTRIES} entries within 30s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let consumed = cas.bg_engine().run_wal_consumer().await.expect("run wal consumer");
+    assert_eq!(
+        consumed, 0,
+        "an armed background consumer owns the range, which is exactly what \
+         open_file_cas_with_quiesced_consumer rules out for a counted foreground call"
+    );
+}
 
 /// Verifies that `run_wal_consumer()` on a `FileSystemCas` materializes
 /// WAL-only small blobs into the blob store so they are retrievable and
 /// have an on-disk blob file.
 #[tokio::test]
 async fn file_system_cas_wal_consumer_materializes_blob() {
-    let cas = open_file_cas().await;
+    let cas = open_file_cas_with_quiesced_consumer().await;
 
     let data = Bytes::from_static(b"wal-materialize-test");
     let hash = cas.put(data.clone()).await.expect("put");
@@ -36,9 +137,15 @@ async fn file_system_cas_wal_consumer_materializes_blob() {
 /// Verifies that `run_wal_consumer()` processes entries sequentially across
 /// multiple put cycles and subsequent calls return 0 (idempotency for that
 /// batch).
+///
+/// The count assertions hold only while the foreground call is the store's
+/// only consumer: `FileSystemCas::open` arms a background consumer that drains
+/// the same range 500 ms later, and the loser of that race reports a short
+/// count. [`open_file_cas_with_quiesced_consumer`] stops it, which is what
+/// makes the batch sizes below the caller's to account for.
 #[tokio::test]
 async fn file_system_cas_wal_consumer_processes_batches() {
-    let cas = open_file_cas().await;
+    let cas = open_file_cas_with_quiesced_consumer().await;
 
     // Put entries in two batches to verify consumer processes all.
     for i in 0..5 {
@@ -46,7 +153,10 @@ async fn file_system_cas_wal_consumer_processes_batches() {
         cas.put(data).await.expect("put batch a");
     }
     let consumed1 = cas.bg_engine().run_wal_consumer().await.expect("first wal consumer");
-    assert!(consumed1 >= 5, "first consume must process all batch-a entries");
+    assert!(
+        consumed1 >= 5,
+        "first consume must process all batch-a entries: consumed1={consumed1}"
+    );
 
     // Second consume returns 0 (no new entries).
     let consumed2 = cas.bg_engine().run_wal_consumer().await.expect("second wal consumer");
@@ -58,7 +168,11 @@ async fn file_system_cas_wal_consumer_processes_batches() {
         cas.put(data).await.expect("put batch b");
     }
     let consumed3 = cas.bg_engine().run_wal_consumer().await.expect("third wal consumer");
-    assert!(consumed3 >= 3, "third consume must process all batch-b entries");
+    assert!(
+        consumed3 >= 3,
+        "third consume must process all batch-b entries: consumed3={consumed3} \
+         consumed1={consumed1} consumed2={consumed2}"
+    );
 
     // All entries from both batches retrievable.
     for i in 0..5 {
@@ -95,6 +209,10 @@ async fn file_system_cas_reopen_and_consume_wal() {
     // Second session: reopen, verify data is recoverable via WAL replay.
     {
         let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.expect("second open");
+        // The background consumer this store arms at open would claim the
+        // replayed range on its own; stop it so the count below is this
+        // call's.
+        cas.bg_guard_ref().shutdown().await;
         // `open_with_strategies` calls `rebuild_from_wal`, which loads
         // un-consumed WAL entries into the in-memory metadata store.
         // Data should be retrievable immediately.
@@ -111,7 +229,7 @@ async fn file_system_cas_reopen_and_consume_wal() {
 /// — second call consumes 0 entries.
 #[tokio::test]
 async fn file_system_cas_wal_consumer_multiple_cycles() {
-    let cas = open_file_cas().await;
+    let cas = open_file_cas_with_quiesced_consumer().await;
 
     cas.put(Bytes::from_static(b"first")).await.expect("put first");
     cas.put(Bytes::from_static(b"second")).await.expect("put second");

@@ -58,6 +58,37 @@ pub(crate) async fn open_file_cas() -> FileCasFixture {
     FileCasFixture { cas, _dir: dir }
 }
 
+/// Creates a fresh artifact tempdir and opens a `FileSystemCas` whose background
+/// WAL consumer is stopped before the caller writes anything.
+///
+/// # Why a test that counts consumed entries needs this
+///
+/// [`open_file_cas`] arms the store's background consumer, which waits 500 ms and
+/// then drains the WAL on its own. A test that calls `run_wal_consumer` itself
+/// and asserts on the returned count is then racing that consumer for the same
+/// entries: whichever call reaches the store's `consume_lock` first claims the
+/// whole range, and the loser reports a short count. `consume_lock` makes replay
+/// exclusive but says nothing about *who* drains the range, so the background
+/// consumer wins the race whenever it wakes up before the foreground call does
+/// — which is any time the test has been running for 500 ms.
+///
+/// Stopping the consumer makes the foreground call the only consumer, so the
+/// count is a property of the code under test rather than of scheduling.
+///
+/// The stop is `BackgroundMaintenanceGuard::shutdown`, awaited: it sets the
+/// cooperative flag, aborts the task, and awaits the handle, so the task has
+/// observably stopped rather than merely been asked to. It runs here — before
+/// the first `put`, on a WAL that is still empty — so the consumer cannot have
+/// claimed part of a range even if its task was already inside
+/// `run_wal_consumer` when the abort landed. `FileSystemCas::close` is
+/// deliberately not used: it also closes the store's mutation gate, after which
+/// every leased write fails with `BrokenPipe`.
+pub(crate) async fn open_file_cas_with_quiesced_consumer() -> FileCasFixture {
+    let cas = open_file_cas().await;
+    cas.bg_guard_ref().shutdown().await;
+    cas
+}
+
 /// Creates a fresh artifact tempdir and opens a `FileSystemCas` whose
 /// background WAL consumer runs every `bg_interval`.
 pub(crate) async fn open_file_cas_with_background(bg_interval: Duration) -> FileCasFixture {
