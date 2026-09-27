@@ -198,7 +198,6 @@ impl WriteGate {
     ///
     /// Used by [`ProgressRenderer`] test paths where the caller
     /// provides their own [`MultiProgress`] without a [`BufferedTerm`].
-    #[allow(dead_code, reason = "used by renderer unit tests and group.rs with_multi_progress")]
     pub(crate) fn new_noop() -> Self {
         Self { flag: Arc::new(AtomicBool::new(false)), committed_frame_term: None }
     }
@@ -268,9 +267,9 @@ impl WriteGate {
 
     /// Whether terminal writes are currently suppressed.
     ///
-    /// Used by `debug_assert!` in `paint()` to verify the caller is
-    /// inside a frame window.
-    #[allow(dead_code, reason = "used by debug_assert in suppress() and paint assertions")]
+    /// Read by the `debug_assert!` in [`Self::commit_frame`] to check the
+    /// caller's write-window contract. That `debug_assert!` is compiled in
+    /// every build, so this accessor has a non-test caller too.
     pub(crate) fn is_suppressed(&self) -> bool {
         self.flag.load(Ordering::Acquire)
     }

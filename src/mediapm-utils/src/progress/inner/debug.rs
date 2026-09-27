@@ -27,12 +27,10 @@ impl DimensionSource for RealTerminalSource {
 ///
 /// Use [`set`](TestDimensionSource::set) to change dimensions mid-test so
 /// resize reactivity can be exercised without a real terminal.
-#[allow(dead_code)]
 pub struct TestDimensionSource {
     dims: Mutex<(u16, u16)>,
 }
 
-#[allow(dead_code)]
 impl TestDimensionSource {
     /// Create a source with the given initial dimensions.
     #[must_use]
@@ -82,7 +80,6 @@ impl TimeSource for RealTimeSource {
 ///
 /// Use [`advance`](TestTimeSource::advance) to move time forward
 /// synthetically without real wall-clock delay.
-#[allow(dead_code)]
 pub struct TestTimeSource {
     now: Mutex<Instant>,
 }
@@ -93,7 +90,6 @@ impl Default for TestTimeSource {
     }
 }
 
-#[allow(dead_code)]
 impl TestTimeSource {
     /// Create a source initialized to [`Instant::now`].
     #[must_use]
@@ -108,16 +104,6 @@ impl TestTimeSource {
     /// Panics if the internal mutex is poisoned.
     pub fn advance(&self, dur: Duration) {
         *self.now.lock().unwrap() += dur;
-    }
-
-    /// Override the instant returned by [`TimeSource::now`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal mutex is poisoned.
-    #[allow(dead_code)]
-    pub fn set(&self, instant: Instant) {
-        *self.now.lock().unwrap() = instant;
     }
 }
 
