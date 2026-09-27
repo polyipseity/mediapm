@@ -171,6 +171,7 @@ pub async fn sync_hierarchy(
         ffmpeg_slot_limits,
     );
     metadata::resolve_flattened_entry_paths(&mut flattened, document, &lookup_context).await?;
+    sanitize_and_validate_hierarchy_paths(&mut flattened)?;
     let shared = Arc::new(SyncSharedState {
         hierarchy_root: hierarchy_root.clone(),
         cas: cas.clone(),
@@ -305,6 +306,45 @@ pub async fn sync_hierarchy(
     );
 
     Ok(report)
+}
+
+/// Sanitizes and validates every flattened hierarchy entry's path components,
+/// writing the accepted components back in place.
+///
+/// This is the production entry point of the chain in
+/// [`commit`]: NFD normalization, reserved-character sanitization (when the
+/// entry's effective [`SanitizeNamesConfig`] enables it), then strict
+/// validation. It runs *after* [`metadata::resolve_flattened_entry_paths`],
+/// because that step interpolates `${media.id}` and
+/// `${media.metadata.<key>}` into components — the first point at which
+/// externally sourced text (tag metadata, ffprobe output, ZIP `info.json`)
+/// can reach a filesystem path — and *before* any worker starts, so a
+/// rejected entry never reaches staging, verification, or commit and no
+/// partially-validated path is ever written.
+///
+/// Validating all entries (not only templated ones) is deliberate: the
+/// config-level reserved-character check in `config::hierarchy_types` does not
+/// reject `.` or `..`, so a statically declared `..` component would otherwise
+/// commit outside the library root.
+///
+/// # Errors
+///
+/// Returns the first [`MediaPmError::Workflow`] from
+/// [`commit::sanitize_and_validate_components`], naming the offending
+/// component. Failing the whole sync is intentional: a hierarchy that cannot
+/// produce a safe path has no correct partial materialization.
+fn sanitize_and_validate_hierarchy_paths(
+    flattened: &mut [FlattenedHierarchyEntry],
+) -> Result<(), MediaPmError> {
+    let default_replacements = commit::default_sanitize_replacements();
+    for entry in flattened.iter_mut() {
+        entry.path_components = commit::sanitize_and_validate_components(
+            &entry.path_components,
+            &entry.entry.sanitize_names,
+            &default_replacements,
+        )?;
+    }
+    Ok(())
 }
 
 /// Materialises one flattened hierarchy entry from CAS content to the

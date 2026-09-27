@@ -1,17 +1,23 @@
 //! Path validation, readonly enforcement, and filesystem helpers.
+//!
+//! Two concerns live here. The first is the hierarchy **path-component
+//! validation chain** ([`sanitize_and_validate_components`] and everything
+//! under it): NFD normalization, reserved-character sanitization, and strict
+//! per-component validation including `.`/`..` traversal rejection. Its
+//! production entry point is
+//! [`crate::materializer::sanitize_and_validate_hierarchy_paths`], which the
+//! materializer runs over every resolved hierarchy entry before any path is
+//! staged or written. The second is **readonly enforcement** for managed
+//! outputs ([`ensure_managed_path_readonly`]) and **stale-path removal**
+//! ([`remove_path`]).
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-#[cfg(test)]
-use std::collections::BTreeMap;
-
-#[cfg(test)]
 use unicode_normalization::UnicodeNormalization;
 
-#[cfg(test)]
 use crate::config::hierarchy_types::SanitizeNamesConfig;
-
 use crate::error::MediaPmError;
 
 /// Removes one path recursively when it is a directory, or as one file otherwise.
@@ -272,17 +278,34 @@ fn clear_directory_writable(path: &Path) -> Result<(), MediaPmError> {
     Ok(())
 }
 
+/// Reserved characters rewritten by [`default_sanitize_replacements`].
+///
+/// Mirrors the character set rejected by `is_rejected_char`, so
+/// [`SanitizeNamesConfig::Enabled`] rewrites exactly the characters that
+/// would otherwise fail validation.
+pub(super) const SANITIZED_RESERVED_CHARS: [char; 9] =
+    ['<', '>', ':', '"', '|', '?', '*', '/', '\\'];
+
+/// Builds the default replacement map applied under
+/// [`SanitizeNamesConfig::Enabled`]: every reserved character listed in
+/// [`SANITIZED_RESERVED_CHARS`] becomes `_`.
+///
+/// This is the concrete meaning of the `Enabled` variant's documented
+/// "reserved chars to `_`" policy. Per-entry [`SanitizeNamesConfig::Custom`]
+/// maps are layered on top of this map by
+/// [`sanitize_and_validate_components`].
+#[must_use]
+pub(super) fn default_sanitize_replacements() -> BTreeMap<char, char> {
+    SANITIZED_RESERVED_CHARS.into_iter().map(|ch| (ch, '_')).collect()
+}
+
 /// Applies a reserved-character replacement map to a single path component.
 ///
 /// This operates on individual characters within one path component, not on
 /// a joined path string, so `/` and `\` within a component are properly
-/// replaced rather than consumed as structural separators.
+/// replaced rather than consumed as structural separators. Characters absent
+/// from `replacements` pass through unchanged.
 #[must_use]
-/// Applies a character replacement map to one path component.
-///
-/// Compiled only under `cfg(test)`: the path-validation chain below has no
-/// production entry point, so a release build never sanitizes a component.
-#[cfg(test)]
 pub(super) fn sanitize_path_component(
     component: &str,
     replacements: &BTreeMap<char, char>,
@@ -296,8 +319,12 @@ pub(super) fn sanitize_path_component(
 /// template placeholders are resolved.
 /// Rejects a path whose components are not already NFD-normalized.
 ///
-/// Compiled only under `cfg(test)`: the path-validation chain below has no
-/// production entry point, so a release build never runs this check.
+/// This is a *source-level* pre-check: it rejects a config-declared component
+/// in a non-NFD form before template placeholders are resolved. It stays
+/// `cfg(test)`-gated because the materializer entry point normalizes instead
+/// of rejecting (see [`sanitize_and_validate_components`]), and promoting this
+/// helper to a config-load error is a separate user-visible policy change for
+/// existing NFC-spelled hierarchy declarations.
 #[cfg(test)]
 pub(super) fn check_nfd_source(components: &[String]) -> Result<(), MediaPmError> {
     for component in components {
@@ -320,9 +347,11 @@ pub(super) fn check_nfd_source(components: &[String]) -> Result<(), MediaPmError
 /// - Must be Unicode NFD normalized (with a distinct message from the source check)
 ///
 /// Returns the validated components (consume-then-return for pipeline chaining).
-/// Compiled only under `cfg(test)`: the path-validation chain has no production
-/// entry point, so a release build never runs these checks.
-#[cfg(test)]
+///
+/// Enforced in production by [`sanitize_and_validate_components`], which the
+/// materializer runs over every resolved hierarchy entry before any path is
+/// staged or written (see
+/// [`crate::materializer::sanitize_and_validate_hierarchy_paths`]).
 pub(super) fn validate_components(components: &[String]) -> Result<Vec<String>, MediaPmError> {
     for component in components {
         if component.is_empty() {
@@ -364,10 +393,10 @@ pub(super) fn validate_components(components: &[String]) -> Result<Vec<String>, 
 ///
 /// Delegates to [`validate_components`] when any component fails validation.
 ///
-/// Compiled only under `cfg(test)`: this is the chain's only entry point and it
-/// has no production caller, so a release build never validates or sanitizes
-/// hierarchy path components.
-#[cfg(test)]
+/// Production entry point of the chain: the materializer calls this for every
+/// flattened hierarchy entry, after metadata interpolation and before any
+/// path is staged, verified, or committed (see
+/// [`crate::materializer::sanitize_and_validate_hierarchy_paths`]).
 pub(super) fn sanitize_and_validate_components(
     components: &[String],
     sanitize_names: &SanitizeNamesConfig,
@@ -395,8 +424,13 @@ pub(super) fn sanitize_and_validate_components(
 
 /// Returns whether one character is forbidden by cross-platform filename rules.
 ///
-/// Compiled only under `cfg(test)`: sole caller is [`validate_components`].
-#[cfg(test)]
+/// The set doubles as the traversal guard: `/` and `\\` are rejected, so a
+/// component that smuggled a separator (for example an artist tag `AC/DC`)
+/// can never re-split into extra path components, and an absolute component
+/// can never anchor outside the hierarchy root. `.` and `..` are rejected by
+/// `validate_components` before this predicate is consulted.
+///
+/// Sole caller is [`validate_components`].
 fn is_rejected_char(ch: char) -> bool {
     matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\')
 }
