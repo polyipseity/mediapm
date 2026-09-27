@@ -9,7 +9,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use std::sync::Arc;
 
-use crate::api::{ObjectEncoding, VerifyTriggerStrategy};
+use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -17,53 +17,28 @@ use super::BlobStore;
 
 /// Ephemeral in-memory blob storage backed by `DashMap`.
 ///
-/// Verify strategies are accepted but ignored — in-memory data cannot be
-/// externally corrupted.
+/// The store takes no verify strategies: in-memory data cannot be corrupted
+/// between write and read, so there is nothing for a trigger strategy to
+/// guard. [`FileSystemBlobStore::create`](super::FileSystemBlobStore::create)
+/// is the constructor that does consult strategies, because the filesystem it
+/// writes to can change underneath it.
 #[derive(Clone)]
 pub struct InMemoryBlobStore {
     data: Arc<DashMap<Hash, (Bytes, ObjectEncoding)>>,
     aux: Arc<DashMap<(Hash, String), Bytes>>,
-    // WHY: the store records the strategies its constructor was handed, and
-    // nothing reads them back. That is the documented contract of this type
-    // (see the docs above): in-memory data cannot be corrupted between write
-    // and read, so there is nothing for a trigger strategy to guard. The field
-    // is kept so the construction surface stays parallel with
-    // `FileSystemBlobStore::create`, which does consult its strategies.
-    #[expect(
-        dead_code,
-        reason = "recorded for construction parity with the filesystem blob store, but never consulted: in-memory blobs cannot be externally corrupted"
-    )]
-    verify_strategies: Vec<VerifyTriggerStrategy>,
 }
 
 impl Default for InMemoryBlobStore {
     fn default() -> Self {
-        Self {
-            data: Arc::new(DashMap::new()),
-            aux: Arc::new(DashMap::new()),
-            verify_strategies: Vec::new(),
-        }
+        Self { data: Arc::new(DashMap::new()), aux: Arc::new(DashMap::new()) }
     }
 }
 
 impl InMemoryBlobStore {
-    /// Create an empty blob store with no verification.
+    /// Create an empty blob store.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Create an empty blob store with the given verify strategies.
-    ///
-    /// Strategies are accepted for API compatibility but ignored — in-memory
-    /// data is always consistent.
-    #[must_use]
-    pub fn with_strategies(strategies: Vec<VerifyTriggerStrategy>) -> Self {
-        Self {
-            data: Arc::new(DashMap::new()),
-            aux: Arc::new(DashMap::new()),
-            verify_strategies: strategies,
-        }
     }
 }
 
