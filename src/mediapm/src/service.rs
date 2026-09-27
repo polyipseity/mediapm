@@ -388,16 +388,29 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         )
     }
 
-    /// Adds one online media source at the given position and saves the
-    /// document.
+    /// Adds one online media source with caller-supplied metadata and saves
+    /// the document.
     ///
-    /// Normalizes the URI, validates the scheme, optionally fetches metadata
-    /// from the source, then inserts the entry into the mediapm document.
+    /// All metadata is caller-supplied: the non-empty `title` and
+    /// `description` overrides are applied to a clone of `media_source`, and
+    /// the entry is then inserted into the document's `media` map under
+    /// `media_id` and saved. This function reads neither the filesystem nor
+    /// the network, and it does not touch the hierarchy.
+    ///
+    /// The `uri` and `position` parameters exist for interface symmetry with
+    /// [`add_local_source_with_position`](Self::add_local_source_with_position)
+    /// and are not read here. A caller derives `media_id` from the URI before
+    /// calling (see `media_id_from_uri`), and the entry's order in the
+    /// document follows its `media_id` key rather than the requested
+    /// position.
+    ///
+    /// When `media_id` is already present, `overwrite` replaces the existing
+    /// entry and drops its hierarchy nodes; otherwise the call fails.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError::Workflow`] if the media id already exists or
-    /// the hierarchy insertion fails.
+    /// Returns [`MediaPmError::Workflow`] if `media_id` already exists and
+    /// `overwrite` is unset, or if the document cannot be saved.
     #[expect(
         clippy::too_many_arguments,
         clippy::needless_pass_by_value,

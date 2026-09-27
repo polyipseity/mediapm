@@ -13,7 +13,7 @@ util.rs                    — first_non_empty_json_string helper
 http_client.rs             — Shared reqwest::Client (OnceLock)
 global.rs                  — MediaPmGlobalPaths, MEDIAPM_GIT_HASH
 paths.rs                   — MediaPmPaths (17 fields), MediaPmPathOverrides
-source_metadata.rs         — Online/local metadata probes
+source_metadata.rs         — Local-source ffprobe probes + conductor CAS root
 hierarchy.rs               — Hierarchy node mutation
 metadata_cache.rs          — JSON metadata cache, TTL-based expiry
 service.rs                 — MediaPmService<Cas> orchestration
@@ -144,6 +144,8 @@ Two caches are enabled by default, both workspace-scoped under `<runtime>/cache/
 
 - **ffprobe cache** (`metadata_cache.rs`): `MediaPmService` owns a `MetadataCache` at `paths.workspace_mediapm_cache_dir()` (`<runtime>/cache/mediapm/metadata.cache.json`). Each `add_local_source_*` call consults it keyed by `ffprobe:{path}` (TTL = 1 day, `METADATA_CACHE_ENTRY_TTL_SECONDS`); the probe runs only on a miss. Expired entries are pruned at open and flushed atomically on drop.
 - **media-tagger HTTP cache**: the media-tagger step synthesizes a `cache_dir` input defaulting to `paths.workspace_media_tagger_cache_dir()` (`<runtime>/cache/media_tagger`), threaded through `synthesize_media_tagger_step` → `build_media_tagger_metadata_inputs` as the `cache_dir` step option (overridable via `options.cache_dir`). `MediaTaggerHttpCache` honors a non-empty `cache_dir`; empty disables caching. `cache_expiry_seconds` defaults to `86400`.
+
+`ffprobe` is the only source-metadata probe. Online `${media.metadata.*}` values are resolved during materialization from the yt-dlp `info.json` sidecar held in CAS (`materializer/metadata.rs`, `resolve_variant_metadata_key`); `media add` never contacts a remote source, and `add_media_source_with_position` takes its title, description, and media id from the caller.
 
 ### Global tool cache CLI
 
