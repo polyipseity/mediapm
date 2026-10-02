@@ -11,10 +11,11 @@
 //! grid, and a synthetic clock the screen can advance so the elapsed and rate
 //! columns hold numbers instead of depending on wall time.
 //!
-//! Each screen's renderer lives in its own sibling file, `tool_sync.rs` or
-//! `workflow.rs`, and each example declares only the one it needs. Compiling
-//! every renderer into every example binary would leave the unused ones dead,
-//! which `warnings = "deny"` turns into a build failure.
+//! Each screen's renderer lives in its own sibling file, `tool_sync.rs`,
+//! `workflow.rs`, or `materialization.rs`, and each example declares only the
+//! one it needs. Compiling every renderer into every example binary would
+//! leave the unused ones dead, which `warnings = "deny"` turns into a build
+//! failure.
 //!
 //! The files under `examples/fixtures/` hold the transcripts these renderers
 //! produce, one per width.
