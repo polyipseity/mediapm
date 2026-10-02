@@ -21,15 +21,31 @@ MIN_PREFIX_WIDTH = 0       (decreasable floor, effective floor ~4 from ANSI rese
 MAX_PREFIX_WIDTH = 40      (hard ceiling, prefixes truncate beyond this)
 MIN_SUFFIX_WIDTH = 0       (decreasable floor, no ANSI overhead on suffix side)
 MAX_SUFFIX_WIDTH = 65
+FRAME_OVERHEAD_COLUMNS = 4 (spinner glyph plus the three spaces between the four template fields)
+MIN_BAR_FILL = 4           (columns held back for the fill before the label slot grows)
 ```
 
-`max_prefix_width()` (`src/mediapm-utils/src/progress/inner/components.rs:569`) and `max_suffix_width()` (`:574`) are `const fn` returning those two ceilings. Neither takes an argument, so no terminal width enters the budget. `recompute_layout` clamps the widths it measured against the constants: `prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, MAX_PREFIX_WIDTH)`, `suffix_w = max_suffix.clamp(MIN_SUFFIX_WIDTH, MAX_SUFFIX_WIDTH)`.
+`max_prefix_width(cols)` (`src/mediapm-utils/src/progress/inner/components.rs:586`) and `max_suffix_width(cols)` (`:592`) are `const fn` capping those two ceilings at the terminal width, so neither reserves more than the line holds. `recompute_layout` (`renderer.rs:921`) then spends what is left of `cols`:
+
+```text
+label_columns = cols - (FRAME_OVERHEAD_COLUMNS + MIN_BAR_FILL)
+suffix_w     = min(measured suffix, suffix_ceiling, label_columns)
+prefix_w     = min(measured prefix, prefix_ceiling, label_columns - suffix_w)
+```
+
+The suffix is settled first because it is the field that must not wrap: a suffix past the end of the line spills onto the row below, where it reads as a second bar. `cols` arrives from [`DimensionSource::dimensions`](`src/mediapm-utils/src/progress/inner/debug.rs:12`), which is `RealTerminalSource` on a terminal and `TestDimensionSource` under a test.
 
 ## Two layout facts to know before changing a label
 
-**The seed label sets the prefix ceiling.** The renderer measures the label a bar was created with, not the text that bar draws. `SharedState::with_time_source_and_style` splits the seed into prefix components at `src/mediapm-utils/src/progress/inner/renderer.rs:180`, and `recompute_layout` takes the screen-wide maximum of those measured prefixes at `:920`. Client truncation can only cut width, never add it, so the seed is the ceiling and a longer rendered label is cut down to it. The conductor seeds every worker slot with `idle [wf]` (`src/mediapm-conductor/src/orchestration/coordinator.rs:343`), so on the workflow screen an active worker row renders `[active]` and nothing else at any terminal width. This is the behaviour behind the bug report that prompted these examples.
+**The slot is measured from what a bar draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` turns the seed into built-in prefix components at `src/mediapm-utils/src/progress/inner/renderer.rs:178`, and `snap.prefix` is their render, which is the right width to measure for a bar that draws them. A bar with a `BarLabelTruncation` installed draws something else, so `recompute_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`renderer.rs:936`). `snap.prefix` is the wrong width for such a bar, because the seeds are short by design and `idle [wf]` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:343`). A client label may be longer or shorter than the string its bar was created with, so the measurement has to follow the label.
 
-**The budget never subtracts the terminal width.** Because the two helpers take no argument, narrowing the terminal shrinks the fill first and the labels not at all. Each screen runs out of fill at a different width, and no template switches at any of them: the workflow screen still has a fill column at 41 columns and has none at 40, materialization still gives every row one at 39 and has none at 37, and tool sync is squeezed to a six-column bar at 60 and breaks the same way below 54 (`src/mediapm/examples/mediapm_progress_workflow.rs:23` and `:134`, `mediapm_progress_materialize.rs:29`, `mediapm_progress_tool_sync.rs:79`). That is why the examples default to width 80 and the unit tests pin 40 (`common::mk()` in `src/mediapm-utils/tests/progress_output/common.rs`): 40 is a width that keeps assertions short, not a width chosen to be realistic.
+**The budget is the terminal's, and the ceiling only trims it.** The slot is what is left after the spinner, the separators, the suffix and `MIN_BAR_FILL`, capped at `MAX_PREFIX_WIDTH`. Narrowing the terminal shrinks the fill first and takes columns from the label one ranked field at a time, so what changes across widths is which field survives, not how much of the line the labels occupy. That is why the examples default to width 80 and the unit tests pin 40 (`common::mk()` in `src/mediapm-utils/tests/progress_output/common.rs`): 40 keeps assertions short and is not a width chosen to be realistic.
+
+## No row wraps, and no compact row exists
+
+Every width from the harness minimum of 8 columns to 80 draws one line per row on all three screens, which the three `*_screen_never_wraps_a_row` tests pin. The fill is what absorbs the narrowing: the budget reserves `MIN_BAR_FILL` columns for it and hands the rest to the label, one ranked field at a time. At 8 columns, the narrowest the harness accepts, a row is the spinner and three fill cells and nothing else.
+
+The fill floor is the reason there is no compact row template. All four styles embed `wide_bar` and a suffix slot, so none of them can express a bar-less row, and every width from 8 to 80 has fill to draw. A template that no width would select is dead code, and `warnings = "deny"` in the root `Cargo.toml` would reject it.
 
 ## Production templates
 
@@ -165,17 +181,17 @@ Carries file-path identity and phase. No version, no count/total, no workflow/st
 
 | Field | Meaning | Example |
 |-------|---------|---------|
-| `status_marker` | Terminal state marker, which the materializer never writes | `""` |
+| `status_marker` | Terminal state marker | `""` / `"W"` / `"F"` |
 | `entry_path` | Directory portion of hierarchy path | `"Music/Artist/Album"` |
 | `entry_name` | Basename of hierarchy entry | `"song.mkv"` |
 | `file_name` | Extracted file basename (sub-bars only) | `"cover.jpg"` |
 | `phase` | Materialization phase tag | `"stg"` / `"vrf"` / `"cmt"` / `"wrt"` / `"mat"` |
 
-**Suffix:** always empty. `truncate_suffix` returns `String::new()` unconditionally (`src/mediapm/src/materializer/progress_labels.rs:68-70`), and the client-truncation path replaces a bar's suffix with that return value rather than adding to it, so elapsed, rate, eta, and count never render on a materialization row.
+**Suffix:** the auto-derived timing, in the same order `WorkerBarLabel` uses (`src/mediapm/src/materializer/progress_labels.rs:109`). `truncate_suffix` fits `elapsed`, `rate` and `eta` through `fit_segments` and has to read them out of the merged `SuffixComponents` to do it: the client path replaces a bar's suffix with what this method returns rather than adding to it, so a label that returns an empty string takes elapsed, rate and eta off the screen rather than narrowing them.
 
 ### Why the structs are separate
 
-They carry different fields, and the truncation order is a per-screen decision rather than a property of a label type. A worker bar wants its activity marker first and has no tally; a materialization bar wants its phase first and no identifiers at all. Merging them would force every screen's ranking through one shared struct, and the ranking is the part that has to be right.
+They carry different fields, and the truncation order is a per-screen decision rather than a property of a label type. A worker bar wants its activity marker first and has no tally; a materialization bar wants its phase first and a path, where the path shortens from the head because its tail is the informative end. Merging them would force every screen's ranking through one shared struct, and the ranking is the part that has to be right.
 
 ### Built-in `PrefixComponents` truncation order
 
@@ -207,7 +223,7 @@ Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases a
 
 Phase `[wf]` appears in the seeds rather than in a client label: the coordinator seeds every worker slot `idle [wf]` (`coordinator.rs:343`) and the overall bar `workflow [wf]`.
 
-A live run registers worker-slot bars only. `StepBarLabel` has no production caller, so nothing on this screen shows a per-step version or tally. The bars that do exist use `WorkerBarLabel`, whose prefix order puts the activity marker ahead of the identifiers; combined with the seed ceiling above, an active row renders `[active]` on its own and a warning or failed row renders `[W]` or `[F]` with its identifiers already dropped.
+A live run registers worker-slot bars only. `StepBarLabel` has no production caller, so nothing on this screen shows a per-step version or tally. The bars that do exist use `WorkerBarLabel`, which ranks `status_marker`, `activity`, `workflow_id`, `step_id`, `tool` and leaves `tool` the only elastic segment, so a running row reads `[active] default s3 (ffmpeg)` wherever the terminal has room for it and gives up the identifiers before the tool name. The seed does not cap the slot, so the tool name survives widths at which the workflow and step identifiers are gone.
 
 Worker-slot states (`worker_slot_label` in `coordinator.rs:195`):
 
@@ -222,15 +238,15 @@ Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec
 
 ### Screen C: Materialization (`src/mediapm/src/materializer/`)
 
-Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`. Prefix segments are ordered `phase`, `status_marker`, `entry_name`, `file_name`, `entry_path`, so the phase tag leads, the basename is kept whole, and the elastic directory path is shortened from the front and yields first.
+Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`. Prefix segments are ordered `phase`, `status_marker`, `entry_name`, `entry_path`, `file_name`, so the phase tag leads, both halves of the path are elastic and shorten from the head, and `file_name` is dropped before the directory that holds it. `entry_name` is elastic rather than kept whole because a name kept whole is a name that vanishes once nothing else can shrink, and its tail still carries the extension and the bracketed media id that separates one entry from another.
 
 Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-extracted-file sub-bar inside a ZIP folder variant).
 
-Three things on this screen do not behave the way the phase list suggests:
+Only the media entry walks the phase list:
 
 - **The `[stg]` → `[vrf]` → `[cmt]` transition runs only for `HierarchyEntryKind::Media`.** The per-entry bar is created with phase `stg` for every entry kind (`src/mediapm/src/materializer/mod.rs:396-403`), and only the `Media` arm calls `set_truncation` again, at `mod.rs:429-448`. A `MediaFolder` or `Playlist` entry shows `[stg]` for its whole run.
-- **No row carries a status marker.** Nothing outside the label's own unit test writes `status_marker`, which that test does at `src/mediapm/src/materializer/progress_labels.rs:122`. `finish_warning` (`mod.rs:525`) and `finish_error` (`mod.rs:557` and `:573`) set a bar's terminal state and stop there, so a warning and a failure are indistinguishable on screen apart from the bar colour.
-- **No row carries a suffix**, for the reason given under `MaterializationBarLabel` above.
+
+A warning or a failure carries its marker in the text as well as in the bar colour. `mark_entry_bar_finished` (`src/mediapm/src/materializer/mod.rs:383`) re-installs the bar's label with `status_marker` set to `W` or `F` immediately before `finish_warning` or `finish_error` (`mod.rs:557`, `:592` and `:609`), so `[W]` and `[F]` are readable on the row itself. Every row also carries the timing the renderer derives for it, for the reason given under `MaterializationBarLabel` above.
 
 ## Post-finish result messages
 
@@ -311,7 +327,7 @@ Do not paste a terminal frame into this file. Every screen has a runnable exampl
 | B workflow | `cargo run -p mediapm --example mediapm_progress_workflow` | `src/mediapm/examples/fixtures/mediapm_progress_workflow/` |
 | C materialization | `cargo run -p mediapm --example mediapm_progress_materialize` | `src/mediapm/examples/fixtures/mediapm_progress_materialize/` |
 
-Every example takes `--width` and `--height`. The defaults are 80 and 24 (`src/mediapm/examples/support/mod.rs:41`). Each fixture directory holds a width-80 transcript and one narrow transcript: 60 columns for tool sync, 41 for workflow, 27 for materialization. Regenerate one by running the example at that width and redirecting stdout.
+Every example takes `--width` and `--height`. The defaults are 80 and 24 (`src/mediapm/examples/support/mod.rs:41`), and the harness refuses a width below 8 (`src/mediapm/examples/support/mod.rs:51`). Each fixture directory holds a width-80 transcript and one narrow transcript, and the narrow one sits at the narrowest width where every row on that screen still renders its identity: 50 columns for tool sync, where every row still shows its phase tag; 65 for workflow, where every row still shows its tool name in full; 27 for materialization, where every row still shows its phase tag. Each number was measured by rendering its screen at successive widths rather than carried over from another screen, so re-measure rather than inherit if the budget moves again. Regenerate one by running the example at that width and redirecting stdout.
 
 Each example also asserts its own grid inline, with `assert_eq!` against a `concat!` literal in `src/mediapm/examples/mediapm_progress_*.rs`, so a layout change fails the suite before anyone reaches for a transcript.
 
@@ -330,7 +346,7 @@ Each example also asserts its own grid inline, with `assert_eq!` against a `conc
 These test files use `assert_eq!(term.contents(), concat!(...))` against an inline literal and ARE the real format:
 
 - `src/mediapm-utils/tests/progress_output/` — `consumer.rs`, `elapsed.rs`, `layout.rs`, `lifecycle.rs`, `render.rs`, `resize.rs`, `spinner.rs`; `common.rs` and `debug.rs` are helpers and the debug sink
-- `src/mediapm/examples/mediapm_progress_tool_sync.rs`, `mediapm_progress_workflow.rs`, `mediapm_progress_materialize.rs` — one exact grid per screen, at the default width and at the narrow one
+- `src/mediapm/examples/mediapm_progress_tool_sync.rs`, `mediapm_progress_workflow.rs`, `mediapm_progress_materialize.rs` — one exact grid per screen, at the default width and at the narrowest width where the screen stays identifiable, plus a `*_screen_never_wraps_a_row` sweep down to the harness minimum of 8
 
 `src/mediapm/src/output/progress.rs` also asserts against `term.contents()`, but with substring checks rather than exact literals, so it pins behaviour such as "elapsed reads `0s` after finish" rather than a full frame.
 

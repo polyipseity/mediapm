@@ -120,11 +120,11 @@ mod tests {
     /// started being budgeted from the terminal, so it is worth re-measuring
     /// rather than treating as fixed.
     ///
-    /// Together with the 80-column case this pins the working side of the
-    /// boundary. The narrow side is covered by
-    /// `materialization_screen_never_wraps_a_row`.
+    /// At 26 the slot is empty on every row and each one is the spinner, the
+    /// fill and the suffix, which is what
+    /// `materialization_screen_never_wraps_a_row` covers.
     #[test]
-    fn materialization_screen_at_fill_boundary_matches_inline_grid() {
+    fn materialization_screen_at_narrowest_identifiable_width_matches_inline_grid() {
         let config = ScreenConfig { width: 27, height: DEFAULT_HEIGHT };
         let grid = strip_ansi_escapes(&render_materialization_screen(config));
         assert_eq!(
@@ -142,19 +142,19 @@ mod tests {
     /// The frame a folder entry wider than the client budget produces.
     ///
     /// The folder is the online demo's. Its `entry_name` is 59 columns against
-    /// a 29 column budget, and `entry_name` is elastic, so the name
+    /// the slot the terminal leaves, and `entry_name` is elastic, so the name
     /// shortens from the front and rows two and three keep
     /// `[youtube.dQw4w9WgXcQ]`, the part that names the video. The old
     /// ranking made `entry_name` a `Segment::keep`, which `fit_segments`
     /// drops whole once nothing can shrink, and those two rows rendered as a
     /// bare `[stg]` and `[wrt]` with no identity at all.
     ///
-    /// The over-long seed still costs the other rows, because the shared
-    /// prefix slot is sized from the longest seed: it grows from 29 columns to
-    /// 40 and the two media rows surrender part of their directory to
-    /// `… Children` and `…e Wall`. One folder name this wide costs every row
-    /// on the screen some of its path, which is the reason the frame is
-    /// pinned here rather than left to the module doc's word "over-long".
+    /// The other rows are unchanged from the 80-column grid above, because
+    /// their own labels already fill the 40-column slot. The slot is what the
+    /// widest label measures, capped at `MAX_PREFIX_WIDTH`, so a name wider
+    /// than the slot shortens inside it and costs the rows that needed no
+    /// shortening nothing. Which fields survive that is the label's ranking
+    /// and not the budget's business.
     #[test]
     fn materialization_screen_keeps_the_tail_of_a_folder_name_wider_than_the_budget() {
         let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
@@ -179,8 +179,9 @@ mod tests {
     /// Under the old rule the prefix kept the width of the longest seed and the
     /// row outgrew the terminal, so from 46 columns down the grid interleaved a
     /// blank line per row. What gives way now is the prefix, one ranked field
-    /// at a time, and the fill keeps its four cells throughout. The row count
-    /// and the row width are what this pins; the fill is not what is at stake.
+    /// at a time, and the fill keeps four cells from 9 columns up and three at
+    /// the 8-column minimum the harness accepts. The row count and the row
+    /// width are what this pins; the fill is not what is at stake.
     #[test]
     fn materialization_screen_never_wraps_a_row() {
         for width in [26, 24, 22, 20, 18, 16, 14, 12, 10, 8] {

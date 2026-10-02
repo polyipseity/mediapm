@@ -9,7 +9,7 @@
 //! per-step bar above the overall bar carries a version and a progress tally.
 //!
 //! A worker row carries the workflow, the step and the tool it is running:
-//! `[active] default s3 (ffmpeg)` is 28 columns of the 39 the screen gives its
+//! `[active] default s3 (ffmpeg)` is 28 columns of the 38 the screen gives its
 //! labels at this width. The slot is what the terminal has left after the
 //! spinner, the separators, the suffix and a fill floor, so at narrower widths
 //! the tool name goes before the bar does.
@@ -19,11 +19,15 @@
 //!
 //! ```text
 //! cargo run --package mediapm --example mediapm_progress_workflow
-//! cargo run --package mediapm --example mediapm_progress_workflow -- --width 41
+//! cargo run --package mediapm --example mediapm_progress_workflow -- --width 65
 //! ```
 //!
-//! 41 leaves room for the activity markers, the tally and a five-cell fill.
-//! `workflow_screen_never_wraps_a_row` covers the widths below it, where the
+//! 65 is the narrowest width at which every row still renders its tool name in
+//! full, measured by rendering this screen at successive widths rather than
+//! taken from the other two screens. The tool is the last field `WorkerBarLabel`
+//! ranks, so it is the first to go: at 64 the per-step row is down to the tail
+//! `…fmpeg)`, and by 41 a running worker reads `[active]` and nothing else.
+//! `workflow_screen_never_wraps_a_row` covers the widths below 65, where the
 //! label gives way one field at a time and the row still fits on one line.
 //!
 //! What reaches stdout is the rendered grid with its colour escapes removed, so
@@ -96,26 +100,28 @@ mod tests {
         );
     }
 
-    /// The exact grid at 41 columns, where the activity markers, the step
-    /// tally and a five-cell fill still fit on one line.
+    /// The exact grid at 65 columns, the narrowest width at which every row
+    /// still renders its tool name in full.
     ///
-    /// The identity fields give way in the order the label ranks them: the
-    /// identifiers go first, then the tool name, and the marker stays last
-    /// because it is the only field that says the slot is alive.
+    /// Six of the seven rows name a tool and the seventh names the workflow,
+    /// which is the identity the overall bar has. What the width buys is the
+    /// tail end of that: the per-step row carries the version and the tally
+    /// ahead of it, so it is the row that reaches the limit first, and the
+    /// worker rows follow it through `default`, `s3` and into the tool.
     #[test]
-    fn workflow_screen_at_narrow_width_matches_inline_grid() {
-        let config = ScreenConfig { width: 41, height: DEFAULT_HEIGHT };
+    fn workflow_screen_at_narrowest_identifiable_width_matches_inline_grid() {
+        let config = ScreenConfig { width: 65, height: DEFAULT_HEIGHT };
         let grid = strip_ansi_escapes(&render_workflow_screen(config));
         assert_eq!(
             grid,
             concat!(
-                "⠙       [active] ░░░░ 22s 0/d\n",
-                "⠙       [active] ░░░░ 19s 0/d\n",
-                "⠏     [W] [idle] ████ 4s\n",
-                "⠏     [F] [idle] ████ 5s\n",
-                "⠏     [idle] …e) ████ 6s\n",
-                "⠇       [wf] 1/3 █░░░ 1/3 22s 0/d\n",
-                "⠏              w █░░░  4/12 23s",
+                "⠙           [active] default s3 (ffmpeg) ░░░░ 22s 0/d\n",
+                "⠙           [active] default s4 (yt-dlp) ░░░░ 19s 0/d\n",
+                "⠏                      [W] [idle] (idle) ████ 4s\n",
+                "⠏                      [F] [idle] (idle) ████ 5s\n",
+                "⠏                          [idle] (idle) ████ 6s\n",
+                "⠇     [wf] 1/3 [7.1] default s3 (ffmpeg) █░░░ 1/3 22s 0/d\n",
+                "⠏                      [W] workflow [wf] █░░░  4/12 23s",
             )
         );
     }
@@ -127,12 +133,15 @@ mod tests {
     /// columns down the captured grid grew an interleaved blank line per row:
     /// the row was wider than the terminal and the spill landed below it, where
     /// a suffix such as `0s 0/d` reads as a second bar. What gives way now is
-    /// the label, and the fill keeps its four cells at every width measured,
-    /// which is why this asserts the row count and the row width rather than
-    /// the fill.
+    /// the label. The fill keeps four cells from 9 columns up and three at the
+    /// 8-column minimum the harness accepts, so this asserts the row count and
+    /// the row width rather than the fill.
     #[test]
     fn workflow_screen_never_wraps_a_row() {
-        for width in [38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8] {
+        for width in [
+            64, 62, 60, 58, 56, 54, 52, 50, 48, 46, 44, 42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22,
+            20, 18, 16, 14, 12, 10, 8,
+        ] {
             let config = ScreenConfig { width, height: DEFAULT_HEIGHT };
             let grid = strip_ansi_escapes(&render_workflow_screen(config));
             let rows: Vec<&str> = grid.lines().collect();
