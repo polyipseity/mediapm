@@ -19,34 +19,28 @@
 //!
 //! `materializing [mat]` is nineteen columns and the overall bar is the only
 //! bar whose seed stays that short. Every other seed carries a path or a
-//! variant name, so the shared prefix slot is clamped to the renderer's 40
-//! column ceiling (`MAX_PREFIX_WIDTH` in
-//! `src/mediapm-utils/src/progress/inner/components.rs:556`) and the rows are
-//! 40 columns of prefix whatever the terminal width is. The client gets 36 of
-//! those after the renderer's four byte reset. Only the labels that fit
-//! survive, and under pressure the elastic directory path is shortened from
-//! its head. A folder name longer than the whole 36 column budget is not
-//! elastic, so it is dropped whole and the row is left with the bare `[stg]` or
-//! `[wrt]` tag and no identity at all. The online demo's media folder is named
-//! that long, so it is the ordinary case for a real music library rather than
-//! an exotic one, and
-//! `materialization_screen_drops_a_folder_name_wider_than_the_budget` in
-//! `mediapm_progress_materialize.rs` pins the frame it renders.
+//! variant name, and the longest of them is twenty-nine, so the shared prefix
+//! slot measures twenty-nine plus the renderer's four byte overhead and the
+//! client gets twenty-nine columns back. Under that budget the elastic path
+//! halves shorten from the head, and a folder name wider than the whole budget
+//! shortens too rather than being dropped whole. The online demo's media
+//! folder is named that long, so it is the ordinary case for a real music
+//! library rather than an exotic one, and
+//! `materialization_screen_keeps_the_tail_of_a_folder_name_wider_than_the_budget`
+//! in `mediapm_progress_materialize.rs` pins the frame it renders.
 //!
-//! No row on this screen carries a suffix. [`MaterializationBarLabel`] returns
-//! an empty string from `truncate_suffix` unconditionally
-//! (`src/mediapm/src/materializer/progress_labels.rs:68-71`), and a bar with
-//! client truncation installed has its suffix replaced by that return value
-//! rather than supplemented by it, so the auto-derived elapsed, rate, and eta
-//! columns never reach the terminal here. The conductor's labels pass the same
-//! suffix through `fit_segments`, which is why the workflow screen shows
-//! elapsed time and this one does not.
+//! Every row carries the auto-derived timing the renderer passes in. The
+//! client-truncation path replaces a bar's suffix with what
+//! [`MaterializationBarLabel::truncate_suffix`] returns rather than
+//! supplementing it, so that method has to read `elapsed`, `rate`, and `eta`
+//! out of the merged `SuffixComponents` or the timing never reaches the
+//! terminal. The conductor's labels pass the same suffix through
+//! `fit_segments`, and so does this one.
 //!
-//! No row carries an `[F]` or `[W]` marker either. Nothing outside the label's
-//! own unit test writes `status_marker`: `finish_warning` at
-//! `src/mediapm/src/materializer/mod.rs:525` and `finish_error` at `:557` and
-//! `:573` set a bar's terminal state and stop there, so the status segment the
-//! label builds for a non-empty marker never reaches a screen.
+//! No row here carries an `[F]` or `[W]` marker, because nothing in this
+//! screen finishes with a warning or an error. The materializer does install
+//! one on those finishes, at the three call sites that used to change only a
+//! bar's colour; this screen just takes neither path.
 //!
 //! The label is the library's own [`MaterializationBarLabel`], re-exported
 //! from the `mediapm` crate root, and the path split is the library's
@@ -75,9 +69,9 @@ const LINK_VARIANT_MEMBERS: u64 = 3;
 /// Media folder entry the screen renders, as a path relative to the library
 /// root.
 ///
-/// Chosen short enough that `entry_name` fits the 36 column client budget, so
-/// the folder row reads like a normal frame. The online demo names the same
-/// kind of folder wider than that, which is what
+/// The basename is twenty-three columns, which fits the client budget on its
+/// own, so the folder row reads like a normal frame. The online demo names the
+/// same kind of folder wider than that, which is what
 /// `render_materialization_screen_for_folder` exists to render.
 const READABLE_FOLDER_ENTRY: &str = "Music/Rick Astley/Never Gonna Give You Up";
 
@@ -86,11 +80,10 @@ const READABLE_FOLDER_ENTRY: &str = "Music/Rick Astley/Never Gonna Give You Up";
 /// `prepare_hierarchy_entry` splits the relative path once with
 /// [`split_entry_path`] at `src/mediapm/src/materializer/mod.rs:396` and
 /// reuses the two halves for every phase it transitions through, so this takes
-/// the same pair rather than splitting again. `status_marker` is left at its
-/// default because no materializer call site sets it: `finish_warning` at
-/// `mod.rs:525` and `finish_error` at `mod.rs:557` and `:573` change the bar's
-/// terminal state without ever installing a `[F]` or `[W]` label, so that
-/// segment never reaches a materialization screen.
+/// the same pair rather than splitting again. `status_marker` stays at its
+/// default because no bar in this screen finishes with a warning or an error;
+/// the materializer sets the marker at the three finishes that do, through
+/// `mark_entry_bar_finished`.
 fn phase_label(entry_path: &str, entry_name: &str, phase: &str) -> Arc<MaterializationBarLabel> {
     Arc::new(MaterializationBarLabel {
         entry_path: entry_path.to_string(),
@@ -151,10 +144,10 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     /// `src/mediapm/src/materializer/mod.rs:746`.
     const LINK_VARIANT: &str = "links";
 
-    // `entry_name` is a keep segment, so a folder name wider than the 36 column
-    // client budget is dropped whole rather than shortened and the row renders
-    // as a bare `[stg]`. The default seed stays inside the budget for that
-    // reason; `materialization_screen_drops_a_folder_name_wider_than_the_budget`
+    // A folder name wider than the client budget shortens from the front rather
+    // than being dropped whole, so both the name's tail and the directory's
+    // tail survive. The default seed stays inside the budget;
+    // `materialization_screen_keeps_the_tail_of_a_folder_name_wider_than_the_budget`
     // renders the online demo's name, which does not.
     let (folder_path, folder_name) = split_entry_path(folder_entry);
     let (album_path, album_name) = split_entry_path(

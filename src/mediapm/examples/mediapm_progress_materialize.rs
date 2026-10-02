@@ -10,12 +10,9 @@
 //!
 //! The rows are the same width whatever the terminal is, because the shared
 //! prefix slot is sized from the longest seed and clamped to the renderer's
-//! 40 column ceiling, and every seed but the overall bar's carries a path. No
-//! row shows an elapsed or rate column: this label's suffix truncation returns
-//! an empty string, which replaces the renderer's auto-derived suffix rather
-//! than supplementing it. That is why this screen looks nothing like the
-//! other two, and the module doc in `support/materialization.rs` has the
-//! call sites.
+//! 40 column ceiling, and every seed but the overall bar's carries a path. The
+//! module doc in `support/materialization.rs` has the arithmetic and the seed
+//! sizes.
 //!
 //! The data is synthetic, so the example runs offline and in about a
 //! millisecond.
@@ -25,12 +22,15 @@
 //! cargo run --package mediapm --example mediapm_progress_materialize -- --width 39
 //! ```
 //!
-//! 39 is the narrowest width that still gives every row a fill column,
+//! 48 is the narrowest width at which every row still draws a fill column,
 //! measured by rendering this screen at successive widths rather than
-//! inherited from the other two screens. At 38 two rows keep a fill and three
-//! are bare, and at 37 no row has one and the grid starts interleaving a blank
-//! line per row. `materialization_screen_below_the_fill_boundary` describes
-//! that regime rather than pinning it as a transcript.
+//! inherited from the other two screens. Below it no row draws one, and at 46
+//! and down the grid starts interleaving a blank line per row.
+//! `materialization_screen_below_the_fill_boundary` describes that regime
+//! rather than pinning it as a transcript. The width used to be 39, before
+//! the materialization label started rendering the auto-derived suffix; see
+//! `materialization_screen_at_fill_boundary_matches_inline_grid` for the
+//! arithmetic.
 //!
 //! What reaches stdout is the rendered grid with its colour escapes removed, so
 //! redirecting the command writes the transcript checked in under
@@ -90,17 +90,14 @@ mod tests {
     /// on `[vrf]`. The overall bar is at one of three entries and still
     /// active, because the other two entries have not committed.
     ///
-    /// No row carries an `[F]` or `[W]` marker even though the materializer
-    /// finishes bars with `finish_warning` and `finish_error`. No call site
-    /// sets `status_marker`, so that segment never renders here.
+    /// No row carries an `[F]` or `[W]` marker, because nothing here finishes
+    /// with a warning or an error. The materializer does install one on those
+    /// finishes; this screen just never takes that path.
     ///
-    /// Every prefix is clipped by the shared prefix slot, which is sized from
-    /// the longest seed, so the album row's directory is front-ellipsised to
-    /// `…en` while the `[vrf]` row loses its path whole. No row carries an
-    /// elapsed, rate, or eta column either: the label's `truncate_suffix`
-    /// returns an empty string, which replaces the renderer's auto-derived
-    /// suffix instead of supplementing it. A layout change that stops clamping
-    /// has to change this transcript.
+    /// Every prefix shares one slot sized from the longest seed, so the name
+    /// gives up four columns to its directory on the rows that have both. The
+    /// suffix carries the auto-derived timing, `6s` and `0/d` per row. A layout
+    /// change that stops clamping has to change this transcript.
     #[test]
     fn materialization_screen_at_default_width_matches_inline_grid() {
         let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
@@ -108,33 +105,45 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "⠏     [cmt] 01 - Telepathy.flac …en ██████████████████████████████████████████\n",
-                "⠸     [stg] Never Gonna Give You Up ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n",
-                "⠴     [wrt] Never Gonna Give You Up ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n",
-                "⠇      [vrf] 01 - In the Flesh?.m4a ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n",
-                "⠋               [mat] materializing ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+                "⠏     [cmt] 01 - Telepathy.flac …en █████████████████████████████████ 6s\n",
+                "⠸     [stg] …r Gonna Give You Up …y ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
+                "⠴     [wrt] …a Give You Up …y links ███████████░░░░░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
+                "⠇     [vrf] …- In the Flesh?.m4a …l ███████████░░░░░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
+                "⠋               [mat] materializing ███████████░░░░░░░░░░░░░░░░░░░░░░ 13s 1/m",
             )
         );
     }
 
-    /// The exact grid at 39 columns, the narrowest width that still leaves
-    /// every row a fill column.
+    /// The exact grid at 48 columns, the narrowest width at which every row
+    /// still draws a fill column.
+    ///
+    /// This width used to be 39, and it moved because the materialization
+    /// label started rendering the auto-derived suffix. The shared prefix
+    /// slot on this screen is content-driven rather than width-driven: the
+    /// longest seed is 29 columns and the renderer adds 4 bytes of ANSI
+    /// overhead, so the client gets 29 columns back whatever the terminal is.
+    /// That leaves 6 columns at a 39-column terminal once the spinner and the
+    /// separators are laid out, and the new 6-column suffix now takes all of
+    /// them, leaving the bar nothing and pushing the line to 43. From 48 the
+    /// budget fits again. The number is a property of the current budget
+    /// arithmetic, not of this screen, so it is worth re-measuring rather than
+    /// treating as fixed.
     ///
     /// Together with the 80-column case this pins the working side of the
     /// boundary. The failing side is described by
     /// `materialization_screen_below_the_fill_boundary`.
     #[test]
-    fn materialization_screen_at_narrow_width_matches_inline_grid() {
-        let config = ScreenConfig { width: 39, height: DEFAULT_HEIGHT };
+    fn materialization_screen_at_fill_boundary_matches_inline_grid() {
+        let config = ScreenConfig { width: 48, height: DEFAULT_HEIGHT };
         let grid = strip_ansi_escapes(&render_materialization_screen(config));
         assert_eq!(
             grid,
             concat!(
-                "⠏     [cmt] 01 - Telepathy.flac …en █\n",
-                "⠸     [stg] Never Gonna Give You Up ░\n",
-                "⠴     [wrt] Never Gonna Give You Up ░\n",
-                "⠇      [vrf] 01 - In the Flesh?.m4a ░░\n",
-                "⠋               [mat] materializing ░░",
+                "⠏     [cmt] 01 - Telepathy.flac …en █ 6s\n",
+                "⠸     [stg] …r Gonna Give You Up …y ░ 6s 0/d\n",
+                "⠴     [wrt] …a Give You Up …y links ░ 4s 0/d\n",
+                "⠇     [vrf] …- In the Flesh?.m4a …l ░ 0s 0/d\n",
+                "⠋               [mat] materializing ░ 13s 1/m",
             )
         );
     }
@@ -142,19 +151,21 @@ mod tests {
     /// The frame a folder entry wider than the client budget produces.
     ///
     /// The folder is the online demo's. Its `entry_name` is 59 columns against
-    /// a 36 column budget, and `entry_name` is a keep segment, so
-    /// `fit_segments` drops it whole rather than shortening it and rows two
-    /// and three keep nothing but their phase tag. The row loses its identity,
-    /// and for a real music library a name that long is ordinary, not exotic.
+    /// a 29 column budget, and `entry_name` is elastic, so the name
+    /// shortens from the front and rows two and three keep
+    /// `[youtube.dQw4w9WgXcQ]`, the part that names the video. The old
+    /// ranking made `entry_name` a `Segment::keep`, which `fit_segments`
+    /// drops whole once nothing can shrink, and those two rows rendered as a
+    /// bare `[stg]` and `[wrt]` with no identity at all.
     ///
-    /// The over-long seed costs the other rows as well. The shared prefix slot
-    /// is sized from the longest seed, so it grows from 36 columns to 43 and
-    /// the two media rows surrender most of their directory to `[cmt] …
-    /// Children` and `[vrf] …e Wall`. One folder name this wide costs every row
-    /// on the screen its path, which is the reason the frame is pinned here
-    /// rather than left to the module doc's word "over-long".
+    /// The over-long seed still costs the other rows, because the shared
+    /// prefix slot is sized from the longest seed: it grows from 29 columns to
+    /// 40 and the two media rows surrender part of their directory to
+    /// `… Children` and `…e Wall`. One folder name this wide costs every row
+    /// on the screen some of its path, which is the reason the frame is
+    /// pinned here rather than left to the module doc's word "over-long".
     #[test]
-    fn materialization_screen_drops_a_folder_name_wider_than_the_budget() {
+    fn materialization_screen_keeps_the_tail_of_a_folder_name_wider_than_the_budget() {
         let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
         let grid = strip_ansi_escapes(&render_materialization_screen_for_folder(
             config,
@@ -163,11 +174,11 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "⠏     [cmt] 01 - Telepathy.flac … Children ███████████████████████████████████\n",
-                "⠸                                    [stg] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n",
-                "⠴                                    [wrt] ███████████░░░░░░░░░░░░░░░░░░░░░░░░\n",
-                "⠇     [vrf] 01 - In the Flesh?.m4a …e Wall ████████████░░░░░░░░░░░░░░░░░░░░░░░░\n",
-                "⠋                      [mat] materializing ████████████░░░░░░░░░░░░░░░░░░░░░░░░"
+                "⠏     [cmt] 01 - Telepathy.flac … Children ██████████████████████████ 6s\n",
+                "⠸     [stg] …u Up [youtube.dQw4w9WgXcQ] …s ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
+                "⠴     [wrt] …youtube.dQw4w9WgXcQ] …s links ████████░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
+                "⠇     [vrf] 01 - In the Flesh?.m4a …e Wall ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
+                "⠋                      [mat] materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m",
             )
         );
     }
@@ -175,16 +186,16 @@ mod tests {
     /// What happens below the fill boundary, described rather than pinned.
     ///
     /// The prefix slot is sized from the longest seed and clamped to 40
-    /// columns, and it does not shrink with the terminal, so the fill is the
-    /// first thing to go. At 38 columns two rows still draw a fill and three
-    /// are bare; from 37 down to 30 no row draws one, and the captured grid
-    /// grows an interleaved blank line per row as content wraps. No test
-    /// asserts those exact bytes: a fixture made of blank lines would read
-    /// like a transcript when it is the renderer reporting that it ran out of
-    /// room, so the regime lives in this comment instead.
+    /// columns, and it does not shrink with the terminal, so the bar is the
+    /// first thing to go. At 47 columns the grid is five lines but no row draws
+    /// a fill; from 46 down to 37 it grows an interleaved blank line per row as
+    /// the content wraps. No test asserts those exact bytes: a fixture made of
+    /// blank lines would read like a transcript when it is the renderer
+    /// reporting that it ran out of room, so the regime lives in this comment
+    /// and in the width list instead.
     #[test]
     fn materialization_screen_below_the_fill_boundary() {
-        for width in [37, 36, 35, 30] {
+        for width in [47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 30] {
             let config = ScreenConfig { width, height: DEFAULT_HEIGHT };
             let grid = strip_ansi_escapes(&render_materialization_screen(config));
             let rows: Vec<&str> = grid.lines().collect();

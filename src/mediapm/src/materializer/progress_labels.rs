@@ -10,16 +10,26 @@ use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit
 
 /// Truncation order for a materialization bar.
 ///
-/// Segments are ordered most important first and yield from the tail.
-/// Prefix: `phase` → `status_marker` → `entry_name` → `file_name` (sub-bars
-/// only) → `entry_path` (elastic, shortened from the front so the directory
-/// tail survives).
+/// Segments are ordered most important first and yield from the tail. The
+/// prefix is `phase`, `status_marker`, `entry_name`, `entry_path`,
+/// `file_name`, with the two path halves elastic so they shorten from the
+/// front. The suffix is `elapsed`, `rate`, `eta`, then an elastic `custom`,
+/// in the same order `WorkerBarLabel` uses.
 ///
 /// The order is the whole mechanism. `fit_segments` drops from the tail
-/// unconditionally, so a field survives by its position in the list.
+/// unconditionally, so a field survives by its position in the list, and it
+/// shrinks elastic fields from the tail too, so a field listed later is the
+/// one that gives up columns first.
 ///
-/// Materialization bars carry no version, no count/total, and no
-/// workflow/step identity.
+/// A reader scanning this screen wants to know, per row, what is being
+/// written and whether it worked. `phase` says what the bar is doing,
+/// `status_marker` says it failed or was skipped, and the two path halves say
+/// which file. A row that renders as `[stg]` on its own answers none of that,
+/// which is what made the old ranking a defect rather than a preference.
+///
+/// The prefix carries no version, no count/total, and no workflow/step
+/// identity, and neither does the suffix: the bar's position out of total is
+/// not a number this label can put a name to.
 #[derive(Debug, Clone, Default)]
 pub struct MaterializationBarLabel {
     /// Terminal-state marker, rendered bracketed as `[F]` or `[W]`. Empty
@@ -36,6 +46,29 @@ pub struct MaterializationBarLabel {
 }
 
 impl MaterializationBarLabel {
+    /// Build the prefix segments, most important first.
+    ///
+    /// `phase` and `status_marker` lead, so width pressure sheds the path
+    /// before it sheds the two things that say what the row is doing and
+    /// whether it went wrong.
+    ///
+    /// `entry_name` and `entry_path` are both elastic, and they yield in that
+    /// order because `fit_segments` shrinks from the tail: the directory
+    /// shortens to its last column first, then the basename shortens to its
+    /// last few characters. That tail is the informative end of each, since
+    /// the leading half of a path is the artist's name and the row is not
+    /// about the artist.
+    ///
+    /// `entry_name` is elastic rather than kept whole because a kept name is a
+    /// name that vanishes: at 36 columns the online demo's 59-column folder
+    /// name left the reader with a bare `[stg]`. Shortened, its tail still
+    /// carries the extension and the bracketed media id, which is what
+    /// separates one video from another in a list of them.
+    ///
+    /// `file_name` ranks last. It only appears on a `[wrt]` sub-bar, where it
+    /// repeats the variant name the parent row already implies, and there are
+    /// as many of those rows as there are extracted members. The directory
+    /// says where the members are going, and no other row carries it.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.phase.is_empty() {
@@ -45,16 +78,47 @@ impl MaterializationBarLabel {
             segs.push(Segment::keep(format!("[{}]", self.status_marker)));
         }
         if !self.entry_name.is_empty() {
-            segs.push(Segment::keep(self.entry_name.clone()));
+            segs.push(Segment::elastic(self.entry_name.clone()));
+        }
+        if !self.entry_path.is_empty() {
+            segs.push(Segment::elastic(self.entry_path.clone()));
         }
         if !self.file_name.is_empty() {
             segs.push(Segment::keep(self.file_name.clone()));
         }
-        // Entry path is the directory portion and the only elastic segment:
-        // shortened from the front so the tail adjacent to the filename
-        // survives, rather than dropped whole.
-        if !self.entry_path.is_empty() {
-            segs.push(Segment::elastic(self.entry_path.clone()));
+        segs
+    }
+
+    /// Build the suffix segments, most important first.
+    ///
+    /// Takes no `&self`: a materialization row has no suffix field of its own
+    /// to contribute, which is the same reason
+    /// `WorkerBarLabel::suffix_segments` takes none, and it is why this body
+    /// is identical to that one.
+    ///
+    /// The renderer passes its merged `SuffixComponents` in, and
+    /// `elapsed`, `rate`, and `eta` arrive through it, so reading them here
+    /// is the only way a materialization row shows how long it has been
+    /// running. They are `Segment::keep`, so a narrow suffix drops them whole
+    /// rather than shaving `0m12s` into `…2s`. Only free-form `custom` text
+    /// is elastic.
+    ///
+    /// The count and the total are not rendered. This label has no tally of
+    /// its own to name the numbers, which is the same reason
+    /// `WorkerBarLabel::suffix_segments` skips them.
+    fn suffix_segments(suffix: &SuffixComponents) -> Vec<Segment> {
+        let mut segs = Vec::new();
+        if !suffix.elapsed.is_empty() {
+            segs.push(Segment::keep(suffix.elapsed.clone()));
+        }
+        if let Some(ref rate) = suffix.rate {
+            segs.push(Segment::keep(rate.clone()));
+        }
+        if let Some(ref eta) = suffix.eta {
+            segs.push(Segment::keep(eta.clone()));
+        }
+        if !suffix.custom.is_empty() {
+            segs.push(Segment::elastic(suffix.custom.clone()));
         }
         segs
     }
@@ -65,9 +129,8 @@ impl BarLabelTruncation for MaterializationBarLabel {
         fit_segments(&self.prefix_segments(), max_width)
     }
 
-    fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
-        // Materialization bars have no suffix components.
-        String::new()
+    fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
+        fit_segments(&Self::suffix_segments(suffix), max_width)
     }
 }
 
@@ -155,41 +218,86 @@ mod tests {
         assert!(tight.contains("song.mkv"), "entry_name lost: {tight:?}");
     }
 
-    /// `entry_name` outranks the path: the long name survives while the
-    /// longer path is shortened and then surrendered whole.
+    /// The name shortens from the front, so the extension survives, and the
+    /// path yields its columns first because it is listed after the name and
+    /// `fit_segments` shrinks from the tail.
     #[test]
-    fn entry_name_outranks_entry_path() {
+    fn entry_name_shortens_from_the_front_and_the_path_yields_first() {
         let label = MaterializationBarLabel {
             entry_path: "very/long/path/segments".into(),
             entry_name: "important-file.mkv".into(),
             phase: "cmt".into(),
             ..Default::default()
         };
-        let tight = label.truncate_prefix(25);
-        assert!(tight.contains("important-file.mkv"), "entry_name dropped: {tight:?}");
-        assert!(tight.contains("[cmt]"), "phase dropped: {tight:?}");
+        assert_eq!(label.truncate_prefix(25), "[cmt] …ortant-file.mkv …s");
+        assert_eq!(label.truncate_prefix(20), "[cmt] …t-file.mkv …s");
     }
 
-    /// On sub-bars the extracted `file_name` outranks the directory path.
+    /// A folder name wider than the budget still names itself.
     ///
-    /// The prior version's tight assertion was vacuous; this version
-    /// asserts on the tight case, where ordering actually bites.
+    /// The name is the online demo's, and 59 columns is ordinary for a
+    /// YouTube-style title, not exotic. `entry_name` used to be a
+    /// `Segment::keep` ranked above the elastic `entry_path`, so once the
+    /// path had shrunk as far as it could, `fit_segments` dropped the name
+    /// whole and the row rendered as a bare `[stg]`. See
+    /// `MaterializationBarLabel` for the order that fixes it.
     #[test]
-    fn file_name_outranks_entry_path_on_sub_bars() {
+    fn an_over_long_folder_name_keeps_the_tail_of_its_name() {
         let label = MaterializationBarLabel {
-            entry_path: "Music/Artist/Album".into(),
+            entry_path: "music videos".into(),
+            entry_name: "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]".into(),
+            phase: "stg".into(),
+            ..Default::default()
+        };
+        let out = label.truncate_prefix(36);
+        assert!(out.contains("[stg]"), "phase lost: {out:?}");
+        assert!(out.contains("dQw4w9WgXcQ"), "the media id identifying the name was cut: {out:?}");
+        assert!(out.chars().count() <= 36, "overflowed: {out:?}");
+    }
+
+    /// A materialization row shows the timing the renderer derives for it.
+    ///
+    /// `elapsed`, `rate`, and `eta` reach the label through the merged
+    /// `SuffixComponents` the renderer passes in, so dropping them from
+    /// `truncate_suffix` strips the timing off every row on the screen.
+    #[test]
+    fn suffix_renders_the_auto_derived_timing() {
+        let label = MaterializationBarLabel {
+            entry_name: "song.mkv".into(),
+            phase: "cmt".into(),
+            ..Default::default()
+        };
+        let suffix = SuffixComponents {
+            count: "2".into(),
+            total: "5".into(),
+            elapsed: "0m12s".into(),
+            rate: Some("1.2 MiB/s".into()),
+            eta: Some("[0m03s]".into()),
+            custom: String::new(),
+        };
+        assert_eq!(label.truncate_suffix(80, &suffix), "0m12s 1.2 MiB/s [0m03s]");
+        // eta yields before rate, and rate before elapsed, so a narrow
+        // suffix still names how long the row has been running.
+        assert_eq!(label.truncate_suffix(6, &suffix), "0m12s");
+    }
+
+    /// `file_name` ranks below both halves of the path, so a sub-bar row
+    /// surrenders the variant name whole before it loses the directory.
+    ///
+    /// The old ranking put `file_name` above `entry_path`, and at 21 columns
+    /// that difference was invisible because nothing had to be dropped. The
+    /// pair of widths below straddles the point where it does, so a reordering
+    /// that moved `file_name` back up would fail the narrow one.
+    #[test]
+    fn file_name_yields_before_the_path_on_sub_bars() {
+        let label = MaterializationBarLabel {
+            entry_path: "Music/Rick Astley/Never Gonna Give You Up".into(),
             entry_name: "album".into(),
             file_name: "cover.jpg".into(),
             phase: "wrt".into(),
             ..Default::default()
         };
-        let wide = label.truncate_prefix(80);
-        assert!(wide.contains("cover.jpg"), "file_name missing when wide: {wide:?}");
-
-        let tight = label.truncate_prefix(21);
-        assert!(tight.contains("[wrt]"), "phase lost: {tight:?}");
-        assert!(tight.contains("cover.jpg"), "file_name dropped before entry_path: {tight:?}");
-        assert!(!tight.contains("Music/"), "entry_path survived past file_name: {tight:?}");
-        assert!(tight.chars().count() <= 21, "overflowed: {tight:?}");
+        assert_eq!(label.truncate_prefix(21), "[wrt] …m …p cover.jpg");
+        assert_eq!(label.truncate_prefix(20), "[wrt] …m …p");
     }
 }
