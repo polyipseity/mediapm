@@ -368,6 +368,34 @@ fn sanitize_and_validate_hierarchy_paths(
         .collect()
 }
 
+/// Re-install an entry bar's label with a terminal-state marker.
+///
+/// `finish_warning` and `finish_error` change a bar's colour and nothing else,
+/// so the prefix of a failed entry kept reading `[stg]` and the text never
+/// said what happened. The marker is the conductor's: `W` for a warning, `F`
+/// for a failure.
+///
+/// `entry_path`, `entry_name`, and `phase` are what the bar already shows, so
+/// they are passed in rather than read back off the handle. The renderer
+/// keeps the truncation a bar was last given until it draws the next frame,
+/// so re-installing the same label with the marker set is enough to redraw the
+/// row with it.
+fn mark_entry_bar_finished(
+    bar: &Arc<dyn ProgressBarApi>,
+    entry_path: &str,
+    entry_name: &str,
+    phase: &str,
+    status_marker: &str,
+) {
+    bar.set_truncation(Arc::new(MaterializationBarLabel {
+        entry_path: entry_path.to_string(),
+        entry_name: entry_name.to_string(),
+        file_name: String::new(),
+        phase: phase.to_string(),
+        status_marker: status_marker.to_string(),
+    }));
+}
+
 /// Materialises one flattened hierarchy entry from CAS content to the
 /// filesystem hierarchy root.
 ///
@@ -522,6 +550,10 @@ async fn prepare_hierarchy_entry(
                 ));
                 if let Some(ref bar) = entry_bar {
                     bar.advance(1);
+                    // The bar is on `[vrf]`: the media arm installs it before
+                    // resolving the variant hash and never moves on, because
+                    // there is no hash to commit.
+                    mark_entry_bar_finished(bar, ep, en, "vrf", "W");
                     bar.finish_warning();
                 }
                 Ok(PreparedHierarchyEntryResult {
@@ -554,6 +586,9 @@ async fn prepare_hierarchy_entry(
                     bar.finish_success();
                 } else {
                     bar.advance(1);
+                    // The folder arm never installs a later phase, so the bar
+                    // is still on the `[stg]` it was created with.
+                    mark_entry_bar_finished(bar, ep, en, "stg", "F");
                     bar.finish_error();
                 }
             }
@@ -570,6 +605,7 @@ async fn prepare_hierarchy_entry(
                     bar.finish_success();
                 } else {
                     bar.advance(1);
+                    mark_entry_bar_finished(bar, ep, en, "stg", "F");
                     bar.finish_error();
                 }
             }
@@ -1408,14 +1444,124 @@ mod tests {
                     prefix: "[vrf] test_file".into(),
                     suffix: String::new(),
                 },
-                // Skipped: advance(1) on entry_bar + FinishWarning.
+                // Skipped: advance(1) on entry_bar, the `[W]` label that
+                // names the skip in the text, then FinishWarning.
                 ProgressOp::Advance { delta: 1 },
+                ProgressOp::SetTruncation {
+                    prefix: "[vrf] [W] test_file".into(),
+                    suffix: String::new(),
+                },
                 ProgressOp::FinishWarning,
                 // Overall bar: advance(1) after entry completes + finish_success.
                 ProgressOp::Advance { delta: 1 },
                 ProgressOp::FinishSuccess,
             ],
             "\nops mismatch — expected [mat] overall + [stg]→[vrf] skip path",
+        );
+    }
+
+    /// The label installed immediately before a warning finish carries `[W]`.
+    ///
+    /// `finish_warning` on its own only changes the bar's colour, and the
+    /// materialization label has no marker, so a skipped entry and a failed
+    /// one used to be indistinguishable in the text. The phase in the marker
+    /// label is the one the bar already shows, so the marker adds a fact
+    /// instead of replacing one.
+    #[tokio::test]
+    async fn sync_hierarchy_marks_a_skipped_entry_warning() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+
+        let document = single_media_document("src1", HierarchyPath::simple("test_file"));
+        let mut state = MediaPmState::default();
+        let conductor_state = ConductorState::new_empty();
+        let generated_doc = NickelDocument::default();
+
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        sync_hierarchy(
+            &paths,
+            &document,
+            &mut state,
+            &cas,
+            true,
+            &conductor_state,
+            &generated_doc,
+            Some(Arc::new(recording.clone())),
+            Some(Arc::new(overall)),
+        )
+        .await
+        .expect("sync_hierarchy should succeed");
+
+        let ops = recording.ops();
+        let finish = ops
+            .iter()
+            .position(|op| matches!(op, ProgressOp::FinishWarning))
+            .expect("a media entry with no content hash finishes with a warning");
+        assert_eq!(
+            ops.get(finish.saturating_sub(1)),
+            Some(&ProgressOp::SetTruncation {
+                prefix: "[vrf] [W] test_file".into(),
+                suffix: String::new(),
+            }),
+            "the label installed before the warning finish must carry [W]; got {ops:?}",
+        );
+    }
+
+    /// The label installed immediately before a failed entry's finish carries
+    /// `[F]`, and a failure now reads the same way as a warning.
+    ///
+    /// The failure is provoked through the folder arm rather than asserted
+    /// against a mock: a variant name of `..` is refused by the
+    /// path-component parser before any byte is written, which is the
+    /// cheapest real `Err` the materializer produces.
+    #[tokio::test]
+    async fn sync_hierarchy_marks_a_failed_folder_entry() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+
+        let mut document = single_media_document("src1", HierarchyPath::simple("album"));
+        document.hierarchy[0].kind = HierarchyNodeKind::MediaFolder;
+        let source = document.media.get_mut("src1").unwrap();
+        source.steps[0].output_variants = BTreeMap::from([(
+            "..".to_string(),
+            OutputVariantValue::Generic(GenericOutputVariantConfig {
+                kind: "primary".to_string(),
+                ..Default::default()
+            }),
+        )]);
+        let mut state = MediaPmState::default();
+        let conductor_state = ConductorState::new_empty();
+        let generated_doc = NickelDocument::default();
+
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        let result = sync_hierarchy(
+            &paths,
+            &document,
+            &mut state,
+            &cas,
+            true,
+            &conductor_state,
+            &generated_doc,
+            Some(Arc::new(recording.clone())),
+            Some(Arc::new(overall)),
+        )
+        .await;
+
+        assert!(result.is_err(), "a rejected variant name must fail the entry: {result:?}");
+        let ops = recording.ops();
+        let finish = ops
+            .iter()
+            .position(|op| matches!(op, ProgressOp::FinishError))
+            .expect("a refused variant name finishes the entry bar with an error");
+        assert_eq!(
+            ops.get(finish.saturating_sub(1)),
+            Some(&ProgressOp::SetTruncation {
+                prefix: "[stg] [F] album".into(),
+                suffix: String::new(),
+            }),
+            "the label installed before the error finish must carry [F]; got {ops:?}",
         );
     }
 
@@ -1607,6 +1753,10 @@ mod tests {
                 ProgressOp::SetTruncation { prefix: "[stg] AC_DC".into(), suffix: String::new() },
                 ProgressOp::SetTruncation { prefix: "[vrf] AC_DC".into(), suffix: String::new() },
                 ProgressOp::Advance { delta: 1 },
+                ProgressOp::SetTruncation {
+                    prefix: "[vrf] [W] AC_DC".into(),
+                    suffix: String::new(),
+                },
                 ProgressOp::FinishWarning,
                 ProgressOp::Advance { delta: 1 },
                 ProgressOp::FinishSuccess,
