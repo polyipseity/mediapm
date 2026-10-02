@@ -1314,8 +1314,17 @@ impl ProgressRenderer {
     /// Respond to terminal dimension changes since the last tick.
     ///
     /// Adjusts the slot capacity when height changes (prepending or
-    /// draining blank slots) and re-applies bar styles when width
-    /// crosses the 60-column compact/full template boundary.
+    /// draining blank slots) and re-applies bar styles so every slot
+    /// picks up the new width.
+    ///
+    /// No template is selected by width. The four styles in `components.rs`
+    /// are built per frame from the live `prefix_w`/`suffix_w` cells, and
+    /// those cells are clamped against content-driven ceilings that take no
+    /// terminal width, so a narrower terminal shrinks the bar fill rather
+    /// than switching layouts. The width at which a screen runs out of fill
+    /// is therefore a property of the seed labels on that screen, not a
+    /// threshold in this function: 41 columns on the workflow screen, 39 on
+    /// materialization, and a six-column bar at 60 on tool sync.
     ///
     /// Returns `true` if any dimension actually changed.
     pub(crate) fn maybe_adjust_for_resize(&mut self) -> bool {

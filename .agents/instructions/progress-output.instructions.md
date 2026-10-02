@@ -6,13 +6,13 @@ applyTo: "src/mediapm-utils/src/progress/mod.rs, src/mediapm-utils/src/progress/
 
 # Progress bar rendered output format
 
-This file is the authoritative reference for what progress bars actually look like on a terminal. Any agent editing progress code MUST read this before changing templates, glyphs, colors, prefix/suffix shapes, or ordering. Do NOT invent ASCII mocks.
+This file records the rules the renderer follows: what goes in a prefix, how a label is ranked for truncation, and which screen installs which label. For what a frame actually looks like, the authority is the three runnable examples listed under "Worked examples" and the transcripts they generate. Any agent editing progress code MUST read this before changing templates, glyphs, colors, prefix/suffix shapes, or ordering, and MUST NOT hand-write a terminal frame into documentation.
 
 ## Source of truth
 
-- `src/mediapm-utils/src/progress/inner/components.rs`: templates, styles, truncation functions (`semantic_truncate_prefix`, `semantic_truncate_suffix`, `render_prefix_components`, `render_suffix_components`)
+- `src/mediapm-utils/src/progress/inner/components.rs`: templates, styles, truncation functions (`semantic_truncate_prefix`, `semantic_truncate_suffix`, `render_prefix_components`, `render_suffix_components`), plus `StatusCount` (`:19`) and `format_status_list` (`:31`)
 - `src/mediapm-utils/src/progress/inner/renderer.rs`: layout (`recompute_layout`), single push point (`sync_snapshot_to_bar`), pre-roll, resize handling, debug sink
-- Verified by `src/mediapm-utils/tests/progress_output/*.rs` using exact `assert_eq!(term.contents(), concat!(...))`
+- Verified by `src/mediapm-utils/tests/progress_output/*.rs` using exact `assert_eq!(term.contents(), concat!(...))`, and by the three runnable screen examples listed under "Worked examples"
 
 ## Width constants
 
@@ -23,7 +23,13 @@ MIN_SUFFIX_WIDTH = 0       (decreasable floor, no ANSI overhead on suffix side)
 MAX_SUFFIX_WIDTH = 65
 ```
 
-`max_prefix_width(cols)` and `max_suffix_width(cols)` are `const fn` that return the constant ceilings; the `cols` parameter is intentionally unused. Clamping in `recompute_layout`: `prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, max_prefix_width(cols))`, `suffix_w = max_suffix.clamp(MIN_SUFFIX_WIDTH, max_suffix_width(cols))`.
+`max_prefix_width()` (`src/mediapm-utils/src/progress/inner/components.rs:569`) and `max_suffix_width()` (`:574`) are `const fn` returning those two ceilings. Neither takes an argument, so no terminal width enters the budget. `recompute_layout` clamps the widths it measured against the constants: `prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, MAX_PREFIX_WIDTH)`, `suffix_w = max_suffix.clamp(MIN_SUFFIX_WIDTH, MAX_SUFFIX_WIDTH)`.
+
+## Two layout facts to know before changing a label
+
+**The seed label sets the prefix ceiling.** The renderer measures the label a bar was created with, not the text that bar draws. `SharedState::with_time_source_and_style` splits the seed into prefix components at `src/mediapm-utils/src/progress/inner/renderer.rs:180`, and `recompute_layout` takes the screen-wide maximum of those measured prefixes at `:920`. Client truncation can only cut width, never add it, so the seed is the ceiling and a longer rendered label is cut down to it. The conductor seeds every worker slot with `idle [wf]` (`src/mediapm-conductor/src/orchestration/coordinator.rs:343`), so on the workflow screen an active worker row renders `[active]` and nothing else at any terminal width. This is the behaviour behind the bug report that prompted these examples.
+
+**The budget never subtracts the terminal width.** Because the two helpers take no argument, narrowing the terminal shrinks the fill first and the labels not at all. Each screen runs out of fill at a different width, and no template switches at any of them: the workflow screen still has a fill column at 41 columns and has none at 40, materialization still gives every row one at 39 and has none at 37, and tool sync is squeezed to a six-column bar at 60 and breaks the same way below 54 (`src/mediapm/examples/mediapm_progress_workflow.rs:23` and `:134`, `mediapm_progress_materialize.rs:29`, `mediapm_progress_tool_sync.rs:79`). That is why the examples default to width 80 and the unit tests pin 40 (`common::mk()` in `src/mediapm-utils/tests/progress_output/common.rs`): 40 is a width that keeps assertions short, not a width chosen to be realistic.
 
 ## Production templates
 
@@ -36,7 +42,7 @@ Templates are **dynamic `format!` strings** built inside `apply_*_bar_style` fun
 | `apply_done_bar_style` | `{spinner:.white/.dim} {prefix:>{pw}.{pw}} {wide_bar:0.green/dim} {msg:<{sw}.{sw}}` | green/dim |
 | `apply_failed_bar_style` | `{spinner:.red} {prefix:>{pw}.{pw}} {wide_bar:0.red/dim} {msg:<{sw}.{sw}}` | red/dim |
 
-Where `{pw}` = `prefix_w`, `{sw}` = `suffix_w` (numeric, from the cell values). `prefix_w` is always ≥ 12 (clamped by `MIN_PREFIX_WIDTH`), so the dynamic template path is the only reachable path.
+Where `{pw}` = `prefix_w` and `{sw}` = `suffix_w`, both read from the cells `recompute_layout` writes. There is no static template to fall back to.
 
 All styles: `tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")`, `progress_chars("█░")`.
 
@@ -113,17 +119,19 @@ The tick loop and attach operation are designed to minimize visible flicker:
 
 All three structs implement [`BarLabelTruncation`] (defined in `src/mediapm-utils/src/progress/truncation.rs`) and are rendered via the client-truncation path in `sync_snapshot_to_bar`. The renderer prepends `\x1b[0m` (4-byte ANSI reset) to all client-truncated prefixes; no colored markers are embedded in the truncated string.
 
+Only two of the three are installed by production code: the conductor coordinator installs `WorkerBarLabel`, the mediapm materializer installs `MaterializationBarLabel`, and `StepBarLabel` has no production caller. It is exercised by `mediapm_progress_workflow` and by `src/mediapm-conductor/tests/int/progress_labels.rs`, so the type is supported and tested while a live workflow draws no such bar.
+
 Fitting uses `fit_segments` (shared from `mediapm_utils::progress`). Segments are supplied most important first and the list is walked from the tail, so the **last** segment is the first to yield. Under width pressure, elastic segments are shortened from the front and keep their informative tail, so a path retains its filename and immediate parent; once no segment can shrink further, whole segments drop from the tail until the remainder fits. No segment is ever cut at a character boundary: a segment is shown whole, shortened from the front, or absent.
 
 **Segment order alone determines the outcome.** `fit_segments` drops from the tail unconditionally, so a field survives by its position in the list. When designing a new label, rank the fields and mark the shrink behaviour (`Shrink::Keep` for whole, `Shrink::FrontEllipsis` for elastic).
 
-This file does not publish that ranking. The order, and the reasoning behind each segment's classification, live in the `prefix_segments` and `suffix_segments` bodies of `src/mediapm-conductor/src/orchestration/progress_labels.rs` (`StepBarLabel`, `WorkerBarLabel`) and `src/mediapm/src/materializer/progress_labels.rs` (`MaterializationBarLabel`). Read the code: it is the only source, and a transcription of it here could only ever disagree with it.
+The per-screen orderings summarised under each struct below are a convenience, not the spec. The normative ranking, and the reasoning behind each segment's classification, live in the `prefix_segments` and `suffix_segments` bodies of `src/mediapm-conductor/src/orchestration/progress_labels.rs` (`StepBarLabel`, `WorkerBarLabel`) and `src/mediapm/src/materializer/progress_labels.rs` (`MaterializationBarLabel`). Read the code when a field's classification is in question.
 
-### Struct 1: `StepBarLabel` (conductor per-step bars)
+### Struct 1: `StepBarLabel` (conductor per-step bars, no production caller)
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries real-progress fields: version, completed/total, phase, workflow/step identity.
+Carries real-progress fields: version, completed/total, phase, workflow/step identity. A live `run_workflow` never draws one, so nothing on the workflow screen is pinned by these fields.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
@@ -139,7 +147,7 @@ Carries real-progress fields: version, completed/total, phase, workflow/step ide
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries activity flag only, with no workflow phase and no progress tally.
+Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `activity`, `workflow_id`, `step_id`, `tool` (`src/mediapm-conductor/src/orchestration/progress_labels.rs:171-189`), so the activity marker leads and the tool name is the last and only elastic segment. This is the label a live workflow installs: the coordinator creates one bar per pool member at `src/mediapm-conductor/src/orchestration/coordinator.rs:340-353` and re-labels each one through `set_truncation` on every dispatch and every step outcome.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
@@ -157,23 +165,17 @@ Carries file-path identity and phase. No version, no count/total, no workflow/st
 
 | Field | Meaning | Example |
 |-------|---------|---------|
-| `status_marker` | Terminal state marker | `""` / `"F"` |
+| `status_marker` | Terminal state marker, which the materializer never writes | `""` |
 | `entry_path` | Directory portion of hierarchy path | `"Music/Artist/Album"` |
 | `entry_name` | Basename of hierarchy entry | `"song.mkv"` |
 | `file_name` | Extracted file basename (sub-bars only) | `"cover.jpg"` |
 | `phase` | Materialization phase tag | `"stg"` / `"vrf"` / `"cmt"` / `"wrt"` / `"mat"` |
 
-**Suffix:** None — `truncate_suffix` returns an empty string, as materialization bars set no suffix components.
+**Suffix:** always empty. `truncate_suffix` returns `String::new()` unconditionally (`src/mediapm/src/materializer/progress_labels.rs:68-70`), and the client-truncation path replaces a bar's suffix with that return value rather than adding to it, so elapsed, rate, eta, and count never render on a materialization row.
 
-### Why three structs instead of one
+### Why the structs are separate
 
-Each screen carries different semantic fields:
-
-- **Step bars** need progress tallies (`completed`/`total`) and version, whereas materialization and worker bars have neither.
-- **Worker bars** need activity flags but no progress tally or phase.
-- **Materialization bars** need path/name decomposition but no workflow identity, no version, no count/total.
-
-A single generic struct would either carry unused fields (polluting the API) or require `Option` wrappers everywhere. Three focused structs give each screen its own field names and its own truncation order with zero overhead.
+They carry different fields, and the truncation order is a per-screen decision rather than a property of a label type. A worker bar wants its activity marker first and has no tally; a materialization bar wants its phase first and no identifiers at all. Merging them would force every screen's ranking through one shared struct, and the ranking is the part that has to be right.
 
 ### Built-in `PrefixComponents` truncation order
 
@@ -185,7 +187,7 @@ The built-in path is used by Screen A (tool-sync) bars, which do not install `Ba
 
 - **Raw `ProgressBar` tests** use the test-only `{elapsed_precise}` template, producing `[00:00:00]` format (bracketed, HH:MM:SS).
 - **`ProgressScreen` tests** use the production renderer, producing `0s` / `42s` / `1m35s` format via `format_elapsed` (compact, no brackets).
-- Worked examples below are labeled accordingly.
+- The runnable screen examples render through the production renderer, so they are neither of the two test-only shapes above.
 
 ## Per-screen specs
 
@@ -193,16 +195,21 @@ The built-in path is used by Screen A (tool-sync) bars, which do not install `Ba
 
 Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases are shortened from longer names (`resolve` → `res`, `fetch` → `fch`, `process` → `pro`, `prune` → `prn`).
 
+- **Bar label** is `{tool_id} {version} [{phase}]`, space-separated (`src/mediapm/src/conductor_bridge/sync/provision.rs:144` and `:213`). A tool reporting no human-readable version drops the version and the space, so the label is `media-tagger [fch]`.
+- **Resolve bar** totals `metadata_fetch_count` (`provision.rs:212`), which is 2 for ffmpeg (BtbN autobuild tag plus evermeet version) and 1 for every other tool. It is a lookup count, never a byte total or a percentage.
 - **Resolve bar** shows `N cached` status list via `SuffixComponents::status_list`.
 - **Skip bar** shows `skipped, N cached` status list (when cached) vs `skipped` (when not cached).
+- **Byte columns** render through `format_count` (`src/mediapm-utils/src/progress/inner/components.rs:205`), which is decimal: 31 457 280 bytes reads `31M`, not `29.9MiB`.
 - **Prune bar** (`[prn]`) uses the `tools.len()` call before the `retain` block to count prune candidates and sets the total to that count. Zero-bar guard: `[prn]` bar is not created when there are no candidates. The bar advances once per document-rewrite removal, then once more for filesystem prune.
 - Overall bar uses `apply_overall_bar_style` (magenta); child bars use `apply_bar_style` (yellow).
 
 ### Screen B: Workflow (`src/mediapm-conductor/src/orchestration/`)
 
-Phase: `[wf]`. Per-step child bars use `StepBarLabel` for client-defined truncation. Worker-slot bars use `WorkerBarLabel` with separate `workflow_id`/`step_id`/`tool` fields.
+Phase `[wf]` appears in the seeds rather than in a client label: the coordinator seeds every worker slot `idle [wf]` (`coordinator.rs:343`) and the overall bar `workflow [wf]`.
 
-Worker-slot states (`worker_slot_label` in `coordinator.rs`):
+A live run registers worker-slot bars only. `StepBarLabel` has no production caller, so nothing on this screen shows a per-step version or tally. The bars that do exist use `WorkerBarLabel`, whose prefix order puts the activity marker ahead of the identifiers; combined with the seed ceiling above, an active row renders `[active]` on its own and a warning or failed row renders `[W]` or `[F]` with its identifiers already dropped.
+
+Worker-slot states (`worker_slot_label` in `coordinator.rs:195`):
 
 | State | `workflow_id` | `step_id` | `tool` | `activity` | `status_marker` |
 |-------|---------------|-----------|--------|------------|------------------|
@@ -215,9 +222,15 @@ Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec
 
 ### Screen C: Materialization (`src/mediapm/src/materializer/`)
 
-Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`. Under width pressure, the directory path is truncated first while the basename is preserved.
+Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`. Prefix segments are ordered `phase`, `status_marker`, `entry_name`, `file_name`, `entry_path`, so the phase tag leads, the basename is kept whole, and the elastic directory path is shortened from the front and yields first.
 
-Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-file sub-bar inside `media_folder` extraction). Per-entry child bars with `[stg]` → `[vrf]` → `[cmt]` phase transitions. No suffix components are set.
+Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-extracted-file sub-bar inside a ZIP folder variant).
+
+Three things on this screen do not behave the way the phase list suggests:
+
+- **The `[stg]` → `[vrf]` → `[cmt]` transition runs only for `HierarchyEntryKind::Media`.** The per-entry bar is created with phase `stg` for every entry kind (`src/mediapm/src/materializer/mod.rs:396-403`), and only the `Media` arm calls `set_truncation` again, at `mod.rs:429-448`. A `MediaFolder` or `Playlist` entry shows `[stg]` for its whole run.
+- **No row carries a status marker.** Nothing outside the label's own unit test writes `status_marker`, which that test does at `src/mediapm/src/materializer/progress_labels.rs:122`. `finish_warning` (`mod.rs:525`) and `finish_error` (`mod.rs:557` and `:573`) set a bar's terminal state and stop there, so a warning and a failure are indistinguishable on screen apart from the bar colour.
+- **No row carries a suffix**, for the reason given under `MaterializationBarLabel` above.
 
 ## Post-finish result messages
 
@@ -247,15 +260,15 @@ After progress bars finish, the CLI prints structured result lines via primitive
 **Screen A: `mediapm sync`** (via `print_sync_summary` in `output/mod.rs`):
 
 ```text
-✓ sync complete    executed=3  cached=2  materialized=5  pruned_tools=0  removed_tools=0
-  Δ warning message
+✓ sync complete    executed=3  cached=2  materialized=5
+  Δ some warning message
 ```
 
 - Icon: `Warning` when `workflow_failed_steps > 0`; `Success` when `executed > 0 || materialized > 0`; `NoChange` otherwise.
 - Fields: `executed` always shown; `cached`, `materialized`, `skipped`, `removed`, `removed_empty`, `added_tools`, `updated_tools`, `pruned_tools`, `removed_tools`, `skipped_tools`, `failed` shown only when >0.
 - Warnings: one `print_warning` line per warning.
 
-**Screen A: `mediapm tool sync`** (via `print_result` + `ToolsSyncSummary`):
+**Screen A: `mediapm tool sync`** (via `CliSyncObserver::on_phase` in `output/observer.rs`, which calls `print_result` with the `ToolsSyncSummary` fields):
 
 ```text
 ✓ tools synced    added=2  updated=1  pruned=0  removed=0
@@ -288,70 +301,19 @@ After progress bars finish, the CLI prints structured result lines via primitive
 
 The library (`MediaPmService::sync_library_with_tag_update_checks_and_observer`) calls `observer.on_phase(report)` immediately after each screen's `group.join()` returns, in order: `Tools` → `Workflow` → `Materialization`. The `CliSyncObserver` renders structured `print_result` lines. Tests use a recording observer to assert the exact phase sequence and values.
 
-## Worked examples (Production, W=80)
+## Worked examples: run them, do not transcribe them
 
-Children render above the overall bar: child bars first, overall bar last.
+Do not paste a terminal frame into this file. Every screen has a runnable example that renders it through the shared capture harness in `src/mediapm/examples/support/`, and every run has a committed transcript under `src/mediapm/examples/fixtures/`. Run the example to see the frame; read the fixture to compare against it. The transcripts are generated output and must not be edited by hand, because a hand-edited fixture no longer proves that the renderer draws what the code says it draws. Children render above the overall bar: child bars first, overall bar last.
 
-### Screen A: tool-sync, mid-resolve (3 tools, ffmpeg resolving)
+| Screen | Example | Fixtures |
+| --- | --- | --- |
+| A tool sync | `cargo run -p mediapm --example mediapm_progress_tool_sync` | `src/mediapm/examples/fixtures/mediapm_progress_tool_sync/` |
+| B workflow | `cargo run -p mediapm --example mediapm_progress_workflow` | `src/mediapm/examples/fixtures/mediapm_progress_workflow/` |
+| C materialization | `cargo run -p mediapm --example mediapm_progress_materialize` | `src/mediapm/examples/fixtures/mediapm_progress_materialize/` |
 
-```text
-⠋                   ffmpeg@7.1 [res] 0/100 0s 42.5/d
-⠙                  yt-dlp@2025.1 [fch] 45/82 3s 14.2 MiB/s 4s
-⠹                         [prn] 0/1
-⠹                 syncing tools 3/12 0s 211/s 0s
-```
+Every example takes `--width` and `--height`. The defaults are 80 and 24 (`src/mediapm/examples/support/mod.rs:41`). Each fixture directory holds a width-80 transcript and one narrow transcript: 60 columns for tool sync, 41 for workflow, 39 for materialization. Regenerate one by running the example at that width and redirecting stdout.
 
-- 4th line (overall, last): magenta spinner + magenta/dim bar.
-- Lines 1-3: child bars, yellow spinner + yellow/dim bar.
-- `[prn]` prune bar shows `N/M` count (M = prune candidates from `tools.len()` before `retain`; N = items removed so far + filesystem prune step).
-
-### Screen B: workflow, mid-run (3 workers, pool_size=3)
-
-```text
-⠙                  default s5 (echo@v1) [active] 1/2 running
-⠙                  default s6 (import) [active] 0/1 running
-⠙                          (idle) [idle] 1/1 idle
-⠹                       workflow 4/12 0s 211/s 0s
-```
-
-- Worker label format: `workflow_id step_id (tool) [activity]` — each field is a separate truncatable part.
-- Active workers show `workflow_id`, `step_id`, `(tool)`, `[active]`.
-- Idle worker shows `(idle) [idle]` with full empty bar (pinned total=1, pos=0).
-
-### Screen C — materialization (media entry mid-commit)
-
-```text
-⠋                      song.mkv [stg] 2/5
-⠙                   song.mkv [cmt] 128/256
-⠹             materializing [mat] 3/8 0s 12/s 0s
-```
-
-- Per-entry bar prefix: `entry_name [phase]` — basename is kept longest under truncation.
-- Per-entry bar transitions `[stg]` → `[vrf]` → `[cmt]`.
-- Overall bar: `materializing [mat]`.
-- `[wrt]` per-file sub-bars appear inside `media_folder` entries with `file_name` set.
-
-### Screen A: tool-sync post-finish
-
-After all bars finish, the CLI prints:
-
-```text
-✓ sync complete    executed=3  cached=2  materialized=1  removed=1
-  Δ some warning message
-```
-
-- `✓` is green bold; `sync complete` is bold.
-- Fields separated by two spaces; `executed` always shown, others only when >0.
-- Each warning on its own indented line with yellow `Δ`.
-
-### Screen A — tool sync post-finish
-
-```text
-✓ tools synced    added=2  updated=1  pruned=0  removed=0
-```
-
-- All four fields always shown.
-- No duration tracked for tool sync.
+Each example also asserts its own grid inline, with `assert_eq!` against a `concat!` literal in `src/mediapm/examples/mediapm_progress_*.rs`, so a layout change fails the suite before anyone reaches for a transcript.
 
 ## Debug JSONL
 
@@ -365,10 +327,12 @@ After all bars finish, the CLI prints:
 
 ## Authoritative tests
 
-These test files use `assert_eq!(term.contents(), concat!(...))` and ARE the real format:
+These test files use `assert_eq!(term.contents(), concat!(...))` against an inline literal and ARE the real format:
 
-- `src/mediapm-utils/tests/progress_output/*.rs` (terminal.rs, consumer.rs, transition.rs, progress_group.rs, spinner.rs, regression.rs, single_bar.rs, resolve_label.rs)
-- `src/mediapm/src/output/progress.rs`
+- `src/mediapm-utils/tests/progress_output/` — `consumer.rs`, `elapsed.rs`, `layout.rs`, `lifecycle.rs`, `render.rs`, `resize.rs`, `spinner.rs`; `common.rs` and `debug.rs` are helpers and the debug sink
+- `src/mediapm/examples/mediapm_progress_tool_sync.rs`, `mediapm_progress_workflow.rs`, `mediapm_progress_materialize.rs` — one exact grid per screen, at the default width and at the narrow one
+
+`src/mediapm/src/output/progress.rs` also asserts against `term.contents()`, but with substring checks rather than exact literals, so it pins behaviour such as "elapsed reads `0s` after finish" rather than a full frame.
 
 ## Global toggle and auto-detection
 
@@ -396,8 +360,7 @@ Every CLI command handler follows a consistent shape: perform the operation, pri
 
 ## Related files
 
-- `src/mediapm/src/output/report.rs` — post-finish result primitives (`print_result`, `print_warning`, `print_hint`, `print_heading`, `print_error`, `StatusIcon`)
-- `src/mediapm/src/output/mod.rs` — `print_sync_summary` (Screen A sync summary)
+- `src/mediapm/src/output/mod.rs` — re-exports the post-finish result primitives from `mediapm_utils::report` (`:15`) and defines `print_sync_summary` (Screen A sync summary, `:29`)
 - `src/mediapm-conductor/src/api.rs` — `RunSummary` struct (Screen B)
 - `src/mediapm/src/lib.rs` — `SyncSummary`, `ToolsSyncSummary` struct definitions
 

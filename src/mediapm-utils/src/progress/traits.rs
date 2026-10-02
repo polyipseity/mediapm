@@ -25,13 +25,15 @@ use std::sync::Arc;
 ///   materialization, and legacy per-step workflow screens.
 /// - [`WorkerSpinner`](BarStyle::WorkerSpinner) — a fixed worker-slot bar
 ///   driven by **per-worker** state rather than a per-step or global total.
-///   The coordinator populates `prefix_components`/`suffix_components`
-///   directly (no `version`/`phase`; status markers are `[F]` for failed,
-///   `[W]` for pending-retry, empty for active/idle), and the renderer
-///   applies a `0/0` div-by-zero guard (renders `total = 1, pos = 0` when
-///   the worker's assigned count is `0`) so an idle worker shows an empty
-///   all-░ bar. The same `wide_bar` child template as `StepCount` is used;
-///   only the field population differs.
+///   The coordinator installs a [`BarLabelTruncation`] label through
+///   [`ProgressBarApi::set_truncation`] and never populates
+///   `prefix_components`/`suffix_components` on such a bar (no `version`,
+///   no `phase`; the label carries the `[F]`/`[W]` status markers for
+///   failed and pending-retry slots and omits them for active and idle).
+///   The renderer applies a `0/0` div-by-zero guard (renders `total = 1,
+///   pos = 0` when the worker's assigned count is `0`) so an idle worker
+///   shows an empty all-░ bar. The same `wide_bar` child template as
+///   `StepCount` is used; only the label differs.
 ///
 /// Set via [`ProgressBarApi::set_style`] (or [`ProgressBarHandle::set_style`]) after
 /// [`ProgressScreen::add_bar`]. Defaults to [`StepCount`](BarStyle::StepCount).
