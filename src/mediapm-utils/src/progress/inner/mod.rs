@@ -36,11 +36,11 @@ pub(crate) use gate::WriteGate;
 // does not satisfy the `unused_imports` lint, hence the allow.
 #[allow(unused_imports)]
 pub(crate) use components::{
-    MAX_PREFIX_WIDTH, MAX_SLOTS, MAX_SUFFIX_WIDTH, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH,
-    apply_bar_style, apply_done_bar_style, apply_failed_bar_style, apply_overall_bar_style,
-    bar_color_code, blank_bar_style, format_count, format_elapsed, format_eta, format_rate,
-    max_prefix_width, max_suffix_width, prefix_components_from_str, render_prefix_components,
-    render_suffix_components, semantic_truncate_prefix, semantic_truncate_suffix, strip_ansi,
-    visible_width,
+    FRAME_OVERHEAD_COLUMNS, MAX_PREFIX_WIDTH, MAX_SLOTS, MAX_SUFFIX_WIDTH, MIN_BAR_FILL,
+    MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH, apply_bar_style, apply_done_bar_style,
+    apply_failed_bar_style, apply_overall_bar_style, bar_color_code, blank_bar_style, format_count,
+    format_elapsed, format_eta, format_rate, max_prefix_width, max_suffix_width,
+    prefix_components_from_str, render_prefix_components, render_suffix_components,
+    semantic_truncate_prefix, semantic_truncate_suffix, strip_ansi, visible_width,
 };
 pub(crate) use renderer::SharedState;

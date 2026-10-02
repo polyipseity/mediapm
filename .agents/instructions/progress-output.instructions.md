@@ -311,7 +311,7 @@ Do not paste a terminal frame into this file. Every screen has a runnable exampl
 | B workflow | `cargo run -p mediapm --example mediapm_progress_workflow` | `src/mediapm/examples/fixtures/mediapm_progress_workflow/` |
 | C materialization | `cargo run -p mediapm --example mediapm_progress_materialize` | `src/mediapm/examples/fixtures/mediapm_progress_materialize/` |
 
-Every example takes `--width` and `--height`. The defaults are 80 and 24 (`src/mediapm/examples/support/mod.rs:41`). Each fixture directory holds a width-80 transcript and one narrow transcript: 60 columns for tool sync, 41 for workflow, 39 for materialization. Regenerate one by running the example at that width and redirecting stdout.
+Every example takes `--width` and `--height`. The defaults are 80 and 24 (`src/mediapm/examples/support/mod.rs:41`). Each fixture directory holds a width-80 transcript and one narrow transcript: 60 columns for tool sync, 41 for workflow, 27 for materialization. Regenerate one by running the example at that width and redirecting stdout.
 
 Each example also asserts its own grid inline, with `assert_eq!` against a `concat!` literal in `src/mediapm/examples/mediapm_progress_*.rs`, so a layout change fails the suite before anyone reaches for a transcript.
 

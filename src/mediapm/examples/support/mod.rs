@@ -31,13 +31,10 @@ use mediapm_utils::progress::{
 /// Terminal width used when `--width` is absent.
 ///
 /// 80, not the `W` in `mediapm-utils/tests/progress_output/common.rs`. That
-/// suite constant is 40, but its labels are short (`worker-a`), while a real
-/// tool-sync label is `ffmpeg v7.1 [res]`. The renderer clamps the prefix to
-/// [`MAX_PREFIX_WIDTH`](MAX_PREFIX_WIDTH) and the suffix to
-/// [`MAX_SUFFIX_WIDTH`](MAX_SUFFIX_WIDTH) without subtracting the terminal
-/// width, so prefix plus suffix can exceed 40 on its own and the bar gets no
-/// fill. 80 is the narrowest width where the tool-sync screen renders without
-/// wrapping.
+/// suite constant is 40 and its labels are short (`worker-a`), while a real
+/// tool-sync label is `ffmpeg v7.1 [res]`. Both render without wrapping now
+/// that the label slot is paid for out of the terminal width, so the choice is
+/// what a transcript of a real screen should be, not a boundary.
 pub const DEFAULT_WIDTH: u16 = 80;
 
 /// Terminal height used when `--height` is absent.
@@ -55,9 +52,9 @@ const MIN_WIDTH: u16 = 8;
 
 /// Largest width the harness accepts.
 ///
-/// The renderer reserves at most `MAX_PREFIX_WIDTH` (40) for the prefix and
-/// `MAX_SUFFIX_WIDTH` (65) for the suffix, so past a few hundred columns the
-/// extra width is empty space on every line.
+/// The prefix is capped at `MAX_PREFIX_WIDTH` and the suffix at
+/// `MAX_SUFFIX_WIDTH` whatever the terminal is, so past a few hundred columns
+/// the extra width is empty space on every line.
 const MAX_WIDTH: u16 = 500;
 
 /// Shortest height the harness accepts.

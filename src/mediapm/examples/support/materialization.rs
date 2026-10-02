@@ -4,10 +4,8 @@
 //! terminal and synthetic clock the shared harness in `support/mod.rs` builds.
 //! The example that pulls this module in is `mediapm_progress_materialize`.
 //!
-//! The seeds are quoted from the materializer rather than chosen, because the
-//! renderer measures each bar's seed to size the prefix slot the whole screen
-//! shares, so a seed longer than production would widen that slot and draw
-//! prefixes a live sync never draws. There are three distinct seeds:
+//! The seeds are quoted from the materializer rather than chosen, so the rows
+//! here are the rows a live sync draws. There are three distinct seeds:
 //!
 //! - `materializing [mat]` on the overall bar, created by
 //!   `with_overall` at `src/mediapm/src/service.rs:1349` and quoted by the
@@ -19,13 +17,12 @@
 //!
 //! `materializing [mat]` is nineteen columns and the overall bar is the only
 //! bar whose seed stays that short. Every other seed carries a path or a
-//! variant name, and the longest of them is twenty-nine, so the shared prefix
-//! slot measures twenty-nine plus the renderer's four byte overhead and the
-//! client gets twenty-nine columns back. Under that budget the elastic path
-//! halves shorten from the head, and a folder name wider than the whole budget
-//! shortens too rather than being dropped whole. The online demo's media
-//! folder is named that long, so it is the ordinary case for a real music
-//! library rather than an exotic one, and
+//! variant name. The shared prefix slot is what the terminal has left after the
+//! spinner, the separators, the suffix and a fill floor, and under it the
+//! elastic path halves shorten from the head, so a folder name wider than the
+//! whole budget shortens too rather than being dropped whole. The online
+//! demo's media folder is named that long, so it is the ordinary case for a
+//! real music library rather than an exotic one, and
 //! `materialization_screen_keeps_the_tail_of_a_folder_name_wider_than_the_budget`
 //! in `mediapm_progress_materialize.rs` pins the frame it renders.
 //!

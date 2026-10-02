@@ -52,12 +52,10 @@ mod tests {
     /// The exact grid at `DEFAULT_WIDTH`, the narrowest width
     /// `mediapm-utils/tests/progress_output/common.rs` calls `W`.
     ///
-    /// The grid is worth reading closely, because it is not the shape a reader
-    /// expects. The prefix and suffix columns together come to more than 40, and
-    /// `max_prefix_width` and `max_suffix_width` ignore the terminal width, so
-    /// the bar fill gets nothing and the drawn line wraps inside the captured
-    /// terminal. That is what the renderer does at this width today; pinning it
-    /// means a future layout change has to say so here rather than land quietly.
+    /// The bar keeps twenty-six of the eighty columns. Both label columns are
+    /// what they measure, and the fill takes the rest, so the screen renders the
+    /// same at any width down to the point where the labels and the floor stop
+    /// fitting between them.
     #[test]
     fn tool_sync_screen_at_default_width_matches_inline_grid() {
         let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
@@ -76,9 +74,9 @@ mod tests {
         );
     }
 
-    /// The exact grid at 60 columns, where the prefix and suffix still fit but the
-    /// bar is squeezed to six columns. Together with the 80-column case this pins
-    /// both ends of the width-sensitive part of the layout.
+    /// The exact grid at 60 columns, where the labels take what they measure and
+    /// the bar is squeezed to six columns. Together with the 80-column case this
+    /// pins both ends of the width-sensitive part of the layout.
     #[test]
     fn tool_sync_screen_at_narrow_width_matches_inline_grid() {
         let config = ScreenConfig { width: 60, height: DEFAULT_HEIGHT };

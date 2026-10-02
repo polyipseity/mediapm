@@ -8,11 +8,10 @@
 //! keeps the phase it was created with, because only the media arm installs a
 //! later one. See the module doc in `support/materialization.rs`.
 //!
-//! The rows are the same width whatever the terminal is, because the shared
-//! prefix slot is sized from the longest seed and clamped to the renderer's
-//! 40 column ceiling, and every seed but the overall bar's carries a path. The
-//! module doc in `support/materialization.rs` has the arithmetic and the seed
-//! sizes.
+//! The shared prefix slot is the widest label the screen draws, held to what
+//! the terminal has left after the spinner, the separators, the suffix and a
+//! fill floor. Every entry label here carries a path, so the path shortens
+//! from the front as the terminal narrows and the file name survives longest.
 //!
 //! The data is synthetic, so the example runs offline and in about a
 //! millisecond.
@@ -22,15 +21,11 @@
 //! cargo run --package mediapm --example mediapm_progress_materialize -- --width 39
 //! ```
 //!
-//! 48 is the narrowest width at which every row still draws a fill column,
-//! measured by rendering this screen at successive widths rather than
-//! inherited from the other two screens. Below it no row draws one, and at 46
-//! and down the grid starts interleaving a blank line per row.
-//! `materialization_screen_below_the_fill_boundary` describes that regime
-//! rather than pinning it as a transcript. The width used to be 39, before
-//! the materialization label started rendering the auto-derived suffix; see
-//! `materialization_screen_at_fill_boundary_matches_inline_grid` for the
-//! arithmetic.
+//! 27 is the narrowest width at which every row still draws its phase tag,
+//! measured by rendering this screen at successive widths rather than inherited
+//! from the other two screens. Below it the prefix slot is empty and the rows
+//! are the spinner, the fill and the suffix.
+//! `materialization_screen_never_wraps_a_row` covers the widths under it.
 //!
 //! What reaches stdout is the rendered grid with its colour escapes removed, so
 //! redirecting the command writes the transcript checked in under
@@ -94,10 +89,11 @@ mod tests {
     /// with a warning or an error. The materializer does install one on those
     /// finishes; this screen just never takes that path.
     ///
-    /// Every prefix shares one slot sized from the longest seed, so the name
-    /// gives up four columns to its directory on the rows that have both. The
-    /// suffix carries the auto-derived timing, `6s` and `0/d` per row. A layout
-    /// change that stops clamping has to change this transcript.
+    /// Every prefix shares one slot, and the longest label on the screen sets
+    /// it, so the two rows whose name and directory compete keep both ends:
+    /// `01 - Telepathy.flac` on the committed row and `… Children` on the one
+    /// still staging. The suffix carries the auto-derived timing, `6s` and
+    /// `0/d` per row.
     #[test]
     fn materialization_screen_at_default_width_matches_inline_grid() {
         let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
@@ -105,45 +101,40 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "⠏     [cmt] 01 - Telepathy.flac …en █████████████████████████████████ 6s\n",
-                "⠸     [stg] …r Gonna Give You Up …y ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
-                "⠴     [wrt] …a Give You Up …y links ███████████░░░░░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
-                "⠇     [vrf] …- In the Flesh?.m4a …l ███████████░░░░░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
-                "⠋               [mat] materializing ███████████░░░░░░░░░░░░░░░░░░░░░░ 13s 1/m",
+                "⠏     [cmt] 01 - Telepathy.flac … Children ██████████████████████████ 6s\n",
+                "⠸     [stg] Never Gonna Give You Up …stley ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
+                "⠴     [wrt] …er Gonna Give You Up …y links ████████░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
+                "⠇     [vrf] 01 - In the Flesh?.m4a …e Wall ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
+                "⠋                      [mat] materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m",
             )
         );
     }
 
-    /// The exact grid at 48 columns, the narrowest width at which every row
-    /// still draws a fill column.
+    /// The exact grid at 27 columns, the narrowest width at which every row
+    /// still draws its phase tag.
     ///
-    /// This width used to be 39, and it moved because the materialization
-    /// label started rendering the auto-derived suffix. The shared prefix
-    /// slot on this screen is content-driven rather than width-driven: the
-    /// longest seed is 29 columns and the renderer adds 4 bytes of ANSI
-    /// overhead, so the client gets 29 columns back whatever the terminal is.
-    /// That leaves 6 columns at a 39-column terminal once the spinner and the
-    /// separators are laid out, and the new 6-column suffix now takes all of
-    /// them, leaving the bar nothing and pushing the line to 43. From 48 the
-    /// budget fits again. The number is a property of the current budget
-    /// arithmetic, not of this screen, so it is worth re-measuring rather than
-    /// treating as fixed.
+    /// The slot has one field left here. The suffix takes what the active rows
+    /// reserve, the fill keeps its four cells, and the phase tag is the only
+    /// prefix segment short enough to survive the rest, which is why it is the
+    /// one that is still readable. The width moved from 48 when the prefix
+    /// started being budgeted from the terminal, so it is worth re-measuring
+    /// rather than treating as fixed.
     ///
     /// Together with the 80-column case this pins the working side of the
-    /// boundary. The failing side is described by
-    /// `materialization_screen_below_the_fill_boundary`.
+    /// boundary. The narrow side is covered by
+    /// `materialization_screen_never_wraps_a_row`.
     #[test]
     fn materialization_screen_at_fill_boundary_matches_inline_grid() {
-        let config = ScreenConfig { width: 48, height: DEFAULT_HEIGHT };
+        let config = ScreenConfig { width: 27, height: DEFAULT_HEIGHT };
         let grid = strip_ansi_escapes(&render_materialization_screen(config));
         assert_eq!(
             grid,
             concat!(
-                "⠏     [cmt] 01 - Telepathy.flac …en █ 6s\n",
-                "⠸     [stg] …r Gonna Give You Up …y ░ 6s 0/d\n",
-                "⠴     [wrt] …a Give You Up …y links ░ 4s 0/d\n",
-                "⠇     [vrf] …- In the Flesh?.m4a …l ░ 0s 0/d\n",
-                "⠋               [mat] materializing ░ 13s 1/m",
+                "⠏     [cmt] ████ 6s\n",
+                "⠸     [stg] ░░░░ 6s 0/d\n",
+                "⠴     [wrt] █░░░ 4s 0/d\n",
+                "⠇     [vrf] █░░░ 0s 0/d\n",
+                "⠋     [mat] █░░░ 13s 1/m",
             )
         );
     }
@@ -183,24 +174,26 @@ mod tests {
         );
     }
 
-    /// What happens below the fill boundary, described rather than pinned.
+    /// No width wraps a row, down to the narrowest the harness accepts.
     ///
-    /// The prefix slot is sized from the longest seed and clamped to 40
-    /// columns, and it does not shrink with the terminal, so the bar is the
-    /// first thing to go. At 47 columns the grid is five lines but no row draws
-    /// a fill; from 46 down to 37 it grows an interleaved blank line per row as
-    /// the content wraps. No test asserts those exact bytes: a fixture made of
-    /// blank lines would read like a transcript when it is the renderer
-    /// reporting that it ran out of room, so the regime lives in this comment
-    /// and in the width list instead.
+    /// Under the old rule the prefix kept the width of the longest seed and the
+    /// row outgrew the terminal, so from 46 columns down the grid interleaved a
+    /// blank line per row. What gives way now is the prefix, one ranked field
+    /// at a time, and the fill keeps its four cells throughout. The row count
+    /// and the row width are what this pins; the fill is not what is at stake.
     #[test]
-    fn materialization_screen_below_the_fill_boundary() {
-        for width in [47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 30] {
+    fn materialization_screen_never_wraps_a_row() {
+        for width in [26, 24, 22, 20, 18, 16, 14, 12, 10, 8] {
             let config = ScreenConfig { width, height: DEFAULT_HEIGHT };
             let grid = strip_ansi_escapes(&render_materialization_screen(config));
             let rows: Vec<&str> = grid.lines().collect();
-            let fill = rows.iter().filter(|row| row.contains(['\u{2588}', '\u{2591}'])).count();
-            assert_eq!(fill, 0, "width {width} should draw no fill, got {rows:?}");
+            assert_eq!(rows.len(), 5, "width {width} must draw five rows: {rows:?}");
+            for row in rows {
+                assert!(
+                    row.chars().count() <= usize::from(width),
+                    "width {width} must not wrap: {row:?}",
+                );
+            }
         }
     }
 

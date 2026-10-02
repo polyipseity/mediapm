@@ -231,6 +231,15 @@ pub fn bar_cells(contents: &str) -> usize {
     contents.chars().filter(|&cell| cell == '█' || cell == '░').count()
 }
 
+/// Columns one captured line occupies.
+///
+/// [`InMemoryTerm`] strips the escapes the renderer writes, so counting the
+/// characters of a line is its drawn width. A line longer than the terminal it
+/// was captured at is a row that wrapped.
+pub fn drawn_width(line: &str) -> usize {
+    line.chars().count()
+}
+
 /// The first line of `contents` that contains `label`.
 ///
 /// Panics when no line matches: for a test that has just asserted the bar was

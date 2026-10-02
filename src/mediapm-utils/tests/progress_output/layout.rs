@@ -9,9 +9,57 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use mediapm_utils::progress::{TestDimensionSource, TestTimeSource};
+use mediapm_utils::progress::{
+    BarLabelTruncation, Segment, SuffixComponents, TestDimensionSource, TestTimeSource,
+    fit_segments,
+};
 
 use super::common::{mk_with_capacity, mk_with_capacity_and_ts, mk_with_dims};
+
+/// A worker row's label, laid out the way
+/// `mediapm_conductor::orchestration::progress_labels::WorkerBarLabel` lays it
+/// out: the activity marker leads, the workflow and step identifiers follow,
+/// and the parenthesised tool name is the one elastic segment.
+///
+/// Duplicated here because `mediapm-utils` cannot depend on the conductor.
+/// What these tests are about is the budget the renderer hands the label, and
+/// that is the same whichever client fills the slot.
+struct WorkerRowLabel {
+    /// Workflow the slot is running, e.g. `"default"`.
+    workflow_id: String,
+    /// Step the slot is running, e.g. `"s3"`.
+    step_id: String,
+    /// Conductor tool name, e.g. `"yt-dlp"`.
+    tool: String,
+    /// Worker state marker, e.g. `"active"`.
+    activity: String,
+}
+
+impl BarLabelTruncation for WorkerRowLabel {
+    fn truncate_prefix(&self, max_width: usize) -> String {
+        let segments = vec![
+            Segment::keep(format!("[{}]", self.activity)),
+            Segment::keep(self.workflow_id.clone()),
+            Segment::keep(self.step_id.clone()),
+            Segment::elastic(format!("({})", self.tool)),
+        ];
+        fit_segments(&segments, max_width)
+    }
+
+    fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
+        let mut segments = Vec::new();
+        if !suffix.elapsed.is_empty() {
+            segments.push(Segment::keep(suffix.elapsed.clone()));
+        }
+        if let Some(ref rate) = suffix.rate {
+            segments.push(Segment::keep(rate.clone()));
+        }
+        if let Some(ref eta) = suffix.eta {
+            segments.push(Segment::keep(eta.clone()));
+        }
+        fit_segments(&segments, max_width)
+    }
+}
 
 /// A screen with only an overall bar still reserves every slot: the grid height
 /// is fixed, so the overall bar sits on the last line and the rest stay blank.
@@ -376,13 +424,14 @@ fn overflow_bars_are_tracked_but_not_drawn() {
 /// is parsed into components at construction, so the tool name and the phase tag
 /// are separate fields before anything is drawn.
 ///
-/// The label is 33 characters against the 40-column prefix budget, so nothing is
-/// truncated here. The drop order that would apply if it were — the version
-/// shrinks before the phase is removed — is pinned by the inline
-/// `truncate_parsed_resolve_label_preserves_phase` unit test.
+/// The label is 33 characters and the 80-column terminal pays for the prefix,
+/// the suffix and the fill, so nothing is truncated here. The drop order that
+/// would apply if it were, where the version shrinks before the phase is
+/// removed, is pinned by the inline `truncate_parsed_resolve_label_preserves_phase`
+/// unit test.
 #[test]
 fn resolve_label_within_budget_keeps_phase_tag() {
-    let dims = Arc::new(TestDimensionSource::new((4, 40)));
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
     let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
@@ -407,7 +456,7 @@ fn resolve_label_within_budget_keeps_phase_tag() {
 /// than being reduced to its first token.
 #[test]
 fn resolve_label_multiword_no_bracket_keeps_whole_label() {
-    let dims = Arc::new(TestDimensionSource::new((4, 40)));
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
     let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
@@ -426,4 +475,31 @@ fn resolve_label_multiword_no_bracket_keeps_whole_label() {
         ),
         "resolve_label_multiword_no_bracket_keeps_whole_label"
     );
+}
+
+/// A worker slot seeded with the coordinator's `idle [wf]` still draws its tool
+/// name at 80 columns.
+///
+/// The seed is nine columns and a client label can only be shortened by
+/// [`fit_segments`], never lengthened, so a prefix slot sized from the seed
+/// leaves the label nothing to grow into. The 80-column line has room for
+/// `default s3 (yt-dlp)` after the marker and the suffix, and a run that drops
+/// the tool name here loses the only thing that says which tool the slot is
+/// running.
+#[test]
+fn prefix_slot_is_not_pinned_to_the_seed_label() {
+    let (terminal, term) = mk_with_capacity(4, 80, 3);
+    let screen = terminal.screen().build();
+
+    let worker = screen.add_bar(1, "idle [wf]");
+    worker.set_truncation(Arc::new(WorkerRowLabel {
+        workflow_id: "default".to_string(),
+        step_id: "s3".to_string(),
+        tool: "yt-dlp".to_string(),
+        activity: "active".to_string(),
+    }));
+    screen.tick();
+
+    let contents = term.contents();
+    assert!(contents.contains("(yt-dlp)"), "worker row lost its tool name: {contents:?}");
 }

@@ -25,13 +25,13 @@ use std::time::{Duration, Instant};
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
 
 use super::{
-    DebugSlotState, DebugTickSnapshot, DimensionSource, MAX_SLOTS, MIN_PREFIX_WIDTH,
-    MIN_SUFFIX_WIDTH, PrefixComponents, ProgressDebugSink, RealTimeSource, SuffixComponents,
-    TimeSource, WriteGate, apply_bar_style, apply_done_bar_style, apply_failed_bar_style,
-    apply_overall_bar_style, bar_color_code, blank_bar_style, format_count, format_elapsed,
-    format_eta, format_rate, max_prefix_width, max_suffix_width, prefix_components_from_str,
-    render_prefix_components, render_suffix_components, semantic_truncate_prefix,
-    semantic_truncate_suffix, visible_width,
+    DebugSlotState, DebugTickSnapshot, DimensionSource, FRAME_OVERHEAD_COLUMNS, MAX_SLOTS,
+    MIN_BAR_FILL, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH, PrefixComponents, ProgressDebugSink,
+    RealTimeSource, SuffixComponents, TimeSource, WriteGate, apply_bar_style, apply_done_bar_style,
+    apply_failed_bar_style, apply_overall_bar_style, bar_color_code, blank_bar_style, format_count,
+    format_elapsed, format_eta, format_rate, max_prefix_width, max_suffix_width,
+    prefix_components_from_str, render_prefix_components, render_suffix_components,
+    semantic_truncate_prefix, semantic_truncate_suffix, visible_width,
 };
 use crate::progress::BarStyle;
 
@@ -602,8 +602,9 @@ pub struct ProgressRenderer {
     debug_sink: Option<Arc<ProgressDebugSink>>,
 
     /// Current uniform prefix width applied to every visible bar this frame.
-    /// Recomputed each tick from the max measured prefix across bound slots,
-    /// clamped between [`MIN_PREFIX_WIDTH`] and [`max_prefix_width`].
+    /// Recomputed each tick from the widest measured prefix among bound slots,
+    /// then held to what the terminal has left after the suffix and the bar
+    /// floor, and never past [`MIN_PREFIX_WIDTH`] or [`max_prefix_width`].
     prefix_w: Cell<usize>,
     /// Current uniform suffix width applied to every visible bar this frame.
     /// See [`Self::prefix_w`] — same contract with [`MIN_SUFFIX_WIDTH`] /
@@ -902,22 +903,48 @@ impl ProgressRenderer {
     ///
     /// Measures the rendered prefix/suffix width of each bound slot (via
     /// [`SharedState::snapshot`]), takes the max across all bound slots, and
-    /// clamps it into `[MIN_PREFIX_WIDTH, max_prefix_width()]` (prefix)
-    /// and `[MIN_SUFFIX_WIDTH, max_suffix_width()]` (suffix). The result
-    /// is stored in the `prefix_w`/`suffix_w` cells and every bound slot is
-    /// re-synced so all bars share the same alignment width — short labels
-    /// no longer waste space and long labels no longer overflow the bar.
+    /// spends the terminal's columns on them: what is left after the spinner,
+    /// the separators and [`MIN_BAR_FILL`] is split between the two, the
+    /// suffix taking what it measured first and the prefix the remainder.
+    ///
+    /// The result is stored in the `prefix_w`/`suffix_w` cells and every bound
+    /// slot is re-synced so all bars share the same alignment width — short
+    /// labels no longer waste space and long labels no longer overflow the bar.
+    ///
+    /// This is the budget and nothing else: it says how many columns a label
+    /// may use, not which of its fields survive. That is
+    /// [`semantic_truncate_prefix`] for the built-in components and the
+    /// client's own [`BarLabelTruncation`] for a client label, and each ranks
+    /// its own fields. Moving a ranking in here is tempting and wrong: it puts
+    /// one cut in two places, and the two disagree the first time a screen
+    /// gains a field.
     pub(crate) fn recompute_layout(&self) {
+        let (_, cols) = self.dim_source.dimensions();
+        let prefix_ceiling = max_prefix_width(cols);
+        let suffix_ceiling = max_suffix_width(cols);
         let mut max_prefix = 0usize;
         let mut max_suffix = 0usize;
         for (i, slot) in self.slots.iter().enumerate() {
             if let Some(ref source) = *slot.source.borrow() {
                 let snap = source.snapshot();
-                let has_client_truncation = slot.source.borrow().as_ref().is_some_and(|s| {
-                    s.truncation.read().expect("shared_state truncation lock").is_some()
-                });
+                let truncation =
+                    source.truncation.read().expect("shared_state truncation lock").clone();
+                let has_client_truncation = truncation.is_some();
                 let status_overhead = compute_ansi_overhead(snap.status, has_client_truncation);
-                max_prefix = max_prefix.max(visible_width(snap.prefix.as_str()) + status_overhead);
+                // Measure what this bar will actually draw.  A bar with a
+                // client label draws that label, so measuring the seed it was
+                // constructed with would cap the slot at the placeholder text
+                // every screen seeds its slots with, and a client label can
+                // only ever be shortened.  Ask the client for its own output
+                // at the ceiling, exactly as the suffix is measured below.
+                let prefix_width = if let Some(ref t) = truncation {
+                    let rendered =
+                        t.truncate_prefix(prefix_ceiling.saturating_sub(status_overhead));
+                    visible_width(rendered.as_str()) + status_overhead
+                } else {
+                    visible_width(snap.prefix.as_str()) + status_overhead
+                };
+                max_prefix = max_prefix.max(prefix_width);
                 // Measure the full rendered suffix (auto fields + custom),
                 // not just the stored custom text — the rendered RHS also
                 // carries count/total/elapsed/rate/eta which consume the
@@ -967,22 +994,9 @@ impl ProgressRenderer {
                 // user-set `rate`/`eta`/`custom` must widen `suffix_w` or
                 // it would overflow at draw and get truncated away.
                 let full_suffix = compose_suffix(&snap, rate_str.as_deref(), eta_str.as_deref());
-                let suffix_width = if has_client_truncation {
-                    // Client-truncated bars: call the client's suffix
-                    // truncation with a generous budget to measure the
-                    // actual width of the final output string.
-                    if let Some(ref source) = *slot.source.borrow() {
-                        if let Some(ref t) =
-                            *source.truncation.read().expect("shared_state truncation lock")
-                        {
-                            let rendered = t.truncate_suffix(max_suffix_width(), &full_suffix);
-                            visible_width(rendered.as_str())
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    }
+                let suffix_width = if let Some(ref t) = truncation {
+                    let rendered = t.truncate_suffix(suffix_ceiling, &full_suffix);
+                    visible_width(rendered.as_str())
                 } else {
                     let rendered = render_suffix_components(&full_suffix, "");
                     visible_width(rendered.as_str())
@@ -990,8 +1004,18 @@ impl ProgressRenderer {
                 max_suffix = max_suffix.max(suffix_width);
             }
         }
-        let prefix_w = max_prefix.clamp(MIN_PREFIX_WIDTH, max_prefix_width());
-        let suffix_w = max_suffix.clamp(MIN_SUFFIX_WIDTH, max_suffix_width());
+        // What is left of the line once the spinner, the separators and a
+        // floor under the fill are paid for. Both label fields come out of it.
+        // The suffix is settled first because it is the field that must not
+        // wrap: a suffix past the end of the line spills onto the row below,
+        // where it reads as a second bar.
+        let label_columns = usize::from(cols).saturating_sub(FRAME_OVERHEAD_COLUMNS + MIN_BAR_FILL);
+        let suffix_w = max_suffix.min(suffix_ceiling).min(label_columns);
+        let spare_prefix = label_columns.saturating_sub(suffix_w);
+        // Without the terminal term this slot is the widest seed label on
+        // screen, and a bar seeded with a short placeholder never grows past
+        // it however much room the line has.
+        let prefix_w = max_prefix.min(prefix_ceiling).min(spare_prefix);
         self.prefix_w.set(prefix_w);
         self.suffix_w.set(suffix_w);
         for (i, slot) in self.slots.iter().enumerate() {
@@ -1318,13 +1342,12 @@ impl ProgressRenderer {
     /// picks up the new width.
     ///
     /// No template is selected by width. The four styles in `components.rs`
-    /// are built per frame from the live `prefix_w`/`suffix_w` cells, and
-    /// those cells are clamped against content-driven ceilings that take no
-    /// terminal width, so a narrower terminal shrinks the bar fill rather
-    /// than switching layouts. The width at which a screen runs out of fill
-    /// is therefore a property of the seed labels on that screen, not a
-    /// threshold in this function: 41 columns on the workflow screen, 39 on
-    /// materialization, and a six-column bar at 60 on tool sync.
+    /// are built per frame from the live `prefix_w`/`suffix_w` cells, and those
+    /// cells are already paid for out of the terminal width, so a narrower
+    /// terminal takes columns from the label first and only then from the
+    /// fill. The width at which a screen runs out of fill is therefore a
+    /// property of that screen's own labels and suffix, not a threshold in
+    /// this function: `MIN_BAR_FILL` is what every screen keeps in common.
     ///
     /// Returns `true` if any dimension actually changed.
     pub(crate) fn maybe_adjust_for_resize(&mut self) -> bool {

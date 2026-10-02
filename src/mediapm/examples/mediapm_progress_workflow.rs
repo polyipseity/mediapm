@@ -8,10 +8,11 @@
 //! the `[W]` or `[F]` marker when a step ended in a warning or a failure. The
 //! per-step bar above the overall bar carries a version and a progress tally.
 //!
-//! The rows are narrower than the identity they carry. Every bar is seeded with
-//! `idle [wf]`, the string `coordinator.rs:343` installs, and the renderer sizes
-//! the prefix slot from the seed rather than from the drawn label, so tool names
-//! arrive truncated. See the module doc in `support/workflow.rs`.
+//! A worker row carries the workflow, the step and the tool it is running:
+//! `[active] default s3 (ffmpeg)` is 28 columns of the 39 the screen gives its
+//! labels at this width. The slot is what the terminal has left after the
+//! spinner, the separators, the suffix and a fill floor, so at narrower widths
+//! the tool name goes before the bar does.
 //!
 //! The data is synthetic, so the example runs offline and in about a
 //! millisecond.
@@ -21,11 +22,9 @@
 //! cargo run --package mediapm --example mediapm_progress_workflow -- --width 41
 //! ```
 //!
-//! 41 is the narrowest width that still gives the bar a column, so it pins the
-//! boundary from the working side. One column narrower the fill is gone
-//! entirely, and three narrower still the transcript comes back with an
-//! interleaved blank line per row. `workflow_screen_below_the_fill_boundary`
-//! describes that regime rather than pinning it as a transcript.
+//! 41 leaves room for the activity markers, the tally and a five-cell fill.
+//! `workflow_screen_never_wraps_a_row` covers the widths below it, where the
+//! label gives way one field at a time and the row still fits on one line.
 //!
 //! What reaches stdout is the rendered grid with its colour escapes removed, so
 //! redirecting the command writes the transcript checked in under
@@ -75,10 +74,10 @@ mod tests {
     /// twelve steps. The overall bar carries `[W]` because a step was lost, so
     /// the coordinator finishes the run as a warning.
     ///
-    /// Every row is short of the identity the label carries. The prefix slot is
-    /// thirteen columns because the widest seed is `workflow [wf]`, so the
-    /// workflow, step and tool names are cut. That is the shape a live run
-    /// draws, and a layout change that widens the slot has to change it here.
+    /// The two running rows carry the whole identity: marker, workflow, step
+    /// and tool. The per-step row carries a version and a tally as well, which
+    /// is the widest label on the screen, so it sets the shared slot and the
+    /// worker rows right-align against it.
     #[test]
     fn workflow_screen_at_default_width_matches_inline_grid() {
         let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
@@ -86,23 +85,23 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "⠙          [active] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 22s 0/d\n",
-                "⠙          [active] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 19s 0/d\n",
-                "⠏     [W] [idle] …) ████████████████████████████████████████ 4s\n",
-                "⠏     [F] [idle] …) ████████████████████████████████████████ 5s\n",
-                "⠏     [idle] (idle) ████████████████████████████████████████ 6s\n",
-                "⠇          [wf] 1/3 █████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░ 1/3 22s 0/d\n",
-                "⠏              work █████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  4/12 23s",
+                "⠙           [active] default s3 (ffmpeg) ░░░░░░░░░░░░░░░░░░░ 22s 0/d\n",
+                "⠙           [active] default s4 (yt-dlp) ░░░░░░░░░░░░░░░░░░░ 19s 0/d\n",
+                "⠏                      [W] [idle] (idle) ███████████████████ 4s\n",
+                "⠏                      [F] [idle] (idle) ███████████████████ 5s\n",
+                "⠏                          [idle] (idle) ███████████████████ 6s\n",
+                "⠇     [wf] 1/3 [7.1] default s3 (ffmpeg) ██████░░░░░░░░░░░░░ 1/3 22s 0/d\n",
+                "⠏                      [W] workflow [wf] ██████░░░░░░░░░░░░░  4/12 23s",
             )
         );
     }
 
-    /// The exact grid at 41 columns, the narrowest width that still leaves the
-    /// bar a column.
+    /// The exact grid at 41 columns, where the activity markers, the step
+    /// tally and a five-cell fill still fit on one line.
     ///
-    /// Together with the 80-column case this pins the working side of the
-    /// boundary. The failing side is described by
-    /// `workflow_screen_below_the_fill_boundary`.
+    /// The identity fields give way in the order the label ranks them: the
+    /// identifiers go first, then the tool name, and the marker stays last
+    /// because it is the only field that says the slot is alive.
     #[test]
     fn workflow_screen_at_narrow_width_matches_inline_grid() {
         let config = ScreenConfig { width: 41, height: DEFAULT_HEIGHT };
@@ -110,36 +109,40 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "⠙          [active] ░ 22s 0/d\n",
-                "⠙          [active] ░ 19s 0/d\n",
-                "⠏     [W] [idle] …) █ 4s\n",
-                "⠏     [F] [idle] …) █ 5s\n",
-                "⠏     [idle] (idle) █ 6s\n",
-                "⠇          [wf] 1/3 ░ 1/3 22s 0/d\n",
-                "⠏              work ░  4/12 23s",
+                "⠙       [active] ░░░░ 22s 0/d\n",
+                "⠙       [active] ░░░░ 19s 0/d\n",
+                "⠏     [W] [idle] ████ 4s\n",
+                "⠏     [F] [idle] ████ 5s\n",
+                "⠏     [idle] …e) ████ 6s\n",
+                "⠇       [wf] 1/3 █░░░ 1/3 22s 0/d\n",
+                "⠏              w █░░░  4/12 23s",
             )
         );
     }
 
-    /// What happens below the fill boundary, described rather than pinned.
+    /// No width wraps a row, down to the narrowest the harness accepts.
     ///
-    /// The prefix slot does not shrink with the terminal, so the fill is the
-    /// first thing to go. At 40 columns every bar draws at zero width and the
-    /// seven rows come back with no fill between them. From 37 down to 20 the
-    /// captured grid grows an interleaved blank line per row, because a row
-    /// whose content exceeds the terminal wraps and the spill lands on the line
-    /// below. No test asserts those exact bytes: a fixture made of blank lines
-    /// would read like a transcript when it is the renderer reporting that it
-    /// ran out of room, so the regime lives in this comment instead. The
-    /// tool-sync screen breaks the same way below 54 columns.
+    /// This is the failure the width budget exists to remove. The prefix slot
+    /// used to be sized from the seed label and never shrank, so from 40
+    /// columns down the captured grid grew an interleaved blank line per row:
+    /// the row was wider than the terminal and the spill landed below it, where
+    /// a suffix such as `0s 0/d` reads as a second bar. What gives way now is
+    /// the label, and the fill keeps its four cells at every width measured,
+    /// which is why this asserts the row count and the row width rather than
+    /// the fill.
     #[test]
-    fn workflow_screen_below_the_fill_boundary() {
-        for width in [40, 39, 37] {
+    fn workflow_screen_never_wraps_a_row() {
+        for width in [38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8] {
             let config = ScreenConfig { width, height: DEFAULT_HEIGHT };
             let grid = strip_ansi_escapes(&render_workflow_screen(config));
             let rows: Vec<&str> = grid.lines().collect();
-            let fill = rows.iter().filter(|row| row.contains(['\u{2588}', '\u{2591}'])).count();
-            assert_eq!(fill, 0, "width {width} should draw no fill, got {rows:?}");
+            assert_eq!(rows.len(), 7, "width {width} must draw seven rows: {rows:?}");
+            for row in rows {
+                assert!(
+                    row.chars().count() <= usize::from(width),
+                    "width {width} must not wrap: {row:?}",
+                );
+            }
         }
     }
 

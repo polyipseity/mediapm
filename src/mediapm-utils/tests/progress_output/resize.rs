@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use mediapm_utils::progress::{SuffixComponents, TestDimensionSource};
 
-use super::common::{bar_cells, mk_with_capacity, mk_with_dims, without_spinners};
+use super::common::{bar_cells, drawn_width, mk_with_capacity, mk_with_dims, without_spinners};
 
 /// Changing only the dimension source's columns redraws the same frame: the
 /// frame width is fixed by the draw target, so this pins the fact that width
@@ -54,11 +54,16 @@ fn dimension_source_columns_do_not_change_the_frame() {
     );
 }
 
-/// A narrow draw target has no room for the bar field at all: the prefix and the
-/// suffix are still written, but the bar between them collapses to nothing (and
-/// the suffix overflows onto further lines).
+/// A narrow draw target gives up the label before it gives up the bar, and the
+/// row stays on one line.
+///
+/// At 20 columns the spinner, the separators, the suffix and the fill floor
+/// leave nothing for the prefix, so `tool-a` is gone and the four-cell fill is
+/// still drawn. This is the whole point of budgeting from the terminal width:
+/// before, the prefix held its measured width and the row came back wrapped,
+/// with `0s 0/d` on the line below where it read as a second bar.
 #[test]
-fn narrow_draw_target_drops_the_bar() {
+fn narrow_draw_target_drops_the_label_not_the_bar() {
     let (wide_terminal, wide_term) = mk_with_capacity(4, 40, 3);
     let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
     let _child = wide_screen.add_bar(7, "tool-a");
@@ -72,7 +77,14 @@ fn narrow_draw_target_drops_the_bar() {
     let wide = wide_term.contents();
     let narrow = narrow_term.contents();
     assert!(bar_cells(&wide) > 0, "the 40-column frame has room for a bar: {wide:?}");
-    assert_eq!(bar_cells(&narrow), 0, "the 20-column frame has none: {narrow:?}");
+    assert_eq!(
+        bar_cells(&narrow),
+        8,
+        "both 20-column rows keep the four-cell fill floor: {narrow:?}",
+    );
+    for line in narrow.lines() {
+        assert!(drawn_width(line) <= 20, "a 20-column row must not wrap: {line:?}");
+    }
     assert_eq!(
         &wide,
         concat!(
@@ -81,12 +93,12 @@ fn narrow_draw_target_drops_the_bar() {
             "⠸      tool-a ░░░░░░░░░  0/7 0s 0/d\n",
             "⠹     overall ░░░░░░░░░  0/10 0s 0/d"
         ),
-        "narrow_draw_target_drops_the_bar/wide"
+        "narrow_draw_target_drops_the_label_not_the_bar/wide"
     );
     assert_eq!(
         &narrow,
-        concat!("\n", "\n", "⠸      tool-a   0/7\n", "0s 0/d"),
-        "narrow_draw_target_drops_the_bar/narrow"
+        concat!("\n", "\n", "⠸  ░░░░  0/7 0s 0/d\n", "⠹  ░░░░  0/10 0s 0/d"),
+        "narrow_draw_target_drops_the_label_not_the_bar/narrow"
     );
 }
 
@@ -138,8 +150,9 @@ fn wider_draw_target_expands_the_bar() {
 }
 
 /// A custom suffix that cannot fit a narrow draw target never reaches the
-/// terminal: the 20-column frame for a bar carrying an 18-character custom suffix
-/// is empty, so neither the custom text nor the rate/ETA after it is drawn. The
+/// terminal: at 20 columns the suffix is cut to what the line has left after
+/// the spinner, the separators and the fill floor, and the custom text is the
+/// first thing to go, so neither it nor the rate/ETA behind it is drawn. The
 /// wide frame in the same test renders the suffix in full, which is what makes
 /// the absence observable.
 ///
@@ -173,7 +186,14 @@ fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
         !narrow.contains("already downloaded"),
         "the narrow frame does not render it: {narrow:?}"
     );
-    assert_eq!(&narrow, "", "narrow_draw_target_does_not_render_an_oversize_custom_suffix/narrow");
+    for line in narrow.lines() {
+        assert!(drawn_width(line) <= 20, "a 20-column row must not wrap: {line:?}");
+    }
+    assert_eq!(
+        &narrow,
+        concat!("\n", "\n", "⠸  ░░░░  0/10 0s 0/d\n", "⠹  ░░░░  0/10 0s 0/d"),
+        "narrow_draw_target_does_not_render_an_oversize_custom_suffix/narrow"
+    );
     assert_eq!(
         &wide,
         concat!(

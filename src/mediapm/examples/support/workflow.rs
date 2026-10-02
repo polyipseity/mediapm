@@ -6,18 +6,14 @@
 //!
 //! Every bar here carries the seed `idle [wf]`, the string the coordinator
 //! installs at
-//! `src/mediapm-conductor/src/orchestration/coordinator.rs:343`. The seed
-//! decides the layout. The renderer splits it into prefix components at
-//! `SharedState::with_time_source_and_style` and sizes the prefix slot the
-//! whole screen shares to the widest of those seeds
-//! (`recompute_layout`). What a bar then draws comes from that bar's own
-//! truncation, and truncation only cuts width, never adds it, so the seed is
-//! the ceiling. `idle [wf]` is nine columns and the overall bar's
-//! `workflow [wf]` is thirteen, so the slot is thirteen columns and a worker
-//! tool name such as `(ffmpeg)` ellipsises at any terminal width. An active
-//! row reads `[active]` and nothing else, which is what the original bug
-//! report described. That is the renderer, not a choice made here, so this
-//! screen keeps the real seed and lets the transcript come out short.
+//! `src/mediapm-conductor/src/orchestration/coordinator.rs:343`, and every
+//! worker row overrides what it draws with its own [`WorkerBarLabel`]. The
+//! renderer sizes the prefix slot from what a bar will draw rather than from
+//! the seed it was constructed with (`recompute_layout`), so the seed is
+//! nine columns and the row is thirty-eight: `default s3 (ffmpeg)` next to
+//! `[active]`. Nothing here has to pick a longer seed to make room, which is
+//! the change from when the seed was the ceiling and an active row read
+//! `[active]` and nothing else.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -172,9 +168,8 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     // tally partway through its three outputs.
     dispatch(&workers[0], "default", "s3", "ffmpeg");
     // The coordinator registers no per-step bar, so there is no production seed
-    // to copy for this one. It takes the worker seed for the reason the module
-    // doc gives: a longer seed here would widen the shared prefix slot for
-    // every other bar and dress up rows the renderer ellipsises in a live run.
+    // to copy for this one. It takes the worker seed: the slot follows what a
+    // bar draws, so a longer seed here would buy nothing.
     let step_bar = screen.add_bar(STEP_OUTPUTS, WORKFLOW_SEED);
     step_bar.set_truncation(Arc::new(StepBarLabel {
         status_marker: String::new(),

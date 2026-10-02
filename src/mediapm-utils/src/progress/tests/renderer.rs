@@ -722,45 +722,18 @@ fn budget_test_components() -> PrefixComponents {
     }
 }
 
-/// The width the renderer measures the prefix at, derived from the same
-/// helper the renderer uses to build it, so the expectation never comes from
-/// the value under test.
-///
-/// Assumes an [`Active`] bar. Production renders with the slot's actual
-/// status, and `Failed` or `Warning` adds a coloured status marker whose
-/// brackets occupy visible width, so this returns too small a width for
-/// those. A failed-bar test must pass that status in rather than reuse this
-/// helper unchanged.
-///
-/// [`Active`]: TrackStatus::Active
-fn derived_prefix_width(components: &PrefixComponents) -> usize {
-    visible_width(&render_prefix_components(components, TrackStatus::Active))
-}
-
-/// Prefix components wide enough that the measured prefix exceeds the prefix
-/// ceiling, so the slot clamps.
-///
-/// Renders as `ingest transcoder (ffmpeg) v2.10.0 [wf] 12/40`, 45 visible
-/// columns, against a ceiling of [`MAX_PREFIX_WIDTH`]. A step label of this
-/// shape is ordinary — a long workflow and tool name, a full version, and a
-/// three-digit progress tally.
-fn clamped_budget_test_components() -> PrefixComponents {
-    PrefixComponents {
-        marker: String::new(),
-        tool_name: "ingest transcoder (ffmpeg)".into(),
-        version: "v2.10.0".into(),
-        phase: "wf".into(),
-        count: "12".into(),
-        total: "40".into(),
-    }
-}
-
 /// A terminal, one bar, and a [`BudgetTruncation`] that records the budgets
 /// the renderer grants it.
 ///
 /// The terminal is held alongside the screen because `screen()` borrows it:
 /// dropping the terminal tears the renderer down, and the client branch of
 /// the draw never runs.
+///
+/// `cols` sizes both the captured grid and the injected dimension source, so
+/// the frame the test reads and the width the renderer budgets against are the
+/// same number. Left on the default the renderer would read the host terminal
+/// through [`RealTerminalSource`] and the assertions would hold or fail with
+/// the window this test ran in.
 struct BudgetFixture {
     /// The in-memory terminal the rendered frame is read back from.
     term: indicatif::InMemoryTerm,
@@ -773,11 +746,13 @@ struct BudgetFixture {
 }
 
 impl BudgetFixture {
-    /// Builds the fixture around a single bar carrying `components`.
-    fn new(components: PrefixComponents) -> Self {
-        let term = indicatif::InMemoryTerm::new(10, 80);
+    /// Builds the fixture around a single bar carrying `components` on a
+    /// terminal `cols` columns wide.
+    fn new(components: PrefixComponents, cols: u16) -> Self {
+        let term = indicatif::InMemoryTerm::new(10, cols);
         let terminal = ProgressTerminal::builder()
             .with_term_like(Box::new(term.clone()))
+            .with_dim_source(Arc::new(TestDimensionSource::new((10, cols))))
             .with_pre_roll_capture(super::pre_roll_capture())
             .capacity(4)
             .with_ticker_enabled(false)
@@ -797,62 +772,90 @@ impl BudgetFixture {
     }
 }
 
-#[test]
-fn client_truncation_receives_prefix_width_minus_ansi_overhead() {
-    // Unclamped regime: this prefix is 15 columns, so
-    // `visible_width + 4 = 19` sits inside the prefix ceiling and the two
-    // cancel — the client is granted exactly the width of the prefix the
-    // renderer derived from the components it was given.
-    //
-    // The invariant that holds in *both* regimes is narrower than the
-    // cancellation: the ANSI reserve is subtracted exactly once, at draw
-    // time, and never twice. Cancellation is what that produces while the
-    // slot is unclamped; once the prefix is wide enough to clamp, the
-    // reserve is still deducted but the remainder is the ceiling, not the
-    // measured width. The clamped half is covered by the sibling test
-    // `client_truncation_receives_clamped_prefix_width_minus_ansi_overhead`.
-    //
-    // The expected width is computed from the same public helper the
-    // renderer uses to build the prefix, never read back from the recorder,
-    // so this fails if the budget arithmetic changes.
-    let components = budget_test_components();
-    let expected = derived_prefix_width(&components);
-    let fixture = BudgetFixture::new(components);
-    fixture.tick();
+/// Terminal width for the budget tests that need the prefix ceiling to bind.
+/// [`BudgetTruncation`] claims the whole suffix ceiling, so the prefix only
+/// reaches its own ceiling once the line carries that suffix plus the spinner,
+/// the separators and [`MIN_BAR_FILL`] as well.
+const WIDE_TERMINAL_COLS: u16 = 120;
 
-    assert_eq!(
-        fixture.recorder.prefix_budget(),
-        Some(expected),
-        "client prefix budget must equal the measured prefix width",
+/// Terminal width where a suffix filling the whole suffix ceiling leaves the
+/// prefix only what the spinner, the separators and [`MIN_BAR_FILL`] do not
+/// claim.
+const NARROW_TERMINAL_COLS: u16 = 80;
+
+/// A client that draws a fixed 13-column label is granted 13 columns, whatever
+/// the bar was seeded with and whatever its built-in components measure.
+///
+/// The bar is seeded `test` and given a 15-column resolve label before the
+/// client replaces both, so a slot sized from either of those would not grant
+/// the client what it drew. Every screen in this workspace seeds its bars, and
+/// a slot sized from a seed can only ever shorten a label.
+#[test]
+fn client_prefix_budget_follows_what_the_client_drew() {
+    let term = indicatif::InMemoryTerm::new(10, 80);
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_dim_source(Arc::new(TestDimensionSource::new((10, 80))))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
+    let group = terminal.screen().build();
+    let bar = group.add_bar(100, "test");
+    bar.set_prefix_components(budget_test_components());
+    bar.set_truncation(Arc::new(FixedTruncation {
+        prefix: "CLIENT-PREFIX",
+        suffix: "CLIENT-SUFFIX",
+    }));
+    group.tick();
+
+    let content = term.contents();
+    assert!(
+        content.contains("CLIENT-PREFIX"),
+        "a 13-column client label needs a 13-column slot plus the ANSI reserve: {content:?}",
     );
 }
 
+/// A client that fills every budget it is handed reaches the prefix ceiling,
+/// and the ceiling less the ANSI reserve is what it ends up granted.
+///
+/// The reserve is deducted once, at draw time. Deducting it before the ceiling
+/// is applied grants 36 columns and this fails, as does not deducting it at
+/// all.
 #[test]
-fn client_truncation_receives_clamped_prefix_width_minus_ansi_overhead() {
-    // Clamped regime: this prefix is 45 visible columns, so
-    // `visible_width + 4` overruns the prefix ceiling and the slot is
-    // clamped to `MAX_PREFIX_WIDTH`. The client is granted the clamped slot
-    // with the ANSI reserve deducted once — the ceiling less the escape, not
-    // the ceiling, and not the measured width.
-    //
-    // This is the half of the contract the unclamped test cannot see. If the
-    // renderer deducted the reserve before clamping, or failed to deduct it
-    // at all, the two would be indistinguishable there and only this would
-    // notice.
-    let components = clamped_budget_test_components();
-    let measured = derived_prefix_width(&components);
-    assert!(
-        measured > MAX_PREFIX_WIDTH - ANSI_RESET.len(),
-        "fixture must exceed the clamp threshold, got {measured}",
-    );
-
-    let fixture = BudgetFixture::new(components);
+fn client_prefix_budget_is_capped_by_the_prefix_ceiling() {
+    let fixture = BudgetFixture::new(budget_test_components(), WIDE_TERMINAL_COLS);
     fixture.tick();
 
     assert_eq!(
         fixture.recorder.prefix_budget(),
         Some(MAX_PREFIX_WIDTH - ANSI_RESET.len()),
         "clamped prefix budget must be the ceiling less the ANSI reserve",
+    );
+}
+
+/// A line too narrow for both labels gives the prefix only what is left after
+/// the suffix has taken what it measured.
+///
+/// This is the case the budget exists for: with the suffix filling its own
+/// ceiling, the prefix gets the terminal width less the spinner, the
+/// separators, the suffix and [`MIN_BAR_FILL`]. A rule that never subtracted
+/// the terminal width would hand the client [`MAX_PREFIX_WIDTH`] here and the
+/// row would wrap.
+#[test]
+fn client_prefix_budget_yields_to_the_suffix_on_a_narrow_line() {
+    let expected = usize::from(NARROW_TERMINAL_COLS)
+        - FRAME_OVERHEAD_COLUMNS
+        - SUFFIX_SLOT
+        - MIN_BAR_FILL
+        - ANSI_RESET.len();
+    let fixture = BudgetFixture::new(budget_test_components(), NARROW_TERMINAL_COLS);
+    fixture.tick();
+
+    assert_eq!(
+        fixture.recorder.prefix_budget(),
+        Some(expected),
+        "prefix budget must be what the line has left after the suffix",
     );
 }
 
@@ -865,7 +868,7 @@ fn client_truncation_receives_full_suffix_width_with_no_ansi_subtraction() {
     // counterpart here. Were the subtraction applied to the suffix as well,
     // the granted width would be `SUFFIX_SLOT - ANSI_RESET.len()` and this
     // would fail.
-    let fixture = BudgetFixture::new(budget_test_components());
+    let fixture = BudgetFixture::new(budget_test_components(), WIDE_TERMINAL_COLS);
     fixture.tick();
 
     assert_eq!(
@@ -887,11 +890,8 @@ fn client_truncated_prefix_fills_exactly_its_budget_and_fits_its_slot() {
     // here because `InMemoryTerm` strips ANSI from what it reports; that the
     // reset is present is asserted by no test, as recorded in the
     // `inner::renderer` module documentation.
-    const TERM_COLS: usize = 80;
-
-    let components = budget_test_components();
-    let expected = derived_prefix_width(&components);
-    let fixture = BudgetFixture::new(components);
+    let expected = MAX_PREFIX_WIDTH - ANSI_RESET.len();
+    let fixture = BudgetFixture::new(budget_test_components(), WIDE_TERMINAL_COLS);
     let content = fixture.tick();
 
     assert_eq!(
@@ -900,6 +900,9 @@ fn client_truncated_prefix_fills_exactly_its_budget_and_fits_its_slot() {
         "frame must show exactly the granted budget, one p per column: {content:?}",
     );
     for line in content.lines() {
-        assert!(visible_width(line) <= TERM_COLS, "rendered line overflows the terminal: {line:?}");
+        assert!(
+            visible_width(line) <= usize::from(WIDE_TERMINAL_COLS),
+            "rendered line overflows the terminal: {line:?}",
+        );
     }
 }

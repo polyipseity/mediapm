@@ -560,19 +560,37 @@ pub(crate) const MIN_SUFFIX_WIDTH: usize = 0;
 /// Maximum reserved suffix width (hard ceiling).
 pub(crate) const MAX_SUFFIX_WIDTH: usize = 65;
 
-/// Maximum visible width for the prefix field.
+/// Columns a frame spends outside its label fields: the spinner glyph and the
+/// single spaces between `{spinner}`, `{prefix}`, `{wide_bar}` and `{msg}`.
 ///
-/// The dynamic `prefix_w`/`suffix_w` cells in [`ProgressRenderer`] hold the
-/// actual per-frame width (clamped between the `MIN_*` floor and `MAX_*`
-/// ceiling); this constant is the hard ceiling used when clamping. Alignment
-/// is driven by the measured max across visible bars, not by terminal width.
-pub(crate) const fn max_prefix_width() -> usize {
-    MAX_PREFIX_WIDTH
+/// Every template built in this module lays the line out as those four fields,
+/// so this is the width no label can have at any terminal size.
+pub(crate) const FRAME_OVERHEAD_COLUMNS: usize = 4;
+
+/// Columns held back for the bar fill before the prefix slot grows past the
+/// measured label.
+///
+/// Under that the prefix is clamped to [`MIN_PREFIX_WIDTH`] and the suffix
+/// truncates instead, so the fill keeps these cells for as long as the line
+/// has room for it. Narrower still and the fill is the field that gets
+/// nothing.
+pub(crate) const MIN_BAR_FILL: usize = 4;
+
+/// Ceiling for the prefix slot on a terminal `cols` columns wide.
+///
+/// Alignment follows the widest label on screen, so the ceiling is what stops
+/// one long label from taking the whole line, and `cols` is what stops the
+/// ceiling from being wider than the line.
+/// [`ProgressRenderer::recompute_layout`](super::ProgressRenderer::recompute_layout)
+/// applies the per-frame budget on top of this.
+pub(crate) fn max_prefix_width(cols: u16) -> usize {
+    usize::from(cols).min(MAX_PREFIX_WIDTH)
 }
 
-/// Maximum visible width for the suffix field. See [`max_prefix_width`].
-pub(crate) const fn max_suffix_width() -> usize {
-    MAX_SUFFIX_WIDTH
+/// Ceiling for the suffix slot on a terminal `cols` columns wide.
+/// See [`max_prefix_width`].
+pub(crate) fn max_suffix_width(cols: u16) -> usize {
+    usize::from(cols).min(MAX_SUFFIX_WIDTH)
 }
 
 /// Progressively truncate prefix [`PrefixComponents`] so the rendered
