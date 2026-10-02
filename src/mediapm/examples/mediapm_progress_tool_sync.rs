@@ -18,6 +18,9 @@
 #[path = "support/mod.rs"]
 mod support;
 
+#[path = "support/tool_sync.rs"]
+mod tool_sync;
+
 use support::ScreenConfig;
 
 /// Print the tool-sync screen at the size the arguments select.
@@ -36,14 +39,15 @@ fn main() {
             ScreenConfig { width: support::DEFAULT_WIDTH, height: support::DEFAULT_HEIGHT }
         }
     };
-    let grid = support::render_tool_sync_screen(config);
+    let grid = tool_sync::render_tool_sync_screen(config);
     println!("{}", support::strip_ansi_escapes(&grid));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::support::{DEFAULT_HEIGHT, DEFAULT_WIDTH, strip_ansi_escapes};
-    use super::support::{ScreenConfig, parse_screen_config, render_tool_sync_screen};
+    use super::support::ScreenConfig;
+    use super::support::{DEFAULT_HEIGHT, DEFAULT_WIDTH, parse_screen_config, strip_ansi_escapes};
+    use super::tool_sync::render_tool_sync_screen;
 
     /// The exact grid at `DEFAULT_WIDTH`, the narrowest width
     /// `mediapm-utils/tests/progress_output/common.rs` calls `W`.
