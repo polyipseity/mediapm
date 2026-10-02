@@ -7,7 +7,7 @@ pub(crate) mod commit;
 pub(crate) mod file_ops;
 mod metadata;
 pub(crate) mod playlist;
-mod progress_labels;
+pub(crate) mod progress_labels;
 mod resolve;
 mod zip;
 

@@ -68,6 +68,7 @@ pub use global::{
     global_tool_cache_status,
 };
 pub use materializer::MaterializeReport;
+pub use materializer::progress_labels::{MaterializationBarLabel, split_entry_path};
 pub use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 pub use paths::MediaPmPaths;
 pub use service::MediaPmService;

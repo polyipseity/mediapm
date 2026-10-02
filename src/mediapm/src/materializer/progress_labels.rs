@@ -21,7 +21,7 @@ use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit
 /// Materialization bars carry no version, no count/total, and no
 /// workflow/step identity.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct MaterializationBarLabel {
+pub struct MaterializationBarLabel {
     /// Terminal-state marker, rendered bracketed as `[F]` or `[W]`. Empty
     /// when the entry has no status, in which case the segment is omitted.
     pub status_marker: String,
@@ -73,8 +73,19 @@ impl BarLabelTruncation for MaterializationBarLabel {
 
 /// Split a relative path into `(entry_path, entry_name)`.
 ///
-/// Returns `("", path)` when the path has no `/` separator.
-pub(crate) fn split_entry_path(path: &str) -> (&str, &str) {
+/// The first element is everything before the last `/`, which is what
+/// [`MaterializationBarLabel::entry_path`] holds, and the second is the
+/// basename, which is what [`MaterializationBarLabel::entry_name`] holds. A
+/// path with no `/` yields `("", path)`, so a caller can pass the result
+/// straight into the label without special-casing a bare filename.
+///
+/// This is the split the materializer applies at
+/// `src/mediapm/src/materializer/mod.rs:396` and `:744` when it builds a bar
+/// label, so an entry path outside the library, such as the
+/// `mediapm_progress_materialize` example, can render the same label the
+/// library renders instead of splitting the path a second way.
+#[must_use]
+pub fn split_entry_path(path: &str) -> (&str, &str) {
     match path.rfind('/') {
         Some(pos) => (&path[..pos], &path[pos + 1..]),
         None => ("", path),
