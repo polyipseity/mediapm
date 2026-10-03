@@ -3,8 +3,8 @@
 //! Provides the [`MetadataStore`] trait (entry + constraint operations) and the
 //! [`MetadataEntry`] type. Implementations:
 //!
-//! - [`InMemoryMetadataStore`](self::mem::InMemoryMetadataStore) — ephemeral, all data in `DashMap`s
-//! - [`FileSystemMetadataStore`](self::fs::FileSystemMetadataStore) — in-memory with persisted snapshot file
+//! - `InMemoryMetadataStore` — ephemeral, all data in `DashMap`s
+//! - `FileSystemMetadataStore` — in-memory with persisted snapshot file
 
 mod fs;
 mod mem;
@@ -43,13 +43,16 @@ impl MetadataEntry {
 
 /// Unified metadata store — payload metadata + constraint hints.
 ///
-/// Object metadata (payload size, encoding) is stored via [`put`]/[`get`]/[`delete`]
-/// and rebuilt from the WAL on startup. Constraint data is stored independently
-/// via [`set_constraint`]/[`get_constraint`] — see §8.6 in AGENTS.md.
+/// Object metadata (payload size, encoding) is stored via
+/// [`MetadataStore::put`]/[`MetadataStore::get`]/[`MetadataStore::delete`]
+/// and rebuilt from the WAL on startup. Constraint data is stored
+/// independently via
+/// [`MetadataStore::set_constraint`]/[`MetadataStore::get_constraint`] —
+/// see §8.6 in AGENTS.md.
 ///
 /// In-memory implementations are reconstructed from journal replay on startup.
-/// [`FileSystemMetadataStore`] additionally persists constraints to disk so they survive
-/// WAL trim and process restart.
+/// The internal `FileSystemMetadataStore` additionally persists constraints to
+/// disk so they survive WAL trim and process restart.
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
     /// Store metadata for a hash (replaces existing entry).

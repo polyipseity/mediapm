@@ -90,7 +90,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     /// Drain the WAL consumer once: drain WAL entries into Blob +
     /// Metadata, advancing checkpoint after each entry.
     ///
-    /// Replay is exclusive per store: the call holds [`Self::consume_lock`]
+    /// Replay is exclusive per store: the call holds `consume_lock`
     /// for its whole body, so a background consumer and a foreground
     /// `flush` / `run_maintenance_cycle` drain the same range one after the
     /// other instead of interleaving. The second caller observes the

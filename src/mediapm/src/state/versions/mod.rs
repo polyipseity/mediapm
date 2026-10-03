@@ -2,8 +2,8 @@
 //!
 //! This module is the **only** place that knows which schema versions exist
 //! and which file owns each one. Every read of `state.json` on disk enters
-//! through [`from_json_value`], and every write leaves through
-//! [`to_json_value`].
+//! through `from_json_value`, and every write leaves through
+//! `to_json_value`.
 //!
 //! ## Supported versions
 //!

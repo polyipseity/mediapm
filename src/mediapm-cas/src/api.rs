@@ -103,7 +103,7 @@ pub trait CasApi: Send + Sync {
     /// metadata stores, making them visible to future `get`/`stat` calls.
     ///
     /// Returns the number of WAL entries consumed. No-op for backends that
-    /// use write-through semantics (e.g. [`InMemoryCas`]) or for callers
+    /// use write-through semantics (e.g. [`InMemoryCas`](crate::InMemoryCas)) or for callers
     /// that never use write-back CAS stores.
     ///
     /// # Guarantees

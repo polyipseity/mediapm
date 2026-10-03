@@ -1,5 +1,5 @@
-//! Storage backends: WAL, Metadata, Blob, [`BackgroundEngine`],
-//! and the composed [`CasStore`] handle.
+//! Storage backends: WAL, Metadata, Blob, [`BackgroundEngine`](bg_engine::BackgroundEngine),
+//! and the composed [`CasStore`](store::CasStore) handle.
 
 pub mod bg_engine;
 pub mod blob_store;

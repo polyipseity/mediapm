@@ -148,11 +148,9 @@ impl Default for ProgressTerminalBuilder {
 
 /// Configuration methods for [`ProgressTerminalBuilder`].
 impl ProgressTerminalBuilder {
-    /// Use an injectable [`TermLike`] instead of creating a
-    /// [`BufferedTerm`](super::gate::BufferedTerm) over
-    /// [`console::Term::stderr`]. Always wraps the term in
-    /// [`BufferedTerm`](super::gate::BufferedTerm) so the
-    /// write-gate protocol is exercised in tests.
+    /// Use an injectable [`TermLike`] instead of creating a `BufferedTerm`
+    /// over [`console::Term::stderr`]. Always wraps the term in a
+    /// `BufferedTerm` so the write-gate protocol is exercised in tests.
     #[must_use]
     pub fn with_term_like(mut self, term: Box<dyn TermLike>) -> Self {
         let (buffered, gate) = super::gate::BufferedTerm::new(term);
@@ -341,7 +339,7 @@ impl ProgressTerminal {
 
     /// Begin building a new screen on this terminal.
     ///
-    /// Returns a [`TerminalScreenBuilder`] that can configure dynamic height,
+    /// Returns a `TerminalScreenBuilder` that can configure dynamic height,
     /// capacity, and an optional overall bar before calling `.build()`.
     ///
     /// # Panics
@@ -353,9 +351,8 @@ impl ProgressTerminal {
         TerminalScreenBuilder { terminal: self, overall: None, _state: PhantomData }
     }
 
-    /// Force a render sync (used in tests with
-    /// [`InMemoryTerm`](indicatif::InMemoryTerm) where the timer
-    /// thread does not run).
+    /// Force a render sync. Tests use this with the in-memory terminal from
+    /// `indicatif`'s `in_memory` feature, where the timer thread does not run.
     ///
     /// When no screen is live, this is a no-op.
     pub fn tick(&self) {
@@ -654,15 +651,46 @@ impl ProgressScreen {
     ///
     /// What retains the line of a bar that is still **unfinished** here depends on the draw target, so it is stated per configuration:
     ///
-    /// - **Write-gated target** (the `BufferedTerm` a terminal wraps around its term, which is what production draws through): the **write gate** retains it. indicatif's `BarState::drop` finishes an unfinished bar and draws it, but that draw lands after [`finalize`](ProgressRenderer::finalize)'s window has closed, so the gate suppresses it and the frame `finalize` drew is the last one the terminal ever sees. The gate's role here is real: production retention rests on it, and deleting this reasoning is not safe.
-    /// - **Ungated target** (a bare [`MultiProgress`] whose gate is a no-op): the **finish policy** retains it. Every slot bar carries `ProgressFinish::AndLeave` (see `with_slot_finish_policy` in [`ProgressRenderer`]); without it, indicatif's default `ProgressFinish::AndClear` sets `Status::DoneHidden` in `BarState::drop` and clears the bar's line on the way out.
+    /// - **Write-gated target** (the `BufferedTerm` a terminal wraps around its
+    ///   term, which is what production draws through): the **write gate**
+    ///   retains it. indicatif's `BarState::drop` finishes an unfinished bar and
+    ///   draws it, but that draw lands after the window `finalize` closes, so
+    ///   the gate suppresses it and the frame `finalize` drew is the last one
+    ///   the terminal ever sees. The gate's role here is real: production
+    ///   retention rests on it, and deleting this reasoning is not safe.
+    /// - **Ungated target** (a bare [`MultiProgress`] whose gate is a no-op):
+    ///   the **finish policy** retains it. Every slot bar carries
+    ///   `ProgressFinish::AndLeave` (see `with_slot_finish_policy` in
+    ///   [`ProgressRenderer`]); without it, indicatif's default
+    ///   `ProgressFinish::AndClear` sets `Status::DoneHidden` in
+    ///   `BarState::drop` and clears the bar's line on the way out.
     ///
-    /// `with_slot_finish_policy` is therefore **defense-in-depth**, not a fix for an observed production defect: it keeps the retention contract from depending on the gate's window timing, so an ungated target — or a future drop path that draws inside an open window — still keeps the line. No production configuration was measured to lose an unfinished bar's line with the policy absent. The gated behavior is pinned by `progress::tests::screen::gated_terminal_retains_an_unfinished_bar`; the ungated half by `join_commits_an_unfinished_bar` and `drop_without_join_keeps_an_unfinished_bar`.
+    /// `with_slot_finish_policy` is therefore **defense-in-depth**, not a fix
+    /// for an observed production defect: it keeps the retention contract from
+    /// depending on the gate's window timing, so an ungated target, or a future
+    /// drop path that draws inside an open window, still keeps the line. No
+    /// production configuration was measured to lose an unfinished bar's line
+    /// with the policy absent. The gated behavior is pinned by
+    /// `progress::tests::screen::gated_terminal_retains_an_unfinished_bar`; the
+    /// ungated half by `join_commits_an_unfinished_bar` and
+    /// `drop_without_join_keeps_an_unfinished_bar`.
     ///
     /// One measured limit of that retention, and one derived bound:
     ///
-    /// - On either configuration, a bar that was **finished** before the drop keeps its line through `BarState::drop`'s `is_finished()` short-circuit, which returns before the finish policy is ever consulted.  Exercised by `progress::tests::screen`.
-    /// - Derived, **not** measured: the ticker's `Weak::upgrade()` fails here, but a tick already in flight holds a strong clone of the renderer until it returns, so the retired reservation can outlive `join` by up to one tick.  That bound follows from [`ProgressRenderer::run_frame`] returning immediately once finalized (the guard `finalize` sets): the window is a single no-op tick that drops the reservation when it ends, so a screen built and drawn inside the window sees the retired reservation for one frame.  The overlap itself is unmeasured and cannot be forced from a test — it needs a join to land inside another thread's upgrade.
+    /// - On either configuration, a bar that was **finished** before the drop
+    ///   keeps its line through `BarState::drop`'s `is_finished()` short-circuit,
+    ///   which returns before the finish policy is ever consulted. Exercised by
+    ///   `progress::tests::screen`.
+    /// - Derived, **not** measured: the ticker's `Weak::upgrade()` fails here,
+    ///   but a tick already in flight holds a strong clone of the renderer until
+    ///   it returns, so the retired reservation can outlive `join` by up to one
+    ///   tick. That bound follows from `ProgressRenderer::run_frame` returning
+    ///   immediately once finalized (the guard `finalize` sets): the window is
+    ///   a single no-op tick that drops the reservation when it ends, so a
+    ///   screen built and drawn inside the window sees the retired reservation
+    ///   for one frame. The overlap itself is unmeasured and cannot be forced
+    ///   from a test, because it needs a join to land inside another thread's
+    ///   upgrade.
     ///
     /// Idempotent: joining an already-joined (or never-live) screen is a no-op,
     /// which is what makes `Drop` safe to route through here.
@@ -697,9 +725,8 @@ impl ProgressScreen {
         self.join();
     }
 
-    /// Force a render sync (used in tests with
-    /// [`InMemoryTerm`](indicatif::InMemoryTerm) where the timer
-    /// thread does not run).
+    /// Force a render sync. Tests use this with the in-memory terminal from
+    /// `indicatif`'s `in_memory` feature, where the timer thread does not run.
     ///
     /// A no-op once the screen is committed: its renderer is gone (the
     /// terminal dropped the last strong reference) or already finalized.

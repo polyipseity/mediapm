@@ -58,7 +58,8 @@ pub enum ProgressOp {
         components: crate::progress::SuffixComponents,
     },
     /// `set_truncation(truncation)` was called. Records the rendered
-    /// prefix/suffix from the installed [`BarLabelTruncation`] at the
+    /// prefix/suffix from the installed
+    /// [`BarLabelTruncation`](crate::progress::BarLabelTruncation) at the
     /// recorder's configured width.
     SetTruncation {
         /// Rendered prefix string (full width, no truncation applied).

@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 /// Visual style for a child progress bar.
 ///
-/// A marker stored on [`SharedState`] and read by the renderer's single push
-/// point ([`ProgressRenderer::sync_snapshot_to_bar`]); it does **not** change
-/// color or overall-bar semantics.
+/// A marker stored on the internal `SharedState` and read by the renderer's
+/// single push point (`sync_snapshot_to_bar`); it does **not** change color
+/// or overall-bar semantics.
 ///
 /// - [`StepCount`](BarStyle::StepCount) — the default. Shows a `count/total`
 ///   ratio driven by `advance`/`set_position`/`set_total`, with the standard

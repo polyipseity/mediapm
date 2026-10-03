@@ -264,9 +264,9 @@ pub(crate) fn render_suffix_components(parts: &SuffixComponents, color_code: &st
 
 // ---- Source-data component types -----------------------------------
 
-/// Source components of a progress prefix, stored separately so
-/// [`semantic_truncate_prefix`] receives individual fields directly
-/// rather than a combined string that must be re-parsed.
+/// Source components of a progress prefix, stored separately so the internal
+/// `semantic_truncate_prefix` receives individual fields directly rather than a
+/// combined string that must be re-parsed.
 ///
 /// Normative truncation spec (removal order, least-important first):
 ///
@@ -288,8 +288,8 @@ pub(crate) fn render_suffix_components(parts: &SuffixComponents, color_code: &st
 /// visible characters that participate in truncation.
 ///
 /// Initial values come from parsing the `add_bar`/`with_overall` label at
-/// construction; [`ProgressBarHandle::set_prefix_components`] is the only
-/// runtime mutation API. The removal order above is a normative spec,
+/// construction; [`set_prefix_components`](super::ProgressBarHandle::set_prefix_components)
+/// is the only runtime mutation API. The removal order above is a normative spec,
 /// verified verbatim by the `semantic_truncate_prefix_*` unit suites.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PrefixComponents {
@@ -307,9 +307,9 @@ pub struct PrefixComponents {
     pub total: String,
 }
 
-/// Source components of a progress suffix, stored separately so
-/// [`semantic_truncate_suffix`] receives each field directly without
-/// string re-parsing.
+/// Source components of a progress suffix, stored separately so the internal
+/// `semantic_truncate_suffix` receives each field directly without string
+/// re-parsing.
 ///
 /// Normative truncation spec (removal order, least-important first):
 ///
@@ -327,7 +327,8 @@ pub struct PrefixComponents {
 /// Render rule: `eta` is rendered only when `rate` is present
 /// (eta-only-when-rate guard).
 ///
-/// [`ProgressBarHandle::set_suffix_components`] is the only mutation API (the
+/// [`set_suffix_components`](super::ProgressBarHandle::set_suffix_components)
+/// is the only mutation API (the
 /// legacy `set_suffix(String)` is removed); user-set fields override the
 /// auto-derived ticker fields at sync time with empty fields auto-filled.
 /// The removal order above is a normative spec, verified verbatim by the

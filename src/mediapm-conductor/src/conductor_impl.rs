@@ -21,7 +21,7 @@ use crate::state::ConductorState;
 
 /// Concrete facade over the conductor orchestration runtime.
 ///
-/// Wraps a lazily initialized [`ConductorActorClient`] and persists
+/// Wraps a lazily initialized `ConductorActorClient` and persists
 /// [`ConductorState`] across runs so repeated deterministic workflows hit the cache.
 pub struct Conductor<C>
 where

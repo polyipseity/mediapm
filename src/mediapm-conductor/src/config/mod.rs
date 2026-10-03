@@ -15,8 +15,8 @@
 //! This module holds the resolved (option-free) types only. The active
 //! `*Latest` wire family lives in the `v_latest` file inside [`versions`] and
 //! is reached exclusively through the unversioned entry points in
-//! [`versions`] ([`versions::from_boundary`], [`versions::into_boundary`],
-//! [`versions::merge_document_sources`]). No versioned symbol is re-exported
+//! [`versions`] (`versions::from_boundary`, `versions::into_boundary`,
+//! `versions::merge_document_sources`). No versioned symbol is re-exported
 //! from here, and no code in this module names a versioned wire type in
 //! either direction.
 

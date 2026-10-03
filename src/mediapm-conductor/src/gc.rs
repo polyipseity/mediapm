@@ -96,7 +96,7 @@ where
 /// Runs full CAS maintenance: optimize, prune constraints.
 ///
 /// Does not touch instance GC or orphan reclamation; callers run
-/// [`run_conductor_gc`] for the full cycle.
+/// `run_conductor_gc` for the full cycle.
 ///
 /// # Errors
 ///

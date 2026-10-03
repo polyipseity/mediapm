@@ -838,11 +838,11 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// progress opens no live terminal at all. An injected terminal takes
     /// precedence over both `no_progress` and
     /// [`SyncProgressOverrides::no_progress`]; see
-    /// [`sync_progress_terminal`].
+    /// `sync_progress_terminal`.
     ///
     /// # Errors
     ///
-    /// Delegates to [`sync_tools_from_document`](Self::sync_tools_from_document).
+    /// Delegates to `Self::sync_tools_from_document`.
     pub async fn sync_tools_with_progress_overrides(
         &mut self,
         check_tag_updates: bool,

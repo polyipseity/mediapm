@@ -104,7 +104,7 @@ pub fn resolve_runtime_storage(
 /// The runtime knobs a document may deviate from the spelled-out defaults by.
 ///
 /// [`runtime_boundary`] writes out every knob of the boundary value, using
-/// [`defaults`](crate::config::defaults) for anything left as `None` here.
+/// [`defaults`] for anything left as `None` here.
 /// That is deliberate: the point of the resulting document is that a reader
 /// can see the whole runtime surface, so the constructor fills in the defaults
 /// rather than leaving fields implicit.
@@ -229,8 +229,8 @@ fn spelled_path(knob: &str) -> String {
 /// ```
 ///
 /// Every knob absent from `deviations` is written out explicitly — the scalar
-/// ones from [`defaults`](crate::config::defaults), the path ones from
-/// [`spelled_path_layout`] — so the produced document documents the whole
+/// ones from [`defaults`], the path ones from
+/// `spelled_path_layout` — so the produced document documents the whole
 /// runtime surface rather than only the interesting parts.
 #[must_use]
 pub fn runtime_boundary(deviations: RuntimeBoundaryDeviations) -> MediaRuntimeStorageLatest {

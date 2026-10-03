@@ -302,7 +302,7 @@ pub fn link_to_sandbox_filtered(
 /// foreign-platform directories determined by compile-time `#[cfg]`.
 ///
 /// This is a thin wrapper around [`link_to_sandbox_filtered`] that
-/// passes the host-specific [`super::FOREIGN_PLATFORM_DIRS`].
+/// passes the host-specific `super::FOREIGN_PLATFORM_DIRS`.
 ///
 /// # Errors
 /// Returns `Err` with a description if I/O operations fail.

@@ -665,17 +665,17 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 /// across all sources, and it increases as more sources are accounted for.
 /// The per-source estimate refines further after extraction (from compressed
 /// estimate to actual directory size), which is also expected behavior
-/// documented in [`estimate_uncompressed_size`].
+/// documented in `estimate_uncompressed_size`.
 ///
 /// ## Progress bar smoothness
 ///
-/// Progress callbacks are threaded through [`process_single_source`] and
+/// Progress callbacks are threaded through `process_single_source` and
 /// the extraction helpers so that per-chunk callbacks fire during archive
 /// extraction (and during repacking to CAS). This gives the progress bar
 /// smooth ~20Hz updates instead of freezing for seconds at a time during
 /// the decompression of large archives (yt-dlp, ffmpeg, deno, rsgain).
 ///
-/// The [`fire_progress`] helper function is the single push point for all
+/// The `fire_progress` helper function is the single push point for all
 /// progress snapshots. It aggregates the budget state and dispatches it
 /// through the provider's progress callback. Both the fetch and process
 /// phases use this shared helper, so snapshot semantics stay consistent.
@@ -686,17 +686,17 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 ///   entry with cumulative compressed bytes as the position.
 ///
 /// - **tar.gz / tar.xz extraction**: the compressed payload size is used
-///   as the total, and a [`CountingReader`] tracks how many compressed
+///   as the total, and a `CountingReader` tracks how many compressed
 ///   bytes have been consumed by the decoder. A callback fires after each
-///   tar entry, and sub-entry callbacks fire every [`SUB_ENTRY_CHUNK`] (64
+///   tar entry, and sub-entry callbacks fire every `SUB_ENTRY_CHUNK` (64
 ///   KiB) bytes consumed.
 ///
 /// - **Binary / launcher sources**: a single callback fires after the
 ///   source is fully processed (CAS import is an instant in-memory
 ///   operation).
 ///
-/// - **Repacking (compress item)**: the [`pack_directory_to_uncompressed_zip_bytes`]
-///   function fires sub-entry callbacks every [`SUB_ENTRY_CHUNK`] bytes
+/// - **Repacking (compress item)**: the `pack_directory_to_uncompressed_zip_bytes`
+///   function fires sub-entry callbacks every `SUB_ENTRY_CHUNK` bytes
 ///   written, keeping the bar smooth during the repack phase.
 ///
 /// The per-source item callback in the main loop below advances the item
@@ -711,7 +711,7 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 /// through the full process pipeline.
 ///
 /// [`MAX_LOOKAHEAD`] (16) bounds the number of concurrent HEAD probes
-/// during phase 1 (resolve). [`SUB_ENTRY_CHUNK`] (64 KiB) controls the
+/// during phase 1 (resolve). `SUB_ENTRY_CHUNK` (64 KiB) controls the
 /// minimum byte interval between sub-entry progress callbacks during
 /// extraction/compression, preventing excessive callback overhead.
 ///

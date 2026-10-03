@@ -15,8 +15,8 @@
 //!   over the same versions.
 //! - `v_latest.rs` owns the active `*Latest` boundary family. This module is
 //!   the ONLY bridge between that family and the resolved (option-free) types
-//!   in `config/mod.rs`: [`from_boundary`] (read direction), [`into_boundary`]
-//!   (encode direction), and [`merge_document_sources`] (multi-document load +
+//!   in `config/mod.rs`: `from_boundary` (read direction), `into_boundary`
+//!   (encode direction), and `merge_document_sources` (multi-document load +
 //!   merge) all live here. `config/mod.rs` names no version path at all.
 //! - This module MAY import from `v_latest`, but MUST NOT re-export any
 //!   versioned symbol outside `versions/`. A re-export would let an outside

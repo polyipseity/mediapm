@@ -351,7 +351,7 @@ impl Cache {
     }
 
     /// Prunes expired entries for one domain **immediately**, bypassing the
-    /// 24-hour [`PRUNE_INTERVAL_SECONDS`] cooldown enforced by
+    /// 24-hour `PRUNE_INTERVAL_SECONDS` cooldown enforced by
     /// [`Cache::prune_expired_entries`].
     ///
     /// A manual prune must actually remove expired entries regardless of when
@@ -476,8 +476,8 @@ impl Cache {
     /// Removes expired index rows and their unreferenced CAS payloads for
     /// one domain.
     ///
-    /// This method enforces [`PRUNE_INTERVAL_SECONDS`] cooldown between
-    /// successive calls per domain.  Use [`Self::prune_expired_inner`] to bypass the
+    /// This method enforces the `PRUNE_INTERVAL_SECONDS` cooldown between
+    /// successive calls per domain. Use `Self::prune_expired_inner` to bypass the
     /// cooldown.
     ///
     /// # Errors

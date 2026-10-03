@@ -321,11 +321,11 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "⠏       01 - Telepathy.flac Children [cmt] ██████████████████████████ 6s\n",
-                "⠸       You Up [youtube.dQw4w9WgXcQ] [stg] ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
+                "⠏     01 - Telepathy.flac o Children [cmt] ██████████████████████████ 6s\n",
+                "⠸     e You Up [youtube.dQw4w9WgXcQ] [stg] ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
                 "⠴     Up [youtube.dQw4w9WgXcQ] links [wrt] ████████░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
-                "⠧        01 - In the Flesh?.m4a Wall [vrf] ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
-                "⠋                            materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m",
+                "⠧     01 - In the Flesh?.m4a he Wall [vrf] ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
+                "⠋                            materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m"
             )
         );
     }

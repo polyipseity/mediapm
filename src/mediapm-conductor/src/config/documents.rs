@@ -12,8 +12,8 @@
 //! values never lose to implicit serde defaults, and human-readable fields
 //! (`external_data` descriptions, workflow `display_name`/`description`) are
 //! never merged or compared across documents. The merge itself is version
-//! code and lives in [`super::versions::merge`], reachable only through the
-//! unversioned [`super::versions::merge_document_sources`] entry point.
+//! code and lives in `super::versions`, reachable only through the
+//! unversioned `super::versions::merge_document_sources` entry point.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -32,7 +32,7 @@ struct HandleToken;
 ///
 /// Wraps [`CasStore`] with a [`FileWal`] for WAL persistence, a
 /// [`FileSystemBlobStore`] for payload persistence, and a
-/// [`FileSystemMetadataStore`] for metadata + constraint lookup with per-
+/// `FileSystemMetadataStore` for metadata + constraint lookup with per-
 /// directory persistent snapshots alongside blob files.
 ///
 /// Spawns a background WAL consumer on open to periodically materialize

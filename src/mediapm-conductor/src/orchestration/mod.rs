@@ -1,7 +1,7 @@
 //! Orchestration layer — actors, protocol types, and coordinator.
 //!
 //! This module is the runtime heart of conductor.  It owns the
-//! [`coordinator::WorkflowCoordinator`] that drives workflow execution across a pool of
+//! `coordinator::WorkflowCoordinator` that drives workflow execution across a pool of
 //! step-worker actors, plus the protocol types those actors depend on.
 
 pub(crate) mod config;

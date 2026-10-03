@@ -77,7 +77,7 @@ impl Hash {
     /// Produces `blake3(h₁.as_bytes() ‖ h₂.as_bytes() ‖ …)`. Deterministic —
     /// same sequence always produces same composite hash.
     ///
-    /// This is used by [`Conductor`] and [`MediaPM`] for [`StringList`] identity where
+    /// This is used by the conductor and mediapm layers for `StringList` identity where
     /// element hashes are already stored as individual CAS objects.
     #[must_use]
     pub fn composite(hashes: &[Hash]) -> Self {
@@ -174,7 +174,7 @@ impl fmt::Debug for Hash {
 
 impl fmt::Display for Hash {
     /// Returns the canonical human-readable format `"blake3:hexdigest"`,
-    /// matching the [`Serialize`](Serialize) representation.
+    /// matching the [`Serialize`] representation.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "blake3:{}", self.to_hex())
     }

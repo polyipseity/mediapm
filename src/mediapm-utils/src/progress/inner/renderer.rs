@@ -408,7 +408,7 @@ impl ProgressBarHandle {
     }
 
     /// Create a standalone progress handle (not managed by a
-    /// [`ProgressScreen`]) with no display backend.
+    /// [`ProgressScreen`](super::ProgressScreen)) with no display backend.
     ///
     #[must_use]
     pub fn new(total: u64) -> Self {
@@ -455,7 +455,7 @@ impl ProgressBarHandle {
     ///
     /// The **single runtime prefix mutation API**. The initial value always
     /// comes from parsing the `add_bar`/`with_overall` label at construction
-    /// (see [`SharedState::with_time_source`]); this method overrides those
+    /// (see `SharedState::with_time_source`); this method overrides those
     /// parsed components with fully structured source data. The legacy
     /// `set_prefix(String)` API has been removed — there is no string mutation
     /// path left.
@@ -478,7 +478,7 @@ impl ProgressBarHandle {
     /// API has been removed, and the suffix always flows through this
     /// structured path.
     ///
-    /// Merge semantics (applied at [`sync_snapshot_to_bar`] time): user-set
+    /// Merge semantics (applied at `sync_snapshot_to_bar` time): user-set
     /// fields override the auto-derived fields composed from ticker data;
     /// empty user fields fall back to fresh ticker data, so callers may set
     /// just the fields they care about (typically `custom`) and leave the
@@ -502,10 +502,10 @@ impl ProgressBarHandle {
     /// Install client-supplied truncation logic.
     ///
     /// Once set, the renderer's single push point calls
-    /// [`BarLabelTruncation::truncate_prefix`] /
-    /// [`BarLabelTruncation::truncate_suffix`] to obtain the final display
-    /// strings directly, instead of the built-in component rendering. The
-    /// client owns the field layout and order.
+    /// [`truncate_prefix`](crate::progress::BarLabelTruncation::truncate_prefix)
+    /// / [`truncate_suffix`](crate::progress::BarLabelTruncation::truncate_suffix)
+    /// to obtain the final display strings directly, instead of the built-in
+    /// component rendering. The client owns the field layout and order.
     ///
     /// # Panics
     ///
@@ -618,15 +618,15 @@ struct RenderedSlot {
 ///
 /// # Allocation strategy
 ///
-/// 1. [`attach`](Self::attach) places new children into the **bottom** of the
+/// 1. `attach` places new children into the **bottom** of the
 ///    active band (just above the overall bar if one exists) and shifts all
 ///    existing active children up by one slot, preserving chronological order
 ///    top-to-bottom.
 /// 2. When all slots are occupied by active handles, finished slots are
 ///    recycled (scanning from the bottom upward).
 /// 3. When no finished slot can be recycled, the new handle is pushed into
-///    [`orphaned_states`](Self::orphaned_states) — tracked but with no render
-///    slot until the terminal grows.
+///    `orphaned_states` — tracked but with no render slot until the terminal
+///    grows.
 /// 4. Finished bars stay visible — their slots are only recycled when new
 ///    handles need display space.
 pub struct ProgressRenderer {
