@@ -349,13 +349,25 @@ pub fn assert_every_transcript_matches(
     }
 }
 
-/// Render a screen at every width in [`SWEEP_WIDTHS`] and assert two things.
+/// Render a screen at every width in [`SWEEP_WIDTHS`] and assert that no row wraps.
 ///
-/// A row must not be wider than the terminal, and every row must draw at least
-/// one bar cell. The first is the bug the width budget exists to remove: a row
-/// wider than the terminal spills onto the line below, where a suffix reads as
-/// a second bar. The second keeps the first honest, because a narrow terminal
-/// can also be satisfied by a row that fits by being empty.
+/// The failure this exists for: a row wider than the terminal spills onto the
+/// line below, where a suffix reads as a second bar. Before the width budget
+/// landed, the captured grid grew an interleaved blank line per row from 40
+/// columns down, because the prefix slot was sized from the seed label and
+/// never shrank.
+///
+/// It no longer asserts that a row carries a fill. Below the fill threshold a
+/// row draws no bar on purpose and the label is what a reader wants there
+/// instead, so "has a bar cell" is false by design at every width below 59 on
+/// tool sync and materialization and below 66 on the workflow screen, whose
+/// labels are seven columns wider than the other two. Which of those applies to
+/// a given width is a property of that screen's labels, not of the width, so
+/// pinning one number here would be wrong for two of the three screens.
+///
+/// Whether a narrow row says anything is checked by
+/// [`assert_narrow_rows_carry_a_label_or_a_count`] instead, because that is a
+/// separate property with its own failure.
 ///
 /// Width is counted in characters, not bytes. The spinner glyph is three bytes
 /// of UTF-8 and one column, so counting bytes lets a row that visibly wraps
@@ -373,18 +385,78 @@ pub fn assert_no_row_wraps_over_sweep_widths(
                 "{screen} at width {width} draws a row of {} columns, which wraps: {row:?}",
                 row.chars().count()
             );
-            assert!(
-                BAR_CELLS.iter().any(|cell| row.contains(*cell)),
-                "{screen} at width {width} draws a row with no bar cell: {row:?}"
-            );
         }
     }
+}
+
+/// Render a screen at every width in [`SWEEP_WIDTHS`] and assert that a row
+/// never goes back to saying nothing.
+///
+/// A row can satisfy "does not wrap" by being empty, which is how the old
+/// prefix bug hid: the label was pushed off the line, the fill shrank to its
+/// four-cell floor, and both properties looked fine. A fill alone does not
+/// settle it either, because below the fill threshold the bar is dropped on
+/// purpose and the label is what carries the row.
+///
+/// A row does go empty at the very bottom of the range, and the test says so
+/// rather than pretending otherwise. Below the fill crossing the bar is gone,
+/// so what is left of the row is the label and the suffix, and a row that has
+/// neither keeps its timing rather than rendering a lone spinner. Measured
+/// over the three example screens on 2026-10-03, the widths at which at least
+/// one row is empty are 8 to 11 on tool sync, where the byte row's `31M/31M`
+/// tally is one column wider than the suffix slot it is given; 8 to 12 on
+/// materialization, where every row's suffix carries nothing but timing, so
+/// the suffix slot measures nothing and the five-column phase tag does not
+/// fit what the prefix is left; and 8 alone on the workflow screen, where the
+/// overall bar's tally renders as ` 4/12` and the slot at that width is four
+/// columns.
+///
+/// So the assertion is on the shape of that band and not on its absence: once a
+/// screen has a width at which every row says something, no wider width may
+/// have one that does not. A row going empty again at 40 after being readable
+/// at 20 would be the bug this catches.
+#[cfg(test)]
+pub fn assert_narrow_rows_carry_a_label_or_a_count(
+    screen: &str,
+    render: impl Fn(ScreenConfig) -> String,
+) {
+    let mut seen_readable_width = false;
+    for width in SWEEP_WIDTHS {
+        let grid = render(ScreenConfig { width, height: DEFAULT_HEIGHT });
+        let empty: Vec<&str> = grid.lines().filter(|row| !says_anything(row)).collect();
+        if empty.is_empty() {
+            seen_readable_width = true;
+            continue;
+        }
+        assert!(
+            !seen_readable_width,
+            "{screen} at width {width} draws {empty:?}, but every row of this screen already \
+             read at a narrower width"
+        );
+    }
+}
+
+/// Whether a rendered row says anything beyond its spinner.
+///
+/// A fill cell counts, because a bar is a row's own report of how far along it
+/// is. So does any text past the spinner glyph, which is the label, or the
+/// tally or the timing the row spends the columns it would have spent on a bar
+/// on. The spinner is skipped rather than trimmed so the glyph itself can never
+/// be the answer.
+#[cfg(test)]
+fn says_anything(row: &str) -> bool {
+    if BAR_CELLS.iter().any(|cell| row.contains(*cell)) {
+        return true;
+    }
+    row.chars().skip(1).collect::<String>().trim().chars().count() > 1
 }
 
 /// The two fill characters a bar draws.
 ///
 /// Every progress style fills with `█` for the done part and `░` for the rest,
-/// so a row carrying neither has no bar on it however well it fits.
+/// so a row carrying neither has no bar on it however well it fits. The two
+/// glyphs are three bytes of UTF-8 each and one column, which is why the sweep
+/// counts columns and not bytes.
 #[cfg(test)]
 const BAR_CELLS: [char; 2] = ['█', '░'];
 

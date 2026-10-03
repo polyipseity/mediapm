@@ -1,7 +1,7 @@
-⠏  ████  2/2 0s 2 cached
-⠏  ████  1/1 0s skipped, 1 cac
-⠏  ████  1/1 0s
-⠏  ████  31M/31M 3s 1 cached
-⠏  ████  3/3 2s
-⠏  ████  2/2 1s
-⠏  ████  3/3 9s
+⠏       2/2 2 cached
+⠏       1/1 skipped, 1 cached
+⠏       1/1
+⠏       31M/31M 1 cached
+⠏       3/3
+⠏       2/2
+⠏       3/3

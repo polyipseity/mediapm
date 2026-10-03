@@ -1,7 +1,7 @@
-⠏      ffmpeg [res] ████  2/2 0s 2 cached
-⠏      yt-dlp [res] ████  1/1 0s skipped, 1 cached
-⠏     deno v2 [res] ████  1/1 0s
-⠏        deno [fch] ████  31M/31M 3s 1 cached
-⠏        deno [pro] ████  3/3 2s
-⠏     pruning [prn] ████  2/2 1s
-⠏     syncing tools ████  3/3 9s
+⠏        ffmpeg v7.1 [res]  2/2 2 cached
+⠏     yt-dlp v2025.1 [res]  1/1 skipped, 1 cached
+⠏        deno v2.1.4 [res]  1/1
+⠏     deno v2.1. [fch] 1/2  31M/31M 1 cached
+⠏     deno v2.1. [pro] 2/3  3/3
+⠏            pruning [prn]  2/2
+⠏            syncing tools  3/3

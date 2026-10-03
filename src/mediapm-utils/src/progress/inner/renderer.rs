@@ -56,14 +56,16 @@ fn compute_ansi_overhead(status: TrackStatus, has_client_truncation: bool) -> us
 
 /// Compose the full suffix component set from snapshot data and timing.
 ///
-/// Merges auto-derived fields (count, total, elapsed, rate, eta) with
-/// user-set overrides from `snap.suffix_components`. Used by both
-/// `sync_snapshot_to_bar` (for rendering) and `recompute_layout` (for
-/// width measurement) so the draw path and the layout estimate agree.
+/// `keep_timing` decides whether the row draws its timing columns. See
+/// [`keeps_timing`] for why a row that has dropped its fill sometimes keeps
+/// them anyway. The strip itself lives in [`without_timing`], so the draw path
+/// and the measurement pass in [`ProgressRenderer::recompute_layout`] cannot
+/// disagree about what a row without its timing would hold.
 fn compose_suffix(
     snap: &TrackSnapshot,
     rate_str: Option<&str>,
     eta_str: Option<&str>,
+    keep_timing: bool,
 ) -> SuffixComponents {
     let auto_suffix = SuffixComponents {
         count: format_count(snap.position),
@@ -73,7 +75,73 @@ fn compose_suffix(
         eta: eta_str.map(str::to_owned),
         custom: String::new(),
     };
-    SuffixComponents::merge(&auto_suffix, &snap.suffix_components)
+    let merged = SuffixComponents::merge(&auto_suffix, &snap.suffix_components);
+    if keep_timing { merged } else { without_timing(&merged) }
+}
+
+/// Drop the timing columns from a merged suffix, keeping the tally and any
+/// caller-set text.
+///
+/// `elapsed`, `rate` and `eta` answer "how long", and they are the first thing
+/// a frame that has given up its fill gives up too, because the columns they
+/// want are the ones the label and the tally want. `count`/`total` answer "how
+/// far along" and `custom` carries the caller's own status words, so both stay.
+fn without_timing(suffix: &SuffixComponents) -> SuffixComponents {
+    SuffixComponents { elapsed: String::new(), rate: None, eta: None, ..suffix.clone() }
+}
+
+/// Whether a row draws its timing columns on a frame that has dropped its fill.
+///
+/// A frame whose fill is at [`MIN_BAR_FILL`] draws no bar at all, so its
+/// columns go to the label and the tally, and the timing is what gives way
+/// first. That trade is only worth making while the row still says something
+/// without it, so the condition is about the row rather than about the frame:
+/// `prefix` and `timingless_suffix` are what this row would draw with the
+/// timing stripped, at the widths [`ProgressRenderer::recompute_layout`]
+/// settled.
+///
+/// A row with nothing left keeps its timing instead. A worker slot on the
+/// workflow screen has no tally of its own and a label that does not fit a
+/// narrow line, so a stripped worker row renders `⠙` and nothing else, which
+/// is a worse frame than the four-cell bar the fill would have drawn. Reading
+/// this the other way round looks wrong until the bare-spinner case is on
+/// screen; the timing is what is left, not what is spent first.
+///
+/// A frame that draws its fill is never bare, since four cells of `░░░░` are
+/// the row's own report of how far along it is.
+fn keeps_timing(draw_fill: bool, prefix: &str, timingless_suffix: &str) -> bool {
+    draw_fill || (visible_width(prefix) == 0 && visible_width(timingless_suffix) == 0)
+}
+
+/// Render the suffix a slot draws into a `suffix_w`-column slot.
+///
+/// A client label decides which of its fields render, so it is asked; a bar
+/// with no client label truncates the built-in components and renders those.
+/// `sync_snapshot_to_bar` draws through this and
+/// [`ProgressRenderer::recompute_layout`] measures through it, so what the
+/// budget reserves and what the row shows are the same string.
+fn render_slot_suffix(
+    suffix: &SuffixComponents,
+    truncation: Option<&Arc<dyn crate::progress::BarLabelTruncation>>,
+    suffix_w: usize,
+    color_code: &str,
+) -> String {
+    match truncation {
+        Some(t) => t.truncate_suffix(suffix_w, suffix),
+        None => render_suffix_components(&semantic_truncate_suffix(suffix, suffix_w), color_code),
+    }
+}
+
+/// Measure the columns a merged suffix occupies once truncated to `ceiling`.
+///
+/// The measurement is what the budget reserves, so it goes through the same
+/// [`render_slot_suffix`] the draw path uses.
+fn measure_suffix_width(
+    ceiling: usize,
+    suffix: &SuffixComponents,
+    truncation: Option<&Arc<dyn crate::progress::BarLabelTruncation>>,
+) -> usize {
+    visible_width(render_slot_suffix(suffix, truncation, ceiling, "").as_str())
 }
 
 // ---- SharedState (pure tracking, no indicatif dependency) -------------
@@ -610,6 +678,16 @@ pub struct ProgressRenderer {
     /// See [`Self::prefix_w`] — same contract with [`MIN_SUFFIX_WIDTH`] /
     /// [`max_suffix_width`].
     suffix_w: Cell<usize>,
+    /// Whether this frame's bars draw their fill.
+    ///
+    /// `false` once the fill the budget affords is at [`MIN_BAR_FILL`], which
+    /// is the width a frame's labels leave the bar at every terminal narrower
+    /// than the one where the labels stop overflowing the line. A fill that
+    /// size carries a fixed quarter-resolution fraction the count beside it
+    /// already states, and it is paid for out of a label being cut to `…`, so
+    /// below that point the frame drops it and the columns go to the label and
+    /// the count. See [`Self::recompute_layout`].
+    draw_fill: Cell<bool>,
 }
 
 /// EMA-smoothed rate tracking for a render slot.
@@ -642,6 +720,8 @@ struct SlotCache {
     style_suffix_w: Cell<usize>,
     /// Cached `is_overall` flag at last `set_style` call (style dedup).
     style_is_overall: Cell<bool>,
+    /// Cached `draw_fill` flag at last `set_style` call (style dedup).
+    style_draw_fill: Cell<bool>,
     /// Last status code at last `set_style` call (style dedup).
     style_status_code: Cell<u8>,
 }
@@ -656,6 +736,7 @@ impl SlotCache {
             style_prefix_w: Cell::new(usize::MAX),
             style_suffix_w: Cell::new(usize::MAX),
             style_is_overall: Cell::new(false),
+            style_draw_fill: Cell::new(false),
             style_status_code: Cell::new(u8::MAX),
         }
     }
@@ -720,6 +801,7 @@ impl ProgressRenderer {
             debug_sink,
             prefix_w: Cell::new(MIN_PREFIX_WIDTH),
             suffix_w: Cell::new(MIN_SUFFIX_WIDTH),
+            draw_fill: Cell::new(true),
         }
     }
 
@@ -740,7 +822,15 @@ impl ProgressRenderer {
         };
         let inner = ProgressBar::new(total);
         let overall_bar = with_slot_finish_policy(self.inner.add(inner));
-        apply_overall_bar_style(&overall_bar, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH);
+        // The style set here is the first frame's, before any
+        // `recompute_layout` has run, so it carries the initial `draw_fill` and
+        // is replaced on that first layout pass.
+        apply_overall_bar_style(
+            &overall_bar,
+            MIN_PREFIX_WIDTH,
+            MIN_SUFFIX_WIDTH,
+            self.draw_fill.get(),
+        );
         overall_bar.set_prefix(label);
         self.slots.push(RenderedSlot {
             bar: overall_bar,
@@ -760,20 +850,22 @@ impl ProgressRenderer {
             let is_overall = self.has_overall && i == self.slots.len() - 1;
             let prefix_w = self.prefix_w.get();
             let suffix_w = self.suffix_w.get();
+            let draw_fill = self.draw_fill.get();
             let status_code = snap.status.code();
 
             // Style dedup: only call set_style when dimensions or status changed.
             let style_changed = prefix_w != slot.cache.style_prefix_w.get()
                 || suffix_w != slot.cache.style_suffix_w.get()
                 || is_overall != slot.cache.style_is_overall.get()
+                || draw_fill != slot.cache.style_draw_fill.get()
                 || status_code != slot.cache.style_status_code.get();
             if style_changed {
                 if is_overall {
-                    apply_overall_bar_style(&slot.bar, prefix_w, suffix_w);
+                    apply_overall_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
                 } else if snap.status == TrackStatus::Failed {
-                    apply_failed_bar_style(&slot.bar, prefix_w, suffix_w);
+                    apply_failed_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
                 } else if snap.status != TrackStatus::Active {
-                    apply_done_bar_style(&slot.bar, prefix_w, suffix_w);
+                    apply_done_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
                 } else {
                     // Slot recycling may leave the indicatif bar with
                     // Status::DoneVisible from the previous phase.  Reset
@@ -781,11 +873,12 @@ impl ProgressRenderer {
                     if slot.bar.is_finished() {
                         slot.bar.reset();
                     }
-                    apply_bar_style(&slot.bar, prefix_w, suffix_w);
+                    apply_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
                 }
                 slot.cache.style_prefix_w.set(prefix_w);
                 slot.cache.style_suffix_w.set(suffix_w);
                 slot.cache.style_is_overall.set(is_overall);
+                slot.cache.style_draw_fill.set(draw_fill);
                 slot.cache.style_status_code.set(status_code);
             }
             let rate_str: Option<String> = if snap.status == TrackStatus::Active {
@@ -918,12 +1011,57 @@ impl ProgressRenderer {
     /// its own fields. Moving a ranking in here is tempting and wrong: it puts
     /// one cut in two places, and the two disagree the first time a screen
     /// gains a field.
+    ///
+    /// # The fill threshold
+    ///
+    /// A fill at [`MIN_BAR_FILL`] is worth nothing: four cells of `░░░░` show a
+    /// quarter-resolution fraction the count beside it already states. So this
+    /// function asks what the fill would actually be, and when the answer is
+    /// the floor it spends those columns on the label and the count instead and
+    /// draws the frame from the no-fill template.
+    ///
+    /// The question is asked against the budget that still reserves the floor,
+    /// so it cannot answer differently next frame and oscillate: reserving the
+    /// floor is what pins the fill at the floor. Only once the answer says no
+    /// fill does the line drop the reservation, which frees four columns for
+    /// the label.
+    ///
+    /// What that costs a screen is its own label widths, so the width at which
+    /// the fill comes back differs per screen rather than being one number the
+    /// renderer could hard-code. Measured over the three example screens at
+    /// every width from 8 to 120, the fill sits at the floor at every width up
+    /// to 58 on tool sync and materialization and up to 65 on the workflow
+    /// screen, whose labels are seven columns wider.
+    ///
+    /// # The budget a row that kept its timing is drawn into
+    ///
+    /// A row with nothing left on it keeps its timing (see [`keeps_timing`]),
+    /// and that timing is rendered into the suffix slot this function settled,
+    /// truncated to that slot, rather than widening it. Reserving it here
+    /// would let one row's clock take columns from the next row's label,
+    /// which is the failure this budget exists to prevent, and it would make
+    /// the width depend on which rows happen to be bare this frame.
+    ///
+    /// The timing a bare row keeps is therefore not measured here, so nothing
+    /// this pass settles depends on which rows are bare this frame. The draw
+    /// path reads the same two cells, asks [`keeps_timing`] the same question
+    /// against them, and strips the timing through the same [`without_timing`]
+    /// the measurement below uses, so the budget and the message cannot answer
+    /// differently about the same row.
     pub(crate) fn recompute_layout(&self) {
         let (_, cols) = self.dim_source.dimensions();
         let prefix_ceiling = max_prefix_width(cols);
         let suffix_ceiling = max_suffix_width(cols);
         let mut max_prefix = 0usize;
         let mut max_suffix = 0usize;
+        // The composed suffix with the frame's timing stripped, and the
+        // client's truncation, for every bound slot in slot order. Filled on
+        // the first pass so the fill-threshold second pass can measure it
+        // without re-snapshotting.
+        let mut measured: Vec<(
+            SuffixComponents,
+            Option<Arc<dyn crate::progress::BarLabelTruncation>>,
+        )> = Vec::with_capacity(self.slots.len());
         for (i, slot) in self.slots.iter().enumerate() {
             if let Some(ref source) = *slot.source.borrow() {
                 let snap = source.snapshot();
@@ -993,14 +1131,22 @@ impl ProgressRenderer {
                 // overrides), not just the auto-derived fields.  A wider
                 // user-set `rate`/`eta`/`custom` must widen `suffix_w` or
                 // it would overflow at draw and get truncated away.
-                let full_suffix = compose_suffix(&snap, rate_str.as_deref(), eta_str.as_deref());
-                let suffix_width = if let Some(ref t) = truncation {
-                    let rendered = t.truncate_suffix(suffix_ceiling, &full_suffix);
-                    visible_width(rendered.as_str())
-                } else {
-                    let rendered = render_suffix_components(&full_suffix, "");
-                    visible_width(rendered.as_str())
-                };
+                //
+                // On a frame that keeps its fill, that is the whole suffix.
+                // On a frame that drops the fill, what the budget reserves is
+                // the suffix with the timing stripped, because that is the
+                // narrower of the two and a row that keeps its timing renders
+                // it into the slot this reserves. The timingless suffix is
+                // kept so the no-fill pass below can measure it without
+                // timing on a frame that turns out to draw no fill, which
+                // saves re-snapshotting every slot.
+                let suffix_with_timing =
+                    compose_suffix(&snap, rate_str.as_deref(), eta_str.as_deref(), true);
+                let suffix_without_timing =
+                    compose_suffix(&snap, rate_str.as_deref(), eta_str.as_deref(), false);
+                measured.push((suffix_without_timing, truncation.clone()));
+                let suffix_width =
+                    measure_suffix_width(suffix_ceiling, &suffix_with_timing, truncation.as_ref());
                 max_suffix = max_suffix.max(suffix_width);
             }
         }
@@ -1009,15 +1155,49 @@ impl ProgressRenderer {
         // The suffix is settled first because it is the field that must not
         // wrap: a suffix past the end of the line spills onto the row below,
         // where it reads as a second bar.
-        let label_columns = usize::from(cols).saturating_sub(FRAME_OVERHEAD_COLUMNS + MIN_BAR_FILL);
-        let suffix_w = max_suffix.min(suffix_ceiling).min(label_columns);
-        let spare_prefix = label_columns.saturating_sub(suffix_w);
-        // Without the terminal term this slot is the widest seed label on
-        // screen, and a bar seeded with a short placeholder never grows past
-        // it however much room the line has.
-        let prefix_w = max_prefix.min(prefix_ceiling).min(spare_prefix);
+        //
+        // Settling a width is pure arithmetic over the two measured maxima, so
+        // the fill-threshold second pass below reuses it rather than repeating
+        // the suffix and prefix caps by hand.
+        // The prefix cap carries the terminal term on purpose: without it the
+        // slot is the widest seed label on screen, and a bar seeded with a short
+        // placeholder never grows past it however much room the line has.
+        let settle = |label_columns: usize, max_suffix: usize| {
+            let suffix_w = max_suffix.min(suffix_ceiling).min(label_columns);
+            let prefix_w = max_prefix.min(prefix_ceiling).min(label_columns - suffix_w);
+            (prefix_w, suffix_w)
+        };
+        let reserved_columns =
+            usize::from(cols).saturating_sub(FRAME_OVERHEAD_COLUMNS + MIN_BAR_FILL);
+        let (prefix_w, suffix_w) = settle(reserved_columns, max_suffix);
+        // A fill at the floor is four cells of `░░░░` or `████`, which says
+        // nothing the count beside it does not. Once the labels take the rest
+        // of the line the fill is pinned there at every narrower width, so this
+        // is the widest terminal at which the bar has still stopped growing.
+        let fill = usize::from(cols).saturating_sub(FRAME_OVERHEAD_COLUMNS + prefix_w + suffix_w);
+        let draw_fill = fill > MIN_BAR_FILL;
+        let (prefix_w, suffix_w) = if draw_fill {
+            (prefix_w, suffix_w)
+        } else {
+            // The bar is gone, so the floor it was holding is not: give those
+            // columns to the label, and re-measure the suffix without the
+            // timing the frame no longer draws, or the slot it reserves would
+            // be wider than the message that fills it. The measurement uses
+            // the same `compose_suffix` the draw path composes with, so the
+            // two are the same string rather than two rules that agree today.
+            max_suffix = 0;
+            for (suffix, truncation) in &measured {
+                max_suffix = max_suffix.max(measure_suffix_width(
+                    suffix_ceiling,
+                    suffix,
+                    truncation.as_ref(),
+                ));
+            }
+            settle(usize::from(cols).saturating_sub(FRAME_OVERHEAD_COLUMNS), max_suffix)
+        };
         self.prefix_w.set(prefix_w);
         self.suffix_w.set(suffix_w);
+        self.draw_fill.set(draw_fill);
         for (i, slot) in self.slots.iter().enumerate() {
             if slot.source.borrow().is_some() {
                 self.sync_slot(i);
@@ -1259,7 +1439,6 @@ impl ProgressRenderer {
             (snap.total, snap.position)
         };
         let color_code = bar_color_code(snap.status, is_overall);
-        let fresh_suffix = compose_suffix(snap, rate_str, eta_str);
 
         // Client-defined truncation takes precedence when installed. The
         // renderer only *calls* the trait; it owns no field layout. The
@@ -1282,22 +1461,35 @@ impl ProgressRenderer {
             );
             render_prefix_components(&truncated_prefix, snap.status)
         };
+        // Whether this row draws its timing depends on what the row holds
+        // without it, which takes both of this frame's settled widths to
+        // render. The two are composed either way; the one that loses is the
+        // one the row draws. Decided before the prefix is pushed so the
+        // prefix is still in hand to answer it.
+        let timingless_suffix = compose_suffix(snap, rate_str, eta_str, false);
+        let timingless_rendered = render_slot_suffix(
+            &timingless_suffix,
+            truncation.as_ref(),
+            self.suffix_w.get(),
+            color_code,
+        );
+        let fresh_suffix = if keeps_timing(
+            self.draw_fill.get(),
+            new_prefix.as_str(),
+            timingless_rendered.as_str(),
+        ) {
+            compose_suffix(snap, rate_str, eta_str, true)
+        } else {
+            timingless_suffix
+        };
         if new_prefix != *slot.cache.prefix.borrow() {
             slot.bar.set_prefix(new_prefix.clone());
             *slot.cache.prefix.borrow_mut() = new_prefix;
         }
         // Build display suffix: client truncation when installed, else
         // truncate the fresh component set then render.
-        let display_suffix = if let Some(t) = truncation.as_ref() {
-            // Client-truncated bars: pass the full merged suffix component
-            // set so the client can render auto-derived fields alongside its
-            // own fields.  The client also computes suffix width using these
-            // same components.
-            t.truncate_suffix(self.suffix_w.get(), &fresh_suffix)
-        } else {
-            let truncated_suffix = semantic_truncate_suffix(&fresh_suffix, self.suffix_w.get());
-            render_suffix_components(&truncated_suffix, color_code)
-        };
+        let display_suffix =
+            render_slot_suffix(&fresh_suffix, truncation.as_ref(), self.suffix_w.get(), color_code);
         if display_suffix != *slot.cache.suffix.borrow() {
             slot.bar.set_message(display_suffix.clone());
             *slot.cache.suffix.borrow_mut() = display_suffix;
@@ -1321,12 +1513,13 @@ impl ProgressRenderer {
         let slot = &self.slots[i];
         let prefix_w = self.prefix_w.get();
         let suffix_w = self.suffix_w.get();
+        let draw_fill = self.draw_fill.get();
         if self.has_overall && i == self.slots.len() - 1 {
-            apply_overall_bar_style(&slot.bar, prefix_w, suffix_w);
+            apply_overall_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
         } else if status == TrackStatus::Failed {
-            apply_failed_bar_style(&slot.bar, prefix_w, suffix_w);
+            apply_failed_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
         } else {
-            apply_done_bar_style(&slot.bar, prefix_w, suffix_w);
+            apply_done_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
         }
         match status {
             TrackStatus::Failed | TrackStatus::Warning => slot.bar.abandon(),

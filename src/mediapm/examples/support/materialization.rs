@@ -18,8 +18,9 @@
 //! `materializing [mat]` is nineteen columns and the overall bar is the only
 //! bar whose seed stays that short. Every other seed carries a path or a
 //! variant name. The shared prefix slot is what the terminal has left after the
-//! spinner, the separators, the suffix and a fill floor, and under it the
-//! elastic path halves shorten from the head, so a folder name wider than the
+//! spinner, the separators and the suffix, with a fill floor under the bar
+//! while there is room for a bar at all, and under it the elastic path halves
+//! shorten from the head, so a folder name wider than the
 //! whole budget shortens too rather than being dropped whole. The online
 //! demo's media folder is named that long, so it is the ordinary case for a
 //! real music library rather than an exotic one, and
@@ -47,11 +48,14 @@
 //! rather than passing unnoticed against a local copy of the field list.
 //!
 //! Where the labels give way, measured on 2026-10-03 by rendering this screen
-//! at every width the harness accepts: 27 columns is the narrowest at which
+//! at every width the harness accepts: 13 columns is the narrowest at which
 //! every row still draws its phase tag, and below it the prefix slot is empty
-//! and each row is the spinner, its fill and its suffix. The active rows
-//! reserve `6s 0/d`, the fill keeps its floor, and `[cmt]` is the only segment
-//! short enough to survive what is left. Those are facts about the seed paths
+//! and each row is the spinner and nothing else. A row in that band has no
+//! suffix of its own to show either, so the suffix slot measures nothing and
+//! there are no columns for the timing to go in either; that band is the one
+//! place on any of the three screens where a row renders as a lone spinner.
+//! Above it the active rows reserve `6s 0/d` and the fill keeps its floor
+//! until the bar crosses back at 59. Those are facts about the seed paths
 //! quoted above, not a contract, and they move when a path changes length.
 //! Nothing in the suite is named after them, because a fixture called for one
 //! of those widths would go on testing that width after the seed it was

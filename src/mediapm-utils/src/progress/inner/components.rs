@@ -574,6 +574,15 @@ pub(crate) const FRAME_OVERHEAD_COLUMNS: usize = 4;
 /// truncates instead, so the fill keeps these cells for as long as the line
 /// has room for it. Narrower still and the fill is the field that gets
 /// nothing.
+///
+/// This is also the width at which a frame stops drawing its fill. Measured
+/// across the three example screens at every width from 8 to 120, a fill sits
+/// at exactly this width at every width below the point where the screen's
+/// labels stop overflowing the line, and grows by one cell per column above
+/// it. Four cells of `░░░░` carry a fixed quarter-resolution fraction that the
+/// count in the suffix already states, and they are paid for out of a label
+/// being cut to `…`. `ProgressRenderer::recompute_layout` drops the fill at
+/// that point and hands the columns to the label and the count instead.
 pub(crate) const MIN_BAR_FILL: usize = 4;
 
 /// Ceiling for the prefix slot on a terminal `cols` columns wide.
@@ -772,52 +781,99 @@ pub(crate) fn semantic_truncate_suffix(
     out
 }
 
-pub(crate) fn apply_overall_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
-    let tpl = format!(
-        "{{spinner:.green}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.magenta/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
-    );
-    pb.set_style(
-        ProgressStyle::with_template(&tpl)
-            .expect("valid dynamic overall template")
-            .progress_chars("█░")
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
+/// Build the template for one frame, with or without the fill.
+///
+/// Every style lays the line out as `{spinner} {prefix} {wide_bar} {msg}`, so a
+/// frame that drops the fill is the same four-field layout with the third field
+/// and the space in front of it removed: `{spinner} {prefix} {msg}`. The space
+/// in front of `{msg}` stays, which is why the message carries its own leading
+/// space in [`render_suffix_components`].
+///
+/// `spinner` and `fill` are the two `{spinner}` and `{wide_bar}` style
+/// specifiers, so each caller keeps its own colours and only chooses whether to
+/// draw a fill at all.
+fn frame_template(
+    spinner: &str,
+    fill: &str,
+    prefix_w: usize,
+    suffix_w: usize,
+    draw_fill: bool,
+) -> String {
+    if draw_fill {
+        format!(
+            "{{spinner:{spinner}}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.{fill}}} {{msg:<{suffix_w}.{suffix_w}}}"
+        )
+    } else {
+        format!(
+            "{{spinner:{spinner}}} {{prefix:>{prefix_w}.{prefix_w}}} {{msg:<{suffix_w}.{suffix_w}}}"
+        )
+    }
 }
 
-pub(crate) fn apply_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
-    let tpl = format!(
-        "{{spinner:.green}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.yellow/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
-    );
-    pb.set_style(
-        ProgressStyle::with_template(&tpl)
-            .expect("valid dynamic child template")
-            .progress_chars("█░")
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
+/// Build a bar style from one frame template.
+///
+/// Every production style fills with `█` for the done part and `░` for the rest,
+/// and cycles the same braille spinner, so those two choices live here rather
+/// than in each caller.
+fn bar_style(tpl: &str) -> ProgressStyle {
+    ProgressStyle::with_template(tpl)
+        .expect("valid dynamic bar template")
+        .progress_chars("█░")
+        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 }
 
-pub(crate) fn apply_done_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
-    let tpl = format!(
-        "{{spinner:.white/.dim}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.green/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
-    );
-    pb.set_style(
-        ProgressStyle::with_template(&tpl)
-            .expect("valid dynamic done template")
-            .progress_chars("█░")
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
+/// Apply the overall aggregate bar's style.
+///
+/// `draw_fill` is `false` on a frame narrow enough that the fill would sit at
+/// [`MIN_BAR_FILL`]; `ProgressRenderer::recompute_layout` is where that is
+/// decided.
+pub(crate) fn apply_overall_bar_style(
+    pb: &ProgressBar,
+    prefix_w: usize,
+    suffix_w: usize,
+    draw_fill: bool,
+) {
+    pb.set_style(bar_style(&frame_template(
+        ".green",
+        "magenta/dim",
+        prefix_w,
+        suffix_w,
+        draw_fill,
+    )));
 }
 
-pub(crate) fn apply_failed_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize) {
-    let tpl = format!(
-        "{{spinner:.red}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.red/dim}} {{msg:<{suffix_w}.{suffix_w}}}"
-    );
-    pb.set_style(
-        ProgressStyle::with_template(&tpl)
-            .expect("valid dynamic failed template")
-            .progress_chars("█░")
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
+/// Apply an in-progress child bar's style. See [`apply_overall_bar_style`] for
+/// what `draw_fill` means.
+pub(crate) fn apply_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize, draw_fill: bool) {
+    pb.set_style(bar_style(&frame_template(".green", "yellow/dim", prefix_w, suffix_w, draw_fill)));
+}
+
+/// Apply a finished bar's style. See [`apply_overall_bar_style`] for what
+/// `draw_fill` means.
+pub(crate) fn apply_done_bar_style(
+    pb: &ProgressBar,
+    prefix_w: usize,
+    suffix_w: usize,
+    draw_fill: bool,
+) {
+    pb.set_style(bar_style(&frame_template(
+        ".white/.dim",
+        "green/dim",
+        prefix_w,
+        suffix_w,
+        draw_fill,
+    )));
+}
+
+/// Apply a failed bar's style. See [`apply_overall_bar_style`] for what
+/// `draw_fill` means.
+pub(crate) fn apply_failed_bar_style(
+    pb: &ProgressBar,
+    prefix_w: usize,
+    suffix_w: usize,
+    draw_fill: bool,
+) {
+    pb.set_style(bar_style(&frame_template(".red", "red/dim", prefix_w, suffix_w, draw_fill)));
 }
 
 pub(crate) fn blank_bar_style() -> ProgressStyle {

@@ -1,7 +1,7 @@
-⠏     ffm ████  2/2 0s 2 cached
-⠏     yt- ████  1/1 0s skipped, 1 cached
-⠏     den ████  1/1 0s
-⠏     den ████  31M/31M 3s 1 cached
-⠏     den ████  3/3 2s
-⠏     pru ████  2/2 1s
-⠏     syn ████  3/3 9s
+⠏         ffmpeg  2/2 2 cached
+⠏         yt-dlp  1/1 skipped, 1 cached
+⠏     deno [res]  1/1
+⠏     deno [fch]  31M/31M 1 cached
+⠏     deno [pro]  3/3
+⠏        pruning  2/2
+⠏     syncing to  3/3

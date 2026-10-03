@@ -54,16 +54,18 @@ fn dimension_source_columns_do_not_change_the_frame() {
     );
 }
 
-/// A narrow draw target gives up the label before it gives up the bar, and the
+/// A narrow draw target gives up the bar before it gives up the label, and the
 /// row stays on one line.
 ///
-/// At 20 columns the spinner, the separators, the suffix and the fill floor
-/// leave nothing for the prefix, so `tool-a` is gone and the four-cell fill is
-/// still drawn. This is the whole point of budgeting from the terminal width:
-/// before, the prefix held its measured width and the row came back wrapped,
-/// with `0s 0/d` on the line below where it read as a second bar.
+/// At 20 columns the spinner, the separators and the suffix leave so little of
+/// the line that the fill the budget affords is exactly its four-cell floor,
+/// and a floor-sized fill carries a fraction the count beside it already
+/// states. So the row drops it, keeps `tool-a`, keeps `0/7`, and drops the
+/// timing with the bar. This is the whole point of budgeting from the terminal
+/// width: before, the prefix held its measured width and the row came back
+/// wrapped, with `0s 0/d` on the line below where it read as a second bar.
 #[test]
-fn narrow_draw_target_drops_the_label_not_the_bar() {
+fn narrow_draw_target_drops_the_bar_not_the_label() {
     let (wide_terminal, wide_term) = mk_with_capacity(4, 40, 3);
     let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
     let _child = wide_screen.add_bar(7, "tool-a");
@@ -79,8 +81,8 @@ fn narrow_draw_target_drops_the_label_not_the_bar() {
     assert!(bar_cells(&wide) > 0, "the 40-column frame has room for a bar: {wide:?}");
     assert_eq!(
         bar_cells(&narrow),
-        8,
-        "both 20-column rows keep the four-cell fill floor: {narrow:?}",
+        0,
+        "both 20-column rows drop a fill that would be at its floor: {narrow:?}",
     );
     for line in narrow.lines() {
         assert!(drawn_width(line) <= 20, "a 20-column row must not wrap: {line:?}");
@@ -93,12 +95,12 @@ fn narrow_draw_target_drops_the_label_not_the_bar() {
             "⠸      tool-a ░░░░░░░░░  0/7 0s 0/d\n",
             "⠹     overall ░░░░░░░░░  0/10 0s 0/d"
         ),
-        "narrow_draw_target_drops_the_label_not_the_bar/wide"
+        "narrow_draw_target_drops_the_bar_not_the_label/wide"
     );
     assert_eq!(
         &narrow,
-        concat!("\n", "\n", "⠸  ░░░░  0/7 0s 0/d\n", "⠹  ░░░░  0/10 0s 0/d"),
-        "narrow_draw_target_drops_the_label_not_the_bar/narrow"
+        concat!("\n", "\n", "⠸      tool-a  0/7\n", "⠹     overall  0/10"),
+        "narrow_draw_target_drops_the_bar_not_the_label/narrow"
     );
 }
 
@@ -156,9 +158,10 @@ fn wider_draw_target_expands_the_bar() {
 /// wide frame in the same test renders the suffix in full, which is what makes
 /// the absence observable.
 ///
-/// This does not evidence truncation ordering: the narrow frame draws no bar at
-/// all, so no field is dropped field-by-field. The order suffix fields are removed
-/// in is pinned by the inline `semantic_truncate_suffix_*` unit tests.
+/// This does not evidence truncation ordering: the narrow frame drops its bar
+/// outright and drops the timing with it, so the only field left to fit is the
+/// `custom` text, which is shortened from the front. The order suffix fields are
+/// removed in is pinned by the inline `semantic_truncate_suffix_*` unit tests.
 #[test]
 fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
     let (narrow_terminal, narrow_term) = mk_with_capacity(4, 20, 3);
@@ -191,7 +194,7 @@ fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
     }
     assert_eq!(
         &narrow,
-        concat!("\n", "\n", "⠸  ░░░░  0/10 0s 0/d\n", "⠹  ░░░░  0/10 0s 0/d"),
+        concat!("\n", "\n", "⠸   0/10 already do\n", "⠹   0/10"),
         "narrow_draw_target_does_not_render_an_oversize_custom_suffix/narrow"
     );
     assert_eq!(

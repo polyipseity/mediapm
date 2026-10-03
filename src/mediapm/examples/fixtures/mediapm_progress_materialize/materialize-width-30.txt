@@ -1,5 +1,5 @@
-⠏     [cmt] …c ████ 6s
-⠸     [stg] …p ░░░░ 6s 0/d
-⠴     [wrt] …p █░░░ 4s 0/d
-⠇     [vrf] …a █░░░ 0s 0/d
-⠋     [mat] …g █░░░ 13s 1/m
+⠏     [cmt] …lepathy.flac …n
+⠸     [stg] … Give You Up …y
+⠴     [wrt] …You Up …y links
+⠇     [vrf] …e Flesh?.m4a …l
+⠋        [mat] materializing

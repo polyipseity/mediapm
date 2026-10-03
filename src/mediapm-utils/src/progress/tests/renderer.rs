@@ -779,8 +779,11 @@ impl BudgetFixture {
 const WIDE_TERMINAL_COLS: u16 = 120;
 
 /// Terminal width where a suffix filling the whole suffix ceiling leaves the
-/// prefix only what the spinner, the separators and [`MIN_BAR_FILL`] do not
-/// claim.
+/// prefix only what the spinner and the separators do not claim.
+///
+/// [`MIN_BAR_FILL`] is not in that list because a suffix this wide takes the
+/// line down to a fill the budget cannot grow past its floor, so the frame
+/// drops the fill and gives the floor's columns to the label instead.
 const NARROW_TERMINAL_COLS: u16 = 80;
 
 /// A client that draws a fixed 13-column label is granted 13 columns, whatever
@@ -839,16 +842,17 @@ fn client_prefix_budget_is_capped_by_the_prefix_ceiling() {
 ///
 /// This is the case the budget exists for: with the suffix filling its own
 /// ceiling, the prefix gets the terminal width less the spinner, the
-/// separators, the suffix and [`MIN_BAR_FILL`]. A rule that never subtracted
-/// the terminal width would hand the client [`MAX_PREFIX_WIDTH`] here and the
-/// row would wrap.
+/// separators and the suffix. A rule that never subtracted the terminal width
+/// would hand the client [`MAX_PREFIX_WIDTH`] here and the row would wrap.
+///
+/// [`MIN_BAR_FILL`] is absent from the subtraction because a suffix that wide
+/// leaves the fill at its floor, and a frame whose fill is at its floor draws
+/// no bar at all. Those four columns are the label's, which is why the prefix
+/// budget here is [`MIN_BAR_FILL`] wider than it would be on a barful frame.
 #[test]
 fn client_prefix_budget_yields_to_the_suffix_on_a_narrow_line() {
-    let expected = usize::from(NARROW_TERMINAL_COLS)
-        - FRAME_OVERHEAD_COLUMNS
-        - SUFFIX_SLOT
-        - MIN_BAR_FILL
-        - ANSI_RESET.len();
+    let expected =
+        usize::from(NARROW_TERMINAL_COLS) - FRAME_OVERHEAD_COLUMNS - SUFFIX_SLOT - ANSI_RESET.len();
     let fixture = BudgetFixture::new(budget_test_components(), NARROW_TERMINAL_COLS);
     fixture.tick();
 

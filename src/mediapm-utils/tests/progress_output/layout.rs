@@ -503,3 +503,45 @@ fn prefix_slot_is_not_pinned_to_the_seed_label() {
     let contents = term.contents();
     assert!(contents.contains("(yt-dlp)"), "worker row lost its tool name: {contents:?}");
 }
+
+/// A frame whose fill would be at its floor draws no bar, and the columns the
+/// bar held go to the label and the count.
+///
+/// `MIN_BAR_FILL` is four cells, and below the point where a screen's labels
+/// stop overflowing the line, every width from 8 up draws exactly four at every
+/// width: the budget pays the label and the suffix first, so the fill cannot
+/// grow. Four cells say nothing the count beside them does not, and they are
+/// paid for out of a label that is being cut to `…`. Measured across the three
+/// example screens, that point is width 59 for tool sync and materialization and
+/// width 66 for the workflow screen, whose labels are seven columns wider.
+///
+/// The wide half is the rest of the contract: at 80 the fill has room to grow,
+/// so the row keeps its bar.
+#[test]
+fn fill_at_its_floor_gives_its_columns_to_the_label_and_count() {
+    let (terminal, term) = mk_with_capacity(2, 20, 1);
+    let screen = terminal.screen().build();
+    let bar = screen.add_bar(3, "default s3 (ffmpeg)");
+    bar.advance(1);
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!("⠼     default", "   1/3"),
+        "narrow row must keep the label and the count and drop the fill"
+    );
+
+    let (terminal, term) = mk_with_capacity(2, 80, 1);
+    let screen = terminal.screen().build();
+    let bar = screen.add_bar(3, "default s3 (ffmpeg)");
+    bar.advance(1);
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "⠼     default s3 (ffmpeg) ",
+            "█████████████░░░░░░░░░░░░░░░░░░░░░░░░░░",
+            "  1/3 0s 0/d"
+        ),
+        "a wide row keeps its fill and its timing"
+    );
+}
