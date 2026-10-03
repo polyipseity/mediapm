@@ -18,10 +18,16 @@
 //! failure.
 //!
 //! The files under `examples/fixtures/` hold the transcripts these renderers
-//! produce, one per width.
+//! produce, one per width. The directory listing is the list of widths: no
+//! source file names them, and adding one is adding one file.
 
 use std::fmt;
 use std::sync::Arc;
+
+#[cfg(test)]
+use std::ops::RangeInclusive;
+#[cfg(test)]
+use std::path::{Path, PathBuf};
 
 use indicatif::InMemoryTerm;
 use mediapm_utils::progress::{
@@ -56,6 +62,15 @@ const MIN_WIDTH: u16 = 8;
 /// `MAX_SUFFIX_WIDTH` whatever the terminal is, so past a few hundred columns
 /// the extra width is empty space on every line.
 const MAX_WIDTH: u16 = 500;
+
+/// Terminal widths the no-wrap sweep walks, inclusive.
+///
+/// The upper end is the widest committed transcript. The lower end is
+/// [`MIN_WIDTH`], the narrowest the harness accepts, which is well below any
+/// transcript: a transcript says what one width drew and cannot say that the
+/// widths beside it neither wrapped nor went empty.
+#[cfg(test)]
+const SWEEP_WIDTHS: RangeInclusive<u16> = MIN_WIDTH..=120;
 
 /// Shortest height the harness accepts.
 const MIN_HEIGHT: u16 = 2;
@@ -253,4 +268,140 @@ pub fn strip_ansi_escapes(grid: &str) -> String {
         }
     }
     stripped
+}
+
+/// Directory holding one screen's committed transcripts.
+///
+/// Resolved through `CARGO_MANIFEST_DIR` rather than the working directory,
+/// because a test runner picks the working directory and the example is run
+/// from the workspace root. The manifest points at the `mediapm` package, so
+/// the transcripts sit at `<package>/examples/fixtures/<example>/`. They are
+/// committed files: the walk below needs them in the checkout, and a missing
+/// one is a failed test rather than a skipped one.
+#[cfg(test)]
+fn fixture_directory(example: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/fixtures").join(example)
+}
+
+/// Read the terminal width a transcript filename names.
+///
+/// The name is `<stem>-width-<N>.txt`, where `N` is the `--width` the example
+/// was run at. Anything else is an error naming the file, because a stray
+/// `README.txt` or a `.bak` left in the directory would otherwise sit there
+/// unread and quietly reduce what the screen is covered at.
+///
+/// A width above [`u16::MAX`] is the same kind of error: the harness takes a
+/// `u16` and the number in the name has to be one it could have been run at.
+#[cfg(test)]
+fn fixture_width(path: &Path, stem: &str) -> u16 {
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let parse_failure = || {
+        panic!(
+            "{name} is not a transcript filename: expected {stem}-width-<N>.txt, \
+             where N is a terminal width the example accepts"
+        )
+    };
+    name.strip_prefix(&format!("{stem}-width-"))
+        .and_then(|rest| rest.strip_suffix(".txt"))
+        .and_then(|digits| digits.parse::<u16>().ok())
+        .unwrap_or_else(parse_failure)
+}
+
+/// Render a screen at every width its committed transcripts name and compare.
+///
+/// The directory listing decides which widths are checked, so a new transcript
+/// is covered the moment it lands and no source file has to learn about it.
+/// Each transcript carries the one trailing newline that `main`'s `println!`
+/// adds, which is why the comparison strips it before matching the grid.
+#[cfg(test)]
+pub fn assert_every_transcript_matches(
+    example: &str,
+    stem: &str,
+    height: u16,
+    render: impl Fn(ScreenConfig) -> String,
+) {
+    let directory = fixture_directory(example);
+    let transcripts = read_dir_sorted(&directory);
+    assert!(
+        !transcripts.is_empty(),
+        "{} holds no transcripts, so {example} would be covered at no width at all",
+        directory.display()
+    );
+    for path in transcripts {
+        let width = fixture_width(&path, stem);
+        let recorded = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        let grid = render(ScreenConfig { width, height });
+        let Some(without_trailing_newline) = recorded.strip_suffix('\n') else {
+            panic!("{} does not end with a newline", path.display());
+        };
+        assert!(
+            !without_trailing_newline.ends_with('\n'),
+            "{} ends with a blank line, so it no longer matches stdout",
+            path.display()
+        );
+        assert_eq!(
+            without_trailing_newline,
+            grid,
+            "{} does not match what {example} renders at --width {width}",
+            path.display()
+        );
+    }
+}
+
+/// Render a screen at every width in [`SWEEP_WIDTHS`] and assert two things.
+///
+/// A row must not be wider than the terminal, and every row must draw at least
+/// one bar cell. The first is the bug the width budget exists to remove: a row
+/// wider than the terminal spills onto the line below, where a suffix reads as
+/// a second bar. The second keeps the first honest, because a narrow terminal
+/// can also be satisfied by a row that fits by being empty.
+///
+/// Width is counted in characters, not bytes. The spinner glyph is three bytes
+/// of UTF-8 and one column, so counting bytes lets a row that visibly wraps
+/// pass, which is the one thing this test is here to catch.
+#[cfg(test)]
+pub fn assert_no_row_wraps_over_sweep_widths(
+    screen: &str,
+    render: impl Fn(ScreenConfig) -> String,
+) {
+    for width in SWEEP_WIDTHS {
+        let grid = render(ScreenConfig { width, height: DEFAULT_HEIGHT });
+        for row in grid.lines() {
+            assert!(
+                row.chars().count() <= usize::from(width),
+                "{screen} at width {width} draws a row of {} columns, which wraps: {row:?}",
+                row.chars().count()
+            );
+            assert!(
+                BAR_CELLS.iter().any(|cell| row.contains(*cell)),
+                "{screen} at width {width} draws a row with no bar cell: {row:?}"
+            );
+        }
+    }
+}
+
+/// The two fill characters a bar draws.
+///
+/// Every progress style fills with `█` for the done part and `░` for the rest,
+/// so a row carrying neither has no bar on it however well it fits.
+#[cfg(test)]
+const BAR_CELLS: [char; 2] = ['█', '░'];
+
+/// Every regular file in a directory, sorted by path.
+///
+/// Sorting is what makes a failure report the same width first on a second
+/// run; the filesystem's own order is not stable across machines.
+#[cfg(test)]
+fn read_dir_sorted(directory: &Path) -> Vec<PathBuf> {
+    let entries = std::fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("cannot list {}: {error}", directory.display()));
+    let mut paths: Vec<PathBuf> = entries
+        .map(|entry| {
+            entry.unwrap_or_else(|error| panic!("{}: {error}", directory.display())).path()
+        })
+        .filter(|path| path.is_file())
+        .collect();
+    paths.sort();
+    paths
 }

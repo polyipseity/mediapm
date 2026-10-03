@@ -39,13 +39,13 @@ The suffix is settled first because it is the field that must not wrap: a suffix
 
 **The slot is measured from what a bar draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` turns the seed into built-in prefix components at `src/mediapm-utils/src/progress/inner/renderer.rs:178`, and `snap.prefix` is their render, which is the right width to measure for a bar that draws them. A bar with a `BarLabelTruncation` installed draws something else, so `recompute_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`renderer.rs:936`). `snap.prefix` is the wrong width for such a bar, because the seeds are short by design and `idle [wf]` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:343`). A client label may be longer or shorter than the string its bar was created with, so the measurement has to follow the label.
 
-**The budget is the terminal's, and the ceiling only trims it.** The slot is what is left after the spinner, the separators, the suffix and `MIN_BAR_FILL`, capped at `MAX_PREFIX_WIDTH`. Narrowing the terminal shrinks the fill first and takes columns from the label one ranked field at a time, so what changes across widths is which field survives, not how much of the line the labels occupy. That is why the examples default to width 80 and the unit tests pin 40 (`common::mk()` in `src/mediapm-utils/tests/progress_output/common.rs`): 40 keeps assertions short and is not a width chosen to be realistic.
+**The budget is the terminal's, and the ceiling only trims it.** The slot is what is left after the spinner, the separators, the suffix and `MIN_BAR_FILL`, capped at `MAX_PREFIX_WIDTH`. Narrowing the terminal shrinks the fill first and takes columns from the label one ranked field at a time, so what changes across widths is which field survives, not how much of the line the labels occupy.
 
 ## No row wraps, and no compact row exists
 
-Every width from the harness minimum of 8 columns to 80 draws one line per row on all three screens, which the three `*_screen_never_wraps_a_row` tests pin. The fill is what absorbs the narrowing: the budget reserves `MIN_BAR_FILL` columns for it and hands the rest to the label, one ranked field at a time. At 8 columns, the narrowest the harness accepts, a row is the spinner and three fill cells and nothing else.
+Every width the progress examples accept draws one line per row on all three screens, which the three `*_screen_never_wraps_a_row` sweeps pin. The fill is what absorbs the narrowing: the budget reserves `MIN_BAR_FILL` columns for it and hands the rest to the label, one ranked field at a time. At the narrowest width the harness accepts, a row is the spinner, its fill cells and nothing else.
 
-The fill floor is the reason there is no compact row template. All four styles embed `wide_bar` and a suffix slot, so none of them can express a bar-less row, and every width from 8 to 80 has fill to draw. A template that no width would select is dead code, and `warnings = "deny"` in the root `Cargo.toml` would reject it.
+The fill floor is the reason there is no compact row template. All four styles embed `wide_bar` and a suffix slot, so none of them can express a bar-less row, and every width has fill to draw. A template that no width would select is dead code, and `warnings = "deny"` in the root `Cargo.toml` would reject it.
 
 ## Production templates
 
@@ -319,17 +319,11 @@ The library (`MediaPmService::sync_library_with_tag_update_checks_and_observer`)
 
 ## Worked examples: run them, do not transcribe them
 
-Do not paste a terminal frame into this file. Every screen has a runnable example that renders it through the shared capture harness in `src/mediapm/examples/support/`, and every run has a committed transcript under `src/mediapm/examples/fixtures/`. Run the example to see the frame; read the fixture to compare against it. The transcripts are generated output and must not be edited by hand, because a hand-edited fixture no longer proves that the renderer draws what the code says it draws. Children render above the overall bar: child bars first, overall bar last.
+Do not paste a terminal frame into this file. Screen A is `mediapm_progress_tool_sync`, screen B is `mediapm_progress_workflow`, and screen C is `mediapm_progress_materialize`. Run one with `--width N` to see a frame at that width, or read the transcripts under `src/mediapm/examples/fixtures/`. The transcripts are generated output and must not be edited by hand, because a hand-edited fixture no longer proves that the renderer draws what the code says it draws. Children render above the overall bar: child bars first, overall bar last.
 
-| Screen | Example | Fixtures |
-| --- | --- | --- |
-| A tool sync | `cargo run -p mediapm --example mediapm_progress_tool_sync` | `src/mediapm/examples/fixtures/mediapm_progress_tool_sync/` |
-| B workflow | `cargo run -p mediapm --example mediapm_progress_workflow` | `src/mediapm/examples/fixtures/mediapm_progress_workflow/` |
-| C materialization | `cargo run -p mediapm --example mediapm_progress_materialize` | `src/mediapm/examples/fixtures/mediapm_progress_materialize/` |
+Every example takes `--width` and `--height`; their defaults and the range the harness accepts are in `src/mediapm/examples/support/mod.rs`. Regenerate a transcript by running the example at that width and redirecting stdout. The directory listing is the set of widths, since each file is named for the width it was captured at and each screen's test reads the widths back out of those names. A file in one of those directories that is not a transcript is a test failure, not something to leave lying around.
 
-Every example takes `--width` and `--height`. The defaults are 80 and 24 (`src/mediapm/examples/support/mod.rs:41`), and the harness refuses a width below 8 (`src/mediapm/examples/support/mod.rs:51`). Each fixture directory holds a width-80 transcript and one narrow transcript, and the narrow one sits at the narrowest width where every row on that screen still renders its identity: 50 columns for tool sync, where every row still shows its phase tag; 65 for workflow, where every row still shows its tool name in full; 27 for materialization, where every row still shows its phase tag. Each number was measured by rendering its screen at successive widths rather than carried over from another screen, so re-measure rather than inherit if the budget moves again. Regenerate one by running the example at that width and redirecting stdout.
-
-Each example also asserts its own grid inline, with `assert_eq!` against a `concat!` literal in `src/mediapm/examples/mediapm_progress_*.rs`, so a layout change fails the suite before anyone reaches for a transcript.
+Each example's test walks its own fixture directory and compares what the screen renders against each transcript, so a layout change fails the suite before anyone reaches for a transcript by hand.
 
 ## Debug JSONL
 
@@ -343,10 +337,10 @@ Each example also asserts its own grid inline, with `assert_eq!` against a `conc
 
 ## Authoritative tests
 
-These test files use `assert_eq!(term.contents(), concat!(...))` against an inline literal and ARE the real format:
+The `mediapm-utils` suite uses `assert_eq!(term.contents(), concat!(...))` against an inline literal and IS the real format:
 
 - `src/mediapm-utils/tests/progress_output/` — `consumer.rs`, `elapsed.rs`, `layout.rs`, `lifecycle.rs`, `render.rs`, `resize.rs`, `spinner.rs`; `common.rs` and `debug.rs` are helpers and the debug sink
-- `src/mediapm/examples/mediapm_progress_tool_sync.rs`, `mediapm_progress_workflow.rs`, `mediapm_progress_materialize.rs` — one exact grid per screen, at the default width and at the narrowest width where the screen stays identifiable, plus a `*_screen_never_wraps_a_row` sweep down to the harness minimum of 8
+- `src/mediapm/examples/mediapm_progress_tool_sync.rs`, `mediapm_progress_workflow.rs`, `mediapm_progress_materialize.rs` — one test that walks the screen's transcript directory and compares every frame it finds there, plus a `*_screen_never_wraps_a_row` sweep over the widths the harness accepts
 
 `src/mediapm/src/output/progress.rs` also asserts against `term.contents()`, but with substring checks rather than exact literals, so it pins behaviour such as "elapsed reads `0s` after finish" rather than a full frame.
 

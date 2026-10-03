@@ -12,24 +12,24 @@
 //! the terminal has left after the spinner, the separators, the suffix and a
 //! fill floor. Every entry label here carries a path, so the path shortens
 //! from the front as the terminal narrows and the file name survives longest.
+//! Where that leaves the labels is a measured fact about these seed paths and
+//! it moves when they move, so it is recorded in `support/materialization.rs`
+//! rather than pinned here.
 //!
 //! The data is synthetic, so the example runs offline and in about a
 //! millisecond.
 //!
 //! ```text
 //! cargo run --package mediapm --example mediapm_progress_materialize
-//! cargo run --package mediapm --example mediapm_progress_materialize -- --width 39
+//! cargo run --package mediapm --example mediapm_progress_materialize -- --width 40
 //! ```
-//!
-//! 27 is the narrowest width at which every row still draws its phase tag,
-//! measured by rendering this screen at successive widths rather than inherited
-//! from the other two screens. Below it the prefix slot is empty and the rows
-//! are the spinner, the fill and the suffix.
-//! `materialization_screen_never_wraps_a_row` covers the widths under it.
 //!
 //! What reaches stdout is the rendered grid with its colour escapes removed, so
 //! redirecting the command writes the transcript checked in under
-//! `examples/fixtures/mediapm_progress_materialize/`.
+//! `examples/fixtures/mediapm_progress_materialize/`. Each transcript is named
+//! for the width it was captured at, and
+//! `materialization_screen_matches_every_committed_transcript` reads the widths
+//! out of those names.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -65,7 +65,10 @@ mod tests {
         render_materialization_screen, render_materialization_screen_for_folder,
     };
     use super::support::ScreenConfig;
-    use super::support::{DEFAULT_HEIGHT, DEFAULT_WIDTH, parse_screen_config, strip_ansi_escapes};
+    use super::support::{
+        DEFAULT_HEIGHT, DEFAULT_WIDTH, assert_every_transcript_matches,
+        assert_no_row_wraps_over_sweep_widths, parse_screen_config, strip_ansi_escapes,
+    };
 
     /// Media folder entry as `demo_hierarchy_spec::online_demo_media_folder_relative()`
     /// spells it, quoted rather than computed so the frame below stays a
@@ -73,70 +76,46 @@ mod tests {
     const WIDE_FOLDER_ENTRY: &str =
         "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]";
 
-    /// The exact grid at `DEFAULT_WIDTH`.
+    /// The materialization screen at every width a transcript is checked in
+    /// at.
     ///
-    /// Read the rows from the top. A finished media entry sits on `[cmt]`
-    /// because that is the last label the media arm installs, and the label is
-    /// never cleared on finish. Below it the folder entry is still on `[stg]`,
-    /// which is the faithful render: the folder arm of the dispatch never
-    /// installs a later phase label, so a folder row carries its creation
-    /// phase for its whole run. The `[wrt]` sub-bar under it is one of three
-    /// extracted link members in. The last entry has resolved its hash and is
-    /// on `[vrf]`. The overall bar is at one of three entries and still
-    /// active, because the other two entries have not committed.
+    /// The widths come from the filenames in
+    /// `examples/fixtures/mediapm_progress_materialize/`, so this test has no
+    /// list of its own to fall out of date. A file in that directory that does
+    /// not parse as a transcript name fails the test rather than going unread.
     ///
-    /// No row carries an `[F]` or `[W]` marker, because nothing here finishes
-    /// with a warning or an error. The materializer does install one on those
-    /// finishes; this screen just never takes that path.
-    ///
-    /// Every prefix shares one slot, and the longest label on the screen sets
-    /// it, so the two rows whose name and directory compete keep both ends:
-    /// `01 - Telepathy.flac` on the committed row and `… Children` on the one
-    /// still staging. The suffix carries the auto-derived timing, `6s` and
-    /// `0/d` per row.
+    /// Read the rows from the top in any one frame. A finished media entry sits
+    /// on `[cmt]`, which is the last label the media arm installs and is never
+    /// cleared on finish. Below it the folder entry is still on `[stg]`, which
+    /// is the faithful render: the folder arm of the dispatch never installs a
+    /// later phase label, so a folder row carries its creation phase for its
+    /// whole run. The `[wrt]` sub-bar under it is one of three extracted link
+    /// members in. The last entry has resolved its hash and is on `[vrf]`. The
+    /// overall bar is at one of three entries and still active, because the
+    /// other two have not committed. No row carries a marker, because nothing
+    /// here finishes with a warning or an error.
     #[test]
-    fn materialization_screen_at_default_width_matches_inline_grid() {
-        let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
-        let grid = strip_ansi_escapes(&render_materialization_screen(config));
-        assert_eq!(
-            grid,
-            concat!(
-                "⠏     [cmt] 01 - Telepathy.flac … Children ██████████████████████████ 6s\n",
-                "⠸     [stg] Never Gonna Give You Up …stley ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
-                "⠴     [wrt] …er Gonna Give You Up …y links ████████░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
-                "⠇     [vrf] 01 - In the Flesh?.m4a …e Wall ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
-                "⠋                      [mat] materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m",
-            )
+    fn materialization_screen_matches_every_committed_transcript() {
+        assert_every_transcript_matches(
+            "mediapm_progress_materialize",
+            "materialize",
+            DEFAULT_HEIGHT,
+            |config| strip_ansi_escapes(&render_materialization_screen(config)),
         );
     }
 
-    /// The exact grid at 27 columns, the narrowest width at which every row
-    /// still draws its phase tag.
+    /// No width wraps a row, and no row loses its bar.
     ///
-    /// The slot has one field left here. The suffix takes what the active rows
-    /// reserve, the fill keeps its four cells, and the phase tag is the only
-    /// prefix segment short enough to survive the rest, which is why it is the
-    /// one that is still readable. The width moved from 48 when the prefix
-    /// started being budgeted from the terminal, so it is worth re-measuring
-    /// rather than treating as fixed.
-    ///
-    /// At 26 the slot is empty on every row and each one is the spinner, the
-    /// fill and the suffix, which is what
-    /// `materialization_screen_never_wraps_a_row` covers.
+    /// Under the old rule the prefix kept the width of the longest seed and the
+    /// row outgrew the terminal, so from the middle of the range down the grid
+    /// interleaved a blank line per row. What gives way now is the prefix, one
+    /// ranked field at a time. A row could also stop wrapping by going empty,
+    /// so each one has to carry a fill character as well.
     #[test]
-    fn materialization_screen_at_narrowest_identifiable_width_matches_inline_grid() {
-        let config = ScreenConfig { width: 27, height: DEFAULT_HEIGHT };
-        let grid = strip_ansi_escapes(&render_materialization_screen(config));
-        assert_eq!(
-            grid,
-            concat!(
-                "⠏     [cmt] ████ 6s\n",
-                "⠸     [stg] ░░░░ 6s 0/d\n",
-                "⠴     [wrt] █░░░ 4s 0/d\n",
-                "⠇     [vrf] █░░░ 0s 0/d\n",
-                "⠋     [mat] █░░░ 13s 1/m",
-            )
-        );
+    fn materialization_screen_never_wraps_a_row() {
+        assert_no_row_wraps_over_sweep_widths("materialization", |config| {
+            strip_ansi_escapes(&render_materialization_screen(config))
+        });
     }
 
     /// The frame a folder entry wider than the client budget produces.
@@ -149,12 +128,18 @@ mod tests {
     /// drops whole once nothing can shrink, and those two rows rendered as a
     /// bare `[stg]` and `[wrt]` with no identity at all.
     ///
-    /// The other rows are unchanged from the 80-column grid above, because
-    /// their own labels already fill the 40-column slot. The slot is what the
+    /// The other rows are unchanged from the wide frame the transcripts carry,
+    /// because their own labels already fill the slot. The slot is what the
     /// widest label measures, capped at `MAX_PREFIX_WIDTH`, so a name wider
     /// than the slot shortens inside it and costs the rows that needed no
     /// shortening nothing. Which fields survive that is the label's ranking
     /// and not the budget's business.
+    ///
+    /// This one keeps a `concat!` literal instead of a transcript. It renders a
+    /// different seed from the one every committed transcript was captured
+    /// from, so a transcript of it would need its own directory, and the
+    /// filenames in that directory would have to parse against a different
+    /// stem. One screen, one directory is the shape the walk above relies on.
     #[test]
     fn materialization_screen_keeps_the_tail_of_a_folder_name_wider_than_the_budget() {
         let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
@@ -172,30 +157,6 @@ mod tests {
                 "⠋                      [mat] materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m",
             )
         );
-    }
-
-    /// No width wraps a row, down to the narrowest the harness accepts.
-    ///
-    /// Under the old rule the prefix kept the width of the longest seed and the
-    /// row outgrew the terminal, so from 46 columns down the grid interleaved a
-    /// blank line per row. What gives way now is the prefix, one ranked field
-    /// at a time, and the fill keeps four cells from 9 columns up and three at
-    /// the 8-column minimum the harness accepts. The row count and the row
-    /// width are what this pins; the fill is not what is at stake.
-    #[test]
-    fn materialization_screen_never_wraps_a_row() {
-        for width in [26, 24, 22, 20, 18, 16, 14, 12, 10, 8] {
-            let config = ScreenConfig { width, height: DEFAULT_HEIGHT };
-            let grid = strip_ansi_escapes(&render_materialization_screen(config));
-            let rows: Vec<&str> = grid.lines().collect();
-            assert_eq!(rows.len(), 5, "width {width} must draw five rows: {rows:?}");
-            for row in rows {
-                assert!(
-                    row.chars().count() <= usize::from(width),
-                    "width {width} must not wrap: {row:?}",
-                );
-            }
-        }
     }
 
     /// The flags that pick the size have to reach the terminal, and an absent

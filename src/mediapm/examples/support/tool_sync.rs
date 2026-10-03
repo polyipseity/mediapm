@@ -16,6 +16,24 @@
 //! `syncing tools` from `sync/mod.rs:1255`. `version_suffix` is a space and the
 //! human-readable version, or empty when the tool reports none, per the doc at
 //! `provision.rs:144`.
+//!
+//! These rows draw the built-in prefix, so what gives way under a narrow
+//! terminal is fixed by `semantic_truncate_prefix` rather than by a ranking
+//! this file chooses: the version is shaved from the right first, so
+//! `yt-dlp v2025.1 [res]` loses the `1` and then the whole version, then the
+//! tally is dropped whole, and the phase tag is the last thing to go.
+//!
+//! Where that leaves the labels, measured on 2026-10-03 by rendering this
+//! screen at every width the harness accepts: 50 columns is the narrowest at
+//! which all six phase-tagged rows still show their tag. One column narrower,
+//! the prune row has lost `[prn]` and the overall bar reads `syncing tool`.
+//! The overall bar is the exception at every width, because it carries no
+//! phase and its name is the whole of its identity. Those are facts about the
+//! seeds quoted above, not a contract, and they move when a tool name or a
+//! version changes length. Nothing in the suite is named after them, because a
+//! fixture called for one of those widths would go on testing that width after
+//! the seed it was measured against had moved, and its name would be the only
+//! thing left still claiming the number mattered.
 
 use std::time::Duration;
 

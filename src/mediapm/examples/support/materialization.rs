@@ -45,6 +45,18 @@
 //! order: a reorder in
 //! `src/mediapm/src/materializer/progress_labels.rs` changes these grids
 //! rather than passing unnoticed against a local copy of the field list.
+//!
+//! Where the labels give way, measured on 2026-10-03 by rendering this screen
+//! at every width the harness accepts: 27 columns is the narrowest at which
+//! every row still draws its phase tag, and below it the prefix slot is empty
+//! and each row is the spinner, its fill and its suffix. The active rows
+//! reserve `6s 0/d`, the fill keeps its floor, and `[cmt]` is the only segment
+//! short enough to survive what is left. Those are facts about the seed paths
+//! quoted above, not a contract, and they move when a path changes length.
+//! Nothing in the suite is named after them, because a fixture called for one
+//! of those widths would go on testing that width after the seed it was
+//! measured against had moved, and its name would be the only thing left still
+//! claiming the number mattered.
 
 use std::sync::Arc;
 use std::time::Duration;

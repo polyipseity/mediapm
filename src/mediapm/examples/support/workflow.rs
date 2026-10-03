@@ -14,6 +14,18 @@
 //! `[active]`. Nothing here has to pick a longer seed to make room, which is
 //! the change from when the seed was the ceiling and an active row read
 //! `[active]` and nothing else.
+//!
+//! Where the label gives way, measured on 2026-10-03 by rendering this screen
+//! at every width the harness accepts: 65 columns is the narrowest at which all
+//! six rows that name a tool still show that tool in full. One column
+//! narrower, the per-step row is down to the tail `…fmpeg)`, because it
+//! carries the version and the tally ahead of the tool and so reaches the
+//! limit first, and by 41 a running worker reads `[active]` and nothing else.
+//! Those are facts about the seeds quoted above, not a contract, and they move
+//! when a label changes length. Nothing in the suite is named after them,
+//! because a fixture called for one of those widths would go on testing that
+//! width after the seed it was measured against had moved, and its name would
+//! be the only thing left still claiming the number mattered.
 
 use std::sync::Arc;
 use std::time::Duration;

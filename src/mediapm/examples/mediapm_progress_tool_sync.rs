@@ -3,27 +3,26 @@
 //! The bars are the ones `reconcile_desired_tools` registers during a tool
 //! sync: a `[res]` resolve bar per tool, a `[fch]` fetch bar and a `[pro]`
 //! process bar for each tool that has payloads, the `[prn]` prune bar, and the
-//! pinned `syncing tools` overall bar. The data is synthetic, so the example
-//! runs offline and in about a millisecond.
+//! pinned `syncing tools` overall bar. Tool-sync rows draw the built-in prefix,
+//! so what gives way under a narrow terminal is fixed by
+//! `semantic_truncate_prefix`: the version shortens from the right, then the
+//! tally is dropped whole, then the phase tag. Where that leaves the labels is
+//! a measured fact about these seeds and it moves when they move, so it is
+//! recorded in `support/tool_sync.rs` rather than pinned here.
+//!
+//! The data is synthetic, so the example runs offline and in about a
+//! millisecond.
 //!
 //! ```text
 //! cargo run --package mediapm --example mediapm_progress_tool_sync
 //! cargo run --package mediapm --example mediapm_progress_tool_sync -- --width 50
 //! ```
 //!
-//! 50 is the narrowest width at which every row still renders its phase tag,
-//! measured by rendering this screen at successive widths rather than taken
-//! from the other two screens. Tool-sync rows draw the built-in prefix, so what
-//! goes under pressure is fixed by `semantic_truncate_prefix`: the version is
-//! shaved from the right first, so `yt-dlp v2025.1 [res]` loses the `1` and
-//! then the whole version, then the tally is dropped whole, and the phase tag
-//! is the last thing to go. At 49 the prune row has lost `[prn]` and the
-//! overall bar reads `syncing tool`.
-//! `tool_sync_screen_never_wraps_a_row` covers the widths below 50.
-//!
 //! What reaches stdout is the rendered grid with its colour escapes removed, so
 //! redirecting the command writes the transcript checked in under
-//! `examples/fixtures/mediapm_progress_tool_sync/`.
+//! `examples/fixtures/mediapm_progress_tool_sync/`. Each transcript is named for
+//! the width it was captured at, and `tool_sync_screen_matches_every_committed_transcript`
+//! reads the widths out of those names.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -56,88 +55,44 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::support::ScreenConfig;
-    use super::support::{DEFAULT_HEIGHT, DEFAULT_WIDTH, parse_screen_config, strip_ansi_escapes};
+    use super::support::{
+        DEFAULT_HEIGHT, DEFAULT_WIDTH, assert_every_transcript_matches,
+        assert_no_row_wraps_over_sweep_widths, parse_screen_config, strip_ansi_escapes,
+    };
     use super::tool_sync::render_tool_sync_screen;
 
-    /// The exact grid at `DEFAULT_WIDTH`, the width every screen is pinned at
-    /// as well as the width the three examples default to.
+    /// The tool-sync screen at every width a transcript is checked in at.
     ///
-    /// The prefix slot is what the widest label on the screen measures, so all
-    /// seven rows render their label in full and the fill takes the rest of the
-    /// line. Narrowing the terminal does not move that until the labels and the
-    /// fill no longer fit between them, which
-    /// `tool_sync_screen_at_narrowest_identifiable_width_matches_inline_grid`
-    /// measures.
+    /// The widths come from the filenames in
+    /// `examples/fixtures/mediapm_progress_tool_sync/`, so this test has no
+    /// list of its own to fall out of date. A file in that directory that does
+    /// not parse as a transcript name fails the test rather than going unread.
+    ///
+    /// The rows, read from the top: a resolve bar per tool, a fetch bar and a
+    /// process bar for the tool that has payloads, the prune bar, and the
+    /// overall bar. The overall bar carries no phase at any width, so its name
+    /// is the whole of its identity.
     #[test]
-    fn tool_sync_screen_at_default_width_matches_inline_grid() {
-        let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
-        let grid = strip_ansi_escapes(&render_tool_sync_screen(config));
-        assert_eq!(
-            grid,
-            concat!(
-                "⠏         ffmpeg v7.1 [res] ██████████████████████████  2/2 0s 2 cached\n",
-                "⠏      yt-dlp v2025.1 [res] ██████████████████████████  1/1 0s skipped, 1 cached\n",
-                "⠏         deno v2.1.4 [res] ██████████████████████████  1/1 0s\n",
-                "⠏     deno v2.1.4 [fch] 1/2 ██████████████████████████  31M/31M 3s 1 cached\n",
-                "⠏     deno v2.1.4 [pro] 2/3 ██████████████████████████  3/3 2s\n",
-                "⠏             pruning [prn] ██████████████████████████  2/2 1s\n",
-                "⠏             syncing tools ██████████████████████████  3/3 9s",
-            )
+    fn tool_sync_screen_matches_every_committed_transcript() {
+        assert_every_transcript_matches(
+            "mediapm_progress_tool_sync",
+            "tool-sync",
+            DEFAULT_HEIGHT,
+            |config| strip_ansi_escapes(&render_tool_sync_screen(config)),
         );
     }
 
-    /// The exact grid at 50 columns, the narrowest width at which every row
-    /// still renders its phase tag. The overall bar is the exception the
-    /// fixture records rather than works around: it is seeded `syncing tools`
-    /// and carries no phase at any width, so the name it renders is the whole
-    /// of its identity.
-    ///
-    /// Every row has already given something up to get here: the tally is
-    /// gone from five rows and the version is shortened on the resolve rows.
-    /// What this pins is that the phase tag outranks both, which is the order
-    /// the removal table in `components.rs` records. One column narrower and
-    /// `[prn]` is dropped off the prune row.
-    #[test]
-    fn tool_sync_screen_at_narrowest_identifiable_width_matches_inline_grid() {
-        let config = ScreenConfig { width: 50, height: DEFAULT_HEIGHT };
-        let grid = strip_ansi_escapes(&render_tool_sync_screen(config));
-        assert_eq!(
-            grid,
-            concat!(
-                "⠏      ffmpeg [res] ████  2/2 0s 2 cached\n",
-                "⠏      yt-dlp [res] ████  1/1 0s skipped, 1 cached\n",
-                "⠏     deno v2 [res] ████  1/1 0s\n",
-                "⠏        deno [fch] ████  31M/31M 3s 1 cached\n",
-                "⠏        deno [pro] ████  3/3 2s\n",
-                "⠏     pruning [prn] ████  2/2 1s\n",
-                "⠏     syncing tools ████  3/3 9s",
-            )
-        );
-    }
-
-    /// No width wraps a row, down to the narrowest the harness accepts.
+    /// No width wraps a row, and no row loses its bar.
     ///
     /// The prefix is the field that gives way: the version shortens, then the
-    /// tally, then the phase tag, then the label. The fill keeps four cells
-    /// from 9 columns up and three at the 8-column minimum the harness
-    /// accepts, so this asserts the row count and the row width rather than
-    /// the fill.
+    /// tally, then the phase tag, then the label. A row could also stop
+    /// wrapping by going empty, so each one has to carry a fill character as
+    /// well.
     #[test]
     fn tool_sync_screen_never_wraps_a_row() {
-        for width in
-            [48, 46, 44, 42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8]
-        {
-            let config = ScreenConfig { width, height: DEFAULT_HEIGHT };
-            let grid = strip_ansi_escapes(&render_tool_sync_screen(config));
-            let rows: Vec<&str> = grid.lines().collect();
-            assert_eq!(rows.len(), 7, "width {width} must draw seven rows: {rows:?}");
-            for row in rows {
-                assert!(
-                    row.chars().count() <= usize::from(width),
-                    "width {width} must not wrap: {row:?}",
-                );
-            }
-        }
+        assert_no_row_wraps_over_sweep_widths("tool sync", |config| {
+            strip_ansi_escapes(&render_tool_sync_screen(config))
+        });
     }
 
     /// The flags that pick the size have to reach the terminal, and an absent
