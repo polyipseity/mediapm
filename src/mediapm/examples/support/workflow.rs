@@ -16,11 +16,14 @@
 //! `[active]` and nothing else.
 //!
 //! Where the label gives way, measured on 2026-10-03 by rendering this screen
-//! at every width the harness accepts: 65 columns is the narrowest at which all
-//! six rows that name a tool still show that tool in full. One column
+//! at every width the harness accepts: 47 columns is the narrowest at which all
+//! three rows that name a tool still show that tool in full. One column
 //! narrower, the per-step row is down to the tail `…fmpeg)`, because it
 //! carries the version and the tally ahead of the tool and so reaches the
-//! limit first, and by 41 a running worker reads `[active]` and nothing else.
+//! limit first, and by 28 a running worker reads `[active]` and nothing else.
+//! Below the fill crossing the rows give up their timing to keep their label,
+//! and a row whose label does not fit either keeps the timing instead, so the
+//! active workers read `⠙  22s` on a line too narrow for `[active]` itself.
 //! Those are facts about the seeds quoted above, not a contract, and they move
 //! when a label changes length. Nothing in the suite is named after them,
 //! because a fixture called for one of those widths would go on testing that
@@ -42,8 +45,8 @@ use crate::support::{ScreenConfig, capture_terminal};
 /// one without reaching into the coordinator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WorkerSlot {
-    /// No step on the slot. Identifiers are empty, so the prefix renders as
-    /// `(idle) [idle]`.
+    /// No step on the slot. The prefix carries the activity marker alone, so
+    /// the row reads `[idle]`.
     Idle,
     /// A step is running. This is the only state that fills in the workflow,
     /// step, and tool names.
@@ -81,7 +84,7 @@ impl WorkerSlot {
                 status_marker: String::new(),
                 workflow_id: String::new(),
                 step_id: String::new(),
-                tool: "idle".to_string(),
+                tool: String::new(),
                 activity: "idle".to_string(),
             },
             Self::Active { workflow_id, step_id, tool } => WorkerBarLabel {
@@ -95,14 +98,14 @@ impl WorkerSlot {
                 status_marker: "W".to_string(),
                 workflow_id: String::new(),
                 step_id: String::new(),
-                tool: "idle".to_string(),
+                tool: String::new(),
                 activity: "idle".to_string(),
             },
             Self::Failed => WorkerBarLabel {
                 status_marker: "F".to_string(),
                 workflow_id: String::new(),
                 step_id: String::new(),
-                tool: "idle".to_string(),
+                tool: String::new(),
                 activity: "idle".to_string(),
             },
         }
@@ -129,8 +132,8 @@ fn dispatch(bar: &ProgressBarHandle, workflow_id: &str, step_id: &str, tool: &st
 /// it, and the child bars are the worker slots the coordinator pre-creates one
 /// per pool member. Two slots end in a warning state (`[W]` for a step the
 /// coordinator will retry, `[F]` for one it will not), one drops its
-/// identifiers and returns to `(idle) [idle]`, one never receives a step, and
-/// one is still running when the transcript is read.
+/// identifiers and reads `[idle]`, one never receives a step, and one is still
+/// running when the transcript is read.
 ///
 /// The last child bar is a per-step bar carrying a version and a progress
 /// tally. It is drawn with [`StepBarLabel`], which the coordinator declares and
@@ -226,7 +229,7 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     clock.advance(Duration::from_secs(1));
 
     // The fifth slot's step succeeds, and the slot drops its identifiers and
-    // goes back to `(idle) [idle]`.
+    // goes back to `[idle]`.
     dispatch(&workers[4], "default", "s2", "archive");
     screen.tick();
     clock.advance(Duration::from_secs(6));

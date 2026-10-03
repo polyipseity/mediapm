@@ -10,6 +10,9 @@
 //! a measured fact about these seeds and it moves when they move, so it is
 //! recorded in `support/tool_sync.rs` rather than pinned here.
 //!
+//! The per-screen spec is the "Screen A: tool-sync" section of
+//! `.agents/instructions/progress-output.instructions.md`.
+//!
 //! The data is synthetic, so the example runs offline and in about a
 //! millisecond.
 //!
@@ -57,7 +60,8 @@ mod tests {
     use super::support::ScreenConfig;
     use super::support::{
         DEFAULT_HEIGHT, DEFAULT_WIDTH, assert_every_transcript_matches,
-        assert_no_row_wraps_over_sweep_widths, parse_screen_config, strip_ansi_escapes,
+        assert_narrow_rows_carry_a_label_or_a_count, assert_no_row_wraps_over_sweep_widths,
+        parse_screen_config, strip_ansi_escapes,
     };
     use super::tool_sync::render_tool_sync_screen;
 
@@ -82,15 +86,33 @@ mod tests {
         );
     }
 
-    /// No width wraps a row, and no row loses its bar.
+    /// No width wraps a row.
     ///
     /// The prefix is the field that gives way: the version shortens, then the
-    /// tally, then the phase tag, then the label. A row could also stop
-    /// wrapping by going empty, so each one has to carry a fill character as
-    /// well.
+    /// tally, then the phase tag, then the label.
+    ///
+    /// It asserts nothing about the bar. Below the fill crossing the row drops
+    /// it on purpose so the label can have the columns, so "carries a fill
+    /// cell" is false by design there. The sweep below asks what survives the
+    /// crossing: that a row still says something.
     #[test]
     fn tool_sync_screen_never_wraps_a_row() {
         assert_no_row_wraps_over_sweep_widths("tool sync", |config| {
+            strip_ansi_escapes(&render_tool_sync_screen(config))
+        });
+    }
+
+    /// Once a width is readable on this screen, every wider width is too.
+    ///
+    /// The sweep beside this one only asks that a row fits. This asks that it
+    /// has something on it, which is the property a fit can be satisfied by
+    /// breaking. Below the fill crossing the bar is dropped on purpose, so the
+    /// row is carried by its label and its tally, and by its timing when it has
+    /// neither; a screen whose rows go empty again after a readable width is
+    /// losing information it had.
+    #[test]
+    fn tool_sync_screen_rows_never_go_empty() {
+        assert_narrow_rows_carry_a_label_or_a_count("tool sync", |config| {
             strip_ansi_escapes(&render_tool_sync_screen(config))
         });
     }

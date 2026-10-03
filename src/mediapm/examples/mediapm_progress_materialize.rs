@@ -8,9 +8,16 @@
 //! keeps the phase it was created with, because only the media arm installs a
 //! later one. See the module doc in `support/materialization.rs`.
 //!
+//! What each tag stands for is tabulated under "Materialization phase tags" in
+//! `.agents/instructions/progress-output.instructions.md`: `stg` copies CAS
+//! content into the staging area, `vrf` checks the staged bytes, `cmt` writes
+//! into the library, `wrt` is one file inside a folder variant, and `mat`
+//! labels this screen's overall bar.
+//!
 //! The shared prefix slot is the widest label the screen draws, held to what
-//! the terminal has left after the spinner, the separators, the suffix and a
-//! fill floor. Every entry label here carries a path, so the path shortens
+//! the terminal has left after the spinner, the separators and the suffix, with
+//! a fill floor under the bar while there is room for a bar at all. Every entry
+//! label here carries a path, so the path shortens
 //! from the front as the terminal narrows and the file name survives longest.
 //! Where that leaves the labels is a measured fact about these seed paths and
 //! it moves when they move, so it is recorded in `support/materialization.rs`
@@ -67,7 +74,8 @@ mod tests {
     use super::support::ScreenConfig;
     use super::support::{
         DEFAULT_HEIGHT, DEFAULT_WIDTH, assert_every_transcript_matches,
-        assert_no_row_wraps_over_sweep_widths, parse_screen_config, strip_ansi_escapes,
+        assert_narrow_rows_carry_a_label_or_a_count, assert_no_row_wraps_over_sweep_widths,
+        parse_screen_config, strip_ansi_escapes,
     };
 
     /// Media folder entry as `demo_hierarchy_spec::online_demo_media_folder_relative()`
@@ -104,16 +112,35 @@ mod tests {
         );
     }
 
-    /// No width wraps a row, and no row loses its bar.
+    /// No width wraps a row.
     ///
     /// Under the old rule the prefix kept the width of the longest seed and the
     /// row outgrew the terminal, so from the middle of the range down the grid
     /// interleaved a blank line per row. What gives way now is the prefix, one
-    /// ranked field at a time. A row could also stop wrapping by going empty,
-    /// so each one has to carry a fill character as well.
+    /// ranked field at a time.
+    ///
+    /// It asserts nothing about the bar. Below the fill crossing the row drops
+    /// it on purpose so the label can have the columns, so "carries a fill
+    /// cell" is false by design there. The sweep below asks what survives the
+    /// crossing: that a row still says something.
     #[test]
     fn materialization_screen_never_wraps_a_row() {
         assert_no_row_wraps_over_sweep_widths("materialization", |config| {
+            strip_ansi_escapes(&render_materialization_screen(config))
+        });
+    }
+
+    /// Once a width is readable on this screen, every wider width is too.
+    ///
+    /// The sweep beside this one only asks that a row fits. This asks that it
+    /// has something on it, which is the property a fit can be satisfied by
+    /// breaking. Below the fill crossing the bar is dropped on purpose, so the
+    /// row is carried by its label and its tally, and by its timing when it has
+    /// neither; a screen whose rows go empty again after a readable width is
+    /// losing information it had.
+    #[test]
+    fn materialization_screen_rows_never_go_empty() {
+        assert_narrow_rows_carry_a_label_or_a_count("materialization", |config| {
             strip_ansi_escapes(&render_materialization_screen(config))
         });
     }

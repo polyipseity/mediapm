@@ -5,7 +5,7 @@
 //! Tests are gated on `#[cfg(feature = "progress")]` for parity with the
 //! feature-gated production code path.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::{TestConductor, doc_with_workflows, echo_tool};
@@ -94,13 +94,16 @@ fn broken_tool(name: &str) -> mediapm_conductor::ToolSpec {
 }
 
 /// Idle worker-slot prefix components (no step assigned yet).
+///
+/// Mirrors `worker_slot_label` in the coordinator: a slot with no step on it
+/// has no tool to name, so `tool` is empty.
 fn idle_pc() -> ProgressOp {
     use mediapm_conductor::orchestration::progress_labels::WorkerBarLabel;
     let label = WorkerBarLabel {
         status_marker: String::new(),
         workflow_id: String::new(),
         step_id: String::new(),
-        tool: "idle".into(),
+        tool: String::new(),
         activity: "idle".into(),
     };
     ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
@@ -399,6 +402,53 @@ async fn three_step_same_level_progress_ops() {
             },
             ProgressOp::FinishSuccess,
         ],
+    );
+}
+
+/// Regression: a slot that is not running a step stops at its activity
+/// marker. `WorkerBarLabel` renders `tool` parenthesized, so the `tool`
+/// placeholder the non-active states used to carry drew `(idle)` next to the
+/// `[idle]` that `activity` had already said. The active state keeps its
+/// tool name, so `[active] default s1 (broken)` has to survive the change.
+#[tokio::test]
+async fn regression_idle_slot_prefix_stops_at_the_activity_marker() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("broken".into(), broken_tool("broken"))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            // Two retries, so the slot passes through PendingRetry before it
+            // fails for good and all three non-active states are recorded.
+            steps: vec![WorkflowStepSpec { max_retries: 2, ..step("s1", "broken", "") }],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.failed_steps, 1);
+
+    let mut idle = BTreeSet::new();
+    let mut active = Vec::new();
+    for op in tracker.ops() {
+        let ProgressOp::SetTruncation { prefix, .. } = op else { continue };
+        if prefix.contains("[active]") {
+            active.push(prefix);
+        } else {
+            idle.insert(prefix);
+        }
+    }
+    assert_eq!(
+        idle,
+        BTreeSet::from(["[idle]".to_string(), "[W] [idle]".to_string(), "[F] [idle]".to_string()]),
+        "a slot with no step running names no tool"
+    );
+    assert_eq!(
+        active,
+        vec!["[active] default s1 (broken)".to_string(); 3],
+        "a slot running a step still names workflow, step and tool"
     );
 }
 

@@ -3,17 +3,22 @@
 //! The bars are the ones the conductor coordinator registers during
 //! `run_workflow`: a fixed grid of worker-slot bars that are created once per
 //! pool member and reused for every dispatch, plus the pinned `workflow [wf]`
-//! overall bar. A worker slot shows `(idle) [idle]` when nothing is running on
-//! it, the workflow, step and tool names plus `[active]` when a step is, and
+//! overall bar. A worker slot reads `[idle]` when nothing is running on it,
+//! the workflow, step and tool names plus `[active]` when a step is, and
 //! the `[W]` or `[F]` marker when a step ended in a warning or a failure. The
 //! per-step bar above the overall bar carries a version and a progress tally.
 //!
 //! A worker row carries the workflow, the step and the tool it is running:
 //! `[active] default s3 (ffmpeg)` is 28 columns. The slot is what the terminal
-//! has left after the spinner, the separators, the suffix and a fill floor, so
-//! at narrower widths the tool name goes before the bar does. Where the label
+//! has left after the spinner, the separators and the suffix, so at narrower
+//! widths the tool name goes first, then the bar itself, and a row whose label
+//! no longer fits keeps its timing rather than going blank. Where the label
 //! gives way is a measured fact about these seed labels and it moves when they
 //! move, so it is recorded in `support/workflow.rs` rather than pinned here.
+//!
+//! The per-screen spec is the "Screen B: Workflow" section of
+//! `.agents/instructions/progress-output.instructions.md`, which tabulates
+//! what each worker-slot state fills into the label.
 //!
 //! The data is synthetic, so the example runs offline and in about a
 //! millisecond.
@@ -63,7 +68,8 @@ mod tests {
     use super::support::ScreenConfig;
     use super::support::{
         DEFAULT_HEIGHT, DEFAULT_WIDTH, assert_every_transcript_matches,
-        assert_no_row_wraps_over_sweep_widths, parse_screen_config, strip_ansi_escapes,
+        assert_narrow_rows_carry_a_label_or_a_count, assert_no_row_wraps_over_sweep_widths,
+        parse_screen_config, strip_ansi_escapes,
     };
     use super::workflow::render_workflow_screen;
 
@@ -88,18 +94,37 @@ mod tests {
         );
     }
 
-    /// No width wraps a row, and no row loses its bar.
+    /// No width wraps a row.
     ///
     /// This is the failure the width budget exists to remove. The prefix slot
     /// used to be sized from the seed label and never shrank, so from 40
     /// columns down the captured grid grew an interleaved blank line per row:
     /// the row was wider than the terminal and the spill landed below it,
     /// where a suffix such as `0s 0/d` reads as a second bar. What gives way
-    /// now is the label. A row could also stop wrapping by going empty, so
-    /// each one has to carry a fill character as well.
+    /// now is the label.
+    ///
+    /// It asserts nothing about the bar. Below the fill crossing the row drops
+    /// it on purpose so the label can have the columns, so "carries a fill
+    /// cell" is false by design there. The sweep below asks what survives the
+    /// crossing: that a row still says something.
     #[test]
     fn workflow_screen_never_wraps_a_row() {
         assert_no_row_wraps_over_sweep_widths("workflow", |config| {
+            strip_ansi_escapes(&render_workflow_screen(config))
+        });
+    }
+
+    /// Once a width is readable on this screen, every wider width is too.
+    ///
+    /// The sweep beside this one only asks that a row fits. This asks that it
+    /// has something on it, which is the property a fit can be satisfied by
+    /// breaking. Below the fill crossing the bar is dropped on purpose, so the
+    /// row is carried by its label and its tally, and by its timing when it has
+    /// neither; a screen whose rows go empty again after a readable width is
+    /// losing information it had.
+    #[test]
+    fn workflow_screen_rows_never_go_empty() {
+        assert_narrow_rows_carry_a_label_or_a_count("workflow", |config| {
             strip_ansi_escapes(&render_workflow_screen(config))
         });
     }

@@ -154,11 +154,14 @@ where
 ///
 /// | worker state | `TrackStatus` | marker | `tool_name` |
 /// | --- | --- | --- | --- |
-/// | idle (no step assigned / between steps) | `Active` | empty | `"idle"` |
+/// | idle (no step assigned / between steps) | `Active` | empty | empty |
 /// | active (executing) | `Active` | empty | `"{wf}/{step} ({tool})"` |
-/// | pending-retry | `Warning` | `"W"` | `"idle"` |
-/// | failed (final) | `Failed` | `"F"` | `"idle"` |
-/// | finalize (all available steps consumed) | `Success` | empty | `"idle"` |
+/// | pending-retry | `Warning` | `"W"` | empty |
+/// | failed (final) | `Failed` | `"F"` | empty |
+/// | finalize (all available steps consumed) | `Success` | empty | empty |
+///
+/// `tool_name` is empty in every state but `Active`, so a slot with no step
+/// on it renders as `[idle]` rather than naming a tool it is not running.
 ///
 /// Invariant: a worker is NEVER done (Success) while available steps remain.
 /// Failed and pending-retry states already surface their own `TrackStatus`
@@ -186,11 +189,13 @@ enum WorkerSlotState {
 
 /// Builds the [`WorkerBarLabel`] for a worker-slot bar in the given state.
 ///
-/// `workflow_name`/`step_id`/`tool` are only used by the `Active` state to
-/// Populate separate `workflow_id`, `step_id`, and `tool` fields so the
+/// `workflow_name`/`step_id`/`tool` are only read by the `Active` state, which
+/// fills in the `workflow_id`, `step_id`, and `tool` fields so the
 /// client-side truncation order (`WorkerBarLabel`) can drop trailing parts
-/// independently.  A worker bar carries no workflow phase and no progress
-/// tally, so those fields are absent by construction (see [`WorkerSlotState`]).
+/// independently. Every other state leaves `tool` empty: there is no step
+/// running, so there is no conductor tool to name, and the row ends at
+/// `[idle]`. A worker bar carries no workflow phase and no progress tally, so
+/// those fields are absent by construction (see [`WorkerSlotState`]).
 #[cfg(feature = "progress")]
 fn worker_slot_label(
     state: WorkerSlotState,
@@ -210,21 +215,21 @@ fn worker_slot_label(
             status_marker: "W".to_string(),
             workflow_id: String::new(),
             step_id: String::new(),
-            tool: "idle".to_string(),
+            tool: String::new(),
             activity: "idle".to_string(),
         },
         WorkerSlotState::Failed => WorkerBarLabel {
             status_marker: "F".to_string(),
             workflow_id: String::new(),
             step_id: String::new(),
-            tool: "idle".to_string(),
+            tool: String::new(),
             activity: "idle".to_string(),
         },
         WorkerSlotState::Idle | WorkerSlotState::Succeeded => WorkerBarLabel {
             status_marker: String::new(),
             workflow_id: String::new(),
             step_id: String::new(),
-            tool: "idle".to_string(),
+            tool: String::new(),
             activity: "idle".to_string(),
         },
     }

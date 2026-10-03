@@ -22,34 +22,49 @@ MAX_PREFIX_WIDTH = 40      (hard ceiling, prefixes truncate beyond this)
 MIN_SUFFIX_WIDTH = 0       (decreasable floor, no ANSI overhead on suffix side)
 MAX_SUFFIX_WIDTH = 65
 FRAME_OVERHEAD_COLUMNS = 4 (spinner glyph plus the three spaces between the four template fields)
-MIN_BAR_FILL = 4           (columns held back for the fill before the label slot grows)
+MIN_BAR_FILL = 4           (floor held back under the fill, and the width at which a frame stops drawing one)
 ```
 
-`max_prefix_width(cols)` (`src/mediapm-utils/src/progress/inner/components.rs:586`) and `max_suffix_width(cols)` (`:592`) are `const fn` capping those two ceilings at the terminal width, so neither reserves more than the line holds. `recompute_layout` (`renderer.rs:921`) then spends what is left of `cols`:
+`max_prefix_width(cols)` (`src/mediapm-utils/src/progress/inner/components.rs:595`) and `max_suffix_width(cols)` (`:601`) are `const fn` capping those two ceilings at the terminal width, so neither reserves more than the line holds. `recompute_layout` (`renderer.rs:1052`) then spends what is left of `cols`, in two steps:
 
 ```text
-label_columns = cols - (FRAME_OVERHEAD_COLUMNS + MIN_BAR_FILL)
-suffix_w     = min(measured suffix, suffix_ceiling, label_columns)
-prefix_w     = min(measured prefix, prefix_ceiling, label_columns - suffix_w)
+reserved = cols - (FRAME_OVERHEAD_COLUMNS + MIN_BAR_FILL)
+suffix_w = min(measured suffix, suffix_ceiling, reserved)
+prefix_w = min(measured prefix, prefix_ceiling, reserved - suffix_w)
+fill     = cols - (FRAME_OVERHEAD_COLUMNS + prefix_w + suffix_w)
+```
+
+`draw_fill` is `fill > MIN_BAR_FILL`. A frame that answers no draws itself from the same four fields with `{wide_bar}` and the space in front of it left out, and re-settles the two label slots over the columns the floor was holding, with the suffix measured again without its timing:
+
+```text
+reserved   = cols - FRAME_OVERHEAD_COLUMNS
+suffix_w   = min(measured suffix without timing, suffix_ceiling, reserved)
+prefix_w   = min(measured prefix, prefix_ceiling, reserved - suffix_w)
 ```
 
 The suffix is settled first because it is the field that must not wrap: a suffix past the end of the line spills onto the row below, where it reads as a second bar. `cols` arrives from [`DimensionSource::dimensions`](`src/mediapm-utils/src/progress/inner/debug.rs:12`), which is `RealTerminalSource` on a terminal and `TestDimensionSource` under a test.
+
+On a frame with no bar, the timing is the first thing the suffix gives up, because the columns it wants are the ones the label and the tally want. A row that would have nothing left keeps it: a worker slot has no tally of its own, so a stripped worker row would read `⠙` and nothing else, and a lone spinner is a worse frame than the four cells of bar that were dropped. `keeps_timing` (`renderer.rs:112`) is that condition, `compose_suffix` (`renderer.rs:64`) applies it, and `without_timing` (`renderer.rs:89`) is the one strip both the draw path and the measurement pass go through, so the two cannot answer differently about the same row.
 
 ## Two layout facts to know before changing a label
 
 **The slot is measured from what a bar draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` turns the seed into built-in prefix components at `src/mediapm-utils/src/progress/inner/renderer.rs:178`, and `snap.prefix` is their render, which is the right width to measure for a bar that draws them. A bar with a `BarLabelTruncation` installed draws something else, so `recompute_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`renderer.rs:936`). `snap.prefix` is the wrong width for such a bar, because the seeds are short by design and `idle [wf]` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:343`). A client label may be longer or shorter than the string its bar was created with, so the measurement has to follow the label.
 
-**The budget is the terminal's, and the ceiling only trims it.** The slot is what is left after the spinner, the separators, the suffix and `MIN_BAR_FILL`, capped at `MAX_PREFIX_WIDTH`. Narrowing the terminal shrinks the fill first and takes columns from the label one ranked field at a time, so what changes across widths is which field survives, not how much of the line the labels occupy.
+**The budget is the terminal's, and the ceiling only trims it.** The slot is what is left after the spinner, the separators and the suffix, capped at `MAX_PREFIX_WIDTH`, and the fill takes what neither label wants, down to a floor of `MIN_BAR_FILL` columns. Narrowing the terminal shrinks the fill first and takes columns from the label one ranked field at a time, so what changes across widths is which field survives, not how much of the line the labels occupy.
 
-## No row wraps, and no compact row exists
+## No row wraps, and a frame below the crossing has no bar
 
-Every width the progress examples accept draws one line per row on all three screens, which the three `*_screen_never_wraps_a_row` sweeps pin. The fill is what absorbs the narrowing: the budget reserves `MIN_BAR_FILL` columns for it and hands the rest to the label, one ranked field at a time. At the narrowest width the harness accepts, a row is the spinner, its fill cells and nothing else.
+Every width the progress examples accept draws one line per row on all three screens, which the three `*_screen_never_wraps_a_row` sweeps pin.
 
-The fill floor is the reason there is no compact row template. All four styles embed `wide_bar` and a suffix slot, so none of them can express a bar-less row, and every width has fill to draw. A template that no width would select is dead code, and `warnings = "deny"` in the root `Cargo.toml` would reject it.
+A frame drops its fill when the fill the budget affords is at or below `MIN_BAR_FILL`. Four cells of `░░░░` or `████` carry a quarter-resolution fraction that the count beside them already states, and they are paid for out of a label being cut to `…`. So at that point the frame stops drawing a bar and gives the columns to the label and the count instead, which is what `{spinner} {prefix} {msg}` is for.
+
+Above a screen's own crossing nothing changes: the fill is back, the four template fields are back, and a frame looks the way it always did. The crossings differ per screen because each screen's labels differ, and the width at which the labels stop overflowing the line is a property of those labels. Measured over the three example screens at every width from 8 to 120, the fill is at the floor at every width up to 58 on tool sync and materialization and up to 65 on the workflow screen, whose labels are seven columns wider. Read `recompute_layout` for the question it asks; there is no width constant to look up.
+
+A row still says something at the bottom of the range, and that is the property the `*_screen_rows_never_go_empty` sweeps pin. Two things carry a row once the bar is gone: the label, and the count and timing in the suffix. A row with neither renders its timing rather than nothing, as `keeps_timing` decides above. What is left is the bottom of the range on a screen whose suffixes are timing-only, where the suffix slot measures nothing and there are no columns for the timing either. That is measured per screen in the doc comment of `assert_narrow_rows_carry_a_label_or_a_count` in `src/mediapm/examples/support/mod.rs`.
 
 ## Production templates
 
-Templates are **dynamic `format!` strings** built inside `apply_*_bar_style` functions using live `prefix_w`/`suffix_w` values. There are NO static `CHILD_BAR_TEMPLATE`/`OVERALL_BAR_TEMPLATE` constants.
+Templates are **dynamic `format!` strings** built inside `apply_*_bar_style` functions using live `prefix_w`/`suffix_w` values and the frame's `draw_fill`. There are NO static `CHILD_BAR_TEMPLATE`/`OVERALL_BAR_TEMPLATE` constants.
 
 | Function | Template pattern | Wide bar style |
 |---|---|---|
@@ -59,6 +74,8 @@ Templates are **dynamic `format!` strings** built inside `apply_*_bar_style` fun
 | `apply_failed_bar_style` | `{spinner:.red} {prefix:>{pw}.{pw}} {wide_bar:0.red/dim} {msg:<{sw}.{sw}}` | red/dim |
 
 Where `{pw}` = `prefix_w` and `{sw}` = `suffix_w`, both read from the cells `recompute_layout` writes. There is no static template to fall back to.
+
+`draw_fill == false` builds the same four fields with `{wide_bar}` and the space in front of it left out: `{spinner:.green} {prefix:>{pw}.{pw}} {msg:<{sw}.{sw}}`, so a frame with no bar is the same layout minus the third field. The space in front of `{msg}` stays, which is why `render_suffix_components` gives the count/total segment its own leading space. `frame_template` in `components.rs` holds both shapes and takes each caller's colours as arguments, so a style is one call rather than two.
 
 All styles: `tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")`, `progress_chars("█░")`.
 
@@ -118,10 +135,10 @@ All status-list suffixes use the **number-first** format: `{n} {word}`, comma-jo
 
 `sync_snapshot_to_bar` (in `renderer.rs`) is the single push point from `SharedState` → indicatif. It determines whether client-defined truncation (`BarLabelTruncation` via `set_truncation`) or built-in truncation (`PrefixComponents` via `set_prefix_components`) applies:
 
-- **Client-truncated bars**: `ansi_overhead = 4`. Calls `truncation.truncate_prefix(prefix_w - 4)` then prepends `\x1b[0m` to the result. Suffix path: calls `truncation.truncate_suffix(suffix_w, &fresh_suffix)` where `fresh_suffix` is the merged `SuffixComponents` (auto-derived + user-set fields).
+- **Client-truncated bars**: `ansi_overhead = 4`. Calls `truncation.truncate_prefix(prefix_w - 4)` then prepends `\x1b[0m` to the result. Suffix path: calls `truncation.truncate_suffix(suffix_w, &fresh_suffix)` where `fresh_suffix` is the merged `SuffixComponents` (auto-derived + user-set fields), with the timing stripped on a frame that draws no bar unless the row would otherwise have nothing to say.
 - **Built-in bars**: `ansi_overhead` is 13 for `Failed`/`Warning`, 4 otherwise. Calls `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` then `render_prefix_components` to wrap the prefix in colored markers.
 
-`recompute_layout` checks for installed client truncation to apply the same overhead rule for width budgeting. It also passes `&full_suffix` (the same merged components) to client truncation for width budgeting.
+`recompute_layout` checks for installed client truncation to apply the same overhead rule for width budgeting. It measures the suffix through the same `render_slot_suffix` the draw path renders through, so a client label is asked for its own output in both passes.
 
 ## Buffer ordering and style dedup
 
@@ -129,7 +146,7 @@ The tick loop and attach operation are designed to minimize visible flicker:
 
 - **Buffer-first tick**: `tick()` enables the `WriteGate` (suppresses writes) BEFORE calling `recompute_layout()`. This ensures all `set_style` calls from `recompute_layout` → `sync_slot` → `apply_*_bar_style` are suppressed until `WriteGate::open()` releases them atomically.
 - **Buffered attach**: `attach()` wraps its entire body in a `WriteGate::suppress()`/`open()` pair so slot shifts, sync_slot, and recompute_layout during bar attachment are buffered and appear atomically.
-- **Style dedup**: `sync_slot` caches `(prefix_w, suffix_w, is_overall, status_code)` in `SlotCache` and only calls `apply_*_bar_style` when any component of this tuple changes. This eliminates redundant style writes when bar dimensions and status are stable across ticks.
+- **Style dedup**: `sync_slot` caches `(prefix_w, suffix_w, is_overall, draw_fill, status_code)` in `SlotCache` and only calls `apply_*_bar_style` when any component of this tuple changes. This eliminates redundant style writes when bar dimensions and status are stable across ticks.
 
 ## Three bar-label structs
 
@@ -230,9 +247,11 @@ Worker-slot states (`worker_slot_label` in `coordinator.rs:195`):
 | State | `workflow_id` | `step_id` | `tool` | `activity` | `status_marker` |
 |-------|---------------|-----------|--------|------------|------------------|
 | Active | workflow name | step id | conductor tool name | `active` | (empty) |
-| PendingRetry | (empty) | (empty) | `idle` | `idle` | `W` |
-| Failed | (empty) | (empty) | `idle` | `idle` | `F` |
-| Idle / Succeeded | (empty) | (empty) | `idle` | `idle` | (empty) |
+| PendingRetry | (empty) | (empty) | (empty) | `idle` | `W` |
+| Failed | (empty) | (empty) | (empty) | `idle` | `F` |
+| Idle / Succeeded | (empty) | (empty) | (empty) | `idle` | (empty) |
+
+`tool` is empty in every state but `Active`, because a slot with no step on it has no tool to name. The row stops at its activity marker: `[idle]`, or `[W] [idle]` and `[F] [idle]` for a retry and a final failure. Earlier revisions filled `tool` with the string `idle`, which rendered as `(idle)` beside the `[idle]` that `activity` had already said.
 
 Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec.name`, never a managed-tool name.
 
@@ -240,13 +259,27 @@ Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec
 
 Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`. Prefix segments are ordered `phase`, `status_marker`, `entry_name`, `entry_path`, `file_name`, so the phase tag leads, both halves of the path are elastic and shorten from the head, and `file_name` is dropped before the directory that holds it. `entry_name` is elastic rather than kept whole because a name kept whole is a name that vanishes once nothing else can shrink, and its tail still carries the extension and the bracketed media id that separates one entry from another.
 
-Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-extracted-file sub-bar inside a ZIP folder variant).
+Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-extracted-file sub-bar inside a ZIP folder variant). See "Materialization phase tags" below for what each phase does.
 
 Only the media entry walks the phase list:
 
 - **The `[stg]` → `[vrf]` → `[cmt]` transition runs only for `HierarchyEntryKind::Media`.** The per-entry bar is created with phase `stg` for every entry kind (`src/mediapm/src/materializer/mod.rs:396-403`), and only the `Media` arm calls `set_truncation` again, at `mod.rs:429-448`. A `MediaFolder` or `Playlist` entry shows `[stg]` for its whole run.
 
-A warning or a failure carries its marker in the text as well as in the bar colour. `mark_entry_bar_finished` (`src/mediapm/src/materializer/mod.rs:383`) re-installs the bar's label with `status_marker` set to `W` or `F` immediately before `finish_warning` or `finish_error` (`mod.rs:557`, `:592` and `:609`), so `[W]` and `[F]` are readable on the row itself. Every row also carries the timing the renderer derives for it, for the reason given under `MaterializationBarLabel` above.
+A warning or a failure carries its marker in the text as well as in the bar colour. `mark_entry_bar_finished` (`src/mediapm/src/materializer/mod.rs:383`) re-installs the bar's label with `status_marker` set to `W` or `F` immediately before `finish_warning` or `finish_error` (`mod.rs:557`, `:592` and `:609`), so `[W]` and `[F]` are readable on the row itself. A row also carries the timing the renderer derives for it, for the reason given under `MaterializationBarLabel` above, except on a frame that has dropped its bar where the timing gives way to the label unless the row would then have nothing at all.
+
+### Materialization phase tags
+
+The tags cost three columns each in the prefix slot, which is why the full word is not spelled out there. They render bracketed, so `[cmt]` on a row is the commit phase.
+
+| Tag | Phase | What the row is doing |
+|-----|-------|------------------------|
+| `stg` | staging | copying CAS content into the staging area |
+| `vrf` | verify | checking staged bytes before committing |
+| `cmt` | commit | writing into the library |
+| `wrt` | write | one file inside a folder variant |
+| `mat` | materializing | the overall bar for this screen |
+
+`stg`, `vrf` and `cmt` are the three phases one media entry walks. `wrt` labels a sub-bar for a single extracted file inside a folder variant, and `mat` labels the overall bar.
 
 ## Post-finish result messages
 
@@ -332,7 +365,7 @@ Each example's test walks its own fixture directory and compares what the screen
 ## Pre-roll, gap conversion, finalize
 
 - **Pre-roll**: On first draw, writes blank lines to scroll existing terminal content into scrollback, then repositions cursor. Only fires when `pre_roll_term` is `Some` (not in test mode).
-- **Gap conversion**: Child bars that are inactive or finished show a fully-dimmed empty bar (`total=1, pos=0`). Idle workers are explicitly finished (via `finish_success`), so they appear as dimmed empty bars. The `WorkerSpinner` style detects this state.
+- **Gap conversion**: Child bars that are inactive or finished show a fully-dimmed empty bar (`total=1, pos=0`) where the frame has room for a fill. Idle workers are explicitly finished (via `finish_success`), so that is the bar they show. `WorkerSpinner` detects the state. Below the fill crossing the frame draws no bar, so an idle worker reads `[idle]` and its timing on its own.
 - **Finalize**: `group.join()` returns after all bars finish; the renderer removes blank reserved slots and triggers a final draw so only finished bars persist in scrollback.
 
 ## Authoritative tests
@@ -340,7 +373,7 @@ Each example's test walks its own fixture directory and compares what the screen
 The `mediapm-utils` suite uses `assert_eq!(term.contents(), concat!(...))` against an inline literal and IS the real format:
 
 - `src/mediapm-utils/tests/progress_output/` — `consumer.rs`, `elapsed.rs`, `layout.rs`, `lifecycle.rs`, `render.rs`, `resize.rs`, `spinner.rs`; `common.rs` and `debug.rs` are helpers and the debug sink
-- `src/mediapm/examples/mediapm_progress_tool_sync.rs`, `mediapm_progress_workflow.rs`, `mediapm_progress_materialize.rs` — one test that walks the screen's transcript directory and compares every frame it finds there, plus a `*_screen_never_wraps_a_row` sweep over the widths the harness accepts
+- `src/mediapm/examples/mediapm_progress_tool_sync.rs`, `mediapm_progress_workflow.rs`, `mediapm_progress_materialize.rs` — one test that walks the screen's transcript directory and compares every frame it finds there, plus a `*_screen_never_wraps_a_row` sweep and a `*_screen_rows_never_go_empty` sweep over the widths the harness accepts
 
 `src/mediapm/src/output/progress.rs` also asserts against `term.contents()`, but with substring checks rather than exact literals, so it pins behaviour such as "elapsed reads `0s` after finish" rather than a full frame.
 
