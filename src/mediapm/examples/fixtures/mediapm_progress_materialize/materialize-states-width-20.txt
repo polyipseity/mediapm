@@ -1,8 +1,8 @@
-⠏        [W] [vrf]
-⠏            [cmt]
-⠼            [stg]
-⠴            [stg]
-⠏       thumbnails
-⠋      links [wrt]
-⠏        [F] [stg]
+⠏     [W] 4a [vrf]
+⠏     y.flac [cmt]
+⠼     al.m4a [stg]
+⠴
 ⠏
+⠋
+⠏     [F] u8 [stg]
+⠏     aterializing

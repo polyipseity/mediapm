@@ -180,22 +180,75 @@ fn dispatch(bar: &ProgressBarHandle, workflow_id: &str, step_id: &str, tool: &st
     .apply(bar);
 }
 
+/// What the pinned overall row is naming.
+///
+/// Mirrors the coordinator's private `OverallBarState` in `overall_bar_label`,
+/// so the demo draws the two states the coordinator moves the bar between: a
+/// step that is running, and a step that is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverallRow<'a> {
+    /// No step is running. The row names the workflow alone.
+    Idle,
+    /// A step is running. This is the only state that fills in the step and
+    /// tool names.
+    Running {
+        /// Step identifier inside the workflow.
+        step_id: &'a str,
+        /// Conductor tool name the step calls.
+        tool: &'a str,
+    },
+}
+
+impl OverallRow<'_> {
+    /// Install the label the coordinator would install for this state.
+    ///
+    /// `version` is empty here for the same reason it is empty in the
+    /// coordinator: no versioned tool field exists to read it from.
+    fn apply(self, overall: &ProgressBarHandle, workflow_id: &str) {
+        let (step_id, tool) = match self {
+            Self::Idle => (String::new(), String::new()),
+            Self::Running { step_id, tool } => (step_id.to_string(), tool.to_string()),
+        };
+        overall.set_truncation(Arc::new(StepBarLabel {
+            status_marker: String::new(),
+            workflow_id: workflow_id.to_string(),
+            step_id,
+            tool,
+            version: String::new(),
+            completed: String::new(),
+            total: String::new(),
+        }));
+    }
+}
+
+/// Tell the overall row a step started, the way a dispatch does.
+fn dispatch_overall(overall: &ProgressBarHandle, step_id: &str, tool: &str) {
+    OverallRow::Running { step_id, tool }.apply(overall, "default");
+}
+
+/// Tell the overall row a step stopped, the way each step outcome does.
+fn release_overall(overall: &ProgressBarHandle) {
+    OverallRow::Idle.apply(overall, "default");
+}
+
 /// Render the workflow screen at `config`'s size and return the raw grid.
 ///
-/// The overall bar is labelled `workflow`, as the service builds it, and
-/// the child bars are the worker slots the coordinator pre-creates one per
-/// pool member. Two slots end in a warning state (`[W]` for a step the
+/// The overall bar is pinned at the bottom and labelled through
+/// [`StepBarLabel`], so it names the workflow and the step running on it, and
+/// falls back to naming the workflow alone whenever no step is running. The
+/// child bars are the worker slots the coordinator pre-creates one per pool
+/// member. Two slots end in a warning state (`[W]` for a step the
 /// coordinator will retry, `[F]` for one it will not), one drops its
 /// identifiers and reads `[idle]`, one never receives a step, and one is still
 /// running when the transcript is read.
 ///
 /// The last child bar is a per-step bar carrying a version and a progress
-/// tally. It is drawn with [`StepBarLabel`], which the coordinator declares and
-/// tests but never installs: a real run registers worker-slot bars only, so
-/// that row shows a label the renderer supports rather than a frame a live
-/// workflow draws. `progress-output.instructions.md` still describes per-step
-/// child bars on this screen, and that description is what this row is
-/// checking.
+/// tally. A real run registers worker-slot bars only, so that row shows a
+/// label the renderer supports rather than a frame a live workflow draws.
+/// The coordinator now installs the same label on the overall bar, where the
+/// tally is empty, so the two rows agree on what the label means.
+/// `progress-output.instructions.md` still describes per-step child bars on
+/// this screen, and that description is what this row is checking.
 ///
 /// The grid keeps its ANSI colour escapes, the same bytes the terminal received.
 /// Pass the result through [`strip_ansi_escapes`](crate::support::strip_ansi_escapes)
@@ -236,6 +289,7 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     // The first slot takes step `s3`, and the per-step bar opens on it with a
     // tally partway through its three outputs.
     dispatch(&workers[0], "default", "s3", "ffmpeg");
+    dispatch_overall(&overall, "s3", "ffmpeg");
     // The coordinator registers no per-step bar, so there is no production seed
     // to copy for this one. It takes the worker seed: the slot follows what a
     // bar draws, so a longer seed here would buy nothing.
@@ -255,28 +309,33 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
 
     // The second slot takes step `s4`.
     dispatch(&workers[1], "default", "s4", "yt-dlp");
+    dispatch_overall(&overall, "s4", "yt-dlp");
     screen.tick();
     clock.advance(Duration::from_secs(2));
 
     // The third slot's step fails while the step still allows a retry, so the
     // slot takes the `W` marker.
     dispatch(&workers[2], "default", "s5", "import");
+    dispatch_overall(&overall, "s5", "import");
     screen.tick();
     clock.advance(Duration::from_secs(4));
     WorkerSlot::PendingRetry.apply(&workers[2]);
     workers[2].advance(1);
     workers[2].finish_warning();
+    release_overall(&overall);
     overall.advance(1);
     screen.tick();
     clock.advance(Duration::from_secs(1));
 
     // The fourth slot's step fails with no retry left, so the slot takes `F`.
     dispatch(&workers[3], "default", "s6", "export");
+    dispatch_overall(&overall, "s6", "export");
     screen.tick();
     clock.advance(Duration::from_secs(5));
     WorkerSlot::Failed.apply(&workers[3]);
     workers[3].advance(1);
     workers[3].finish_warning();
+    release_overall(&overall);
     overall.advance(1);
     screen.tick();
     clock.advance(Duration::from_secs(1));
@@ -284,11 +343,13 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     // The fifth slot's step succeeds, and the slot drops its identifiers and
     // goes back to `[idle]`.
     dispatch(&workers[4], "default", "s2", "archive");
+    dispatch_overall(&overall, "s2", "archive");
     screen.tick();
     clock.advance(Duration::from_secs(6));
     WorkerSlot::Idle.apply(&workers[4]);
     workers[4].advance(1);
     workers[4].finish_success();
+    release_overall(&overall);
     overall.advance(1);
     screen.tick();
 
@@ -374,11 +435,11 @@ fn render_dense(config: ScreenConfig) -> String {
     // so no slot has gone back to idle and no slot has failed.
     for (index, (step_id, tool)) in LEVEL_STEPS.iter().enumerate() {
         dispatch(&workers[index], "default", step_id, tool);
+        dispatch_overall(&overall, step_id, tool);
         overall.advance(1);
         screen.tick();
         clock.advance(Duration::from_secs(1 + index as u64));
     }
-
     overall.finish_success();
     screen.join();
     drop(terminal);
@@ -444,27 +505,32 @@ fn render_states(config: ScreenConfig) -> String {
     // The first slot runs a step whose tool name is wider than the prefix slot's
     // ceiling, so its parenthesised name shortens from the front at every width.
     dispatch(&workers[0], "default", "s7", "transcode-lossless-to-flac");
+    dispatch_overall(&overall, "s7", "transcode-lossless-to-flac");
     screen.tick();
     clock.advance(Duration::from_secs(3));
 
     // The second slot's step failed and the coordinator will retry it.
     dispatch(&workers[1], "default", "s8", "sd");
+    dispatch_overall(&overall, "s8", "sd");
     screen.tick();
     clock.advance(Duration::from_secs(2));
     WorkerSlot::PendingRetry.apply(&workers[1]);
     workers[1].advance(1);
     workers[1].finish_warning();
+    release_overall(&overall);
     overall.advance(1);
     screen.tick();
     clock.advance(Duration::from_secs(1));
 
     // The third slot's step failed with no retry left.
     dispatch(&workers[2], "default", "s9", "import");
+    dispatch_overall(&overall, "s9", "import");
     screen.tick();
     clock.advance(Duration::from_secs(2));
     WorkerSlot::Failed.apply(&workers[2]);
     workers[2].advance(1);
     workers[2].finish_warning();
+    release_overall(&overall);
     overall.advance(1);
     screen.tick();
     clock.advance(Duration::from_secs(1));

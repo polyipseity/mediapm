@@ -123,7 +123,7 @@ pub struct MaterializationBarLabel {
     pub entry_path: String,
     /// Basename of hierarchy entry, e.g. `"song.mkv"`. A trailing
     /// square-bracket group is taken out into the label's own segment by
-    /// [`split_entry_id`], so the elastic name carries no brackets for a clip
+    /// `split_entry_id`, so the elastic name carries no brackets for a clip
     /// to cut in half.
     pub entry_name: String,
     /// Extracted file basename (sub-bars only), e.g. `"cover.jpg"`.

@@ -4,4 +4,4 @@
 ⠏                       [F] [idle]
 ⠏                           [idle]
 ⠼          default s3 (ffmpeg) 7.1 1/3
-⠏                     [W] workflow  4/12
+⠏                          default 4/12

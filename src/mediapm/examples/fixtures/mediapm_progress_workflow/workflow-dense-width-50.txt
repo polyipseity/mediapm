@@ -6,4 +6,4 @@
 ⠧           default s6 (yt-dlp) [active]
 ⠦               default s7 (sd) [active]
 ⠦     default s8 (media-tagger) [active]
-⠏                               workflow  8/24
+⠏              default s8 (media-tagger) 8/24
