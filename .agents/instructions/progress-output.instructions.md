@@ -25,7 +25,7 @@ FRAME_OVERHEAD_COLUMNS = 4 (spinner glyph plus the three spaces between the four
 MIN_BAR_FILL = 4           (floor held back under the fill, and the width at which a frame stops drawing one)
 ```
 
-`max_prefix_width(cols)` (`src/mediapm-utils/src/progress/inner/components.rs:595`) and `max_suffix_width(cols)` (`:601`) are `const fn` capping those two ceilings at the terminal width, so neither reserves more than the line holds. `recompute_layout` (`renderer.rs:1052`) then spends what is left of `cols`, in two steps:
+`max_prefix_width(cols)` (`src/mediapm-utils/src/progress/inner/components.rs:595`) and `max_suffix_width(cols)` (`:601`) are `const fn` capping those two ceilings at the terminal width, so neither reserves more than the line holds. `recompute_layout` (`renderer.rs:1131`) then spends what is left of `cols`, in two steps:
 
 ```text
 reserved = cols - (FRAME_OVERHEAD_COLUMNS + MIN_BAR_FILL)
@@ -48,7 +48,7 @@ On a frame with no bar, the timing is the first thing the suffix gives up, becau
 
 ## Two layout facts to know before changing a label
 
-**The slot is measured from what a bar draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` turns the seed into built-in prefix components at `src/mediapm-utils/src/progress/inner/renderer.rs:178`, and `snap.prefix` is their render, which is the right width to measure for a bar that draws them. A bar with a `BarLabelTruncation` installed draws something else, so `recompute_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`renderer.rs:936`). `snap.prefix` is the wrong width for such a bar, because the seeds are short by design and `idle [wf]` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:343`). A client label may be longer or shorter than the string its bar was created with, so the measurement has to follow the label.
+**The slot is measured from what a bar draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` turns the seed into built-in prefix components at `src/mediapm-utils/src/progress/inner/renderer.rs:238`, and `snap.prefix` is their render, which is the right width to measure for a bar that draws them. A bar with a `BarLabelTruncation` installed draws something else, so `recompute_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`renderer.rs:936`). `snap.prefix` is the wrong width for such a bar, because the seeds are short by design and `idle` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:447`). A client label may be longer or shorter than the string its bar was created with, so the measurement has to follow the label.
 
 **The budget is the terminal's, and the ceiling only trims it.** The slot is what is left after the spinner, the separators and the suffix, capped at `MAX_PREFIX_WIDTH`, and the fill takes what neither label wants, down to a floor of `MIN_BAR_FILL` columns. Narrowing the terminal shrinks the fill first and takes columns from the label one ranked field at a time, so what changes across widths is which field survives, not how much of the line the labels occupy.
 
@@ -122,15 +122,6 @@ All status-list suffixes use the **number-first** format: `{n} {word}`, comma-jo
 | `Warning` | any | `33` | yellow |
 | `Success` | any | `32` | green |
 
-### ANSI overhead in truncation
-
-`sync_snapshot_to_bar` subtracts an ANSI overhead from `prefix_w` before calling either the client-truncation trait or the built-in `semantic_truncate_prefix`/`render_prefix_components` path.
-
-- **Client-truncated bars** (when `BarLabelTruncation` is installed via `set_truncation`): always **4 bytes**, since client strings carry no colored markers and only the ANSI reset is needed. The renderer prepends `\x1b[0m` to the client-truncated prefix string.
-- **Built-in bars** (`PrefixComponents` path): **13 bytes** for `Failed`/`Warning` (reset + color escape around marker); **4 bytes** for all other states.
-
-`recompute_layout` uses the same overhead logic to compute the available prefix width before layout.
-
 ## Truncation dispatch
 
 `sync_snapshot_to_bar` (in `renderer.rs`) is the single push point from `SharedState` → indicatif. It determines whether client-defined truncation (`BarLabelTruncation` via `set_truncation`) or built-in truncation (`PrefixComponents` via `set_prefix_components`) applies:
@@ -152,25 +143,26 @@ The tick loop and attach operation are designed to minimize visible flicker:
 
 All three structs implement [`BarLabelTruncation`] (defined in `src/mediapm-utils/src/progress/truncation.rs`) and are rendered via the client-truncation path in `sync_snapshot_to_bar`. The renderer prepends `\x1b[0m` (4-byte ANSI reset) to all client-truncated prefixes; no colored markers are embedded in the truncated string.
 
-Only two of the three are installed by production code: the conductor coordinator installs `WorkerBarLabel`, the mediapm materializer installs `MaterializationBarLabel`, and `StepBarLabel` has no production caller. It is exercised by `mediapm_progress_workflow` and by `src/mediapm-conductor/tests/int/progress_labels.rs`, so the type is supported and tested while a live workflow draws no such bar.
+All three are installed by production code: the conductor coordinator puts `WorkerBarLabel` on each worker slot and `StepBarLabel` on the pinned overall row, and the mediapm materializer installs `MaterializationBarLabel`.
 
-Fitting uses `fit_segments` (shared from `mediapm_utils::progress`). Segments are supplied most important first and the list is walked from the tail, so the **last** segment is the first to yield. Under width pressure, elastic segments are shortened from the front and keep their informative tail, so a path held as a single segment keeps its filename and its immediate parent whenever the cut lands on a `/`; once no segment can shrink further, whole segments drop from the tail until the remainder fits. No segment is ever cut inside a word: a segment is shown whole, shortened from the front to a whole word or a whole bracketed group, or absent. Nothing marks the cut, so a shortened segment is indistinguishable from one that was always that short. What it is not is a partial word: the tail always begins at a boundary.
+Fitting uses `fit_segments` (shared from `mediapm_utils::progress`). Segments are supplied most important first and the list is walked from the tail, so the **last** segment is the first to yield. Under width pressure, elastic segments are shortened from the front, keeping the tail of the text, and once no segment can shrink further whole segments drop from the tail until the remainder fits. The clip is blind, so a tail may begin mid-word and a truncated path reads `he Wall`. Snapping to the next word or slash used to prevent that and cost monotonicity instead: two widths inside one word could render the same length, or go backwards. The clip came back, and `rendered_length_is_monotone_in_width` pins it.
 
-**Segment order alone determines the outcome.** `fit_segments` drops from the tail unconditionally, so a field survives by its position in the list. When designing a new label, rank the fields and mark the shrink behaviour (`Shrink::Keep` for whole, `Shrink::Front` for elastic).
+Brackets are decoration on the segment (`brackets: Option<Brackets>`) rather than part of its text, and they are applied after fitting, to a segment that came through whole and to no other. A clipped segment gives them up, which is why a shortened row never shows a `)` whose `(` was cut away. Nothing marks a cut, so a shortened segment is indistinguishable from one that was always that short.
+
+**Segment order alone determines the outcome.** `fit_segments` drops from the tail unconditionally, so a field survives by its position in the list. When designing a new label, rank the fields and mark the shrink behaviour (`Shrink::Keep` for whole, `Shrink::Front` where the tail is the informative end, `Shrink::Head` for a version, which numbers itself from the left).
 
 The per-screen orderings summarised under each struct below are a convenience, not the spec. The normative ranking, and the reasoning behind each segment's classification, live in the `prefix_segments` and `suffix_segments` bodies of `src/mediapm-conductor/src/orchestration/progress_labels.rs` (`StepBarLabel`, `WorkerBarLabel`) and `src/mediapm/src/materializer/progress_labels.rs` (`MaterializationBarLabel`). Read the code when a field's classification is in question.
 
-### Struct 1: `StepBarLabel` (conductor per-step bars, no production caller)
+### Struct 1: `StepBarLabel` (conductor overall row)
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries real-progress fields: version, completed/total, phase, workflow/step identity. A live `run_workflow` never draws one, so nothing on the workflow screen is pinned by these fields.
+Carries workflow, step and tool identity, plus a version and a tally. The coordinator builds it for the pinned overall row and fills in neither the version nor the tally: `UnifiedToolSpec` holds a builtin id such as `echo@v1` and no version, and the overall bar counts steps through its fill rather than through a tally. The workflow example is the only caller that fills a version, so it is the only screen where `Shrink::Head` has anything to cut.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
-| `version` | Tool version | `"7.1"` |
-| `completed` / `total` | Progress tally, rendered in the suffix | `"2"` / `"5"` |
-| `phase` | Workflow phase tag | `"wf"` |
+| `version` | Tool version, head-keeping. Empty in production, so no segment is rendered. | `"7.1"` |
+| `completed` / `total` | Progress tally, rendered in the suffix only when `completed` is set | `"2"` / `"5"` |
 | `status_marker` | Terminal state marker | `""` / `"F"` / `"W"` |
 | `workflow_id` | Workflow name | `"default"` |
 | `step_id` | Step identifier | `"s3"` |
@@ -180,7 +172,7 @@ Carries real-progress fields: version, completed/total, phase, workflow/step ide
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `workflow_id`, `step_id`, `tool`, `activity`, so the activity marker trails and the tool name is the only elastic segment. This is the label a live workflow installs: the coordinator creates one bar per pool member at `src/mediapm-conductor/src/orchestration/coordinator.rs:340-353` and re-labels each one through `set_truncation` on every dispatch and every step outcome.
+Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `workflow_id`, `step_id`, `tool`, `activity`, so the activity marker trails and the tool name is the only elastic segment. This is the label the coordinator creates a bar for, one per pool member (`src/mediapm-conductor/src/orchestration/coordinator.rs:447`), and re-labels through `set_truncation` on every dispatch and every step outcome.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
@@ -202,7 +194,7 @@ Carries file-path identity and phase. No version, no count/total, no workflow/st
 | `entry_path` | Directory portion of hierarchy path | `"Music/Artist/Album"` |
 | `entry_name` | Basename of hierarchy entry | `"song.mkv"` |
 | `file_name` | Extracted file basename (sub-bars only) | `"cover.jpg"` |
-| `phase` | Materialization phase tag | `"stg"` / `"vrf"` / `"cmt"` / `"wrt"` / `"mat"` |
+| `phase` | Phase this row is on, as `Option<MaterializationPhase>`; absent renders no tag | `Some(Staging)` |
 
 **Suffix:** the auto-derived timing, in the same order `WorkerBarLabel` uses (`src/mediapm/src/materializer/progress_labels.rs:109`). `truncate_suffix` fits `elapsed`, `rate` and `eta` through `fit_segments` and has to read them out of the merged `SuffixComponents` to do it: the client path replaces a bar's suffix with what this method returns rather than adding to it, so a label that returns an empty string takes elapsed, rate and eta off the screen rather than narrowing them.
 
@@ -238,11 +230,11 @@ Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases a
 
 ### Screen B: Workflow (`src/mediapm-conductor/src/orchestration/`)
 
-Phase `[wf]` appears in the seeds rather than in a client label: the coordinator seeds every worker slot `idle [wf]` (`coordinator.rs:343`) and the overall bar `workflow [wf]`.
+No row on this screen carries a phase tag. The seeds are `workflow` for the overall bar and `idle` for every worker slot (`coordinator.rs:447`), and both are replaced by a client label as soon as the bar has one.
 
-A live run registers worker-slot bars only. `StepBarLabel` has no production caller, so nothing on this screen shows a per-step version or tally. The bars that do exist use `WorkerBarLabel`, which ranks `status_marker`, `workflow_id`, `step_id`, `tool`, `activity` and leaves `tool` the only elastic segment, so a running row reads `default s3 (ffmpeg) [active]` wherever the terminal has room for it. Position is priority and `fit_segments` walks from the tail, so a narrow row gives up the `[active]` tag and then the tool name and keeps the identifiers, which is the order tool-sync already yields its phase tag in. The seed does not cap the slot: the label is measured from what the row draws, so a row keeps its names at widths where the nine-column seed would have clipped them.
+The overall row uses `StepBarLabel`, re-installed at each dispatch and at each step outcome, so it names what is running: `default s3 (ffmpeg)`. The conductor carries no tool version, so the `version` field is empty there and its segment is dropped. Worker slots use `WorkerBarLabel`, which ranks `status_marker`, `workflow_id`, `step_id`, `tool`, `activity` and leaves `tool` the only elastic segment, so a running slot reads `default s5 (echo) [active]` wherever the terminal has room for it. `fit_segments` walks from the tail, so a narrow row gives up the `[active]` tag and then the tool name and keeps the identifiers. The seed does not cap the slot: the label is measured from what the row draws, so a row keeps its names at widths where the four-column seed would have clipped them.
 
-Worker-slot states (`worker_slot_label` in `coordinator.rs:195`):
+Worker-slot states (`worker_slot_label` in `coordinator.rs:200`):
 
 | State | `workflow_id` | `step_id` | `tool` | `activity` | `status_marker` |
 |-------|---------------|-----------|--------|------------|------------------|
@@ -259,13 +251,9 @@ Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec
 
 Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`. Prefix segments are ordered `status_marker`, `entry_name`, `entry_path`, `file_name`, `phase`, so the phase tag trails the way it does on tool-sync and is the first whole segment a narrow row gives up, both halves of the path are elastic and shorten from the head, and columns come back in the order `entry_path` shrinks, then `entry_name` shrinks, then whole segments drop from the tail: `phase`, `file_name`, and the path halves after them. `entry_name` is elastic rather than kept whole because a name kept whole is a name that vanishes once nothing else can shrink, and its tail still carries the extension and the bracketed media id that separates one entry from another.
 
-Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-extracted-file sub-bar inside a ZIP folder variant). See "Materialization phase tags" below for what each phase does.
+The phase is a `MaterializationPhase` enum, not a string. `HierarchyEntryKind::phases()` declares what each kind walks, and the match on the enum is exhaustive, so an arm that forgot to declare a phase it runs is a compile error: `Media` walks `[stg]`, `[vrf]` and `[cmt]`, while `MediaFolder` and `Playlist` declare `[stg]` and nothing more, which is all their arms do. A folder row therefore reads `[stg]` for its whole life, and its tag says nothing about how far it got. See "Materialization phase tags" below for what each phase does.
 
-Only the media entry walks the phase list:
-
-- **The `[stg]` → `[vrf]` → `[cmt]` transition runs only for `HierarchyEntryKind::Media`.** The per-entry bar is created with phase `stg` for every entry kind (`src/mediapm/src/materializer/mod.rs:396-403`), and only the `Media` arm calls `set_truncation` again, at `mod.rs:429-448`. A `MediaFolder` or `Playlist` entry shows `[stg]` for its whole run.
-
-A warning or a failure carries its marker in the text as well as in the bar colour. `mark_entry_bar_finished` (`src/mediapm/src/materializer/mod.rs:383`) re-installs the bar's label with `status_marker` set to `W` or `F` immediately before `finish_warning` or `finish_error` (`mod.rs:557`, `:592` and `:609`), so `[W]` and `[F]` are readable on the row itself. A row also carries the timing the renderer derives for it, for the reason given under `MaterializationBarLabel` above, except on a frame that has dropped its bar where the timing gives way to the label unless the row would then have nothing at all.
+A warning or a failure carries its marker in the text as well as in the bar colour. `EntryPhaseBar::finish` (`src/mediapm/src/materializer/mod.rs`) re-installs the row's current phase with `status_marker` set to `W` or `F` immediately before `finish_warning` or `finish_error`, so `[W]` and `[F]` are readable on the row itself and a row that stopped part-way through a multi-phase entry reports where. A row also carries the timing the renderer derives for it, for the reason given under `MaterializationBarLabel` above, except on a frame that has dropped its bar where the timing gives way to the label unless the row would then have nothing at all.
 
 ### Materialization phase tags
 
@@ -277,9 +265,8 @@ The tags cost three columns each in the prefix slot, which is why the full word 
 | `vrf` | verify | checking staged bytes before committing |
 | `cmt` | commit | writing into the library |
 | `wrt` | write | one file inside a folder variant |
-| `mat` | materializing | the overall bar for this screen |
 
-`stg`, `vrf` and `cmt` are the three phases one media entry walks. `wrt` labels a sub-bar for a single extracted file inside a folder variant, and `mat` labels the overall bar.
+`stg`, `vrf` and `cmt` are the three phases a media entry walks, and `wrt` labels a sub-bar for a single extracted file inside a folder variant. No overall bar on any screen carries a tag: the three seeds are `workflow`, `idle` and `materializing`.
 
 ## Post-finish result messages
 
@@ -354,7 +341,11 @@ The library (`MediaPmService::sync_library_with_tag_update_checks_and_observer`)
 
 Do not paste a terminal frame into this file. Screen A is `mediapm_progress_tool_sync`, screen B is `mediapm_progress_workflow`, and screen C is `mediapm_progress_materialize`. Run one with `--width N` to see a frame at that width, or read the transcripts under `src/mediapm/examples/fixtures/`. The transcripts are generated output and must not be edited by hand, because a hand-edited fixture no longer proves that the renderer draws what the code says it draws. Children render above the overall bar: child bars first, overall bar last.
 
-Every example takes `--width` and `--height`; their defaults and the range the harness accepts are in `src/mediapm/examples/support/mod.rs`. Regenerate a transcript by running the example at that width and redirecting stdout. The directory listing is the set of widths, since each file is named for the width it was captured at and each screen's test reads the widths back out of those names. A file in one of those directories that is not a transcript is a test failure, not something to leave lying around.
+Every example takes `--scenario`, `--width` and `--height`. A transcript is named `<stem>-<scenario>-width-<N>.txt`, and the three scenarios are `baseline`, `dense` and `states`. A name with no scenario segment is the width-only shape these files carried before the axis existed and reads as `baseline`; a segment naming no scenario is an error, because a typo there would quietly drop a scenario's coverage. `--height` is only for drawing a screen somewhere other than the height its own bar count asks for.
+
+Height follows from the scenario: `Scenario::height()` is `bars + 1`. The renderer draws one line per bar, and the newline that commits the frame scrolls the top row away once the frame fills the terminal, so the frame is given a row it does not draw. That one row is exactly enough at every band size from 4 to 255 bars.
+
+Regenerate a transcript by running the example with its scenario and width and redirecting stdout. The directory listing is the set of scenarios and widths, since each file is named for both and each screen's test reads both back out of those names. A file in one of those directories that is not a transcript is a test failure, not something to leave lying around.
 
 Each example's test walks its own fixture directory and compares what the screen renders against each transcript, so a layout change fails the suite before anyone reaches for a transcript by hand.
 
@@ -412,7 +403,7 @@ Every CLI command handler follows a consistent shape: perform the operation, pri
 | Module | Crate | Feature | Purpose |
 |---|---|---|---|
 | `mediapm_utils::report` | `mediapm-utils` | `report` | `StatusIcon`, `print_result`, `format_result_line`, `print_warning`, `print_hint`, `print_error`, `print_heading`, `print_status_report`, `format_duration` |
-| `mediapm_utils::progress` | `mediapm-utils` | `progress` | `ProgressScreen`, `ProgressBarHandle`, `ProgressTerminal`, `ProgressScreenApi`, `ProgressBarApi`, `BarLabelTruncation`, `fit_segments`, `Segment`, `Shrink`, `front_tail` |
+| `mediapm_utils::progress` | `mediapm-utils` | `progress` | `ProgressScreen`, `ProgressBarHandle`, `ProgressTerminal`, `ProgressScreenApi`, `ProgressBarApi`, `BarLabelTruncation`, `fit_segments`, `Segment`, `Shrink`, `Brackets`, `front_tail` |
 | `mediapm_utils::progress` (always) | `mediapm-utils` | — | `DownloadProgressSnapshot`, `ProgressCallback` |
 | `mediapm::output::progress` | `mediapm` | — | `ProgressScreen`, `ProgressBarHandle`, `ProgressBarApi`, `ProgressScreenApi`, `ProgressTerminal` re-exports |
 | `mediapm::output::report` | `mediapm` | — | Re-exports from `mediapm_utils::report` |
