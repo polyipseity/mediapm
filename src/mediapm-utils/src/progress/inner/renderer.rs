@@ -684,9 +684,9 @@ pub struct ProgressRenderer {
     /// is the width a frame's labels leave the bar at every terminal narrower
     /// than the one where the labels stop overflowing the line. A fill that
     /// size carries a fixed quarter-resolution fraction the count beside it
-    /// already states, and it is paid for out of a label being cut to `…`, so
-    /// below that point the frame drops it and the columns go to the label and
-    /// the count. See [`Self::recompute_layout`].
+    /// already states, and it is paid for out of a label clipped down to its
+    /// tail, so below that point the frame drops it and the columns go to the
+    /// label and the count. See [`Self::recompute_layout`].
     draw_fill: Cell<bool>,
 }
 

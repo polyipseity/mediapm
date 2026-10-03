@@ -511,7 +511,7 @@ fn prefix_slot_is_not_pinned_to_the_seed_label() {
 /// stop overflowing the line, every width from 8 up draws exactly four at every
 /// width: the budget pays the label and the suffix first, so the fill cannot
 /// grow. Four cells say nothing the count beside them does not, and they are
-/// paid for out of a label that is being cut to `…`. Measured across the three
+/// paid for out of a label clipped down to its tail. Measured across the three
 /// example screens, that point is width 59 for tool sync and materialization and
 /// width 66 for the workflow screen, whose labels are seven columns wider.
 ///

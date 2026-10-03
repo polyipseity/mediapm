@@ -49,13 +49,6 @@ pub trait BarLabelTruncation: Send + Sync {
     fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String;
 }
 
-/// Minimum visible columns retained for a front-ellipsised segment.
-///
-/// One column of tail plus the leading ellipsis. A segment already this
-/// short yields no further width and is left alone.
-#[cfg(feature = "progress")]
-pub const MIN_TAIL: usize = 2;
-
 /// How a segment yields width when the bar line does not fit.
 ///
 /// A segment is either shortened (elastic) or surrendered whole (keep).
@@ -66,12 +59,55 @@ pub const MIN_TAIL: usize = 2;
 pub enum Shrink {
     /// Never shortened. The segment is dropped whole when it cannot fit.
     Keep,
-    /// Shortened from the front, keeping the informative tail: `…/tail`.
+    /// Shortened from the front, keeping the informative tail, so
+    /// `Music/Artist/Album/song.mkv` at 15 columns reads `Album/song.mkv`.
     ///
-    /// Use for values with a meaningful end — paths, tool names, and free
-    /// user text. Never for values that are meaningless when clipped:
-    /// `[wf]` is not `…f]`.
-    FrontEllipsis,
+    /// Use for values with a meaningful end: paths, tool names, and free
+    /// user text. Never for a fixed marker, where the cut takes the brackets
+    /// that say what the piece is: `[wf]` clipped to `wf]` or `f]` reads as
+    /// loose text instead of a phase tag, and no amount of fitting puts the
+    /// brackets back. A `Keep` marker is dropped whole or kept whole.
+    Front,
+}
+
+/// Characters whose following character a clipped tail may start at.
+///
+/// A tail is the right-hand end of a value, so the only place worth cutting is
+/// just after one of these. Each one ends a piece of the value, so cutting
+/// after it leaves a piece that stands on its own.
+///
+/// * space and `/` end a word and a path element, so `Children` survives where
+///   `hildren` does not.
+/// * `(` and `[` open a bracketed group the label conventions write as one
+///   piece, so `(ffmpeg)` and `[youtube.dQw4w9WgXcQ]` survive whole.
+/// * `-` ends a word of a hyphenated name, the same way a space ends a word
+///   of a phrase, so `builtin-archive` survives where `archive)` does not say
+///   which tool it came from.
+///
+/// Two characters are deliberately absent. A closing bracket, because
+/// `(ffmpeg)` cut to two columns keeps `g)` whichever way the cut is made: the
+/// bracket that opened the name is the boundary the cut uses. A dot, because
+/// it is the one boundary that lands inside a word rather than between words,
+/// so a filename cut back to it comes back as `mkv`.
+#[cfg(feature = "progress")]
+const SEGMENT_BOUNDARIES: [char; 5] = [' ', '/', '(', '[', '-'];
+
+/// The boundaries that join two pieces of a value rather than opening one.
+///
+/// A tail that begins on one of these is a cut that landed *on* the joiner
+/// instead of after it, and it reads as noise on the row: `[cmt] - Telepathy.flac`
+/// carries a dash that names nothing, and a tail of nothing but spaces is the
+/// double space a row used to show between two segments. The bracketing
+/// boundaries are absent, because a tail that opens with `[` or `(` opens a
+/// complete group and reads as one.
+#[cfg(feature = "progress")]
+const JOINING_BOUNDARIES: [char; 3] = [' ', '/', '-'];
+
+/// Whether `c` ends a piece of a label value, so that a tail cut after it
+/// names something on its own.
+#[cfg(feature = "progress")]
+fn is_boundary(c: char) -> bool {
+    SEGMENT_BOUNDARIES.contains(&c)
 }
 
 /// One ordered piece of a bar label.
@@ -99,17 +135,34 @@ impl Segment {
     /// An elastic piece: shortened from the front before anything is dropped.
     #[must_use]
     pub fn elastic(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::FrontEllipsis }
+        Self { text: text.into(), shrink: Shrink::Front }
     }
 }
 
-/// Shorten `text` to `target` visible columns, keeping the tail.
+/// Shorten `text` to at most `target` visible columns, keeping the tail.
 ///
-/// Returns `text` unchanged when it already fits. A `target` of `0` yields
-/// an empty string; `1` yields a bare ellipsis.
+/// The tail is the last `target` columns, and the cut moves left to just after
+/// the first boundary character in it, so what survives is a whole word or a
+/// whole bracketed group rather than a piece of one. The first boundary is
+/// the right one to cut after because it keeps the most text: `he Wall` becomes
+/// `Wall` rather than `W`, and `/Album/song.mkv` becomes `Album/song.mkv`
+/// rather than `song.mkv`. A tail with no boundary left in it names nothing,
+/// and this returns the empty string for it: the caller drops the segment
+/// whole instead of rendering `g)` or `n`.
+///
+/// Nothing marks the cut, so the tail itself is all the reader gets:
+/// `front_tail("(ffmpeg)", 7)` is `ffmpeg)`,
+/// `front_tail("Music/Pink Floyd/The Wall", 7)` is `Wall`, and
+/// `front_tail("Music/Has the Right to Children", 6)` is empty. A tail that
+/// would begin on a space, a `/`, or a `-` starts after it instead, so
+/// `front_tail("01 - Telepathy.flac", 16)` is `Telepathy.flac` and not
+/// `- Telepathy.flac`.
+///
+/// Returns `text` unchanged when it already fits, and an empty string when
+/// `target` is `0`.
 #[cfg(feature = "progress")]
 #[must_use]
-pub fn front_ellipsis(text: &str, target: usize) -> String {
+pub fn front_tail(text: &str, target: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= target {
         return text.to_string();
@@ -117,11 +170,24 @@ pub fn front_ellipsis(text: &str, target: usize) -> String {
     if target == 0 {
         return String::new();
     }
-    if target == 1 {
-        return "…".to_string();
+    let mut start = chars.len() - target;
+    // A tail that already begins at a boundary is left alone, so `ffmpeg)`
+    // and `Astley` are not trimmed a second time by their own brackets and
+    // separators. Otherwise the cut takes what follows the first boundary
+    // inside the tail, which is the empty string when there is none.
+    if start > 0 && !is_boundary(chars[start - 1]) {
+        match chars[start..].iter().position(|c| is_boundary(*c)) {
+            Some(offset) => start += offset + 1,
+            None => return String::new(),
+        }
     }
-    let tail: String = chars[chars.len() - (target - 1)..].iter().collect();
-    format!("…{tail}")
+    // A tail may not begin on a joiner: the row shows one space between
+    // segments, so a tail that opens with another renders as a double space,
+    // and a tail of `-` renders as a dash with nothing after it.
+    while start < chars.len() && JOINING_BOUNDARIES.contains(&chars[start]) {
+        start += 1;
+    }
+    chars[start..].iter().collect()
 }
 
 /// Join `segments` with single spaces, using each `text` verbatim.
@@ -140,23 +206,29 @@ fn visible_len(text: &str) -> usize {
 ///
 /// `segments` is ordered most important first and is walked from the tail.
 ///
-/// * **Phase A (shrink)** — each [`Shrink::FrontEllipsis`] segment, from the
+/// * **Phase A (shrink)**: each [`Shrink::Front`] segment, from the
 ///   tail forward, is shortened by the overage before the next one yields
-///   anything. The shortening stops at [`MIN_TAIL`], so a segment whose
-///   overage exceeds its own length above that floor is shortened by less
-///   than the overage, and the remainder can still be too wide when Phase A
-///   ends.
-/// * **Phase B (drop)** — once no segment can shrink further, whole segments
+///   anything. The shortening stops at the first boundary in the segment's own
+///   tail, so a segment whose overage reaches past that boundary is shortened
+///   by less than the overage, and the remainder can still be too wide when
+///   Phase A ends. A segment with no boundary left in its tail yields nothing
+///   at all: a tail that names nothing is worse than no segment, because
+///   `render` joins with single spaces, so an empty piece would leave two
+///   spaces where the text was. Such a segment is dropped on the spot rather
+///   than left for Phase B: it is about to give its columns back, and a
+///   segment still holding them would deny the segments ahead of it the
+///   overage they need to yield at all.
+/// * **Phase B (drop)**: once no segment can shrink further, whole segments
 ///   drop from the tail until the remainder fits or one segment is left. The
-///   leading segment is never popped, so a leading head group yields
+///   leading segment is never popped here, so a leading head group yields
 ///   progressively rather than all at once: a step bar headed by
 ///   `[wf] [F] 1/4` still renders `[wf] [F]` at width 11, and only `[wf]` at
 ///   width 7.
 ///
-/// The ladder **never shaves**: no segment is ever cut at a character
-/// boundary. A segment is shown whole, shortened from the front, or absent —
-/// never a fragment. This is the property that separates it from the prefix
-/// cut it replaces.
+/// The ladder **never shaves**: no segment is ever cut inside a word. A
+/// segment is shown whole, shortened from the front to a tail that names
+/// something on its own, or absent. This is the property that separates it
+/// from the prefix cut it replaces.
 ///
 /// # Examples
 ///
@@ -167,7 +239,10 @@ fn visible_len(text: &str) -> usize {
 ///     Segment::elastic("Music/Artist/Album/song.mkv"),
 /// ];
 /// assert_eq!(fit_segments(&segs, 40), "[wf] Music/Artist/Album/song.mkv");
-/// assert_eq!(fit_segments(&segs, 20), "[wf] …Album/song.mkv");
+/// assert_eq!(fit_segments(&segs, 20), "[wf] Album/song.mkv");
+/// // At 12 columns the path's own tail holds no boundary, so the path is
+/// // dropped whole rather than rendered as a fragment.
+/// assert_eq!(fit_segments(&segs, 12), "[wf]");
 /// ```
 ///
 /// # Degenerate widths
@@ -190,21 +265,32 @@ pub fn fit_segments(segments: &[Segment], max_width: usize) -> String {
 
     let mut kept: Vec<Segment> = segments.to_vec();
 
-    // Phase A — elastic segments yield width from the front, tail first.
-    for idx in (0..kept.len()).rev() {
+    // Phase A: elastic segments yield width from the front, tail first. A
+    // segment whose tail has no boundary to be cut at is dropped here rather
+    // than in Phase B: it is about to hand its columns back, and while it
+    // still holds them the segments ahead of it see an overage they cannot
+    // answer either.
+    let mut idx = kept.len();
+    while idx > 0 {
+        idx -= 1;
         if visible_len(&render(&kept)) <= max_width {
             break;
         }
-        if kept[idx].shrink != Shrink::FrontEllipsis {
+        if kept[idx].shrink != Shrink::Front {
             continue;
         }
         let over = visible_len(&render(&kept)) - max_width;
         let current = kept[idx].text.chars().count();
-        let target = current.saturating_sub(over).max(MIN_TAIL);
+        let target = current.saturating_sub(over);
         if target >= current {
             continue;
         }
-        kept[idx].text = front_ellipsis(&kept[idx].text, target);
+        let clipped = front_tail(&kept[idx].text, target);
+        if clipped.is_empty() {
+            kept.remove(idx);
+            continue;
+        }
+        kept[idx].text = clipped;
     }
 
     // Phase B — drop whole segments from the tail until the remainder fits

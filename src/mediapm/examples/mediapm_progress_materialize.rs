@@ -147,13 +147,19 @@ mod tests {
 
     /// The frame a folder entry wider than the client budget produces.
     ///
-    /// The folder is the online demo's. Its `entry_name` is 59 columns against
+    /// The folder is the online demo's. Its `entry_name` is 58 columns against
     /// the slot the terminal leaves, and `entry_name` is elastic, so the name
-    /// shortens from the front and rows two and three keep
-    /// `[youtube.dQw4w9WgXcQ]`, the part that names the video. The old
+    /// is cut back to a boundary and rows two and three keep
+    /// `Up [youtube.dQw4w9WgXcQ]`, the part that names the video. The old
     /// ranking made `entry_name` a `Segment::keep`, which `fit_segments`
     /// drops whole once nothing can shrink, and those two rows rendered as a
     /// bare `[stg]` and `[wrt]` with no identity at all.
+    ///
+    /// Row two shows what a cut costs when the directory behind the name can
+    /// yield no tail at all: the path is dropped, so the name takes the
+    /// overage in its place and keeps `You Up [youtube.dQw4w9WgXcQ]` rather
+    /// than the whole 58 columns. Row three keeps `links`, the extracted
+    /// member the sub-bar is writing.
     ///
     /// The other rows are unchanged from the wide frame the transcripts carry,
     /// because their own labels already fill the slot. The slot is what the
@@ -177,11 +183,11 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "⠏     [cmt] 01 - Telepathy.flac … Children ██████████████████████████ 6s\n",
-                "⠸     [stg] …u Up [youtube.dQw4w9WgXcQ] …s ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
-                "⠴     [wrt] …youtube.dQw4w9WgXcQ] …s links ████████░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
-                "⠇     [vrf] 01 - In the Flesh?.m4a …e Wall ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
-                "⠋                      [mat] materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m",
+                "⠏       [cmt] 01 - Telepathy.flac Children ██████████████████████████ 6s\n",
+                "⠸       [stg] You Up [youtube.dQw4w9WgXcQ] ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
+                "⠴     [wrt] Up [youtube.dQw4w9WgXcQ] links ████████░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
+                "⠇        [vrf] 01 - In the Flesh?.m4a Wall ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
+                "⠋                      [mat] materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m"
             )
         );
     }

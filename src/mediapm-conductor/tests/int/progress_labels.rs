@@ -163,10 +163,11 @@ fn step_label_shrinks_tool_before_dropping_version() {
 
 #[test]
 fn worker_label_front_ellipsises_very_long_tool_name() {
-    // A tool name longer than the budget is shortened from the front, so
-    // the leading activity marker survives and the tool's tail is kept.
-    // This is the behaviour change from the old prefix cut, which kept
-    // the head `(a-very-long-t` and discarded the whole activity marker.
+    // A tool name longer than the budget is clipped to its tail, so the
+    // leading activity marker survives and the row ends in `limit)`, the end
+    // of the tool name. This is the behaviour change from the old prefix
+    // cut, which kept the head `(a-very-long-t` and discarded the whole
+    // activity marker.
     let label = WorkerBarLabel {
         status_marker: String::new(),
         workflow_id: String::new(),
@@ -175,7 +176,7 @@ fn worker_label_front_ellipsises_very_long_tool_name() {
         activity: "active".into(),
     };
     let tight = label.truncate_prefix(15);
-    assert_eq!(tight, "[active] …imit)");
+    assert_eq!(tight, "[active] limit)");
 }
 
 #[test]
@@ -208,7 +209,7 @@ fn worker_suffix_keeps_auto_derived_timing_fields() {
 #[test]
 fn step_label_front_ellipsises_very_long_tool_name() {
     // With every head field empty the tool name is the only segment.
-    // It must be shortened from the front, keeping the tail, not cut from
+    // It must be clipped from the front, keeping the tail, not cut from
     // the front as the old implementation did.
     let label = StepBarLabel {
         status_marker: String::new(),
@@ -221,8 +222,7 @@ fn step_label_front_ellipsises_very_long_tool_name() {
         total: String::new(),
     };
     let tight = label.truncate_prefix(20);
-    assert!(tight.starts_with('…'), "not front-ellipsised: {tight:?}");
-    assert!(tight.ends_with("limit)"), "tail not preserved: {tight:?}");
+    assert_eq!(tight, "maximum-width-limit)");
     assert_eq!(tight.chars().count(), 20);
 }
 
@@ -260,7 +260,7 @@ fn step_suffix_keeps_the_leading_tally_and_timing_fields() {
 
     // Too narrow for all four. Segments yield from the tail, so the tally
     // leads the order and is the last one standing; the timing fields are
-    // surrendered whole rather than shaved, because none of them is elastic.
+    // surrendered whole rather than clipped, because none of them is elastic.
     let tight = label.truncate_suffix(10, &suffix);
     assert_eq!(tight, "3/10", "tight case must keep the leading tally whole: {tight:?}");
 }

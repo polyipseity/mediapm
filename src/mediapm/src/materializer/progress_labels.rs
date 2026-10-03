@@ -54,16 +54,17 @@ impl MaterializationBarLabel {
     ///
     /// `entry_name` and `entry_path` are both elastic, and they yield in that
     /// order because `fit_segments` shrinks from the tail: the directory
-    /// shortens to its last column first, then the basename shortens to its
-    /// last few characters. That tail is the informative end of each, since
-    /// the leading half of a path is the artist's name and the row is not
-    /// about the artist.
+    /// gives up its leading elements first, and only then does the basename
+    /// yield anything of its own. Both are cut back to a boundary, so what
+    /// survives is a whole element rather than the last few characters of one:
+    /// a directory at 16 columns reads `Rick Astley`, and the leading half of
+    /// a path is the artist's name, which the row is not about.
     ///
     /// `entry_name` is elastic rather than kept whole because a kept name is a
-    /// name that vanishes: at 36 columns the online demo's 59-column folder
-    /// name left the reader with a bare `[stg]`. Shortened, its tail still
-    /// carries the extension and the bracketed media id, which is what
-    /// separates one video from another in a list of them.
+    /// name that vanishes: at 39 columns the online demo's 58-column folder
+    /// name has a tail that carries the bracketed media id, which is what
+    /// separates one video from another in a list of them, and that tail only
+    /// exists because the elastic name is cut rather than surrendered.
     ///
     /// `file_name` ranks last. It only appears on a `[wrt]` sub-bar, where it
     /// repeats the variant name the parent row already implies, and there are
@@ -100,8 +101,8 @@ impl MaterializationBarLabel {
     /// `elapsed`, `rate`, and `eta` arrive through it, so reading them here
     /// is the only way a materialization row shows how long it has been
     /// running. They are `Segment::keep`, so a narrow suffix drops them whole
-    /// rather than shaving `0m12s` into `…2s`. Only free-form `custom` text
-    /// is elastic.
+    /// rather than clipping `0m12s` down to `2s`. Only free-form `custom`
+    /// text is elastic.
     ///
     /// The count and the total are not rendered. This label has no tally of
     /// its own to name the numbers, which is the same reason
@@ -196,8 +197,8 @@ mod tests {
         }
     }
 
-    /// The elastic path is shortened from the front so the directory tail —
-    /// the part adjacent to the filename — survives. It used to be dropped
+    /// The elastic path is clipped from the front so the directory tail,
+    /// the part adjacent to the filename, survives. It used to be dropped
     /// whole, because it ranked last.
     #[test]
     fn entry_path_is_shortened_from_the_front() {
@@ -211,16 +212,17 @@ mod tests {
         let wide = label.truncate_prefix(80);
         assert!(wide.contains("Music/Artist/Album/1977"), "wide path missing: {wide:?}");
 
-        // Tight: the path must keep its tail, never its head.
+        // Tight: the path must keep its last directory, never its head.
         let tight = label.truncate_prefix(20);
-        assert!(tight.contains('…'), "path not front-ellipsised: {tight:?}");
+        assert_eq!(tight, "[stg] song.mkv 1977");
         assert!(!tight.contains("Music/"), "path head retained instead of tail: {tight:?}");
         assert!(tight.contains("song.mkv"), "entry_name lost: {tight:?}");
     }
 
-    /// The name shortens from the front, so the extension survives, and the
-    /// path yields its columns first because it is listed after the name and
-    /// `fit_segments` shrinks from the tail.
+    /// The path yields its columns before the name yields any of its own, and
+    /// what the path yields is a whole directory rather than a fragment of
+    /// one. When the path can yield nothing at all, it is dropped and the name
+    /// yields in its place, down to its last hyphenated word.
     #[test]
     fn entry_name_shortens_from_the_front_and_the_path_yields_first() {
         let label = MaterializationBarLabel {
@@ -229,8 +231,12 @@ mod tests {
             phase: "cmt".into(),
             ..Default::default()
         };
-        assert_eq!(label.truncate_prefix(25), "[cmt] …ortant-file.mkv …s");
-        assert_eq!(label.truncate_prefix(20), "[cmt] …t-file.mkv …s");
+        // The path gives up everything above its last element and the name is
+        // untouched.
+        assert_eq!(label.truncate_prefix(40), "[cmt] important-file.mkv path/segments");
+        // Too narrow for the path at any answer it can give, so it is dropped
+        // and the name takes the overage instead.
+        assert_eq!(label.truncate_prefix(23), "[cmt] file.mkv");
     }
 
     /// A folder name wider than the budget still names itself.
@@ -241,6 +247,9 @@ mod tests {
     /// path had shrunk as far as it could, `fit_segments` dropped the name
     /// whole and the row rendered as a bare `[stg]`. See
     /// `MaterializationBarLabel` for the order that fixes it.
+    ///
+    /// What the name keeps at this width is the bracketed media id and the
+    /// words in front of it, cut back to the last space.
     #[test]
     fn an_over_long_folder_name_keeps_the_tail_of_its_name() {
         let label = MaterializationBarLabel {
@@ -249,10 +258,14 @@ mod tests {
             phase: "stg".into(),
             ..Default::default()
         };
-        let out = label.truncate_prefix(36);
+        let out = label.truncate_prefix(39);
         assert!(out.contains("[stg]"), "phase lost: {out:?}");
         assert!(out.contains("dQw4w9WgXcQ"), "the media id identifying the name was cut: {out:?}");
-        assert!(out.chars().count() <= 36, "overflowed: {out:?}");
+        assert_eq!(
+            out, "[stg] Give You Up [youtube.dQw4w9WgXcQ]",
+            "name not clipped to its tail: {out:?}"
+        );
+        assert!(out.chars().count() <= 39, "overflowed: {out:?}");
     }
 
     /// A materialization row shows the timing the renderer derives for it.
@@ -281,13 +294,13 @@ mod tests {
         assert_eq!(label.truncate_suffix(6, &suffix), "0m12s");
     }
 
-    /// `file_name` ranks below both halves of the path, so a sub-bar row
-    /// surrenders the variant name whole before it loses the directory.
+    /// `file_name` ranks last, so the variant name is the last thing a
+    /// sub-bar row gives up, after the directory and the entry name.
     ///
-    /// The old ranking put `file_name` above `entry_path`, and at 21 columns
-    /// that difference was invisible because nothing had to be dropped. The
-    /// pair of widths below straddles the point where it does, so a reordering
-    /// that moved `file_name` back up would fail the narrow one.
+    /// The pair of widths below straddles that point, so a reordering that
+    /// moved `file_name` off the tail would fail the narrow one: with the
+    /// variant name ahead of the phase tag it would be the segment left
+    /// standing.
     #[test]
     fn file_name_yields_before_the_path_on_sub_bars() {
         let label = MaterializationBarLabel {
@@ -297,7 +310,7 @@ mod tests {
             phase: "wrt".into(),
             ..Default::default()
         };
-        assert_eq!(label.truncate_prefix(21), "[wrt] …m …p cover.jpg");
-        assert_eq!(label.truncate_prefix(20), "[wrt] …m …p");
+        assert_eq!(label.truncate_prefix(15), "[wrt] cover.jpg");
+        assert_eq!(label.truncate_prefix(14), "[wrt]");
     }
 }

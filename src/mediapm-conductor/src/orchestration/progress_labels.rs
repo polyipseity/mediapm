@@ -54,11 +54,11 @@ impl StepBarLabel {
     /// version and identifiers before the phase, status marker, or tally.
     ///
     /// The version and the identifiers are `Keep` rather than `Elastic`
-    /// because shaving them destroys the only part that identifies them: a
-    /// front-shortened `[7.1]` renders as `…1]`, and a front-shortened
-    /// `default` as `…ult`. Neither names a version or a workflow. The tally
-    /// is pushed as a single `{completed}/{total}` segment, so it is atomic
-    /// by construction and never renders as a bare count.
+    /// because clipping them destroys what identifies them: `[7.1]` clipped
+    /// to `1]` and `default` clipped to `ult` both read as loose text, and
+    /// neither names a version or a workflow. The tally is pushed as a
+    /// single `{completed}/{total}` segment, so it is atomic by
+    /// construction and never renders as a bare count.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.phase.is_empty() {
@@ -133,7 +133,8 @@ impl BarLabelTruncation for StepBarLabel {
 /// Segments are ordered most important first and yield from the tail. The
 /// prefix leads with `status_marker` and `activity`, so width pressure sheds
 /// the `tool` name first, then the identifiers, before the head. The `tool`
-/// name is elastic and is shortened from the front rather than dropped whole.
+/// name is elastic and is cut back to a boundary from the front rather than
+/// dropped whole.
 /// A worker carries no workflow phase and no progress tally, so the suffix
 /// has no tally segment; the auto-derived `elapsed`, `rate`, and `eta` still
 /// render, ahead of an elastic `custom`.
@@ -163,11 +164,11 @@ impl WorkerBarLabel {
     /// The two leading segments come first, so width pressure sheds the
     /// identifiers and tool name before the status marker or activity.
     ///
-    /// The identifiers are `Keep` rather than `Elastic` because shaving them
-    /// destroys the only part that identifies them: a front-shortened
-    /// `default` renders as `…ult`, which names no workflow. The tool name is
-    /// the one elastic segment, because its parenthesised tail — the part that
-    /// names the tool — is the informative end.
+    /// The identifiers are `Keep` rather than `Elastic` because clipping
+    /// them destroys what identifies them: `default` clipped to `ult` names
+    /// no workflow. The tool name is the one elastic segment, because its
+    /// parenthesised tail is the informative end, so `(ffmpeg)` clipped to
+    /// four columns reads `mpeg)`.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.status_marker.is_empty() {

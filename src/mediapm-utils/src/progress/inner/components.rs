@@ -581,7 +581,7 @@ pub(crate) const FRAME_OVERHEAD_COLUMNS: usize = 4;
 /// labels stop overflowing the line, and grows by one cell per column above
 /// it. Four cells of `░░░░` carry a fixed quarter-resolution fraction that the
 /// count in the suffix already states, and they are paid for out of a label
-/// being cut to `…`. `ProgressRenderer::recompute_layout` drops the fill at
+/// clipped down to its tail. `ProgressRenderer::recompute_layout` drops the fill at
 /// that point and hands the columns to the label and the count instead.
 pub(crate) const MIN_BAR_FILL: usize = 4;
 

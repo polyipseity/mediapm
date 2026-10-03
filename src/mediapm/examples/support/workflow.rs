@@ -18,7 +18,7 @@
 //! Where the label gives way, measured on 2026-10-03 by rendering this screen
 //! at every width the harness accepts: 47 columns is the narrowest at which all
 //! three rows that name a tool still show that tool in full. One column
-//! narrower, the per-step row is down to the tail `…fmpeg)`, because it
+//! narrower, the per-step row is down to the tail `fmpeg)`, because it
 //! carries the version and the tally ahead of the tool and so reaches the
 //! limit first, and by 28 a running worker reads `[active]` and nothing else.
 //! Below the fill crossing the rows give up their timing to keep their label,
