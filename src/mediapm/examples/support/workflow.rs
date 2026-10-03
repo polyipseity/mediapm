@@ -10,20 +10,20 @@
 //! worker row overrides what it draws with its own [`WorkerBarLabel`]. The
 //! renderer sizes the prefix slot from what a bar will draw rather than from
 //! the seed it was constructed with (`recompute_layout`), so the seed is
-//! nine columns and the row is thirty-eight: `default s3 (ffmpeg)` next to
-//! `[active]`. Nothing here has to pick a longer seed to make room, which is
-//! the change from when the seed was the ceiling and an active row read
-//! `[active]` and nothing else.
+//! nine columns and the row is thirty-eight: `default s3 (ffmpeg) [active]`.
+//! Nothing here has to pick a longer seed to make room, which is the change
+//! from when the seed was the ceiling and an active row read `[active]` and
+//! nothing else.
 //!
 //! Where the label gives way, measured on 2026-10-03 by rendering this screen
-//! at every width the harness accepts: 47 columns is the narrowest at which all
+//! at every width the harness accepts: 43 columns is the narrowest at which all
 //! three rows that name a tool still show that tool in full. One column
-//! narrower, the per-step row is down to the tail `fmpeg)`, because it
-//! carries the version and the tally ahead of the tool and so reaches the
-//! limit first, and by 28 a running worker reads `[active]` and nothing else.
-//! Below the fill crossing the rows give up their timing to keep their label,
-//! and a row whose label does not fit either keeps the timing instead, so the
-//! active workers read `⠙  22s` on a line too narrow for `[active]` itself.
+//! narrower, the per-step row is down to the tail `ffmpeg)`, because it carries
+//! the version and the phase tag as well and is the longer of the two rows, and
+//! by 28 a running worker reads `default s3` and nothing else. Below the fill
+//! crossing the rows give up their timing to keep their label, and a row whose
+//! label does not fit either keeps the timing instead, so the active workers
+//! read `⠙  22s` on a line too narrow for `default s3 [active]`.
 //! Those are facts about the seeds quoted above, not a contract, and they move
 //! when a label changes length. Nothing in the suite is named after them,
 //! because a fixture called for one of those widths would go on testing that

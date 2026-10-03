@@ -17,11 +17,11 @@
 //! The shared prefix slot is the widest label the screen draws, held to what
 //! the terminal has left after the spinner, the separators and the suffix, with
 //! a fill floor under the bar while there is room for a bar at all. Every entry
-//! label here carries a path, so the path shortens
-//! from the front as the terminal narrows and the file name survives longest.
-//! Where that leaves the labels is a measured fact about these seed paths and
-//! it moves when they move, so it is recorded in `support/materialization.rs`
-//! rather than pinned here.
+//! label here carries a path, so the path shortens from the front as the
+//! terminal narrows, and the phase tag trails, which makes it the first field
+//! a narrow row gives up. Where that leaves the labels is a measured fact
+//! about these seed paths and it moves when they move, so it is recorded in
+//! `support/materialization.rs` rather than pinned here.
 //!
 //! The data is synthetic, so the example runs offline and in about a
 //! millisecond.
@@ -147,13 +147,12 @@ mod tests {
 
     /// The frame a folder entry wider than the client budget produces.
     ///
-    /// The folder is the online demo's. Its `entry_name` is 58 columns against
+    /// The folder is the online demo's. Its `entry_name` is 59 columns against
     /// the slot the terminal leaves, and `entry_name` is elastic, so the name
     /// is cut back to a boundary and rows two and three keep
-    /// `Up [youtube.dQw4w9WgXcQ]`, the part that names the video. The old
-    /// ranking made `entry_name` a `Segment::keep`, which `fit_segments`
-    /// drops whole once nothing can shrink, and those two rows rendered as a
-    /// bare `[stg]` and `[wrt]` with no identity at all.
+    /// `Up [youtube.dQw4w9WgXcQ]`, the part that names the video. A name kept
+    /// whole is a name `fit_segments` drops once nothing can shrink, and those
+    /// two rows would render as a bare phase tag with no identity at all.
     ///
     /// Row two shows what a cut costs when the directory behind the name can
     /// yield no tail at all: the path is dropped, so the name takes the
@@ -183,11 +182,11 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "⠏       [cmt] 01 - Telepathy.flac Children ██████████████████████████ 6s\n",
-                "⠸       [stg] You Up [youtube.dQw4w9WgXcQ] ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
-                "⠴     [wrt] Up [youtube.dQw4w9WgXcQ] links ████████░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
-                "⠇        [vrf] 01 - In the Flesh?.m4a Wall ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
-                "⠋                      [mat] materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m"
+                "⠏       01 - Telepathy.flac Children [cmt] ██████████████████████████ 6s\n",
+                "⠸       You Up [youtube.dQw4w9WgXcQ] [stg] ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
+                "⠴     Up [youtube.dQw4w9WgXcQ] links [wrt] ████████░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
+                "⠇        01 - In the Flesh?.m4a Wall [vrf] ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
+                "⠋                      materializing [mat] ████████░░░░░░░░░░░░░░░░░░ 13s 1/m"
             )
         );
     }

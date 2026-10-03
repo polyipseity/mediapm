@@ -48,19 +48,21 @@
 //! rather than passing unnoticed against a local copy of the field list.
 //!
 //! Where the labels give way, measured on 2026-10-03 by rendering this screen
-//! at every width the harness accepts: 13 columns is the narrowest at which
-//! every row still draws its phase tag, and below it the prefix slot is empty
-//! and each row is the spinner and nothing else. A row in that band has no
-//! suffix of its own to show either, so the suffix slot measures nothing and
-//! there are no columns for the timing to go in either; that band is the one
-//! place on any of the three screens where a row renders as a lone spinner.
-//! Above it the active rows reserve `6s 0/d` and the fill keeps its floor
-//! until the bar crosses back at 59. Those are facts about the seed paths
-//! quoted above, not a contract, and they move when a path changes length.
-//! Nothing in the suite is named after them, because a fixture called for one
-//! of those widths would go on testing that width after the seed it was
-//! measured against had moved, and its name would be the only thing left still
-//! claiming the number mattered.
+//! at every width the harness accepts: 19 columns is the narrowest at which
+//! every row still draws its phase tag. The `[wrt]` sub-bar is the row that
+//! loses the tag first, from 13 columns up, because its member name outranks
+//! the tag and spends the columns the tag would have had. Below 13 the prefix
+//! slot is empty and each row is the spinner and nothing else. A row in that
+//! band has no suffix of its own to show either, so the suffix slot measures
+//! nothing and there are no columns for the timing to go in either; that band
+//! is the one place on any of the three screens where a row renders as a lone
+//! spinner. Above the empty band the active rows reserve `6s 0/d` and the fill
+//! keeps its floor until the bar crosses back at 59. Those are facts about the
+//! seed paths quoted above, not a contract, and they move when a path changes
+//! length. Nothing in the suite is named after them, because a fixture called
+//! for one of those widths would go on testing that width after the seed it
+//! was measured against had moved, and its name would be the only thing left
+//! still claiming the number mattered.
 
 use std::sync::Arc;
 use std::time::Duration;

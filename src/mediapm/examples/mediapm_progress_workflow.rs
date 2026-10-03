@@ -9,12 +9,13 @@
 //! per-step bar above the overall bar carries a version and a progress tally.
 //!
 //! A worker row carries the workflow, the step and the tool it is running:
-//! `[active] default s3 (ffmpeg)` is 28 columns. The slot is what the terminal
+//! `default s3 (ffmpeg) [active]` is 28 columns. The slot is what the terminal
 //! has left after the spinner, the separators and the suffix, so at narrower
-//! widths the tool name goes first, then the bar itself, and a row whose label
-//! no longer fits keeps its timing rather than going blank. Where the label
-//! gives way is a measured fact about these seed labels and it moves when they
-//! move, so it is recorded in `support/workflow.rs` rather than pinned here.
+//! widths the tool name goes first, then the trailing `[active]` tag, then the
+//! bar itself, and a row whose label no longer fits keeps its timing rather
+//! than going blank. Where the label gives way is a measured fact about these
+//! seed labels and it moves when they move, so it is recorded in
+//! `support/workflow.rs` rather than pinned here.
 //!
 //! The per-screen spec is the "Screen B: Workflow" section of
 //! `.agents/instructions/progress-output.instructions.md`, which tabulates

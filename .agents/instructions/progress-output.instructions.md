@@ -169,7 +169,7 @@ Carries real-progress fields: version, completed/total, phase, workflow/step ide
 | Field | Meaning | Example |
 |-------|---------|---------|
 | `version` | Tool version | `"7.1"` |
-| `completed` / `total` | Progress tally | `"2"` / `"5"` |
+| `completed` / `total` | Progress tally, rendered in the suffix | `"2"` / `"5"` |
 | `phase` | Workflow phase tag | `"wf"` |
 | `status_marker` | Terminal state marker | `""` / `"F"` / `"W"` |
 | `workflow_id` | Workflow name | `"default"` |
@@ -180,7 +180,7 @@ Carries real-progress fields: version, completed/total, phase, workflow/step ide
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `activity`, `workflow_id`, `step_id`, `tool` (`src/mediapm-conductor/src/orchestration/progress_labels.rs:171-189`), so the activity marker leads and the tool name is the last and only elastic segment. This is the label a live workflow installs: the coordinator creates one bar per pool member at `src/mediapm-conductor/src/orchestration/coordinator.rs:340-353` and re-labels each one through `set_truncation` on every dispatch and every step outcome.
+Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `workflow_id`, `step_id`, `tool`, `activity`, so the activity marker trails and the tool name is the only elastic segment. This is the label a live workflow installs: the coordinator creates one bar per pool member at `src/mediapm-conductor/src/orchestration/coordinator.rs:340-353` and re-labels each one through `set_truncation` on every dispatch and every step outcome.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
@@ -240,7 +240,7 @@ Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases a
 
 Phase `[wf]` appears in the seeds rather than in a client label: the coordinator seeds every worker slot `idle [wf]` (`coordinator.rs:343`) and the overall bar `workflow [wf]`.
 
-A live run registers worker-slot bars only. `StepBarLabel` has no production caller, so nothing on this screen shows a per-step version or tally. The bars that do exist use `WorkerBarLabel`, which ranks `status_marker`, `activity`, `workflow_id`, `step_id`, `tool` and leaves `tool` the only elastic segment, so a running row reads `[active] default s3 (ffmpeg)` wherever the terminal has room for it and gives up the identifiers before the tool name. The seed does not cap the slot, so the tool name survives widths at which the workflow and step identifiers are gone.
+A live run registers worker-slot bars only. `StepBarLabel` has no production caller, so nothing on this screen shows a per-step version or tally. The bars that do exist use `WorkerBarLabel`, which ranks `status_marker`, `workflow_id`, `step_id`, `tool`, `activity` and leaves `tool` the only elastic segment, so a running row reads `default s3 (ffmpeg) [active]` wherever the terminal has room for it. Position is priority and `fit_segments` walks from the tail, so a narrow row gives up the `[active]` tag and then the tool name and keeps the identifiers, which is the order tool-sync already yields its phase tag in. The seed does not cap the slot: the label is measured from what the row draws, so a row keeps its names at widths where the nine-column seed would have clipped them.
 
 Worker-slot states (`worker_slot_label` in `coordinator.rs:195`):
 
@@ -257,7 +257,7 @@ Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec
 
 ### Screen C: Materialization (`src/mediapm/src/materializer/`)
 
-Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`. Prefix segments are ordered `phase`, `status_marker`, `entry_name`, `entry_path`, `file_name`, so the phase tag leads, both halves of the path are elastic and shorten from the head, and `file_name` is dropped before the directory that holds it. `entry_name` is elastic rather than kept whole because a name kept whole is a name that vanishes once nothing else can shrink, and its tail still carries the extension and the bracketed media id that separates one entry from another.
+Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`. Prefix segments are ordered `status_marker`, `entry_name`, `entry_path`, `file_name`, `phase`, so the phase tag trails the way it does on tool-sync and is the first whole segment a narrow row gives up, both halves of the path are elastic and shorten from the head, and columns come back in the order `entry_path` shrinks, then `entry_name` shrinks, then whole segments drop from the tail: `phase`, `file_name`, and the path halves after them. `entry_name` is elastic rather than kept whole because a name kept whole is a name that vanishes once nothing else can shrink, and its tail still carries the extension and the bracketed media id that separates one entry from another.
 
 Phases: `[mat]` overall, `[stg]` staging, `[vrf]` verify, `[cmt]` commit, `[wrt]` write (per-extracted-file sub-bar inside a ZIP folder variant). See "Materialization phase tags" below for what each phase does.
 
