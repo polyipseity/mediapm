@@ -8,12 +8,11 @@
 //! here are the rows a live sync draws. There are three distinct seeds:
 //!
 //! - `materializing` on the overall bar, created by
-//!   `with_overall` at `src/mediapm/src/service.rs:1349` and quoted by the
-//!   recorder tests at `src/mediapm/src/materializer/mod.rs:1291`.
-//! - `{relative_path} [stg]` on a per-entry bar, from
-//!   `src/mediapm/src/materializer/mod.rs:398`.
-//! - `{variant_name} [wrt]` on a per-extracted-file sub-bar, from
-//!   `src/mediapm/src/materializer/mod.rs:746`.
+//!   `with_overall` at `src/mediapm/src/service.rs` and quoted by the
+//!   recorder tests in the materializer.
+//! - `{relative_path} [stg]` on a per-entry bar, from `EntryPhaseBar::create`.
+//! - `{variant_name} [wrt]` on a per-extracted-file sub-bar, from the folder
+//!   arm.
 //!
 //! `materializing` is thirteen columns and the overall bar is the only
 //! bar whose seed stays that short. Every other seed carries a path or a
@@ -50,12 +49,12 @@
 //!
 //! The `[W]` row is what a live sync reaches. A media entry whose variant
 //! resolved no content hash is skipped with a warning, and the bar is finished
-//! on `[vrf]` with the marker set (`materializer/mod.rs:553`), which is the only
-//! warning the per-entry arm has.
+//! on `[vrf]`, the phase the media arm installed before resolving the hash,
+//! with the marker set. That is the only warning a per-entry row carries.
 //!
 //! The `[F]` row is reached too, on the two arms that check their result before
-//! finishing: a media folder (`:588`) and a playlist (`:605`). Both finish on
-//! `[stg]`, because neither installs a later phase. Neither can be reached
+//! finishing: a media folder and a playlist. Both finish on `[stg]`, the
+//! only phase either of them declares. Neither can be reached
 //! without the overall bar failing as well, since the same error returns from
 //! `prepare_hierarchy_entry`, breaks the collect loop in `sync_hierarchy`, and
 //! finishes the overall bar with an error (`:280`). That is why the `states`
@@ -103,7 +102,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use mediapm::{MaterializationBarLabel, split_entry_path};
+use mediapm::{MaterializationBarLabel, MaterializationPhase, split_entry_path};
 use mediapm_utils::progress::{ProgressBarHandle, ProgressScreen};
 
 use crate::scenarios::{Scenario, ScenarioName};
@@ -135,8 +134,8 @@ pub fn scenario(name: ScenarioName) -> Scenario {
     }
 }
 
-/// A per-entry bar's three phases, from `add_bar(3, ...)` at
-/// `src/mediapm/src/materializer/mod.rs:398`.
+/// A per-entry bar's total, which is what `EntryPhaseBar::create` hands to
+/// `add_bar` in the materializer.
 const ENTRY_PHASES: u64 = 3;
 
 /// Extracted members the folder variant in this demo unpacks into. The sub-bar
@@ -156,17 +155,21 @@ const READABLE_FOLDER_ENTRY: &str = "Music/Rick Astley/Never Gonna Give You Up";
 
 /// Install the label the materializer installs for a phase.
 ///
-/// `prepare_hierarchy_entry` splits the relative path once with
-/// [`split_entry_path`] at `src/mediapm/src/materializer/mod.rs:396` and
-/// reuses the two halves for every phase it transitions through, so this takes
-/// the same pair rather than splitting again. `status_marker` stays at its
+/// The materializer splits the relative path once with [`split_entry_path`]
+/// when it opens the bar and reuses the two halves for every phase it
+/// transitions through, so this takes the same pair rather than splitting
+/// again. `status_marker` stays at its
 /// default on the phase transitions, because the marker belongs to the finish
 /// and not to the phase; [`mark_finished`] is the call that sets it.
-fn phase_label(entry_path: &str, entry_name: &str, phase: &str) -> Arc<MaterializationBarLabel> {
+fn phase_label(
+    entry_path: &str,
+    entry_name: &str,
+    phase: MaterializationPhase,
+) -> Arc<MaterializationBarLabel> {
     Arc::new(MaterializationBarLabel {
         entry_path: entry_path.to_string(),
         entry_name: entry_name.to_string(),
-        phase: phase.to_string(),
+        phase: Some(phase),
         ..Default::default()
     })
 }
@@ -184,9 +187,9 @@ fn phase_label(entry_path: &str, entry_name: &str, phase: &str) -> Arc<Materiali
 /// sub-bar underneath. The third is a media file partway through verify.
 ///
 /// The folder row staying on `[stg]` is the faithful render, not a slip here.
-/// Only the media arm calls `set_truncation` again after the initial `[stg]`
-/// (`src/mediapm/src/materializer/mod.rs:431` and `:442`), so a media folder and
-/// a playlist entry keep the phase they were created with for their whole run.
+/// A media folder and a playlist entry declare `[stg]` and no later phase,
+/// because their arms install none, so they keep the phase they were created
+/// with for their whole run.
 ///
 /// The grid keeps its ANSI colour escapes, the same bytes the terminal received.
 /// Pass the result through [`strip_ansi_escapes`](crate::support::strip_ansi_escapes)
@@ -218,8 +221,8 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     /// Seed the overall bar carries, from `src/mediapm/src/service.rs:1349`.
     const OVERALL_SEED: &str = "materializing";
     /// Variant whose ZIP members the folder entry unpacks. The name doubles as
-    /// the sub-bar's seed and its `file_name` segment, as at
-    /// `src/mediapm/src/materializer/mod.rs:746`.
+    /// the sub-bar's seed and its `file_name` segment, as the folder arm's
+    /// `[wrt]` sub-bar builds it.
     const LINK_VARIANT: &str = "links";
 
     // A folder name wider than the client budget shortens from the front rather
@@ -237,9 +240,9 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall(OVERALL_SEED, 1).build();
     // `sync_hierarchy` replaces the placeholder total with the entry count and
-    // installs the label on the caller's own handle, at
-    // `src/mediapm/src/materializer/mod.rs:196` and `:203`. The label leaves
-    // `phase` empty, so the overall row names the screen and no phase.
+    // installs the label on the caller's own handle, whether that is the handle
+    // it was given or one it opened itself. The label leaves `phase` unset, so
+    // the overall row names the screen and no phase.
     overall.set_total(ENTRY_COUNT);
     overall.set_truncation(Arc::new(MaterializationBarLabel {
         entry_name: "materializing".to_string(),
@@ -249,16 +252,16 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     // The first entry is a media file, so it is the one row that walks the full
     // `[stg]` to `[vrf]` to `[cmt]` sequence.
     let finished = screen.add_bar(ENTRY_PHASES, &format!("{album_name} [stg]"));
-    finished.set_truncation(phase_label(album_path, album_name, "stg"));
+    finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Staging));
     screen.tick();
     clock.advance(Duration::from_secs(2));
 
-    finished.set_truncation(phase_label(album_path, album_name, "vrf"));
+    finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Verify));
     finished.advance(1);
     screen.tick();
     clock.advance(Duration::from_secs(1));
 
-    finished.set_truncation(phase_label(album_path, album_name, "cmt"));
+    finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Commit));
     finished.advance(1);
     screen.tick();
     clock.advance(Duration::from_secs(3));
@@ -273,7 +276,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     // it was created with, and the per-extracted-file sub-bar opens underneath
     // it once the folder arm reaches the variant it unpacks.
     let folder = screen.add_bar(ENTRY_PHASES, &format!("{folder_name} [stg]"));
-    folder.set_truncation(phase_label(folder_path, folder_name, "stg"));
+    folder.set_truncation(phase_label(folder_path, folder_name, MaterializationPhase::Staging));
     screen.tick();
     clock.advance(Duration::from_secs(2));
 
@@ -282,7 +285,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
         entry_path: folder_path.to_string(),
         entry_name: folder_name.to_string(),
         file_name: LINK_VARIANT.to_string(),
-        phase: "wrt".to_string(),
+        phase: Some(MaterializationPhase::Write),
         ..Default::default()
     }));
     write.advance(1);
@@ -292,9 +295,9 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     // The third entry is a media file that has resolved its hash and is on the
     // verify tag, still running when the transcript is read.
     let verifying = screen.add_bar(ENTRY_PHASES, &format!("{single_name} [stg]"));
-    verifying.set_truncation(phase_label(single_path, single_name, "stg"));
+    verifying.set_truncation(phase_label(single_path, single_name, MaterializationPhase::Staging));
     verifying.advance(1);
-    verifying.set_truncation(phase_label(single_path, single_name, "vrf"));
+    verifying.set_truncation(phase_label(single_path, single_name, MaterializationPhase::Verify));
     screen.tick();
     clock.advance(Duration::from_secs(2));
 
@@ -344,36 +347,42 @@ const THUMBNAIL_MEMBERS: u64 = 2;
 
 /// Open a per-entry bar the way `prepare_hierarchy_entry` does.
 ///
-/// The seed is `{relative_path} [stg]` (`materializer/mod.rs:423`) and the
+/// The seed is `{relative_path} [stg]` (`EntryPhaseBar::create`) and the
 /// label carries the split of that path the materializer keeps, so the row
 /// reads what a live row reads rather than what a shorter seed would fit.
 fn add_entry_bar(screen: &ProgressScreen, relative_path: &str) -> ProgressBarHandle {
     let (entry_path, entry_name) = split_entry_path(relative_path);
     let bar = screen.add_bar(ENTRY_PHASES, &format!("{relative_path} [stg]"));
-    bar.set_truncation(phase_label(entry_path, entry_name, "stg"));
+    bar.set_truncation(phase_label(entry_path, entry_name, MaterializationPhase::Staging));
     bar
 }
 
-/// Re-install an entry bar's label on a later phase, as the media arm does at
-/// each of its two transitions (`materializer/mod.rs:455` and `:470`).
-fn set_entry_phase(bar: &ProgressBarHandle, relative_path: &str, phase: &str) {
+/// Re-install an entry bar's label on a later phase, as the media arm does
+/// through `EntryPhaseBar::enter` at each of its two transitions.
+fn set_entry_phase(bar: &ProgressBarHandle, relative_path: &str, phase: MaterializationPhase) {
     let (entry_path, entry_name) = split_entry_path(relative_path);
     bar.set_truncation(phase_label(entry_path, entry_name, phase));
 }
 
 /// Re-install an entry bar's label with a terminal marker, as
-/// `mark_entry_bar_finished` does (`materializer/mod.rs:380`).
+/// `EntryPhaseBar::finish` does.
 ///
 /// The marker is the caller's, because it is the finish that decides between
-/// them: the warned media arm passes `W` on `[vrf]`, and the folder and
-/// playlist arms pass `F` on `[stg]`.
-fn mark_finished(bar: &ProgressBarHandle, relative_path: &str, phase: &str, marker: &str) {
+/// them, and so is the phase: the warned media arm passes `W` on the `[vrf]`
+/// it last installed, and the failed playlist passes `F` on the `[stg]` it
+/// never left.
+fn mark_finished(
+    bar: &ProgressBarHandle,
+    relative_path: &str,
+    phase: MaterializationPhase,
+    marker: &str,
+) {
     let (entry_path, entry_name) = split_entry_path(relative_path);
     bar.set_truncation(Arc::new(MaterializationBarLabel {
         entry_path: entry_path.to_string(),
         entry_name: entry_name.to_string(),
         file_name: String::new(),
-        phase: phase.to_string(),
+        phase: Some(phase),
         status_marker: marker.to_string(),
     }));
 }
@@ -396,7 +405,7 @@ fn add_write_bar(
         entry_path: entry_path.to_string(),
         entry_name: entry_name.to_string(),
         file_name: variant_name.to_string(),
-        phase: "wrt".to_string(),
+        phase: Some(MaterializationPhase::Write),
         ..Default::default()
     }));
     bar
@@ -410,9 +419,9 @@ fn add_write_bar(
 /// itself, while `dense` and `states` share this.
 fn commit_media_entry(bar: &ProgressBarHandle, relative_path: &str) {
     bar.advance(1);
-    set_entry_phase(bar, relative_path, "vrf");
+    set_entry_phase(bar, relative_path, MaterializationPhase::Verify);
     bar.advance(1);
-    set_entry_phase(bar, relative_path, "cmt");
+    set_entry_phase(bar, relative_path, MaterializationPhase::Commit);
     bar.advance(1);
     bar.finish_success();
 }
@@ -462,7 +471,7 @@ fn render_dense(config: ScreenConfig) -> String {
     // to come, which is where the baseline leaves its third entry.
     let verifying = add_entry_bar(&screen, THIN_ICE_TRACK);
     verifying.advance(1);
-    set_entry_phase(&verifying, THIN_ICE_TRACK, "vrf");
+    set_entry_phase(&verifying, THIN_ICE_TRACK, MaterializationPhase::Verify);
     screen.tick();
     clock.advance(Duration::from_secs(2));
 
@@ -542,9 +551,9 @@ fn render_states(config: ScreenConfig) -> String {
     // warning, and this is the only warning a per-entry row has.
     let warned = add_entry_bar(&screen, THIN_ICE_TRACK);
     warned.advance(1);
-    set_entry_phase(&warned, THIN_ICE_TRACK, "vrf");
+    set_entry_phase(&warned, THIN_ICE_TRACK, MaterializationPhase::Verify);
     clock.advance(Duration::from_secs(2));
-    mark_finished(&warned, THIN_ICE_TRACK, "vrf", "W");
+    mark_finished(&warned, THIN_ICE_TRACK, MaterializationPhase::Verify, "W");
     warned.finish_warning();
     overall.advance(1);
     screen.tick();
@@ -587,7 +596,7 @@ fn render_states(config: ScreenConfig) -> String {
     let failed = add_entry_bar(&screen, ONLINE_PLAYLIST);
     failed.advance(1);
     clock.advance(Duration::from_secs(1));
-    mark_finished(&failed, ONLINE_PLAYLIST, "stg", "F");
+    mark_finished(&failed, ONLINE_PLAYLIST, MaterializationPhase::Staging, "F");
     failed.finish_error();
     overall.advance(1);
     screen.tick();

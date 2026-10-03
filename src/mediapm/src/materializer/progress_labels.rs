@@ -6,7 +6,79 @@
 //! `WorkerBarLabel`, which live in `mediapm-conductor` and are not visible
 //! to rustdoc from this crate.
 
+use crate::config::hierarchy_types::HierarchyEntryKind;
+
 use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit_segments};
+
+use self::MaterializationPhase::{Commit, Staging, Verify};
+
+/// One phase of the materialization screen.
+///
+/// The set is closed, so a bar cannot name a phase this screen does not have
+/// and a typo cannot reach a rendered row. The tag is fixed per variant here
+/// rather than spelled at each call site, which is what let the folder and
+/// playlist arms drift: each named its finish tag with its own literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterializationPhase {
+    /// Staging CAS content into the entry's target directory.
+    Staging,
+    /// Checking staged bytes against the expected hash before they are
+    /// committed into the library.
+    Verify,
+    /// Writing the entry into the library.
+    Commit,
+    /// Writing one extracted member of a ZIP folder variant, on the sub-bar
+    /// under a folder row rather than on the folder row itself.
+    Write,
+}
+
+impl MaterializationPhase {
+    /// Text inside the brackets, as [`MaterializationBarLabel`] renders it.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Staging => "stg",
+            Self::Verify => "vrf",
+            Self::Commit => "cmt",
+            Self::Write => "wrt",
+        }
+    }
+}
+
+impl HierarchyEntryKind {
+    /// Phases a bar for this kind installs, in the order its arm enters them.
+    ///
+    /// Declared here, next to the tag that renders it, rather than inside each
+    /// arm of the materializer's entry match, because that is where the two
+    /// agreed by accident: the folder and playlist arms never installed a
+    /// second phase, so their rows kept `[stg]` for their whole run and the
+    /// failure path repeated the same literal. The match is exhaustive over the
+    /// enum, so a kind cannot exist without saying what it walks.
+    ///
+    /// A kind lists only phases its arm really runs. A folder or a playlist
+    /// stages and then finishes; neither verifies or commits as a separate
+    /// step today, so listing more would put a tag on the screen that no code
+    /// behind it stands for.
+    #[must_use]
+    pub fn phases(self) -> &'static [MaterializationPhase] {
+        match self {
+            Self::Media => &[Staging, Verify, Commit],
+            Self::MediaFolder | Self::Playlist => &[Staging],
+        }
+    }
+
+    /// The phase a bar for this kind is created on, which is `phases()[0]`.
+    ///
+    /// Stated as its own match rather than read off [`Self::phases`] because a
+    /// const item cannot index a slice. `phases_agree_with_first_phase` holds
+    /// the two to each other.
+    #[must_use]
+    pub(crate) const fn first_phase(self) -> MaterializationPhase {
+        match self {
+            Self::Media | Self::MediaFolder | Self::Playlist => Staging,
+        }
+    }
+}
 
 /// Truncation order for a materialization bar.
 ///
@@ -50,10 +122,9 @@ pub struct MaterializationBarLabel {
     pub entry_name: String,
     /// Extracted file basename (sub-bars only), e.g. `"cover.jpg"`.
     pub file_name: String,
-    /// Materialization phase tag: `"stg"` / `"vrf"` / `"cmt"` / `"wrt"`. A
-    /// per-entry row names the phase it is in; the overall bar leaves it
-    /// empty, because its label already says it is materializing.
-    pub phase: String,
+    /// Phase the row is in. A per-entry row names it; the overall bar leaves
+    /// it `None`, because its label already says it is materializing.
+    pub phase: Option<MaterializationPhase>,
 }
 
 impl MaterializationBarLabel {
@@ -99,8 +170,8 @@ impl MaterializationBarLabel {
         if !self.file_name.is_empty() {
             segs.push(Segment::keep(self.file_name.clone()));
         }
-        if !self.phase.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.phase)));
+        if let Some(phase) = self.phase {
+            segs.push(Segment::keep(format!("[{}]", phase.tag())));
         }
         segs
     }
@@ -158,10 +229,9 @@ impl BarLabelTruncation for MaterializationBarLabel {
 /// path with no `/` yields `("", path)`, so a caller can pass the result
 /// straight into the label without special-casing a bare filename.
 ///
-/// This is the split the materializer applies at
-/// `src/mediapm/src/materializer/mod.rs:396` and `:744` when it builds a bar
-/// label, so an entry path outside the library, such as the
-/// `mediapm_progress_materialize` example, can render the same label the
+/// This is the split the materializer applies in `prepare_hierarchy_entry`
+/// when it builds a bar label, so an entry path outside the library, such as
+/// the `mediapm_progress_materialize` example, can render the same label the
 /// library renders instead of splitting the path a second way.
 #[must_use]
 pub fn split_entry_path(path: &str) -> (&str, &str) {
@@ -174,6 +244,48 @@ pub fn split_entry_path(path: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two declarations of a kind's first phase cannot drift apart: the
+    /// bar a kind creates itself opens on `first_phase`, and the list an arm
+    /// walks starts at `phases()[0]`. A kind added to one and not the other
+    /// would create a row on a phase its arm never enters.
+    #[test]
+    fn phases_agree_with_first_phase() {
+        for kind in [
+            HierarchyEntryKind::Media,
+            HierarchyEntryKind::MediaFolder,
+            HierarchyEntryKind::Playlist,
+        ] {
+            assert_eq!(
+                kind.phases().first(),
+                Some(&kind.first_phase()),
+                "{kind:?} declares a first phase its own list does not start with",
+            );
+            assert!(
+                !kind.phases().is_empty(),
+                "{kind:?} declares no phase, so its row would have no tag to open on",
+            );
+        }
+    }
+
+    /// The tag is the only thing that differs between phases, so a mistyped
+    /// variant cannot render as free text.
+    #[test]
+    fn phase_tags_are_the_documented_three_letters() {
+        assert_eq!(MaterializationPhase::Staging.tag(), "stg");
+        assert_eq!(MaterializationPhase::Verify.tag(), "vrf");
+        assert_eq!(MaterializationPhase::Commit.tag(), "cmt");
+        assert_eq!(MaterializationPhase::Write.tag(), "wrt");
+    }
+
+    /// A label with no phase names the screen and nothing more, which is what
+    /// the overall bar shows.
+    #[test]
+    fn a_label_without_a_phase_renders_no_tag() {
+        let label =
+            MaterializationBarLabel { entry_name: "materializing".into(), ..Default::default() };
+        assert_eq!(label.truncate_prefix(80), "materializing");
+    }
 
     #[test]
     fn split_entry_path_with_separators() {
@@ -202,7 +314,7 @@ mod tests {
             entry_path: "Music/Artist/Album".into(),
             entry_name: "song.mkv".into(),
             file_name: "cover.jpg".into(),
-            phase: "wrt".into(),
+            phase: Some(MaterializationPhase::Write),
         };
         for width in MARKER_WIDTH..=18 {
             let out = label.truncate_prefix(width);
@@ -219,7 +331,7 @@ mod tests {
         let label = MaterializationBarLabel {
             entry_path: "Music/Artist/Album/1977".into(),
             entry_name: "song.mkv".into(),
-            phase: "stg".into(),
+            phase: Some(MaterializationPhase::Staging),
             ..Default::default()
         };
         // Wide enough for the full path, so nothing is shortened.
@@ -242,7 +354,7 @@ mod tests {
         let label = MaterializationBarLabel {
             entry_path: "very/long/path/segments".into(),
             entry_name: "important-file.mkv".into(),
-            phase: "cmt".into(),
+            phase: Some(MaterializationPhase::Commit),
             ..Default::default()
         };
         // The path gives up everything above its last element and the name is
@@ -269,7 +381,7 @@ mod tests {
         let label = MaterializationBarLabel {
             entry_path: "music videos".into(),
             entry_name: "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]".into(),
-            phase: "stg".into(),
+            phase: Some(MaterializationPhase::Staging),
             ..Default::default()
         };
         let out = label.truncate_prefix(39);
@@ -291,7 +403,7 @@ mod tests {
     fn suffix_renders_the_auto_derived_timing() {
         let label = MaterializationBarLabel {
             entry_name: "song.mkv".into(),
-            phase: "cmt".into(),
+            phase: Some(MaterializationPhase::Commit),
             ..Default::default()
         };
         let suffix = SuffixComponents {
@@ -320,7 +432,7 @@ mod tests {
             entry_path: "Music/Rick Astley/Never Gonna Give You Up".into(),
             entry_name: "album".into(),
             file_name: "cover.jpg".into(),
-            phase: "wrt".into(),
+            phase: Some(MaterializationPhase::Write),
             ..Default::default()
         };
         assert_eq!(label.truncate_prefix(15), "cover.jpg [wrt]");

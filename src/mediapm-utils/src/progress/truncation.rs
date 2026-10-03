@@ -80,6 +80,12 @@ pub enum Shrink {
     /// boundary and `7.` is the shape the row is meant to read. A value that
     /// does hold boundaries is better served by [`Front`](Self::Front), whose
     /// cut leaves a piece that names something on its own.
+    ///
+    /// One production label builds this mode, `StepBarLabel::version`, and
+    /// nothing on the production path fills that field: the conductor has no
+    /// versioned tool to read, so a live workflow bar renders no head-keeping
+    /// segment and this mode never runs there. The workflow example supplies
+    /// a literal version and is the only caller that renders it.
     Head,
 }
 

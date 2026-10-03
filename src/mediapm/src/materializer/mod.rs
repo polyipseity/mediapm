@@ -19,7 +19,7 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
-use self::progress_labels::{MaterializationBarLabel, split_entry_path};
+use self::progress_labels::{MaterializationBarLabel, MaterializationPhase, split_entry_path};
 use crate::config::hierarchy_types::{
     FlattenedHierarchyEntry, HierarchyEntryKind, PlaylistItemRef, ValidatedHierarchyEntry,
     collect_playlist_media_index, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
@@ -366,31 +366,96 @@ fn sanitize_and_validate_hierarchy_paths(
         .collect()
 }
 
-/// Re-install an entry bar's label with a terminal-state marker.
+/// Drives one hierarchy entry's phase bar from the phases its kind declares.
 ///
-/// `finish_warning` and `finish_error` change a bar's colour and nothing else,
-/// so the text of a failed entry never said what happened. The marker is the
-/// conductor's: `W` for a warning, `F` for a failure.
-///
-/// `entry_path`, `entry_name`, and `phase` are what the bar already shows, so
-/// they are passed in rather than read back off the handle. The renderer
-/// keeps the truncation a bar was last given until it draws the next frame,
-/// so re-installing the same label with the marker set is enough to redraw the
-/// row with it.
-fn mark_entry_bar_finished(
-    bar: &Arc<dyn ProgressBarApi>,
-    entry_path: &str,
-    entry_name: &str,
-    phase: &str,
-    status_marker: &str,
-) {
-    bar.set_truncation(Arc::new(MaterializationBarLabel {
-        entry_path: entry_path.to_string(),
-        entry_name: entry_name.to_string(),
-        file_name: String::new(),
-        phase: phase.to_string(),
-        status_marker: status_marker.to_string(),
-    }));
+/// The bar opens on [`HierarchyEntryKind::first_phase`] and every later phase
+/// arrives through [`EntryPhaseBar::enter`], so a row's tag follows the arm
+/// instead of following a literal beside it. Holding the phase here is what
+/// lets [`EntryPhaseBar::finish`] name the phase an entry was actually in when
+/// it failed, rather than the phase the arm that failed used to hardcode.
+struct EntryPhaseBar<'a> {
+    /// The bar, absent when the caller asked for no progress output. Every
+    /// method is a no-op without it, so an arm never re-checks for progress.
+    handle: Option<Arc<dyn ProgressBarApi>>,
+    /// Directory half of the hierarchy-relative path.
+    entry_path: &'a str,
+    /// Basename half of the same path.
+    entry_name: &'a str,
+    /// Phase the row is on, always one of the kind's declared phases.
+    phase: MaterializationPhase,
+}
+
+impl<'a> EntryPhaseBar<'a> {
+    /// Split `relative_path` and open a bar for `kind`, on its first declared
+    /// phase. Holds nothing when `progress_group` is `None`.
+    fn create(
+        progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
+        relative_path: &'a str,
+        kind: HierarchyEntryKind,
+    ) -> EntryPhaseBar<'a> {
+        let (entry_path, entry_name) = split_entry_path(relative_path);
+        let phase = kind.first_phase();
+        let handle = progress_group.map(|pg| {
+            // The bar totals three while an entry bar advances once, because
+            // the arm advances it after its work returns rather than per
+            // phase. That count is unchanged here; only the tag follows the
+            // kind's declaration.
+            let bar = pg.add_bar(3, &format!("{relative_path} [{}]", phase.tag()));
+            bar.set_truncation(Arc::new(MaterializationBarLabel {
+                entry_path: entry_path.to_string(),
+                entry_name: entry_name.to_string(),
+                phase: Some(phase),
+                ..Default::default()
+            }));
+            bar
+        });
+        EntryPhaseBar { handle, entry_path, entry_name, phase }
+    }
+
+    /// Install `phase` as the row's current phase.
+    ///
+    /// Takes `&mut self` because the phase the row is on is the one a later
+    /// `finish` reports, so moving on changes this row rather than something
+    /// the bar is told separately.
+    fn enter(&mut self, phase: MaterializationPhase) {
+        self.phase = phase;
+        self.label(phase, "");
+    }
+
+    /// Re-install the row's current phase with a terminal-state marker.
+    ///
+    /// `finish_warning` and `finish_error` change a bar's colour and nothing
+    /// else, so the text of a finished entry never said what happened. The
+    /// marker is the caller's, because it is the finish that decides between
+    /// them: a skipped media entry warns and a rejected one errors.
+    ///
+    /// The phase is the one the row is on, not a fresh literal, so a failure
+    /// part-way through a multi-phase entry reports where it stopped.
+    fn finish(&self, status_marker: &str) {
+        self.label(self.phase, status_marker);
+    }
+
+    /// The bar itself, for the calls an arm makes on the work rather than on
+    /// its label. Returns a handle the caller owns, so holding it cannot
+    /// borrow the row for the duration.
+    fn handle(&self) -> Option<Arc<dyn ProgressBarApi>> {
+        self.handle.clone()
+    }
+
+    /// Install `phase` and `status_marker` together, the one place a row's
+    /// label text is built.
+    fn label(&self, phase: MaterializationPhase, status_marker: &str) {
+        let Some(ref bar) = self.handle else {
+            return;
+        };
+        bar.set_truncation(Arc::new(MaterializationBarLabel {
+            entry_path: self.entry_path.to_string(),
+            entry_name: self.entry_name.to_string(),
+            file_name: String::new(),
+            phase: Some(phase),
+            status_marker: status_marker.to_string(),
+        }));
+    }
 }
 
 /// Materialises one flattened hierarchy entry from CAS content to the
@@ -416,19 +481,12 @@ async fn prepare_hierarchy_entry(
     // there is no `&str` here for a caller to hand unvalidated text to.
     let target_path = shared.hierarchy_root.join(commit::join_path_components(&entry.path));
 
-    // Per-entry phase bar: stage → verify → commit. Owned by mediapm (not the
-    // conductor), so it carries the `[stg]`/`[vrf]`/`[cmt]` phase tags.
-    let (ep, en) = split_entry_path(&relative_path);
-    let entry_bar: Option<Arc<dyn ProgressBarApi>> = progress_group.clone().map(|pg| {
-        let bar = pg.add_bar(3, &format!("{relative_path} [stg]"));
-        bar.set_truncation(Arc::new(MaterializationBarLabel {
-            entry_path: ep.to_string(),
-            entry_name: en.to_string(),
-            phase: "stg".to_string(),
-            ..Default::default()
-        }));
-        bar
-    });
+    // Per-entry phase bar, owned by mediapm (not the conductor), so it carries
+    // the `[stg]`/`[vrf]`/`[cmt]` phase tags. Which phases this row walks is
+    // the kind's declaration, and the driver installs them as the arm enters
+    // them, so a kind that gains a phase cannot leave its row on the old tag.
+    let mut entry_bar =
+        EntryPhaseBar::create(progress_group.clone(), &relative_path, entry.entry.kind);
 
     match entry.entry.kind {
         HierarchyEntryKind::Media => {
@@ -452,25 +510,11 @@ async fn prepare_hierarchy_entry(
 
             let effective_variant = variant_selector.first().cloned().unwrap_or(variant_name);
 
-            if let Some(ref bar) = entry_bar {
-                bar.set_truncation(Arc::new(MaterializationBarLabel {
-                    entry_path: ep.to_string(),
-                    entry_name: en.to_string(),
-                    phase: "vrf".to_string(),
-                    ..Default::default()
-                }));
-            }
+            entry_bar.enter(MaterializationPhase::Verify);
             let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
 
             if let Some(hash) = hash {
-                if let Some(ref bar) = entry_bar {
-                    bar.set_truncation(Arc::new(MaterializationBarLabel {
-                        entry_path: ep.to_string(),
-                        entry_name: en.to_string(),
-                        phase: "cmt".to_string(),
-                        ..Default::default()
-                    }));
-                }
+                entry_bar.enter(MaterializationPhase::Commit);
 
                 // Check if this variant has a zip_member binding (e.g., subtitles_en
                 // produces a ZIP containing `.en.vtt`). The raw CAS hash points at the
@@ -526,7 +570,7 @@ async fn prepare_hierarchy_entry(
                     variant: effective_variant.clone(),
                     hash: materialized_hash.to_string(),
                 };
-                if let Some(ref bar) = entry_bar {
+                if let Some(bar) = entry_bar.handle() {
                     bar.advance(1);
                     bar.finish_success();
                 }
@@ -545,12 +589,12 @@ async fn prepare_hierarchy_entry(
                 shared.notice(format!(
                     "media '{media_id}' variant '{effective_variant}' has no content hash; skipping"
                 ));
-                if let Some(ref bar) = entry_bar {
+                if let Some(bar) = entry_bar.handle() {
                     bar.advance(1);
-                    // The bar is on `[vrf]`: the media arm installs it before
-                    // resolving the variant hash and never moves on, because
-                    // there is no hash to commit.
-                    mark_entry_bar_finished(bar, ep, en, "vrf", "W");
+                    // The media arm last installed `[vrf]` and never moved on,
+                    // because there is no hash to commit, so the warning names
+                    // the phase the row is actually on.
+                    entry_bar.finish("W");
                     bar.finish_warning();
                 }
                 Ok(PreparedHierarchyEntryResult {
@@ -577,15 +621,14 @@ async fn prepare_hierarchy_entry(
                 progress_group,
             )
             .await;
-            if let Some(ref bar) = entry_bar {
+            // The folder arm installs no phase after the one it was created on,
+            // so the failure names the phase its declared list ends at.
+            if let Some(bar) = entry_bar.handle() {
+                bar.advance(1);
                 if result.is_ok() {
-                    bar.advance(1);
                     bar.finish_success();
                 } else {
-                    bar.advance(1);
-                    // The folder arm never installs a later phase, so the bar
-                    // is still on the `[stg]` it was created with.
-                    mark_entry_bar_finished(bar, ep, en, "stg", "F");
+                    entry_bar.finish("F");
                     bar.finish_error();
                 }
             }
@@ -596,13 +639,12 @@ async fn prepare_hierarchy_entry(
             let result =
                 materialize_playlist_entry(entry, document, &target_path, &relative_path, shared)
                     .await;
-            if let Some(ref bar) = entry_bar {
+            if let Some(bar) = entry_bar.handle() {
+                bar.advance(1);
                 if result.is_ok() {
-                    bar.advance(1);
                     bar.finish_success();
                 } else {
-                    bar.advance(1);
-                    mark_entry_bar_finished(bar, ep, en, "stg", "F");
+                    entry_bar.finish("F");
                     bar.finish_error();
                 }
             }
@@ -781,7 +823,7 @@ async fn materialize_media_folder_entry(
                     entry_path: sub_path.to_string(),
                     entry_name: sub_name.to_string(),
                     file_name: variant_name.clone(),
-                    phase: "wrt".to_string(),
+                    phase: Some(MaterializationPhase::Write),
                     ..Default::default()
                 }));
                 sub
@@ -1557,6 +1599,120 @@ mod tests {
             }),
             "the label installed before the error finish must carry [F]; got {ops:?}",
         );
+    }
+
+    /// The phase tag a rendered prefix ends with, or `None` when it carries
+    /// none, which is how a row is checked against its declaration.
+    fn rendered_phase_tag(prefix: &str) -> Option<&str> {
+        prefix.rsplit_once('[').and_then(|(_, tail)| tail.strip_suffix(']'))
+    }
+
+    /// A finished entry names the phase its kind declares last, and no phase
+    /// outside that declaration ever reaches the row.
+    ///
+    /// The bug this pins: the folder and playlist arms installed a phase only
+    /// on the failure path, by passing the literal `"stg"` beside the bar,
+    /// while the row they had already created sat on `[stg]` for its whole
+    /// run. Nothing tied the tag to what the arm did, so a finished folder row
+    /// was indistinguishable from one still staging and the two could drift
+    /// apart silently. Driving the bar from `HierarchyEntryKind::phases`
+    /// instead of from literals makes a tag the arm never declared a build of
+    /// the same kind that fails here.
+    #[test]
+    fn entry_bar_installs_exactly_the_phases_its_kind_declares() {
+        for kind in [
+            HierarchyEntryKind::Media,
+            HierarchyEntryKind::MediaFolder,
+            HierarchyEntryKind::Playlist,
+        ] {
+            let phases = kind.phases();
+            let tracker = RecordingProgressTracker::new();
+            let mut bar =
+                EntryPhaseBar::create(Some(Arc::new(tracker.clone())), "Music/album", kind);
+            for phase in phases.iter().skip(1) {
+                bar.enter(*phase);
+            }
+            bar.finish("F");
+
+            let rendered: Vec<String> = tracker
+                .ops()
+                .iter()
+                .filter_map(|op| match op {
+                    ProgressOp::SetTruncation { prefix, .. } => {
+                        Some(rendered_phase_tag(prefix).unwrap_or_default().to_string())
+                    }
+                    _ => None,
+                })
+                .collect();
+            let mut expected: Vec<String> =
+                phases.iter().map(|phase| phase.tag().to_string()).collect();
+            let last = expected.last().cloned().expect("a kind declares at least one phase");
+            expected.push(last.clone());
+
+            assert_eq!(
+                rendered, expected,
+                "{kind:?} rendered a tag its own declaration does not list",
+            );
+            assert_eq!(
+                tracker.ops().last(),
+                Some(&ProgressOp::SetTruncation {
+                    prefix: format!("[F] album Music [{last}]"),
+                    suffix: String::new(),
+                }),
+                "{kind:?} did not finish on the last phase it declares",
+            );
+        }
+    }
+
+    /// A folder and a playlist declare the one phase their arms walk.
+    ///
+    /// Both stage and then finish; neither verifies or commits as a separate
+    /// step, so a longer list would put a tag on the screen with no code behind
+    /// it. A media entry walks all three.
+    #[test]
+    fn folder_and_playlist_declare_only_the_phase_they_walk() {
+        assert_eq!(HierarchyEntryKind::MediaFolder.phases(), &[MaterializationPhase::Staging],);
+        assert_eq!(HierarchyEntryKind::Playlist.phases(), &[MaterializationPhase::Staging]);
+        assert_eq!(
+            HierarchyEntryKind::Media.phases(),
+            &[
+                MaterializationPhase::Staging,
+                MaterializationPhase::Verify,
+                MaterializationPhase::Commit,
+            ],
+        );
+    }
+
+    /// A media entry that fails part-way names where it stopped.
+    ///
+    /// The finish reads the phase the row is on rather than a literal, so the
+    /// two failure points report different tags. One literal for both is the
+    /// shape this replaced: the media arm passed `"vrf"` at a skip and the
+    /// folder and playlist arms passed `"stg"` at a failure, each correct only
+    /// as long as no arm moved.
+    #[test]
+    fn a_finished_media_entry_names_the_phase_it_reached() {
+        for (phase, tag) in
+            [(MaterializationPhase::Verify, "vrf"), (MaterializationPhase::Commit, "cmt")]
+        {
+            let tracker = RecordingProgressTracker::new();
+            let mut bar = EntryPhaseBar::create(
+                Some(Arc::new(tracker.clone())),
+                "song.mkv",
+                HierarchyEntryKind::Media,
+            );
+            bar.enter(phase);
+            bar.finish("W");
+
+            assert_eq!(
+                tracker.ops().last(),
+                Some(&ProgressOp::SetTruncation {
+                    prefix: format!("[W] song.mkv [{tag}]"),
+                    suffix: String::new(),
+                }),
+                "the warning must name the phase the entry reached",
+            );
+        }
     }
 
     /// Builds a one-media-entry document whose hierarchy path is `path`.
