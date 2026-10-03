@@ -18,8 +18,8 @@ use super::common::{mk_with_capacity, mk_with_capacity_and_ts, mk_with_dims};
 
 /// A worker row's label, laid out the way
 /// `mediapm_conductor::orchestration::progress_labels::WorkerBarLabel` lays it
-/// out: the activity marker leads, the workflow and step identifiers follow,
-/// and the parenthesised tool name is the one elastic segment.
+/// out: the workflow and step identifiers come first, the parenthesised tool
+/// name and the activity marker trail them.
 ///
 /// Duplicated here because `mediapm-utils` cannot depend on the conductor.
 /// What these tests are about is the budget the renderer hands the label, and
@@ -38,10 +38,10 @@ struct WorkerRowLabel {
 impl BarLabelTruncation for WorkerRowLabel {
     fn truncate_prefix(&self, max_width: usize) -> String {
         let segments = vec![
-            Segment::keep(format!("[{}]", self.activity)),
             Segment::keep(self.workflow_id.clone()),
             Segment::keep(self.step_id.clone()),
             Segment::elastic(format!("({})", self.tool)),
+            Segment::keep(format!("[{}]", self.activity)),
         ];
         fit_segments(&segments, max_width)
     }
@@ -483,8 +483,9 @@ fn resolve_label_multiword_no_bracket_keeps_whole_label() {
 /// The seed is nine columns and a client label can only be shortened by
 /// [`fit_segments`], never lengthened, so a prefix slot sized from the seed
 /// leaves the label nothing to grow into. The 80-column line has room for
-/// `default s3 (yt-dlp)` after the marker and the suffix, and a run that drops
-/// the tool name here loses the only thing that says which tool the slot is
+/// The 80-column line has room for
+/// `default s3 (yt-dlp) [active]` before the suffix, and a run that drops the
+/// tool name here loses the only thing that says which tool the slot is
 /// running.
 #[test]
 fn prefix_slot_is_not_pinned_to_the_seed_label() {

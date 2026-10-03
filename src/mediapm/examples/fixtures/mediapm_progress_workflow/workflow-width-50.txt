@@ -1,7 +1,7 @@
-⠙           [active] default s3 (ffmpeg)
-⠙           [active] default s4 (yt-dlp)
-⠏                             [W] [idle]
-⠏                             [F] [idle]
-⠏                                 [idle]
-⠇     [wf] 1/3 [7.1] default s3 (ffmpeg) 1/3
-⠏                      [W] workflow [wf]  4/12
+⠙       default s3 (ffmpeg) [active]
+⠙       default s4 (yt-dlp) [active]
+⠏                         [W] [idle]
+⠏                         [F] [idle]
+⠏                             [idle]
+⠇     default s3 (ffmpeg) [7.1] [wf] 1/3
+⠏                  [W] workflow [wf]  4/12

@@ -2,10 +2,12 @@
 //!
 //! Validates that the conductor-owned label structs implement
 //! [`BarLabelTruncation`] with the correct field order: a worker bar never
-//! carries a `completed/total` progress tally, while a step bar places its
-//! phase, status marker, and progress tally ahead of the tool name in the
-//! segment list, so they are the last to yield; the tool name is the elastic
-//! segment that shrinks first.
+//! carries a `completed`/`total` progress tally, while a step bar carries that
+//! tally in the suffix only, so the prefix holds names and the suffix holds
+//! counts. Both labels lead with the status marker and end with the phase or
+//! activity marker, which makes that trailing marker the first thing width
+//! pressure sheds. The tool name is the elastic segment, so it shortens before
+//! anything is dropped whole.
 
 use mediapm_conductor::orchestration::progress_labels::{StepBarLabel, WorkerBarLabel};
 use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents};
@@ -33,10 +35,10 @@ fn worker_label_ignores_a_populated_tally_in_the_suffix() {
     assert!(!out.contains("3/10"), "worker suffix must not carry a tally: {out:?}");
     assert!(out.contains("2m 05s"), "worker suffix lost elapsed: {out:?}");
 
-    // The prefix carries the activity marker and the parenthesized tool name.
+    // The prefix names the workflow, the step, and the tool, then closes with
+    // the activity marker.
     let wide = label.truncate_prefix(80);
-    assert!(wide.contains("[active]"), "worker prefix missing activity: {wide:?}");
-    assert!(wide.contains("(echo@v1)"), "worker prefix missing tool: {wide:?}");
+    assert_eq!(wide, "wf s1 (echo@v1) [active]");
 }
 
 #[test]
@@ -48,11 +50,12 @@ fn worker_label_tight_prefix_keeps_the_activity_marker() {
         tool: "mediapm-conductor-builtin-archive".into(),
         activity: "active".into(),
     };
-    // Narrow enough that the tail has to go. The activity marker leads the
-    // order, so it survives and the tool name is shed.
-    let tight = label.truncate_prefix(10);
+    // Narrow enough that the tool name has to go. Its tail holds no boundary
+    // this narrow, so `fit_segments` drops it whole rather than rendering a
+    // fragment, and what is left is the identifiers and the marker.
+    let tight = label.truncate_prefix(14);
     assert!(tight.contains("[active]"), "activity lost under pressure: {tight:?}");
-    assert!(!tight.contains("archive"), "tool should be shed at width 10: {tight:?}");
+    assert!(!tight.contains("archive"), "tool should be shed at width 14: {tight:?}");
 }
 
 #[test]
@@ -67,7 +70,7 @@ fn worker_label_idle_renders_its_activity_marker() {
     // The tool name is deliberately not "idle", so it cannot stand in for the
     // marker; the assertion is on the bracketed form the label renders.
     let prefix = label.truncate_prefix(40);
-    assert!(prefix.contains("[idle]"), "idle worker prefix missing activity marker: {prefix:?}");
+    assert_eq!(prefix, "(archive) [idle]");
 }
 
 #[test]
@@ -83,22 +86,22 @@ fn step_label_truncate_keeps_version() {
         total: "4".into(),
     };
     let prefix = label.truncate_prefix(80);
-    assert!(prefix.contains("[1.2.3]"), "step prefix missing version: {prefix:?}");
-    assert!(prefix.contains("1/4"), "step prefix missing progress tally: {prefix:?}");
-    assert!(prefix.contains("[wf]"), "step prefix missing phase: {prefix:?}");
+    assert_eq!(prefix, "wf s1 (echo@v1) [1.2.3] [wf]");
 
     // The width-80 case above fits whole, so on its own it would still pass if
-    // truncation were removed. At 20 the tail is dropped and the version has
-    // to outrank the identifiers and the tool name to survive.
+    // truncation were removed. At 20 the tool name is shed and the version and
+    // phase have to outrank the tool name to survive.
     let tight = label.truncate_prefix(20);
     assert!(tight.contains("[1.2.3]"), "version lost under truncation: {tight:?}");
+    assert!(tight.contains("[wf]"), "phase lost under truncation: {tight:?}");
     assert!(!tight.contains("echo"), "tool should be shed at width 20: {tight:?}");
 }
 
-/// Visible width of the leading `[wf] [F] 1/4` head.
-const STEP_HEAD_WIDTH: usize = 12;
-/// Visible width of the leading `[F] [active]` head.
-const WORKER_HEAD_WIDTH: usize = 12;
+/// Visible width of the leading `[F] wf s1` head a step bar shares with a
+/// worker bar.
+const STEP_HEAD_WIDTH: usize = 9;
+/// Visible width of the leading `[F] wf s1` head on a worker bar.
+const WORKER_HEAD_WIDTH: usize = 9;
 
 #[test]
 fn step_label_head_survives_across_narrow_widths() {
@@ -114,11 +117,30 @@ fn step_label_head_survives_across_narrow_widths() {
     };
     for width in STEP_HEAD_WIDTH..=20 {
         let out = label.truncate_prefix(width);
-        assert!(out.contains("[wf]"), "phase lost at width {width}: {out:?}");
         assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
-        assert!(out.contains("1/4"), "tally lost at width {width}: {out:?}");
+        assert!(out.contains("wf"), "workflow lost at width {width}: {out:?}");
+        assert!(out.contains("s1"), "step lost at width {width}: {out:?}");
         assert!(out.chars().count() <= width, "overflowed at width {width}: {out:?}");
     }
+}
+
+#[test]
+fn step_label_sheds_the_phase_before_the_version() {
+    // The phase tag trails the version, and `fit_segments` drops from the
+    // tail, so the phase is what goes when the two no longer both fit. This is
+    // the order tool-sync already uses for its own phase tag.
+    let label = StepBarLabel {
+        status_marker: String::new(),
+        workflow_id: "wf".into(),
+        step_id: "s1".into(),
+        tool: "echo@v1".into(),
+        version: "9.9.9".into(),
+        phase: "wf".into(),
+        completed: "1".into(),
+        total: "4".into(),
+    };
+    assert_eq!(label.truncate_prefix(18), "wf s1 [9.9.9] [wf]");
+    assert_eq!(label.truncate_prefix(17), "wf s1 [9.9.9]");
 }
 
 #[test]
@@ -133,16 +155,63 @@ fn worker_label_head_survives_across_narrow_widths() {
     for width in WORKER_HEAD_WIDTH..=20 {
         let out = label.truncate_prefix(width);
         assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
-        assert!(out.contains("[active]"), "activity lost at width {width}: {out:?}");
+        assert!(out.contains("wf"), "workflow lost at width {width}: {out:?}");
+        assert!(out.contains("s1"), "step lost at width {width}: {out:?}");
         assert!(out.chars().count() <= width, "overflowed at width {width}: {out:?}");
     }
 }
 
 #[test]
+fn worker_label_sheds_the_activity_marker_before_the_identifiers() {
+    // The activity marker trails the identifiers, so it is the first segment
+    // to go once the row narrows past the head.
+    let label = WorkerBarLabel {
+        status_marker: "F".into(),
+        workflow_id: "wf".into(),
+        step_id: "s1".into(),
+        tool: "echo@v1".into(),
+        activity: "active".into(),
+    };
+    assert_eq!(label.truncate_prefix(18), "[F] wf s1 [active]");
+    assert_eq!(label.truncate_prefix(17), "[F] wf s1");
+}
+
+#[test]
+fn step_label_renders_the_tally_once_and_only_in_the_suffix() {
+    // Names live in the prefix and counts live in the suffix, so the tally
+    // leaves the prefix entirely. The renderer offers its own count and total
+    // in the suffix components, and the label renders its own tally from its
+    // own fields, so a label that echoed the renderer's count as well would
+    // put the same figure on the row twice.
+    let label = StepBarLabel {
+        status_marker: String::new(),
+        workflow_id: "wf".into(),
+        step_id: "s1".into(),
+        tool: "echo@v1".into(),
+        version: "7.1".into(),
+        phase: "wf".into(),
+        completed: "1".into(),
+        total: "3".into(),
+    };
+    let suffix = SuffixComponents {
+        count: "1".into(),
+        total: "3".into(),
+        elapsed: "23s".into(),
+        ..Default::default()
+    };
+    let prefix = label.truncate_prefix(80);
+    assert!(!prefix.contains("1/3"), "tally must not render in the prefix: {prefix:?}");
+    let out = label.truncate_suffix(80, &suffix);
+    assert_eq!(out.matches("1/3").count(), 1, "tally rendered more than once: {out:?}");
+    assert!(out.ends_with("1/3 23s"), "tally should lead the suffix: {out:?}");
+}
+
+#[test]
 fn step_label_shrinks_tool_before_dropping_version() {
     // Under width pressure the elastic tool name is shortened first; only
-    // once it cannot shrink further is the version dropped. The leading
-    // head never yields.
+    // once it cannot shrink further is it dropped whole. The version and the
+    // phase both outrank the tool name, so both are still here after the tool
+    // has given back columns.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
@@ -153,21 +222,16 @@ fn step_label_shrinks_tool_before_dropping_version() {
         completed: "1".into(),
         total: "4".into(),
     };
-    let tight = label.truncate_prefix(20);
-    assert!(tight.contains("[wf]"), "phase lost: {tight:?}");
-    assert!(tight.contains("1/4"), "tally lost: {tight:?}");
-    assert!(tight.contains("[9.9.9]"), "version dropped too early: {tight:?}");
+    let tight = label.truncate_prefix(30);
     assert!(!tight.contains("a-very-long-tool-name"), "tool not shortened: {tight:?}");
-    assert!(tight.chars().count() <= 20, "overflowed: {tight:?}");
+    assert_eq!(tight, "wf s1 name@v1) [9.9.9] [wf]");
 }
 
 #[test]
-fn worker_label_front_ellipsises_very_long_tool_name() {
-    // A tool name longer than the budget is clipped to its tail, so the
-    // leading activity marker survives and the row ends in `limit)`, the end
-    // of the tool name. This is the behaviour change from the old prefix
-    // cut, which kept the head `(a-very-long-t` and discarded the whole
-    // activity marker.
+fn worker_label_clips_a_very_long_tool_name_from_the_front() {
+    // A tool name longer than the budget is clipped to its tail, so the row
+    // keeps the informative end of the name and still closes with the activity
+    // marker rather than dropping it.
     let label = WorkerBarLabel {
         status_marker: String::new(),
         workflow_id: String::new(),
@@ -175,8 +239,8 @@ fn worker_label_front_ellipsises_very_long_tool_name() {
         tool: "a-very-long-tool-name-that-exceeds-the-maximum-width-limit".into(),
         activity: "active".into(),
     };
-    let tight = label.truncate_prefix(15);
-    assert_eq!(tight, "[active] limit)");
+    let tight = label.truncate_prefix(20);
+    assert_eq!(tight, "limit) [active]");
 }
 
 #[test]
@@ -207,10 +271,10 @@ fn worker_suffix_keeps_auto_derived_timing_fields() {
 }
 
 #[test]
-fn step_label_front_ellipsises_very_long_tool_name() {
-    // With every head field empty the tool name is the only segment.
-    // It must be clipped from the front, keeping the tail, not cut from
-    // the front as the old implementation did.
+fn step_label_clips_a_very_long_tool_name_from_the_front() {
+    // With every other field empty the tool name is the only segment, so the
+    // clip has nothing to fall back on and the result is the bare tail of the
+    // name at exactly the budget.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: String::new(),
@@ -228,7 +292,7 @@ fn step_label_front_ellipsises_very_long_tool_name() {
 
 #[test]
 fn step_suffix_keeps_the_leading_tally_and_timing_fields() {
-    // A step bar carries its own progress tally in the label struct, and the
+    // The tally is the step bar's only count and renders in the suffix, and the
     // renderer separately supplies auto-derived elapsed, rate and ETA in the
     // suffix argument. Both must reach the rendered suffix: the timing fields
     // reach it only through that argument, so a `suffix_segments` that stopped

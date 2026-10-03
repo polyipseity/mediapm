@@ -3,20 +3,24 @@
 //! mediapm-utils owns the render push point but not the field layout. The
 //! two structs here carry conductor's own semantically-named fields and
 //! implement [`BarLabelTruncation`] with their own order. A step bar
-//! ([`StepBarLabel`]) carries real-progress fields (`version`,
-//! `completed`/`total`, `phase`); a worker-slot bar ([`WorkerBarLabel`])
-//! carries an `activity` marker (`active`/`idle`) alongside its identifiers
-//! and tool name, and never a workflow phase or progress tally.
+//! ([`StepBarLabel`]) carries real-progress fields (`version`, `completed`/
+//! `total`, `phase`); a worker-slot bar ([`WorkerBarLabel`]) carries an
+//! `activity` marker (`active`/`idle`) alongside its identifiers and tool
+//! name, and never a workflow phase or progress tally.
+//!
+//! Both labels put the status marker first and the phase or activity marker
+//! last, which is the order tool-sync already renders: `ffmpeg v7.1 [res]`
+//! names the thing before it says what state the thing is in.
 
 use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit_segments};
 
 /// Truncation order for a per-step (real-progress) bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix leads with `phase`, `status_marker`, and `completed`/`total`, so
-/// width pressure sheds the `tool` name first, then the version and
-/// identifiers, before the head. The `tool` name is elastic and is shortened
-/// from the front rather than dropped whole. The suffix repeats the tally,
+/// prefix ends with the version and the phase tag. Under width pressure the
+/// `tool` name shortens from the front first, and once it cannot shrink
+/// further the trailing `phase` is dropped, then the version, and only then
+/// the identifiers and the status marker. The suffix leads with the tally,
 /// then `elapsed`, `rate`, `eta`, and an elastic `custom`.
 ///
 /// The order is the whole mechanism. `fit_segments` drops from the tail
@@ -36,13 +40,17 @@ pub struct StepBarLabel {
     pub tool: String,
     /// Tool version, rendered bracketed as `[7.1]`.
     pub version: String,
-    /// Workflow phase tag, rendered bracketed as `[wf]`.
+    /// Workflow phase tag, rendered bracketed as `[wf]`. Trails the version
+    /// so a narrowed row keeps the version and loses the tag, which is the
+    /// order tool-sync's own `[res]` tag yields in.
     pub phase: String,
-    /// Completed count for the progress tally. Rendered only when both it
-    /// and `total` are non-empty.
+    /// Completed count for the progress tally, rendered as
+    /// `{completed}/{total}` in the suffix. Names belong in the prefix and
+    /// counts in the suffix, so this field has no prefix rendering. Empty
+    /// when the step has no tally.
     pub completed: String,
-    /// Total count for the progress tally. Rendered only when both it and
-    /// `completed` are non-empty.
+    /// Total count for the progress tally. Rendered only when `completed`
+    /// is non-empty.
     pub total: String,
 }
 
@@ -50,28 +58,19 @@ pub struct StepBarLabel {
 impl StepBarLabel {
     /// Build the prefix segments, most important first.
     ///
-    /// The three leading segments come first, so width pressure sheds the
-    /// version and identifiers before the phase, status marker, or tally.
+    /// The status marker leads and the phase tag trails, so the tag is the
+    /// first segment dropped and the marker is never dropped. A `[F]` that
+    /// got clipped away would leave a failed row reading as a succeeded one,
+    /// which is the one thing a row must not do.
     ///
-    /// The version and the identifiers are `Keep` rather than `Elastic`
-    /// because clipping them destroys what identifies them: `[7.1]` clipped
-    /// to `1]` and `default` clipped to `ult` both read as loose text, and
-    /// neither names a version or a workflow. The tally is pushed as a
-    /// single `{completed}/{total}` segment, so it is atomic by
-    /// construction and never renders as a bare count.
+    /// The identifiers, the version, and the phase are `Keep` rather than
+    /// `Elastic` because clipping them destroys what identifies them: `[7.1]`
+    /// clipped to `1]` and `default` clipped to `ult` both read as loose text,
+    /// and neither names a version or a workflow.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
-        if !self.phase.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.phase)));
-        }
         if !self.status_marker.is_empty() {
             segs.push(Segment::keep(format!("[{}]", self.status_marker)));
-        }
-        if !self.completed.is_empty() && !self.total.is_empty() {
-            segs.push(Segment::keep(format!("{}/{}", self.completed, self.total)));
-        }
-        if !self.version.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.version)));
         }
         if !self.workflow_id.is_empty() {
             segs.push(Segment::keep(self.workflow_id.clone()));
@@ -82,10 +81,20 @@ impl StepBarLabel {
         if !self.tool.is_empty() {
             segs.push(Segment::elastic(format!("({})", self.tool)));
         }
+        if !self.version.is_empty() {
+            segs.push(Segment::keep(format!("[{}]", self.version)));
+        }
+        if !self.phase.is_empty() {
+            segs.push(Segment::keep(format!("[{}]", self.phase)));
+        }
         segs
     }
 
     /// Build the suffix segments, most important first.
+    ///
+    /// The tally leads, because it is the only count the step bar has and the
+    /// renderer supplies one of its own alongside the timing fields, so the
+    /// label has to render exactly one of them.
     ///
     /// Free-form `custom` text is elastic so a long user string is
     /// shortened from the front rather than cut at its head.
@@ -131,10 +140,10 @@ impl BarLabelTruncation for StepBarLabel {
 /// Truncation order for a worker-slot (activity) bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix leads with `status_marker` and `activity`, so width pressure sheds
-/// the `tool` name first, then the identifiers, before the head. The `tool`
-/// name is elastic and is cut back to a boundary from the front rather than
-/// dropped whole.
+/// prefix ends with the `tool` name and the `activity` marker. Under width
+/// pressure the `tool` name shortens from the front first, and once it cannot
+/// shrink further the trailing marker is dropped, then the identifiers, and
+/// only then the status marker.
 /// A worker carries no workflow phase and no progress tally, so the suffix
 /// has no tally segment; the auto-derived `elapsed`, `rate`, and `eta` still
 /// render, ahead of an elastic `custom`.
@@ -153,7 +162,9 @@ pub struct WorkerBarLabel {
     /// Conductor tool name, rendered parenthesized as `(echo)`. The only
     /// elastic prefix segment.
     pub tool: String,
-    /// Worker state marker, rendered bracketed as `[active]` or `[idle]`.
+    /// Worker state marker, rendered bracketed as `[active]` or `[idle]`. It
+    /// trails the identifiers so a narrowed row gives up the tag before it
+    /// gives up the names of what is running.
     pub activity: String,
 }
 
@@ -161,8 +172,11 @@ pub struct WorkerBarLabel {
 impl WorkerBarLabel {
     /// Build the prefix segments, most important first.
     ///
-    /// The two leading segments come first, so width pressure sheds the
-    /// identifiers and tool name before the status marker or activity.
+    /// The status marker leads and the activity marker trails, so the
+    /// trailing tag is the first segment dropped and the marker is never
+    /// dropped. A `[F]` that got clipped away would leave a failed slot
+    /// reading as an idle one, which is the one thing a row must not do.
+    /// Tool-sync gives up its phase tag the same way.
     ///
     /// The identifiers are `Keep` rather than `Elastic` because clipping
     /// them destroys what identifies them: `default` clipped to `ult` names
@@ -174,9 +188,6 @@ impl WorkerBarLabel {
         if !self.status_marker.is_empty() {
             segs.push(Segment::keep(format!("[{}]", self.status_marker)));
         }
-        if !self.activity.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.activity)));
-        }
         if !self.workflow_id.is_empty() {
             segs.push(Segment::keep(self.workflow_id.clone()));
         }
@@ -185,6 +196,9 @@ impl WorkerBarLabel {
         }
         if !self.tool.is_empty() {
             segs.push(Segment::elastic(format!("({})", self.tool)));
+        }
+        if !self.activity.is_empty() {
+            segs.push(Segment::keep(format!("[{}]", self.activity)));
         }
         segs
     }

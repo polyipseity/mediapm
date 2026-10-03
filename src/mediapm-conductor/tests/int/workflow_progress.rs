@@ -409,7 +409,7 @@ async fn three_step_same_level_progress_ops() {
 /// marker. `WorkerBarLabel` renders `tool` parenthesized, so the `tool`
 /// placeholder the non-active states used to carry drew `(idle)` next to the
 /// `[idle]` that `activity` had already said. The active state keeps its
-/// tool name, so `[active] default s1 (broken)` has to survive the change.
+/// tool name, so `default s1 (broken) [active]` has to survive the change.
 #[tokio::test]
 async fn regression_idle_slot_prefix_stops_at_the_activity_marker() {
     fix_worker_pool_size();
@@ -447,7 +447,7 @@ async fn regression_idle_slot_prefix_stops_at_the_activity_marker() {
     );
     assert_eq!(
         active,
-        vec!["[active] default s1 (broken)".to_string(); 3],
+        vec!["default s1 (broken) [active]".to_string(); 3],
         "a slot running a step still names workflow, step and tool"
     );
 }
