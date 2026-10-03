@@ -1,0 +1,9 @@
+⠹     default s1 ffmpeg) [active]
+⠙     default s2 yt-dlp) [active]
+⠋     default s3 ffmpeg) [active]
+⠇      default s4 (deno) [active]
+⠧     default s5 rsgain) [active]
+⠦     default s6 yt-dlp) [active]
+⠴        default s7 (sd) [active]
+⠸     default s8 tagger) [active]
+⠏                        workflow  8/24

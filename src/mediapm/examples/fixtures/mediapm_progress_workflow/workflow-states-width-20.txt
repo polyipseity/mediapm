@@ -1,0 +1,7 @@
+⠸      default
+⠏          [W]
+⠏          [F]
+⠏       [idle]
+⠋      default 2/5
+⠹      default 1/3
+⠏               2/9

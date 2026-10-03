@@ -15,21 +15,46 @@
 //! from when the seed was the ceiling and an active row read `[active]` and
 //! nothing else.
 //!
-//! Where the label gives way, measured on 2026-10-03 by rendering this screen
-//! at every width the harness accepts: 41 columns is the narrowest at which all
-//! three rows that name a tool still show that tool in full. One column
-//! narrower both worker rows are down to the tail `ffmpeg)`, and by 30 a
-//! running worker reads `default s3` and nothing else. The per-step row holds
-//! its parenthesised tool name down to 32, so it goes on naming the tool eight
-//! columns after the worker rows have stopped. Below the fill crossing the
-//! rows give up their timing to keep their label, and a row whose label does
-//! not fit either keeps the timing instead, so the active workers read
-//! `⠙  22s` on a line too narrow for `default s3 [active]`.
-//! Those are facts about the seeds quoted above, not a contract, and they move
+//! Where the labels give way, measured on 2026-10-03 by rendering this screen
+//! at every width from 8 to 130 and reading the shape each row's prefix takes.
+//!
+//! The two labels on this screen give their columns up from opposite ends. A
+//! worker row shortens its tool name from the front and keeps the tail; on the
+//! baseline screen that name is whole at 41 columns, reads `ffmpeg)` at 40, and
+//! at 37 the `yt-dlp` row is already down to `dlp)`. Below 37 the tool is gone
+//! and the row reads `default s3 [active]` from width 32, and at 31 the activity
+//! tag goes as well. The longest of the managed tool names, `media-tagger`,
+//! reaches its whole `(media-tagger)` at 47 on the `dense` screen, which is where
+//! the worker rows run a whole pool at once. A step row shortens its version from
+//! the end and keeps the head, one column at a time: the version reads `7` at 34,
+//! `7.` at 35 and `7.1` whole at 36, by which time the tool name beside it has
+//! been whole since 32.
+//!
+//! The `states` scenario pushes both labels past the point where they fit. The
+//! worker's twenty-eight column tool name is never whole, and reads `flac)` at
+//! 37 and `to-flac)` at 40. The step bar's forty-one column version starts
+//! shrinking at 33 and stops at `autobuild-2025-1` on width 48, because the
+//! prefix slot caps at forty columns whatever the terminal is. The yield order
+//! shows on the other step row: its tool name is the thirty-four column
+//! `user-declared-lossless-transcode`, and the version beside it never renders at
+//! any width at all, because a trailing segment is dropped whole before the
+//! segment ahead of it is shortened.
+//!
+//! Below the fill crossing the rows give up their timing to keep their label,
+//! and a row whose label does not fit either keeps the timing instead, so the
+//! active workers read `⠙  22s` on a line too narrow for `default s3 [active]`.
+//! Those are facts about the labels quoted above, not a contract, and they move
 //! when a label changes length. Nothing in the suite is named after them,
 //! because a fixture called for one of those widths would go on testing that
-//! width after the seed it was measured against had moved, and its name would
+//! width after the label it was measured against had moved, and its name would
 //! be the only thing left still claiming the number mattered.
+//!
+//! # Scenarios
+//!
+//! [`SCENARIOS`] holds the three shapes this screen is captured in. Each entry
+//! declares how many bars its renderer draws, and the harness derives the
+//! terminal height from that count, so a scenario and its transcripts cannot
+//! drift apart.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,7 +62,35 @@ use std::time::Duration;
 use mediapm_conductor::orchestration::progress_labels::{StepBarLabel, WorkerBarLabel};
 use mediapm_utils::progress::{BarStyle, ProgressBarHandle};
 
+use crate::scenarios::{Scenario, ScenarioName};
 use crate::support::{ScreenConfig, capture_terminal};
+
+/// The workflow screen in each of the three shapes it is captured in.
+///
+/// `baseline` draws the screen as it shipped. `dense` runs a whole worker pool
+/// at once so the band of slots is long. `states` draws tool names and a version
+/// wider than any committed transcript, which is the only thing the other two
+/// leave out once the baseline has already drawn a warned slot, a failed slot and
+/// an idle one.
+pub const SCENARIOS: [Scenario; 3] = [
+    Scenario::new(ScenarioName::Baseline, 7, render_workflow_screen),
+    Scenario::new(ScenarioName::Dense, 9, render_dense),
+    Scenario::new(ScenarioName::States, 7, render_states),
+];
+
+/// The scenario this screen draws under `name`.
+///
+/// The table covers every name [`ScenarioName`] has, so the match is total by
+/// construction rather than by a fallback that would quietly draw the wrong
+/// screen.
+#[must_use]
+pub fn scenario(name: ScenarioName) -> Scenario {
+    match name {
+        ScenarioName::Baseline => SCENARIOS[0],
+        ScenarioName::Dense => SCENARIOS[1],
+        ScenarioName::States => SCENARIOS[2],
+    }
+}
 
 /// The states a worker-slot bar distinguishes.
 ///
@@ -244,6 +297,212 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     // rather than success.
     step_bar.advance(1);
     overall.set_position(4);
+    overall.finish_warning();
+    screen.join();
+    drop(terminal);
+    grid.contents()
+}
+
+/// A pool with every slot busy, which is what a wide host looks like.
+///
+/// The coordinator sizes the pool from the host's available parallelism and lets
+/// `MEDIAPM_CONDUCTOR_WORKER_POOL_SIZE` override it
+/// (`orchestration/config.rs:40`), so a machine with room for it runs a level's
+/// steps side by side and the screen fills with active slots. The baseline leaves
+/// two of its five slots running and puts the other three through a warning, a
+/// failure and a return to idle; this one has nothing in it but running steps.
+///
+/// There is no per-step bar in this scenario, and that is a measurement rather
+/// than an oversight. A band wide enough to want one stops being reproducible:
+/// past a certain number of animating rows at once, one row's spinner glyph comes
+/// out a step different depending on how tall the terminal was, which
+/// [`Scenario::render_at`](crate::scenarios::Scenario::render_at) refuses as a
+/// frame that moves with the height. Measured on 2026-10-03, eight animating rows
+/// reproduce at every width from 8 to 500, ten of them fail at width 8 about four
+/// runs in ten, and sixteen of them fail from width 8 to width 15 on every run.
+/// The draw target throttles redraws against the wall clock and every unfinished
+/// bar animates on every frame, so a wide band is the likely cause. The bar count
+/// here is the largest this renderer can hold still, not the largest a host could
+/// reach.
+///
+/// The steps carry the six managed tools' bare ids, which is what a conductor
+/// step names (`WorkerBarLabel.tool` is `ToolSpec.name`, and a managed tool's
+/// generated-document key is its id plus a content hash, while the spec's own
+/// name is the bare id). A workflow reaches for the same tool from more than one
+/// step, so ffmpeg and yt-dlp each appear twice.
+#[must_use]
+fn render_dense(config: ScreenConfig) -> String {
+    /// Slots the pool holds. A pool this size is a host with the cores to fill
+    /// it, which is the case the baseline never draws.
+    const POOL_SIZE: usize = 8;
+    /// Steps in the workflow, which is what the overall bar totals. The level
+    /// below runs eight of them, so the overall bar is part-way through the whole
+    /// workflow rather than through the level.
+    const STEP_COUNT: u64 = 24;
+    /// Seed the coordinator installs on every worker slot, quoted from
+    /// `coordinator.rs:348`.
+    const WORKFLOW_SEED: &str = "idle";
+    /// The step each slot runs and the tool it runs.
+    const LEVEL_STEPS: [(&str, &str); POOL_SIZE] = [
+        ("s1", "ffmpeg"),
+        ("s2", "yt-dlp"),
+        ("s3", "ffmpeg"),
+        ("s4", "deno"),
+        ("s5", "rsgain"),
+        ("s6", "yt-dlp"),
+        ("s7", "sd"),
+        ("s8", "media-tagger"),
+    ];
+
+    let (terminal, grid, clock) = capture_terminal(config);
+    let (screen, overall) = terminal.screen().with_overall("workflow", 1).build();
+    overall.set_total(STEP_COUNT);
+
+    let workers: Vec<_> = (0..POOL_SIZE)
+        .map(|_| {
+            let bar = screen.add_bar(0, WORKFLOW_SEED);
+            bar.set_style(BarStyle::WorkerSpinner);
+            WorkerSlot::Idle.apply(&bar);
+            bar.finish_success();
+            bar
+        })
+        .collect();
+    screen.tick();
+    clock.advance(Duration::from_secs(1));
+
+    // Each slot takes its step and stays on it. The frame is caught mid-level,
+    // so no slot has gone back to idle and no slot has failed.
+    for (index, (step_id, tool)) in LEVEL_STEPS.iter().enumerate() {
+        dispatch(&workers[index], "default", step_id, tool);
+        overall.advance(1);
+        screen.tick();
+        clock.advance(Duration::from_secs(1 + index as u64));
+    }
+
+    overall.finish_success();
+    screen.join();
+    drop(terminal);
+    grid.contents()
+}
+
+/// The labels wider than any committed transcript.
+///
+/// Four slots and two per-step bars. The baseline has already drawn a warned
+/// slot, a failed slot and an idle one, so this scenario spends its width on the
+/// two ways a label gives up columns, which is what the shorter seeds never
+/// reach.
+///
+/// The tool names come from the workflow document: `WorkerBarLabel.tool` is the
+/// step's own `ToolSpec.name`, which for a managed tool is the bare id and for a
+/// tool the user declared is whatever the user spelled. Both names here are
+/// hyphenated, which is what makes the front clip bite rather than discard the
+/// segment: a tail with no boundary in it names nothing, so it is dropped whole.
+///
+/// The step rows are split the other way round. One carries ffmpeg's composite
+/// human-readable version, forty-one columns wide, which is wider than the prefix
+/// slot's own ceiling of forty, so the head-keeping shrink runs at every width the
+/// harness accepts and the version never renders whole. The other carries sd's
+/// `v1.10.0` beside a thirty-four column tool name, and the version never renders
+/// there either: it trails the tool name, so it is dropped whole before the name
+/// ahead of it is shortened, and what is left on the row is the front clip
+/// working on the name.
+#[must_use]
+fn render_states(config: ScreenConfig) -> String {
+    /// Slots the pool holds.
+    const POOL_SIZE: usize = 4;
+    /// Steps in the workflow, which is what the overall bar totals.
+    const STEP_COUNT: u64 = 9;
+    /// Outputs the per-step bar tracking the wide version tracks.
+    const WIDE_VERSION_OUTPUTS: u64 = 5;
+    /// Outputs the per-step bar tracking the wide tool name tracks.
+    const WIDE_TOOL_OUTPUTS: u64 = 3;
+    /// Seed the coordinator installs on every worker slot, quoted from
+    /// `coordinator.rs:348`.
+    const WORKFLOW_SEED: &str = "idle";
+    /// ffmpeg's `human_readable_version` is its `BtbN` autobuild tag and the
+    /// evermeet version as one string (`tools/provider/mod.rs:391`).
+    const FFMPEG_VERSION: &str = "autobuild-2025-10-03-12-00+evermeet-8.1.2";
+    /// sd's reported version.
+    const SD_VERSION: &str = "v1.10.0";
+
+    let (terminal, grid, clock) = capture_terminal(config);
+    let (screen, overall) = terminal.screen().with_overall("workflow", 1).build();
+    overall.set_total(STEP_COUNT);
+
+    let workers: Vec<_> = (0..POOL_SIZE)
+        .map(|_| {
+            let bar = screen.add_bar(0, WORKFLOW_SEED);
+            bar.set_style(BarStyle::WorkerSpinner);
+            WorkerSlot::Idle.apply(&bar);
+            bar.finish_success();
+            bar
+        })
+        .collect();
+    screen.tick();
+    clock.advance(Duration::from_secs(1));
+
+    // The first slot runs a step whose tool name is wider than the prefix slot's
+    // ceiling, so its parenthesised name shortens from the front at every width.
+    dispatch(&workers[0], "default", "s7", "transcode-lossless-to-flac");
+    screen.tick();
+    clock.advance(Duration::from_secs(3));
+
+    // The second slot's step failed and the coordinator will retry it.
+    dispatch(&workers[1], "default", "s8", "sd");
+    screen.tick();
+    clock.advance(Duration::from_secs(2));
+    WorkerSlot::PendingRetry.apply(&workers[1]);
+    workers[1].advance(1);
+    workers[1].finish_warning();
+    overall.advance(1);
+    screen.tick();
+    clock.advance(Duration::from_secs(1));
+
+    // The third slot's step failed with no retry left.
+    dispatch(&workers[2], "default", "s9", "import");
+    screen.tick();
+    clock.advance(Duration::from_secs(2));
+    WorkerSlot::Failed.apply(&workers[2]);
+    workers[2].advance(1);
+    workers[2].finish_warning();
+    overall.advance(1);
+    screen.tick();
+    clock.advance(Duration::from_secs(1));
+
+    // The fourth slot never receives a step at all, which is a different idle row
+    // from one whose step finished: neither carries a marker, and this one has
+    // no counters to have advanced.
+    screen.tick();
+
+    // The wide version and the wide tool name are on separate steps so each row
+    // shows one shrink biting rather than both at once.
+    let wide_version = screen.add_bar(WIDE_VERSION_OUTPUTS, WORKFLOW_SEED);
+    wide_version.set_truncation(Arc::new(StepBarLabel {
+        status_marker: String::new(),
+        workflow_id: "default".to_string(),
+        step_id: "s7".to_string(),
+        tool: "ffmpeg".to_string(),
+        version: FFMPEG_VERSION.to_string(),
+        completed: "2".to_string(),
+        total: WIDE_VERSION_OUTPUTS.to_string(),
+    }));
+    wide_version.set_position(2);
+
+    let wide_tool = screen.add_bar(WIDE_TOOL_OUTPUTS, WORKFLOW_SEED);
+    wide_tool.set_truncation(Arc::new(StepBarLabel {
+        status_marker: String::new(),
+        workflow_id: "default".to_string(),
+        step_id: "s8".to_string(),
+        tool: "user-declared-lossless-transcode".to_string(),
+        version: SD_VERSION.to_string(),
+        completed: "1".to_string(),
+        total: WIDE_TOOL_OUTPUTS.to_string(),
+    }));
+    wide_tool.set_position(1);
+    screen.tick();
+    clock.advance(Duration::from_secs(4));
+
+    overall.set_position(2);
     overall.finish_warning();
     screen.join();
     drop(terminal);

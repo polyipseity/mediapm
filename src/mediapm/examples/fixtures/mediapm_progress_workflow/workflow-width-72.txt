@@ -1,7 +1,7 @@
-⠙       default s3 (ffmpeg) [active] ░░░░░░░░░░░░░░░ 22s 0/d
-⠙       default s4 (yt-dlp) [active] ░░░░░░░░░░░░░░░ 19s 0/d
-⠏                         [W] [idle] ███████████████ 4s
-⠏                         [F] [idle] ███████████████ 5s
-⠏                             [idle] ███████████████ 6s
-⠇     default s3 (ffmpeg) [7.1] [wf] █████░░░░░░░░░░ 1/3 22s 0/d
-⠏                  [W] workflow [wf] █████░░░░░░░░░░  4/12 23s
+⠙     default s3 (ffmpeg) [active] ░░░░░░░░░░░░░░░░░ 22s 0/d
+⠙     default s4 (yt-dlp) [active] ░░░░░░░░░░░░░░░░░ 19s 0/d
+⠏                       [W] [idle] █████████████████ 4s
+⠏                       [F] [idle] █████████████████ 5s
+⠏                           [idle] █████████████████ 6s
+⠇          default s3 (ffmpeg) 7.1 █████░░░░░░░░░░░░ 1/3 22s 0/d
+⠏                     [W] workflow █████░░░░░░░░░░░░  4/12 23s

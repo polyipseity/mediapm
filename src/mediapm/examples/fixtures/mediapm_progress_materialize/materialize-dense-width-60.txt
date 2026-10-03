@@ -1,0 +1,10 @@
+⠏       01 - Telepathy.flac Children [cmt] █████ 2s
+⠏     02 - Olson.wav Canada/Geogaddi [cmt] █████ 3s
+⠏        01 - In the Flesh?.m4a Wall [cmt] █████ 4s
+⠸     02 - The Thin Ice.m4a The Wall [vrf] █░░░░ 15s 0/d
+⠴          02 - Xtal.m4a Works 85-92 [stg] ░░░░░ 13s 0/d
+⠦       You Up [youtube.dQw4w9WgXcQ] [stg] ░░░░░ 12s 0/d
+⠏                         thumbnails [wrt] █████ 1s
+⠋     Up [youtube.dQw4w9WgXcQ] links [wrt] █░░░░ 6s 0/d
+⠏            rickroll.m3u8 playlists [stg] █████ 2s
+⠇                            materializing ██░░░ 33s 4/m 43s

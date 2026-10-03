@@ -1,0 +1,9 @@
+⠹            default s1
+⠙            default s2
+⠋            default s3
+⠇            default s4
+⠧            default s5
+⠦            default s6
+⠴            default s7
+⠸            default s8
+⠏              workflow  8/24
