@@ -56,7 +56,7 @@ On a frame with no bar, the timing is the first thing the suffix gives up, becau
 
 Every width the progress examples accept draws one line per row on all three screens, which the three `*_screen_never_wraps_a_row` sweeps pin.
 
-A frame drops its fill when the fill the budget affords is at or below `MIN_BAR_FILL`. Four cells of `░░░░` or `████` carry a quarter-resolution fraction that the count beside them already states, and they are paid for out of a label being cut to `…`. So at that point the frame stops drawing a bar and gives the columns to the label and the count instead, which is what `{spinner} {prefix} {msg}` is for.
+A frame drops its fill when the fill the budget affords is at or below `MIN_BAR_FILL`. Four cells of `░░░░` or `████` carry a quarter-resolution fraction that the count beside them already states, and they are paid for out of a label being clipped down to its tail. So at that point the frame stops drawing a bar and gives the columns to the label and the count instead, which is what `{spinner} {prefix} {msg}` is for.
 
 Above a screen's own crossing nothing changes: the fill is back, the four template fields are back, and a frame looks the way it always did. The crossings differ per screen because each screen's labels differ, and the width at which the labels stop overflowing the line is a property of those labels. Measured over the three example screens at every width from 8 to 120, the fill is at the floor at every width up to 58 on tool sync and materialization and up to 65 on the workflow screen, whose labels are seven columns wider. Read `recompute_layout` for the question it asks; there is no width constant to look up.
 
@@ -154,9 +154,9 @@ All three structs implement [`BarLabelTruncation`] (defined in `src/mediapm-util
 
 Only two of the three are installed by production code: the conductor coordinator installs `WorkerBarLabel`, the mediapm materializer installs `MaterializationBarLabel`, and `StepBarLabel` has no production caller. It is exercised by `mediapm_progress_workflow` and by `src/mediapm-conductor/tests/int/progress_labels.rs`, so the type is supported and tested while a live workflow draws no such bar.
 
-Fitting uses `fit_segments` (shared from `mediapm_utils::progress`). Segments are supplied most important first and the list is walked from the tail, so the **last** segment is the first to yield. Under width pressure, elastic segments are shortened from the front and keep their informative tail, so a path retains its filename and immediate parent; once no segment can shrink further, whole segments drop from the tail until the remainder fits. No segment is ever cut at a character boundary: a segment is shown whole, shortened from the front, or absent.
+Fitting uses `fit_segments` (shared from `mediapm_utils::progress`). Segments are supplied most important first and the list is walked from the tail, so the **last** segment is the first to yield. Under width pressure, elastic segments are shortened from the front and keep their informative tail, so a path held as a single segment keeps its filename and its immediate parent whenever the cut lands on a `/`; once no segment can shrink further, whole segments drop from the tail until the remainder fits. No segment is ever cut inside a word: a segment is shown whole, shortened from the front to a whole word or a whole bracketed group, or absent. Nothing marks the cut, so a shortened segment is indistinguishable from one that was always that short. What it is not is a partial word: the tail always begins at a boundary.
 
-**Segment order alone determines the outcome.** `fit_segments` drops from the tail unconditionally, so a field survives by its position in the list. When designing a new label, rank the fields and mark the shrink behaviour (`Shrink::Keep` for whole, `Shrink::FrontEllipsis` for elastic).
+**Segment order alone determines the outcome.** `fit_segments` drops from the tail unconditionally, so a field survives by its position in the list. When designing a new label, rank the fields and mark the shrink behaviour (`Shrink::Keep` for whole, `Shrink::Front` for elastic).
 
 The per-screen orderings summarised under each struct below are a convenience, not the spec. The normative ranking, and the reasoning behind each segment's classification, live in the `prefix_segments` and `suffix_segments` bodies of `src/mediapm-conductor/src/orchestration/progress_labels.rs` (`StepBarLabel`, `WorkerBarLabel`) and `src/mediapm/src/materializer/progress_labels.rs` (`MaterializationBarLabel`). Read the code when a field's classification is in question.
 
@@ -412,7 +412,7 @@ Every CLI command handler follows a consistent shape: perform the operation, pri
 | Module | Crate | Feature | Purpose |
 |---|---|---|---|
 | `mediapm_utils::report` | `mediapm-utils` | `report` | `StatusIcon`, `print_result`, `format_result_line`, `print_warning`, `print_hint`, `print_error`, `print_heading`, `print_status_report`, `format_duration` |
-| `mediapm_utils::progress` | `mediapm-utils` | `progress` | `ProgressScreen`, `ProgressBarHandle`, `ProgressTerminal`, `ProgressScreenApi`, `ProgressBarApi`, `BarLabelTruncation`, `fit_segments`, `Segment`, `Shrink`, `front_ellipsis` |
+| `mediapm_utils::progress` | `mediapm-utils` | `progress` | `ProgressScreen`, `ProgressBarHandle`, `ProgressTerminal`, `ProgressScreenApi`, `ProgressBarApi`, `BarLabelTruncation`, `fit_segments`, `Segment`, `Shrink`, `front_tail` |
 | `mediapm_utils::progress` (always) | `mediapm-utils` | — | `DownloadProgressSnapshot`, `ProgressCallback` |
 | `mediapm::output::progress` | `mediapm` | — | `ProgressScreen`, `ProgressBarHandle`, `ProgressBarApi`, `ProgressScreenApi`, `ProgressTerminal` re-exports |
 | `mediapm::output::report` | `mediapm` | — | Re-exports from `mediapm_utils::report` |
