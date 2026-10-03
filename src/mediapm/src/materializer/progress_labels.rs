@@ -8,7 +8,9 @@
 
 use crate::config::hierarchy_types::HierarchyEntryKind;
 
-use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit_segments};
+use mediapm_utils::progress::{
+    BarLabelTruncation, Brackets, Segment, SuffixComponents, fit_segments,
+};
 
 use self::MaterializationPhase::{Commit, Staging, Verify};
 
@@ -83,8 +85,9 @@ impl HierarchyEntryKind {
 /// Truncation order for a materialization bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix is `status_marker`, `entry_name`, `entry_path`, `file_name`,
-/// `phase`, with the two path halves elastic so they shorten from the front.
+/// prefix is `status_marker`, `entry_name`, `entry_id`, `entry_path`,
+/// `file_name`, `phase`, with the two path halves elastic so they shorten from
+/// the front.
 /// The suffix is `elapsed`, `rate`, `eta`, then an elastic `custom`, in the
 /// same order `WorkerBarLabel` uses.
 ///
@@ -118,7 +121,10 @@ pub struct MaterializationBarLabel {
     pub status_marker: String,
     /// Directory portion of hierarchy path, e.g. `"Music/Artist/Album"`.
     pub entry_path: String,
-    /// Basename of hierarchy entry, e.g. `"song.mkv"`.
+    /// Basename of hierarchy entry, e.g. `"song.mkv"`. A trailing
+    /// square-bracket group is taken out into the label's own segment by
+    /// [`split_entry_id`], so the elastic name carries no brackets for a clip
+    /// to cut in half.
     pub entry_name: String,
     /// Extracted file basename (sub-bars only), e.g. `"cover.jpg"`.
     pub file_name: String,
@@ -138,16 +144,22 @@ impl MaterializationBarLabel {
     /// `entry_name` and `entry_path` are both elastic, and they yield in that
     /// order because `fit_segments` shrinks from the tail: the directory
     /// gives up its leading elements first, and only then does the basename
-    /// yield anything of its own. Both are cut back to a boundary, so what
-    /// survives is a whole element rather than the last few characters of one:
-    /// a directory at 16 columns reads `Rick Astley`, and the leading half of
-    /// a path is the artist's name, which the row is not about.
+    /// yield anything of its own. Both are cut between characters, so a
+    /// directory at 16 columns can read as the last few columns of an
+    /// element, and the leading half of a path is the artist's name, which
+    /// the row is not about.
+    ///
+    /// The id [`split_entry_id`] lifts out of the name ranks above the path:
+    /// it is short, whole, and names the entry exactly where the path names
+    /// only a directory in it. It is `Keep`, so width pressure spends the
+    /// elastic halves before giving it up.
     ///
     /// `entry_name` is elastic rather than kept whole because a kept name is a
     /// name that vanishes: at 39 columns the online demo's 59-column folder
-    /// name has a tail that carries the bracketed media id, which is what
-    /// separates one video from another in a list of them, and that tail only
-    /// exists because the elastic name is cut rather than surrendered.
+    /// name has a tail that carries the words in front of the media id, which
+    /// is what separates one video from another in a list of them, and that
+    /// tail only exists because the elastic name is cut rather than
+    /// surrendered.
     ///
     /// `file_name` only appears on a `[wrt]` sub-bar, where it repeats the
     /// variant name the parent row already implies, and there are as many of
@@ -159,10 +171,14 @@ impl MaterializationBarLabel {
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.status_marker.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.status_marker)));
+            segs.push(Segment::keep(self.status_marker.clone()).brackets(Brackets::Square));
         }
-        if !self.entry_name.is_empty() {
-            segs.push(Segment::elastic(self.entry_name.clone()));
+        let (stem, entry_id) = split_entry_id(&self.entry_name);
+        if !stem.is_empty() {
+            segs.push(Segment::elastic(stem.to_string()));
+        }
+        if !entry_id.is_empty() {
+            segs.push(Segment::keep(entry_id.to_string()).brackets(Brackets::Square));
         }
         if !self.entry_path.is_empty() {
             segs.push(Segment::elastic(self.entry_path.clone()));
@@ -171,7 +187,7 @@ impl MaterializationBarLabel {
             segs.push(Segment::keep(self.file_name.clone()));
         }
         if let Some(phase) = self.phase {
-            segs.push(Segment::keep(format!("[{}]", phase.tag())));
+            segs.push(Segment::keep(phase.tag()).brackets(Brackets::Square));
         }
         segs
     }
@@ -239,6 +255,32 @@ pub fn split_entry_path(path: &str) -> (&str, &str) {
         Some(pos) => (&path[..pos], &path[pos + 1..]),
         None => ("", path),
     }
+}
+
+/// Split a hierarchy basename into `(stem, bracket_id)`.
+///
+/// The `rename_files` projection puts the media id in square brackets at the
+/// end of a folder name, e.g. `Rick Astley - Never Gonna Give You Up
+/// [youtube.dQw4w9WgXcQ]`. That group is the id, it is what separates one
+/// video from another in a list of them, and it is the piece a narrow row
+/// cannot afford to half-show. [`MaterializationBarLabel`] renders it as a
+/// segment of its own, so the name beside it carries no brackets for a clip
+/// to cut.
+///
+/// A basename that does not end in `]` has no trailing group, and the name is
+/// returned whole with an empty id. A media file's projected name ends in its
+/// extension (`...[youtube.dQw4w9WgXcQ].link.mkv`), so it takes that branch:
+/// the id stays inside the elastic name, which is the one shape on this
+/// screen where a clip can still leave a bracket behind.
+#[must_use]
+pub fn split_entry_id(name: &str) -> (&str, &str) {
+    let Some(open) = name.rfind('[') else {
+        return (name, "");
+    };
+    let Some(id) = name[open + 1..].strip_suffix(']') else {
+        return (name, "");
+    };
+    (name[..open].trim_end(), id)
 }
 
 #[cfg(test)]
@@ -340,15 +382,14 @@ mod tests {
 
         // Tight: the path must keep its last directory, never its head.
         let tight = label.truncate_prefix(20);
-        assert_eq!(tight, "song.mkv 1977 [stg]");
+        assert_eq!(tight, "song.mkv /1977 [stg]");
         assert!(!tight.contains("Music/"), "path head retained instead of tail: {tight:?}");
         assert!(tight.contains("song.mkv"), "entry_name lost: {tight:?}");
     }
 
-    /// The path yields its columns before the name yields any of its own, and
-    /// what the path yields is a whole directory rather than a fragment of
-    /// one. When the path can yield nothing at all, it is dropped and the name
-    /// yields in its place, down to its last hyphenated word.
+    /// The path yields its columns before the name yields any of its own.
+    /// When the path can yield nothing at all, it is dropped and the name
+    /// takes the overage instead, cut between characters.
     #[test]
     fn entry_name_shortens_from_the_front_and_the_path_yields_first() {
         let label = MaterializationBarLabel {
@@ -359,10 +400,10 @@ mod tests {
         };
         // The path gives up everything above its last element and the name is
         // untouched.
-        assert_eq!(label.truncate_prefix(40), "important-file.mkv path/segments [cmt]");
+        assert_eq!(label.truncate_prefix(40), "important-file.mkv g/path/segments [cmt]");
         // Too narrow for the path at any answer it can give, so it is dropped
         // and the name takes the overage instead.
-        assert_eq!(label.truncate_prefix(23), "file.mkv [cmt]");
+        assert_eq!(label.truncate_prefix(23), "mportant-file.mkv [cmt]");
     }
 
     /// A folder name wider than the budget still names itself.
@@ -375,7 +416,12 @@ mod tests {
     /// `MaterializationBarLabel` for the order that fixes it.
     ///
     /// What the name keeps at this width is the bracketed media id and the
-    /// words in front of it, cut back to the last space.
+    /// words in front of it.
+    ///
+    /// The id is a segment of its own, so it is rendered whole or dropped
+    /// whole at every width: no clip of the name beside it can leave half a
+    /// bracket pair on the row, which is the whole reason the label splits it
+    /// out of `entry_name`.
     #[test]
     fn an_over_long_folder_name_keeps_the_tail_of_its_name() {
         let label = MaterializationBarLabel {
@@ -392,6 +438,14 @@ mod tests {
             "name not clipped to its tail: {out:?}"
         );
         assert!(out.chars().count() <= 39, "overflowed: {out:?}");
+
+        for width in 3..=39 {
+            let out = label.truncate_prefix(width);
+            assert!(
+                !out.contains(']') || out.contains("[youtube.dQw4w9WgXcQ]"),
+                "stray closing bracket at width {width}: {out:?}"
+            );
+        }
     }
 
     /// A materialization row shows the timing the renderer derives for it.

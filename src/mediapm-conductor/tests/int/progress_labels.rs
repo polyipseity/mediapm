@@ -139,7 +139,10 @@ fn step_label_drops_the_version_before_touching_the_tool_name() {
         total: "4".into(),
     };
     assert_eq!(label.truncate_prefix(16), "wf s1 (echo@v1)");
-    assert_eq!(label.truncate_prefix(14), "wf s1 echo@v1)");
+    // One column narrower than the bracketed name, the name is whole and
+    // still only the parentheses go: decoration is what a row gives up
+    // before it cuts a name in half.
+    assert_eq!(label.truncate_prefix(14), "wf s1 echo@v1");
 }
 
 #[test]
@@ -221,9 +224,12 @@ fn step_label_clips_a_long_tool_name_after_the_version_is_gone() {
     };
     assert_eq!(label.truncate_prefix(32), "wf s1 (a-very-long-tool-name@v1)");
 
+    // Two columns narrower than the bracketed name, so the whole name renders
+    // and only its parentheses are gone. The name is never shown cut with a
+    // bracket left over: the clipper is handed the name, not `(name)`.
     let tight = label.truncate_prefix(30);
-    assert_eq!(tight, "wf s1 very-long-tool-name@v1)");
-    assert!(!tight.contains("a-very-long-tool-name"), "tool not shortened: {tight:?}");
+    assert_eq!(tight, "wf s1 a-very-long-tool-name@v1");
+    assert!(!tight.contains(')'), "a closing parenthesis outlived its name: {tight:?}");
     assert!(!tight.contains("9.9.9"), "version should be gone at 30: {tight:?}");
 }
 
@@ -240,7 +246,7 @@ fn worker_label_clips_a_very_long_tool_name_from_the_front() {
         activity: "active".into(),
     };
     let tight = label.truncate_prefix(20);
-    assert_eq!(tight, "limit) [active]");
+    assert_eq!(tight, "width-limit [active]");
 }
 
 #[test]
@@ -285,7 +291,7 @@ fn step_label_clips_a_very_long_tool_name_from_the_front() {
         total: String::new(),
     };
     let tight = label.truncate_prefix(20);
-    assert_eq!(tight, "maximum-width-limit)");
+    assert_eq!(tight, "-maximum-width-limit");
     assert_eq!(tight.chars().count(), 20);
 }
 

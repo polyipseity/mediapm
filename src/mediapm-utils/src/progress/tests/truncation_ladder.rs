@@ -1,52 +1,38 @@
 //! Unit tests for the shared fitting ladder (`fit_segments`).
 //!
-//! These pin the properties the Phase 2 design promises at the
+//! These pin the properties the fitting policy promises at the
 //! pure-function level, with no terminal and no label type involved. A
 //! failure here means the fitting policy itself is broken, which the
 //! per-label tests would not localise.
 
-use crate::progress::{Segment, Shrink, fit_segments, front_tail};
+use crate::progress::{Brackets, Segment, fit_segments, front_tail};
 
 /// Head: phase, status, tally. Elastic: tool. Keep: version, ids.
 fn step_segments() -> Vec<Segment> {
     vec![
-        Segment::keep("[wf]"),
-        Segment::keep("[F]"),
+        Segment::keep("wf").brackets(Brackets::Square),
+        Segment::keep("F").brackets(Brackets::Square),
         Segment::keep("1/4"),
         Segment::keep("9.9.9"),
         Segment::keep("default"),
         Segment::keep("s5"),
-        Segment::elastic("(mediapm-conductor-builtin-archive)"),
+        Segment::elastic("mediapm-conductor-builtin-archive").brackets(Brackets::Round),
     ]
 }
 
 /// A segment set whose elastic pieces are paths and a hyphenated name, the
-/// shapes the three progress screens actually clip. Neither carries a space,
-/// so each one reaches the output as a single token and a token can be traced
-/// back to the segment it came from.
+/// shapes the three progress screens actually clip.
 fn path_segments() -> Vec<Segment> {
     vec![
-        Segment::keep("[cmt]"),
+        Segment::keep("cmt").brackets(Brackets::Square),
         Segment::elastic("Music/Artist/Album/song.mkv"),
         Segment::elastic("mediapm-conductor-builtin-archive"),
     ]
 }
 
-/// Whether `token` is a tail [`front_tail`] could have produced from `seg`.
-///
-/// The clip cuts back to a boundary, so the budget that produced a tail is
-/// not its own width: `front_tail` on the tail's width cuts further. The
-/// tail is legitimate when some budget at or above that width returns it
-/// unchanged, which is what a whole segment and a clipped one both do.
-fn is_a_tail_of(token: &str, seg: &Segment) -> bool {
-    (token.chars().count()..=seg.text.chars().count())
-        .any(|budget| front_tail(&seg.text, budget) == token)
-}
-
 /// A head-keeping segment gives columns back from its end, so a version
 /// walks down one column at a time: `7.1`, `7.`, `7`, then nothing. The
-/// clip lands between characters rather than after a boundary, because a
-/// version carries none to cut after.
+/// clip lands between characters, and a version carries none to cut after.
 #[test]
 fn head_keeping_clip_takes_columns_from_the_end_of_a_version() {
     let version = vec![Segment::elastic_head("7.1")];
@@ -58,22 +44,17 @@ fn head_keeping_clip_takes_columns_from_the_end_of_a_version() {
 
 /// The two elastic modes cut opposite ends of the same value, so they have
 /// to disagree about its shape at the same width.
-///
-/// The version cases are the ones a tail-keeping clip cannot reach: `7.1`
-/// holds no boundary, so [`front_tail`] finds nothing to cut after and
-/// yields the empty string at every width below the whole value. If the
-/// head mode ever dispatched to it, all four of those expectations would
-/// read empty and this test would fail.
 #[test]
 fn the_two_elastic_modes_are_not_the_same_clip() {
+    // Both clips land between characters, so at two columns a version reads
+    // from the left under one mode and from the right under the other.
     let version_head = vec![Segment::elastic_head("7.1")];
     let version_tail = vec![Segment::elastic("7.1")];
-    assert_eq!(fit_segments(&version_tail, 2), "");
+    assert_eq!(fit_segments(&version_tail, 2), ".1");
     assert_eq!(fit_segments(&version_head, 2), "7.");
     assert_eq!(fit_segments(&version_head, 1), "7");
 
-    // A value that does carry a boundary has both ends worth naming, so the
-    // two modes cut visibly different pieces out of it at one width.
+    // A value with both ends worth naming shows the same split at one width.
     let path_head = vec![Segment::elastic_head("Music/song.mkv")];
     let path_tail = vec![Segment::elastic("Music/song.mkv")];
     assert_eq!(fit_segments(&path_head, 8), "Music/so");
@@ -112,63 +93,29 @@ fn head_survives_below_and_above_its_own_width() {
     }
 }
 
-/// Every width stays inside the budget, and no width renders a token that
-/// could only have come from cutting a word in half.
+/// Rendered length never rises as the slot narrows.
 ///
-/// This replaces `output_length_is_monotonic_in_width`. Monotonicity was
-/// dropped because the clip snaps the tail start to a boundary, and where the
-/// next boundary sits is a step function of the budget: on `step_segments` the
-/// row is 38 columns at width 45, 46 columns at width 46, and 38 again at
-/// width 47, because only width 46 lands the tail right after a hyphen. A row
-/// that gains text as the window narrows is jitter, but it never overflows and
-/// it never shows half a word, which is the defect that mattered.
+/// This is the property the boundary-snapped clip could not hold. Snapping
+/// moved the tail start to the next boundary, and where that boundary sits is
+/// a step function of the budget, so the row was 38 columns at width 45, 46
+/// columns at width 46, and 38 again at width 47. A row that grows as the
+/// window narrows reads as jitter rather than as a label. The blind clip has
+/// no step in it, so the ladder is checked over the whole range the
+/// transcript fixtures are captured at.
 #[test]
-fn a_row_never_overflows_and_never_splits_a_word() {
-    let segments = path_segments();
-    // The widest probe has to carry real content, or an implementation that
-    // returns "" at every width passes the loop below vacuously.
-    let widest = fit_segments(&segments, 80);
-    assert!(
-        widest.contains("[cmt]") && widest.contains("song.mkv") && widest.contains("archive"),
-        "widest probe lost content: {widest:?}"
-    );
-
-    for width in 0..80 {
-        let out = fit_segments(&segments, width);
-        assert!(out.chars().count() <= width, "width {width} overflowed: {out:?}");
-        for token in out.split(' ').filter(|t| !t.is_empty()) {
-            let legitimate = segments
-                .iter()
-                .any(|s| token == s.text || (s.shrink == Shrink::Front && is_a_tail_of(token, s)));
+fn rendered_length_is_monotone_in_width() {
+    for segments in [step_segments(), path_segments()] {
+        let mut previous = fit_segments(&segments, 121).chars().count();
+        for width in (8..=120).rev() {
+            let out = fit_segments(&segments, width);
+            let len = out.chars().count();
             assert!(
-                legitimate,
-                "fragment {token:?} that no clip of a segment produces at width {width}: {out:?}"
+                len <= previous,
+                "width {width} rendered {len} columns, more than the {} below it: {out:?}",
+                previous + 1,
             );
-        }
-    }
-}
-
-#[test]
-fn output_is_never_a_fragment() {
-    // The property that separates this ladder from the prefix cut it
-    // replaces: no segment is ever cut at a character boundary. Every
-    // token in the output is either a whole segment, or an elastic segment
-    // shortened from the front. This is what spec rule 3 asks for, and it
-    // is the assertion that fails if a shave is reintroduced.
-    let segments = step_segments();
-    for width in 0..60 {
-        let out = fit_segments(&segments, width);
-        for token in out.split(' ').filter(|t| !t.is_empty()) {
-            let whole = segments.iter().any(|s| {
-                if s.shrink != Shrink::Front {
-                    return token == s.text;
-                }
-                // A whole elastic segment, or a clipped one: the token must
-                // be a non-empty suffix of the segment, because the cut takes
-                // the head and leaves the tail.
-                token == s.text || (!token.is_empty() && s.text.ends_with(token))
-            });
-            assert!(whole, "fragment {token:?} in output at width {width}: {out:?}");
+            assert!(len <= width, "width {width} overflowed: {out:?}");
+            previous = len;
         }
     }
 }
@@ -189,7 +136,7 @@ fn elastic_tool_name_shrinks_before_anything_is_dropped() {
 
     let shrunk = fit_segments(&segments, 40);
     assert_eq!(
-        shrunk, "[wf] [F] 1/4 9.9.9 default s5 archive)",
+        shrunk, "[wf] [F] 1/4 9.9.9 default s5 in-archive",
         "elastic segment not shortened to its tail"
     );
 }
@@ -208,75 +155,58 @@ fn narrow_width_keeps_the_leading_head_whole() {
     assert_eq!(below_head_width, "[wf]");
 }
 
-/// A tail that starts inside a word names nothing, so the clip yields
-/// nothing and the drop phase takes the segment whole. This is the case the
-/// one-column floor used to paper over: `(ffmpeg)` cut to `fmpeg)` spends six
-/// columns of a row on a tool the reader cannot name, where the same six
-/// columns buy back the whole segment or give way to the head beside it.
+/// A clipped tool name never leaves its closing parenthesis behind.
+///
+/// The parentheses used to be formatted into the segment's text, so they
+/// were part of what the clip cut: one column short of the whole name, a row
+/// read `)`. The name is the segment's content and the parentheses are its
+/// decoration now, and a decoration is rendered only when the content is
+/// rendered whole.
 #[test]
-fn a_tail_that_starts_mid_word_yields_nothing() {
-    let segs = vec![Segment::keep("[wf]"), Segment::keep("1/4"), Segment::elastic("(ffmpeg)")];
-    // `[wf] 1/4 (ffmpeg)` is 17 columns, so these three widths hand the tool
-    // name 8, 7 and 6 columns in turn.
-    assert_eq!(fit_segments(&segs, 17), "[wf] 1/4 (ffmpeg)");
-    // Seven columns starts right after the bracket, which is a boundary, so
-    // the whole name survives minus the bracket that opened it.
-    assert_eq!(fit_segments(&segs, 16), "[wf] 1/4 ffmpeg)");
-    // Six columns start inside the tool's name and carry no boundary to cut
-    // after, so the name is dropped rather than rendered as a fragment.
-    assert_eq!(fit_segments(&segs, 15), "[wf] 1/4");
+fn a_clipped_tool_name_leaves_no_stray_parenthesis() {
+    let segs = vec![
+        Segment::keep("wf").brackets(Brackets::Square),
+        Segment::elastic("ffmpeg").brackets(Brackets::Round),
+    ];
+    assert_eq!(fit_segments(&segs, 13), "[wf] (ffmpeg)");
+    // One column less than the bracketed name is wide, so the name is cut
+    // and takes its decoration with it.
+    assert_eq!(fit_segments(&segs, 12), "[wf] ffmpeg");
+    for width in 4..=13 {
+        let out = fit_segments(&segs, width);
+        assert!(
+            !out.contains(')') || out.contains("(ffmpeg)"),
+            "stray parenthesis at width {width}: {out:?}"
+        );
+    }
 }
 
-/// The clip cuts after the first boundary in the tail it was given, so the
-/// character the cut lands on stays and everything behind the boundary is
-/// kept. A window that already begins at a boundary is kept whole, which is
-/// what keeps `ffmpeg)` and `Astley` from being trimmed a second time.
+/// The bracket id on a materialization row is rendered whole or not at all.
+///
+/// The id used to sit inside the folder name, so a clip of the name could
+/// leave `]` on the row with the `[` cut away. It is a segment of its own
+/// now, held by `Keep`, so no width can produce half of its brackets.
 #[test]
-fn a_tail_is_cut_after_the_first_boundary_it_contains() {
-    // `he Wall` and ` Wall` both carry a space, so both lose the partial word
-    // in front of it and keep `Wall`.
-    assert_eq!(front_tail("Music/Pink Floyd/The Wall", 7), "Wall");
-    assert_eq!(front_tail("Music/Pink Floyd/The Wall", 6), "Wall");
-    // A window with no boundary in it yields nothing rather than the partial
-    // word it happens to cover.
-    assert_eq!(front_tail("Music/Has the Right to Children", 6), "");
-    // A window that begins at a boundary is already a whole word or a whole
-    // bracket group, at exactly the budget and at more than it.
-    assert_eq!(front_tail("Music/Has the Right to Children", 8), "Children");
-    // The leading space of a nine-column tail is itself a boundary, so the
-    // cut lands after it and the row shows no double space.
-    assert_eq!(front_tail("Music/Has the Right to Children", 9), "Children");
-    // The bracket is a boundary, so a tool name keeps everything after it.
-    assert_eq!(front_tail("(ffmpeg)", 7), "ffmpeg)");
-    assert_eq!(front_tail("(ffmpeg)", 8), "(ffmpeg)");
-    // A path separator is a boundary, so the last element survives whole.
-    assert_eq!(front_tail("music videos/Rick Astley", 6), "Astley");
-    // A hyphen separates the words of a hyphenated name the way a space
-    // separates the words of a phrase.
-    assert_eq!(front_tail("mediapm-conductor-builtin-archive)", 10), "archive)");
-    assert_eq!(front_tail("mediapm-conductor-builtin-archive)", 16), "builtin-archive)");
-    // A dot is not a boundary, so the stem of a filename cannot be cut away
-    // to leave its extension.
-    assert_eq!(front_tail("01 - Telepathy.flac", 14), "Telepathy.flac");
-    assert_eq!(front_tail("01 - Telepathy.flac", 13), "");
-    // A tail may not begin on a space, a `/`, or a `-`. A window that opens
-    // on one has been cut at the joiner rather than after it.
-    assert_eq!(front_tail("01 - Telepathy.flac", 16), "Telepathy.flac");
-    assert_eq!(front_tail("Music/Artist/Album/song.mkv", 8), "song.mkv");
-    // A tail of nothing but a space is the double space a row used to show
-    // between two segments, so it yields nothing.
-    assert_eq!(front_tail("Never Gonna Give You Up ", 1), "");
+fn a_clipped_bracket_id_leaves_no_stray_bracket() {
+    let segs = vec![
+        Segment::elastic("Never Gonna Give You Up"),
+        Segment::keep("youtube.dQw4w9WgXcQ").brackets(Brackets::Square),
+    ];
+    assert_eq!(fit_segments(&segs, 60), "Never Gonna Give You Up [youtube.dQw4w9WgXcQ]");
+    for width in 5..=60 {
+        let out = fit_segments(&segs, width);
+        assert!(
+            !out.contains(']') || out.contains("[youtube.dQw4w9WgXcQ]"),
+            "stray bracket at width {width}: {out:?}"
+        );
+    }
 }
 
 #[test]
 fn front_tail_keeps_the_tail() {
-    // A window that starts at a boundary is kept whole, which is what a tail
-    // cut back to a space looks like.
-    assert_eq!(front_tail("abcdef ghij", 5), "ghij");
+    assert_eq!(front_tail("abcdef ghij", 5), " ghij");
     assert_eq!(front_tail("abcdef ghij", 4), "ghij");
-    // A window with no boundary in it yields nothing rather than the letters
-    // it happens to cover.
-    assert_eq!(front_tail("abcdefghij", 6), "");
+    assert_eq!(front_tail("abcdefghij", 6), "efghij");
     assert_eq!(front_tail("abc", 10), "abc");
     assert_eq!(front_tail("abcdef", 0), "");
     assert_eq!(front_tail("", 0), "");
@@ -285,12 +215,12 @@ fn front_tail_keeps_the_tail() {
 #[test]
 fn front_tail_preserves_a_path_tail() {
     let short = front_tail("Music/Artist/Album/song.mkv", 15);
-    assert_eq!(short, "Album/song.mkv");
+    assert_eq!(short, "/Album/song.mkv");
     assert!(short.ends_with("song.mkv"), "filename lost: {short:?}");
 }
 
 #[test]
 fn empty_input_yields_empty_output() {
     assert_eq!(fit_segments(&[], 40), "");
-    assert_eq!(fit_segments(&[Segment::keep("[wf]")], 0), "");
+    assert_eq!(fit_segments(&[Segment::keep("wf").brackets(Brackets::Square)], 0), "");
 }

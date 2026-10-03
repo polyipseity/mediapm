@@ -59,27 +59,32 @@ pub trait BarLabelTruncation: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shrink {
     /// Never shortened. The segment is dropped whole when it cannot fit.
+    ///
+    /// Right for a fixed marker, whose brackets are the segment's own
+    /// [`Brackets`] decoration rather than part of its text: a marker whose
+    /// decoration is gone is loose text that no longer says what the piece
+    /// is, so a `Keep` marker is kept whole or dropped whole.
     Keep,
     /// Shortened from the front, keeping the informative tail, so
-    /// `Music/Artist/Album/song.mkv` at 15 columns reads `Album/song.mkv`.
+    /// `Music/Artist/Album/song.mkv` clipped to 15 columns reads
+    /// `st/Album/song.mkv`.
     ///
     /// Use for values with a meaningful end: paths, tool names, and free
-    /// user text. Never for a fixed marker, where the cut takes the brackets
-    /// that say what the piece is: `[wf]` clipped to two columns reads `wf]`,
-    /// loose text instead of a phase tag, and no amount of fitting puts the
-    /// brackets back. A one-column window holds no boundary to cut after, so
-    /// it yields nothing rather than `f]`. A `Keep` marker is dropped whole
-    /// or kept whole.
+    /// user text. The clip is blind, so a tail can begin inside a word and
+    /// read like `he Wall`. That is the deliberate trade: the cut lands
+    /// between characters, so what survives is the widest tail that fits
+    /// rather than the widest one that happens to end on a boundary, which
+    /// is what makes the rendered length monotone in the width it is given.
+    /// A value that must never be cut mid-word belongs in
+    /// [`Keep`](Self::Keep), which drops it instead of cutting it.
     Front,
     /// Shortened from the end, keeping the leading characters, so `7.1` at
     /// two columns reads `7.`.
     ///
     /// Use for values that number or name themselves from the left, where
-    /// the leading columns carry the identity. The cut lands between
-    /// characters rather than after a boundary, because a version holds no
-    /// boundary and `7.` is the shape the row is meant to read. A value that
-    /// does hold boundaries is better served by [`Front`](Self::Front), whose
-    /// cut leaves a piece that names something on its own.
+    /// the leading columns carry the identity. The clip is blind here too, so
+    /// this is [`Front`](Self::Front) taken from the other end: the two modes
+    /// differ only in which end of the value survives.
     ///
     /// One production label builds this mode, `StepBarLabel::version`, and
     /// nothing on the production path fills that field: the conductor has no
@@ -89,44 +94,24 @@ pub enum Shrink {
     Head,
 }
 
-/// Characters whose following character a clipped tail may start at.
+/// The brackets a segment carries around its content.
 ///
-/// A tail is the right-hand end of a value, so the only place worth cutting is
-/// just after one of these. Each one ends a piece of the value, so cutting
-/// after it leaves a piece that stands on its own.
+/// Decoration belongs here rather than inside [`Segment::text`] because the
+/// clipper cuts the text. A caller that formats its own brackets hands the
+/// brackets to the clipper with the content, so a one-column clip of
+/// `(ffmpeg)` leaves `)` on the row: a bracket with nothing opening it.
 ///
-/// * space and `/` end a word and a path element, so `Children` survives where
-///   `hildren` does not.
-/// * `(` and `[` open a bracketed group the label conventions write as one
-///   piece, so `(ffmpeg)` and `[youtube.dQw4w9WgXcQ]` survive whole.
-/// * `-` ends a word of a hyphenated name, the same way a space ends a word
-///   of a phrase, so `builtin-archive` survives where `archive)` does not say
-///   which tool it came from.
-///
-/// Two characters are deliberately absent. A closing bracket, because
-/// `(ffmpeg)` cut to two columns keeps `g)` whichever way the cut is made: the
-/// bracket that opened the name is the boundary the cut uses. A dot, because
-/// it is the one boundary that lands inside a word rather than between words,
-/// so a filename cut back to it comes back as `mkv`.
+/// [`fit_segments`] renders a segment's brackets only when it rendered the
+/// segment whole, so decoration is all or nothing. A segment that had to be
+/// shortened reads as its bare content, which is a name a reader can still
+/// use, rather than as a fragment wearing the punctuation of something else.
 #[cfg(feature = "progress")]
-const SEGMENT_BOUNDARIES: [char; 5] = [' ', '/', '(', '[', '-'];
-
-/// The boundaries that join two pieces of a value rather than opening one.
-///
-/// A tail that begins on one of these is a cut that landed *on* the joiner
-/// instead of after it, and it reads as noise on the row: `[cmt] - Telepathy.flac`
-/// carries a dash that names nothing, and a tail of nothing but spaces is the
-/// double space a row used to show between two segments. The bracketing
-/// boundaries are absent, because a tail that opens with `[` or `(` opens a
-/// complete group and reads as one.
-#[cfg(feature = "progress")]
-const JOINING_BOUNDARIES: [char; 3] = [' ', '/', '-'];
-
-/// Whether `c` ends a piece of a label value, so that a tail cut after it
-/// names something on its own.
-#[cfg(feature = "progress")]
-fn is_boundary(c: char) -> bool {
-    SEGMENT_BOUNDARIES.contains(&c)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Brackets {
+    /// Round brackets, so content `ffmpeg` renders as `(ffmpeg)`.
+    Round,
+    /// Square brackets, so content `active` renders as `[active]`.
+    Square,
 }
 
 /// One ordered piece of a bar label.
@@ -136,10 +121,14 @@ fn is_boundary(c: char) -> bool {
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
-    /// Rendered text of this piece, without the joining separator.
+    /// Content of this piece, without decoration and without the joining
+    /// separator. This is the only part a clip touches.
     pub text: String,
     /// How this piece yields width.
     pub shrink: Shrink,
+    /// Brackets to wrap the content in, applied only when the piece is
+    /// rendered whole. [`None`](Option::None) renders the bare content.
+    pub brackets: Option<Brackets>,
 }
 
 #[cfg(feature = "progress")]
@@ -148,72 +137,56 @@ impl Segment {
     /// dropped when it cannot fit.
     #[must_use]
     pub fn keep(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Keep }
+        Self { text: text.into(), shrink: Shrink::Keep, brackets: None }
     }
 
     /// An elastic piece: shortened from the front before anything is dropped.
     #[must_use]
     pub fn elastic(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Front }
+        Self { text: text.into(), shrink: Shrink::Front, brackets: None }
     }
 
     /// An elastic piece that keeps its leading characters: it gives columns
     /// back from the end before anything is dropped.
     #[must_use]
     pub fn elastic_head(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Head }
+        Self { text: text.into(), shrink: Shrink::Head, brackets: None }
+    }
+
+    /// Wrap this piece's content in `brackets`, which are rendered only when
+    /// the piece survives whole.
+    #[must_use]
+    pub fn brackets(mut self, brackets: Brackets) -> Self {
+        self.brackets = Some(brackets);
+        self
     }
 }
 
 /// Shorten `text` to at most `target` visible columns, keeping the tail.
 ///
-/// The tail is the last `target` columns, and the cut moves left to just after
-/// the first boundary character in it, so what survives is a whole word or a
-/// whole bracketed group rather than a piece of one. The first boundary is
-/// the right one to cut after because it keeps the most text: `he Wall` becomes
-/// `Wall` rather than `W`, and `/Album/song.mkv` becomes `Album/song.mkv`
-/// rather than `song.mkv`. A tail with no boundary left in it names nothing,
-/// and this returns the empty string for it: the caller drops the segment
-/// whole instead of rendering `g)` or `n`.
+/// The tail is the last `target` characters and the cut lands between them,
+/// with no attempt to move it left to a word boundary. A boundary-snapped
+/// cut is a step function of the budget, so widening the slot by one column
+/// can leave the row shorter than it was one column earlier, and a row that
+/// loses text as the window widens is worse to read than a row that shows
+/// half a word.
 ///
 /// Nothing marks the cut, so the tail itself is all the reader gets:
-/// `front_tail("(ffmpeg)", 7)` is `ffmpeg)`,
-/// `front_tail("Music/Pink Floyd/The Wall", 7)` is `Wall`, and
-/// `front_tail("Music/Has the Right to Children", 6)` is empty. A tail that
-/// would begin on a space, a `/`, or a `-` starts after it instead, so
-/// `front_tail("01 - Telepathy.flac", 16)` is `Telepathy.flac` and not
-/// `- Telepathy.flac`.
+/// `front_tail("Music/Pink Floyd/The Wall", 7)` is `he Wall`, and
+/// `front_tail("Music/Has the Right to Children", 6)` is `ildren`. A value
+/// whose cut tail would say nothing is a [`Segment`] with a shrink mode of
+/// [`Shrink::Keep`], which is dropped whole instead.
 ///
 /// Returns `text` unchanged when it already fits, and an empty string when
 /// `target` is `0`.
 #[cfg(feature = "progress")]
 #[must_use]
 pub fn front_tail(text: &str, target: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= target {
+    let len = text.chars().count();
+    if len <= target {
         return text.to_string();
     }
-    if target == 0 {
-        return String::new();
-    }
-    let mut start = chars.len() - target;
-    // A tail that already begins at a boundary is left alone, so `ffmpeg)`
-    // and `Astley` are not trimmed a second time by their own brackets and
-    // separators. Otherwise the cut takes what follows the first boundary
-    // inside the tail, which is the empty string when there is none.
-    if start > 0 && !is_boundary(chars[start - 1]) {
-        match chars[start..].iter().position(|c| is_boundary(*c)) {
-            Some(offset) => start += offset + 1,
-            None => return String::new(),
-        }
-    }
-    // A tail may not begin on a joiner: the row shows one space between
-    // segments, so a tail that opens with another renders as a double space,
-    // and a tail of `-` renders as a dash with nothing after it.
-    while start < chars.len() && JOINING_BOUNDARIES.contains(&chars[start]) {
-        start += 1;
-    }
-    chars[start..].iter().collect()
+    text.chars().skip(len - target).collect()
 }
 
 /// Shorten `text` to at most `target` visible columns, keeping the head.
@@ -231,10 +204,59 @@ fn tail_head(text: &str, target: usize) -> String {
     text.chars().take(target).collect()
 }
 
-/// Join `segments` with single spaces, using each `text` verbatim.
+/// A segment together with what fitting has already done to it.
+///
+/// `clipped` is the only state fitting adds, and it is there so
+/// [`render_one`] knows whether the segment's decoration still applies. It is
+/// set whenever the segment's own text is shortened, and never set for a
+/// segment that was dropped, since a dropped segment renders nothing.
 #[cfg(feature = "progress")]
-fn render(segments: &[Segment]) -> String {
-    segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ")
+#[derive(Debug, Clone)]
+struct Fitted {
+    /// The caller's segment, with `text` possibly shortened.
+    segment: Segment,
+    /// Whether `text` is a shortened copy of the content the caller supplied.
+    clipped: bool,
+}
+
+#[cfg(feature = "progress")]
+impl Fitted {
+    /// Clip `text` to `target` columns in `shrink`'s own mode.
+    ///
+    /// `None` means the segment can give nothing back at that width: a
+    /// [`Shrink::Keep`] segment is not eligible, and an elastic segment
+    /// clipped to nothing has no piece left to render. The caller drops such
+    /// a segment rather than leaving an empty piece behind, because
+    /// [`render`] joins with single spaces and an empty piece would leave two
+    /// where the text was.
+    fn clip(text: &str, shrink: Shrink, target: usize) -> Option<String> {
+        let clipped = match shrink {
+            Shrink::Keep => return None,
+            Shrink::Front => front_tail(text, target),
+            Shrink::Head => tail_head(text, target),
+        };
+        if clipped.is_empty() { None } else { Some(clipped) }
+    }
+}
+
+/// Render one fitted segment: its content, and its decoration only when
+/// fitting left the content whole.
+#[cfg(feature = "progress")]
+fn render_one(fitted: &Fitted) -> String {
+    if fitted.clipped {
+        return fitted.segment.text.clone();
+    }
+    match fitted.segment.brackets {
+        None => fitted.segment.text.clone(),
+        Some(Brackets::Round) => format!("({})", fitted.segment.text),
+        Some(Brackets::Square) => format!("[{}]", fitted.segment.text),
+    }
+}
+
+/// Join `fitted` with single spaces, decorating each piece that is whole.
+#[cfg(feature = "progress")]
+fn render(fitted: &[Fitted]) -> String {
+    fitted.iter().map(render_one).collect::<Vec<_>>().join(" ")
 }
 
 /// Visible column count of `text`.
@@ -248,19 +270,14 @@ fn visible_len(text: &str) -> usize {
 /// `segments` is ordered most important first and is walked from the tail.
 ///
 /// * **Phase A (shrink)**: every elastic segment, from the tail forward, is
-///   shortened by the overage before the next one yields anything. A
-///   [`Shrink::Front`] segment stops at the first boundary in its own tail, so
-///   a segment whose overage reaches past that boundary is shortened by less
-///   than the overage, and the remainder can still be too wide when Phase A
-///   ends. A [`Shrink::Head`] segment has no boundary to stop at and is cut
-///   between characters, so it always gives back exactly the overage. A
-///   tail-keeping segment with no boundary left in its tail yields nothing
-///   at all: a tail that names nothing is worse than no segment, because
-///   `render` joins with single spaces, so an empty piece would leave two
-///   spaces where the text was. Such a segment is dropped on the spot rather
-///   than left for Phase B: it is about to give its columns back, and a
-///   segment still holding them would deny the segments ahead of it the
-///   overage they need to yield at all.
+///   shortened by the overage before the next one yields anything. The
+///   overage is measured in rendered columns and answered in rendered
+///   columns, so a segment's own brackets count against it; a clipped
+///   segment then gives its brackets up as well, which only ever widens the
+///   gap it just closed. A segment whose clip lands on nothing is dropped on
+///   the spot rather than left for Phase B: it is about to give its columns
+///   back, and a segment still holding them would deny the segments ahead of
+///   it the overage they need to yield at all.
 /// * **Phase B (drop)**: once no segment can shrink further, whole segments
 ///   drop from the tail until the remainder fits or one segment is left. The
 ///   leading segment is never popped here, so a leading head group yields
@@ -268,25 +285,29 @@ fn visible_len(text: &str) -> usize {
 ///   `[wf] [F] 1/4` still renders `[wf] [F]` at width 11, and only `[wf]` at
 ///   width 7.
 ///
-/// The ladder **never shaves**: no segment is ever cut inside a word. A
-/// segment is shown whole, shortened from the front to a tail that names
-/// something on its own, shortened from the end when it numbers itself from
-/// the left, or absent. This is the property that separates it from the prefix
-/// cut it replaces.
+/// Both phases only ever remove columns, so the rendered length is monotone
+/// in `max_width`: a narrower slot never yields a longer row. That is what
+/// makes a narrow terminal readable, since a row that gains text as the
+/// window shrinks reads as jitter rather than as a label.
+///
+/// Decoration is rendered after fitting, so a segment that had to be
+/// shortened loses its brackets. A row never shows a closing bracket whose
+/// opening half was cut away.
 ///
 /// # Examples
 ///
 /// ```
-/// # use mediapm_utils::progress::{Segment, fit_segments};
+/// # use mediapm_utils::progress::{Brackets, Segment, fit_segments};
 /// let segs = vec![
-///     Segment::keep("[wf]"),
+///     Segment::keep("wf").brackets(Brackets::Square),
 ///     Segment::elastic("Music/Artist/Album/song.mkv"),
 /// ];
 /// assert_eq!(fit_segments(&segs, 40), "[wf] Music/Artist/Album/song.mkv");
-/// assert_eq!(fit_segments(&segs, 20), "[wf] Album/song.mkv");
-/// // At 12 columns the path's own tail holds no boundary, so the path is
-/// // dropped whole rather than rendered as a fragment.
-/// assert_eq!(fit_segments(&segs, 12), "[wf]");
+/// // The cut is blind, so the tail can begin inside an element.
+/// assert_eq!(fit_segments(&segs, 20), "[wf] /Album/song.mkv");
+/// // At 5 columns the path has nothing left to give, so it is dropped
+/// // whole rather than rendered as a fragment.
+/// assert_eq!(fit_segments(&segs, 5), "[wf]");
 /// ```
 ///
 /// A head-keeping segment gives its columns back from the other end, which is
@@ -294,8 +315,11 @@ fn visible_len(text: &str) -> usize {
 /// the tail could never produce `7.` at any width.
 ///
 /// ```
-/// # use mediapm_utils::progress::{Segment, fit_segments};
-/// let segs = vec![Segment::keep("[wf]"), Segment::elastic_head("7.1")];
+/// # use mediapm_utils::progress::{Brackets, Segment, fit_segments};
+/// let segs = vec![
+///     Segment::keep("wf").brackets(Brackets::Square),
+///     Segment::elastic_head("7.1"),
+/// ];
 /// assert_eq!(fit_segments(&segs, 20), "[wf] 7.1");
 /// assert_eq!(fit_segments(&segs, 7), "[wf] 7.");
 /// assert_eq!(fit_segments(&segs, 6), "[wf] 7");
@@ -307,8 +331,8 @@ fn visible_len(text: &str) -> usize {
 /// rather than a clipped one:
 ///
 /// ```
-/// # use mediapm_utils::progress::{Segment, fit_segments};
-/// let segs = vec![Segment::keep("[wf]")];
+/// # use mediapm_utils::progress::{Brackets, Segment, fit_segments};
+/// let segs = vec![Segment::keep("wf").brackets(Brackets::Square)];
 /// assert_eq!(fit_segments(&segs, 4), "[wf]");
 /// assert_eq!(fit_segments(&segs, 3), "");
 /// ```
@@ -319,35 +343,40 @@ pub fn fit_segments(segments: &[Segment], max_width: usize) -> String {
         return String::new();
     }
 
-    let mut kept: Vec<Segment> = segments.to_vec();
+    let mut kept: Vec<Fitted> =
+        segments.iter().cloned().map(|segment| Fitted { segment, clipped: false }).collect();
 
     // Phase A: elastic segments yield width, tail first, each from the end its
-    // own mode names. A tail-keeping segment whose tail has no boundary to be
-    // cut at is dropped here rather than in Phase B: it is about to hand its
-    // columns back, and while it still holds them the segments ahead of it see
-    // an overage they cannot answer either.
+    // own mode names. `current` is the segment's rendered width, brackets
+    // included, so the target it is given is a budget for the clipped text
+    // the renderer will actually produce.
     let mut idx = kept.len();
     while idx > 0 {
         idx -= 1;
+        let current_rendered = render_one(&kept[idx]);
         if visible_len(&render(&kept)) <= max_width {
             break;
         }
         let over = visible_len(&render(&kept)) - max_width;
-        let current = kept[idx].text.chars().count();
+        let current = visible_len(&current_rendered);
+        if kept[idx].segment.shrink == Shrink::Keep {
+            continue;
+        }
         let target = current.saturating_sub(over);
         if target >= current {
             continue;
         }
-        let clipped = match kept[idx].shrink {
-            Shrink::Keep => continue,
-            Shrink::Front => front_tail(&kept[idx].text, target),
-            Shrink::Head => tail_head(&kept[idx].text, target),
-        };
-        if clipped.is_empty() {
+        let Some(clipped) = Fitted::clip(&kept[idx].segment.text, kept[idx].segment.shrink, target)
+        else {
             kept.remove(idx);
             continue;
-        }
-        kept[idx].text = clipped;
+        };
+        // Every elastic segment gives back exactly the overage: the clip
+        // takes the text down to `target`, and it gives up its decoration as
+        // well, which covers the widths where the overage is smaller than the
+        // decoration and there is no character left to cut.
+        kept[idx].segment.text = clipped;
+        kept[idx].clipped = true;
     }
 
     // Phase B — drop whole segments from the tail until the remainder fits

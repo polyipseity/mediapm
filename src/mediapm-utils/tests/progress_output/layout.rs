@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mediapm_utils::progress::{
-    BarLabelTruncation, Segment, SuffixComponents, TestDimensionSource, TestTimeSource,
+    BarLabelTruncation, Brackets, Segment, SuffixComponents, TestDimensionSource, TestTimeSource,
     fit_segments,
 };
 
@@ -40,8 +40,8 @@ impl BarLabelTruncation for WorkerRowLabel {
         let segments = vec![
             Segment::keep(self.workflow_id.clone()),
             Segment::keep(self.step_id.clone()),
-            Segment::elastic(format!("({})", self.tool)),
-            Segment::keep(format!("[{}]", self.activity)),
+            Segment::elastic(self.tool.clone()).brackets(Brackets::Round),
+            Segment::keep(self.activity.clone()).brackets(Brackets::Square),
         ];
         fit_segments(&segments, max_width)
     }

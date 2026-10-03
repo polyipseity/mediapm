@@ -18,7 +18,9 @@
 //! A client label also replaces the built-in prefix components outright, so a
 //! label that wants a status marker has to carry one.
 
-use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit_segments};
+use mediapm_utils::progress::{
+    BarLabelTruncation, Brackets, Segment, SuffixComponents, fit_segments,
+};
 
 /// Truncation order for the overall workflow bar's label, and for a bar that
 /// tracks a step's outputs.
@@ -45,6 +47,9 @@ pub struct StepBarLabel {
     pub step_id: String,
     /// Conductor tool name, rendered parenthesized as `(ffmpeg)`. Elastic,
     /// so a narrow row shortens the name from its front before dropping it.
+    /// The parentheses are the segment's decoration rather than part of its
+    /// text, so a row that could not fit them renders the bare name and never
+    /// a closing parenthesis whose opening half was cut away.
     pub tool: String,
     /// Tool version, rendered verbatim as `7.1`, with no brackets. The only
     /// head-keeping prefix segment: the columns it gives back come off the
@@ -87,7 +92,7 @@ impl StepBarLabel {
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.status_marker.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.status_marker)));
+            segs.push(Segment::keep(self.status_marker.clone()).brackets(Brackets::Square));
         }
         if !self.workflow_id.is_empty() {
             segs.push(Segment::keep(self.workflow_id.clone()));
@@ -96,7 +101,7 @@ impl StepBarLabel {
             segs.push(Segment::keep(self.step_id.clone()));
         }
         if !self.tool.is_empty() {
-            segs.push(Segment::elastic(format!("({})", self.tool)));
+            segs.push(Segment::elastic(self.tool.clone()).brackets(Brackets::Round));
         }
         if !self.version.is_empty() {
             segs.push(Segment::elastic_head(self.version.clone()));
@@ -200,13 +205,14 @@ impl WorkerBarLabel {
     ///
     /// The identifiers are `Keep` rather than `Elastic` because clipping
     /// them destroys what identifies them: `default` clipped to `ult` names
-    /// no workflow. The tool name is the one elastic segment, because its
-    /// parenthesised tail is the informative end, so `(ffmpeg)` clipped to
-    /// four columns reads `mpeg)`.
+    /// no workflow. The tool name is the one elastic segment, because its tail
+    /// is the informative end. Its parentheses are decoration on the segment,
+    /// not text inside it, so a row that clips the name renders the bare name
+    /// rather than a fragment still wearing its brackets.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.status_marker.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.status_marker)));
+            segs.push(Segment::keep(self.status_marker.clone()).brackets(Brackets::Square));
         }
         if !self.workflow_id.is_empty() {
             segs.push(Segment::keep(self.workflow_id.clone()));
@@ -215,10 +221,10 @@ impl WorkerBarLabel {
             segs.push(Segment::keep(self.step_id.clone()));
         }
         if !self.tool.is_empty() {
-            segs.push(Segment::elastic(format!("({})", self.tool)));
+            segs.push(Segment::elastic(self.tool.clone()).brackets(Brackets::Round));
         }
         if !self.activity.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.activity)));
+            segs.push(Segment::keep(self.activity.clone()).brackets(Brackets::Square));
         }
         segs
     }
