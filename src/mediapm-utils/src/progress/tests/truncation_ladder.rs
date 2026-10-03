@@ -43,6 +43,43 @@ fn is_a_tail_of(token: &str, seg: &Segment) -> bool {
         .any(|budget| front_tail(&seg.text, budget) == token)
 }
 
+/// A head-keeping segment gives columns back from its end, so a version
+/// walks down one column at a time: `7.1`, `7.`, `7`, then nothing. The
+/// clip lands between characters rather than after a boundary, because a
+/// version carries none to cut after.
+#[test]
+fn head_keeping_clip_takes_columns_from_the_end_of_a_version() {
+    let version = vec![Segment::elastic_head("7.1")];
+    assert_eq!(fit_segments(&version, 3), "7.1");
+    assert_eq!(fit_segments(&version, 2), "7.");
+    assert_eq!(fit_segments(&version, 1), "7");
+    assert_eq!(fit_segments(&version, 0), "");
+}
+
+/// The two elastic modes cut opposite ends of the same value, so they have
+/// to disagree about its shape at the same width.
+///
+/// The version cases are the ones a tail-keeping clip cannot reach: `7.1`
+/// holds no boundary, so [`front_tail`] finds nothing to cut after and
+/// yields the empty string at every width below the whole value. If the
+/// head mode ever dispatched to it, all four of those expectations would
+/// read empty and this test would fail.
+#[test]
+fn the_two_elastic_modes_are_not_the_same_clip() {
+    let version_head = vec![Segment::elastic_head("7.1")];
+    let version_tail = vec![Segment::elastic("7.1")];
+    assert_eq!(fit_segments(&version_tail, 2), "");
+    assert_eq!(fit_segments(&version_head, 2), "7.");
+    assert_eq!(fit_segments(&version_head, 1), "7");
+
+    // A value that does carry a boundary has both ends worth naming, so the
+    // two modes cut visibly different pieces out of it at one width.
+    let path_head = vec![Segment::elastic_head("Music/song.mkv")];
+    let path_tail = vec![Segment::elastic("Music/song.mkv")];
+    assert_eq!(fit_segments(&path_head, 8), "Music/so");
+    assert_eq!(fit_segments(&path_tail, 8), "song.mkv");
+}
+
 /// Rendered width of the leading three-segment head, `[wf] [F] 1/4`. Below
 /// this the group cannot fit, so dropping from the tail reduces the output to
 /// `[wf]` alone; at or above it the whole group fits and the trailing

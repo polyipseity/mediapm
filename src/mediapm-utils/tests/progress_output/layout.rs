@@ -477,13 +477,12 @@ fn resolve_label_multiword_no_bracket_keeps_whole_label() {
     );
 }
 
-/// A worker slot seeded with the coordinator's `idle [wf]` still draws its tool
-/// name at 80 columns.
+/// A worker slot seeded with the coordinator's `idle` still draws its tool name
+/// at 80 columns.
 ///
-/// The seed is nine columns and a client label can only be shortened by
+/// The seed is four columns and a client label can only be shortened by
 /// [`fit_segments`], never lengthened, so a prefix slot sized from the seed
 /// leaves the label nothing to grow into. The 80-column line has room for
-/// The 80-column line has room for
 /// `default s3 (yt-dlp) [active]` before the suffix, and a run that drops the
 /// tool name here loses the only thing that says which tool the slot is
 /// running.
@@ -492,7 +491,7 @@ fn prefix_slot_is_not_pinned_to_the_seed_label() {
     let (terminal, term) = mk_with_capacity(4, 80, 3);
     let screen = terminal.screen().build();
 
-    let worker = screen.add_bar(1, "idle [wf]");
+    let worker = screen.add_bar(1, "idle");
     worker.set_truncation(Arc::new(WorkerRowLabel {
         workflow_id: "default".to_string(),
         step_id: "s3".to_string(),

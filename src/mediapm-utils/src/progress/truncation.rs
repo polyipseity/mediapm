@@ -51,9 +51,10 @@ pub trait BarLabelTruncation: Send + Sync {
 
 /// How a segment yields width when the bar line does not fit.
 ///
-/// A segment is either shortened (elastic) or surrendered whole (keep).
-/// Every segment is eventually droppable; the distinction only governs
-/// *how* width is reclaimed first.
+/// A segment is either shortened (elastic) or surrendered whole (keep), and
+/// an elastic segment gives columns back from one end or the other. Every
+/// segment is eventually droppable; the distinction only governs *how* width
+/// is reclaimed first.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shrink {
@@ -64,10 +65,22 @@ pub enum Shrink {
     ///
     /// Use for values with a meaningful end: paths, tool names, and free
     /// user text. Never for a fixed marker, where the cut takes the brackets
-    /// that say what the piece is: `[wf]` clipped to `wf]` or `f]` reads as
+    /// that say what the piece is: `[wf]` clipped to two columns reads `wf]`,
     /// loose text instead of a phase tag, and no amount of fitting puts the
-    /// brackets back. A `Keep` marker is dropped whole or kept whole.
+    /// brackets back. A one-column window holds no boundary to cut after, so
+    /// it yields nothing rather than `f]`. A `Keep` marker is dropped whole
+    /// or kept whole.
     Front,
+    /// Shortened from the end, keeping the leading characters, so `7.1` at
+    /// two columns reads `7.`.
+    ///
+    /// Use for values that number or name themselves from the left, where
+    /// the leading columns carry the identity. The cut lands between
+    /// characters rather than after a boundary, because a version holds no
+    /// boundary and `7.` is the shape the row is meant to read. A value that
+    /// does hold boundaries is better served by [`Front`](Self::Front), whose
+    /// cut leaves a piece that names something on its own.
+    Head,
 }
 
 /// Characters whose following character a clipped tail may start at.
@@ -137,6 +150,13 @@ impl Segment {
     pub fn elastic(text: impl Into<String>) -> Self {
         Self { text: text.into(), shrink: Shrink::Front }
     }
+
+    /// An elastic piece that keeps its leading characters: it gives columns
+    /// back from the end before anything is dropped.
+    #[must_use]
+    pub fn elastic_head(text: impl Into<String>) -> Self {
+        Self { text: text.into(), shrink: Shrink::Head }
+    }
 }
 
 /// Shorten `text` to at most `target` visible columns, keeping the tail.
@@ -190,6 +210,21 @@ pub fn front_tail(text: &str, target: usize) -> String {
     chars[start..].iter().collect()
 }
 
+/// Shorten `text` to at most `target` visible columns, keeping the head.
+///
+/// The head is the first `target` characters and the cut lands between them.
+/// Nothing snaps the cut to a boundary: the values that use this clip carry
+/// none to snap to, and `7.` is what a version is supposed to read at two
+/// columns rather than whatever piece a boundary rule would happen to pick.
+///
+/// Returns `text` unchanged when it already fits, and the empty string when
+/// `target` is `0`.
+#[cfg(feature = "progress")]
+#[must_use]
+fn tail_head(text: &str, target: usize) -> String {
+    text.chars().take(target).collect()
+}
+
 /// Join `segments` with single spaces, using each `text` verbatim.
 #[cfg(feature = "progress")]
 fn render(segments: &[Segment]) -> String {
@@ -206,12 +241,14 @@ fn visible_len(text: &str) -> usize {
 ///
 /// `segments` is ordered most important first and is walked from the tail.
 ///
-/// * **Phase A (shrink)**: each [`Shrink::Front`] segment, from the
-///   tail forward, is shortened by the overage before the next one yields
-///   anything. The shortening stops at the first boundary in the segment's own
-///   tail, so a segment whose overage reaches past that boundary is shortened
-///   by less than the overage, and the remainder can still be too wide when
-///   Phase A ends. A segment with no boundary left in its tail yields nothing
+/// * **Phase A (shrink)**: every elastic segment, from the tail forward, is
+///   shortened by the overage before the next one yields anything. A
+///   [`Shrink::Front`] segment stops at the first boundary in its own tail, so
+///   a segment whose overage reaches past that boundary is shortened by less
+///   than the overage, and the remainder can still be too wide when Phase A
+///   ends. A [`Shrink::Head`] segment has no boundary to stop at and is cut
+///   between characters, so it always gives back exactly the overage. A
+///   tail-keeping segment with no boundary left in its tail yields nothing
 ///   at all: a tail that names nothing is worse than no segment, because
 ///   `render` joins with single spaces, so an empty piece would leave two
 ///   spaces where the text was. Such a segment is dropped on the spot rather
@@ -227,8 +264,9 @@ fn visible_len(text: &str) -> usize {
 ///
 /// The ladder **never shaves**: no segment is ever cut inside a word. A
 /// segment is shown whole, shortened from the front to a tail that names
-/// something on its own, or absent. This is the property that separates it
-/// from the prefix cut it replaces.
+/// something on its own, shortened from the end when it numbers itself from
+/// the left, or absent. This is the property that separates it from the prefix
+/// cut it replaces.
 ///
 /// # Examples
 ///
@@ -243,6 +281,18 @@ fn visible_len(text: &str) -> usize {
 /// // At 12 columns the path's own tail holds no boundary, so the path is
 /// // dropped whole rather than rendered as a fragment.
 /// assert_eq!(fit_segments(&segs, 12), "[wf]");
+/// ```
+///
+/// A head-keeping segment gives its columns back from the other end, which is
+/// what a version needs: it numbers itself from the left, so a clip that kept
+/// the tail could never produce `7.` at any width.
+///
+/// ```
+/// # use mediapm_utils::progress::{Segment, fit_segments};
+/// let segs = vec![Segment::keep("[wf]"), Segment::elastic_head("7.1")];
+/// assert_eq!(fit_segments(&segs, 20), "[wf] 7.1");
+/// assert_eq!(fit_segments(&segs, 7), "[wf] 7.");
+/// assert_eq!(fit_segments(&segs, 6), "[wf] 7");
 /// ```
 ///
 /// # Degenerate widths
@@ -265,19 +315,16 @@ pub fn fit_segments(segments: &[Segment], max_width: usize) -> String {
 
     let mut kept: Vec<Segment> = segments.to_vec();
 
-    // Phase A: elastic segments yield width from the front, tail first. A
-    // segment whose tail has no boundary to be cut at is dropped here rather
-    // than in Phase B: it is about to hand its columns back, and while it
-    // still holds them the segments ahead of it see an overage they cannot
-    // answer either.
+    // Phase A: elastic segments yield width, tail first, each from the end its
+    // own mode names. A tail-keeping segment whose tail has no boundary to be
+    // cut at is dropped here rather than in Phase B: it is about to hand its
+    // columns back, and while it still holds them the segments ahead of it see
+    // an overage they cannot answer either.
     let mut idx = kept.len();
     while idx > 0 {
         idx -= 1;
         if visible_len(&render(&kept)) <= max_width {
             break;
-        }
-        if kept[idx].shrink != Shrink::Front {
-            continue;
         }
         let over = visible_len(&render(&kept)) - max_width;
         let current = kept[idx].text.chars().count();
@@ -285,7 +332,11 @@ pub fn fit_segments(segments: &[Segment], max_width: usize) -> String {
         if target >= current {
             continue;
         }
-        let clipped = front_tail(&kept[idx].text, target);
+        let clipped = match kept[idx].shrink {
+            Shrink::Keep => continue,
+            Shrink::Front => front_tail(&kept[idx].text, target),
+            Shrink::Head => tail_head(&kept[idx].text, target),
+        };
         if clipped.is_empty() {
             kept.remove(idx);
             continue;
