@@ -44,7 +44,7 @@ Key ecosystem (from `Cargo.toml`):
 
 ## Progress bar boundary (no indicatif in library)
 
-The conductor library must not depend on indicatif directly. Progress is communicated via `RunWorkflowOptions.progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>`. The conductor composes the workflow screen (`[wf]` phase) from this group. The conductor CLI binary builds a `ProgressGroup` and passes it. `DownloadProgressSnapshot` and `ProgressCallback` from `mediapm-utils` are available in the library for download progress.
+The conductor library must not depend on indicatif directly. Progress is communicated via `RunWorkflowOptions.progress_group: Option<Arc<dyn ProgressGroupApi + Send + Sync>>`. The conductor composes the workflow screen from this group. The conductor CLI binary builds a `ProgressGroup` and passes it. `DownloadProgressSnapshot` and `ProgressCallback` from `mediapm-utils` are available in the library for download progress.
 
 All progress bar rendering, templates, glyphs, colors, prefix/suffix shapes, truncation dispatch, per-screen specs, post-finish result messages, output stream policy, and the module boundary rule live in `progress-output.instructions.md` and `progress-budget.instructions.md`. Read those files before editing progress code. The actual rendered format is also verified by `src/mediapm-utils/tests/progress_output/*.rs`; never invent ASCII mocks.
 

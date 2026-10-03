@@ -1,5 +1,5 @@
-//! Workflow screen progress tests — validates the `[wf]` progress bars
-//! emitted by the conductor coordinator via `RecordingProgressTracker`.
+//! Workflow screen progress tests, validates the bars the conductor
+//! coordinator emits via `RecordingProgressTracker`.
 //!
 //! Every assertion uses exact `assert_eq!` on recorded `ProgressOp` sequences.
 //! Tests are gated on `#[cfg(feature = "progress")]` for parity with the
@@ -168,7 +168,7 @@ async fn run_with_progress_opts(
     workflow_name: &str,
     extra: RunWorkflowOptions,
 ) -> (RecordingProgressTracker, mediapm_conductor::RunSummary) {
-    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow [wf]", 1);
+    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow", 1);
     let summary = tc
         .conductor()
         .run_workflow(
@@ -190,7 +190,7 @@ async fn run_with_progress(
     tc: &TestConductor,
     workflow_name: &str,
 ) -> (RecordingProgressTracker, mediapm_conductor::RunSummary) {
-    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow [wf]", 1);
+    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow", 1);
     let summary = tc
         .conductor()
         .run_workflow(
@@ -210,7 +210,7 @@ async fn run_with_progress(
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Single-step echo workflow emits the expected `[wf]` progress sequence:
+/// Single-step echo workflow emits the expected progress sequence:
 /// overall bar (total set by coordinator) → per-worker idle bars → step bar
 /// via worker-0 slot → advance → finish → overall advance → finish.
 #[tokio::test]
@@ -231,13 +231,13 @@ async fn single_step_success_progress_ops() {
         tracker.ops(),
         vec![
             // Overall bar created by with_overall(), total set to real step count.
-            ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
+            ProgressOp::AddBar { total: 1, label: "workflow".into() },
             ProgressOp::SetTotal { total: 1 },
             // Per-worker idle bars (2 workers), created finished.
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Dispatch s1 to worker-0 (re-activate idle bar).
@@ -286,13 +286,13 @@ async fn two_step_same_level_success_progress_ops() {
         tracker.ops(),
         vec![
             // Overall bar created by with_overall(), total set by coordinator.
-            ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
+            ProgressOp::AddBar { total: 1, label: "workflow".into() },
             ProgressOp::SetTotal { total: 2 },
             // Per-worker idle bars (2 workers), created finished.
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Dispatch s1 to worker-0 (re-activate idle bar).
@@ -356,13 +356,13 @@ async fn three_step_same_level_progress_ops() {
         tracker.ops(),
         vec![
             // Overall bar created by with_overall(), total set by coordinator.
-            ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
+            ProgressOp::AddBar { total: 1, label: "workflow".into() },
             ProgressOp::SetTotal { total: 3 },
             // Per-worker idle bars (2 workers), created finished.
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Dispatch s1 to worker-0 (re-activate, assigned 1).
@@ -505,13 +505,13 @@ async fn two_step_sequential_levels_progress_ops() {
         tracker.ops(),
         vec![
             // Overall bar created by with_overall(), total set by coordinator.
-            ProgressOp::AddBar { total: 1, label: "workflow [wf]".into() },
+            ProgressOp::AddBar { total: 1, label: "workflow".into() },
             ProgressOp::SetTotal { total: 2 },
             // Per-worker idle bars (2 workers), created finished.
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
-            ProgressOp::AddBar { total: 0, label: "idle [wf]".into() },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Level 0: dispatch s1 to worker-0 (re-activate, assigned 1).
@@ -570,14 +570,14 @@ async fn regression_no_per_step_flicker() {
     let ops = tracker.ops();
     let idle_bars = ops
         .iter()
-        .filter(|op| matches!(op, ProgressOp::AddBar { label, .. } if label == "idle [wf]"))
+        .filter(|op| matches!(op, ProgressOp::AddBar { label, .. } if label == "idle"))
         .count();
     assert_eq!(idle_bars, 2, "exactly pool_size idle bars");
 
     let step_bars = ops
         .iter()
         .filter(|op| {
-            matches!(op, ProgressOp::AddBar { label, .. } if label != "idle [wf]" && label != "workflow [wf]")
+            matches!(op, ProgressOp::AddBar { label, .. } if label != "idle" && label != "workflow")
         })
         .count();
     assert_eq!(step_bars, 0, "no per-step AddBar (no flicker)");

@@ -4,10 +4,8 @@
 //! [`BarLabelTruncation`] with the correct field order: a worker bar never
 //! carries a `completed`/`total` progress tally, while a step bar carries that
 //! tally in the suffix only, so the prefix holds names and the suffix holds
-//! counts. Both labels lead with the status marker and end with the phase or
-//! activity marker, which makes that trailing marker the first thing width
-//! pressure sheds. The tool name is the elastic segment, so it shortens before
-//! anything is dropped whole.
+//! counts. Both labels lead with the status marker and are walked from the
+//! tail, so the least important field is what width pressure reaches first.
 
 use mediapm_conductor::orchestration::progress_labels::{StepBarLabel, WorkerBarLabel};
 use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents};
@@ -74,27 +72,29 @@ fn worker_label_idle_renders_its_activity_marker() {
 }
 
 #[test]
-fn step_label_truncate_keeps_version() {
+fn step_label_keeps_the_version_while_the_tool_name_is_whole() {
+    // The version trails the tool name, so it is the first segment to yield
+    // and the tool name the last to be touched. At 18 the version has given
+    // back two of its five columns and reads `1.`, while the parenthesised
+    // tool name still renders in full. That is the order tool-sync already
+    // uses, where its own `[res]` tag goes before its tool name is clipped.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
         step_id: "s1".into(),
         tool: "echo@v1".into(),
         version: "1.2.3".into(),
-        phase: "wf".into(),
         completed: "1".into(),
         total: "4".into(),
     };
-    let prefix = label.truncate_prefix(80);
-    assert_eq!(prefix, "wf s1 (echo@v1) [1.2.3] [wf]");
+    let wide = label.truncate_prefix(80);
+    assert_eq!(wide, "wf s1 (echo@v1) 1.2.3");
 
-    // The width-80 case above fits whole, so on its own it would still pass if
-    // truncation were removed. At 20 the tool name is shed and the version and
-    // phase have to outrank the tool name to survive.
-    let tight = label.truncate_prefix(20);
-    assert!(tight.contains("[1.2.3]"), "version lost under truncation: {tight:?}");
-    assert!(tight.contains("[wf]"), "phase lost under truncation: {tight:?}");
-    assert!(!tight.contains("echo"), "tool should be shed at width 20: {tight:?}");
+    // The width-80 case fits whole, so on its own it would still pass if
+    // truncation were removed.
+    let tight = label.truncate_prefix(18);
+    assert_eq!(tight, "wf s1 (echo@v1) 1.");
+    assert!(tight.contains("(echo@v1)"), "tool name should be untouched at 18: {tight:?}");
 }
 
 /// Visible width of the leading `[F] wf s1` head a step bar shares with a
@@ -111,7 +111,6 @@ fn step_label_head_survives_across_narrow_widths() {
         step_id: "s1".into(),
         tool: "echo@v1".into(),
         version: "9.9.9".into(),
-        phase: "wf".into(),
         completed: "1".into(),
         total: "4".into(),
     };
@@ -125,22 +124,22 @@ fn step_label_head_survives_across_narrow_widths() {
 }
 
 #[test]
-fn step_label_sheds_the_phase_before_the_version() {
-    // The phase tag trails the version, and `fit_segments` drops from the
-    // tail, so the phase is what goes when the two no longer both fit. This is
-    // the order tool-sync already uses for its own phase tag.
+fn step_label_drops_the_version_before_touching_the_tool_name() {
+    // The version runs out before the tool name does. It is the tail segment,
+    // so once it has nothing left to give it is dropped rather than rendered
+    // as a fragment, and the row falls back to the identifiers and the tool
+    // name. Only past that width is the tool name itself shortened.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
         step_id: "s1".into(),
         tool: "echo@v1".into(),
-        version: "9.9.9".into(),
-        phase: "wf".into(),
+        version: "1.2.3".into(),
         completed: "1".into(),
         total: "4".into(),
     };
-    assert_eq!(label.truncate_prefix(18), "wf s1 [9.9.9] [wf]");
-    assert_eq!(label.truncate_prefix(17), "wf s1 [9.9.9]");
+    assert_eq!(label.truncate_prefix(16), "wf s1 (echo@v1)");
+    assert_eq!(label.truncate_prefix(14), "wf s1 echo@v1)");
 }
 
 #[test]
@@ -189,7 +188,6 @@ fn step_label_renders_the_tally_once_and_only_in_the_suffix() {
         step_id: "s1".into(),
         tool: "echo@v1".into(),
         version: "7.1".into(),
-        phase: "wf".into(),
         completed: "1".into(),
         total: "3".into(),
     };
@@ -207,24 +205,26 @@ fn step_label_renders_the_tally_once_and_only_in_the_suffix() {
 }
 
 #[test]
-fn step_label_shrinks_tool_before_dropping_version() {
-    // Under width pressure the elastic tool name is shortened first; only
-    // once it cannot shrink further is it dropped whole. The version and the
-    // phase both outrank the tool name, so both are still here after the tool
-    // has given back columns.
+fn step_label_clips_a_long_tool_name_after_the_version_is_gone() {
+    // The version is already gone at both widths below, so what changes
+    // between them is the tool name and nothing else. A name long enough to
+    // need the room is clipped from its front rather than dropped whole,
+    // which keeps the tail that says which tool it was.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
         step_id: "s1".into(),
         tool: "a-very-long-tool-name@v1".into(),
         version: "9.9.9".into(),
-        phase: "wf".into(),
         completed: "1".into(),
         total: "4".into(),
     };
+    assert_eq!(label.truncate_prefix(32), "wf s1 (a-very-long-tool-name@v1)");
+
     let tight = label.truncate_prefix(30);
+    assert_eq!(tight, "wf s1 very-long-tool-name@v1)");
     assert!(!tight.contains("a-very-long-tool-name"), "tool not shortened: {tight:?}");
-    assert_eq!(tight, "wf s1 name@v1) [9.9.9] [wf]");
+    assert!(!tight.contains("9.9.9"), "version should be gone at 30: {tight:?}");
 }
 
 #[test]
@@ -281,7 +281,6 @@ fn step_label_clips_a_very_long_tool_name_from_the_front() {
         step_id: String::new(),
         tool: "extremely-long-tool-name-that-exceeds-the-maximum-width-limit".into(),
         version: String::new(),
-        phase: String::new(),
         completed: String::new(),
         total: String::new(),
     };
@@ -304,7 +303,6 @@ fn step_suffix_keeps_the_leading_tally_and_timing_fields() {
         step_id: String::new(),
         tool: String::new(),
         version: String::new(),
-        phase: String::new(),
         completed: "3".into(),
         total: "10".into(),
     };

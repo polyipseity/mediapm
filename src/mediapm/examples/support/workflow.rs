@@ -4,26 +4,27 @@
 //! terminal and synthetic clock the shared harness in `support/mod.rs` builds.
 //! The example that pulls this module in is `mediapm_progress_workflow`.
 //!
-//! Every bar here carries the seed `idle [wf]`, the string the coordinator
+//! Every bar here carries the seed `idle`, the string the coordinator
 //! installs at
-//! `src/mediapm-conductor/src/orchestration/coordinator.rs:343`, and every
+//! `src/mediapm-conductor/src/orchestration/coordinator.rs:348`, and every
 //! worker row overrides what it draws with its own [`WorkerBarLabel`]. The
 //! renderer sizes the prefix slot from what a bar will draw rather than from
-//! the seed it was constructed with (`recompute_layout`), so the seed is
-//! nine columns and the row is thirty-eight: `default s3 (ffmpeg) [active]`.
+//! the seed it was constructed with (`recompute_layout`), so the seed is four
+//! characters and the row reads `default s3 (ffmpeg) [active]`.
 //! Nothing here has to pick a longer seed to make room, which is the change
 //! from when the seed was the ceiling and an active row read `[active]` and
 //! nothing else.
 //!
 //! Where the label gives way, measured on 2026-10-03 by rendering this screen
-//! at every width the harness accepts: 43 columns is the narrowest at which all
+//! at every width the harness accepts: 41 columns is the narrowest at which all
 //! three rows that name a tool still show that tool in full. One column
-//! narrower, the per-step row is down to the tail `ffmpeg)`, because it carries
-//! the version and the phase tag as well and is the longer of the two rows, and
-//! by 28 a running worker reads `default s3` and nothing else. Below the fill
-//! crossing the rows give up their timing to keep their label, and a row whose
-//! label does not fit either keeps the timing instead, so the active workers
-//! read `⠙  22s` on a line too narrow for `default s3 [active]`.
+//! narrower both worker rows are down to the tail `ffmpeg)`, and by 30 a
+//! running worker reads `default s3` and nothing else. The per-step row holds
+//! its parenthesised tool name down to 32, so it goes on naming the tool eight
+//! columns after the worker rows have stopped. Below the fill crossing the
+//! rows give up their timing to keep their label, and a row whose label does
+//! not fit either keeps the timing instead, so the active workers read
+//! `⠙  22s` on a line too narrow for `default s3 [active]`.
 //! Those are facts about the seeds quoted above, not a contract, and they move
 //! when a label changes length. Nothing in the suite is named after them,
 //! because a fixture called for one of those widths would go on testing that
@@ -128,9 +129,9 @@ fn dispatch(bar: &ProgressBarHandle, workflow_id: &str, step_id: &str, tool: &st
 
 /// Render the workflow screen at `config`'s size and return the raw grid.
 ///
-/// The overall bar is labelled `workflow [wf]`, as the conductor CLI builds
-/// it, and the child bars are the worker slots the coordinator pre-creates one
-/// per pool member. Two slots end in a warning state (`[W]` for a step the
+/// The overall bar is labelled `workflow`, as the service builds it, and
+/// the child bars are the worker slots the coordinator pre-creates one per
+/// pool member. Two slots end in a warning state (`[W]` for a step the
 /// coordinator will retry, `[F]` for one it will not), one drops its
 /// identifiers and reads `[idle]`, one never receives a step, and one is still
 /// running when the transcript is read.
@@ -156,11 +157,11 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     /// Outputs the per-step bar tracks.
     const STEP_OUTPUTS: u64 = 3;
     /// Seed the coordinator installs on every worker slot, quoted from
-    /// `coordinator.rs:343`.
-    const WORKFLOW_SEED: &str = "idle [wf]";
+    /// `coordinator.rs:348`.
+    const WORKFLOW_SEED: &str = "idle";
 
     let (terminal, grid, clock) = capture_terminal(config);
-    let (screen, overall) = terminal.screen().with_overall("workflow [wf]", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("workflow", 1).build();
     // The caller pins the overall bar with a placeholder total; the coordinator
     // sets the step count once the workflow is resolved.
     overall.set_total(STEP_COUNT);
@@ -192,7 +193,6 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
         step_id: "s3".to_string(),
         tool: "ffmpeg".to_string(),
         version: "7.1".to_string(),
-        phase: "wf".to_string(),
         completed: "1".to_string(),
         total: STEP_OUTPUTS.to_string(),
     }));

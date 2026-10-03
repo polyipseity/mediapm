@@ -38,11 +38,13 @@ mod runtime_tmp_lifecycle;
 /// otherwise only reports as a build abort.
 mod http_decoupling;
 
-/// Workflow progress screen `[wf]`: overall bar + per-step bars with
-/// `SetPrefixComponents`, `Advance`, and `FinishSuccess`/`FinishWarning`.
+/// Workflow progress screen: an overall bar the caller creates, one
+/// pre-created worker-slot bar per pool member that is relabelled with
+/// `SetTruncation` on every dispatch, plus `Advance` and
+/// `FinishSuccess`/`FinishWarning`.
 mod workflow_progress;
 
 /// Client-defined bar-label truncation: worker bars drop progress tally,
-/// step bars keep version under width pressure.
+/// step bars yield the version before the tool name.
 #[cfg(feature = "progress")]
 mod progress_labels;

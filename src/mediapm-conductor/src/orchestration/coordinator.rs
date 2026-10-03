@@ -345,7 +345,7 @@ where
             #[cfg(feature = "progress")]
             if let Some(ref pg) = options.progress_group {
                 for _ in 0..pool_size {
-                    let bar = pg.add_bar(0, "idle [wf]");
+                    let bar = pg.add_bar(0, "idle");
                     bar.set_style(BarStyle::WorkerSpinner);
                     bar.set_truncation(Arc::new(worker_slot_label(
                         WorkerSlotState::Idle,

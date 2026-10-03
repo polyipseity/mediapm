@@ -3,25 +3,28 @@
 //! mediapm-utils owns the render push point but not the field layout. The
 //! two structs here carry conductor's own semantically-named fields and
 //! implement [`BarLabelTruncation`] with their own order. A step bar
-//! ([`StepBarLabel`]) carries real-progress fields (`version`, `completed`/
-//! `total`, `phase`); a worker-slot bar ([`WorkerBarLabel`]) carries an
-//! `activity` marker (`active`/`idle`) alongside its identifiers and tool
-//! name, and never a workflow phase or progress tally.
+//! ([`StepBarLabel`]) carries real-progress fields (a version and a
+//! `completed`/`total` tally); a worker-slot bar ([`WorkerBarLabel`]) carries
+//! an `activity` marker (`active`/`idle`) alongside its identifiers and tool
+//! name, and never a progress tally.
 //!
-//! Both labels put the status marker first and the phase or activity marker
-//! last, which is the order tool-sync already renders: `ffmpeg v7.1 [res]`
-//! names the thing before it says what state the thing is in.
+//! Both labels put the status marker first and are walked from the tail, so the
+//! last field is the first to go. A worker bar ends on its activity marker and
+//! yields that tag before it shortens a tool name, which is the order
+//! tool-sync already renders: `ffmpeg v7.1 [res]` names the thing before it
+//! says what state the thing is in.
 
 use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit_segments};
 
 /// Truncation order for a per-step (real-progress) bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix ends with the version and the phase tag. Under width pressure the
-/// `tool` name shortens from the front first, and once it cannot shrink
-/// further the trailing `phase` is dropped, then the version, and only then
-/// the identifiers and the status marker. The suffix leads with the tally,
-/// then `elapsed`, `rate`, `eta`, and an elastic `custom`.
+/// prefix ends with the version, so the version is what width pressure reaches
+/// for first: it gives columns back from its end, and it drops whole before
+/// the `tool` name ahead of it is shortened at all. Once neither can shrink
+/// further the identifiers drop, and the status marker with them. The suffix
+/// leads with the tally, then `elapsed`, `rate`, `eta`, and an elastic
+/// `custom`.
 ///
 /// The order is the whole mechanism. `fit_segments` drops from the tail
 /// unconditionally, so a field survives by its position in the list.
@@ -35,15 +38,15 @@ pub struct StepBarLabel {
     pub workflow_id: String,
     /// Step identifier within the workflow, e.g. `"s3"`.
     pub step_id: String,
-    /// Conductor tool name, rendered parenthesized as `(ffmpeg)`. The only
-    /// elastic prefix segment.
+    /// Conductor tool name, rendered parenthesized as `(ffmpeg)`. Elastic,
+    /// so a narrow row shortens the name from its front before dropping it.
     pub tool: String,
-    /// Tool version, rendered bracketed as `[7.1]`.
+    /// Tool version, rendered verbatim as `7.1`, with no brackets. The only
+    /// head-keeping prefix segment: the columns it gives back come off the
+    /// end, so a narrowed row reads `7.` instead of a tail that names
+    /// nothing. It trails the tool name, so it yields before the name is
+    /// touched.
     pub version: String,
-    /// Workflow phase tag, rendered bracketed as `[wf]`. Trails the version
-    /// so a narrowed row keeps the version and loses the tag, which is the
-    /// order tool-sync's own `[res]` tag yields in.
-    pub phase: String,
     /// Completed count for the progress tally, rendered as
     /// `{completed}/{total}` in the suffix. Names belong in the prefix and
     /// counts in the suffix, so this field has no prefix rendering. Empty
@@ -58,15 +61,16 @@ pub struct StepBarLabel {
 impl StepBarLabel {
     /// Build the prefix segments, most important first.
     ///
-    /// The status marker leads and the phase tag trails, so the tag is the
-    /// first segment dropped and the marker is never dropped. A `[F]` that
+    /// The status marker leads, so it is the last segment to go. A `[F]` that
     /// got clipped away would leave a failed row reading as a succeeded one,
     /// which is the one thing a row must not do.
     ///
-    /// The identifiers, the version, and the phase are `Keep` rather than
-    /// `Elastic` because clipping them destroys what identifies them: `[7.1]`
-    /// clipped to `1]` and `default` clipped to `ult` both read as loose text,
-    /// and neither names a version or a workflow.
+    /// The identifiers are `Keep` rather than `Elastic` because clipping them
+    /// destroys what identifies them: `default` clipped to `ult` names no
+    /// workflow. The version is the exception, and it is the one head-keeping
+    /// segment, because a version numbers itself from the left: `7.1` at two
+    /// columns reads `7.`, where a clip that kept the tail could yield nothing
+    /// at all, since the value holds no boundary to cut after.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.status_marker.is_empty() {
@@ -82,10 +86,7 @@ impl StepBarLabel {
             segs.push(Segment::elastic(format!("({})", self.tool)));
         }
         if !self.version.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.version)));
-        }
-        if !self.phase.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.phase)));
+            segs.push(Segment::elastic_head(self.version.clone()));
         }
         segs
     }
