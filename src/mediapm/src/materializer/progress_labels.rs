@@ -50,7 +50,9 @@ pub struct MaterializationBarLabel {
     pub entry_name: String,
     /// Extracted file basename (sub-bars only), e.g. `"cover.jpg"`.
     pub file_name: String,
-    /// Materialization phase tag: `"stg"` / `"vrf"` / `"cmt"` / `"wrt"` / `"mat"`.
+    /// Materialization phase tag: `"stg"` / `"vrf"` / `"cmt"` / `"wrt"`. A
+    /// per-entry row names the phase it is in; the overall bar leaves it
+    /// empty, because its label already says it is materializing.
     pub phase: String,
 }
 

@@ -1,7 +1,7 @@
 //! Renders the materialization progress screen (screen C) at a chosen width.
 //!
 //! The bars are the ones `sync_hierarchy` registers: the pinned
-//! `materializing [mat]` overall bar, one bar per hierarchy entry seeded with
+//! `materializing` overall bar, one bar per hierarchy entry seeded with
 //! `{relative_path} [stg]`, and, inside a media folder entry, one sub-bar per
 //! extracted variant seeded with `{variant_name} [wrt]`. A media entry walks
 //! its bar through `[stg]`, `[vrf]`, and `[cmt]`; a folder or playlist entry
@@ -11,8 +11,9 @@
 //! What each tag stands for is tabulated under "Materialization phase tags" in
 //! `.agents/instructions/progress-output.instructions.md`: `stg` copies CAS
 //! content into the staging area, `vrf` checks the staged bytes, `cmt` writes
-//! into the library, `wrt` is one file inside a folder variant, and `mat`
-//! labels this screen's overall bar.
+//! into the library, and `wrt` is one file inside a folder variant. The
+//! overall bar carries no tag, since the word beside it already names the
+//! phase.
 //!
 //! The shared prefix slot is the widest label the screen draws, held to what
 //! the terminal has left after the spinner, the separators and the suffix, with
@@ -186,7 +187,7 @@ mod tests {
                 "⠸       You Up [youtube.dQw4w9WgXcQ] [stg] ░░░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d\n",
                 "⠴     Up [youtube.dQw4w9WgXcQ] links [wrt] ████████░░░░░░░░░░░░░░░░░░ 4s 0/d\n",
                 "⠇        01 - In the Flesh?.m4a Wall [vrf] ████████░░░░░░░░░░░░░░░░░░ 0s 0/d\n",
-                "⠋                      materializing [mat] ████████░░░░░░░░░░░░░░░░░░ 13s 1/m"
+                "⠋                            materializing ████████░░░░░░░░░░░░░░░░░░ 13s 1/m"
             )
         );
     }

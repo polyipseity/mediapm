@@ -1266,7 +1266,7 @@ impl MediaPmService<FileSystemCas> {
         // The workflow screen must be built only after the tool phase's screen
         // has been joined: a terminal allows exactly one live screen at a time.
         let (workflow_group, workflow_overall_handle) =
-            terminal.screen().with_overall("workflow [wf]", 1).build();
+            terminal.screen().with_overall("workflow", 1).build();
         let workflow_pg: Option<Arc<dyn ProgressScreenApi + Send + Sync>> =
             Some(Arc::new(workflow_group));
         let workflow_overall: Option<Arc<dyn ProgressBarApi>> =
@@ -1346,7 +1346,7 @@ impl MediaPmService<FileSystemCas> {
         // the workflow screen — the one-terminal rule, not one draw target per
         // screen. It is built only after the workflow screen has been joined.
         let (materialize_group, materialize_overall_handle) =
-            terminal.screen().with_overall("materializing [mat]", 1).build();
+            terminal.screen().with_overall("materializing", 1).build();
         let materialize_pg: Option<Arc<dyn ProgressScreenApi + Send + Sync>> =
             Some(Arc::new(materialize_group));
         let materialize_overall: Option<Arc<dyn ProgressBarApi>> =

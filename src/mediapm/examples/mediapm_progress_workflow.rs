@@ -2,7 +2,7 @@
 //!
 //! The bars are the ones the conductor coordinator registers during
 //! `run_workflow`: a fixed grid of worker-slot bars that are created once per
-//! pool member and reused for every dispatch, plus the pinned `workflow [wf]`
+//! pool member and reused for every dispatch, plus the pinned `workflow`
 //! overall bar. A worker slot reads `[idle]` when nothing is running on it,
 //! the workflow, step and tool names plus `[active]` when a step is, and
 //! the `[W]` or `[F]` marker when a step ended in a warning or a failure. The

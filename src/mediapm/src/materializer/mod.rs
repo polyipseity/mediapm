@@ -194,15 +194,13 @@ pub async fn sync_hierarchy(
         // Caller owns the overall bar — set the real entry count.
         bar.set_total(validated.len() as u64);
         bar.set_truncation(Arc::new(MaterializationBarLabel {
-            phase: "mat".to_string(),
             entry_name: "materializing".to_string(),
             ..Default::default()
         }));
         bar
     } else if let Some(ref pg) = progress_group {
-        let bar = pg.add_bar(validated.len() as u64, "materializing [mat]");
+        let bar = pg.add_bar(validated.len() as u64, "materializing");
         bar.set_truncation(Arc::new(MaterializationBarLabel {
-            phase: "mat".to_string(),
             entry_name: "materializing".to_string(),
             ..Default::default()
         }));
@@ -1323,7 +1321,7 @@ mod tests {
         let conductor_state = ConductorState::new_empty();
         let generated_doc = NickelDocument::default();
 
-        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
         let result = sync_hierarchy(
             &paths,
             &document,
@@ -1343,13 +1341,13 @@ mod tests {
         // prevents set_total/set_prefix_components from running.
         assert_eq!(
             ops,
-            vec![ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() }],
+            vec![ProgressOp::AddBar { total: 1, label: "materializing".into() }],
             "empty hierarchy should only produce the overall AddBar, got {ops:?}",
         );
     }
 
     /// Single media entry with no CAS content emits the full progress
-    /// sequence: overall `[mat]` bar → per-entry `[stg]`/`[vrf]` phases →
+    /// sequence: overall bar → per-entry `[stg]`/`[vrf]` phases →
     /// `Advance(1)` + `FinishWarning` (skipped) → overall
     /// `Advance(1)` + `FinishSuccess`.
     ///
@@ -1402,7 +1400,7 @@ mod tests {
         let conductor_state = ConductorState::new_empty();
         let generated_doc = NickelDocument::default();
 
-        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
         let result = sync_hierarchy(
             &paths,
             &document,
@@ -1418,7 +1416,7 @@ mod tests {
 
         assert!(result.is_ok(), "sync_hierarchy should succeed: {result:?}");
         let ops = recording.ops();
-        // Exact op sequence: overall `[mat]` bar (AddBar from with_overall,
+        // Exact op sequence: overall bar (AddBar from with_overall,
         // then SetTotal + SetTruncation from sync_hierarchy) → per-entry
         // `[stg]`/`[vrf]` phases → `Advance(1)` + `FinishWarning` (skipped, no
         // CAS content) → overall `Advance(1)` + `FinishSuccess`.
@@ -1426,12 +1424,9 @@ mod tests {
             ops,
             vec![
                 // Overall bar created by with_overall(), total set by sync_hierarchy.
-                ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() },
+                ProgressOp::AddBar { total: 1, label: "materializing".into() },
                 ProgressOp::SetTotal { total: 1 },
-                ProgressOp::SetTruncation {
-                    prefix: "materializing [mat]".into(),
-                    suffix: String::new(),
-                },
+                ProgressOp::SetTruncation { prefix: "materializing".into(), suffix: String::new() },
                 // Per-entry bar: staging.
                 ProgressOp::AddBar { total: 3, label: "test_file [stg]".into() },
                 ProgressOp::SetTruncation {
@@ -1455,7 +1450,7 @@ mod tests {
                 ProgressOp::Advance { delta: 1 },
                 ProgressOp::FinishSuccess,
             ],
-            "\nops mismatch — expected [mat] overall + [stg]→[vrf] skip path",
+            "\nops mismatch — expected the overall bar + [stg]→[vrf] skip path",
         );
     }
 
@@ -1477,7 +1472,7 @@ mod tests {
         let conductor_state = ConductorState::new_empty();
         let generated_doc = NickelDocument::default();
 
-        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
         sync_hierarchy(
             &paths,
             &document,
@@ -1534,7 +1529,7 @@ mod tests {
         let conductor_state = ConductorState::new_empty();
         let generated_doc = NickelDocument::default();
 
-        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
         let result = sync_hierarchy(
             &paths,
             &document,
@@ -1658,7 +1653,7 @@ mod tests {
         let conductor_state = ConductorState::new_empty();
         let generated_doc = NickelDocument::default();
 
-        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
         let result = sync_hierarchy(
             &paths,
             &document,
@@ -1684,7 +1679,7 @@ mod tests {
         );
         assert_eq!(
             recording.ops(),
-            vec![ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() }],
+            vec![ProgressOp::AddBar { total: 1, label: "materializing".into() }],
             "rejection must precede the overall-bar setup and every entry worker, \
              so no per-entry staging bar was ever created"
         );
@@ -1724,7 +1719,7 @@ mod tests {
         let conductor_state = ConductorState::new_empty();
         let generated_doc = NickelDocument::default();
 
-        let (recording, overall) = RecordingProgressTracker::with_overall("materializing [mat]", 1);
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
         let result = sync_hierarchy(
             &paths,
             &document,
@@ -1742,12 +1737,9 @@ mod tests {
         assert_eq!(
             recording.ops(),
             vec![
-                ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() },
+                ProgressOp::AddBar { total: 1, label: "materializing".into() },
                 ProgressOp::SetTotal { total: 1 },
-                ProgressOp::SetTruncation {
-                    prefix: "materializing [mat]".into(),
-                    suffix: String::new(),
-                },
+                ProgressOp::SetTruncation { prefix: "materializing".into(), suffix: String::new() },
                 ProgressOp::AddBar { total: 3, label: "AC_DC [stg]".into() },
                 ProgressOp::SetTruncation { prefix: "AC_DC [stg]".into(), suffix: String::new() },
                 ProgressOp::SetTruncation { prefix: "AC_DC [vrf]".into(), suffix: String::new() },

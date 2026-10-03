@@ -58,6 +58,10 @@ mod tests {
     /// here". A sync that builds a second, private terminal for the tool phase
     /// leaves this grid empty at the tools report while the workflow and
     /// materialization reports still fill it.
+    ///
+    /// The workflow and materialization grids also have to stay clear of
+    /// `[wf]` and `[mat]`. An overall bar names what it is, so a phase tag
+    /// beside that name only restates it.
     #[tokio::test]
     async fn sync_runs_every_phase_through_one_terminal() {
         let (mut service, _root, _cache) =
@@ -112,14 +116,26 @@ mod tests {
 
         let (_, workflow_grid) = &grids[1];
         assert!(
-            workflow_grid.contains("[wf]"),
-            "the workflow phase did not render into the injected terminal:\n{workflow_grid}"
+            workflow_grid.contains("workflow"),
+            "the workflow phase drew no overall bar into the injected terminal:\n{workflow_grid}"
+        );
+        assert!(
+            !workflow_grid.contains("[wf]"),
+            "the workflow phase tag is back. It returns if the overall seed regains its \
+             `[wf]`, or if a worker slot regains its `[wf]`, so neither half of the \
+             screen may name the phase:\n{workflow_grid}"
         );
 
         let (_, materialization_grid) = &grids[2];
         assert!(
-            materialization_grid.contains("[mat]"),
-            "the materialization phase did not render into the injected terminal:\n{materialization_grid}"
+            materialization_grid.contains("materializing"),
+            "the materialization phase drew no overall bar into the injected terminal:\n{materialization_grid}"
+        );
+        assert!(
+            !materialization_grid.contains("[mat]"),
+            "the materialization phase tag is back on the overall row. It returns if that \
+             row's `MaterializationBarLabel` sets `phase`, or if a per-entry row does; \
+             only the per-entry rows may name a phase:\n{materialization_grid}"
         );
     }
 }

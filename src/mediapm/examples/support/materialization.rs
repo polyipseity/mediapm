@@ -7,7 +7,7 @@
 //! The seeds are quoted from the materializer rather than chosen, so the rows
 //! here are the rows a live sync draws. There are three distinct seeds:
 //!
-//! - `materializing [mat]` on the overall bar, created by
+//! - `materializing` on the overall bar, created by
 //!   `with_overall` at `src/mediapm/src/service.rs:1349` and quoted by the
 //!   recorder tests at `src/mediapm/src/materializer/mod.rs:1291`.
 //! - `{relative_path} [stg]` on a per-entry bar, from
@@ -15,10 +15,12 @@
 //! - `{variant_name} [wrt]` on a per-extracted-file sub-bar, from
 //!   `src/mediapm/src/materializer/mod.rs:746`.
 //!
-//! `materializing [mat]` is nineteen columns and the overall bar is the only
+//! `materializing` is thirteen columns and the overall bar is the only
 //! bar whose seed stays that short. Every other seed carries a path or a
-//! variant name. The shared prefix slot is what the terminal has left after the
-//! spinner, the separators and the suffix, with a fill floor under the bar
+//! variant name. The overall bar carries no phase tag, because the word
+//! already names what the bar is doing. The shared prefix slot is what the
+//! terminal has left after the spinner, the separators and the suffix, with a
+//! fill floor under the bar
 //! while there is room for a bar at all, and under it the elastic path halves
 //! shorten from the head, so a folder name wider than the
 //! whole budget shortens too rather than being dropped whole. The online
@@ -153,7 +155,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     /// Entries in the synthetic library, which is what the overall bar totals.
     const ENTRY_COUNT: u64 = 3;
     /// Seed the overall bar carries, from `src/mediapm/src/service.rs:1349`.
-    const OVERALL_SEED: &str = "materializing [mat]";
+    const OVERALL_SEED: &str = "materializing";
     /// Variant whose ZIP members the folder entry unpacks. The name doubles as
     /// the sub-bar's seed and its `file_name` segment, as at
     /// `src/mediapm/src/materializer/mod.rs:746`.
@@ -174,12 +176,12 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall(OVERALL_SEED, 1).build();
     // `sync_hierarchy` replaces the placeholder total with the entry count and
-    // installs the `[mat]` label on the caller's own handle, at
-    // `src/mediapm/src/materializer/mod.rs:194` and `:196`.
+    // installs the label on the caller's own handle, at
+    // `src/mediapm/src/materializer/mod.rs:196` and `:203`. The label leaves
+    // `phase` empty, so the overall row names the screen and no phase.
     overall.set_total(ENTRY_COUNT);
     overall.set_truncation(Arc::new(MaterializationBarLabel {
         entry_name: "materializing".to_string(),
-        phase: "mat".to_string(),
         ..Default::default()
     }));
 
