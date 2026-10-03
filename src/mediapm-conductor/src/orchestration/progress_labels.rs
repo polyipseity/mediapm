@@ -2,21 +2,26 @@
 //!
 //! mediapm-utils owns the render push point but not the field layout. The
 //! two structs here carry conductor's own semantically-named fields and
-//! implement [`BarLabelTruncation`] with their own order. A step bar
-//! ([`StepBarLabel`]) carries real-progress fields (a version and a
-//! `completed`/`total` tally); a worker-slot bar ([`WorkerBarLabel`]) carries
-//! an `activity` marker (`active`/`idle`) alongside its identifiers and tool
-//! name, and never a progress tally.
+//! implement [`BarLabelTruncation`] with their own order. [`StepBarLabel`]
+//! labels the pinned overall workflow bar, so it names the workflow and the
+//! step running on it, and its tally is filled only by a bar that tracks
+//! outputs rather than by the coordinator; [`WorkerBarLabel`] labels one pool
+//! slot, carrying an `activity` marker (`active`/`idle`) alongside its
+//! identifiers and tool name, and never a tally.
 //!
 //! Both labels put the status marker first and are walked from the tail, so the
 //! last field is the first to go. A worker bar ends on its activity marker and
 //! yields that tag before it shortens a tool name, which is the order
 //! tool-sync already renders: `ffmpeg v7.1 [res]` names the thing before it
 //! says what state the thing is in.
+//!
+//! A client label also replaces the built-in prefix components outright, so a
+//! label that wants a status marker has to carry one.
 
 use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit_segments};
 
-/// Truncation order for a per-step (real-progress) bar.
+/// Truncation order for the overall workflow bar's label, and for a bar that
+/// tracks a step's outputs.
 ///
 /// Segments are ordered most important first and yield from the tail. The
 /// prefix ends with the version, so the version is what width pressure reaches
@@ -46,11 +51,19 @@ pub struct StepBarLabel {
     /// end, so a narrowed row reads `7.` instead of a tail that names
     /// nothing. It trails the tool name, so it yields before the name is
     /// touched.
+    ///
+    /// Reachable from production and empty there. The coordinator builds this
+    /// label for the overall workflow bar and has no versioned tool field to
+    /// read, so it leaves the string empty, the segment is dropped, and the
+    /// row reads `default s3 (ffmpeg)`. The workflow example is the only
+    /// caller that fills it, and so the only screen where `Shrink::Head` has
+    /// anything to cut.
     pub version: String,
     /// Completed count for the progress tally, rendered as
     /// `{completed}/{total}` in the suffix. Names belong in the prefix and
-    /// counts in the suffix, so this field has no prefix rendering. Empty
-    /// when the step has no tally.
+    /// counts in the suffix, so this field has no prefix rendering. The
+    /// coordinator leaves it empty, because the overall bar counts steps
+    /// through its fill rather than through a tally.
     pub completed: String,
     /// Total count for the progress tally. Rendered only when `completed`
     /// is non-empty.
@@ -93,9 +106,13 @@ impl StepBarLabel {
 
     /// Build the suffix segments, most important first.
     ///
-    /// The tally leads, because it is the only count the step bar has and the
+    /// The tally leads, because it is the only count the bar has and the
     /// renderer supplies one of its own alongside the timing fields, so the
-    /// label has to render exactly one of them.
+    /// label has to render exactly one of them. A label with no tally of its
+    /// own falls back to the renderer's derived `count`/`total`, which is what
+    /// the overall workflow bar shows: it counts steps through its fill rather
+    /// than through a tally, and a suffix that ignored the derived pair would
+    /// take `4/12` off the row.
     ///
     /// Free-form `custom` text is elastic so a long user string is
     /// shortened from the front rather than cut at its head.
@@ -110,6 +127,8 @@ impl StepBarLabel {
         let mut segs = Vec::new();
         if !self.completed.is_empty() && !self.total.is_empty() {
             segs.push(Segment::keep(format!("{}/{}", self.completed, self.total)));
+        } else if !suffix.count.is_empty() && !suffix.total.is_empty() {
+            segs.push(Segment::keep(format!("{}/{}", suffix.count, suffix.total)));
         }
         if !suffix.elapsed.is_empty() {
             segs.push(Segment::keep(suffix.elapsed.clone()));

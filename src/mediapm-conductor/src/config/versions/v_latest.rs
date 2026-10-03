@@ -331,8 +331,8 @@ pub(crate) enum ToolKindLatest {
 ///
 /// Custom Serialize/Deserialize flattens the tagged `kind` enum into a flat
 /// record shape matching the Nickel v2 contract: `kind = "builtin"` as a plain
-/// string with variant-specific fields (`name`, `version`, `command`, etc.) as
-/// sibling entries rather than nested under `kind = { kind = "builtin", ... }`.
+/// string with variant-specific fields (`name`, `command`, etc.) as sibling
+/// entries rather than nested under `kind = { kind = "builtin", ... }`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ToolSpecLatest {
     /// Tool kind.
