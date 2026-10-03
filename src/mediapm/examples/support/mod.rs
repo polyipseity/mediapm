@@ -20,6 +20,12 @@
 //! The files under `examples/fixtures/` hold the transcripts these renderers
 //! produce, one per width. The directory listing is the list of widths: no
 //! source file names them, and adding one is adding one file.
+//!
+//! The scenario axis lives in `support/scenarios.rs` rather than here, and an
+//! example opts into it by declaring it. That split is what lets one of the three
+//! screens move onto the axis while the other two have not: this file compiles
+//! into every example binary, so an item here that only one screen called would
+//! read as dead code in the other two, which build under `deny(warnings)`.
 
 use std::fmt;
 use std::sync::Arc;
@@ -279,7 +285,7 @@ pub fn strip_ansi_escapes(grid: &str) -> String {
 /// committed files: the walk below needs them in the checkout, and a missing
 /// one is a failed test rather than a skipped one.
 #[cfg(test)]
-fn fixture_directory(example: &str) -> PathBuf {
+pub(super) fn fixture_directory(example: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/fixtures").join(example)
 }
 
@@ -307,6 +313,20 @@ fn fixture_width(path: &Path, stem: &str) -> u16 {
         .unwrap_or_else(parse_failure)
 }
 
+/// Whether a transcript filename is the shape this matcher claims.
+///
+/// `<stem>-width-<N>.txt` is this matcher's shape and
+/// `<stem>-<scenario>-width-<N>.txt` is the scenario axis's. A directory holds
+/// both once a screen has adopted the axis and its baseline transcripts keep the
+/// names they were captured with, so each matcher claims the names it can read
+/// and steps over the ones it cannot. Neither steps over a name that fits
+/// neither shape, so a file in the directory still cannot go unread.
+#[cfg(test)]
+fn names_the_size_only_shape(path: &Path, stem: &str) -> bool {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    name.starts_with(&format!("{stem}-width-")) && name.ends_with(".txt")
+}
+
 /// Render a screen at every width its committed transcripts name and compare.
 ///
 /// The directory listing decides which widths are checked, so a new transcript
@@ -321,10 +341,13 @@ pub fn assert_every_transcript_matches(
     render: impl Fn(ScreenConfig) -> String,
 ) {
     let directory = fixture_directory(example);
-    let transcripts = read_dir_sorted(&directory);
+    let transcripts: Vec<PathBuf> = read_dir_sorted(&directory)
+        .into_iter()
+        .filter(|path| names_the_size_only_shape(path, stem))
+        .collect();
     assert!(
         !transcripts.is_empty(),
-        "{} holds no transcripts, so {example} would be covered at no width at all",
+        "{} holds no size-only transcripts, so {example} would be covered at no width at all",
         directory.display()
     );
     for path in transcripts {
@@ -465,7 +488,7 @@ const BAR_CELLS: [char; 2] = ['█', '░'];
 /// Sorting is what makes a failure report the same width first on a second
 /// run; the filesystem's own order is not stable across machines.
 #[cfg(test)]
-fn read_dir_sorted(directory: &Path) -> Vec<PathBuf> {
+pub(super) fn read_dir_sorted(directory: &Path) -> Vec<PathBuf> {
     let entries = std::fs::read_dir(directory)
         .unwrap_or_else(|error| panic!("cannot list {}: {error}", directory.display()));
     let mut paths: Vec<PathBuf> = entries

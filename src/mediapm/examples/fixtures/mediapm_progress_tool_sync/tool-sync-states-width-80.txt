@@ -1,0 +1,10 @@
+⠏     media-tagger 0.1.0+8f3a1c07d5b [res] ███████████  1/1 0s
+⠏     ffmpeg autobuild-2025-10-03-12 [res] ███████████  2/2 0s 2 cached
+⠏                     rsgain v2.24.1 [res] ███████████  1/1 0s skipped, 1 cached
+⠏                        deno v2.1.4 [res] ███████████  0/1 5s
+⠏                    deno v2.1.4 [fch] 1/2 ███████████  31M/31M 3s
+⠏                    deno v2.1.4 [pro] 1/2 ███████████  2/2 2s
+⠏                 [W] sd v1.10.0 [res] 1/1 ███████████  1/1 0s
+⠏                 [F] sd v1.10.0 [fch] 0/1 ░░░░░░░░░░░  0/1 0s
+⠏                            pruning [prn] ███████████  1/2 0s
+⠏                        [W] syncing tools ████████░░░  4/5 9s

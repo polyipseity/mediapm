@@ -1,0 +1,10 @@
+⠏     media-tagger 0 [res]  1/1
+⠏     ffmpeg autobui [res]  2/2 2 cached
+⠏     rsgain v2.24.1 [res]  1/1 skipped, 1 cached
+⠏        deno v2.1.4 [res]  0/1
+⠏     deno v2.1. [fch] 1/2  31M/31M
+⠏     deno v2.1. [pro] 1/2  2/2
+⠏                   [W] sd  1/1
+⠏                   [F] sd  0/1
+⠏            pruning [prn]  1/2
+⠏              syncing too  4/5

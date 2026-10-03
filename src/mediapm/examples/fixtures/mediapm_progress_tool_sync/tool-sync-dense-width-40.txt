@@ -1,0 +1,20 @@
+⠏     ffmpeg autobuild [res]  1/1
+⠏     ffmpeg autob [fch] 1/2  172M/172M
+⠏     ffmpeg autob [pro] 1/2  2/2
+⠏     yt-dlp 2025.09.2 [res]  1/1
+⠏     yt-dlp 2025. [fch] 1/2  3.2M/3.2M
+⠏     yt-dlp 2025. [pro] 1/2  2/2
+⠏          deno v2.1.4 [res]  1/1
+⠏      deno v2.1.4 [fch] 1/2  31M/31M
+⠏      deno v2.1.4 [pro] 1/2  2/2
+⠏       rsgain v2.24.1 [res]  1/1
+⠏     rsgain v2.24 [fch] 1/2  13M/13M
+⠏     rsgain v2.24 [pro] 1/2  2/2
+⠏     media-tagger 0.1 [res]  1/1
+⠏     media-tagger [fch] 1/2  21M/21M
+⠏     media-tagger [pro] 1/2  2/2
+⠏           sd v1.10.0 [res]  1/1
+⠏       sd v1.10.0 [fch] 1/2  1.1G/1.1G
+⠏       sd v1.10.0 [pro] 1/2  2/2
+⠏              pruning [prn]  1/2
+⠏              syncing tools  6/6

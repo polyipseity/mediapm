@@ -1,0 +1,10 @@
+⠏     media-tagg  1/1
+⠏         ffmpeg  2/2 2 cached
+⠏         rsgain  1/1 skipped, 1 cached
+⠏     deno [res]  0/1
+⠏     deno [fch]  31M/31M
+⠏     deno [pro]  2/2
+⠏              s  1/1
+⠏              s  0/1
+⠏        pruning  1/2
+⠏              s  4/5

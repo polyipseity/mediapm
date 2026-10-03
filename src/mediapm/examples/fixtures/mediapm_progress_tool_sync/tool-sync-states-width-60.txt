@@ -1,0 +1,10 @@
+⠏     media-tagger 0.1.0+8f3a1 [res]  1/1
+⠏     ffmpeg autobuild-2025-10 [res]  2/2 2 cached
+⠏               rsgain v2.24.1 [res]  1/1 skipped, 1 cached
+⠏                  deno v2.1.4 [res]  0/1
+⠏              deno v2.1.4 [fch] 1/2  31M/31M
+⠏              deno v2.1.4 [pro] 1/2  2/2
+⠏              [W] sd v1.1 [res] 1/1  1/1
+⠏              [F] sd v1.1 [fch] 0/1  0/1
+⠏                      pruning [prn]  1/2
+⠏                  [W] syncing tools  4/5

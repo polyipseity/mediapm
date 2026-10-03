@@ -1,0 +1,20 @@
+⠏     ffmpeg [res]  1/1
+⠏     ffmpeg [fch]  172M/172M
+⠏     ffmpeg [pro]  2/2
+⠏     yt-dlp [res]  1/1
+⠏     yt-dlp [fch]  3.2M/3.2M
+⠏     yt-dlp [pro]  2/2
+⠏     deno v [res]  1/1
+⠏       deno [fch]  31M/31M
+⠏       deno [pro]  2/2
+⠏     rsgain [res]  1/1
+⠏     rsgain [fch]  13M/13M
+⠏     rsgain [pro]  2/2
+⠏     media-tagger  1/1
+⠏     media-tagger  21M/21M
+⠏     media-tagger  2/2
+⠏     sd v1. [res]  1/1
+⠏     sd [fch] 1/2  1.1G/1.1G
+⠏     sd [pro] 1/2  2/2
+⠏          pruning  1/2
+⠏     syncing tool  6/6
