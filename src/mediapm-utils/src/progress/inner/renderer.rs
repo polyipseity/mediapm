@@ -703,8 +703,21 @@ impl SlotTiming {
     }
 }
 
+/// Message a blanked slot carries.
+///
+/// One space rather than the empty string, because an empty message writes no
+/// line at all and the rows above would lose their anchor.
+const BLANK_MESSAGE: &str = " ";
+
 /// Cached last values pushed to a bar, used to skip redundant indicatif
 /// setter calls and reduce terminal flicker.
+///
+/// The cache describes **the bar**, not the source bound to it. A slot's
+/// source moves between bars as the band shifts, but the bar's own state does
+/// not, so a rebind keeps the cache and the next sync can still tell whether
+/// the value it is about to push is already on screen. Rebuilding the cache on
+/// a rebind throws that away and makes every rebind push a value the bar
+/// already shows.
 struct SlotCache {
     /// Last position sent to `set_position`.
     position: Cell<u64>,
@@ -727,6 +740,11 @@ struct SlotCache {
 }
 
 impl SlotCache {
+    /// A cache that has never pushed onto its bar.
+    ///
+    /// `position` and `total` hold the `u64::MAX` never-pushed sentinel, and
+    /// the style cells hold their own, so nothing a fresh bar already shows can
+    /// be mistaken for a repeat of an earlier push.
     fn new() -> Self {
         Self {
             position: Cell::new(u64::MAX),
@@ -740,9 +758,53 @@ impl SlotCache {
             style_status_code: Cell::new(u8::MAX),
         }
     }
+
+    /// Forget the position last pushed, because the bar no longer holds it.
+    ///
+    /// [`indicatif::ProgressBar::reset`] returns the bar's position to zero and
+    /// leaves its length alone, so only the position has to be invalidated:
+    /// [`total`](Self::total) still describes the bar.
+    fn invalidate_position(&self) {
+        self.position.set(u64::MAX);
+    }
+
+    /// Record the blank state [`blank_new_bar`] just pushed onto a fresh bar.
+    ///
+    /// The style status code takes the same `u8::MAX` sentinel a fresh cache
+    /// carries, so the next bind always re-applies the style. That sentinel on
+    /// its own is ambiguous, which is what [`is_blanked`](Self::is_blanked)
+    /// settles.
+    fn mark_blanked(&self) {
+        self.prefix.borrow_mut().clear();
+        *self.suffix.borrow_mut() = BLANK_MESSAGE.to_string();
+        self.style_status_code.set(u8::MAX);
+    }
+
+    /// Whether this slot was blanked and nothing has touched its bar since.
+    ///
+    /// A fresh cache carries the same `u8::MAX` style sentinel but an empty
+    /// suffix, and a blanked slot carries a suffix of exactly
+    /// [`BLANK_MESSAGE`], so the two cannot be confused. A real bind pushes
+    /// both a prefix and a real status code, which clears the answer here, so a
+    /// slot that was rebound and released again is never reported as blank.
+    fn is_blanked(&self) -> bool {
+        self.style_status_code.get() == u8::MAX
+            && self.prefix.borrow().is_empty()
+            && self.suffix.borrow().as_str() == BLANK_MESSAGE
+    }
 }
 
-impl RenderedSlot {}
+/// Put a freshly created bar into the blank state a new slot starts in.
+///
+/// Shared by slot construction and height growth so the state a fresh slot's
+/// cache records is the state its bar is really in, and so the first
+/// [`ProgressRenderer::blank_bar`] on it has nothing to do.
+fn blank_new_bar(bar: &ProgressBar, cache: &SlotCache) {
+    bar.set_style(blank_bar_style());
+    bar.set_message(BLANK_MESSAGE);
+    bar.set_prefix("");
+    cache.mark_blanked();
+}
 
 /// Apply the screen's slot finish policy to a bar that has just been added to a [`MultiProgress`].
 ///
@@ -774,10 +836,9 @@ impl ProgressRenderer {
             // Configuring before mp.add() prevents InMemoryTerm from
             // capturing blank bar output in tests.
             let bar = with_slot_finish_policy(mp.add(pb));
-            bar.set_style(blank_bar_style());
-            bar.set_message(" ");
-            bar.set_prefix("");
-            slots.push(RenderedSlot { bar, source: RefCell::new(None), cache: SlotCache::new() });
+            let cache = SlotCache::new();
+            blank_new_bar(&bar, &cache);
+            slots.push(RenderedSlot { bar, source: RefCell::new(None), cache });
         }
         // Trigger a final draw so all bars are captured by InMemoryTerm
         // even when capacity == terminal height.
@@ -872,6 +933,7 @@ impl ProgressRenderer {
                     // it to InProgress so the spinner cycles again.
                     if slot.bar.is_finished() {
                         slot.bar.reset();
+                        slot.cache.invalidate_position();
                     }
                     apply_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
                 }
@@ -892,10 +954,23 @@ impl ProgressRenderer {
             };
             self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), None);
         } else {
-            slot.bar.set_style(blank_bar_style());
-            slot.bar.set_message(" ");
-            slot.bar.set_prefix("");
+            self.blank_bar(i);
         }
+    }
+
+    /// Return slot `i` to a blank row and record that it is blank.
+    ///
+    /// All three pushes are real `update_estimate_and_draw` calls, so blanking
+    /// a slot that is already blank spends three draws to change nothing. The
+    /// skip is what makes this safe to call from the paths that walk every slot
+    /// on a height change, and it holds because a rebind clears the marker: see
+    /// [`SlotCache::is_blanked`].
+    fn blank_bar(&self, i: usize) {
+        let slot = &self.slots[i];
+        if slot.cache.is_blanked() {
+            return;
+        }
+        blank_new_bar(&slot.bar, &slot.cache);
     }
 
     /// Attach a tracked state to the next available render slot.
@@ -912,6 +987,13 @@ impl ProgressRenderer {
     /// bottom.  When no finished slot is available, the handle is
     /// pushed to [`orphaned_states`] — it remains tracked but has no
     /// render slot until the terminal grows back.
+    ///
+    /// Every slot keeps its [`SlotCache`]. The shift moves sources between
+    /// slots, never bars between slots, so a slot's cache still describes
+    /// what its own bar shows, and the sync that follows a rebind can skip
+    /// a value that bar already holds. Rebuilding the cache here is what
+    /// made every added bar cost a second `set_position` on the slot it
+    /// landed in.
     pub(crate) fn attach(&mut self, state: &Arc<SharedState>) {
         // Buffer all draws during attach — slot shifts + sync_slot + recompute_layout
         // produce many intermediate state changes that should appear atomically.
@@ -937,7 +1019,6 @@ impl ProgressRenderer {
             // Place new child at the freed bottom slot.
             self.slots[bottom].source.replace(Some(Arc::clone(state)));
             self.slots_timing[bottom] = SlotTiming::new(&*self.time_source);
-            self.slots[bottom].cache = SlotCache::new();
             self.sync_slot(bottom);
             self.recompute_layout();
             return;
@@ -962,7 +1043,6 @@ impl ProgressRenderer {
                 // Place new child at the freed bottom slot.
                 self.slots[bottom].source.replace(Some(Arc::clone(state)));
                 self.slots_timing[bottom] = SlotTiming::new(&*self.time_source);
-                self.slots[bottom].cache = SlotCache::new();
                 self.sync_slot(bottom);
                 self.recompute_layout();
                 return;
@@ -1376,9 +1456,7 @@ impl ProgressRenderer {
                 if snap.status == TrackStatus::Active {
                     // bar.tick() called in the spinner loop below.
                 } else if source.is_cleared() {
-                    slot.bar.set_style(blank_bar_style());
-                    slot.bar.set_message(" ");
-                    slot.bar.set_prefix("");
+                    self.blank_bar(i);
                 } else {
                     self.finish_slot(i, snap.status);
                 }
@@ -1572,11 +1650,9 @@ impl ProgressRenderer {
                 for _ in 0..(desired_cap - current_cap) {
                     let pb = ProgressBar::new(0);
                     let bar = with_slot_finish_policy(self.inner.insert(insert_pos, pb));
-                    bar.set_style(blank_bar_style());
-                    bar.set_message(" ");
-                    bar.set_prefix("");
-                    let slot =
-                        RenderedSlot { bar, source: RefCell::new(None), cache: SlotCache::new() };
+                    let cache = SlotCache::new();
+                    blank_new_bar(&bar, &cache);
+                    let slot = RenderedSlot { bar, source: RefCell::new(None), cache };
                     if let Some(orphan) = self.orphaned_states.borrow_mut().pop_back() {
                         slot.source.replace(Some(orphan));
                     }
@@ -1723,8 +1799,126 @@ mod tests {
     use crate::progress::inner::components::MAX_SUFFIX_WIDTH;
     use indicatif::MultiProgress;
     use indicatif::ProgressDrawTarget;
+    use indicatif::TermLike;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
 
+    /// A [`TermLike`] that counts the lines written to a wrapped
+    /// [`indicatif::InMemoryTerm`].
+    ///
+    /// indicatif ends every draw with one `write_line`, so the count is the
+    /// number of draws that reached the target. Re-blanking a blank slot
+    /// changes nothing a frame can show, so a test that pins it has to count
+    /// draws rather than read one.
+    #[derive(Debug)]
+    struct CountingTerm {
+        /// The grid the draws land in, kept so a test can read the frame back.
+        grid: indicatif::InMemoryTerm,
+        /// Number of `write_line` calls since the counter was last read.
+        lines: Arc<AtomicUsize>,
+    }
+
+    impl CountingTerm {
+        fn new(rows: u16, cols: u16) -> Self {
+            Self {
+                grid: indicatif::InMemoryTerm::new(rows, cols),
+                lines: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    impl TermLike for CountingTerm {
+        fn width(&self) -> u16 {
+            self.grid.width()
+        }
+        fn height(&self) -> u16 {
+            self.grid.height()
+        }
+        fn move_cursor_up(&self, n: usize) -> std::io::Result<()> {
+            self.grid.move_cursor_up(n)
+        }
+        fn move_cursor_down(&self, n: usize) -> std::io::Result<()> {
+            self.grid.move_cursor_down(n)
+        }
+        fn move_cursor_right(&self, n: usize) -> std::io::Result<()> {
+            self.grid.move_cursor_right(n)
+        }
+        fn move_cursor_left(&self, n: usize) -> std::io::Result<()> {
+            self.grid.move_cursor_left(n)
+        }
+        fn write_line(&self, s: &str) -> std::io::Result<()> {
+            self.lines.fetch_add(1, Ordering::Relaxed);
+            self.grid.write_line(s)
+        }
+        fn write_str(&self, s: &str) -> std::io::Result<()> {
+            self.grid.write_str(s)
+        }
+        fn clear_line(&self) -> std::io::Result<()> {
+            self.grid.clear_line()
+        }
+        fn flush(&self) -> std::io::Result<()> {
+            self.grid.flush()
+        }
+    }
+
+    /// A renderer over a [`CountingTerm`], plus the draw counter it writes to.
+    fn counting_renderer(
+        rows: u16,
+        cols: u16,
+        capacity: usize,
+    ) -> (ProgressRenderer, Arc<AtomicUsize>) {
+        let term = CountingTerm::new(rows, cols);
+        let lines = Arc::clone(&term.lines);
+        let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
+        let dims = Arc::new(TestDimensionSource::new((rows, cols)));
+        let ts = Arc::new(TestTimeSource::new());
+        let renderer = ProgressRenderer::from_mp(
+            mp,
+            capacity,
+            dims,
+            WriteGate::new_noop(),
+            ts as Arc<dyn TimeSource>,
+            None,
+        );
+        (renderer, lines)
+    }
+
+    /// Blanking a slot that is already blank spends nothing.
+    ///
+    /// All three pushes `blank_bar` makes are real `update_estimate_and_draw`
+    /// calls, and `maybe_adjust_for_resize` walks every slot on a height
+    /// change, so a terminal that grows twice blanks the slots it added on the
+    /// second pass too. The skip is safe because a rebind clears the marker:
+    /// the second half of this test blanks a slot that has since been bound and
+    /// does draw.
+    #[test]
+    fn blanking_an_already_blank_slot_draws_nothing() {
+        let (mut renderer, lines) = counting_renderer(10, 80, 4);
+        // Construction ends with one tick of the last slot, so measure from
+        // here rather than from zero.
+        let baseline = lines.load(Ordering::Relaxed);
+
+        // Slot 0 is blank from construction.
+        renderer.blank_bar(0);
+        renderer.blank_bar(0);
+        assert_eq!(
+            lines.load(Ordering::Relaxed),
+            baseline,
+            "a slot that is already blank must not be drawn again"
+        );
+
+        let bar =
+            Arc::new(SharedState::with_time_source(10, "tool", Arc::clone(&renderer.time_source)));
+        renderer.attach(&bar);
+        // attach binds the bottom slot, the only slot that is no longer blank.
+        let bottom = renderer.slots.len() - 1;
+        let after_attach = lines.load(Ordering::Relaxed);
+        renderer.blank_bar(bottom);
+        assert!(
+            lines.load(Ordering::Relaxed) > after_attach,
+            "a slot that has been bound and released is no longer blank, so blanking it draws"
+        );
+    }
     #[test]
     fn recompute_layout_uniform_widths() {
         // Two bars with different prefix widths must converge to a single

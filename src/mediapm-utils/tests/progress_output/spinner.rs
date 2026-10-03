@@ -48,8 +48,8 @@ fn worker_spinner_style_renders_idle_and_active() {
             "\n",
             "\n",
             "⠹        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/0 0s 0/d\n",
-            "⠴        busy ███████████████████████████████████████████████████  5/5 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
+            "⠼        busy ███████████████████████████████████████████████████  5/5 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
         "worker_spinner_style_renders_idle_and_active/active"
     );
@@ -158,8 +158,8 @@ fn zero_total_fill_depends_on_the_bar_style() {
         concat!(
             "\n",
             "⠹       step-zero ███████  0/0 0s 0/d\n",
-            "⠼     worker-zero ░░░░░░░  0/0 0s 0/d\n",
-            "⠹         overall ░░░░░░░  0/1 0s 0/d"
+            "⠸     worker-zero ░░░░░░░  0/0 0s 0/d\n",
+            "⠹         overall ░░░░░░░  0/1 0s 0/d",
         ),
         "zero_total_fill_depends_on_the_bar_style"
     );

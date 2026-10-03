@@ -40,8 +40,8 @@ fn parallel_workers_with_a_failed_worker() {
             "\n",
             "\n",
             "⠏              [F] worker-a █████████████████████░░░░░░░░░░░░░░  3/5 1s\n",
-            "⠧                  worker-b █████████████████████░░░░░░░░░░░░░░  3/5 2s 17/m 7s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d"
+            "⠦                  worker-b █████████████████████░░░░░░░░░░░░░░  3/5 2s 17/m 7s\n",
+            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d",
         ),
         "parallel_workers_with_a_failed_worker"
     );
@@ -264,8 +264,8 @@ fn workers_with_interleaved_advances() {
             "\n",
             "\n",
             "⠸        fast ███████████████████████████████████████░░░░░░░░░░  8/10 1s 48/m 2s\n",
-            "⠴        slow ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/10 1s 18/m\n",
-            "⠸     overall █████████████████████████████████████████████████  11/10 1s 1.1/s"
+            "⠼        slow ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/10 1s 18/m\n",
+            "⠸     overall █████████████████████████████████████████████████  11/10 1s 1.1/s",
         ),
         "workers_with_interleaved_advances"
     );
@@ -293,8 +293,8 @@ fn worker_children_fill_the_small_grid() {
         concat!(
             "⠸     child-a ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/5 0s 0/d\n",
             "⠸     child-b ████████████████████████████████████████░░░░░░░░░░░  4/5 0s 0/d\n",
-            "⠦     child-c ███████████████████████████████████████████████████  5/5 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
+            "⠼     child-c ███████████████████████████████████████████████████  5/5 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d",
         ),
         "worker_children_fill_the_small_grid"
     );
@@ -314,8 +314,8 @@ fn child_capacity_excludes_the_overall_slot() {
         &term.contents(),
         concat!(
             "⠹       alpha ░░░░░░░░░░░  0/3 0s 0/d\n",
-            "⠼        beta ░░░░░░░░░░░  0/3 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░  0/1 0s 0/d"
+            "⠸        beta ░░░░░░░░░░░  0/3 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░  0/1 0s 0/d",
         ),
         "child_capacity_excludes_the_overall_slot/two_children"
     );
@@ -330,8 +330,8 @@ fn child_capacity_excludes_the_overall_slot() {
         &term.contents(),
         concat!(
             "⠹       alpha ░░░░░░░░░░░  0/3 0s 0/d\n",
-            "⠼        beta ░░░░░░░░░░░  0/3 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░  0/1 0s 0/d"
+            "⠸        beta ░░░░░░░░░░░  0/3 0s 0/d\n",
+            "⠹     overall ░░░░░░░░░░░  0/1 0s 0/d",
         ),
         "child_capacity_excludes_the_overall_slot/three_children"
     );
