@@ -11,21 +11,30 @@ use mediapm_utils::progress::{BarLabelTruncation, Segment, SuffixComponents, fit
 /// Truncation order for a materialization bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix is `phase`, `status_marker`, `entry_name`, `entry_path`,
-/// `file_name`, with the two path halves elastic so they shorten from the
-/// front. The suffix is `elapsed`, `rate`, `eta`, then an elastic `custom`,
-/// in the same order `WorkerBarLabel` uses.
+/// prefix is `status_marker`, `entry_name`, `entry_path`, `file_name`,
+/// `phase`, with the two path halves elastic so they shorten from the front.
+/// The suffix is `elapsed`, `rate`, `eta`, then an elastic `custom`, in the
+/// same order `WorkerBarLabel` uses.
 ///
 /// The order is the whole mechanism. `fit_segments` drops from the tail
 /// unconditionally, so a field survives by its position in the list, and it
 /// shrinks elastic fields from the tail too, so a field listed later is the
 /// one that gives up columns first.
 ///
+/// The phase tag sits at the tail so that a row reads as a file carrying a
+/// phase, the way tool-sync renders `ffmpeg v7.1 [res]`, rather than as a
+/// phase with a file under it. Tail position also makes the tag the first
+/// thing a narrowing terminal takes, and that is what tool-sync does with its
+/// own tag, so the screens agree on what yields first.
+///
+/// The status marker leads because a `[W]` or `[F]` clipped away would leave
+/// a failed row reading like a succeeded one. Tool-sync leads its marker for
+/// the same reason.
+///
 /// A reader scanning this screen wants to know, per row, what is being
-/// written and whether it worked. `phase` says what the bar is doing,
-/// `status_marker` says it failed or was skipped, and the two path halves say
-/// which file. A row that renders as `[stg]` on its own answers none of that,
-/// which is what made the old ranking a defect rather than a preference.
+/// written and whether it worked. The path halves say which file, the
+/// status marker says it failed or was skipped, and the phase tag says what
+/// the bar is doing.
 ///
 /// The prefix carries no version, no count/total, and no workflow/step
 /// identity, and neither does the suffix: the bar's position out of total is
@@ -48,9 +57,10 @@ pub struct MaterializationBarLabel {
 impl MaterializationBarLabel {
     /// Build the prefix segments, most important first.
     ///
-    /// `phase` and `status_marker` lead, so width pressure sheds the path
-    /// before it sheds the two things that say what the row is doing and
-    /// whether it went wrong.
+    /// `status_marker` leads, so width pressure sheds everything else before
+    /// it sheds the field that says whether the row went wrong. `phase` is
+    /// last, so it is the first whole segment a narrow row gives up; the
+    /// reason the tag sits at the tail is on [`MaterializationBarLabel`].
     ///
     /// `entry_name` and `entry_path` are both elastic, and they yield in that
     /// order because `fit_segments` shrinks from the tail: the directory
@@ -61,20 +71,20 @@ impl MaterializationBarLabel {
     /// a path is the artist's name, which the row is not about.
     ///
     /// `entry_name` is elastic rather than kept whole because a kept name is a
-    /// name that vanishes: at 39 columns the online demo's 58-column folder
+    /// name that vanishes: at 39 columns the online demo's 59-column folder
     /// name has a tail that carries the bracketed media id, which is what
     /// separates one video from another in a list of them, and that tail only
     /// exists because the elastic name is cut rather than surrendered.
     ///
-    /// `file_name` ranks last. It only appears on a `[wrt]` sub-bar, where it
-    /// repeats the variant name the parent row already implies, and there are
-    /// as many of those rows as there are extracted members. The directory
-    /// says where the members are going, and no other row carries it.
+    /// `file_name` only appears on a `[wrt]` sub-bar, where it repeats the
+    /// variant name the parent row already implies, and there are as many of
+    /// those rows as there are extracted members. It outranks `phase`
+    /// because a member name still says which member a row is writing once
+    /// the tag is gone, while the directory beside it says nothing the parent
+    /// row does not. The directory outranks both, since no other row carries
+    /// it.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
-        if !self.phase.is_empty() {
-            segs.push(Segment::keep(format!("[{}]", self.phase)));
-        }
         if !self.status_marker.is_empty() {
             segs.push(Segment::keep(format!("[{}]", self.status_marker)));
         }
@@ -86,6 +96,9 @@ impl MaterializationBarLabel {
         }
         if !self.file_name.is_empty() {
             segs.push(Segment::keep(self.file_name.clone()));
+        }
+        if !self.phase.is_empty() {
+            segs.push(Segment::keep(format!("[{}]", self.phase)));
         }
         segs
     }
@@ -174,14 +187,14 @@ mod tests {
         assert_eq!(name, "song.mkv");
     }
 
-    /// Every leading field survives the width band, and no width
+    /// The status marker survives every width that can hold it, and no width
     /// overflows. Detects `entry_name` or `entry_path` being promoted ahead
-    /// of `phase` or `status_marker`: such a reordering sheds the head at
-    /// these widths and fails the first two assertions.
+    /// of `status_marker`: such a reordering spends the columns on the path
+    /// first and loses the one field that says the row failed.
     #[test]
-    fn head_survives_across_narrow_widths() {
-        /// Visible width of the leading `[wrt] [F]` head.
-        const HEAD_WIDTH: usize = 9;
+    fn the_status_marker_survives_across_narrow_widths() {
+        /// Visible width of the leading `[F]` marker.
+        const MARKER_WIDTH: usize = 3;
         let label = MaterializationBarLabel {
             status_marker: "F".into(),
             entry_path: "Music/Artist/Album".into(),
@@ -189,9 +202,8 @@ mod tests {
             file_name: "cover.jpg".into(),
             phase: "wrt".into(),
         };
-        for width in HEAD_WIDTH..=18 {
+        for width in MARKER_WIDTH..=18 {
             let out = label.truncate_prefix(width);
-            assert!(out.contains("[wrt]"), "phase lost at width {width}: {out:?}");
             assert!(out.contains("[F]"), "status lost at width {width}: {out:?}");
             assert!(out.chars().count() <= width, "overflowed at width {width}: {out:?}");
         }
@@ -214,7 +226,7 @@ mod tests {
 
         // Tight: the path must keep its last directory, never its head.
         let tight = label.truncate_prefix(20);
-        assert_eq!(tight, "[stg] song.mkv 1977");
+        assert_eq!(tight, "song.mkv 1977 [stg]");
         assert!(!tight.contains("Music/"), "path head retained instead of tail: {tight:?}");
         assert!(tight.contains("song.mkv"), "entry_name lost: {tight:?}");
     }
@@ -233,10 +245,10 @@ mod tests {
         };
         // The path gives up everything above its last element and the name is
         // untouched.
-        assert_eq!(label.truncate_prefix(40), "[cmt] important-file.mkv path/segments");
+        assert_eq!(label.truncate_prefix(40), "important-file.mkv path/segments [cmt]");
         // Too narrow for the path at any answer it can give, so it is dropped
         // and the name takes the overage instead.
-        assert_eq!(label.truncate_prefix(23), "[cmt] file.mkv");
+        assert_eq!(label.truncate_prefix(23), "file.mkv [cmt]");
     }
 
     /// A folder name wider than the budget still names itself.
@@ -262,7 +274,7 @@ mod tests {
         assert!(out.contains("[stg]"), "phase lost: {out:?}");
         assert!(out.contains("dQw4w9WgXcQ"), "the media id identifying the name was cut: {out:?}");
         assert_eq!(
-            out, "[stg] Give You Up [youtube.dQw4w9WgXcQ]",
+            out, "Give You Up [youtube.dQw4w9WgXcQ] [stg]",
             "name not clipped to its tail: {out:?}"
         );
         assert!(out.chars().count() <= 39, "overflowed: {out:?}");
@@ -294,15 +306,14 @@ mod tests {
         assert_eq!(label.truncate_suffix(6, &suffix), "0m12s");
     }
 
-    /// `file_name` ranks last, so the variant name is the last thing a
-    /// sub-bar row gives up, after the directory and the entry name.
+    /// The phase tag is the first thing a sub-bar row gives up, and the
+    /// variant name goes with it once nothing else can shrink.
     ///
     /// The pair of widths below straddles that point, so a reordering that
-    /// moved `file_name` off the tail would fail the narrow one: with the
-    /// variant name ahead of the phase tag it would be the segment left
-    /// standing.
+    /// moved the phase tag off the tail would fail the wide one: with the tag
+    /// ahead of the variant name it would be the segment left standing.
     #[test]
-    fn file_name_yields_before_the_path_on_sub_bars() {
+    fn the_phase_tag_yields_first_and_the_file_name_after_it() {
         let label = MaterializationBarLabel {
             entry_path: "Music/Rick Astley/Never Gonna Give You Up".into(),
             entry_name: "album".into(),
@@ -310,7 +321,7 @@ mod tests {
             phase: "wrt".into(),
             ..Default::default()
         };
-        assert_eq!(label.truncate_prefix(15), "[wrt] cover.jpg");
-        assert_eq!(label.truncate_prefix(14), "[wrt]");
+        assert_eq!(label.truncate_prefix(15), "cover.jpg [wrt]");
+        assert_eq!(label.truncate_prefix(14), "cover.jpg");
     }
 }

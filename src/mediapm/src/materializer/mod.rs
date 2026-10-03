@@ -371,9 +371,8 @@ fn sanitize_and_validate_hierarchy_paths(
 /// Re-install an entry bar's label with a terminal-state marker.
 ///
 /// `finish_warning` and `finish_error` change a bar's colour and nothing else,
-/// so the prefix of a failed entry kept reading `[stg]` and the text never
-/// said what happened. The marker is the conductor's: `W` for a warning, `F`
-/// for a failure.
+/// so the text of a failed entry never said what happened. The marker is the
+/// conductor's: `W` for a warning, `F` for a failure.
 ///
 /// `entry_path`, `entry_name`, and `phase` are what the bar already shows, so
 /// they are passed in rather than read back off the handle. The renderer
@@ -1430,25 +1429,25 @@ mod tests {
                 ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() },
                 ProgressOp::SetTotal { total: 1 },
                 ProgressOp::SetTruncation {
-                    prefix: "[mat] materializing".into(),
+                    prefix: "materializing [mat]".into(),
                     suffix: String::new(),
                 },
                 // Per-entry bar: staging.
                 ProgressOp::AddBar { total: 3, label: "test_file [stg]".into() },
                 ProgressOp::SetTruncation {
-                    prefix: "[stg] test_file".into(),
+                    prefix: "test_file [stg]".into(),
                     suffix: String::new(),
                 },
                 // Per-entry bar: verify phase (set before hash resolution).
                 ProgressOp::SetTruncation {
-                    prefix: "[vrf] test_file".into(),
+                    prefix: "test_file [vrf]".into(),
                     suffix: String::new(),
                 },
                 // Skipped: advance(1) on entry_bar, the `[W]` label that
                 // names the skip in the text, then FinishWarning.
                 ProgressOp::Advance { delta: 1 },
                 ProgressOp::SetTruncation {
-                    prefix: "[vrf] [W] test_file".into(),
+                    prefix: "[W] test_file [vrf]".into(),
                     suffix: String::new(),
                 },
                 ProgressOp::FinishWarning,
@@ -1501,7 +1500,7 @@ mod tests {
         assert_eq!(
             ops.get(finish.saturating_sub(1)),
             Some(&ProgressOp::SetTruncation {
-                prefix: "[vrf] [W] test_file".into(),
+                prefix: "[W] test_file [vrf]".into(),
                 suffix: String::new(),
             }),
             "the label installed before the warning finish must carry [W]; got {ops:?}",
@@ -1558,7 +1557,7 @@ mod tests {
         assert_eq!(
             ops.get(finish.saturating_sub(1)),
             Some(&ProgressOp::SetTruncation {
-                prefix: "[stg] [F] album".into(),
+                prefix: "[F] album [stg]".into(),
                 suffix: String::new(),
             }),
             "the label installed before the error finish must carry [F]; got {ops:?}",
@@ -1746,15 +1745,15 @@ mod tests {
                 ProgressOp::AddBar { total: 1, label: "materializing [mat]".into() },
                 ProgressOp::SetTotal { total: 1 },
                 ProgressOp::SetTruncation {
-                    prefix: "[mat] materializing".into(),
+                    prefix: "materializing [mat]".into(),
                     suffix: String::new(),
                 },
                 ProgressOp::AddBar { total: 3, label: "AC_DC [stg]".into() },
-                ProgressOp::SetTruncation { prefix: "[stg] AC_DC".into(), suffix: String::new() },
-                ProgressOp::SetTruncation { prefix: "[vrf] AC_DC".into(), suffix: String::new() },
+                ProgressOp::SetTruncation { prefix: "AC_DC [stg]".into(), suffix: String::new() },
+                ProgressOp::SetTruncation { prefix: "AC_DC [vrf]".into(), suffix: String::new() },
                 ProgressOp::Advance { delta: 1 },
                 ProgressOp::SetTruncation {
-                    prefix: "[vrf] [W] AC_DC".into(),
+                    prefix: "[W] AC_DC [vrf]".into(),
                     suffix: String::new(),
                 },
                 ProgressOp::FinishWarning,

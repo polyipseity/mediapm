@@ -1,5 +1,5 @@
 ⠏            [cmt]
-⠸     [stg] You Up
-⠴      [wrt] links
+⠸     You Up [stg]
+⠴      links [wrt]
 ⠇            [vrf]
 ⠋            [mat]

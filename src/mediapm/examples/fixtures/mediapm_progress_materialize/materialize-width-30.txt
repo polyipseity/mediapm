@@ -1,5 +1,5 @@
-⠏       [cmt] Telepathy.flac
-⠸          [stg] Give You Up
-⠴         [wrt] You Up links
-⠇       [vrf] the Flesh?.m4a
-⠋        [mat] materializing
+⠏       Telepathy.flac [cmt]
+⠸          Give You Up [stg]
+⠴         You Up links [wrt]
+⠇       the Flesh?.m4a [vrf]
+⠋        materializing [mat]
