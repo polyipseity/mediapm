@@ -26,6 +26,15 @@ foreach ($arg in $args) {
     }
 }
 
+# A temp root that does not exist cannot be enumerated, and an unscanned sweep
+# prints the same "nothing found" line a real clean sweep prints. Fail instead
+# of letting a caller read the silent case as a clean one. GetTempPath() honors
+# TMPDIR/TMP/TEMP, so the root can go missing on this platform too.
+if (-not (Test-Path -LiteralPath $tempRoot -PathType Container)) {
+    [Console]::Error.WriteLine("no such directory: $tempRoot")
+    exit 1
+}
+
 function Clear-ReadOnlyAttributes {
     param(
         [Parameter(Mandatory = $true)]

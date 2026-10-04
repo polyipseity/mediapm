@@ -59,7 +59,14 @@ cargo --locked test --doc --workspace
 # Caveat: concurrent local mediapm processes could trip it spuriously.
 # Note: janitor sandbox self-tests now live in the root `tests` crate
 # (`cargo --locked test-pkg mediapm-tests`, covered by `cargo test-all`).
-if scripts/clean-mediapm-temp.sh --dry-run | grep -q 'would remove'; then
+# The janitor's own exit status is read before its output: a temp root that
+# cannot be scanned prints nothing that reads as a leftover, so a text-only
+# gate would take the failure for a clean sweep.
+dry_run_out="$(scripts/clean-mediapm-temp.sh --dry-run 2>&1)" || {
+    echo "error: mediapm temp-dir sweep failed: $dry_run_out" >&2
+    exit 1
+}
+if printf '%s\n' "$dry_run_out" | grep -q 'would remove'; then
     echo "error: test suite left mediapm temp dirs behind" >&2
     exit 1
 fi

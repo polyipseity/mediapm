@@ -65,8 +65,9 @@ Test harnesses must not rely on tuple-binding order for this. `mediapm-cas`'s `c
 
 ## Regression gate contract
 
-- `scripts/run-all-tests.sh` ends with a dry-run gate: `clean-mediapm-temp.sh --dry-run | grep -q 'would remove'` -> exit 1. Any leftover managed dir fails the suite. CI-covered (ubuntu-latest).
-- `scripts/run-all-tests.ps1` mirrors the gate for parity; the ps1 janitor self-test is CI-covered via the Windows script-tests job (`cargo --locked test-pkg mediapm-tests`).
+- `scripts/run-all-tests.sh` ends with a dry-run gate, and the gate reads the janitor's exit status before its output: a sweep that exits non-zero fails the runner as `error: mediapm temp-dir sweep failed: <janitor diagnostic>`, and a sweep that exits 0 reporting leftovers fails it as `error: test suite left mediapm temp dirs behind`. The two messages differ so a reader can tell a failed sweep from a dirty one. CI-covered (ubuntu-latest).
+- `scripts/run-all-tests.ps1` mirrors the gate for parity: it reads `$LASTEXITCODE` from a child `pwsh` running the janitor, because an in-process `&` call discards its captured output when the called script exits non-zero, which is exactly the diagnostic the gate has to report. The ps1 runner self-test is CI-covered via the Windows script-tests job (`cargo --locked test-pkg mediapm-tests`).
+- Both runner self-tests (`tests/scripts/test-run-all-tests.{sh,ps1}`) exercise the gate for real against a stub `cargo` on `PATH`, which reaches the gates without running the workspace suite: a missing temp root must fail the runner and name that root, and a root holding a leftover `mediapm-*` dir must fail it with the leftover message.
 - Unprefixed-tempdir invariant gate: `tempfile::tempdir(` and `.prefix(` may appear ONLY in `src/mediapm-utils/src/temp.rs`. Naming drift or a reintroduced unprefixed tempdir fails the suite.
 
 ## Authoring rules

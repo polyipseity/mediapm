@@ -35,4 +35,72 @@ foreach ($needle in @('cargo --locked nextest run', 'cargo --locked test --doc -
 # 5. --large must enable the large-tests Cargo feature (not an env var).
 if (-not $runnerText.Contains('--features large-tests')) { Fail 'runner missing --features large-tests under --large' }
 
+# 6. Temp-dir gate: a sweep that fails must fail the runner. A stub `cargo`
+#    first on PATH lets the real runner reach its gates without running the
+#    workspace suite. The stub dir carries the managed `mediapm-` prefix, so
+#    a leak is reclaimed by the janitor rather than stranded.
+$stubBin = Join-Path ([System.IO.Path]::GetTempPath()) ('mediapm-run-all-tests-stub-' + [System.Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stubBin | Out-Null
+Set-Content -LiteralPath (Join-Path $stubBin 'cargo') -Value "#!/bin/sh`nexit 0`n"
+Set-Content -LiteralPath (Join-Path $stubBin 'cargo.cmd') -Value @('echo off', 'exit /b 0')
+if ($env:OS -ne 'Windows_NT') { & chmod +x (Join-Path $stubBin 'cargo') }
+
+$savedPath = $env:PATH
+$savedTmp = $env:TMP
+$savedTmpDir = $env:TMPDIR
+$savedTemp = $env:TEMP
+function Invoke-RunnerAtRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $env:TMP = $Root
+    $env:TMPDIR = $Root
+    $env:TEMP = $Root
+    $lines = @(& pwsh -NoProfile -File $runner 2>&1)
+    return [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output   = ($lines -join "`n")
+    }
+}
+
+Push-Location $repoRoot
+try {
+    $env:PATH = "$stubBin$([System.IO.Path]::PathSeparator)$savedPath"
+
+    # A missing temp root: the janitor cannot enumerate it and exits
+    # non-zero. The runner must fail and name the cause rather than read the
+    # empty sweep as clean.
+    $missingRoot = Join-Path $stubBin 'missing-root'
+    $missing = Invoke-RunnerAtRoot -Root $missingRoot
+    if ($missing.ExitCode -eq 0) { Fail "runner passed its temp-dir gate with a missing temp root ($missingRoot)" }
+    # .NET's own GetTempPath() diagnostic may precede the cause, so the
+    # runner's message and the cause it names are checked separately.
+    if (-not $missing.Output.Contains('error: mediapm temp-dir sweep failed:')) {
+        Fail "missing-root gate failure missing the sweep message: $($missing.Output)"
+    }
+    if (-not $missing.Output.Contains("no such directory: $missingRoot")) {
+        Fail "missing-root gate failure did not name the cause: $($missing.Output)"
+    }
+
+    # The other route stays: a sweep that exits 0 and reports leftovers
+    # still fails, with its own message so the two failures read
+    # differently.
+    $leftoverRoot = Join-Path $stubBin 'leftover-root'
+    New-Item -ItemType Directory -Path (Join-Path $leftoverRoot 'mediapm-artifact-fake') -Force | Out-Null
+    $leftover = Invoke-RunnerAtRoot -Root $leftoverRoot
+    if ($leftover.ExitCode -eq 0) { Fail "runner passed its temp-dir gate with leftover dirs behind ($leftoverRoot)" }
+    if (-not $leftover.Output.Contains('error: test suite left mediapm temp dirs behind')) {
+        Fail "leftover gate failure missing its message: $($leftover.Output)"
+    }
+} finally {
+    Pop-Location
+    $env:PATH = $savedPath
+    $env:TMP = $savedTmp
+    $env:TMPDIR = $savedTmpDir
+    $env:TEMP = $savedTemp
+    Remove-Item -LiteralPath $stubBin -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Output 'test-run-all-tests.ps1: OK'

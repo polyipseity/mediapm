@@ -67,7 +67,17 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # ps1 runner self-test is CI-covered via the Windows workspace-tests job.
 # Note: janitor sandbox self-tests now live in the root `tests` crate
 # (`cargo --locked test-pkg mediapm-tests`, covered by `cargo test-all`).
-$dryRun = @(& "$PSScriptRoot/clean-mediapm-temp.ps1" --dry-run 2>&1)
+# The janitor's own exit status is read before its output: a temp root that
+# cannot be enumerated prints nothing that reads as a leftover, so a
+# text-only gate would take the failure for a clean sweep. The sweep runs in
+# a child pwsh because an in-process `&` call discards its captured output
+# when the called script exits non-zero, which is exactly the diagnostic this
+# gate has to report. Parity with run-all-tests.sh.
+$dryRun = @(& pwsh -NoProfile -File "$PSScriptRoot/clean-mediapm-temp.ps1" --dry-run 2>&1)
+if ($LASTEXITCODE -ne 0) {
+    [Console]::Error.WriteLine("error: mediapm temp-dir sweep failed: $($dryRun -join ' ')")
+    exit 1
+}
 if (@($dryRun | Where-Object { $_ -like 'would remove:*' }).Count -gt 0) {
     [Console]::Error.WriteLine('error: test suite left mediapm temp dirs behind')
     exit 1

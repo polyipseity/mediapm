@@ -8,6 +8,8 @@
 #   2. Static: the janitor source must contain no migration-era workspace
 #      globs (cli-add-hierarchy / examples/artifacts / stale stamped): the
 #      janitor scope is the temp-root three prefixes ONLY.
+#   3. Temp root preconditions: a $TMPDIR that does not exist must fail and
+#      name that path; an existing empty one must report a clean sweep.
 #
 # POSIX sh (driven by the `mediapm-tests` crate via `cargo test-all`; also
 # runnable standalone).
@@ -59,6 +61,24 @@ test ! -e "$tmpdir/mediapm-cache-fake2" || fail "cache dir not removed"
 test ! -e "$tmpdir/mediapm-runtime-abcdef1234567890" || fail "runtime dir not removed"
 test -d "$tmpdir/cli-add-hierarchy-123-456" || fail "control cli-add-hierarchy-* dir removed"
 test -d "$tmpdir/unrelated-dir" || fail "control unrelated-dir removed"
+
+# --- Preconditions: a missing temp root must fail, an existing empty one passes.
+missing_root="$tmpdir/missing-root"
+if TMPDIR="$missing_root" "$janitor" --dry-run >/dev/null 2>"$tmpdir/missing.err"; then
+    fail "janitor exited 0 for a missing temp root ($missing_root)"
+fi
+case "$(cat "$tmpdir/missing.err")" in
+    *"no such directory: $missing_root"*) ;;
+    *) fail "missing-root diagnostic did not name $missing_root: $(cat "$tmpdir/missing.err")" ;;
+esac
+
+empty_root="$tmpdir/empty-root"
+mkdir -p "$empty_root"
+empty_out="$(TMPDIR="$empty_root" "$janitor" --dry-run)"
+case "$empty_out" in
+    'no mediapm temp directories found') ;;
+    *) fail "empty temp root did not report a clean sweep: $empty_out" ;;
+esac
 
 # --- Static part: migration-era workspace globs must be gone.
 if grep -qE 'cli-add-hierarchy|examples/artifacts|stale stamped' "$janitor"; then

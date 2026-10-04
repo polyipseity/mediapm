@@ -8,6 +8,8 @@
 #   2. Static: the janitor source must contain no migration-era workspace
 #      globs (cli-add-hierarchy / examples/artifacts / stale stamped) - the
 #      janitor scope is the temp-root three prefixes ONLY.
+#   3. Temp root preconditions: a temp root that does not exist must fail and
+#      name that path; an existing empty one must report a clean sweep.
 #
 # Runs only when pwsh is available (the `mediapm-tests` crate probes and
 # skips). CI-covered via the Windows workspace-tests job. Behavioral twin of
@@ -69,6 +71,55 @@ try {
     $env:TMPDIR = $savedTmpDir
     $env:TEMP = $savedTemp
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Runs the janitor in a child pwsh with the temp-root env vars pointed at
+# $Root, so the janitor's own `exit` does not end this self-test. Returns the
+# child exit code and its merged output.
+function Invoke-JanitorAtRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+        [string[]]$JanitorArgs = @()
+    )
+
+    $savedTmp = $env:TMP
+    $savedTmpDir = $env:TMPDIR
+    $savedTemp = $env:TEMP
+    try {
+        $env:TMP = $Root
+        $env:TMPDIR = $Root
+        $env:TEMP = $Root
+        $lines = @(& pwsh -NoProfile -File $janitor @JanitorArgs 2>&1)
+        return [pscustomobject]@{
+            ExitCode = $LASTEXITCODE
+            Output   = ($lines -join "`n")
+        }
+    } finally {
+        $env:TMP = $savedTmp
+        $env:TMPDIR = $savedTmpDir
+        $env:TEMP = $savedTemp
+    }
+}
+
+# --- Preconditions: a missing temp root must fail, an existing empty one passes.
+$missingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("clean-mediapm-temp-missing-" + [System.Guid]::NewGuid().ToString('N'))
+$missing = Invoke-JanitorAtRoot -Root $missingRoot -JanitorArgs @('--dry-run')
+if ($missing.ExitCode -eq 0) { Fail "janitor exited 0 for a missing temp root ($missingRoot)" }
+if (-not $missing.Output.Contains("no such directory: $missingRoot")) {
+    Fail "missing-root diagnostic did not name ${missingRoot}: $($missing.Output)"
+}
+
+$emptyRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("clean-mediapm-temp-empty-" + [System.Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $emptyRoot | Out-Null
+try {
+    $empty = Invoke-JanitorAtRoot -Root $emptyRoot -JanitorArgs @('--dry-run')
+    if ($empty.ExitCode -ne 0) { Fail "janitor exited $($empty.ExitCode) for an empty temp root ($emptyRoot): $($empty.Output)" }
+    if (-not $empty.Output.Contains('no mediapm temp directories found')) {
+        Fail "empty temp root did not report a clean sweep: $($empty.Output)"
+    }
+} finally {
+    Remove-Item -LiteralPath $emptyRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --- Static part: migration-era workspace globs must be gone.

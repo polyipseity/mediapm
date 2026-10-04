@@ -1,10 +1,12 @@
 #!/bin/sh
-# Sandbox-free self-test for scripts/run-all-tests.sh.
+# Self-test for scripts/run-all-tests.sh.
 #
 # The runner's argument validation exits before any cargo invocation, so
 # this self-test never runs the real test suite (execution-safe). It
 # syntax-checks the runner, exercises --help / unknown-arg handling, and
-# asserts the static validation gates exist.
+# asserts the static validation gates exist. The temp-dir gate is exercised
+# for real against a stub `cargo` on PATH, which lets the runner reach its
+# gates without running the workspace suite.
 set -eu
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -54,6 +56,40 @@ done
 case "$runner_text" in
     *'--features large-tests'*) ;;
     *) fail "runner missing --features large-tests under --large" ;;
+esac
+
+# 6. Temp-dir gate: a sweep that fails must fail the runner. A stub `cargo`
+#    on PATH lets the real runner reach its gates without running the
+#    workspace suite.
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT INT TERM
+mkdir -p "$tmpdir/bin"
+printf '#!/bin/sh\nexit 0\n' >"$tmpdir/bin/cargo"
+chmod +x "$tmpdir/bin/cargo"
+
+# A missing temp root: the janitor cannot scan it and exits non-zero. The
+# runner must fail and name the cause rather than read the empty sweep as
+# clean. The assignment lives inside an `if` condition so its non-zero
+# status is exempt from `set -e`.
+missing_root="$tmpdir/missing-root"
+if gate_out="$(cd "$repo_root" && PATH="$tmpdir/bin:$PATH" TMPDIR="$missing_root" sh "$runner" 2>&1)"; then
+    fail "runner passed its temp-dir gate with a missing temp root ($missing_root)"
+fi
+case "$gate_out" in
+    *"error: mediapm temp-dir sweep failed: no such directory: $missing_root"*) ;;
+    *) fail "missing-root gate failure did not name the cause: $gate_out" ;;
+esac
+
+# The other route stays: a sweep that exits 0 and reports leftovers still
+# fails, with its own message so the two failures read differently.
+leftover_root="$tmpdir/leftover-root"
+mkdir -p "$leftover_root/mediapm-artifact-fake"
+if leftover_out="$(cd "$repo_root" && PATH="$tmpdir/bin:$PATH" TMPDIR="$leftover_root" sh "$runner" 2>&1)"; then
+    fail "runner passed its temp-dir gate with leftover dirs behind ($leftover_root)"
+fi
+case "$leftover_out" in
+    *"error: test suite left mediapm temp dirs behind"*) ;;
+    *) fail "leftover gate failure missing its message: $leftover_out" ;;
 esac
 
 echo "test-run-all-tests.sh: OK"

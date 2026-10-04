@@ -22,6 +22,14 @@ for arg in "$@"; do
     esac
 done
 
+# A temp root that does not exist cannot be scanned, and an unscanned sweep
+# prints the same "nothing found" line a real clean sweep prints. Fail instead
+# of letting a caller read the silent case as a clean one.
+if [[ ! -d "$tmp_root" ]]; then
+    echo "no such directory: $tmp_root" >&2
+    exit 1
+fi
+
 remove_if_exists() {
     local path="$1"
     if [[ ! -e "$path" ]]; then
@@ -43,7 +51,7 @@ remove_if_exists() {
 
 while IFS= read -r -d '' dir; do
     remove_if_exists "$dir"
-done < <(find "$tmp_root" -maxdepth 1 -type d -name 'mediapm-*' -print0 2>/dev/null)
+done < <(find "$tmp_root" -maxdepth 1 -type d -name 'mediapm-*' -print0)
 
 if [[ "$removed" -eq 0 ]]; then
     echo "no mediapm temp directories found"
