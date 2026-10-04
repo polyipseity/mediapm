@@ -53,8 +53,10 @@
 //! with the marker set. That is the only warning a per-entry row carries.
 //!
 //! The `[F]` row is reached too, on the two arms that check their result before
-//! finishing: a media folder and a playlist. Both finish on `[stg]`, the
-//! only phase either of them declares. Neither can be reached
+//! finishing: a media folder and a playlist. The playlist fails while
+//! resolving a reference, which is before it enters `[cmt]`, so the row
+//! finishes on `[stg]`; a folder that fails before its first variant is
+//! written finishes there for the same reason. Neither can be reached
 //! without the overall bar failing as well, since the same error returns from
 //! `prepare_hierarchy_entry`, breaks the collect loop in `sync_hierarchy`, and
 //! finishes the overall bar with an error (`:280`). That is why the `states`
@@ -70,10 +72,11 @@
 //! that entry's row keeps drawing as active.
 //!
 //! The `[wrt]` sub-bars and the over-long names are ordinary. A folder entry
-//! with a ZIP variant opens one sub-bar per variant while its own row is still
-//! on `[stg]`, and a YouTube-style media folder name runs to fifty-nine
-//! columns, which is wider than the forty the prefix slot is capped at, so the
-//! elastic name has to shorten it at every width here.
+//! with a ZIP variant opens one sub-bar per variant, and its own row is on
+//! `[wrt]` from the first of them, so a parent and its children name the same
+//! work at two granularities. A YouTube-style media folder name runs to
+//! fifty-nine columns, which is wider than the forty the prefix slot is capped
+//! at, so the elastic name has to shorten it at every width here.
 //!
 //! The label is the library's own [`MaterializationBarLabel`], re-exported
 //! from the `mediapm` crate root, and the path split is the library's
@@ -273,13 +276,15 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     clock.advance(Duration::from_secs(1));
 
     // The second entry is a media folder. Its own bar keeps the `[stg]` label
-    // it was created with, and the per-extracted-file sub-bar opens underneath
-    // it once the folder arm reaches the variant it unpacks.
+    // it was created with until the arm starts writing, and the
+    // per-extracted-file sub-bar opens underneath it at the variant it
+    // unpacks.
     let folder = screen.add_bar(ENTRY_PHASES, &format!("{folder_name} [stg]"));
     folder.set_truncation(phase_label(folder_path, folder_name, MaterializationPhase::Staging));
     screen.tick();
     clock.advance(Duration::from_secs(2));
 
+    folder.set_truncation(phase_label(folder_path, folder_name, MaterializationPhase::Write));
     let write = screen.add_bar(LINK_VARIANT_MEMBERS, &format!("{LINK_VARIANT} [wrt]"));
     write.set_truncation(Arc::new(MaterializationBarLabel {
         entry_path: folder_path.to_string(),
@@ -358,7 +363,8 @@ fn add_entry_bar(screen: &ProgressScreen, relative_path: &str) -> ProgressBarHan
 }
 
 /// Re-install an entry bar's label on a later phase, as the media arm does
-/// through `EntryPhaseBar::enter` at each of its two transitions.
+/// through `EntryPhaseBar::enter` at each of its two transitions. The folder
+/// arm makes one of these calls as well, at the variant it starts writing.
 fn set_entry_phase(bar: &ProgressBarHandle, relative_path: &str, phase: MaterializationPhase) {
     let (entry_path, entry_name) = split_entry_path(relative_path);
     bar.set_truncation(phase_label(entry_path, entry_name, phase));
@@ -370,7 +376,7 @@ fn set_entry_phase(bar: &ProgressBarHandle, relative_path: &str, phase: Material
 /// The marker is the caller's, because it is the finish that decides between
 /// them, and so is the phase: the warned media arm passes `W` on the `[vrf]`
 /// it last installed, and the failed playlist passes `F` on the `[stg]` it
-/// never left.
+/// failed before leaving.
 fn mark_finished(
     bar: &ProgressBarHandle,
     relative_path: &str,
@@ -482,13 +488,15 @@ fn render_dense(config: ScreenConfig) -> String {
     screen.tick();
     clock.advance(Duration::from_secs(1));
 
-    // A media folder runs its variants one after another. The first has
+    // A media folder runs its variants one after another. Its own row moves to
+    // `[wrt]` at the first of them and stays there. The first variant has
     // finished writing its members and sits below its parent's row; the second
     // is part-way through.
-    add_entry_bar(&screen, ONLINE_MEDIA_FOLDER);
+    let folder = add_entry_bar(&screen, ONLINE_MEDIA_FOLDER);
     screen.tick();
     clock.advance(Duration::from_secs(2));
 
+    set_entry_phase(&folder, ONLINE_MEDIA_FOLDER, MaterializationPhase::Write);
     let thumbnails = add_write_bar(&screen, ONLINE_MEDIA_FOLDER, THUMBNAILS, THUMBNAIL_MEMBERS);
     thumbnails.advance(THUMBNAIL_MEMBERS);
     clock.advance(Duration::from_secs(1));
@@ -501,10 +509,11 @@ fn render_dense(config: ScreenConfig) -> String {
     screen.tick();
     clock.advance(Duration::from_secs(4));
 
-    // A playlist entry never leaves `[stg]`: the arm that writes it installs no
-    // later phase, so a written playlist reads as one that finished staging.
+    // A playlist resolves its references and then writes one file, so its row
+    // reaches `[cmt]` at the write.
     let playlist = add_entry_bar(&screen, ONLINE_PLAYLIST);
     playlist.advance(1);
+    set_entry_phase(&playlist, ONLINE_PLAYLIST, MaterializationPhase::Commit);
     clock.advance(Duration::from_secs(2));
     playlist.finish_success();
     overall.advance(1);
@@ -573,12 +582,13 @@ fn render_states(config: ScreenConfig) -> String {
     screen.tick();
     clock.advance(Duration::from_secs(1));
 
-    // A folder mid-variant: its own row is still on `[stg]` while its sub-bars
-    // run below it, and its name is the widest the materializer produces.
-    add_entry_bar(&screen, ONLINE_MEDIA_FOLDER);
+    // A folder mid-variant: its own row is on `[wrt]` while its sub-bars run
+    // below it, and its name is the widest the materializer produces.
+    let folder = add_entry_bar(&screen, ONLINE_MEDIA_FOLDER);
     screen.tick();
     clock.advance(Duration::from_secs(2));
 
+    set_entry_phase(&folder, ONLINE_MEDIA_FOLDER, MaterializationPhase::Write);
     let thumbnails = add_write_bar(&screen, ONLINE_MEDIA_FOLDER, THUMBNAILS, THUMBNAIL_MEMBERS);
     thumbnails.advance(THUMBNAIL_MEMBERS);
     clock.advance(Duration::from_secs(1));
@@ -593,6 +603,8 @@ fn render_states(config: ScreenConfig) -> String {
 
     // The playlist arm is one of two that check their result before finishing,
     // and a failure there is the only `[F]` a folder or playlist row carries.
+    // The row is still on `[stg]` because an unresolvable reference is refused
+    // before the write that would have moved it to `[cmt]`.
     let failed = add_entry_bar(&screen, ONLINE_PLAYLIST);
     failed.advance(1);
     clock.advance(Duration::from_secs(1));

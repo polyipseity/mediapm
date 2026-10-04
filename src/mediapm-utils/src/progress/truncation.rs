@@ -114,6 +114,21 @@ pub enum Brackets {
     Square,
 }
 
+/// What a segment puts between itself and the segment before it.
+///
+/// [`fit_segments`] joins with [`Space`](Self::Space), which is what a label
+/// wants between two of its own fields: `default s3 (ffmpeg)`. A filename is
+/// not two fields, so a caller that splits one into segments says
+/// [`Direct`](Self::Direct) and the pieces rejoin as the single string it was.
+#[cfg(feature = "progress")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Join {
+    /// A single space before this piece.
+    Space,
+    /// Nothing before this piece: it continues the text in front of it.
+    Direct,
+}
+
 /// One ordered piece of a bar label.
 ///
 /// Segments are supplied most important first. [`fit_segments`] walks the
@@ -129,6 +144,8 @@ pub struct Segment {
     /// Brackets to wrap the content in, applied only when the piece is
     /// rendered whole. [`None`](Option::None) renders the bare content.
     pub brackets: Option<Brackets>,
+    /// What separates this piece from the one before it.
+    pub join: Join,
 }
 
 #[cfg(feature = "progress")]
@@ -137,20 +154,20 @@ impl Segment {
     /// dropped when it cannot fit.
     #[must_use]
     pub fn keep(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Keep, brackets: None }
+        Self { text: text.into(), shrink: Shrink::Keep, brackets: None, join: Join::Space }
     }
 
     /// An elastic piece: shortened from the front before anything is dropped.
     #[must_use]
     pub fn elastic(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Front, brackets: None }
+        Self { text: text.into(), shrink: Shrink::Front, brackets: None, join: Join::Space }
     }
 
     /// An elastic piece that keeps its leading characters: it gives columns
     /// back from the end before anything is dropped.
     #[must_use]
     pub fn elastic_head(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Head, brackets: None }
+        Self { text: text.into(), shrink: Shrink::Head, brackets: None, join: Join::Space }
     }
 
     /// Wrap this piece's content in `brackets`, which are rendered only when
@@ -158,6 +175,14 @@ impl Segment {
     #[must_use]
     pub fn brackets(mut self, brackets: Brackets) -> Self {
         self.brackets = Some(brackets);
+        self
+    }
+
+    /// Set what separates this piece from the one before it, for a value
+    /// split across two segments that is a single string when joined.
+    #[must_use]
+    pub fn joined(mut self, join: Join) -> Self {
+        self.join = join;
         self
     }
 }
@@ -253,10 +278,21 @@ fn render_one(fitted: &Fitted) -> String {
     }
 }
 
-/// Join `fitted` with single spaces, decorating each piece that is whole.
+/// Join `fitted`, decorating each piece that is whole.
+///
+/// A piece joined [`Direct`](Join::Direct) contributes nothing in front of
+/// it, so a value the caller split across two segments comes back out as the
+/// one string it was. Every other piece is preceded by a single space.
 #[cfg(feature = "progress")]
 fn render(fitted: &[Fitted]) -> String {
-    fitted.iter().map(render_one).collect::<Vec<_>>().join(" ")
+    let mut out = String::new();
+    for (idx, piece) in fitted.iter().map(render_one).enumerate() {
+        if idx > 0 && fitted[idx].segment.join == Join::Space {
+            out.push(' ');
+        }
+        out.push_str(&piece);
+    }
+    out
 }
 
 /// Visible column count of `text`.
@@ -323,6 +359,26 @@ fn visible_len(text: &str) -> usize {
 /// assert_eq!(fit_segments(&segs, 20), "[wf] 7.1");
 /// assert_eq!(fit_segments(&segs, 7), "[wf] 7.");
 /// assert_eq!(fit_segments(&segs, 6), "[wf] 7");
+/// ```
+///
+/// A value the caller split across two segments rejoins as the one string it
+/// was, because the tail piece declares [`Join::Direct`] rather than taking
+/// the default space:
+///
+/// ```
+/// # use mediapm_utils::progress::{Brackets, Join, Segment, fit_segments};
+/// let segs = vec![
+///     Segment::elastic("01 - Telepathy.flac"),
+///     Segment::keep("youtube.dQw4w9WgXcQ").brackets(Brackets::Square),
+///     Segment::keep(".link.mkv").joined(Join::Direct),
+/// ];
+/// assert_eq!(
+///     fit_segments(&segs, 50),
+///     "01 - Telepathy.flac [youtube.dQw4w9WgXcQ].link.mkv"
+/// );
+/// // The elastic piece clips while the group and the tail beside it, neither
+/// // of which can be shortened, come through whole.
+/// assert_eq!(fit_segments(&segs, 40), "athy.flac [youtube.dQw4w9WgXcQ].link.mkv");
 /// ```
 ///
 /// # Degenerate widths

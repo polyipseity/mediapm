@@ -9,10 +9,10 @@
 use crate::config::hierarchy_types::HierarchyEntryKind;
 
 use mediapm_utils::progress::{
-    BarLabelTruncation, Brackets, Segment, SuffixComponents, fit_segments,
+    BarLabelTruncation, Brackets, Join, Segment, SuffixComponents, fit_segments,
 };
 
-use self::MaterializationPhase::{Commit, Staging, Verify};
+use self::MaterializationPhase::{Commit, Staging, Verify, Write};
 
 /// One phase of the materialization screen.
 ///
@@ -57,15 +57,24 @@ impl HierarchyEntryKind {
     /// failure path repeated the same literal. The match is exhaustive over the
     /// enum, so a kind cannot exist without saying what it walks.
     ///
-    /// A kind lists only phases its arm really runs. A folder or a playlist
-    /// stages and then finishes; neither verifies or commits as a separate
-    /// step today, so listing more would put a tag on the screen that no code
-    /// behind it stands for.
+    /// A kind lists only phases its arm really runs. A folder makes its target
+    /// directory and then writes each selected variant, so it walks staging
+    /// and write. A playlist resolves its references, builds the bytes and
+    /// writes one file, so it walks staging and commit. Neither verifies, so
+    /// neither lists [`Verify`]: it is the one phase only [`Self::Media`]
+    /// claims, which is why a reader counting four tags against three kinds
+    /// is not looking at a dead variant.
+    ///
+    /// A folder's write phase is also the tag its sub-bars carry, so during a
+    /// folder sync the parent row and the rows under it name the same work at
+    /// two granularities. That is the point of declaring it here rather than
+    /// on the sub-bar alone.
     #[must_use]
     pub fn phases(self) -> &'static [MaterializationPhase] {
         match self {
             Self::Media => &[Staging, Verify, Commit],
-            Self::MediaFolder | Self::Playlist => &[Staging],
+            Self::MediaFolder => &[Staging, Write],
+            Self::Playlist => &[Staging, Commit],
         }
     }
 
@@ -85,9 +94,9 @@ impl HierarchyEntryKind {
 /// Truncation order for a materialization bar.
 ///
 /// Segments are ordered most important first and yield from the tail. The
-/// prefix is `status_marker`, `entry_name`, `entry_id`, `entry_path`,
-/// `file_name`, `phase`, with the two path halves elastic so they shorten from
-/// the front.
+/// prefix is `status_marker`, `entry_name` stem, `entry_id`, the tail the id
+/// leaves behind, `entry_path`, `file_name`, `phase`, with the two path
+/// halves elastic so they shorten from the front.
 /// The suffix is `elapsed`, `rate`, `eta`, then an elastic `custom`, in the
 /// same order `WorkerBarLabel` uses.
 ///
@@ -121,10 +130,10 @@ pub struct MaterializationBarLabel {
     pub status_marker: String,
     /// Directory portion of hierarchy path, e.g. `"Music/Artist/Album"`.
     pub entry_path: String,
-    /// Basename of hierarchy entry, e.g. `"song.mkv"`. A trailing
-    /// square-bracket group is taken out into the label's own segment by
-    /// `split_entry_id`, so the elastic name carries no brackets for a clip
-    /// to cut in half.
+    /// Basename of hierarchy entry, e.g. `"song.mkv"`. A square-bracket
+    /// group anywhere in it is taken out into the label's own segment by
+    /// `split_entry_id`, along with anything the group leaves behind, so
+    /// the elastic name carries no brackets for a clip to cut in half.
     pub entry_name: String,
     /// Extracted file basename (sub-bars only), e.g. `"cover.jpg"`.
     pub file_name: String,
@@ -154,6 +163,13 @@ impl MaterializationBarLabel {
     /// only a directory in it. It is `Keep`, so width pressure spends the
     /// elastic halves before giving it up.
     ///
+    /// The tail the group leaves behind is a `Keep` segment joined directly
+    /// to the id, because it is the rest of the same filename rather than a
+    /// field of its own: a media projection is `...[id].link.mkv`, and a row
+    /// reading `...[id] .link.mkv` would be showing a space the name does
+    /// not have. It ranks last of the three, so a narrow row gives up the
+    /// extension before the id and before any of the name.
+    ///
     /// `entry_name` is elastic rather than kept whole because a kept name is a
     /// name that vanishes: at 39 columns the online demo's 59-column folder
     /// name has a tail that carries the words in front of the media id, which
@@ -173,12 +189,15 @@ impl MaterializationBarLabel {
         if !self.status_marker.is_empty() {
             segs.push(Segment::keep(self.status_marker.clone()).brackets(Brackets::Square));
         }
-        let (stem, entry_id) = split_entry_id(&self.entry_name);
+        let (stem, entry_id, entry_tail) = split_entry_id(&self.entry_name);
         if !stem.is_empty() {
             segs.push(Segment::elastic(stem.to_string()));
         }
         if !entry_id.is_empty() {
             segs.push(Segment::keep(entry_id.to_string()).brackets(Brackets::Square));
+        }
+        if !entry_tail.is_empty() {
+            segs.push(Segment::keep(entry_tail.to_string()).joined(Join::Direct));
         }
         if !self.entry_path.is_empty() {
             segs.push(Segment::elastic(self.entry_path.clone()));
@@ -257,30 +276,37 @@ pub fn split_entry_path(path: &str) -> (&str, &str) {
     }
 }
 
-/// Split a hierarchy basename into `(stem, bracket_id)`.
+/// Split a hierarchy basename into `(stem, bracket_id, tail)`.
 ///
-/// The `rename_files` projection puts the media id in square brackets at the
-/// end of a folder name, e.g. `Rick Astley - Never Gonna Give You Up
-/// [youtube.dQw4w9WgXcQ]`. That group is the id, it is what separates one
-/// video from another in a list of them, and it is the piece a narrow row
-/// cannot afford to half-show. [`MaterializationBarLabel`] renders it as a
-/// segment of its own, so the name beside it carries no brackets for a clip
-/// to cut.
+/// The `rename_files` projection puts the media id in square brackets, e.g.
+/// `Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]`. That
+/// group is the id, it is what separates one video from another in a list of
+/// them, and it is the piece a narrow row cannot afford to half-show.
+/// [`MaterializationBarLabel`] renders it as a segment of its own, so the
+/// name beside it carries no brackets for a clip to cut.
 ///
-/// A basename that does not end in `]` has no trailing group, and the name is
-/// returned whole with an empty id. A media file's projected name ends in its
-/// extension (`...[youtube.dQw4w9WgXcQ].link.mkv`), so it takes that branch:
-/// the id stays inside the elastic name, which is the one shape on this
-/// screen where a clip can still leave a bracket behind.
+/// The group is not always last. A media file's projected name continues past
+/// it into its extension, `...[youtube.dQw4w9WgXcQ].link.mkv`, so the tail
+/// comes back as a third piece and the label joins it to the id directly.
+/// Leaving it inside the elastic name is what let a clip leave a bare `]` on
+/// the row: the name held both a bracket group and an extension, and only the
+/// extension survived a narrow cut.
+///
+/// The tail is returned as it stands, whitespace and all, because the join
+/// adds nothing in front of it. A name whose group is followed by a space
+/// keeps that space.
+///
+/// A basename with no bracketed group is returned whole with two empty
+/// pieces, so a caller can pass the result straight into the label.
 #[must_use]
-pub fn split_entry_id(name: &str) -> (&str, &str) {
+pub fn split_entry_id(name: &str) -> (&str, &str, &str) {
     let Some(open) = name.rfind('[') else {
-        return (name, "");
+        return (name, "", "");
     };
-    let Some(id) = name[open + 1..].strip_suffix(']') else {
-        return (name, "");
+    let Some(close) = name[open..].find(']') else {
+        return (name, "", "");
     };
-    (name[..open].trim_end(), id)
+    (name[..open].trim_end(), &name[open + 1..open + close], &name[open + close + 1..])
 }
 
 #[cfg(test)]
@@ -341,6 +367,51 @@ mod tests {
         let (dir, name) = split_entry_path("song.mkv");
         assert_eq!(dir, "");
         assert_eq!(name, "song.mkv");
+    }
+
+    /// The split is three ways whatever the group sits at, since a media
+    /// projection continues into its extension after the group.
+    #[test]
+    fn split_entry_id_separates_the_group_from_the_tail_behind_it() {
+        assert_eq!(
+            split_entry_id("Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]"),
+            ("Rick Astley - Never Gonna Give You Up", "youtube.dQw4w9WgXcQ", ""),
+        );
+        assert_eq!(
+            split_entry_id("01 - Telepathy.flac [youtube.dQw4w9WgXcQ].link.mkv"),
+            ("01 - Telepathy.flac", "youtube.dQw4w9WgXcQ", ".link.mkv"),
+        );
+        assert_eq!(split_entry_id("song.mkv"), ("song.mkv", "", ""));
+        assert_eq!(
+            split_entry_id("album [unclosed.mkv"),
+            ("album [unclosed.mkv", "", ""),
+            "a group that never closes is part of the name, not an id to render",
+        );
+    }
+
+    /// A projected link name renders as the one filename it is, and no width
+    /// cuts a bracket out of it. The group and the extension used to sit
+    /// inside the elastic name together, so a row too narrow for the whole
+    /// name kept the extension and lost the half of the group that opened it.
+    #[test]
+    fn a_projected_link_name_keeps_its_brackets_and_loses_no_space() {
+        let label = MaterializationBarLabel {
+            entry_path: "Music/Artist".into(),
+            entry_name: "01 - Telepathy.flac [youtube.dQw4w9WgXcQ].link.mkv".into(),
+            phase: Some(MaterializationPhase::Commit),
+            ..Default::default()
+        };
+        assert_eq!(
+            label.truncate_prefix(80),
+            "01 - Telepathy.flac [youtube.dQw4w9WgXcQ].link.mkv Music/Artist [cmt]",
+        );
+        for width in 8..=60 {
+            let out = label.truncate_prefix(width);
+            assert!(
+                out.contains(']') == out.contains('['),
+                "half a bracket pair at width {width}: {out:?}"
+            );
+        }
     }
 
     /// The status marker survives every width that can hold it, and no width

@@ -422,6 +422,19 @@ impl<'a> EntryPhaseBar<'a> {
         self.label(phase, "");
     }
 
+    /// Install `phase` only when the row is somewhere else.
+    ///
+    /// The folder arm writes one variant after another and never comes back
+    /// off `[wrt]`, so calling [`Self::enter`] per variant would re-install a
+    /// label the row already carries once per variant for no new fact. A
+    /// caller that moves forward through distinct phases wants [`Self::enter`]
+    /// instead, because a second call there would mean a phase went backwards.
+    fn enter_once(&mut self, phase: MaterializationPhase) {
+        if self.phase != phase {
+            self.enter(phase);
+        }
+    }
+
     /// Re-install the row's current phase with a terminal-state marker.
     ///
     /// `finish_warning` and `finish_error` change a bar's colour and nothing
@@ -619,10 +632,12 @@ async fn prepare_hierarchy_entry(
                 shared,
                 lookup,
                 progress_group,
+                &mut entry_bar,
             )
             .await;
-            // The folder arm installs no phase after the one it was created on,
-            // so the failure names the phase its declared list ends at.
+            // The folder arm moves to `[wrt]` when it starts writing a variant
+            // and stays there, so a failure during the write names that phase
+            // while one raised before the first write names `[stg]`.
             if let Some(bar) = entry_bar.handle() {
                 bar.advance(1);
                 if result.is_ok() {
@@ -636,9 +651,15 @@ async fn prepare_hierarchy_entry(
         }
         HierarchyEntryKind::Playlist => {
             // Playlist generation.
-            let result =
-                materialize_playlist_entry(entry, document, &target_path, &relative_path, shared)
-                    .await;
+            let result = materialize_playlist_entry(
+                entry,
+                document,
+                &target_path,
+                &relative_path,
+                shared,
+                &mut entry_bar,
+            )
+            .await;
             if let Some(bar) = entry_bar.handle() {
                 bar.advance(1);
                 if result.is_ok() {
@@ -729,6 +750,7 @@ async fn materialize_media_folder_entry(
     shared: &SyncSharedState,
     lookup: &MaterializationLookupContext,
     progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
+    entry_bar: &mut EntryPhaseBar<'_>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     tokio::fs::create_dir_all(target_path).await.map_err(|source| MediaPmError::Io {
         operation: "creating media-folder directory".to_string(),
@@ -808,6 +830,10 @@ async fn materialize_media_folder_entry(
 
         // Per-variant file sub-bar: advanced once per written extracted/file
         // member so the materialization screen shows per-file progress.
+        // The parent row moves to `[wrt]` here, before the ZIP test decides
+        // whether this variant opens a sub-bar or writes a plain file, because
+        // both arms write and both belong to the phase the folder declares.
+        entry_bar.enter_once(MaterializationPhase::Write);
         let is_zip = is_zip_content(&data);
         if is_zip {
             let extracted = extract_zip_folder_variant_bytes(&data, &rename_rules)?;
@@ -942,6 +968,7 @@ async fn materialize_playlist_entry(
     target_path: &Path,
     relative_path: &str,
     shared: &SyncSharedState,
+    entry_bar: &mut EntryPhaseBar<'_>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     // Build playlist entries from the media ids referenced by this playlist
     // node. The references are carried on `entry.entry.ids` as
@@ -991,6 +1018,10 @@ async fn materialize_playlist_entry(
     }
 
     let bytes = generate_playlist_bytes(&rendered_entries, entry.entry.format);
+    // The row reaches `[cmt]` at the write rather than at the top of the
+    // function, because a playlist that fails while resolving a reference has
+    // not committed anything and should say so.
+    entry_bar.enter(MaterializationPhase::Commit);
     tokio::fs::write(target_path, &bytes).await.map_err(|source| MediaPmError::Io {
         operation: "writing playlist file".to_string(),
         path: target_path.to_path_buf(),
@@ -1664,15 +1695,24 @@ mod tests {
         }
     }
 
-    /// A folder and a playlist declare the one phase their arms walk.
+    /// A folder and a playlist declare the two phases their arms walk.
     ///
-    /// Both stage and then finish; neither verifies or commits as a separate
-    /// step, so a longer list would put a tag on the screen with no code behind
-    /// it. A media entry walks all three.
+    /// A folder makes its directory and then writes each selected variant, so
+    /// it declares staging and write. A playlist resolves its references,
+    /// builds the bytes and writes one file, so it declares staging and
+    /// commit. Neither verifies, so a list with `[vrf]` in it would put a tag
+    /// on the screen with no code behind it. A media entry walks all three
+    /// phases, and is the only kind that claims verify.
     #[test]
     fn folder_and_playlist_declare_only_the_phase_they_walk() {
-        assert_eq!(HierarchyEntryKind::MediaFolder.phases(), &[MaterializationPhase::Staging],);
-        assert_eq!(HierarchyEntryKind::Playlist.phases(), &[MaterializationPhase::Staging]);
+        assert_eq!(
+            HierarchyEntryKind::MediaFolder.phases(),
+            &[MaterializationPhase::Staging, MaterializationPhase::Write],
+        );
+        assert_eq!(
+            HierarchyEntryKind::Playlist.phases(),
+            &[MaterializationPhase::Staging, MaterializationPhase::Commit],
+        );
         assert_eq!(
             HierarchyEntryKind::Media.phases(),
             &[
@@ -1712,6 +1752,177 @@ mod tests {
                 }),
                 "the warning must name the phase the entry reached",
             );
+        }
+    }
+
+    /// A folder row moves to `[wrt]` where it starts writing a variant and
+    /// stays there, and a playlist row reaches `[cmt]` where it writes.
+    ///
+    /// Both were `[stg]` for their whole run before a kind declared the
+    /// phases its arm walks, so a finished folder read exactly like a folder
+    /// still staging. The folder's row and the sub-bars under it now name the
+    /// same work at two granularities, which is the point of declaring write
+    /// on the folder: during a folder sync the parent says what its children
+    /// say.
+    ///
+    /// This drives a real `sync_hierarchy` rather than a bar in isolation,
+    /// because the arms install these phases deep inside the folder and
+    /// playlist work, and a test that reached for the bar directly would pass
+    /// with the arms still sitting on `[stg]`.
+    ///
+    /// The variant here is a plain file rather than a ZIP, so no `[wrt]`
+    /// sub-bar opens: the workspace `zip` dependency carries no write feature,
+    /// so this test cannot build an archive. A folder row and its sub-bars
+    /// together are drawn by the `mediapm_progress_materialize` transcripts,
+    /// which is where the parent agreeing with its children is pinned.
+    #[tokio::test]
+    async fn a_folder_row_reaches_wrt_and_a_playlist_row_reaches_cmt() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+
+        let hash = cas.put(bytes::Bytes::from_static(b"folder-member-bytes")).await.unwrap();
+        let document = folder_and_playlist_document(&hash.to_string());
+
+        let mut state = MediaPmState::default();
+        let conductor_state = ConductorState::new_empty();
+        let generated_doc = NickelDocument::default();
+
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 2);
+        sync_hierarchy(
+            &paths,
+            &document,
+            &mut state,
+            &cas,
+            true,
+            &conductor_state,
+            &generated_doc,
+            Some(Arc::new(recording.clone())),
+            Some(Arc::new(overall)),
+        )
+        .await
+        .expect("sync_hierarchy should succeed");
+
+        let ops = recording.ops();
+        // Only the folder's own row carries these two prefixes, so the pair is
+        // everything that row said. It never comes back off `[wrt]`.
+        let folder_tags: Vec<Option<&str>> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProgressOp::SetTruncation { prefix, .. }
+                    if prefix == "album [stg]" || prefix == "album [wrt]" =>
+                {
+                    Some(rendered_phase_tag(prefix))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            folder_tags,
+            [Some("stg"), Some("wrt")],
+            "the folder row must leave [stg] for [wrt] and finish there; got {ops:?}",
+        );
+
+        let playlist_tags: Vec<Option<&str>> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProgressOp::SetTruncation { prefix, .. }
+                    if prefix.starts_with("rickroll.m3u8 ") =>
+                {
+                    Some(rendered_phase_tag(prefix))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            playlist_tags,
+            [Some("stg"), Some("cmt")],
+            "a playlist reaches [cmt] at the write; got {ops:?}",
+        );
+    }
+
+    /// A media folder at `album` whose single variant writes one file, and a
+    /// playlist at `playlists/rickroll.m3u8` that references the media entry
+    /// beside it.
+    ///
+    /// The playlist names the media entry by its hierarchy id, which is why
+    /// the media node carries an explicit `id`.
+    fn folder_and_playlist_document(variant_hash: &str) -> MediaPmDocument {
+        let media_node = |id: Option<&str>| HierarchyNode {
+            path: HierarchyPath::simple("song"),
+            kind: HierarchyNodeKind::Media,
+            id: id.map(str::to_string),
+            media_id: Some("src1".to_string()),
+            variant: Some("default".into()),
+            variants: vec![],
+            rename_files: vec![],
+            format: PlaylistFormat::M3u8,
+            ids: vec![],
+            sanitize_names: Some(SanitizeNamesConfig::Inherit),
+            children: vec![],
+        };
+        MediaPmDocument {
+            media: BTreeMap::from([(
+                "src1".to_string(),
+                MediaSourceSpec {
+                    steps: vec![MediaStep {
+                        tool: MediaStepTool::Import,
+                        input_variants: vec![],
+                        output_variants: BTreeMap::from([(
+                            "default".into(),
+                            OutputVariantValue::Generic(GenericOutputVariantConfig {
+                                kind: "primary".to_string(),
+                                ..Default::default()
+                            }),
+                        )]),
+                        options: BTreeMap::new(),
+                    }],
+                    variant_hashes: BTreeMap::from([("default".to_string(), variant_hash.into())]),
+                    ..MediaSourceSpec::default()
+                },
+            )]),
+            hierarchy: vec![
+                media_node(Some("song.local.1")),
+                HierarchyNode {
+                    path: HierarchyPath::simple("album"),
+                    kind: HierarchyNodeKind::MediaFolder,
+                    id: None,
+                    media_id: Some("src1".to_string()),
+                    variant: Some("default".into()),
+                    variants: vec![],
+                    rename_files: vec![],
+                    format: PlaylistFormat::M3u8,
+                    ids: vec![],
+                    sanitize_names: Some(SanitizeNamesConfig::Inherit),
+                    children: vec![],
+                },
+                HierarchyNode {
+                    path: HierarchyPath::from("playlists"),
+                    kind: HierarchyNodeKind::Folder,
+                    id: None,
+                    media_id: None,
+                    variant: None,
+                    variants: vec![],
+                    rename_files: vec![],
+                    format: PlaylistFormat::M3u8,
+                    ids: vec![],
+                    sanitize_names: Some(SanitizeNamesConfig::Inherit),
+                    children: vec![HierarchyNode {
+                        path: HierarchyPath::from("rickroll.m3u8"),
+                        kind: HierarchyNodeKind::Playlist,
+                        id: None,
+                        media_id: None,
+                        variant: None,
+                        variants: vec![],
+                        rename_files: vec![],
+                        format: PlaylistFormat::M3u8,
+                        ids: vec![PlaylistItemRef::Shorthand("song.local.1".to_string())],
+                        sanitize_names: Some(SanitizeNamesConfig::Inherit),
+                        children: vec![],
+                    }],
+                },
+            ],
+            ..MediaPmDocument::default()
         }
     }
 
