@@ -32,6 +32,7 @@ mod renderer;
 mod screen;
 mod state;
 mod terminal;
+mod truncation_brackets;
 mod truncation_ladder;
 
 /// A throwaway term for a terminal's one-shot pre-roll.

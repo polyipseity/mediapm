@@ -123,7 +123,7 @@ fn step_label_brackets_the_version_inside_the_tool_name_pair() {
 
     // Narrow enough to shorten the version, the pair goes with it. Half a
     // group reads as a bracket nothing opened or nothing closed, which is the
-    // fault `label_brackets.rs` sweeps every width for.
+    // fault the fitter-level sweep in `mediapm-utils` watches at every width.
     let narrow = label.truncate_prefix(22);
     assert_eq!(narrow, "default s3 ffmpeg v7.");
     assert!(!narrow.contains('('), "opening bracket outlived the version: {narrow:?}");
