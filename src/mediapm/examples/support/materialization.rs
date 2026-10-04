@@ -102,11 +102,12 @@
 //! was measured against had moved, and its name would be the only thing left
 //! still claiming the number mattered.
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Duration;
 
 use mediapm::{MaterializationBarLabel, MaterializationPhase, split_entry_path};
-use mediapm_utils::progress::{ProgressBarHandle, ProgressScreen};
+use mediapm_utils::progress::{ProgressBarHandle, ProgressScreen, TestTimeSource};
 
 use crate::scenarios::{Scenario, ScenarioName};
 use crate::support::{ScreenConfig, capture_terminal};
@@ -134,6 +135,67 @@ pub fn scenario(name: ScenarioName) -> Scenario {
         ScenarioName::Baseline => SCENARIOS[0],
         ScenarioName::Dense => SCENARIOS[1],
         ScenarioName::States => SCENARIOS[2],
+    }
+}
+
+/// A scenario's declared frame count beside the frames it has drawn.
+///
+/// Every transcript under `examples/fixtures/` pins the bytes each frame drew,
+/// spinner glyph included, so how many frames a scenario draws is part of what
+/// a transcript records. Left to itself the count was however many `screen.tick()`
+/// calls the operations happened to make, which made an edit to the operations a
+/// silent edit to all thirty transcripts. The count is stated here instead, and
+/// the two ways an operations list can disagree with it both end in a stated
+/// outcome rather than in different bytes.
+struct Frames {
+    /// Frames the scenario draws.
+    declared: u16,
+    /// Frames drawn so far, which [`Frames::draw`] and [`Frames::finish`] both add to.
+    drawn: Cell<u16>,
+}
+
+impl Frames {
+    /// Hold the frame count `declared` states for the scenario being drawn.
+    const fn new(declared: u16) -> Self {
+        Self { declared, drawn: Cell::new(0) }
+    }
+
+    /// Draw one frame and move the synthetic clock on by `after`, which is the
+    /// time the operations spent between this frame and the next one.
+    ///
+    /// The count is taken here rather than at the call site so that it tracks
+    /// the frames and not the operations that happened to surround them.
+    fn draw(&self, screen: &ProgressScreen, clock: &TestTimeSource, after: Duration) {
+        screen.tick();
+        clock.advance(after);
+        self.drawn.set(self.drawn.get() + 1);
+    }
+
+    /// Draw the frames the operations left undrawn, and refuse the ones they
+    /// drew beyond the declared count.
+    ///
+    /// A scenario that finishes its work early draws the rest of its frames
+    /// here, with nothing new happening on screen between them. Those frames
+    /// repeat the last state, which is what an idle screen draws anyway, and a
+    /// scenario cannot end up with fewer frames than it declared because
+    /// something was left out.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the operations drew more frames than the scenario declared.
+    /// The transcripts would then record a frame count the scenario does not
+    /// claim, and the count they recorded would be a side effect of the
+    /// operations rather than something anyone stated.
+    fn finish(&self, screen: &ProgressScreen) {
+        let drawn = self.drawn.get();
+        assert!(
+            drawn <= self.declared,
+            "this scenario declares {} frames and its operations drew {drawn}",
+            self.declared
+        );
+        for _ in drawn..self.declared {
+            screen.tick();
+        }
     }
 }
 
@@ -255,6 +317,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
         entry_name: "materializing".to_string(),
         ..Default::default()
     }));
+    let frames = Frames::new(7);
 
     // The first entry is a media file, so it is the one row that walks the full
     // `[stg]` to `[vrf]` to `[cmt]` sequence. The tag moves at each transition
@@ -263,22 +326,18 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     // its own.
     let finished = screen.add_bar(ENTRY_TOTAL, &format!("{album_name} [stg]"));
     finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Staging));
-    screen.tick();
-    clock.advance(Duration::from_secs(2));
+    frames.draw(&screen, &clock, Duration::from_secs(2));
 
     finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Verify));
-    screen.tick();
-    clock.advance(Duration::from_secs(1));
+    frames.draw(&screen, &clock, Duration::from_secs(1));
 
     finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Commit));
-    screen.tick();
-    clock.advance(Duration::from_secs(3));
+    frames.draw(&screen, &clock, Duration::from_secs(3));
 
     finished.advance(1);
     finished.finish_success();
     overall.advance(1);
-    screen.tick();
-    clock.advance(Duration::from_secs(1));
+    frames.draw(&screen, &clock, Duration::from_secs(1));
 
     // The second entry is a media folder. Its own bar keeps the `[stg]` label
     // it was created with until the arm starts writing, and the
@@ -286,8 +345,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     // unpacks.
     let folder = screen.add_bar(ENTRY_TOTAL, &format!("{folder_name} [stg]"));
     folder.set_truncation(phase_label(folder_path, folder_name, MaterializationPhase::Staging));
-    screen.tick();
-    clock.advance(Duration::from_secs(2));
+    frames.draw(&screen, &clock, Duration::from_secs(2));
 
     folder.set_truncation(phase_label(folder_path, folder_name, MaterializationPhase::Write));
     let write = screen.add_bar(LINK_VARIANT_MEMBERS, &format!("{LINK_VARIANT} [wrt]"));
@@ -299,8 +357,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
         ..Default::default()
     }));
     write.advance(1);
-    screen.tick();
-    clock.advance(Duration::from_secs(4));
+    frames.draw(&screen, &clock, Duration::from_secs(4));
 
     // The third entry is a media file that has resolved its hash and is on the
     // verify tag, still running when the transcript is read.
@@ -308,13 +365,13 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     verifying.set_truncation(phase_label(single_path, single_name, MaterializationPhase::Staging));
     verifying.advance(1);
     verifying.set_truncation(phase_label(single_path, single_name, MaterializationPhase::Verify));
-    screen.tick();
-    clock.advance(Duration::from_secs(2));
+    frames.draw(&screen, &clock, Duration::from_secs(2));
 
     // The sync is still in flight: the folder and the third entry have not
     // reached their commit phase, so the overall bar stays active at one of
     // three entries rather than being closed out.
     overall.set_position(1);
+    frames.finish(&screen);
     screen.join();
     drop(terminal);
     grid.contents()
@@ -465,18 +522,18 @@ fn render_dense(config: ScreenConfig) -> String {
         entry_name: "materializing".to_string(),
         ..Default::default()
     }));
+    let frames = Frames::new(12);
 
     for (index, track) in [BOARDS_TRACK, GEOGADDI_TRACK, WALL_TRACK].into_iter().enumerate() {
         let bar = add_entry_bar(&screen, track);
-        screen.tick();
+        frames.draw(&screen, &clock, Duration::ZERO);
         // A finished row keeps the seconds it had when it finished, so the
         // seconds are spent before the commit rather than after it. They differ
         // per entry, which is what a mixed library looks like.
         clock.advance(Duration::from_secs(2 + index as u64));
         commit_media_entry(&bar, track);
         overall.advance(1);
-        screen.tick();
-        clock.advance(Duration::from_secs(3));
+        frames.draw(&screen, &clock, Duration::from_secs(3));
     }
 
     // A media entry that resolved its hash is on `[vrf]` with the commit still
@@ -484,36 +541,31 @@ fn render_dense(config: ScreenConfig) -> String {
     let verifying = add_entry_bar(&screen, THIN_ICE_TRACK);
     verifying.advance(1);
     set_entry_phase(&verifying, THIN_ICE_TRACK, MaterializationPhase::Verify);
-    screen.tick();
-    clock.advance(Duration::from_secs(2));
+    frames.draw(&screen, &clock, Duration::from_secs(2));
 
     // One that has not reached its hash yet is still on the phase it was
     // created with. The handle is not bound, because nothing happens to that
     // row before the frame is drawn.
     add_entry_bar(&screen, XTAL_TRACK);
-    screen.tick();
-    clock.advance(Duration::from_secs(1));
+    frames.draw(&screen, &clock, Duration::from_secs(1));
 
     // A media folder runs its variants one after another. Its own row moves to
     // `[wrt]` at the first of them and stays there. The first variant has
     // finished writing its members and sits below its parent's row; the second
     // is part-way through.
     let folder = add_entry_bar(&screen, ONLINE_MEDIA_FOLDER);
-    screen.tick();
-    clock.advance(Duration::from_secs(2));
+    frames.draw(&screen, &clock, Duration::from_secs(2));
 
     set_entry_phase(&folder, ONLINE_MEDIA_FOLDER, MaterializationPhase::Write);
     let thumbnails = add_write_bar(&screen, ONLINE_MEDIA_FOLDER, THUMBNAILS, THUMBNAIL_MEMBERS);
     thumbnails.advance(THUMBNAIL_MEMBERS);
     clock.advance(Duration::from_secs(1));
     thumbnails.finish_success();
-    screen.tick();
-    clock.advance(Duration::from_secs(3));
+    frames.draw(&screen, &clock, Duration::from_secs(3));
 
     let links = add_write_bar(&screen, ONLINE_MEDIA_FOLDER, LINKS, LINK_VARIANT_MEMBERS);
     links.advance(1);
-    screen.tick();
-    clock.advance(Duration::from_secs(4));
+    frames.draw(&screen, &clock, Duration::from_secs(4));
 
     // A playlist resolves its references and then writes one file, so its row
     // reaches `[cmt]` at the write.
@@ -523,12 +575,12 @@ fn render_dense(config: ScreenConfig) -> String {
     clock.advance(Duration::from_secs(2));
     playlist.finish_success();
     overall.advance(1);
-    screen.tick();
-    clock.advance(Duration::from_secs(1));
+    frames.draw(&screen, &clock, Duration::from_secs(1));
 
     // Three entries are still in flight, so the overall bar is active rather
     // than closed out.
     overall.set_position(ENTRIES_RETURNED);
+    frames.finish(&screen);
     screen.join();
     drop(terminal);
     grid.contents()
@@ -561,6 +613,7 @@ fn render_states(config: ScreenConfig) -> String {
         entry_name: "materializing".to_string(),
         ..Default::default()
     }));
+    let frames = Frames::new(7);
 
     // A media entry whose variant resolved no content hash is skipped with a
     // warning, and this is the only warning a per-entry row has.
@@ -571,7 +624,7 @@ fn render_states(config: ScreenConfig) -> String {
     mark_finished(&warned, THIN_ICE_TRACK, MaterializationPhase::Verify, "W");
     warned.finish_warning();
     overall.advance(1);
-    screen.tick();
+    frames.draw(&screen, &clock, Duration::ZERO);
 
     // A committed row, whose name is wide enough that the elastic name shortens
     // it at every width this screen is captured at.
@@ -579,33 +632,28 @@ fn render_states(config: ScreenConfig) -> String {
     clock.advance(Duration::from_secs(5));
     commit_media_entry(&committed, BOARDS_TRACK);
     overall.advance(1);
-    screen.tick();
-    clock.advance(Duration::from_secs(2));
+    frames.draw(&screen, &clock, Duration::from_secs(2));
 
     // Still staging, so the row carries no marker and the phase it was created
     // with. Nothing happens to the row before the frame is drawn.
     add_entry_bar(&screen, XTAL_TRACK);
-    screen.tick();
-    clock.advance(Duration::from_secs(1));
+    frames.draw(&screen, &clock, Duration::from_secs(1));
 
     // A folder mid-variant: its own row is on `[wrt]` while its sub-bars run
     // below it, and its name is the widest the materializer produces.
     let folder = add_entry_bar(&screen, ONLINE_MEDIA_FOLDER);
-    screen.tick();
-    clock.advance(Duration::from_secs(2));
+    frames.draw(&screen, &clock, Duration::from_secs(2));
 
     set_entry_phase(&folder, ONLINE_MEDIA_FOLDER, MaterializationPhase::Write);
     let thumbnails = add_write_bar(&screen, ONLINE_MEDIA_FOLDER, THUMBNAILS, THUMBNAIL_MEMBERS);
     thumbnails.advance(THUMBNAIL_MEMBERS);
     clock.advance(Duration::from_secs(1));
     thumbnails.finish_success();
-    screen.tick();
-    clock.advance(Duration::from_secs(3));
+    frames.draw(&screen, &clock, Duration::from_secs(3));
 
     let links = add_write_bar(&screen, ONLINE_MEDIA_FOLDER, LINKS, LINK_VARIANT_MEMBERS);
     links.advance(1);
-    screen.tick();
-    clock.advance(Duration::from_secs(4));
+    frames.draw(&screen, &clock, Duration::from_secs(4));
 
     // The playlist arm is one of two that check their result before finishing,
     // and a failure there is the only `[F]` a folder or playlist row carries.
@@ -617,7 +665,7 @@ fn render_states(config: ScreenConfig) -> String {
     mark_finished(&failed, ONLINE_PLAYLIST, MaterializationPhase::Staging, "F");
     failed.finish_error();
     overall.advance(1);
-    screen.tick();
+    frames.draw(&screen, &clock, Duration::ZERO);
 
     // The same error returns from `prepare_hierarchy_entry`, breaks the collect
     // loop, and finishes the overall bar on error, so the failed row and a
@@ -626,6 +674,7 @@ fn render_states(config: ScreenConfig) -> String {
     // reaches its failure through its colour alone.
     overall.set_position(ENTRIES_RETURNED);
     overall.finish_error();
+    frames.finish(&screen);
     screen.join();
     drop(terminal);
     grid.contents()
