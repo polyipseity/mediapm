@@ -833,8 +833,8 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the reposit
 | Bash janitor self-test script (`test-clean-mediapm-temp: OK`)                                                                                | `bash_janitor_self_test`                     | [covered] |
 | Pwsh janitor dry-run + real-run (sandboxed `TMP`/`TMPDIR`/`TEMP`, same assertions, skip when pwsh absent)                                    | `pwsh_janitor_dry_run_and_real_run`          | [covered] |
 | Pwsh janitor self-test (`test-clean-mediapm-temp.ps1: OK`, skip when pwsh absent)                                                            | `pwsh_janitor_self_test`                     | [covered] |
-| Bash runner self-test (`test-run-all-tests.sh: OK`; runner `--help`/unknown-arg handling + static gates, never runs the suite)                | `bash_runner_self_test`                      | [covered] |
-| Pwsh runner self-test (`test-run-all-tests.ps1: OK`; runner `--help`/unknown-arg handling + static gates, never runs the suite)              | `pwsh_runner_self_test`                      | [covered] |
+| Bash runner self-test (`test-run-all-tests.sh: OK`; runner `--help`/unknown-arg handling, static gates, and the temp-dir gate across a missing root, leftover dirs and an existing empty root; never runs the suite)                | `bash_runner_self_test`                      | [covered] |
+| Pwsh runner self-test (`test-run-all-tests.ps1: OK`; runner `--help`/unknown-arg handling, static gates, and the temp-dir gate across a missing root, leftover dirs and an existing empty root; never runs the suite)              | `pwsh_runner_self_test`                      | [covered] |
 | Static: all six scripts exist, executable bit on unix                                                                                        | static script-existence test                 | [covered] |
 | Windows CI job runs ONLY the script tests (no full-suite parity)                                                                             | `windows` job in `.github/workflows/ci.yml`  | [covered] |
 
