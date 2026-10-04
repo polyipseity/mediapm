@@ -912,7 +912,7 @@ Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. On
 | A client-truncating label renders within the width it was granted, and the drawn line does not overflow the terminal | `client_truncated_prefix_fills_exactly_its_budget_and_fits_its_slot` | [covered] |
 | A step bar suffix carries its own tally plus the auto-derived elapsed, rate and ETA the renderer supplies through the argument | `step_suffix_keeps_the_leading_tally_and_timing_fields` | [covered] |
 | A worker bar suffix carries the auto-derived timing fields despite owning no tally | `worker_suffix_keeps_auto_derived_timing_fields` | [covered] |
-| The client-truncation `\x1b[0m` reset is present | no test - every route to the raw string is closed (`InMemoryTerm` strips ANSI, the debug sink records no `prefix` field, `SlotCache::prefix` is private to `inner`, `visible_width` cannot see a zero-width escape). Recorded in the `inner::renderer` module documentation; a seam was declined because a missing reset is a colour bleed, not a layout violation | [missing]: still open; the inner renderer in mediapm-utils owns this, not the progress work |
+| The client-truncation `\x1b[0m` reset is present, and it precedes the truncated label rather than the whole one | `client_truncated_prefix_leads_with_the_reset` (unit, in-module: the private `client_truncated_prefix` is the seam, since `InMemoryTerm` strips ANSI and `visible_width` cannot see a zero-width escape) | [covered] |
 
 ## Demo online content verification (e2e exact bytes + live demo resilient checks)
 

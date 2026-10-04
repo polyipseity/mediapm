@@ -1,20 +1,19 @@
 //! `ProgressBarHandle`, `SharedState`, and `ProgressRenderer` (pure tracking + indicatif rendering).
 //!
-//! # Known coverage gap: the client-truncation ANSI reset
+//! # The client-truncation ANSI reset
 //!
 //! When a bar carries a client-installed [`BarLabelTruncation`], the push
-//! point prefixes the client's string with `\x1b[0m` so colour from a
-//! preceding bar cannot bleed into it. **No test asserts that this reset is
-//! present.** Every route to the raw string is closed: `InMemoryTerm` strips
-//! ANSI from what it reports, the debug sink records no `prefix` field,
-//! `SlotCache::prefix` is private to this module, and [`visible_width`] cannot
-//! see a zero-width escape.
+//! point prefixes the client's string with `\x1b[0m` so a label drawn in a
+//! coloured terminal state cannot colour the bar fill drawn after it. The
+//! wrapping lives in [`client_truncated_prefix`], and
+//! `client_truncated_prefix_leads_with_the_reset` pins both halves of it: the
+//! reset leads, and what follows is the label the renderer granted width to
+//! rather than the whole one.
 //!
-//! The gap is deliberate. A missing reset causes a colour bleed, not a layout
-//! violation, and exposing the raw string purely so a test could observe four
-//! bytes of ANSI would permanently widen the internal API for a cosmetic
-//! guarantee. Anyone changing the wrapping below should know the property is
-//! unguarded, and weigh adding a seam if the consequence of a regression grows.
+//! Neither a drawn frame nor a width measurement can observe the reset:
+//! `InMemoryTerm` strips ANSI from what it reports, and [`visible_width`]
+//! cannot see a zero-width escape. The test therefore sits beside the helper
+//! instead of on a rendered row.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -52,6 +51,24 @@ fn compute_ansi_overhead(status: TrackStatus, has_client_truncation: bool) -> us
             _ => 4,
         }
     }
+}
+
+/// Wrap a client-truncated label in the reset it is drawn under.
+///
+/// A prefix is drawn into whatever state the field before it left the terminal
+/// in, so a row that starts coloured colours everything after it as well, and
+/// the bar fill sits directly after the prefix. The reset hands the label a
+/// default start, which is what lets the fill take its colour from the bar's
+/// own status instead of from the label.
+///
+/// The four bytes it adds are the overhead [`compute_ansi_overhead`] reserves
+/// out of the prefix slot, which is why `width` is what is left after that
+/// subtraction rather than the whole slot.
+fn client_truncated_prefix(
+    truncation: &Arc<dyn crate::progress::BarLabelTruncation>,
+    width: usize,
+) -> String {
+    format!("\x1b[0m{}", truncation.truncate_prefix(width))
 }
 
 /// Compose the full suffix component set from snapshot data and timing.
@@ -1556,8 +1573,7 @@ impl ProgressRenderer {
         let has_client_truncation = truncation.is_some();
         let ansi_overhead = compute_ansi_overhead(snap.status, has_client_truncation);
         let new_prefix = if let Some(t) = truncation.as_ref() {
-            let raw = t.truncate_prefix(self.prefix_w.get().saturating_sub(ansi_overhead));
-            format!("\x1b[0m{raw}")
+            client_truncated_prefix(t, self.prefix_w.get().saturating_sub(ansi_overhead))
         } else {
             let truncated_prefix = semantic_truncate_prefix(
                 &snap.prefix_components,
@@ -1997,5 +2013,47 @@ mod tests {
             (MIN_SUFFIX_WIDTH..=MAX_SUFFIX_WIDTH).contains(&renderer.suffix_w.get()),
             "suffix_w must stay within [MIN_SUFFIX_WIDTH, MAX_SUFFIX_WIDTH]"
         );
+    }
+
+    /// A client label that clips itself to the width the renderer grants,
+    /// standing in for a real client label whose field layout the renderer
+    /// never sees.
+    struct ClippedLabel {
+        /// The label as the client renders it when width is not a constraint.
+        text: String,
+    }
+
+    impl crate::progress::BarLabelTruncation for ClippedLabel {
+        fn truncate_prefix(&self, max_width: usize) -> String {
+            self.text.chars().take(max_width).collect()
+        }
+
+        /// Returns nothing: this test is about the prefix half.
+        fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
+            String::new()
+        }
+    }
+
+    /// The reset leads a client-truncated prefix, and what follows it is the
+    /// truncated label.
+    ///
+    /// Two halves, because either alone is satisfiable by a broken wrapping: a
+    /// reset in front of the whole label would pass a check for the escape
+    /// while the label stayed unclipped, which is the state that overflows its
+    /// slot. So the wide case pins that the reset is there and the narrow case
+    /// pins that the text after it is the clipped one. The label is the test's
+    /// own, so each expectation is that label's text behind the escape and no
+    /// bar fill or spinner glyph is typed by hand.
+    #[test]
+    fn client_truncated_prefix_leads_with_the_reset() {
+        let label: Arc<dyn crate::progress::BarLabelTruncation> =
+            Arc::new(ClippedLabel { text: "hello world".to_owned() });
+
+        // Width the label fits inside: the reset is the only thing added.
+        assert_eq!(client_truncated_prefix(&label, 64), "\x1b[0mhello world");
+
+        // Width that cuts the label: the reset precedes the clipped text, and
+        // the clipped text is what the renderer gets, not the full label.
+        assert_eq!(client_truncated_prefix(&label, 5), "\x1b[0mhello");
     }
 }
