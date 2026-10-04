@@ -15,7 +15,10 @@
 //! rely on; each seeds the drift a file-wide substring or a single-file scan cannot see, so a
 //! future refactor that re-widens either one fails here rather than silently.
 
+use std::collections::BTreeMap;
+
 use mediapm::MediaPmDocument;
+use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec, decode_document, encode_document};
 
 /// Extracts the body of the Nickel record contract `let <contract> = { ... }`.
 ///
@@ -316,4 +319,209 @@ fn parity_tree_scan_catches_dispatcher_outside_mod_rs() {
         Some("config/versions/v1.rs"),
         "the tree scan must name the file holding the dispatcher, not report None"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tool version parity: conductor v2.ncl against the conductor's flat-record wire shape.
+//
+// `ToolSpecLatest` is `pub(crate)`, so every assertion here reaches it the way
+// production does: through `encode_document` and `decode_document`. That is also
+// the only seam where the two sides can be compared, because the Nickel record
+// contract and the custom `Serialize`/`Deserialize` pair are two readings of the
+// same wire format. Neither round trip alone detects drift: a field dropped from
+// both would keep encoding and decoding cleanly, so the assertions below pin each
+// side against the other rather than against itself.
+// ---------------------------------------------------------------------------
+
+/// The conductor's schema v2 contract, read from the file the evaluator loads.
+///
+/// `include_str!` keeps this bound to the shipped file, so editing the contract
+/// fails these assertions instead of leaving them pinned to a copy.
+const CONDUCTOR_V2_NCL: &str =
+    include_str!("../../../mediapm-conductor/src/config/versions/v2.ncl");
+
+/// Builds a one-tool conductor document with the given declared version.
+///
+/// The tool is `executable` because that variant's only required field is
+/// `command`, which keeps a declared `version` the single variable under test.
+/// `None` leaves the field undeclared rather than writing an empty value, which
+/// is the only spelling the contract accepts for "no claim".
+fn document_with_declared_version(name: &str, version: Option<&str>) -> NickelDocument {
+    let tools = BTreeMap::from([(
+        name.to_string(),
+        ToolSpec {
+            kind: ToolKindSpec::Executable {
+                command: vec!["true".to_string()],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            ..Default::default()
+        },
+    )]);
+    NickelDocument { tools, ..Default::default() }
+}
+
+/// Encodes a document and returns the emitted Nickel source as a string.
+fn encode_to_string(document: NickelDocument) -> String {
+    let bytes = encode_document(document).expect("document must encode");
+    String::from_utf8(bytes).expect("encoded document must be UTF-8")
+}
+
+/// Builds a minimal schema v2 conductor document whose single tool carries the
+/// given verbatim `version` line.
+///
+/// The line is spliced in unvalidated so a test can offer the contract a value
+/// the Rust side cannot represent (`""`, `null`) and read what it does with it.
+fn conductor_source_with_version_line(name: &str, version_line: &str) -> String {
+    format!(
+        r#"{{
+  version = 2,
+  tools = {{
+    {name} = {{
+      kind = "executable",
+      version = {version_line},
+      name = "{name}",
+      command = ["true"],
+    }},
+  }},
+}}
+"#
+    )
+}
+
+/// The field is optional and non-empty in both tool records of the conductor contract.
+///
+/// A record-level lookup rather than a file-wide substring, so the assertion
+/// keeps holding if one variant stops declaring the field. The flat-record
+/// `Serialize` writes one shape for both variants, so a field declared on one
+/// and missing on the other is drift the Rust side would hide.
+#[test]
+fn parity_conductor_tool_version_is_optional_and_non_empty_in_nickel() {
+    for contract in ["BuiltinToolSpecV2", "ExecutableToolSpecV2"] {
+        assert!(
+            nickel_record_body(CONDUCTOR_V2_NCL, contract)
+                .is_some_and(|body| { body.contains("version | NonEmptyStringV2 | optional,") }),
+            "{contract} must declare `version | NonEmptyStringV2 | optional`"
+        );
+    }
+
+    // The field is optional and constrained by the same non-empty predicate the
+    // doc comment on `ToolSpecLatest::version` cites. If `NonEmptyStringV2` ever
+    // stops rejecting the empty string, the claim that an empty version is not
+    // representable is no longer backed by the contract.
+    // `NonEmptyStringV2` is a predicate binding rather than a record, so it needs
+    // its own lookup. A `None` here is a failure like it is in `nickel_record_body`,
+    // because a missing binding means the constraint is gone.
+    let (_, after_binding) = CONDUCTOR_V2_NCL
+        .split_once("let NonEmptyStringV2 =")
+        .expect("conductor v2.ncl must define NonEmptyStringV2");
+    let (predicate, _) = after_binding
+        .split_once("\nin\n")
+        .expect("NonEmptyStringV2 must be a top-level `let ... in` binding");
+    assert!(
+        predicate.contains("std.string.is_match \"^.+$\" value"),
+        "NonEmptyStringV2 must keep rejecting the empty string, which is what makes \
+         `Some(\"\")` unrepresentable on the Rust side, got: {predicate}"
+    );
+}
+
+/// An undeclared version serializes away rather than as a null or an empty string.
+///
+/// `skip_serializing_if` on the Rust side and `| optional` on the Nickel side are
+/// two halves of one rule, and the rule is only worth anything if the absent case
+/// produces no entry at all. A `version = ""` or `version = null` in the output
+/// would fail the contract on the next read, so the encoder cannot emit either.
+/// `runtime` is serialized unconditionally and sorts after `version`, so the
+/// first `version` key in the emitted source is the tool's and the envelope's own
+/// `version = 2` comes last.
+#[test]
+fn parity_undeclared_tool_version_serializes_away() {
+    let encoded = encode_to_string(document_with_declared_version("probe_tool", None));
+
+    assert_eq!(
+        encoded.matches("version").count(),
+        1,
+        "only the envelope's schema version belongs in a document with no declared tool \
+         version, got: {encoded}"
+    );
+    assert!(
+        encoded.contains("version = 2"),
+        "the one version entry must be the envelope's schema marker, got: {encoded}"
+    );
+
+    let decoded =
+        decode_document(encoded.as_bytes()).expect("the encoder's own output must decode");
+    assert_eq!(
+        decoded.tools["probe_tool"].version, None,
+        "an undeclared version must read back as absent, not as an empty string"
+    );
+}
+
+/// The contract rejects the two spellings of "no version" that Rust cannot carry.
+///
+/// `| optional` in Nickel means a field may be omitted, not that it may hold
+/// `null`, and `NonEmptyStringV2` rejects `""`. This is the asymmetry the
+/// encoder has to respect: `None` is expressible as an omitted field alone, so a
+/// Rust `None` has exactly one valid encoding.
+#[test]
+fn parity_contract_rejects_empty_and_null_tool_version() {
+    let empty = conductor_source_with_version_line("probe_tool", "\"\"");
+    let err = decode_document(empty.as_bytes())
+        .expect_err("the contract must reject an empty version string");
+    let msg = err.to_string();
+    assert!(msg.contains("version"), "the rejection must name the offending field, got: {msg}");
+
+    let null = conductor_source_with_version_line("probe_tool", "null");
+    let err = decode_document(null.as_bytes())
+        .expect_err("`optional` permits an omitted field, not a null value");
+    let msg = err.to_string();
+    assert!(msg.contains("version"), "the rejection must name the offending field, got: {msg}");
+
+    // The positive case, so the two rejections above cannot pass because the
+    // document is malformed in some unrelated way.
+    let declared = conductor_source_with_version_line("probe_tool", "\"v7.1\"");
+    let decoded = decode_document(declared.as_bytes())
+        .expect("a declared non-empty version is the shape both sides accept");
+    assert_eq!(decoded.tools["probe_tool"].version.as_deref(), Some("v7.1"));
+}
+
+/// A declared version survives the flat-record parser, which is the layer that
+/// would silently drop it.
+///
+/// The contract accepts a declared version, so if `"version"` ever leaves
+/// `TOOL_SPEC_LATEST_KNOWN_KEYS` the deserializer starts rejecting a document
+/// the schema still calls valid. That is the drift this test exists to catch:
+/// the writer round trip in `conductor_bridge::documents` would keep passing,
+/// because it encodes through the same table that would then be missing the key.
+/// The unknown-key case pins the closed-record side of the same table.
+#[test]
+fn parity_declared_tool_version_survives_the_flat_record_impl() {
+    let encoded = encode_to_string(document_with_declared_version("probe_tool", Some("v7.1")));
+    assert!(
+        encoded.contains("version = \"v7.1\""),
+        "a declared version must appear in the encoded source, got: {encoded}"
+    );
+
+    let decoded = decode_document(encoded.as_bytes())
+        .expect("a declared version must survive the round trip");
+    assert_eq!(decoded.tools["probe_tool"].version.as_deref(), Some("v7.1"));
+
+    // Same parser, same closed record: a field neither contract declares is
+    // refused rather than ignored.
+    let undeclared = r#"{
+  version = 2,
+  tools = {
+    probe_tool = {
+      kind = "executable",
+      not_a_tool_field = "x",
+      name = "probe_tool",
+      command = ["true"],
+    },
+  },
+}
+"#;
+    decode_document(undeclared.as_bytes())
+        .expect_err("a tool record must stay closed to fields the contract does not declare");
 }
