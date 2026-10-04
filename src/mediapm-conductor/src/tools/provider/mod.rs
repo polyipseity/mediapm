@@ -3394,6 +3394,137 @@ mod tests {
         );
     }
 
+    /// Reads the central-directory sizes of a single-entry ZIP as
+    /// `(compressed, decompressed)`. The extraction estimate is defined in
+    /// terms of these two numbers, so a test reads them from the archive it
+    /// built rather than assuming a compression ratio.
+    fn single_entry_zip_sizes(zip_bytes: &[u8]) -> (u64, u64) {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).unwrap();
+        assert_eq!(archive.len(), 1, "fixture should hold exactly one entry");
+        let entry = archive.by_index(0).unwrap();
+        (entry.compressed_size(), entry.size())
+    }
+
+    /// Extracts `zip_bytes` into a throwaway artifact dir and returns every
+    /// position the extraction callback reported, in order.
+    fn extract_zip_positions(zip_bytes: &[u8]) -> Vec<u64> {
+        let positions: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&positions);
+        let cb = move |pos: u64| {
+            recorder.lock().unwrap().push(pos);
+        };
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        extract_zip(zip_bytes, dir.path(), Some(&cb)).expect("extract_zip");
+        positions.lock().unwrap().clone()
+    }
+
+    /// Upper bound on what a single read of a ZIP entry can hand back.
+    /// `extract_zip` reads each entry through a buffer of this size, so one
+    /// read advances the decompressed byte count by no more than this. A
+    /// change to that read buffer widens the bound derived from it.
+    const ZIP_READ_BUFFER_MAX: u64 = 65_536;
+
+    /// The endpoint of the ZIP proportional estimate is exact, not rounded.
+    /// Once an entry has been read to its end the estimate reports that
+    /// entry's compressed size to the byte. The closing callback fires the
+    /// cumulative total rather than the estimate, so a truncated estimate
+    /// would leave the final reported value correct while the estimate itself
+    /// fell short. Pinning the second-to-last position is what separates the
+    /// two.
+    #[test]
+    fn zip_proportional_estimate_is_exact_at_the_entry_endpoint() {
+        let payload = pseudo_random_buffer(200_000);
+        let zip_bytes = synthetic_zip(&[("large.bin", payload.as_slice())]);
+        let (entry_compressed, _entry_decompressed) = single_entry_zip_sizes(&zip_bytes);
+
+        let positions = extract_zip_positions(&zip_bytes);
+
+        // 200 KB through a 64 KiB read buffer takes at least four reads, so
+        // the estimate reports at least four in-entry positions before the
+        // single closing callback.
+        assert!(
+            positions.len() >= 5,
+            "expected in-entry estimates ahead of the closing callback, got {} positions",
+            positions.len()
+        );
+
+        let last_estimate = positions[positions.len() - 2];
+        assert_eq!(
+            last_estimate, entry_compressed,
+            "the last in-entry estimate should land exactly on the entry's compressed size"
+        );
+        assert_eq!(
+            positions[positions.len() - 1],
+            entry_compressed,
+            "the closing callback should report the same entry total"
+        );
+    }
+
+    /// Mid-entry, the ZIP estimate is a projection of the bytes written so far
+    /// through the entry's own compression ratio, and that bounds it two ways:
+    /// it stays under the entry's compressed cost until the entry finishes,
+    /// and between two consecutive reports it advances by no more than one
+    /// read buffer's worth of that ratio. Both bounds hold whatever chunk
+    /// sizes the reader returns, so the test pins the ratio the estimate walks
+    /// at rather than the reads that produced it.
+    ///
+    /// How far the estimate sits from the compressed bytes the deflate
+    /// decoder really consumed cannot be asserted at all: the zip crate
+    /// exposes no count of consumed compressed bytes, so there is no ground
+    /// truth to compare against.
+    #[test]
+    fn zip_proportional_estimate_advances_at_the_uniform_ratio_mid_entry() {
+        // Compressible content keeps the entry ratio far below one, so an
+        // estimate that tracked decompressed bytes instead of the ratio would
+        // overshoot both bounds here.
+        let payload = vec![0xAAu8; 200_000];
+        let zip_bytes = synthetic_zip(&[("large.bin", payload.as_slice())]);
+        let (entry_compressed, entry_decompressed) = single_entry_zip_sizes(&zip_bytes);
+
+        let positions = extract_zip_positions(&zip_bytes);
+        assert!(
+            positions.len() >= 3,
+            "expected the closing callback and an exact estimate ahead of it, got {} positions: \
+             {positions:?}",
+            positions.len()
+        );
+        // The last two positions are the exact endpoint estimate and the
+        // closing callback. Everything before them was reported while the
+        // entry was still being read.
+        let mid_entry = &positions[..positions.len() - 2];
+
+        assert!(
+            !mid_entry.is_empty(),
+            "the fixture needs a multi-read entry to report a mid-entry position, got {positions:?}"
+        );
+
+        // Truncating division can carry one unit between the two terms of a
+        // difference, hence the +1.
+        let max_step = ZIP_READ_BUFFER_MAX * entry_compressed / entry_decompressed + 1;
+
+        for (i, &value) in mid_entry.iter().enumerate() {
+            assert!(
+                value < entry_compressed,
+                "mid-entry position {value} (index {i}) already reached the entry total \
+                 {entry_compressed} before the entry finished"
+            );
+            if i > 0 {
+                let previous = mid_entry[i - 1];
+                assert!(
+                    value >= previous,
+                    "mid-entry position went backwards (index {i}): {value} < {previous}"
+                );
+                let step = value - previous;
+                assert!(
+                    step <= max_step,
+                    "mid-entry position advanced by {step} (index {i}), more than one read of \
+                     {ZIP_READ_BUFFER_MAX} bytes projected at ratio \
+                     {entry_compressed}/{entry_decompressed} allows ({max_step})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn compress_budget_total_matches_output_size() {
         // Pack a directory with known files. The callback fires at content

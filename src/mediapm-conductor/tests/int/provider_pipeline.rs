@@ -84,6 +84,18 @@ fn assert_phase_progress_monotonic(all: &[ProviderProgressSnapshot], phase: Prov
     }
 }
 
+/// Returns the last snapshot recorded for `phase`, which is the end state a
+/// progress consumer renders once the phase is over.
+fn last_snapshot_of(
+    all: &[ProviderProgressSnapshot],
+    phase: ProviderPhase,
+) -> &ProviderProgressSnapshot {
+    all.iter()
+        .rev()
+        .find(|snap| snap.phase == phase)
+        .unwrap_or_else(|| panic!("no {phase:?} snapshot recorded"))
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1 — Resolve
 // ---------------------------------------------------------------------------
@@ -336,6 +348,76 @@ async fn process_mixed_archive_binary_progress() {
     let all = snapshots.lock().unwrap().clone();
     assert!(!all.is_empty(), "should have recorded at least one snapshot");
     assert_phase_progress_monotonic(&all, ProviderPhase::Process);
+}
+
+/// Echo launchers plus one synthetic ZIP source, so a single process run
+/// exercises the one-item binary arm and the two-item archive arm
+/// (decompress, then compress) in one budget.
+fn echo_with_zip_archive(downloaded: &DownloadedSources) -> DownloadedSources {
+    let payload = pseudo_random_buffer(20_000);
+    let mut entries = downloaded.entries.clone();
+    entries.push(DownloadedSource {
+        os: "linux".to_string(),
+        producer: SourceProducer::Fetch { urls: vec!["https://example.com/extra.zip".to_string()] },
+        bytes: synthetic_zip(&[("extra.bin", payload.as_slice())]),
+        expected_size: None,
+    });
+    DownloadedSources {
+        tool_id: downloaded.tool_id.clone(),
+        entries,
+        cached_count: downloaded.cached_count,
+    }
+}
+
+/// The aggregate a progress callback receives is where a shortfall in a
+/// single budget item goes invisible: per-item assertions pass while the bar
+/// a consumer renders stops short of its own total. This runs a mixed
+/// launcher and ZIP source set, then checks that the last snapshot of each
+/// phase reports byte position equal to byte total over a non-zero total,
+/// with every item counted as finished. The per-item endpoints are covered by
+/// `process_single_source_archive_two_items_completed` in the provider unit
+/// tests.
+#[tokio::test]
+async fn each_phase_ends_with_a_complete_budget_snapshot() {
+    let cas = InMemoryCas::default();
+    let (snapshots, cb) = recording_progress_cb();
+
+    let downloaded = fetch_echo(Some(Arc::clone(&cb))).await;
+    let fetch_sources = downloaded.entries.len();
+    let mixed = echo_with_zip_archive(&downloaded);
+    // Archives take two budget items, every other source takes one.
+    let process_items = mixed.entries.len() as u64 + 1;
+
+    let _result =
+        process_tool_sources(&mixed, &cas, Some(cb)).await.expect("process mixed sources");
+
+    let all = snapshots.lock().unwrap().clone();
+
+    let last_fetch = last_snapshot_of(&all, ProviderPhase::Fetch);
+    assert!(last_fetch.bytes.1 > 0, "a zero fetch total would make the equality below vacuous");
+    assert_eq!(
+        last_fetch.bytes.0, last_fetch.bytes.1,
+        "fetch phase must end with byte position equal to byte total, got {} of {}",
+        last_fetch.bytes.0, last_fetch.bytes.1
+    );
+    assert_eq!(
+        last_fetch.items,
+        (fetch_sources as u64, fetch_sources as u64),
+        "fetch phase must end with every source counted as finished"
+    );
+
+    let last_process = last_snapshot_of(&all, ProviderPhase::Process);
+    assert!(last_process.bytes.1 > 0, "a zero process total would make the equality below vacuous");
+    assert_eq!(
+        last_process.bytes.0, last_process.bytes.1,
+        "process phase must end with byte position equal to byte total, got {} of {}",
+        last_process.bytes.0, last_process.bytes.1
+    );
+    assert_eq!(
+        last_process.items,
+        (process_items, process_items),
+        "process phase must end with every budget item counted as finished"
+    );
 }
 
 /// Creates a deterministic pseudo-random buffer useful for archive tests
