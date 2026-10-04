@@ -1181,3 +1181,61 @@ async fn builtin_row_renders_no_version_while_a_declared_one_renders() {
          builtin's empty one is a choice and not a field nothing reads"
     );
 }
+
+/// A run with a failed step finishes the pinned overall row as a warning.
+///
+/// The overall row carries the run's verdict, so a run that lost a step cannot
+/// end the same way a clean run does. Two things say that on the row: the
+/// terminal finish is `FinishWarning` rather than `FinishSuccess`, and the label
+/// carries the `[W]` the finish arm installs. The suffix reports the tally, so
+/// it is asserted too: a row that warned without saying how many steps failed
+/// would leave the reader guessing which end of the run to look at.
+#[tokio::test]
+async fn overall_bar_finishes_warning_when_a_step_failed() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("broken".into(), broken_tool("broken"))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![WorkflowStepSpec { max_retries: 0, ..step("s1", "broken", "") }],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.failed_steps, 1, "the fixture must fail its one step");
+
+    let recorded = tracker.recorded();
+    let ops = ops_on_overall(&recorded);
+    assert!(
+        ops.contains(&ProgressOp::FinishWarning),
+        "a run that lost a step must not finish the overall row as a success: {ops:?}"
+    );
+    assert!(
+        !ops.contains(&ProgressOp::FinishSuccess),
+        "the overall row must not claim success after a failed step: {ops:?}"
+    );
+    assert_eq!(
+        ops.last(),
+        Some(&ProgressOp::FinishWarning),
+        "the terminal finish is the last thing the overall row records: {ops:?}"
+    );
+    assert_eq!(
+        count_markers_w(&ops),
+        1,
+        "the finished overall row carries exactly one `[W]` marker: {ops:?}"
+    );
+    let suffix = ops.iter().rev().find_map(|op| match op {
+        ProgressOp::SetSuffixComponents { components } => Some(components.custom.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        suffix,
+        Some("1 failed".to_string()),
+        "the warning is reported with the tally that caused it; a count of zero is \
+         not rendered, so the two phases this run did not enter leave no word behind"
+    );
+}
