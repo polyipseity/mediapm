@@ -1130,3 +1130,54 @@ fn overall_prefixes(ops: &[ProgressOp]) -> Vec<String> {
         })
         .collect()
 }
+
+/// A builtin's overall row carries no version, while a managed tool's row
+/// carries the one the document declared.
+///
+/// The two runs differ in one field of one `ToolSpec`, so the comparison is
+/// what makes this test worth having. Asserting the builtin row alone would
+/// pass just as well if the version field were dead, and asserting the managed
+/// row alone would say nothing about the builtin. Run side by side, the
+/// builtin's empty version is a decision the document made, and the reason it
+/// is worth pinning is that a derived version would read fine on a bar and be
+/// wrong in production: `builtin_id` names a registration and a document key
+/// names a payload, and neither is a claim a user wrote.
+///
+/// The prefixes come from a real `run_workflow`, and the recorder renders the
+/// installed label through the same `truncate_prefix` the renderer calls, so
+/// what is compared is the text the row draws rather than the fields behind it.
+#[cfg(feature = "progress")]
+#[tokio::test]
+async fn builtin_row_renders_no_version_while_a_declared_one_renders() {
+    fix_worker_pool_size();
+
+    let builtin_run = TestConductor::new();
+    builtin_run.write_config(doc_with_workflows(
+        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+        vec![crate::echo_workflow("default", "echo@v1", "hello")],
+    ));
+    let (builtin_tracker, summary) = run_with_progress(&builtin_run, "default").await;
+    assert_eq!(summary.failed_steps, 0);
+
+    let managed_run = TestConductor::new();
+    let mut managed_tool = echo_tool("managed@v1");
+    managed_tool.version = Some("v9.9.9".to_string());
+    managed_run.write_config(doc_with_workflows(
+        BTreeMap::from([("managed@v1".into(), managed_tool)]),
+        vec![crate::echo_workflow("default", "managed@v1", "hello")],
+    ));
+    let (managed_tracker, summary) = run_with_progress(&managed_run, "default").await;
+    assert_eq!(summary.failed_steps, 0);
+
+    assert_eq!(
+        overall_prefixes(&builtin_tracker.ops()),
+        vec!["default s1 (echo@v1)".to_string(), "default".to_string()],
+        "a builtin has no release, so nothing goes inside its parentheses"
+    );
+    assert_eq!(
+        overall_prefixes(&managed_tracker.ops()),
+        vec!["default s1 (managed@v1 v9.9.9)".to_string(), "default".to_string()],
+        "the declared version belongs inside the tool's parentheses, so the \
+         builtin's empty one is a choice and not a field nothing reads"
+    );
+}
