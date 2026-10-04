@@ -1,6 +1,6 @@
 # Coverage matrix
 
-The rows still marked `[missing]` or `[partial]` are deferred to a follow-up plan, and none of them is closed by the work recorded here.
+The rows still marked `[missing]` or `[partial]` are deferred to `.pi/plans/plan-2026-10-04T110000-the-deferred-coverage-rows.md`, and none of them is closed by the work recorded here.
 
 ## MultiItemBudget architecture
 

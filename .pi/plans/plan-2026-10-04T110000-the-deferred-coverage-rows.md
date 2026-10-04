@@ -25,14 +25,14 @@ Each row below is cited by the leading cell of its matrix row, which is what a r
 | group | rows | what closing it costs |
 | --- | --- | --- |
 | progress subsystem | 9 | one is a version-segment assertion on a sync test that is already hermetic; the rest are label and layout assertions against existing harnesses |
-| suffix renderer and inner renderer | 2 | a decision each, one of them a status token that does not exist yet |
+| the deleted string suffix API and the ANSI reset | 2 | a decision each, one of them a status token that does not exist yet; see "Two rows are decisions" |
 | provider pipeline, extraction and repack helpers | 5 | one fixture shape reused across four rows, plus one endpoint assertion the removed test used to make |
 | materializer path components, rename chain, commit path | 3 | string-level unit tests, no new harness |
 | config serde and Nickel parity | 2 | round trips that were removed rather than migrated |
 | tool-sync coordinator | 2 | a seeded stale-entry fixture that no demo provides any more |
 | CLI layer | 2 | one end-to-end run, plus a unit row that stays open only because of it |
 
-The table is in the order the list below runs them.
+The table is in the order the list below runs them, and it is the index; the sections below are named after their group, not numbered.
 
 ## Two rows are decisions
 
@@ -62,7 +62,7 @@ The progress rows go first. Nothing later in the list depends on them, and they 
 6. Tool-sync coordinator, 2 rows. This group needs a fixture written before any row in it can close, and both rows want the same one, so it is built once in one place.
 7. CLI layer, 2 rows. Last because it is the only group that spawns a process, which makes it the slowest to iterate on and the hardest to run hermetically.
 
-## Group 1: progress subsystem, 9 rows
+## Progress subsystem, 9 rows
 
 Two of these rows live in the conductor-coordinator and materializer sections of the matrix, and they are grouped here because both are progress-bar rows rather than workflow or materialization behaviour. The matrix row Overall bar finishes `finish_warning` when `failed_steps > 0`, `finish_success` otherwise (line 874) asserts the conductor's overall bar warning finish; its test lands in `src/mediapm-conductor/tests/int/workflow_progress.rs`. The matrix row Overall `finish_warning` when any entry is skipped, `finish_success` otherwise (line 893) asserts the materializer's equivalent; its test lands in `src/mediapm/src/materializer/mod.rs`. Folding them in is a choice, and the conductor row carries it while the materializer row is thinner, because its test lands in `materializer/mod.rs` rather than a progress module and its only claim on this group is that the assertion is about a progress bar. A session that would rather follow the matrix annotations can split that row out, which leaves the progress group at 8 and the materializer group at 4 and still totals 25.
 
@@ -90,31 +90,31 @@ The matrix row production combination: injected screen together with `overall_ba
 
 The other two rows, per-screen width layout and its clamps unchanged (line 859) and `BarStyle::WorkerSpinner` 0/0 guard, the client-truncation path, and the pre-roll output shape preserved (line 860), name the tests they have and stop there. Neither the test cell nor the status cell says what assertion is missing; both status cells read `still open, and it stays with the progress work`. Whoever picks either one up has to read the gap off the row rather than take it from here, because writing a plausible missing assertion into this plan would be a guess wearing a citation.
 
-## Group 2: provider pipeline, extraction and repack helpers, 5 rows
+## Provider pipeline, extraction and repack helpers, 5 rows
 
 The matrix rows `Regression test suite` (line 20), `Position equals total at endpoint of each phase` (line 210), `ZIP proportional estimation: endpoint exact` (line 211), `ZIP proportional estimation: mid-entry approximate` (line 212) and `Compress ZIP metadata overhead (~KB) vs payload` (line 215). Line 20 is the endpoint half of `full_pipeline_progress_monotonic`; the never-exceeds half is still asserted. Line 210 is the phase-endpoint assertion the removed process-phase budget test used to make. Lines 211 and 212 are the two halves of ZIP proportional estimation, endpoint exact and mid-entry approximate. Line 215 is the compress-overhead undercount.
 
 Four of the five want one thing: a budget fixture that runs a source through fetch and process and can be read at each phase boundary. Built once, it closes all four, and the removed test's endpoint assertion comes back with it.
 
-## Group 3: materializer path components, rename chain, commit path, 3 rows
+## Materializer path components, rename chain, commit path, 3 rows
 
 The matrix rows A flattened entry's components are one of two variants (line 563), `rename_files` replacement strings are sanitized with the configured replacement map (line 570) and The extracted ZIP member path and the non-archive variant name (line 576). Line 563 asks for a negative control proving a `Template` cannot reach a reader. The row already records why a green suite does not prove it: no reader takes `&[PathComponent]`. Line 570 is the `rename_files` replacement map, which has no production caller outside the path-component chain. Line 576 is the variant-name join, guarded by the same call as the ZIP member path that the row's e2e test covers.
 
 All three are unit tests in `src/mediapm/src/path_component.rs` and `src/mediapm/src/materializer/`. Nothing here needs a filesystem fixture.
 
-## Group 4: config serde and Nickel parity, 2 rows
+## Config serde and Nickel parity, 2 rows
 
 The matrix row `dependencies` flattened to `BTreeMap<String, ConfigVersionSpec>` — serde round-trip (line 361) is the `dependencies` map round trip. Two unit tests covering the flat and empty forms were removed and only the Nickel side was left, so the Rust boundary has no test.
 
 The matrix row (b) `sanitize_names` optional at boundary (line 949) records `sanitize_names` resolving `None` to `Inherit` at the boundary, and its test cell reads `(to be added by the sanitize_names boundary slice)`. That is a scheduling risk rather than a cost: if that slice is in flight, this row closes inside it, and a session working this plan independently would duplicate the work or race it. Confirm the state of the slice before starting, and if it is live, leave line 949 to it and take line 361 alone.
 
-## Group 5: tool-sync coordinator, 2 rows
+## Tool-sync coordinator, 2 rows
 
 The matrix rows `name` = bare logical tool id (line 340) and `Whole seed drives update-precheck flow (skip-preference + prune + reprovision)` (line 344). Line 340 is the name-match to `tools_updated` branch, which no test exercises. Line 344 is the aggregate: a seeded stale entry driving already-exists, then skip-preference, then prune-clear, then reprovision. The per-field contracts underneath stay covered, so only the aggregate is open.
 
 The cost is the fixture. No demo seeds stale state any more, so a test has to build the stale `conductor.generated.ncl` plus a matching `state.json` itself. Line 340 falls out of the same fixture.
 
-## Group 6: CLI layer, 2 rows
+## CLI layer, 2 rows
 
 The matrix rows `--no-progress` selects an inert terminal (F39): unit half (line 863) and `--no-progress` end-to-end: a real `--no-progress` CLI run draws no frame on stderr (line 864). Line 863 is marked open only because of line 864, so the two close together or not at all. Line 864 wants a real `--no-progress` run asserted to draw no frame on stderr and no panic string in either captured stream, which means spawning the binary. The unit suite in `service.rs` does not do that.
 
