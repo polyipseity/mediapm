@@ -52,14 +52,14 @@ The token is `[by-design]`, it goes in that instruction file's status list besid
 
 ## Order
 
-The progress rows go first. They have no other owner, and they have now been deferred twice.
+The progress rows go first. Nothing later in the list depends on them, and they have now been deferred twice.
 
 1. Progress subsystem, 9 rows.
 2. Both decisions, 2 rows. Each is a small edit, and they retire the only two rows where writing a test would be the wrong move. Doing them second rather than last means they stop sitting open while the test work runs.
-3. Provider pipeline, 5 rows. One fixture, one shape, four assertions reusing it, so nothing else can start while it is built.
+3. Provider pipeline, 5 rows. One fixture, one shape, four assertions reusing it, so the four rows that want it all wait on that fixture.
 4. Materializer path components, rename chain and commit path, 3 rows. String-level unit tests, no fixture and no shared state, so this group can run beside step 3 rather than after it. It sits fourth only so the plan reads in group order.
 5. Config serde and Nickel parity, 2 rows. Two round trips in one file, and one of the two is at the mercy of another slice, so it is cheap to start and cheap to pause.
-6. Tool-sync coordinator, 2 rows. This is the first group that needs a fixture written before any row in it can close, so it starts after the groups that need none and its fixture lands in one place.
+6. Tool-sync coordinator, 2 rows. This group needs a fixture written before any row in it can close, and both rows want the same one, so it is built once in one place.
 7. CLI layer, 2 rows. Last because it is the only group that spawns a process, which makes it the slowest to iterate on and the hardest to run hermetically.
 
 ## Group 1: progress subsystem, 9 rows
@@ -104,7 +104,7 @@ All three are unit tests in `src/mediapm/src/path_component.rs` and `src/mediapm
 
 ## Group 4: config serde and Nickel parity, 2 rows
 
-The matrix row `dependencies` flattened to `BTreeMap<String, ConfigVersionSpec>`, serde round-trip (line 361) is the `dependencies` map round trip. Two unit tests covering the flat and empty forms were removed and only the Nickel side was left, so the Rust boundary has no test.
+The matrix row `dependencies` flattened to `BTreeMap<String, ConfigVersionSpec>` — serde round-trip (line 361) is the `dependencies` map round trip. Two unit tests covering the flat and empty forms were removed and only the Nickel side was left, so the Rust boundary has no test.
 
 The matrix row (b) `sanitize_names` optional at boundary (line 949) records `sanitize_names` resolving `None` to `Inherit` at the boundary, and its test cell reads `(to be added by the sanitize_names boundary slice)`. That is a scheduling risk rather than a cost: if that slice is in flight, this row closes inside it, and a session working this plan independently would duplicate the work or race it. Confirm the state of the slice before starting, and if it is live, leave line 949 to it and take line 361 alone.
 
