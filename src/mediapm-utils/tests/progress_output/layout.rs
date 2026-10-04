@@ -483,6 +483,96 @@ fn frame_from_prefix(prefix: &PrefixComponents) -> String {
     without_spinners(&term.contents())
 }
 
+/// A screen whose overall row is seeded by a display string.
+fn overall_frame_from_label(label: &str, total: u64) -> String {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
+    let (_screen, overall) = terminal.screen().with_overall(label, total).build();
+    overall.set_position(1);
+    without_spinners(&term.contents())
+}
+
+/// The same screen, seeded by components. Differs from
+/// [`overall_frame_from_label`] only in the constructor.
+fn overall_frame_from_prefix(prefix: &PrefixComponents, total: u64) -> String {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
+    let (_screen, overall) = terminal.screen().with_overall_prefix(prefix, total).build();
+    overall.set_position(1);
+    without_spinners(&term.contents())
+}
+
+/// Moving the overall row off the label route changes its route, not its row.
+///
+/// Each case pairs a label with the components that label parses into, so a
+/// mismatch means the structured constructor altered what the pinned row draws.
+/// A row that carried structure is now reachable: the label route could only
+/// take a single word plus a count, because anything else is read back out of
+/// the rendered string.
+#[test]
+fn structured_overall_prefix_renders_the_frame_the_label_route_rendered() {
+    let cases = [
+        (
+            "ffmpeg autobuild-2026-07-31 [res]",
+            PrefixComponents {
+                tool_name: "ffmpeg".to_string(),
+                version: "autobuild-2026-07-31".to_string(),
+                phase: "res".to_string(),
+                ..Default::default()
+            },
+        ),
+        (
+            "my tool 1.0 build 7 [pro]",
+            PrefixComponents {
+                tool_name: "my tool".to_string(),
+                version: "1.0 build 7".to_string(),
+                phase: "pro".to_string(),
+                ..Default::default()
+            },
+        ),
+        (
+            "materializing",
+            PrefixComponents { tool_name: "materializing".to_string(), ..Default::default() },
+        ),
+    ];
+
+    for (label, prefix) in cases {
+        assert_eq!(
+            overall_frame_from_label(label, 3),
+            overall_frame_from_prefix(&prefix, 3),
+            "{label:?} must draw the same overall row through both constructors"
+        );
+    }
+}
+
+/// A name carrying a space is what the label route cannot express on the
+/// overall row. The drawn row matches either way, so the loss shows in the
+/// components the handle carries.
+#[test]
+fn structured_overall_prefix_keeps_a_tool_name_carrying_a_space() {
+    let prefix = PrefixComponents {
+        tool_name: "my tool".to_string(),
+        version: "1.0 build 7".to_string(),
+        phase: "pro".to_string(),
+        ..Default::default()
+    };
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, _term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
+    let (_screen, overall) = terminal.screen().with_overall_prefix(&prefix, 3).build();
+    let snap = overall.snapshot();
+    assert_eq!(snap.prefix_components.tool_name, "my tool");
+    assert_eq!(snap.prefix_components.version, "1.0 build 7");
+
+    let (terminal, _term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
+    let (_screen, parsed) = terminal.screen().with_overall("my tool 1.0 build 7 [pro]", 3).build();
+    let snap = parsed.snapshot();
+    assert_eq!(snap.prefix_components.tool_name, "my");
+    assert_eq!(snap.prefix_components.version, "tool 1.0 build 7");
+}
+
 /// Moving a bar off the label route changes its route, not its row.
 ///
 /// Each case pairs a label with the components that label used to be parsed

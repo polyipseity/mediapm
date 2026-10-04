@@ -393,8 +393,19 @@ impl Drop for ProgressTerminal {
 /// `.build()` to obtain the screen (and overall handle when overall is set).
 pub struct TerminalScreenBuilder<'a, S = NoOverall> {
     terminal: &'a ProgressTerminal,
-    overall: Option<(String, u64)>,
+    overall: Option<(OverallPrefix, u64)>,
     _state: PhantomData<S>,
+}
+
+/// What seeds the overall bar's prefix.
+///
+/// `Label` hands its string to [`SharedState::with_time_source`], which parses
+/// it into components once at construction. `Components` keeps the fields the
+/// caller already has, so a name or version the parser cannot express reaches
+/// the frame instead of being read back out of a rendered string.
+enum OverallPrefix {
+    Label(String),
+    Components(PrefixComponents),
 }
 
 impl<'a> TerminalScreenBuilder<'a, NoOverall> {
@@ -425,7 +436,30 @@ impl<'a> TerminalScreenBuilder<'a, NoOverall> {
     pub fn with_overall(self, label: &str, total: u64) -> TerminalScreenBuilder<'a, HasOverall> {
         TerminalScreenBuilder {
             terminal: self.terminal,
-            overall: Some((label.to_string(), total)),
+            overall: Some((OverallPrefix::Label(label.to_string()), total)),
+            _state: PhantomData,
+        }
+    }
+
+    /// Add an overall aggregate bar whose prefix fields are given as components.
+    ///
+    /// Transitions the builder from [`NoOverall`] to [`HasOverall`], the same
+    /// way [`with_overall`](Self::with_overall) does.
+    ///
+    /// Reach for this when the row carries a name, a version or a phase that
+    /// the caller holds as fields. [`with_overall`](Self::with_overall) takes a
+    /// display string and parses it, so a field that string cannot express (a
+    /// tool name carrying a space, a version carrying a space) is reshaped on
+    /// the way in.
+    #[must_use]
+    pub fn with_overall_prefix(
+        self,
+        prefix: &PrefixComponents,
+        total: u64,
+    ) -> TerminalScreenBuilder<'a, HasOverall> {
+        TerminalScreenBuilder {
+            terminal: self.terminal,
+            overall: Some((OverallPrefix::Components(prefix.clone()), total)),
             _state: PhantomData,
         }
     }
@@ -452,12 +486,16 @@ impl TerminalScreenBuilder<'_, HasOverall> {
         if !self.terminal.enabled {
             return (ProgressScreen::disabled(), ProgressBarHandle::disabled());
         }
-        let (label, total) = self.overall.expect("HasOverall builder must have overall set");
-        let state = Arc::new(SharedState::with_time_source(
-            total,
-            &label,
-            Arc::clone(&self.terminal.inner.time_source),
-        ));
+        let (prefix, total) = self.overall.expect("HasOverall builder must have overall set");
+        let time_source = Arc::clone(&self.terminal.inner.time_source);
+        let state = Arc::new(match prefix {
+            OverallPrefix::Label(label) => {
+                SharedState::with_time_source(total, &label, time_source)
+            }
+            OverallPrefix::Components(components) => {
+                SharedState::with_prefix(total, &components, BarStyle::StepCount, time_source)
+            }
+        });
         let handle = ProgressBarHandle { state: Arc::clone(&state) };
         let screen = build_screen(self.terminal, Some(state));
         (screen, handle)
