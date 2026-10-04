@@ -92,4 +92,15 @@ case "$leftover_out" in
     *) fail "leftover gate failure missing its message: $leftover_out" ;;
 esac
 
+# A root that exists and holds nothing: the sweep scans it, finds no
+# leftovers, and the runner passes. The two failure routes above cannot tell
+# whether this case still works, so the runner layer asserts it too. The
+# assignment lives inside an `if` condition so `set -e` does not abort the
+# self-test before the diagnostic is reported.
+empty_root="$tmpdir/empty-root"
+mkdir -p "$empty_root"
+if ! empty_out="$(cd "$repo_root" && PATH="$tmpdir/bin:$PATH" TMPDIR="$empty_root" sh "$runner" 2>&1)"; then
+    fail "runner failed its temp-dir gate on an existing empty temp root ($empty_root): $empty_out"
+fi
+
 echo "test-run-all-tests.sh: OK"

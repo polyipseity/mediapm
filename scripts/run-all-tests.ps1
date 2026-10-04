@@ -70,9 +70,11 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # The janitor's own exit status is read before its output: a temp root that
 # cannot be enumerated prints nothing that reads as a leftover, so a
 # text-only gate would take the failure for a clean sweep. The sweep runs in
-# a child pwsh because an in-process `&` call discards its captured output
-# when the called script exits non-zero, which is exactly the diagnostic this
-# gate has to report. Parity with run-all-tests.sh.
+# a child pwsh because the janitor reports a bad root with
+# [Console]::Error.WriteLine, which writes to the process stderr handle
+# instead of PowerShell's error stream, so an in-process `2>&1` leaves that
+# line uncaptured. Do not fold this back into an `&` call: the exit status
+# alone would not say why the sweep failed. Parity with run-all-tests.sh.
 $dryRun = @(& pwsh -NoProfile -File "$PSScriptRoot/clean-mediapm-temp.ps1" --dry-run 2>&1)
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("error: mediapm temp-dir sweep failed: $($dryRun -join ' ')")

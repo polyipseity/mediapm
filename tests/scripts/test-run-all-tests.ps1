@@ -94,6 +94,16 @@ try {
     if (-not $leftover.Output.Contains('error: test suite left mediapm temp dirs behind')) {
         Fail "leftover gate failure missing its message: $($leftover.Output)"
     }
+
+    # A root that exists and holds nothing: the sweep scans it, finds no
+    # leftovers, and the runner passes. The two failure routes above cannot
+    # tell whether this case still works, so the runner layer asserts it too.
+    $emptyRoot = Join-Path $stubBin 'empty-root'
+    New-Item -ItemType Directory -Path $emptyRoot -Force | Out-Null
+    $empty = Invoke-RunnerAtRoot -Root $emptyRoot
+    if ($empty.ExitCode -ne 0) {
+        Fail "runner failed its temp-dir gate on an existing empty temp root ($emptyRoot): $($empty.Output)"
+    }
 } finally {
     Pop-Location
     $env:PATH = $savedPath
