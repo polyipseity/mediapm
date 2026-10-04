@@ -51,7 +51,7 @@ materializer/              — CAS→filesystem materialization
   resolve.rs               —   Source/variant hash resolution, existence checks
   playlist.rs              —   Playlist generation (M3U8, PLS, XSPF, WPL, ASX)
   progress_labels.rs       —   MaterializationBarLabel truncation order (see progress-output.instructions.md)
-  zip.rs                   —   ZIP folder extraction
+  zip_reader.rs            —   ZIP reading: member/folder extraction, binding parse
 
 tools/                     — Managed tool preset/provider + workflow synthesis
   mod.rs                   —   Module router, is_known_tool_id()

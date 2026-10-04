@@ -6,7 +6,7 @@
 //! character. It lives at the crate root because two unrelated callers need
 //! it. `config::hierarchy_types` keeps parsed components on
 //! `FlattenedHierarchyEntry`, and `materializer::commit` and
-//! `materializer::zip` parse new ones out of untrusted text. Putting it in
+//! `materializer::zip_reader` parse new ones out of untrusted text. Putting it in
 //! either of those modules would invert the layering, since
 //! `materializer::commit` sits downstream of `config`.
 //!

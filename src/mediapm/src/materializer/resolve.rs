@@ -18,7 +18,7 @@ use crate::tools::workflows::{
     resolve_media_variant_output_binding_with_limits,
 };
 
-use super::zip::{
+use super::zip_reader::{
     extract_zip_member_bytes, parse_external_data_reference, parse_step_output_reference,
 };
 use super::{

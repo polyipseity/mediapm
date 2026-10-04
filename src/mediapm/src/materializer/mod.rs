@@ -9,7 +9,10 @@ mod metadata;
 pub(crate) mod playlist;
 pub(crate) mod progress_labels;
 mod resolve;
-mod zip;
+// Named `zip_reader` rather than `zip` because a child module shadows the
+// `zip` extern crate in the type namespace from edition 2018 on, and the
+// tests below this one write a ZIP archive.
+mod zip_reader;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -47,7 +50,7 @@ use self::resolve::{
     collect_media_source_available_variants, resolve_hierarchy_source, resolve_variant_hash,
     resolve_variant_source_bytes,
 };
-use self::zip::extract_zip_member_bytes;
+use self::zip_reader::extract_zip_member_bytes;
 
 /// Per-workflow required step output names (`step_id -> output_name[]`).
 pub(super) type RequiredStepOutputNames = BTreeMap<String, BTreeSet<String>>;
@@ -83,7 +86,7 @@ pub(super) struct VariantSourceBytes {
     /// Source CAS hash when bytes map directly to one stored object.
     pub(super) source_hash: Option<Hash>,
 }
-use self::zip::{compile_hierarchy_folder_rename_rules, extract_zip_folder_variant_bytes};
+use self::zip_reader::{compile_hierarchy_folder_rename_rules, extract_zip_folder_variant_bytes};
 
 /// Summary of one `sync_hierarchy` invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -2111,12 +2114,10 @@ mod tests {
         use std::io::Write as _;
 
         let mut buffer = std::io::Cursor::new(Vec::new());
-        // `::zip` rather than `zip`: this module's own child is named `zip`,
-        // and a child module shadows the extern crate in the type namespace.
-        let mut writer = ::zip::ZipWriter::new(&mut buffer);
+        let mut writer = zip::ZipWriter::new(&mut buffer);
         for (name, content) in members {
             writer
-                .start_file::<&str, ()>(name, ::zip::write::SimpleFileOptions::default())
+                .start_file::<&str, ()>(name, zip::write::SimpleFileOptions::default())
                 .expect("a stored member starts");
             writer.write_all(content).expect("the member is written");
         }

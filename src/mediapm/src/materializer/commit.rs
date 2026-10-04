@@ -8,7 +8,7 @@
 //! [`crate::materializer::sanitize_and_validate_hierarchy_paths`], which the
 //! materializer runs over every resolved hierarchy entry before any path is
 //! staged or written, and the ZIP extraction path in
-//! [`crate::materializer::zip`]. The second is **readonly enforcement** for
+//! [`crate::materializer::zip_reader`]. The second is **readonly enforcement** for
 //! managed outputs ([`ensure_managed_path_readonly`]) and **stale-path
 //! removal** ([`remove_path`]).
 //!
