@@ -64,7 +64,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # Regression gate: the test suite must not leave mediapm-owned temp dirs
 # behind. Non-destructive (dry-run only); fails loudly if any leftover
 # artifact/cache/runtime dir appears. Parity with run-all-tests.sh; the
-# ps1 runner self-test is CI-covered via the Windows workspace-tests job.
+# ps1 runner self-test is CI-covered via the "Windows: Workspace Tests" job.
 # Note: janitor sandbox self-tests now live in the root `tests` crate
 # (`cargo --locked test-pkg mediapm-tests`, covered by `cargo test-all`).
 # The janitor's own exit status is read before its output: a temp root that

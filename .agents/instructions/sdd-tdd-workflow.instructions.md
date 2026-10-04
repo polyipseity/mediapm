@@ -19,7 +19,7 @@ Spec-first, test-first development workflow for the mediapm workspace.
    - **Example mains**: every example under `src/*/examples/` must exercise its own `main()` via an embedded test; deterministic examples always run their full path, nondeterministic examples skip in CI, run a deterministic reduced mode in the test harness, and run their full path only on explicit `cargo run --example` (see `example-execution-policy.instructions.md`)
 3. **Enforce exact-output matching for terminal-rendering tests**: Tests that validate progress bar, spinner, or any terminal-rendered output must use `assert_eq!(actual, expected)` with `concat!(...)` string matching. Substring or count-only assertions are not acceptable except in the narrow exceptions documented in `rust-conventions.instructions.md` ("Terminal output matching").
 4. **Implement**: Code against the spec and tests. Verify all tests pass before moving on.
-5. **Update the coverage matrix**: Mark spec items as covered (`[covered]`), partial (`[partial]`), or uncovered (`[missing]`).
+5. **Update the coverage matrix**: Mark spec items as covered (`[covered]`), partial (`[partial]`), uncovered (`[missing]`), or by-design (`[by-design]`).
 
 ## When Fixing a Bug
 
@@ -60,6 +60,9 @@ Do not use unicode emoji in this file or in any coverage matrix entries. Unicode
 - `[covered]`: spec item is fully tested
 - `[partial]`: spec item is partially tested (approximation or incomplete)
 - `[missing]`: spec item is not yet tested
+- `[by-design]`: spec item no test could assert; the row records the reason
+
+`[covered]` claims a test asserts the spec item. `[by-design]` is for spec items no test could assert, and the row has to say why; `[covered]` on such an item claims a test that does not exist.
 
 ## Validation Gates
 
