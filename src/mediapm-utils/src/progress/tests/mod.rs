@@ -27,6 +27,7 @@ pub use std::sync::Arc;
 
 mod ansi;
 mod components;
+mod frame_match;
 mod recording;
 mod renderer;
 mod screen;

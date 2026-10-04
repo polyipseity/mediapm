@@ -30,6 +30,9 @@ use std::fmt;
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use mediapm_utils::progress::assert_frames_match;
+
 use crate::support::ScreenConfig;
 
 /// Flag that picks which of a screen's scenarios to draw.
@@ -317,6 +320,12 @@ fn names_the_scenario_shape(path: &Path, stem: &str) -> bool {
 /// The transcript carries the single trailing newline `main`'s `println!` adds, so
 /// it is stripped before the comparison, and a file carrying a blank line at the
 /// end no longer matches what stdout writes.
+///
+/// The comparison is [`assert_frames_match`] rather than an equality check, so
+/// which glyph the spinner column ended on is animation phase rather than
+/// recorded output. Every other column is compared exactly. The grid arrives
+/// with its escape sequences still in it, because the comparison strips them
+/// itself.
 #[cfg(test)]
 fn assert_transcript_matches(path: &Path, grid: &str, drawn_at: &str) {
     let recorded = std::fs::read_to_string(path)
@@ -329,11 +338,10 @@ fn assert_transcript_matches(path: &Path, grid: &str, drawn_at: &str) {
         "{} ends with a blank line, so it no longer matches stdout",
         path.display()
     );
-    assert_eq!(
+    assert_frames_match(
         without_trailing_newline,
         grid,
-        "{} does not match what the screen renders at {drawn_at}",
-        path.display()
+        &format!("{} does not match what the screen renders at {drawn_at}", path.display()),
     );
 }
 

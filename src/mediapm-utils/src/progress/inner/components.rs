@@ -594,6 +594,25 @@ pub(crate) const MAX_SUFFIX_WIDTH: usize = 65;
 /// so this is the width no label can have at any terminal size.
 pub(crate) const FRAME_OVERHEAD_COLUMNS: usize = 4;
 
+/// Column a frame's spinner glyph occupies.
+///
+/// [`frame_template`] writes `{spinner}` as its first field, before the spaces
+/// and the label slots that make up [`FRAME_OVERHEAD_COLUMNS`], so the glyph is
+/// the first character of the row. Code that has to find the spinner on a
+/// rendered frame reads this constant rather than counting a column itself, so
+/// a template that reorders its fields moves the answer with it.
+pub(crate) const SPINNER_COLUMN: usize = 0;
+
+/// Glyphs every production bar style cycles its spinner through.
+///
+/// [`bar_style`] hands this to `ProgressStyle::tick_chars`, which turns the
+/// string into one tick string per character. `indicatif` then indexes that list
+/// with `tick % (len - 1)`, so with these ten characters the first nine cycle
+/// and the tenth is the string a finished bar draws. Both kinds are reachable on
+/// a real screen, which is why the whole list is what a comparison has to
+/// accept and why nine would be the wrong size.
+pub(crate) const TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
 /// Columns held back for the bar fill before the prefix slot grows past the
 /// measured label.
 ///
@@ -846,7 +865,7 @@ fn bar_style(tpl: &str) -> ProgressStyle {
     ProgressStyle::with_template(tpl)
         .expect("valid dynamic bar template")
         .progress_chars("█░")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+        .tick_chars(TICK_CHARS)
 }
 
 /// Apply the overall aggregate bar's style.

@@ -36,6 +36,8 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use indicatif::InMemoryTerm;
+#[cfg(test)]
+use mediapm_utils::progress::assert_frames_match;
 use mediapm_utils::progress::{
     DimensionSource, ProgressTerminal, TestDimensionSource, TestTimeSource, TimeSource,
 };
@@ -333,6 +335,13 @@ fn names_the_size_only_shape(path: &Path, stem: &str) -> bool {
 /// is covered the moment it lands and no source file has to learn about it.
 /// Each transcript carries the one trailing newline that `main`'s `println!`
 /// adds, which is why the comparison strips it before matching the grid.
+///
+/// The comparison is [`assert_frames_match`], which holds every column to an
+/// exact match except the spinner column. That column advances with wall-clock
+/// spacing between draws rather than with anything the layout says, so pinning
+/// it made the transcripts a record of the machine that captured them. The grid
+/// arrives with its escape sequences still in it, because the comparison strips
+/// them itself.
 #[cfg(test)]
 pub fn assert_every_transcript_matches(
     example: &str,
@@ -363,11 +372,10 @@ pub fn assert_every_transcript_matches(
             "{} ends with a blank line, so it no longer matches stdout",
             path.display()
         );
-        assert_eq!(
+        assert_frames_match(
             without_trailing_newline,
-            grid,
-            "{} does not match what {example} renders at --width {width}",
-            path.display()
+            &grid,
+            &format!("{} does not match what {example} renders at --width {width}", path.display()),
         );
     }
 }

@@ -51,6 +51,13 @@ pub use truncation::{
     BarLabelTruncation, Brackets, Join, Segment, Shrink, fit_segments, front_tail,
 };
 
+// Comparing two rendered frames without pinning the spinner's phase (feature-gated)
+
+#[cfg(feature = "progress")]
+mod frame_match;
+#[cfg(feature = "progress")]
+pub use frame_match::{assert_frames_match, spinner_glyphs};
+
 // Recording types for test assertions (feature-gated)
 
 /// Recording progress operations for test assertions.

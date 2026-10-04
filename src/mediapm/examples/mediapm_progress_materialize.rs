@@ -168,6 +168,11 @@ mod tests {
     /// name as well as the width, so a transcript captured in one scenario
     /// cannot pass against another.
     ///
+    /// Every column is compared exactly except the spinner column, which is compared
+    /// against the set of configured glyphs: which glyph a row shows at the end of a run
+    /// follows the wall-clock spacing between its draws, so pinning it would record the
+    /// machine that captured the transcript rather than the layout it shows.
+    ///
     /// What each row of the baseline frame stands for is described on
     /// `render_materialization_screen`, and what each row of `states` stands for
     /// on `render_states`.
@@ -176,7 +181,7 @@ mod tests {
         assert_every_scenario_transcript_matches(
             "mediapm_progress_materialize",
             "materialize",
-            |name, width| strip_ansi_escapes(&scenario(name).render_at(width)),
+            |name, width| scenario(name).render_at(width),
         );
     }
 
@@ -189,13 +194,18 @@ mod tests {
     /// the baseline, so between the two matchers every file in the directory is
     /// claimed once: this one takes the names without a scenario segment, and
     /// the one above takes the rest.
+    ///
+    /// Every column is compared exactly except the spinner column, which is compared
+    /// against the set of configured glyphs: which glyph a row shows at the end of a run
+    /// follows the wall-clock spacing between its draws, so pinning it would record the
+    /// machine that captured the transcript rather than the layout it shows.
     #[test]
     fn the_baseline_transcripts_still_match_the_width_only_matcher() {
         assert_every_transcript_matches(
             "mediapm_progress_materialize",
             "materialize",
             scenario(ScenarioName::Baseline).height(),
-            |config| strip_ansi_escapes(&scenario(ScenarioName::Baseline).render(config)),
+            |config| scenario(ScenarioName::Baseline).render(config),
         );
     }
 
