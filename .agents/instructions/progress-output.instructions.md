@@ -345,6 +345,8 @@ Every example takes `--scenario`, `--width` and `--height`. A transcript is name
 
 Height follows from the scenario: `Scenario::height()` is `bars + 1`. The renderer draws one line per bar, and the newline that commits the frame scrolls the top row away once the frame fills the terminal, so the frame is given a row it does not draw. That one row is exactly enough at every band size from 4 to 255 bars.
 
+`Scenario::render_at` (`src/mediapm/examples/support/scenarios.rs`) is the entry point a transcript is captured through, and it checks two things before handing the frame back. It asserts the drawn grid has one line per declared bar, and it draws the same scenario a second time at twice the derived height and asserts the two grids are identical. The second check is the load-bearing one and nothing else in the suite replaces it: a renderer whose output depends on the terminal height produces the right row count at the height its own bar count asks for and a different frame at any other height, so every transcript comparison would pass while the screen was wrong on a terminal nobody captured it on. A scenario that declares more bars than it draws fails the first check, one that declares fewer fails the second, which is why it is checked from both sides. `render_at_refuses_a_frame_that_moves_with_the_terminal_height` and its two neighbours in the same test module pin both refusals, so dropping either assertion fails the suite instead of quietly losing the check.
+
 Regenerate a transcript by running the example with its scenario and width and redirecting stdout. The directory listing is the set of scenarios and widths, since each file is named for both and each screen's test reads both back out of those names. A file in one of those directories that is not a transcript is a test failure, not something to leave lying around.
 
 Each example's test walks its own fixture directory and compares what the screen renders against each transcript, so a layout change fails the suite before anyone reaches for a transcript by hand.
@@ -363,8 +365,8 @@ Each example's test walks its own fixture directory and compares what the screen
 
 The `mediapm-utils` suite uses `assert_eq!(term.contents(), concat!(...))` against an inline literal and IS the real format:
 
-- `src/mediapm-utils/tests/progress_output/` — `consumer.rs`, `elapsed.rs`, `layout.rs`, `lifecycle.rs`, `render.rs`, `resize.rs`, `spinner.rs`; `common.rs` and `debug.rs` are helpers and the debug sink
-- `src/mediapm/examples/mediapm_progress_tool_sync.rs`, `mediapm_progress_workflow.rs`, `mediapm_progress_materialize.rs` — one test that walks the screen's transcript directory and compares every frame it finds there, plus a `*_screen_never_wraps_a_row` sweep and a `*_screen_rows_never_go_empty` sweep over the widths the harness accepts
+- `src/mediapm-utils/tests/progress_output/` — `consumer.rs`, `elapsed.rs`, `layout.rs`, `lifecycle.rs`, `render.rs`, `resize.rs`, `spinner.rs`; `common.rs` and `debug.rs` are helpers and the debug sink. These drive the renderer with the ticker off and a test time source, so their exact `assert_eq!(term.contents(), concat!(...))` comparisons hold every column including the spinner
+- `src/mediapm/examples/mediapm_progress_tool_sync.rs`, `mediapm_progress_workflow.rs`, `mediapm_progress_materialize.rs` — one test that walks the screen's transcript directory and compares every frame it finds there through `assert_frames_match`, plus a `*_screen_never_wraps_a_row` sweep and a `*_screen_rows_never_go_empty` sweep over the widths the harness accepts
 
 `src/mediapm/src/output/progress.rs` also asserts against `term.contents()`, but with substring checks rather than exact literals, so it pins behaviour such as "elapsed reads `0s` after finish" rather than a full frame.
 
@@ -375,6 +377,14 @@ Progress is suppressed by passing `no_progress: true` or by constructing a `Prog
 ## Spinner animation
 
 Every progress bar uses a daemon ticker at 50 ms intervals, keeping the spinner animating even during long periods without position updates. The spinner uses braille dots: `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`. For deterministic tests, disable the ticker with `.with_ticker_enabled(false)`.
+
+### Which glyph a row ends on is not the renderer's to decide
+
+The glyph comes out of `indicatif`'s tick counter, and the counter moves on real time. `ProgressBar::set_position` and `ProgressBar::inc` both ask `AtomicPosition::allow(now)` (`indicatif-0.17/src/state.rs`) before they tick, and `allow` is a token bucket: `MAX_BURST` tokens to start, one more per `INTERVAL` (1 ms) of wall-clock time since the bar was created, and a call that gets a token advances `BarState::state.tick`. `ProgressStyle::get_tick_str` then picks `tick_strings[tick % (len - 1)]`.
+
+So the glyph on a row is a function of how much real time passed between that row's position updates, and how much real time passed is a function of everything else on screen. Handing another row more advances spends more time, which hands this row's bucket refills it would not otherwise have had. Two runs that drive the same bars in the same order can end on different glyphs, and nothing in this repository controls which.
+
+That is what the transcript comparison is for. `assert_frames_match` (`src/mediapm-utils/src/progress/frame_match.rs`) compares every column of two frames exactly and exempts the spinner column alone, so a frame is checked for layout without being checked for animation phase. Its own doc records what it cannot see, and the swap it cannot name is stated there as a fact about the output rather than as a defect. Reach for it instead of a byte comparison anywhere a fixture records a frame, and do not re-tighten the spinner column: a fixture that pins the glyph records the machine that captured it.
 
 ## Library stack
 

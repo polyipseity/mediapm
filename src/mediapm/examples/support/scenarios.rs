@@ -386,7 +386,7 @@ mod tests {
         Scenario, ScenarioError, ScenarioName, fixture_transcript, names_the_scenario_shape,
         scenario_list, split_scenario_flag,
     };
-    use crate::support::parse_screen_config;
+    use crate::support::{ScreenConfig, parse_screen_config};
     use std::path::Path;
 
     /// A scenario name round-trips through the text a filename carries.
@@ -481,6 +481,74 @@ mod tests {
         let scenario = Scenario::new(ScenarioName::Baseline, 7, |_| String::new());
         assert_eq!(scenario.bars(), 7);
         assert_eq!(scenario.height(), 8);
+    }
+
+    /// A renderer whose frame carries the terminal height into its text.
+    ///
+    /// Two rows either way, so the bar-count check passes and the height
+    /// comparison is the one left to catch it.
+    fn height_dependent_render(config: ScreenConfig) -> String {
+        format!("row one at {}\nrow two at {}", config.height, config.height)
+    }
+
+    /// `render_at` refuses a frame that moves with the terminal height.
+    ///
+    /// Nothing else in the suite draws a scenario at two heights, so a renderer
+    /// that grew a height-dependent row would pass every transcript and fail
+    /// only on the terminal somebody happened to run it on. The check is the
+    /// second draw, and this is what says so: drop it and the panic goes with
+    /// it, which is the point of pinning it here.
+    #[test]
+    fn render_at_refuses_a_frame_that_moves_with_the_terminal_height() {
+        let scenario = Scenario::new(ScenarioName::Baseline, 2, height_dependent_render);
+        let refusal = panic_message(|| {
+            scenario.render_at(72);
+        });
+        assert!(
+            refusal.contains("draws a different frame at 3 rows than it does at 6"),
+            "{refusal}"
+        );
+    }
+
+    /// `render_at` refuses a frame with fewer rows than the scenario declares.
+    ///
+    /// The other direction of the same bar count, and the one that reads as a
+    /// missing row rather than as an extra one.
+    #[test]
+    fn render_at_refuses_a_frame_shorter_than_its_declared_bars() {
+        let scenario = Scenario::new(ScenarioName::Baseline, 3, height_dependent_render);
+        let refusal = panic_message(|| {
+            scenario.render_at(72);
+        });
+        assert!(refusal.contains("declares 3 bars and draws 2 lines at 4 rows"), "{refusal}");
+    }
+
+    /// A frame that holds still across heights is handed back as it was drawn.
+    ///
+    /// The counterpart to the two refusals, so the checks cannot pass by
+    /// refusing everything.
+    #[test]
+    fn render_at_hands_back_a_frame_that_does_not_move_with_the_height() {
+        let scenario = Scenario::new(ScenarioName::Baseline, 2, |_| "one\ntwo".to_string());
+        assert_eq!(scenario.render_at(72), "one\ntwo");
+    }
+
+    /// The message a refusal carries, so a test can read what it was told.
+    ///
+    /// The comparison fails by panicking, which is what a caller sees. Reading
+    /// the panic back rather than marking each test `#[should_panic]` lets a
+    /// test check that the right check fired rather than any check at all.
+    fn panic_message(body: impl FnOnce()) -> String {
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body))
+            .err()
+            .unwrap_or_else(|| panic!("the check did not fire"));
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => match payload.downcast::<&str>() {
+                Ok(message) => (*message).to_string(),
+                Err(_) => "the check panicked without a message".to_string(),
+            },
+        }
     }
 
     /// The rendered message for an argument list the harness refuses.

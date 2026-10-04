@@ -39,6 +39,11 @@ impl BarId {
     /// [`BarId::Index`] values and lets [`BarId::Standalone`] fall out, which
     /// is what a standalone handle deserves since it is not one of the group's
     /// rows.
+    ///
+    /// No production code calls this. What reads an identity off a recorded op
+    /// is the [`BarId`] itself: `bar_opened_as` in the materializer's tests
+    /// hands one back and tells two rows apart by comparing it, because that is
+    /// all the difference it needs to make.
     #[must_use]
     pub fn index(self) -> Option<usize> {
         match self {

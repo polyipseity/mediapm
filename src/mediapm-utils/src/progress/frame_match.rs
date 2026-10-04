@@ -13,15 +13,18 @@
 //! [`assert_frames_match`] compares everything else exactly and accepts any
 //! configured spinner glyph in the spinner column.
 //!
-//! # What this comparison no longer catches
+//! # What the comparison cannot see
 //!
-//! A frame whose only difference is the spinner's glyph passes, where an exact
-//! comparison would have failed it. So does a swap between the spinner and a
-//! tick glyph that appears as text further along the same row: the spinner
-//! column accepts any configured glyph, and the other column is compared to the
-//! character the frame draws there, so a swap changes that one and is caught.
-//! What the comparison cannot catch is a glyph that changes to a glyph, because
-//! that is a difference it cannot see from the text alone.
+//! One difference: a glyph in the spinner column that changes to a different
+//! glyph. Two runs that draw the same bars in the same order can land on
+//! different phases of the animation, and that is animation rather than layout.
+//!
+//! A swap between the spinner column and a glyph the row also carries as text is
+//! caught whenever the two columns hold different characters, because the text
+//! column is compared exactly. When both columns hold the same character the
+//! swap leaves the rendered row byte for byte what it was, so an exact
+//! comparison misses it too. That is not a gap in the check. The frame holds
+//! nothing that tells the two apart, so there is nothing to see.
 //!
 //! Every other difference still fails. A row that gained or lost a column, a
 //! label that reads differently, a bracket pair that does not match, a fraction

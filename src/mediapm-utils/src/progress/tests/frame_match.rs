@@ -43,6 +43,16 @@ fn assert_matches(expected: &str, actual: &str) {
 /// A row as a progress bar draws it: a spinner, a label, a fill and a tally.
 const ROW: &str = "⠹ default s1 (ffmpeg) [active] ███░░ 2/5 28s";
 
+/// Exchange the characters at two columns of a row.
+///
+/// Built rather than written out, because a hand-written swapped row would be a
+/// claim about the swap rather than the swap itself.
+fn swap_columns(row: &str, left: usize, right: usize) -> String {
+    let mut characters: Vec<char> = row.chars().collect();
+    characters.swap(left, right);
+    characters.into_iter().collect()
+}
+
 /// The glyph set is the configured tick string, the cycle and the final string.
 ///
 /// `indicatif` indexes the configured strings with `tick % (len - 1)`, so a
@@ -85,6 +95,28 @@ fn every_configured_glyph_is_accepted_in_the_spinner_column() {
 fn a_glyph_outside_the_spinner_column_still_differs() {
     let moved = ROW.replacen('⠹', " ", 1).replacen("active", "⠹", 1);
     assert_differs(ROW, &moved);
+}
+
+/// A swap between the spinner column and a glyph the row also carries as text
+/// changes nothing an exact comparison can read, when both columns held the
+/// same character.
+///
+/// The two columns here hold the same glyph, so exchanging them leaves the row
+/// byte for byte what it was. An exact comparison accepts that because there is
+/// no difference to find, and so does this one. There is no frame that shows
+/// the swap happened, which is why it is stated here rather than left as a
+/// caveat: the comparison is not missing a difference, because the output does
+/// not carry one.
+#[test]
+fn a_swap_between_two_columns_holding_the_same_glyph_is_invisible() {
+    let row = "⠹ default ⠹ s1 ███░░ 2/5";
+    let swapped = swap_columns(row, 0, 10);
+    assert_eq!(swapped, row, "the swap left the row changed, so the claim is about something else");
+    assert_eq!(
+        difference(&swapped, row),
+        None,
+        "this comparison accepted a swap it should have been able to name"
+    );
 }
 
 /// A changed label is caught, and the refusal names the row, the column and
