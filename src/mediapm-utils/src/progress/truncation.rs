@@ -101,10 +101,11 @@ pub enum Shrink {
 /// brackets to the clipper with the content, so a one-column clip of
 /// `(ffmpeg)` leaves `)` on the row: a bracket with nothing opening it.
 ///
-/// [`fit_segments`] renders a segment's brackets only when it rendered the
-/// segment whole, so decoration is all or nothing. A segment that had to be
-/// shortened reads as its bare content, which is a name a reader can still
-/// use, rather than as a fragment wearing the punctuation of something else.
+/// A bracket group can span more than one segment, in which case the opening
+/// bracket belongs to the first member and the closing one to the last, and
+/// the pair renders only when every member came through whole. See
+/// [`Segment::spanning_brackets`].
+#[cfg(feature = "progress")]
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Brackets {
@@ -141,9 +142,13 @@ pub struct Segment {
     pub text: String,
     /// How this piece yields width.
     pub shrink: Shrink,
-    /// Brackets to wrap the content in, applied only when the piece is
-    /// rendered whole. [`None`](Option::None) renders the bare content.
+    /// Brackets to wrap the content in, applied only when the whole group
+    /// rendered. [`None`](Option::None) renders the bare content.
     pub brackets: Option<Brackets>,
+    /// How many consecutive segments the decoration wraps, counting this
+    /// one, so `1` is the single-segment group. Set by
+    /// [`Segment::spanning_brackets`].
+    pub bracket_members: usize,
     /// What separates this piece from the one before it.
     pub join: Join,
 }
@@ -154,27 +159,70 @@ impl Segment {
     /// dropped when it cannot fit.
     #[must_use]
     pub fn keep(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Keep, brackets: None, join: Join::Space }
+        Self {
+            text: text.into(),
+            shrink: Shrink::Keep,
+            brackets: None,
+            bracket_members: 1,
+            join: Join::Space,
+        }
     }
 
     /// An elastic piece: shortened from the front before anything is dropped.
     #[must_use]
     pub fn elastic(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Front, brackets: None, join: Join::Space }
+        Self {
+            text: text.into(),
+            shrink: Shrink::Front,
+            brackets: None,
+            bracket_members: 1,
+            join: Join::Space,
+        }
     }
 
     /// An elastic piece that keeps its leading characters: it gives columns
     /// back from the end before anything is dropped.
     #[must_use]
     pub fn elastic_head(text: impl Into<String>) -> Self {
-        Self { text: text.into(), shrink: Shrink::Head, brackets: None, join: Join::Space }
+        Self {
+            text: text.into(),
+            shrink: Shrink::Head,
+            brackets: None,
+            bracket_members: 1,
+            join: Join::Space,
+        }
     }
 
     /// Wrap this piece's content in `brackets`, which are rendered only when
-    /// the piece survives whole.
+    /// the piece survives whole. This is the one-member group, and every
+    /// label in the tree that decorates a single piece uses it.
     #[must_use]
-    pub fn brackets(mut self, brackets: Brackets) -> Self {
+    pub fn brackets(self, brackets: Brackets) -> Self {
+        self.spanning_brackets(brackets, 1)
+    }
+
+    /// Wrap this piece and the `members - 1` pieces after it in `brackets`,
+    /// rendering the pair only when every member of the group survived
+    /// whole.
+    ///
+    /// A group exists for a label whose decoration spans two fields, such as
+    /// the `(ffmpeg v7.1)` a step row draws around its tool name and the
+    /// version beside it. The opening bracket lands on the first member and
+    /// the closing one on the last, so a group whose members did not all come
+    /// through whole has to lose the pair rather than one end of it: `(ffmpeg
+    /// v7.` on its own reads as a bracket nothing closed.
+    ///
+    /// A member that was shortened or dropped takes the whole pair down with
+    /// it, so the group renders as bare content or as a bracketed group and
+    /// never as half of one. Groups are consecutive and may not overlap: a
+    /// segment opens at most one group.
+    ///
+    /// `members` below one is treated as one, since a decoration with no
+    /// member to wrap has nothing to render.
+    #[must_use]
+    pub fn spanning_brackets(mut self, brackets: Brackets, members: usize) -> Self {
         self.brackets = Some(brackets);
+        self.bracket_members = members.max(1);
         self
     }
 
@@ -232,9 +280,9 @@ fn tail_head(text: &str, target: usize) -> String {
 /// A segment together with what fitting has already done to it.
 ///
 /// `clipped` is the only state fitting adds, and it is there so
-/// [`render_one`] knows whether the segment's decoration still applies. It is
-/// set whenever the segment's own text is shortened, and never set for a
-/// segment that was dropped, since a dropped segment renders nothing.
+/// [`render_pieces`] knows whether a segment's bracket group still applies.
+/// It is set whenever the segment's own text is shortened, and never set for
+/// a segment that was dropped, since a dropped segment renders nothing.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
 struct Fitted {
@@ -264,35 +312,66 @@ impl Fitted {
     }
 }
 
-/// Render one fitted segment: its content, and its decoration only when
-/// fitting left the content whole.
+/// The two characters a bracket kind renders as, as `(open, close)`.
 #[cfg(feature = "progress")]
-fn render_one(fitted: &Fitted) -> String {
-    if fitted.clipped {
-        return fitted.segment.text.clone();
-    }
-    match fitted.segment.brackets {
-        None => fitted.segment.text.clone(),
-        Some(Brackets::Round) => format!("({})", fitted.segment.text),
-        Some(Brackets::Square) => format!("[{}]", fitted.segment.text),
+fn bracket_chars(brackets: Brackets) -> (char, char) {
+    match brackets {
+        Brackets::Round => ('(', ')'),
+        Brackets::Square => ('[', ']'),
     }
 }
 
-/// Join `fitted`, decorating each piece that is whole.
+/// Render each segment's text with the brackets its group contributes.
+///
+/// A group runs from the segment that declares it through the next
+/// `bracket_members - 1` segments, so it is resolved against the whole row
+/// rather than one segment at a time. The pair is drawn only when every
+/// member is present and unshortened: a member the clipper shortened, or one
+/// Phase B dropped, takes the pair down with it. A group whose members run
+/// off the end of the row has lost a member the same way and draws nothing.
+///
+/// Pieces carry their own bracket characters, so the widths of the pieces sum
+/// to the width of the row that [`join_pieces`] assembles.
+#[cfg(feature = "progress")]
+fn render_pieces(fitted: &[Fitted]) -> Vec<String> {
+    let mut pieces: Vec<String> = fitted.iter().map(|piece| piece.segment.text.clone()).collect();
+    for start in 0..fitted.len() {
+        let Some(brackets) = fitted[start].segment.brackets else {
+            continue;
+        };
+        let members = fitted[start].segment.bracket_members;
+        let end = start.saturating_add(members.saturating_sub(1));
+        if end >= fitted.len() || fitted[start..=end].iter().any(|piece| piece.clipped) {
+            continue;
+        }
+        let (open, close) = bracket_chars(brackets);
+        pieces[start].insert(0, open);
+        pieces[end].push(close);
+    }
+    pieces
+}
+
+/// Join rendered `pieces` into the row they were fitted into.
 ///
 /// A piece joined [`Direct`](Join::Direct) contributes nothing in front of
 /// it, so a value the caller split across two segments comes back out as the
 /// one string it was. Every other piece is preceded by a single space.
 #[cfg(feature = "progress")]
-fn render(fitted: &[Fitted]) -> String {
+fn join_pieces(fitted: &[Fitted], pieces: &[String]) -> String {
     let mut out = String::new();
-    for (idx, piece) in fitted.iter().map(render_one).enumerate() {
+    for (idx, piece) in pieces.iter().enumerate() {
         if idx > 0 && fitted[idx].segment.join == Join::Space {
             out.push(' ');
         }
-        out.push_str(&piece);
+        out.push_str(piece);
     }
     out
+}
+
+/// Render the row `fitted` currently draws.
+#[cfg(feature = "progress")]
+fn render(fitted: &[Fitted]) -> String {
+    join_pieces(fitted, &render_pieces(fitted))
 }
 
 /// Visible column count of `text`.
@@ -308,9 +387,10 @@ fn visible_len(text: &str) -> usize {
 /// * **Phase A (shrink)**: every elastic segment, from the tail forward, is
 ///   shortened by the overage before the next one yields anything. The
 ///   overage is measured in rendered columns and answered in rendered
-///   columns, so a segment's own brackets count against it; a clipped
-///   segment then gives its brackets up as well, which only ever widens the
-///   gap it just closed. A segment whose clip lands on nothing is dropped on
+///   columns, so a segment's own brackets count against it; a segment that
+///   then gives up its decoration gives back the columns of that decoration
+///   as well, which only ever widens the gap it just closed. A segment whose
+///   clip lands on nothing is dropped on
 ///   the spot rather than left for Phase B: it is about to give its columns
 ///   back, and a segment still holding them would deny the segments ahead of
 ///   it the overage they need to yield at all.
@@ -326,9 +406,10 @@ fn visible_len(text: &str) -> usize {
 /// makes a narrow terminal readable, since a row that gains text as the
 /// window shrinks reads as jitter rather than as a label.
 ///
-/// Decoration is rendered after fitting, so a segment that had to be
-/// shortened loses its brackets. A row never shows a closing bracket whose
-/// opening half was cut away.
+/// Decoration is rendered after fitting, so a group that had to be shortened
+/// loses its brackets. A row never shows a closing bracket whose opening half
+/// was cut away, and a group spanning two segments never shows one end of its
+/// pair without the other.
 ///
 /// # Examples
 ///
@@ -381,6 +462,22 @@ fn visible_len(text: &str) -> usize {
 /// assert_eq!(fit_segments(&segs, 40), "athy.flac [youtube.dQw4w9WgXcQ].link.mkv");
 /// ```
 ///
+/// A bracket group wrapping two segments keeps its pair only while every
+/// member is whole, so a version that shortens takes the tool name's
+/// parentheses down with it rather than leaving one of them on the row:
+///
+/// ```
+/// # use mediapm_utils::progress::{Brackets, Segment, fit_segments};
+/// let segs = vec![
+///     Segment::keep("wf").brackets(Brackets::Square),
+///     Segment::elastic("ffmpeg").spanning_brackets(Brackets::Round, 2),
+///     Segment::elastic_head("v7.1"),
+/// ];
+/// assert_eq!(fit_segments(&segs, 20), "[wf] (ffmpeg v7.1)");
+/// // The version shortened, so the pair is gone rather than half drawn.
+/// assert_eq!(fit_segments(&segs, 15), "[wf] ffmpeg v7");
+/// ```
+///
 /// # Degenerate widths
 ///
 /// Below the width of a single segment the ladder yields an empty string
@@ -409,12 +506,13 @@ pub fn fit_segments(segments: &[Segment], max_width: usize) -> String {
     let mut idx = kept.len();
     while idx > 0 {
         idx -= 1;
-        let current_rendered = render_one(&kept[idx]);
-        if visible_len(&render(&kept)) <= max_width {
+        let pieces = render_pieces(&kept);
+        let row = join_pieces(&kept, &pieces);
+        if visible_len(&row) <= max_width {
             break;
         }
-        let over = visible_len(&render(&kept)) - max_width;
-        let current = visible_len(&current_rendered);
+        let over = visible_len(&row) - max_width;
+        let current = visible_len(&pieces[idx]);
         if kept[idx].segment.shrink == Shrink::Keep {
             continue;
         }

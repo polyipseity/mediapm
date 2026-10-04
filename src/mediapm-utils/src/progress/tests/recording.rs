@@ -1,5 +1,36 @@
 use super::super::inner::*;
 use super::*;
+use crate::progress::BarLabelTruncation;
+
+/// Label whose rendered prefix is a single bracketed marker, so a test can put
+/// a marker on one row and read another row's log without the two mixing.
+struct MarkerLabel(&'static str);
+
+impl BarLabelTruncation for MarkerLabel {
+    fn truncate_prefix(&self, _max_width: usize) -> String {
+        format!("[{}]", self.0)
+    }
+
+    fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
+        String::new()
+    }
+}
+
+/// Box a marker label as the trait object the recording handle takes.
+fn marker(value: &'static str) -> Arc<dyn BarLabelTruncation> {
+    Arc::new(MarkerLabel(value))
+}
+
+/// Count the entries recorded for `bar` whose prefix carries `marker`.
+fn markers_on(entries: &[RecordedProgressOp], bar: BarId, marker: char) -> usize {
+    entries
+        .iter()
+        .filter(|entry| entry.bar == bar)
+        .filter(|entry| {
+            matches!(&entry.op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains(marker))
+        })
+        .count()
+}
 
 // ---- RecordingProgressTracker ---------------------------------------
 
@@ -137,6 +168,69 @@ fn recording_handle_finish_and_clear_warning() {
     h.finish_and_clear();
     h.finish_warning();
     assert_eq!(h.ops(), vec![ProgressOp::FinishAndClear, ProgressOp::FinishWarning]);
+}
+
+/// A run where two rows both emit status markers. Counting across the whole
+/// log gives 3, which cannot say which row emitted what; counting per bar
+/// does. Without bar identity on the op there is no way to write the second
+/// half of this test at all.
+#[test]
+fn markers_can_be_counted_per_bar() {
+    let tracker = RecordingProgressTracker::new();
+    let overall = tracker.add_bar(3, "workflow");
+    let slot = tracker.add_bar(3, "idle");
+
+    overall.set_truncation(&marker("idle"));
+    slot.set_truncation(&marker("W"));
+    slot.set_truncation(&marker("F"));
+    overall.set_truncation(&marker("W"));
+
+    let entries = tracker.recorded();
+
+    assert_eq!(markers_on(&entries, BarId::Index(0), 'W'), 1, "overall row's terminal marker");
+    assert_eq!(markers_on(&entries, BarId::Index(0), 'F'), 0, "no failure on the overall row");
+    assert_eq!(markers_on(&entries, BarId::Index(1), 'W'), 1, "one retry on the worker slot");
+    assert_eq!(markers_on(&entries, BarId::Index(1), 'F'), 1, "failure on the worker slot");
+
+    let combined: usize = entries
+        .iter()
+        .filter(|entry| {
+            matches!(&entry.op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains('W'))
+        })
+        .count();
+    assert_eq!(combined, 2, "the combined count cannot say which row each marker came from");
+}
+
+/// Every bar, including the one whose `AddBar` op opens the log, reports the
+/// index it was handed out under.
+#[test]
+fn add_bar_ops_carry_their_own_index() {
+    let tracker = RecordingProgressTracker::new();
+    let _overall = tracker.add_bar(1, "workflow");
+    let _slot = tracker.add_bar(0, "idle");
+
+    let entries = tracker.recorded();
+    let add_bar_bars: Vec<BarId> = entries
+        .iter()
+        .filter(|e| matches!(e.op, ProgressOp::AddBar { .. }))
+        .map(|e| e.bar)
+        .collect();
+
+    assert_eq!(add_bar_bars, vec![BarId::Index(0), BarId::Index(1)]);
+}
+
+/// A handle built outside a tracker owns its own log and has no index among any
+/// group's bars, so a filter for `Index(0)` cannot pick it up by accident.
+#[test]
+fn standalone_handle_has_no_bar_index() {
+    let handle = RecordingTrackedHandle::new(1);
+    handle.finish_warning();
+
+    let entries = handle.recorded();
+    assert_eq!(handle.bar(), BarId::Standalone);
+    assert_eq!(BarId::Standalone.index(), None);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].bar, BarId::Standalone);
 }
 
 // ---- BarStyle selection (Stage 5 worker-slot generalization) ---------

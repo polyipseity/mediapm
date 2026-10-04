@@ -4,7 +4,7 @@
 //!
 //! * **Recording** — [`RecordingProgressTracker`] tests verify the op-log
 //!   produced by each method call (correct sequence of [`ProgressOp`]
-//!   entries).
+//!   entries) and that each entry names the [`BarId`] it came from.
 //! * **State-mutation** — [`ProgressBarHandle::new`] / [`ProgressBarHandle::with_label`]
 //!   tests verify that underlying [`SharedState`] is updated correctly
 //!   (positions, totals, status, elapsed).
@@ -16,7 +16,9 @@
 //! even when the observation mechanism itself has a bug.
 
 #[allow(unused_imports)]
-pub use super::recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
+pub use super::recording::{
+    BarId, ProgressOp, RecordedProgressOp, RecordingProgressTracker, RecordingTrackedHandle,
+};
 #[allow(unused_imports)]
 pub use super::{
     BarStyle, PrefixComponents, ProgressBarHandle, ProgressScreen, SuffixComponents, TrackStatus,

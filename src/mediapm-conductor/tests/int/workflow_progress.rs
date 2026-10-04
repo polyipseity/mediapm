@@ -13,7 +13,9 @@ use mediapm_conductor::api::RunWorkflowOptions;
 use mediapm_conductor::{ToolKindSpec, ToolRuntime, WorkflowSpec, WorkflowStepSpec};
 use mediapm_utils::progress::BarLabelTruncation;
 use mediapm_utils::progress::SuffixComponents;
-use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
+use mediapm_utils::progress::recording::{
+    BarId, ProgressOp, RecordedProgressOp, RecordingProgressTracker,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -170,11 +172,13 @@ fn count_dispatches(ops: &[ProgressOp]) -> usize {
         .count()
 }
 
-/// Counts `W` markers, on a worker slot or on the overall row.
+/// Counts `W` markers among the ops of a single row.
 ///
 /// A slot carries one per non-final attempt, and the overall row carries the
-/// single terminal `[W]` the finish arm installs, so a run that ends in
-/// failure always contributes one here.
+/// single terminal `[W]` the finish arm installs, so the slice passed in has
+/// to be one row's ops. Take them from [`ops_on_worker_slots`] or
+/// [`ops_on_overall`]; a slice holding both rows cannot say which produced a
+/// given marker.
 fn count_markers_w(ops: &[ProgressOp]) -> usize {
     ops.iter()
         .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains('W')))
@@ -186,6 +190,37 @@ fn count_markers_f(ops: &[ProgressOp]) -> usize {
     ops.iter()
         .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains('F')))
         .count()
+}
+
+/// Identity of the pinned overall row.
+///
+/// The screen opens with `RecordingProgressTracker::with_overall("workflow", 1)`,
+/// so the overall row is the one bar whose `AddBar` op names `workflow`.
+/// Reading that op instead of hardcoding an index is what keeps the per-row
+/// helpers pointing at the same row after a bar is added ahead of it.
+fn overall_bar(recorded: &[RecordedProgressOp]) -> BarId {
+    recorded
+        .iter()
+        .find(|entry| matches!(&entry.op, ProgressOp::AddBar { label, .. } if label == "workflow"))
+        .map(|entry| entry.bar)
+        .expect("tracker opens every screen with an overall row")
+}
+
+/// Ops recorded on the pinned overall row.
+fn ops_on_overall(recorded: &[RecordedProgressOp]) -> Vec<ProgressOp> {
+    let bar = overall_bar(recorded);
+    recorded.iter().filter(|entry| entry.bar == bar).map(|entry| entry.op.clone()).collect()
+}
+
+/// Ops recorded on the worker slots, with the pinned overall row left out.
+///
+/// A slot carries a `[W]` per non-final attempt and the overall row carries the
+/// single terminal `[W]` the finish arm installs, so a count taken over both
+/// rows cannot say which one produced it. Splitting them here is what lets a
+/// test assert the slot's retry count on its own.
+fn ops_on_worker_slots(recorded: &[RecordedProgressOp]) -> Vec<ProgressOp> {
+    let overall = overall_bar(recorded);
+    recorded.iter().filter(|entry| entry.bar != overall).map(|entry| entry.op.clone()).collect()
 }
 
 /// Counts all `advance` operations (step bars + overall bar).
@@ -672,13 +707,28 @@ async fn regression_worker_invariant_holds() {
     assert_eq!(summary.failed_steps, 1);
 
     let ops = tracker.ops();
+    let recorded = tracker.recorded();
     assert_eq!(count_dispatches(&ops), 3, "step dispatched once per attempt (max_retries + 1)");
     assert_eq!(
-        count_markers_w(&ops),
-        3,
-        "pending-retry marker per non-final attempt, plus the overall row's terminal one"
+        count_markers_w(&ops_on_worker_slots(&recorded)),
+        2,
+        "one pending-retry marker per non-final attempt on the worker slot"
     );
-    assert_eq!(count_markers_f(&ops), 1, "final-failure marker on last attempt");
+    assert_eq!(
+        count_markers_w(&ops_on_overall(&recorded)),
+        1,
+        "the pinned overall row's single terminal marker, counted on its own"
+    );
+    assert_eq!(
+        count_markers_f(&ops_on_worker_slots(&recorded)),
+        1,
+        "final-failure marker on the last attempt"
+    );
+    assert_eq!(
+        count_markers_f(&ops_on_overall(&recorded)),
+        0,
+        "the overall row does not carry the failure marker"
+    );
     assert_eq!(count_advances(&ops), 4, "3 step-bar advances + 1 overall advance");
 }
 
@@ -706,7 +756,17 @@ async fn regression_overall_advances_only_on_final_terminal() {
     assert_eq!(summary.failed_steps, 0);
 
     let ops = tracker.ops();
-    assert!(count_markers_w(&ops) >= 1, "pending-retry marker on failed attempt");
+    let recorded = tracker.recorded();
+    assert_eq!(
+        count_markers_w(&ops_on_worker_slots(&recorded)),
+        1,
+        "one pending-retry marker on the worker slot"
+    );
+    assert_eq!(
+        count_markers_w(&ops_on_overall(&recorded)),
+        0,
+        "the run succeeds, so the overall row ends clean"
+    );
     assert_eq!(count_markers_f(&ops), 0, "no final-failure marker on success");
     assert_eq!(count_advances(&ops), 3, "2 step-bar advances + 1 overall advance");
 }
@@ -734,7 +794,17 @@ async fn regression_pending_retry_trends_to_zero() {
     assert_eq!(summary.failed_steps, 0);
 
     let ops = tracker.ops();
-    assert!(count_markers_w(&ops) >= 1, "pending-retry marker on failed attempt");
+    let recorded = tracker.recorded();
+    assert_eq!(
+        count_markers_w(&ops_on_worker_slots(&recorded)),
+        1,
+        "one pending-retry marker on the worker slot"
+    );
+    assert_eq!(
+        count_markers_w(&ops_on_overall(&recorded)),
+        0,
+        "the overall row ends clean once the retry succeeds"
+    );
     assert_eq!(count_markers_f(&ops), 0, "no final-failure marker after success");
 }
 
@@ -761,7 +831,17 @@ async fn retry_then_succeed_progress_ops() {
     assert_eq!(summary.failed_steps, 0);
 
     let ops = tracker.ops();
-    assert!(count_markers_w(&ops) >= 1, "pending-retry marker on failed attempt");
+    let recorded = tracker.recorded();
+    assert_eq!(
+        count_markers_w(&ops_on_worker_slots(&recorded)),
+        1,
+        "one pending-retry marker on the worker slot"
+    );
+    assert_eq!(
+        count_markers_w(&ops_on_overall(&recorded)),
+        0,
+        "the run succeeds, so the overall row ends clean"
+    );
     assert_eq!(count_markers_f(&ops), 0, "no final-failure marker on success");
     assert_eq!(count_dispatches(&ops), 2, "dispatched initial + one retry");
 }
@@ -789,13 +869,28 @@ async fn retry_exhausted_progress_ops() {
     assert_eq!(summary.failed_steps, 1);
 
     let ops = tracker.ops();
+    let recorded = tracker.recorded();
     assert_eq!(count_dispatches(&ops), 3, "dispatched initial + two retries");
     assert_eq!(
-        count_markers_w(&ops),
-        3,
-        "pending-retry marker per non-final attempt, plus the overall row's terminal one"
+        count_markers_w(&ops_on_worker_slots(&recorded)),
+        2,
+        "one pending-retry marker per non-final attempt on the worker slot"
     );
-    assert_eq!(count_markers_f(&ops), 1, "final-failure marker on last attempt");
+    assert_eq!(
+        count_markers_w(&ops_on_overall(&recorded)),
+        1,
+        "the pinned overall row's single terminal marker, counted on its own"
+    );
+    assert_eq!(
+        count_markers_f(&ops_on_worker_slots(&recorded)),
+        1,
+        "final-failure marker on the last attempt"
+    );
+    assert_eq!(
+        count_markers_f(&ops_on_overall(&recorded)),
+        0,
+        "the overall row does not carry the failure marker"
+    );
 }
 
 /// A broken step with `max_retries: 0` is dispatched exactly once and fails
@@ -821,13 +916,28 @@ async fn no_retry_when_max_retries_zero() {
     assert_eq!(summary.failed_steps, 1);
 
     let ops = tracker.ops();
+    let recorded = tracker.recorded();
     assert_eq!(count_dispatches(&ops), 1, "no retry when max_retries is 0");
     assert_eq!(
-        count_markers_w(&ops),
-        1,
-        "no pending-retry marker on the slot, only the overall row's terminal one"
+        count_markers_w(&ops_on_worker_slots(&recorded)),
+        0,
+        "the only attempt is final, so the slot carries no pending-retry marker"
     );
-    assert_eq!(count_markers_f(&ops), 1, "final-failure marker on the only attempt");
+    assert_eq!(
+        count_markers_w(&ops_on_overall(&recorded)),
+        1,
+        "the pinned overall row's single terminal marker"
+    );
+    assert_eq!(
+        count_markers_f(&ops_on_worker_slots(&recorded)),
+        1,
+        "final-failure marker on the only attempt"
+    );
+    assert_eq!(
+        count_markers_f(&ops_on_overall(&recorded)),
+        0,
+        "the overall row does not carry the failure marker"
+    );
 }
 
 /// An impure broken step with `max_retries: 2` is NOT retried when
@@ -863,13 +973,28 @@ async fn impure_no_retry_without_flag() {
     assert_eq!(summary.failed_steps, 1);
 
     let ops = tracker.ops();
+    let recorded = tracker.recorded();
     assert_eq!(count_dispatches(&ops), 1, "impure step not retried without flag");
     assert_eq!(
-        count_markers_w(&ops),
-        1,
-        "no pending-retry marker on the slot, only the overall row's terminal one"
+        count_markers_w(&ops_on_worker_slots(&recorded)),
+        0,
+        "the only attempt is final, so the slot carries no pending-retry marker"
     );
-    assert_eq!(count_markers_f(&ops), 1, "final-failure marker on the only attempt");
+    assert_eq!(
+        count_markers_w(&ops_on_overall(&recorded)),
+        1,
+        "the pinned overall row's single terminal marker"
+    );
+    assert_eq!(
+        count_markers_f(&ops_on_worker_slots(&recorded)),
+        1,
+        "final-failure marker on the only attempt"
+    );
+    assert_eq!(
+        count_markers_f(&ops_on_overall(&recorded)),
+        0,
+        "the overall row does not carry the failure marker"
+    );
 }
 
 /// The overall workflow bar's suffix is a comma-joined status list of

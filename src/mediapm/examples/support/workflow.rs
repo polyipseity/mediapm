@@ -15,30 +15,34 @@
 //! from when the seed was the ceiling and an active row read `[active]` and
 //! nothing else.
 //!
-//! Where the labels give way, measured on 2026-10-03 by rendering this screen
+//! Where the labels give way, measured on 2026-10-04 by rendering this screen
 //! at every width from 8 to 130 and reading the shape each row's prefix takes.
 //!
 //! The two labels on this screen give their columns up from opposite ends. A
 //! worker row shortens its tool name from the front and keeps the tail; on the
-//! baseline screen that name is whole at 41 columns, reads `ffmpeg)` at 40, and
-//! at 37 the `yt-dlp` row is already down to `dlp)`. Below 37 the tool is gone
-//! and the row reads `default s3 [active]` from width 32, and at 31 the activity
-//! tag goes as well. The longest of the managed tool names, `media-tagger`,
-//! reaches its whole `(media-tagger)` at 47 on the `dense` screen, which is where
-//! the worker rows run a whole pool at once. A step row shortens its version from
-//! the end and keeps the head, one column at a time: the version reads `7` at 34,
-//! `7.` at 35 and `7.1` whole at 36, by which time the tool name beside it has
-//! been whole since 32.
+//! baseline screen the bare `ffmpeg` is whole from 29, its parentheses come back
+//! at 40, and the row gives up that decoration before it cuts the name at all.
+//! The `yt-dlp` row beside it reads `dlp` at 35 and `t-dlp` at 37. Below that
+//! the name is gone and the row reads `default s3 [active]` at 31 and 32, and at
+//! 30 the activity tag goes as well. The longest of the managed tool names,
+//! `media-tagger`, reaches its whole `(media-tagger)` at 46 on the `dense`
+//! screen, which is where the worker rows run a whole pool at once. A step row
+//! shortens its version from the end and keeps the head, one column at a time:
+//! the version reads `v` at 32, `v7` at 33, `v7.` at 34 and `v7.1` whole at 35,
+//! by which time the tool name beside it has been whole since 29. The
+//! parentheses round those two come back a column later, at 36, because the pair
+//! belongs to both fields and neither end of it draws until both are whole.
 //!
 //! The `states` scenario pushes both labels past the point where they fit. The
-//! worker's twenty-eight column tool name is never whole, and reads `flac)` at
-//! 37 and `to-flac)` at 40. The step bar's forty-one column version starts
-//! shrinking at 33 and stops at `autobuild-2025-1` on width 48, because the
-//! prefix slot caps at forty columns whatever the terminal is. The yield order
-//! shows on the other step row: its tool name is the thirty-four column
-//! `user-declared-lossless-transcode`, and the version beside it never renders at
-//! any width at all, because a trailing segment is dropped whole before the
-//! segment ahead of it is shortened.
+//! worker's twenty-eight column tool name is never whole, and reads `flac` at 35
+//! and `to-flac` at 38. The step bar's forty-one column version starts shrinking
+//! at 31 and stops at `autobuild-2025-10` on width 47, because the prefix slot
+//! caps at forty columns whatever the terminal is, and the pair round the tool
+//! name never comes back either, since a group with a shortened member draws no
+//! brackets. The yield order shows on the other step row: its tool name is the
+//! thirty-two column `user-declared-lossless-transcode`, and the version beside it
+//! never renders at any width at all, because a trailing segment is dropped whole
+//! before the segment ahead of it is shortened.
 //!
 //! Below the fill crossing the rows give up their timing to keep their label,
 //! and a row whose label does not fit either keeps the timing instead, so the
@@ -299,7 +303,7 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
         workflow_id: "default".to_string(),
         step_id: "s3".to_string(),
         tool: "ffmpeg".to_string(),
-        version: "7.1".to_string(),
+        version: "v7.1".to_string(),
         completed: "1".to_string(),
         total: STEP_OUTPUTS.to_string(),
     }));
@@ -462,11 +466,12 @@ fn render_dense(config: ScreenConfig) -> String {
 /// The step rows are split the other way round. One carries ffmpeg's composite
 /// human-readable version, forty-one columns wide, which is wider than the prefix
 /// slot's own ceiling of forty, so the head-keeping shrink runs at every width the
-/// harness accepts and the version never renders whole. The other carries sd's
-/// `v1.10.0` beside a thirty-four column tool name, and the version never renders
-/// there either: it trails the tool name, so it is dropped whole before the name
-/// ahead of it is shortened, and what is left on the row is the front clip
-/// working on the name.
+/// harness accepts and the version never renders whole, which also keeps the
+/// parentheses round the tool name off the row. The other carries sd's `v1.10.0`
+/// beside a thirty-two column tool name, and the version never renders there
+/// either: it trails the tool name, so it is dropped whole before the name ahead of
+/// it is shortened, and what is left on the row is the front clip working on the
+/// name.
 #[must_use]
 fn render_states(config: ScreenConfig) -> String {
     /// Slots the pool holds.

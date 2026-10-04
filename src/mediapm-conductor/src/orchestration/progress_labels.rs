@@ -28,10 +28,11 @@ use mediapm_utils::progress::{
 /// Segments are ordered most important first and yield from the tail. The
 /// prefix ends with the version, so the version is what width pressure reaches
 /// for first: it gives columns back from its end, and it drops whole before
-/// the `tool` name ahead of it is shortened at all. Once neither can shrink
-/// further the identifiers drop, and the status marker with them. The suffix
-/// leads with the tally, then `elapsed`, `rate`, `eta`, and an elastic
-/// `custom`.
+/// the `tool` name ahead of it is shortened at all. The `tool` name's
+/// parentheses wrap the version too when there is one, so the pair draws only
+/// once both fields are whole. Once neither can shrink further the identifiers
+/// drop, and the status marker with them. The suffix leads with the tally,
+/// then `elapsed`, `rate`, `eta`, and an elastic `custom`.
 ///
 /// The order is the whole mechanism. `fit_segments` drops from the tail
 /// unconditionally, so a field survives by its position in the list.
@@ -45,24 +46,27 @@ pub struct StepBarLabel {
     pub workflow_id: String,
     /// Step identifier within the workflow, e.g. `"s3"`.
     pub step_id: String,
-    /// Conductor tool name, rendered parenthesized as `(ffmpeg)`. Elastic,
-    /// so a narrow row shortens the name from its front before dropping it.
-    /// The parentheses are the segment's decoration rather than part of its
-    /// text, so a row that could not fit them renders the bare name and never
-    /// a closing parenthesis whose opening half was cut away.
+    /// Conductor tool name, rendered parenthesized beside the version as
+    /// `(ffmpeg v7.1)`, or on its own as `(ffmpeg)` when there is no version.
+    /// Elastic, so a narrow row shortens the name from its front before
+    /// dropping it. The parentheses are the group's decoration rather than
+    /// part of any text, so a row that could not fit them renders the bare
+    /// name and never a closing parenthesis whose opening half was cut away.
     pub tool: String,
-    /// Tool version, rendered verbatim as `7.1`, with no brackets. The only
-    /// head-keeping prefix segment: the columns it gives back come off the
-    /// end, so a narrowed row reads `7.` instead of a tail that names
+    /// Tool version, rendered verbatim as `v7.1`, with no brackets of its
+    /// own: it is the second member of the tool name's bracket group, so the
+    /// parentheses around the two come from the name and not from here. The
+    /// only head-keeping prefix segment: the columns it gives back come off
+    /// the end, so a narrowed row reads `v7.` instead of a tail that names
     /// nothing. It trails the tool name, so it yields before the name is
-    /// touched.
+    /// touched, and a version that had to shorten takes the pair down with it.
     ///
     /// Reachable from production and empty there. The coordinator builds this
     /// label for the overall workflow bar and has no versioned tool field to
-    /// read, so it leaves the string empty, the segment is dropped, and the
-    /// row reads `default s3 (ffmpeg)`. The workflow example is the only
-    /// caller that fills it, and so the only screen where `Shrink::Head` has
-    /// anything to cut.
+    /// read, so it leaves the string empty, the group is the single tool
+    /// name, and the row reads `default s3 (ffmpeg)`. The workflow example is
+    /// the only caller that fills it, and so the only screen where
+    /// `Shrink::Head` has anything to cut.
     pub version: String,
     /// Completed count for the progress tally, rendered as
     /// `{completed}/{total}` in the suffix. Names belong in the prefix and
@@ -86,9 +90,13 @@ impl StepBarLabel {
     /// The identifiers are `Keep` rather than `Elastic` because clipping them
     /// destroys what identifies them: `default` clipped to `ult` names no
     /// workflow. The version is the exception, and it is the one head-keeping
-    /// segment, because a version numbers itself from the left: `7.1` at two
-    /// columns reads `7.`, where a clip that kept the tail could yield nothing
+    /// segment, because a version numbers itself from the left: `v7.1` at two
+    /// columns reads `v7`, where a clip that kept the tail could yield nothing
     /// at all, since the value holds no boundary to cut after.
+    ///
+    /// The tool name's parentheses wrap the name and the version together when
+    /// there is a version to wrap, and the name alone when there is not, so
+    /// the group is the one-member case the rest of the tree already draws.
     fn prefix_segments(&self) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !self.status_marker.is_empty() {
@@ -101,7 +109,10 @@ impl StepBarLabel {
             segs.push(Segment::keep(self.step_id.clone()));
         }
         if !self.tool.is_empty() {
-            segs.push(Segment::elastic(self.tool.clone()).brackets(Brackets::Round));
+            let group = if self.version.is_empty() { 1 } else { 2 };
+            segs.push(
+                Segment::elastic(self.tool.clone()).spanning_brackets(Brackets::Round, group),
+            );
         }
         if !self.version.is_empty() {
             segs.push(Segment::elastic_head(self.version.clone()));

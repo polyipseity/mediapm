@@ -75,9 +75,13 @@ fn worker_label_idle_renders_its_activity_marker() {
 fn step_label_keeps_the_version_while_the_tool_name_is_whole() {
     // The version trails the tool name, so it is the first segment to yield
     // and the tool name the last to be touched. At 18 the version has given
-    // back two of its five columns and reads `1.`, while the parenthesised
-    // tool name still renders in full. That is the order tool-sync already
-    // uses, where its own `[res]` tag goes before its tool name is clipped.
+    // back three of its five columns and reads `1.2`, while the tool name
+    // still renders in full. That is the order tool-sync already uses, where
+    // its own `[res]` tag goes before its tool name is clipped.
+    //
+    // The name's parentheses wrap the name and the version together, so the
+    // version shortening takes the pair down with it: the row shows the whole
+    // name rather than half a pair around it.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
@@ -88,13 +92,58 @@ fn step_label_keeps_the_version_while_the_tool_name_is_whole() {
         total: "4".into(),
     };
     let wide = label.truncate_prefix(80);
-    assert_eq!(wide, "wf s1 (echo@v1) 1.2.3");
+    assert_eq!(wide, "wf s1 (echo@v1 1.2.3)");
 
     // The width-80 case fits whole, so on its own it would still pass if
     // truncation were removed.
     let tight = label.truncate_prefix(18);
-    assert_eq!(tight, "wf s1 (echo@v1) 1.");
-    assert!(tight.contains("(echo@v1)"), "tool name should be untouched at 18: {tight:?}");
+    assert_eq!(tight, "wf s1 echo@v1 1.2");
+    assert!(tight.contains("echo@v1"), "tool name should be untouched at 18: {tight:?}");
+    assert!(!tight.contains('('), "half a bracket group outlived its version: {tight:?}");
+}
+
+#[test]
+fn step_label_brackets_the_version_inside_the_tool_name_pair() {
+    // One pair of round brackets around the tool name and the version, so a
+    // reader sees `(ffmpeg v7.1)` as one thing rather than a name and a
+    // figure that happen to sit side by side.
+    let label = StepBarLabel {
+        status_marker: String::new(),
+        workflow_id: "default".into(),
+        step_id: "s3".into(),
+        tool: "ffmpeg".into(),
+        version: "v7.1".into(),
+        completed: String::new(),
+        total: String::new(),
+    };
+    let wide = label.truncate_prefix(40);
+    assert_eq!(wide, "default s3 (ffmpeg v7.1)");
+    assert_eq!(wide.matches('(').count(), 1, "the group needs one opening bracket: {wide:?}");
+    assert_eq!(wide.matches(')').count(), 1, "the group needs one closing bracket: {wide:?}");
+
+    // Narrow enough to shorten the version, the pair goes with it. Half a
+    // group reads as a bracket nothing opened or nothing closed, which is the
+    // fault `label_brackets.rs` sweeps every width for.
+    let narrow = label.truncate_prefix(22);
+    assert_eq!(narrow, "default s3 ffmpeg v7.");
+    assert!(!narrow.contains('('), "opening bracket outlived the version: {narrow:?}");
+    assert!(!narrow.contains(')'), "closing bracket outlived the version: {narrow:?}");
+}
+
+#[test]
+fn step_label_brackets_a_tool_name_that_has_no_version() {
+    // With no version to wrap, the tool name is the whole group, which is the
+    // one-member case every other bracketed segment in the tree draws.
+    let label = StepBarLabel {
+        status_marker: String::new(),
+        workflow_id: "default".into(),
+        step_id: "s3".into(),
+        tool: "media-tagger".into(),
+        version: String::new(),
+        completed: String::new(),
+        total: String::new(),
+    };
+    assert_eq!(label.truncate_prefix(40), "default s3 (media-tagger)");
 }
 
 /// Visible width of the leading `[F] wf s1` head a step bar shares with a
@@ -128,7 +177,9 @@ fn step_label_drops_the_version_before_touching_the_tool_name() {
     // The version runs out before the tool name does. It is the tail segment,
     // so once it has nothing left to give it is dropped rather than rendered
     // as a fragment, and the row falls back to the identifiers and the tool
-    // name. Only past that width is the tool name itself shortened.
+    // name. Only past that width is the tool name itself shortened. The pair
+    // goes with the version, since a bracket group that lost a member draws
+    // no brackets at all.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
@@ -138,11 +189,10 @@ fn step_label_drops_the_version_before_touching_the_tool_name() {
         completed: "1".into(),
         total: "4".into(),
     };
-    assert_eq!(label.truncate_prefix(16), "wf s1 (echo@v1)");
-    // One column narrower than the bracketed name, the name is whole and
-    // still only the parentheses go: decoration is what a row gives up
-    // before it cuts a name in half.
-    assert_eq!(label.truncate_prefix(14), "wf s1 echo@v1");
+    assert_eq!(label.truncate_prefix(15), "wf s1 echo@v1");
+    assert_eq!(label.truncate_prefix(13), "wf s1 echo@v1");
+    // One column narrower than the bare name, the name clips from its front.
+    assert_eq!(label.truncate_prefix(12), "wf s1 cho@v1");
 }
 
 #[test]
@@ -213,6 +263,10 @@ fn step_label_clips_a_long_tool_name_after_the_version_is_gone() {
     // between them is the tool name and nothing else. A name long enough to
     // need the room is clipped from its front rather than dropped whole,
     // which keeps the tail that says which tool it was.
+    //
+    // The name's parentheses wrap the name and the version together, so the
+    // dropped version takes them too. What is left is the name on its own,
+    // which is the same shape a name has when it clips.
     let label = StepBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
@@ -222,15 +276,15 @@ fn step_label_clips_a_long_tool_name_after_the_version_is_gone() {
         completed: "1".into(),
         total: "4".into(),
     };
-    assert_eq!(label.truncate_prefix(32), "wf s1 (a-very-long-tool-name@v1)");
+    assert_eq!(label.truncate_prefix(32), "wf s1 a-very-long-tool-name@v1");
 
-    // Two columns narrower than the bracketed name, so the whole name renders
-    // and only its parentheses are gone. The name is never shown cut with a
-    // bracket left over: the clipper is handed the name, not `(name)`.
-    let tight = label.truncate_prefix(30);
-    assert_eq!(tight, "wf s1 a-very-long-tool-name@v1");
+    // One column narrower than the bare name, so the name clips from its
+    // front. A name is never shown cut with a bracket left over: the
+    // clipper is handed the name, not `(name)`.
+    let tight = label.truncate_prefix(29);
+    assert_eq!(tight, "wf s1 -very-long-tool-name@v1");
     assert!(!tight.contains(')'), "a closing parenthesis outlived its name: {tight:?}");
-    assert!(!tight.contains("9.9.9"), "version should be gone at 30: {tight:?}");
+    assert!(!tight.contains("9.9.9"), "version should be gone at 29: {tight:?}");
 }
 
 #[test]

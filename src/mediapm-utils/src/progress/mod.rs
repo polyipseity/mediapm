@@ -56,11 +56,15 @@ pub use truncation::{
 /// Recording progress operations for test assertions.
 ///
 /// Provides [`RecordingProgressTracker`] and [`RecordingTrackedHandle`], which
-/// record all operations into a shared log without any visual output.
+/// record all operations into a shared log without any visual output, and
+/// [`BarId`] plus [`RecordedProgressOp`], which carry the bar an operation came
+/// from.
 #[cfg(feature = "progress")]
 pub mod recording;
 #[cfg(feature = "progress")]
-pub use recording::{ProgressOp, RecordingProgressTracker, RecordingTrackedHandle};
+pub use recording::{
+    BarId, ProgressOp, RecordedProgressOp, RecordingProgressTracker, RecordingTrackedHandle,
+};
 
 // Trait impls for recording types
 

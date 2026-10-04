@@ -202,6 +202,76 @@ fn a_clipped_bracket_id_leaves_no_stray_bracket() {
     }
 }
 
+/// A bracket group spanning two segments renders whole or not at all.
+///
+/// The step row wraps its tool name and the version beside it in one pair of
+/// parentheses, so the opening bracket belongs to the name and the closing one
+/// to the version. A member that shortens takes the pair down with it: a row
+/// showing `(ffmpeg` or `ffmpeg v7.` has a bracket whose partner is missing,
+/// and the partner is exactly what makes a bracket readable.
+#[test]
+fn a_bracket_group_over_two_segments_is_all_or_nothing() {
+    let segs = vec![
+        Segment::keep("wf").brackets(Brackets::Square),
+        Segment::elastic("ffmpeg").spanning_brackets(Brackets::Round, 2),
+        Segment::elastic_head("v7.1"),
+    ];
+    assert_eq!(fit_segments(&segs, 20), "[wf] (ffmpeg v7.1)");
+    // Two columns short of the bracketed group, the version has given two
+    // of its four columns back and the pair goes with it.
+    assert_eq!(fit_segments(&segs, 15), "[wf] ffmpeg v7");
+    // A group that lost a member to the drop phase has lost it the same way:
+    // at 13 the version is gone whole and the name keeps no parentheses.
+    assert_eq!(fit_segments(&segs, 13), "[wf] ffmpeg");
+    for width in 4..=20 {
+        let out = fit_segments(&segs, width);
+        let opens = out.matches('(').count();
+        assert_eq!(
+            opens,
+            out.matches(')').count(),
+            "half a bracket group at width {width}: {out:?}"
+        );
+        assert!(opens <= 1, "two bracket groups at width {width}: {out:?}");
+        assert!(out.chars().count() <= width, "overflowed at width {width}: {out:?}");
+    }
+}
+
+/// The one-member group is the shape every other bracketed segment draws.
+///
+/// `brackets` is `spanning_brackets` with a single member, so the pair lands on
+/// one segment whether the caller says so or not. Anything that renders the
+/// same at one member has to keep rendering the same at two.
+#[test]
+fn a_one_member_group_renders_the_single_segment_shape() {
+    let names = ["ffmpeg", "media-conductor-builtin-archive", "a"];
+    for brackets in [Brackets::Round, Brackets::Square] {
+        for name in names {
+            let single = vec![Segment::keep("wf"), Segment::elastic(name).brackets(brackets)];
+            let group =
+                vec![Segment::keep("wf"), Segment::elastic(name).spanning_brackets(brackets, 1)];
+            for width in 0..=40 {
+                assert_eq!(
+                    fit_segments(&single, width),
+                    fit_segments(&group, width),
+                    "{name:?} at width {width}"
+                );
+            }
+        }
+    }
+}
+
+/// A group that names fewer members than it has wraps the members it has.
+///
+/// A `members` below one is a caller mistake rather than a rendering choice,
+/// and the narrow reading of it is the single-segment group every other call
+/// site already draws.
+#[test]
+fn a_group_below_one_member_is_a_single_segment() {
+    let segs =
+        vec![Segment::keep("wf"), Segment::elastic("ffmpeg").spanning_brackets(Brackets::Round, 0)];
+    assert_eq!(fit_segments(&segs, 12), "wf (ffmpeg)");
+}
+
 #[test]
 fn front_tail_keeps_the_tail() {
     assert_eq!(front_tail("abcdef ghij", 5), " ghij");
