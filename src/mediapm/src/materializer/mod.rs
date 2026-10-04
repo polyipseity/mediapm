@@ -366,6 +366,44 @@ fn sanitize_and_validate_hierarchy_paths(
         .collect()
 }
 
+/// Open the sub-bar for one extracted folder variant and label it.
+///
+/// The parent row has already entered [`MaterializationPhase::Write`] by the
+/// time this runs, and both rows render that one phase through
+/// [`MaterializationPhase::tag`], so the parent and the rows under it carry
+/// the same word while the folder is being written. The seed label names the
+/// tag too, since the seed is what a row shows before its first render, and a
+/// seed carrying its own literal is a second answer to a question
+/// [`MaterializationPhase::tag`] already answers.
+///
+/// `relative_path` is the folder's own path, so the label carries the folder
+/// as its entry and the variant as `file_name`; that is what lets a member
+/// row name itself beside the entry it belongs to.
+///
+/// Returns `None` when the caller has no screen, which is the shape every use
+/// of the handle already reads: it is advanced and finished conditionally.
+fn add_variant_sub_bar(
+    progress_group: Option<&Arc<dyn ProgressScreenApi + Send + Sync>>,
+    relative_path: &str,
+    variant_name: &str,
+    member_count: usize,
+) -> Option<Arc<dyn ProgressBarApi>> {
+    let pg = progress_group?;
+    let (entry_path, entry_name) = split_entry_path(relative_path);
+    let bar = pg.add_bar(
+        member_count as u64,
+        &format!("{variant_name} [{}]", MaterializationPhase::Write.tag()),
+    );
+    bar.set_truncation(Arc::new(MaterializationBarLabel {
+        entry_path: entry_path.to_string(),
+        entry_name: entry_name.to_string(),
+        file_name: variant_name.to_string(),
+        phase: Some(MaterializationPhase::Write),
+        ..Default::default()
+    }));
+    Some(bar)
+}
+
 /// Drives one hierarchy entry's phase bar from the phases its kind declares.
 ///
 /// The bar opens on [`HierarchyEntryKind::first_phase`] and every later phase
@@ -396,11 +434,13 @@ impl<'a> EntryPhaseBar<'a> {
         let (entry_path, entry_name) = split_entry_path(relative_path);
         let phase = kind.first_phase();
         let handle = progress_group.map(|pg| {
-            // The bar totals three while an entry bar advances once, because
-            // the arm advances it after its work returns rather than per
-            // phase. That count is unchanged here; only the tag follows the
-            // kind's declaration.
-            let bar = pg.add_bar(3, &format!("{relative_path} [{}]", phase.tag()));
+            // The total is the number of advances the row will see, and an
+            // entry arm advances once after its work returns, so a finished
+            // entry reads 1/1 whether it succeeded, warned or failed. The
+            // phases the row passed through are on the tag, not in the
+            // fraction, and the outcome rides on the colour and the status
+            // marker the arm installs at the finish.
+            let bar = pg.add_bar(1, &format!("{relative_path} [{}]", phase.tag()));
             bar.set_truncation(Arc::new(MaterializationBarLabel {
                 entry_path: entry_path.to_string(),
                 entry_name: entry_name.to_string(),
@@ -842,18 +882,12 @@ async fn materialize_media_folder_entry(
                     "media '{media_id}' variant '{variant_name}': ZIP archive contained zero extractable files"
                 ));
             }
-            let (sub_path, sub_name) = split_entry_path(relative_path);
-            let file_bar = progress_group.clone().map(|pg| {
-                let sub = pg.add_bar(extracted.len() as u64, &format!("{variant_name} [wrt]"));
-                sub.set_truncation(Arc::new(MaterializationBarLabel {
-                    entry_path: sub_path.to_string(),
-                    entry_name: sub_name.to_string(),
-                    file_name: variant_name.clone(),
-                    phase: Some(MaterializationPhase::Write),
-                    ..Default::default()
-                }));
-                sub
-            });
+            let file_bar = add_variant_sub_bar(
+                progress_group.as_ref(),
+                relative_path,
+                variant_name,
+                extracted.len(),
+            );
             for (file_rel_path, content) in extracted {
                 let file_rel_path = normalize_yt_dlp_sandbox_zip_member_path(&file_rel_path);
                 // The extracted member name is untrusted archive data, and
@@ -1501,7 +1535,7 @@ mod tests {
                 ProgressOp::SetTotal { total: 1 },
                 ProgressOp::SetTruncation { prefix: "materializing".into(), suffix: String::new() },
                 // Per-entry bar: staging.
-                ProgressOp::AddBar { total: 3, label: "test_file [stg]".into() },
+                ProgressOp::AddBar { total: 1, label: "test_file [stg]".into() },
                 ProgressOp::SetTruncation {
                     prefix: "test_file [stg]".into(),
                     suffix: String::new(),
@@ -1772,9 +1806,10 @@ mod tests {
     ///
     /// The variant here is a plain file rather than a ZIP, so no `[wrt]`
     /// sub-bar opens: the workspace `zip` dependency carries no write feature,
-    /// so this test cannot build an archive. A folder row and its sub-bars
-    /// together are drawn by the `mediapm_progress_materialize` transcripts,
-    /// which is where the parent agreeing with its children is pinned.
+    /// so this test cannot build an archive. The agreement between a folder
+    /// row and the sub-bars under it is pinned where both can be built,
+    /// in `a_folder_row_and_its_variant_sub_bar_render_the_same_phase`, and
+    /// drawn together by the `mediapm_progress_materialize` transcripts.
     #[tokio::test]
     async fn a_folder_row_reaches_wrt_and_a_playlist_row_reaches_cmt() {
         let root = mediapm_utils::temp::artifact_dir().unwrap();
@@ -1839,6 +1874,298 @@ mod tests {
             [Some("stg"), Some("cmt")],
             "a playlist reaches [cmt] at the write; got {ops:?}",
         );
+    }
+
+    /// A folder row and the sub-bar under it render the same phase word.
+    ///
+    /// Both labels come from the real constructors the folder arm uses:
+    /// [`EntryPhaseBar`] for the parent and [`add_variant_sub_bar`] for the
+    /// member row, both recorded through a [`RecordingProgressTracker`] so
+    /// what is asserted is what the screen receives. Nothing here builds a
+    /// label by hand, so the test cannot pass while the arm renders something
+    /// else.
+    ///
+    /// The agreement is the point. A folder row that sat on `[stg]` under
+    /// children reading `[wrt]`, or the reverse, would describe the same work
+    /// two different ways in one column, and nothing else on the screen
+    /// compares the two rows.
+    #[test]
+    fn a_folder_row_and_its_variant_sub_bar_render_the_same_phase() {
+        let tracker = RecordingProgressTracker::new();
+        let mut parent = EntryPhaseBar::create(
+            Some(Arc::new(tracker.clone())),
+            "album",
+            HierarchyEntryKind::MediaFolder,
+        );
+        parent.enter_once(MaterializationPhase::Write);
+        let screen: Arc<dyn ProgressScreenApi + Send + Sync> = Arc::new(tracker.clone());
+        add_variant_sub_bar(Some(&screen), "album", "links", 3)
+            .expect("a screen is supplied, so the sub-bar opens");
+
+        let ops = tracker.ops();
+        let seeds: Vec<(u64, String)> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProgressOp::AddBar { total, label } => Some((*total, label.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seeds,
+            vec![(1, "album [stg]".to_string()), (3, "links [wrt]".to_string())],
+            "both seeds name a phase, since a seed is what a row shows before its first render; got {ops:?}",
+        );
+
+        let rendered: Vec<String> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProgressOp::SetTruncation { prefix, .. } => Some(prefix.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                "album [stg]".to_string(),
+                "album [wrt]".to_string(),
+                "album links [wrt]".to_string(),
+            ],
+            "the parent opens on [stg], moves to [wrt], and the member row follows it; got {ops:?}",
+        );
+
+        let parent_tag = rendered_phase_tag(&rendered[1]);
+        let child_tag = rendered_phase_tag(&rendered[2]);
+        assert_eq!(parent_tag, Some("wrt"), "the folder row is on its write phase");
+        assert_eq!(child_tag, parent_tag, "a child may not name another phase than its parent");
+        assert_eq!(
+            parent_tag,
+            HierarchyEntryKind::MediaFolder.phases().last().map(|phase| phase.tag()),
+            "the write is the last phase a folder declares, so the row that shows it is the declared end",
+        );
+    }
+
+    /// Runs one `sync_hierarchy` in a workspace of its own and reports the
+    /// total its entry row opened with beside the advances that row made.
+    ///
+    /// `build` receives the hash of the CAS payload the workspace holds, so a
+    /// document whose materialization needs content gets a hash it can
+    /// resolve. The workspace is fresh because `sync_hierarchy` treats files
+    /// it already wrote as current, and a second run over the same tree would
+    /// skip the write and advance nothing.
+    ///
+    /// Only one entry is on the screen, so the first bar it opens belongs to
+    /// that entry, and the arm advances the entry row after its work returns,
+    /// which puts the advance after the last bar the screen opened. Counting
+    /// from there keeps a sub-bar's advances out of the total.
+    ///
+    /// The overall row is handed in as a disabled handle rather than left to
+    /// the screen, because a screen of its own would open an overall bar in
+    /// the same log and advance it after the entry, which would put a second
+    /// advance behind the last bar on the screen.
+    async fn entry_row_total_and_advances(
+        build: impl FnOnce(String) -> MediaPmDocument,
+    ) -> (u64, u64) {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+        let hash = cas.put(bytes::Bytes::from_static(b"entry-row-total-bytes")).await.unwrap();
+        let document = build(hash.to_string());
+
+        let recording = RecordingProgressTracker::new();
+        let _ = sync_hierarchy(
+            &paths,
+            &document,
+            &mut MediaPmState::default(),
+            &cas,
+            true,
+            &ConductorState::new_empty(),
+            &NickelDocument::default(),
+            Some(Arc::new(recording.clone())),
+            Some(Arc::new(ProgressBarHandle::disabled())),
+        )
+        .await;
+
+        let ops = recording.ops();
+        let total = ops
+            .iter()
+            .find_map(|op| match op {
+                ProgressOp::AddBar { total, .. } => Some(*total),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let last_bar =
+            ops.iter().rposition(|op| matches!(op, ProgressOp::AddBar { .. })).unwrap_or(0);
+        let advances =
+            ops[last_bar..].iter().filter(|op| matches!(op, ProgressOp::Advance { .. })).count()
+                as u64;
+        (total, advances)
+    }
+
+    /// An entry row's total is the number of advances that row makes.
+    ///
+    /// The total was three while every arm advanced once, so a finished entry
+    /// read `1/3` and the fraction claimed the row had two thirds of its work
+    /// left. Nothing held the total to the advances, so an arm that advanced
+    /// zero times or twice would still have rendered a plausible fraction and
+    /// nothing would have said so.
+    ///
+    /// The two numbers come from the recorder rather than from the constants
+    /// in the source, and each case drives a real `sync_hierarchy` over a
+    /// document holding one entry. The media entry appears twice because it
+    /// has two arms: one that writes its variant and one that skips it for
+    /// want of a hash. The last case is a folder whose variant name is
+    /// refused, which is the failure path where the row advances before it
+    /// learns the work failed.
+    #[tokio::test]
+    async fn an_entry_row_total_is_the_number_of_advances_it_makes() {
+        let media_written = entry_row_total_and_advances(|hash| {
+            let mut document = folder_and_playlist_document(&hash);
+            document.hierarchy.retain(|node| matches!(node.kind, HierarchyNodeKind::Media));
+            document
+        })
+        .await;
+        let media_skipped = entry_row_total_and_advances(|_| {
+            single_media_document("src1", HierarchyPath::simple("song"))
+        })
+        .await;
+        let folder = entry_row_total_and_advances(|hash| {
+            let mut document = folder_and_playlist_document(&hash);
+            document.hierarchy.retain(|node| matches!(node.kind, HierarchyNodeKind::MediaFolder));
+            document
+        })
+        .await;
+        let playlist = entry_row_total_and_advances(|hash| {
+            let mut document = folder_and_playlist_document(&hash);
+            document.hierarchy.retain(|node| matches!(node.kind, HierarchyNodeKind::Folder));
+            if let Some(playlist) =
+                document.hierarchy.first_mut().and_then(|folder| folder.children.first_mut())
+            {
+                playlist.ids.clear();
+            }
+            document
+        })
+        .await;
+        let refused_folder = entry_row_total_and_advances(|_| {
+            let mut document = single_media_document("src1", HierarchyPath::simple("album"));
+            document.hierarchy[0].kind = HierarchyNodeKind::MediaFolder;
+            let source = document.media.get_mut("src1").unwrap();
+            source.steps[0].output_variants = BTreeMap::from([(
+                "..".to_string(),
+                OutputVariantValue::Generic(GenericOutputVariantConfig {
+                    kind: "primary".to_string(),
+                    ..Default::default()
+                }),
+            )]);
+            document
+        })
+        .await;
+
+        for (case, (total, advances)) in [
+            ("a media entry that writes its variant", media_written),
+            ("a media entry with no hash to commit", media_skipped),
+            ("a media folder", folder),
+            ("a playlist", playlist),
+            ("a media folder whose variant name is refused", refused_folder),
+        ] {
+            assert_eq!(
+                total, advances,
+                "{case}: the total an entry row opens with is the advances it will see",
+            );
+            assert_eq!(total, 1, "{case}: an entry row advances once, after its work returns");
+        }
+    }
+
+    /// A playlist that fails before its write stays on `[stg]`.
+    ///
+    /// The playlist arm reaches `[cmt]` at the write, not at the top of the
+    /// function, so an entry that fails while resolving a reference has
+    /// committed nothing and says so. This is deliberate rather than an
+    /// oversight: a row that reached `[cmt]` before the write would claim a
+    /// commit that never happened.
+    ///
+    /// The same failure was previously visible only in the
+    /// `mediapm_progress_materialize` transcripts, which pin what a row looks
+    /// like and not that the phase is a consequence of where the arm failed.
+    #[tokio::test]
+    async fn a_failed_playlist_stays_on_stg() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
+        let result = sync_hierarchy(
+            &paths,
+            &playlist_with_unknown_reference_document(),
+            &mut MediaPmState::default(),
+            &cas,
+            true,
+            &ConductorState::new_empty(),
+            &NickelDocument::default(),
+            Some(Arc::new(recording.clone())),
+            Some(Arc::new(overall)),
+        )
+        .await;
+
+        assert!(result.is_err(), "an unknown reference must fail the playlist: {result:?}");
+        let ops = recording.ops();
+        let playlist_tags: Vec<Option<&str>> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProgressOp::SetTruncation { prefix, .. } if prefix.contains("broken.m3u8 ") => {
+                    Some(rendered_phase_tag(prefix))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            playlist_tags,
+            [Some("stg"), Some("stg")],
+            "a playlist that never reached the write must never claim [cmt]; got {ops:?}",
+        );
+        assert_eq!(
+            ops.iter().rev().find_map(|op| match op {
+                ProgressOp::SetTruncation { prefix, .. } if prefix.contains("broken.m3u8 ") => {
+                    Some(prefix.as_str())
+                }
+                _ => None,
+            }),
+            Some("[F] broken.m3u8 playlists [stg]"),
+            "the failure must finish the row on the phase it stopped at; got {ops:?}",
+        );
+    }
+
+    /// A playlist at `playlists/broken.m3u8` whose only item names a hierarchy
+    /// id no media entry declares, so the arm fails while resolving references
+    /// and never reaches the write.
+    fn playlist_with_unknown_reference_document() -> MediaPmDocument {
+        MediaPmDocument {
+            hierarchy: vec![HierarchyNode {
+                path: HierarchyPath::from("playlists"),
+                kind: HierarchyNodeKind::Folder,
+                id: None,
+                media_id: None,
+                variant: None,
+                variants: vec![],
+                rename_files: vec![],
+                format: PlaylistFormat::M3u8,
+                ids: vec![],
+                sanitize_names: Some(SanitizeNamesConfig::Inherit),
+                children: vec![HierarchyNode {
+                    path: HierarchyPath::from("broken.m3u8"),
+                    kind: HierarchyNodeKind::Playlist,
+                    id: None,
+                    media_id: None,
+                    variant: None,
+                    variants: vec![],
+                    rename_files: vec![],
+                    format: PlaylistFormat::M3u8,
+                    ids: vec![PlaylistItemRef::Shorthand("absent.local.1".to_string())],
+                    sanitize_names: Some(SanitizeNamesConfig::Inherit),
+                    children: vec![],
+                }],
+            }],
+            ..MediaPmDocument::default()
+        }
     }
 
     /// A media folder at `album` whose single variant writes one file, and a
@@ -2107,7 +2434,7 @@ mod tests {
                 ProgressOp::AddBar { total: 1, label: "materializing".into() },
                 ProgressOp::SetTotal { total: 1 },
                 ProgressOp::SetTruncation { prefix: "materializing".into(), suffix: String::new() },
-                ProgressOp::AddBar { total: 3, label: "AC_DC [stg]".into() },
+                ProgressOp::AddBar { total: 1, label: "AC_DC [stg]".into() },
                 ProgressOp::SetTruncation { prefix: "AC_DC [stg]".into(), suffix: String::new() },
                 ProgressOp::SetTruncation { prefix: "AC_DC [vrf]".into(), suffix: String::new() },
                 ProgressOp::Advance { delta: 1 },
