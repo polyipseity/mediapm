@@ -386,3 +386,73 @@ fn step_suffix_keeps_the_leading_tally_and_timing_fields() {
     let tight = label.truncate_suffix(10, &suffix);
     assert_eq!(tight, "3/10", "tight case must keep the leading tally whole: {tight:?}");
 }
+
+/// The step row's three identifying fields give up width in the order they are
+/// declared in: the workflow before the step, and the status marker last.
+///
+/// The widths below each straddle one of those boundaries, so a list that put
+/// the step ahead of the workflow would render `s1` where this renders `wf`, and
+/// a list that let the marker yield would lose the `[F]` that keeps a failed row
+/// from reading as a succeeded one. Every field here is short enough that none of
+/// them can be shortened, so the only thing the width can change is which of
+/// them survive.
+#[test]
+fn step_label_yields_the_step_before_the_workflow_and_the_marker_last() {
+    let label = StepBarLabel {
+        status_marker: "F".into(),
+        workflow_id: "wf".into(),
+        step_id: "s1".into(),
+        tool: "echo".into(),
+        version: String::new(),
+        completed: String::new(),
+        total: String::new(),
+    };
+    // The tool name is the one elastic field, so it is clipped rather than
+    // dropped at the widths between the head boundaries, and it takes its
+    // parentheses with it. The head boundaries are the widths at which only the
+    // head survives, one field fewer each time.
+    assert_eq!(label.truncate_prefix(16), "[F] wf s1 (echo)");
+    assert_eq!(label.truncate_prefix(14), "[F] wf s1 echo");
+    assert_eq!(label.truncate_prefix(10), "[F] wf s1");
+    assert_eq!(label.truncate_prefix(9), "[F] wf s1");
+    assert_eq!(label.truncate_prefix(8), "[F] wf");
+    assert_eq!(label.truncate_prefix(6), "[F] wf");
+    assert_eq!(label.truncate_prefix(5), "[F]");
+    assert_eq!(label.truncate_prefix(3), "[F]");
+    assert_eq!(label.truncate_prefix(2), "");
+}
+
+/// A worker row's suffix gives up its trailing timing columns first, so a
+/// narrow row still names how long it has been running.
+///
+/// The widths below straddle each boundary, so a suffix that listed the fields
+/// in another order would keep the wrong one at the width where only one
+/// survives. None of the four is elastic, so width can only drop them whole.
+#[test]
+fn worker_suffix_yields_eta_then_rate_before_the_elapsed() {
+    let label = WorkerBarLabel {
+        status_marker: String::new(),
+        workflow_id: String::new(),
+        step_id: String::new(),
+        tool: String::new(),
+        activity: "active".into(),
+    };
+    let suffix = SuffixComponents {
+        elapsed: "1m 30s".into(),
+        rate: Some("2.1 MiB/s".into()),
+        eta: Some("00:45".into()),
+        custom: "queued".into(),
+        ..Default::default()
+    };
+    // `custom` is the one elastic field, so it is clipped rather than dropped
+    // at the widths between the timing boundaries. Those are the widths at which
+    // one fewer timing column survives, and which one it is says the order.
+    assert_eq!(label.truncate_suffix(30, &suffix), "1m 30s 2.1 MiB/s 00:45 queued");
+    assert_eq!(label.truncate_suffix(29, &suffix), "1m 30s 2.1 MiB/s 00:45 queued");
+    assert_eq!(label.truncate_suffix(22, &suffix), "1m 30s 2.1 MiB/s 00:45");
+    assert_eq!(label.truncate_suffix(21, &suffix), "1m 30s 2.1 MiB/s");
+    assert_eq!(label.truncate_suffix(16, &suffix), "1m 30s 2.1 MiB/s");
+    assert_eq!(label.truncate_suffix(15, &suffix), "1m 30s");
+    assert_eq!(label.truncate_suffix(6, &suffix), "1m 30s");
+    assert_eq!(label.truncate_suffix(5, &suffix), "");
+}

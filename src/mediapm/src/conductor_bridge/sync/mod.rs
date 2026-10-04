@@ -3870,6 +3870,96 @@ mod tests {
         }
     }
 
+    /// Every per-tool phase bar carries the tool id and the phase tag, with the
+    /// version between them when the provider reported one.
+    ///
+    /// The three fields reach the bar as `PrefixComponents` rather than as one
+    /// rendered string, so what the row reads is the renderer's joining of them:
+    /// the tool id first, then the version, then the bracketed phase. The
+    /// version is legitimately absent for a tool whose provider reports none,
+    /// which is why this asserts the two segments on either side of it rather
+    /// than a fixed three-part label.
+    ///
+    /// The fixture is the same two tools the order-independence test seeds:
+    /// yt-dlp resolves a tag out of the seeded metadata, and media-tagger
+    /// generates its launcher offline. Both take the `Resolved` path, so each
+    /// produces a `[res]`, a `[fch]` and a `[pro]` bar.
+    #[tokio::test]
+    async fn per_tool_phase_bars_carry_the_version_between_the_tool_and_the_phase() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root_tmp = mediapm_utils::temp::cache_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let tracker = RecordingProgressTracker::new();
+        let state = MediaPmState::default();
+
+        seed_two_tool_cache(cache_root_tmp.path()).await;
+
+        let workspace_cas =
+            super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+
+        let mut desired_tools = BTreeMap::new();
+        for tool in ["yt-dlp", "media-tagger"] {
+            desired_tools.insert(
+                tool.to_string(),
+                serde_json::to_value(ToolRequirement {
+                    version_spec: ConfigVersionSpec::Latest,
+                    ..Default::default()
+                })
+                .unwrap(),
+            );
+        }
+
+        let result = reconcile_desired_tools(
+            workspace_cas,
+            &paths,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            &state,
+            Some(cache_root_tmp.path()),
+            &tracker,
+            None,
+        )
+        .await;
+        assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+
+        let ops = tracker.ops();
+        let phase_labels: Vec<&str> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProgressOp::AddBar { label, .. }
+                    if label.ends_with("]")
+                        && !label.starts_with("syncing")
+                        && !label.starts_with("pruning") =>
+                {
+                    Some(label.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(phase_labels.len(), 6, "two tools at three phases each: {phase_labels:?}");
+
+        // yt-dlp's provider resolves a tag from the seeded metadata, so its
+        // rows must carry it between the tool id and the phase tag. The tag is
+        // `2025.07.15`; pinning it here is what makes a version that went
+        // missing, or moved behind the phase tag, a failure rather than a
+        // shorter label nobody reads.
+        let expected: Vec<String> = ["res", "fch", "pro"]
+            .iter()
+            .map(|phase| format!("yt-dlp 2025.07.15 [{phase}]"))
+            .chain(["res", "fch", "pro"].iter().map(|phase| format!("media-tagger [{phase}]")))
+            .collect();
+        let mut observed: Vec<String> =
+            phase_labels.iter().map(|label| (*label).to_string()).collect();
+        observed.sort();
+        let mut expected = expected;
+        expected.sort();
+        assert_eq!(
+            observed, expected,
+            "each phase bar reads tool id, then version when the provider reported one, then the tag"
+        );
+    }
+
     /// Parallel source fetch must be deterministic: running
     /// `reconcile_desired_tools` twice with the same seeded cache must
     /// produce identical generated-document bytes and bar-operation multisets.
