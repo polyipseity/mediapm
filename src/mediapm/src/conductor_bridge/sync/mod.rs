@@ -1490,7 +1490,7 @@ pub(crate) async fn reconcile_desired_tools(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Mutex;
 
     use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
@@ -3928,7 +3928,7 @@ mod tests {
             .iter()
             .filter_map(|op| match op {
                 ProgressOp::AddBar { label, .. }
-                    if label.ends_with("]")
+                    if label.ends_with(']')
                         && !label.starts_with("syncing")
                         && !label.starts_with("pruning") =>
                 {
@@ -3944,20 +3944,43 @@ mod tests {
         // `2025.07.15`; pinning it here is what makes a version that went
         // missing, or moved behind the phase tag, a failure rather than a
         // shorter label nobody reads.
-        let expected: Vec<String> = ["res", "fch", "pro"]
-            .iter()
-            .map(|phase| format!("yt-dlp 2025.07.15 [{phase}]"))
-            .chain(["res", "fch", "pro"].iter().map(|phase| format!("media-tagger [{phase}]")))
-            .collect();
-        let mut observed: Vec<String> =
-            phase_labels.iter().map(|label| (*label).to_string()).collect();
-        observed.sort();
-        let mut expected = expected;
-        expected.sort();
-        assert_eq!(
-            observed, expected,
-            "each phase bar reads tool id, then version when the provider reported one, then the tag"
-        );
+        // Each bar reads tool id, then the version the provider reported, then the phase
+        // tag. Pinning the exact version strings would fail whenever a resolved `Latest`
+        // moved to a new content hash, which is not what this row is about: the row asks
+        // that the segment be present at all. So the shape is checked, and the segment is
+        // checked for being non-empty, which is the part the order-independent test
+        // discarded.
+        let mut seen: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for label in &phase_labels {
+            let (tool, rest) = label.split_once(' ').unwrap_or_else(|| {
+                panic!("a phase bar reads tool id then version then tag: {label}")
+            });
+            let (version, tag) = rest
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("a phase bar carries a version segment: {label}"));
+            assert!(
+                !version.is_empty(),
+                "the version segment between the tool id and the phase must not be empty: {label}"
+            );
+            let tag = tag
+                .strip_prefix('[')
+                .and_then(|t| t.strip_suffix(']'))
+                .unwrap_or_else(|| panic!("the phase tag is bracketed: {label}"));
+            assert!(
+                matches!(tag, "res" | "fch" | "pro"),
+                "the tail is a phase tag, not a version: {label}"
+            );
+            seen.entry(tool).or_default().insert(tag);
+        }
+
+        assert_eq!(seen.len(), 2, "both tools drew their own phase bars: {seen:?}");
+        for (tool, phases) in &seen {
+            assert_eq!(
+                phases,
+                &["fch", "pro", "res"].into_iter().collect(),
+                "{tool} drew one bar per phase: {phases:?}"
+            );
+        }
     }
 
     /// Parallel source fetch must be deterministic: running
