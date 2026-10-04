@@ -139,7 +139,11 @@ pub fn scenario(name: ScenarioName) -> Scenario {
 
 /// A per-entry bar's total, which is what `EntryPhaseBar::create` hands to
 /// `add_bar` in the materializer.
-const ENTRY_PHASES: u64 = 3;
+///
+/// One, because an entry arm advances once after its work returns, so a
+/// finished entry reads a full bar whether it succeeded, warned or failed. The
+/// phases the row passed through are on its tag, not in the fraction.
+const ENTRY_TOTAL: u64 = 1;
 
 /// Extracted members the folder variant in this demo unpacks into. The sub-bar
 /// totals whatever `extract_zip_folder_variant_bytes` returned, and the
@@ -253,19 +257,20 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     }));
 
     // The first entry is a media file, so it is the one row that walks the full
-    // `[stg]` to `[vrf]` to `[cmt]` sequence.
-    let finished = screen.add_bar(ENTRY_PHASES, &format!("{album_name} [stg]"));
+    // `[stg]` to `[vrf]` to `[cmt]` sequence. The tag moves at each transition
+    // and the bar does not, because the arm advances once and the row totals
+    // one. The ticks stay where they were, so each tag still gets a frame of
+    // its own.
+    let finished = screen.add_bar(ENTRY_TOTAL, &format!("{album_name} [stg]"));
     finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Staging));
     screen.tick();
     clock.advance(Duration::from_secs(2));
 
     finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Verify));
-    finished.advance(1);
     screen.tick();
     clock.advance(Duration::from_secs(1));
 
     finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Commit));
-    finished.advance(1);
     screen.tick();
     clock.advance(Duration::from_secs(3));
 
@@ -279,7 +284,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     // it was created with until the arm starts writing, and the
     // per-extracted-file sub-bar opens underneath it at the variant it
     // unpacks.
-    let folder = screen.add_bar(ENTRY_PHASES, &format!("{folder_name} [stg]"));
+    let folder = screen.add_bar(ENTRY_TOTAL, &format!("{folder_name} [stg]"));
     folder.set_truncation(phase_label(folder_path, folder_name, MaterializationPhase::Staging));
     screen.tick();
     clock.advance(Duration::from_secs(2));
@@ -299,7 +304,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
 
     // The third entry is a media file that has resolved its hash and is on the
     // verify tag, still running when the transcript is read.
-    let verifying = screen.add_bar(ENTRY_PHASES, &format!("{single_name} [stg]"));
+    let verifying = screen.add_bar(ENTRY_TOTAL, &format!("{single_name} [stg]"));
     verifying.set_truncation(phase_label(single_path, single_name, MaterializationPhase::Staging));
     verifying.advance(1);
     verifying.set_truncation(phase_label(single_path, single_name, MaterializationPhase::Verify));
@@ -354,10 +359,11 @@ const THUMBNAIL_MEMBERS: u64 = 2;
 ///
 /// The seed is `{relative_path} [stg]` (`EntryPhaseBar::create`) and the
 /// label carries the split of that path the materializer keeps, so the row
-/// reads what a live row reads rather than what a shorter seed would fit.
+/// reads what a live row reads rather than what a shorter seed would fit. The
+/// total is [`ENTRY_TOTAL`], so a row that has advanced is already full.
 fn add_entry_bar(screen: &ProgressScreen, relative_path: &str) -> ProgressBarHandle {
     let (entry_path, entry_name) = split_entry_path(relative_path);
-    let bar = screen.add_bar(ENTRY_PHASES, &format!("{relative_path} [stg]"));
+    let bar = screen.add_bar(ENTRY_TOTAL, &format!("{relative_path} [stg]"));
     bar.set_truncation(phase_label(entry_path, entry_name, MaterializationPhase::Staging));
     bar
 }
@@ -419,14 +425,14 @@ fn add_write_bar(
 
 /// Walk a media entry from `[stg]` to a finished `[cmt]` row.
 ///
-/// The three transitions are the ones the media arm makes, in that order, and
-/// each advance is the call the arm makes after the phase it is leaving. The
-/// caller supplies the handle because the baseline scenario seeds its bars
-/// itself, while `dense` and `states` share this.
+/// The two transitions are the ones the media arm makes, in that order, and
+/// the single advance is the call it makes once its work has returned. Nothing
+/// moves the fraction on the way, so what the row is doing between the first
+/// tag and the last is the tag itself. The caller supplies the handle because
+/// the baseline scenario seeds its bars itself, while `dense` and `states`
+/// share this.
 fn commit_media_entry(bar: &ProgressBarHandle, relative_path: &str) {
-    bar.advance(1);
     set_entry_phase(bar, relative_path, MaterializationPhase::Verify);
-    bar.advance(1);
     set_entry_phase(bar, relative_path, MaterializationPhase::Commit);
     bar.advance(1);
     bar.finish_success();
