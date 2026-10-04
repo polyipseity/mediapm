@@ -2591,6 +2591,308 @@ mod tests {
         );
     }
 
+    /// Runs one `media-tagger` reconcile pass and hands back its report.
+    ///
+    /// media-tagger is the fixture tool for the stale-seed tests because its
+    /// provider is a builtin launcher: resolution needs neither network nor a
+    /// seeded download cache, yet the launcher it generates is a real payload.
+    /// The entry therefore reaches the `Fetched` outcome branch, which is the
+    /// branch where `already_exists` decides `tools_added` against
+    /// `tools_updated`. The no-payload branch makes a different decision, so a
+    /// fixture that landed there would prove nothing about the name-match.
+    async fn reconcile_media_tagger_latest(
+        paths: &MediaPmPaths,
+        state: &MediaPmState,
+        cache_root: &std::path::Path,
+    ) -> ToolSyncReport {
+        let workspace_cas =
+            super::open_workspace_cas_store(paths).await.expect("open workspace cas");
+        let mut desired_tools = BTreeMap::new();
+        desired_tools.insert(
+            "media-tagger".to_string(),
+            serde_json::to_value(ToolRequirement {
+                version_spec: ConfigVersionSpec::Latest,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        reconcile_desired_tools(
+            workspace_cas,
+            paths,
+            &desired_tools,
+            &BTreeMap::new(),
+            RecheckPolicy::default(),
+            state,
+            Some(cache_root),
+            &ProgressScreen::disabled(),
+            None,
+        )
+        .await
+        .expect("reconcile_desired_tools must succeed for an offline builtin launcher")
+    }
+
+    /// A generated-doc entry whose `name` is the bare logical tool id makes the
+    /// pass an update, never an addition.
+    ///
+    /// Both arms run the same fixture with one difference, the seeded entry, so
+    /// the assertion has nothing to read but that difference. The unseeded arm
+    /// is what makes the seeded one meaningful: a pass that ignored the
+    /// name-match would report `(1, 0)` in both arms, and a pass that counted
+    /// nothing at all would report `(0, 0)` in both.
+    #[tokio::test]
+    async fn reconcile_counts_a_name_matched_seed_as_an_update_not_an_addition() {
+        let seeded_tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let seeded_cache = mediapm_utils::temp::cache_dir().unwrap();
+        let seeded_paths = MediaPmPaths::from_root(seeded_tmp.path());
+        let mut stale_content_map = BTreeMap::new();
+        stale_content_map.insert("linux/media-tagger".to_string(), "blake3:stale".to_string());
+        let seeded_doc = NickelDocument {
+            tools: BTreeMap::from([(
+                "media-tagger@blake3:stale".to_string(),
+                ToolSpec {
+                    name: "media-tagger".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime { content_map: stale_content_map, ..Default::default() },
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        save_conductor_generated_document(&seeded_paths, &seeded_doc)
+            .expect("pre-save generated doc");
+
+        let seeded = reconcile_media_tagger_latest(
+            &seeded_paths,
+            &MediaPmState::default(),
+            seeded_cache.path(),
+        )
+        .await;
+
+        let bare_tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let bare_cache = mediapm_utils::temp::cache_dir().unwrap();
+        let bare_paths = MediaPmPaths::from_root(bare_tmp.path());
+        let bare =
+            reconcile_media_tagger_latest(&bare_paths, &MediaPmState::default(), bare_cache.path())
+                .await;
+
+        assert_eq!(
+            (seeded.tools_added, seeded.tools_updated),
+            (0, 1),
+            "a generated-doc spec named `media-tagger` is an update, never an addition: {seeded:?}"
+        );
+        assert_eq!(
+            (bare.tools_added, bare.tools_updated),
+            (1, 0),
+            "the same pass over an empty generated doc is an addition: {bare:?}"
+        );
+    }
+
+    /// The install a real upgrade walks into: a generated-doc entry under a
+    /// stale `{name}@{hash}` key, a `managed_tools` record whose
+    /// `canonical_version` no longer matches what the provider resolves, and
+    /// the provisioned directory that stale hash owns.
+    ///
+    /// One pass has to carry all three, so the assertions read the whole trail
+    /// in order rather than one field of it. The state record is seeded with a
+    /// non-empty `content_map_hash` on purpose: that is the half of the skip
+    /// check that lets a matching `canonical_version` skip, and pairing it with
+    /// a canonical version the provider cannot produce is what keeps this pass
+    /// on the reprovision path.
+    #[tokio::test]
+    async fn stale_seed_drives_name_match_reprovision_and_prune_in_one_pass() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+
+        // The document half of the seed: a previous sync's payload, filed under
+        // its own content hash.
+        let mut stale_content_map = BTreeMap::new();
+        stale_content_map.insert("linux/media-tagger".to_string(), "blake3:stale".to_string());
+        let stale_doc = NickelDocument {
+            tools: BTreeMap::from([(
+                "media-tagger@blake3:stale".to_string(),
+                ToolSpec {
+                    name: "media-tagger".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime { content_map: stale_content_map, ..Default::default() },
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        save_conductor_generated_document(&paths, &stale_doc).expect("pre-save generated doc");
+
+        // The state half of the seed.
+        let mut state = MediaPmState::default();
+        state.managed_tools.push(ToolRegistryEntry {
+            tool_id: "media-tagger".to_string(),
+            version: "old-version".to_string(),
+            canonical_version: "old".to_string(),
+            content_map_hash: "blake3:stale".to_string(),
+            deployed_at: mediapm_utils::Timestamp::default(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
+        });
+
+        // The filesystem half of the seed. Retain-only removes a directory only
+        // when it can take that directory's lock, so the stale one carries a
+        // lock file the way a real provisioned entry does.
+        let stale_dir = paths.tools_dir.join("media-tagger@blake3_stale");
+        std::fs::create_dir_all(&stale_dir).expect("create stale tool dir");
+        std::fs::write(stale_dir.join(".lock"), b"").expect("create stale lock file");
+
+        let report = reconcile_media_tagger_latest(&paths, &state, cache_root.path()).await;
+
+        // The name-match makes this an update, and the mismatched canonical
+        // version keeps it off both skip paths.
+        assert_eq!(
+            report.tools_skipped, 0,
+            "a canonical_version the provider cannot produce must reprovision: {report:?}"
+        );
+        assert_eq!(
+            (report.tools_added, report.tools_updated),
+            (0, 1),
+            "the seeded install is an update, not an addition: {report:?}"
+        );
+
+        // The stale key loses its content map on the new entry's arrival and is
+        // dropped by the rewrite; the fresh hash key is what survives.
+        let after =
+            load_conductor_generated_document(&paths).expect("load generated doc after sync");
+        assert!(
+            !after.tools.contains_key("media-tagger@blake3:stale"),
+            "the stale key must be dropped once its content map is cleared, keys: {:?}",
+            after.tools.keys().collect::<Vec<_>>()
+        );
+        let (active_key, active_spec) = find_active_tool_spec(&after, "media-tagger")
+            .expect("the freshly provisioned tool must resolve as active");
+        assert_ne!(
+            active_key, "media-tagger@blake3:stale",
+            "the active key must be the fresh content hash, got {active_key}"
+        );
+        assert!(
+            !active_spec.runtime.content_map.is_empty(),
+            "the fresh key must carry the reprovisioned payload"
+        );
+        assert!(
+            report.pruned_tools >= 1,
+            "clearing and dropping the stale key counts as a prune: {report:?}"
+        );
+
+        // The provisioned directory follows the same trail on disk.
+        assert!(!stale_dir.exists(), "retain-only must remove the directory the stale hash owned");
+        let provisioned: Vec<String> = std::fs::read_dir(&paths.tools_dir)
+            .expect("read tools dir")
+            .map(|entry| entry.expect("tools dir entry").file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("media-tagger@"))
+            .collect();
+        assert_eq!(
+            provisioned.len(),
+            1,
+            "exactly one fresh directory is left for the tool: {provisioned:?}"
+        );
+    }
+
+    /// `dependencies` is flat on the wire: each tool id is a direct key of the
+    /// map holding its version spec, with nothing wrapping the specs.
+    ///
+    /// The shape is read out of the encoded document rather than compared as a
+    /// whole string, because a whole-string compare also passes when the map
+    /// grows a level of nesting that deserializes back to the same value. The
+    /// key set and the per-dependency reads below are what pin the flatness.
+    #[test]
+    fn tool_requirement_dependencies_round_trip_flat() {
+        let mut dependencies = BTreeMap::new();
+        dependencies.insert(
+            "ffmpeg".to_string(),
+            ConfigVersionSpec::Exact(VersionSpecFields {
+                tag: Some("v7.1".to_string()),
+                version: None,
+                vcs_hash: None,
+            }),
+        );
+        dependencies.insert("deno".to_string(), ConfigVersionSpec::Inherit);
+        dependencies.insert("sd".to_string(), ConfigVersionSpec::Latest);
+        let requirement = ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: dependencies.clone(),
+            ..Default::default()
+        };
+
+        let encoded =
+            serde_json::to_value(&requirement).expect("a ToolRequirement serializes to JSON");
+        let wire_dependencies = encoded
+            .get("dependencies")
+            .and_then(serde_json::Value::as_object)
+            .expect("dependencies encodes as an object");
+
+        assert_eq!(
+            wire_dependencies.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from(["deno".to_string(), "ffmpeg".to_string(), "sd".to_string()]),
+            "each dependency tool id is a direct key of the map: {wire_dependencies:?}"
+        );
+        assert_eq!(
+            wire_dependencies["deno"],
+            serde_json::json!("inherit"),
+            "a unit spec encodes as its bare string: {wire_dependencies:?}"
+        );
+        assert_eq!(
+            wire_dependencies["sd"],
+            serde_json::json!("latest"),
+            "a unit spec encodes as its bare string: {wire_dependencies:?}"
+        );
+        assert_eq!(
+            wire_dependencies["ffmpeg"]["tag"],
+            serde_json::json!("v7.1"),
+            "an exact spec encodes its fields at the top of the dependency value: {wire_dependencies:?}"
+        );
+        assert_eq!(
+            wire_dependencies["ffmpeg"].as_object().map(serde_json::Map::len),
+            Some(1),
+            "an exact spec carries only the fields it set, so a wrapper level cannot hide here: {wire_dependencies:?}"
+        );
+
+        let decoded: ToolRequirement =
+            serde_json::from_value(encoded.clone()).expect("the encoded requirement decodes");
+        assert_eq!(
+            decoded.dependencies, dependencies,
+            "every dependency spec survives the round trip"
+        );
+        assert_eq!(
+            serde_json::to_value(&decoded).expect("the decoded requirement re-encodes"),
+            encoded,
+            "re-encoding reproduces the same document, so a config rewritten by a sync does not drift"
+        );
+    }
+
+    /// A requirement that declares no dependency reads back as an empty map.
+    ///
+    /// The field is `#[serde(default)]`, so the document a user writes without
+    /// a `dependencies` key must decode rather than fail, and must decode to
+    /// the same empty map a written-out empty map produces. The two encodings
+    /// are compared so a default that ever stopped matching the explicit form
+    /// would show up here.
+    #[test]
+    fn tool_requirement_without_dependencies_decodes_to_an_empty_map() {
+        let omitted = serde_json::json!({ "version_spec": "latest" });
+        let decoded: ToolRequirement = serde_json::from_value(omitted.clone())
+            .expect("an omitted map falls back to the default");
+        assert!(
+            decoded.dependencies.is_empty(),
+            "no dependencies declared means no dependencies: {:?}",
+            decoded.dependencies
+        );
+
+        let explicit = serde_json::json!({ "version_spec": "latest", "dependencies": {} });
+        let decoded_explicit: ToolRequirement =
+            serde_json::from_value(explicit).expect("an empty map decodes");
+        assert_eq!(
+            decoded_explicit.dependencies, decoded.dependencies,
+            "the omitted and the written-out empty map must land on the same value"
+        );
+    }
+
     #[tokio::test]
     async fn reconcile_drops_manual_entries_from_generated_doc() {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
