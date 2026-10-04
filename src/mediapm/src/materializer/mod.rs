@@ -93,7 +93,7 @@ use self::zip_reader::{compile_hierarchy_folder_rename_rules, extract_zip_folder
 pub struct MaterializeReport {
     /// Number of hierarchy paths materialized (new or updated).
     pub materialized_paths: usize,
-    /// Number of hierarchy paths skipped (unchanged).
+    /// Number of hierarchy paths whose variant resolved no content hash.
     pub skipped_paths: usize,
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,

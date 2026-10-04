@@ -100,7 +100,7 @@ pub struct SyncSummary {
     pub cached_instances: usize,
     /// Number of hierarchy paths materialized to the resolved library root.
     pub materialized_paths: usize,
-    /// Number of hierarchy paths already up to date and skipped.
+    /// Number of hierarchy paths whose variant resolved no content hash.
     pub skipped_paths: usize,
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,
@@ -138,7 +138,7 @@ pub struct WorkflowSyncSummary {
 pub struct MaterializationSyncSummary {
     /// Paths materialized (new or updated).
     pub materialized_paths: usize,
-    /// Paths already up to date and therefore skipped.
+    /// Paths whose variant resolved no content hash.
     pub skipped_paths: usize,
     /// Stale paths removed.
     pub removed_paths: usize,
