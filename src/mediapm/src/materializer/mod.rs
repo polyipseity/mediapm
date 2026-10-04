@@ -1317,7 +1317,8 @@ mod tests {
 
     use super::*;
     use crate::config::hierarchy_types::{
-        HierarchyNode, HierarchyNodeKind, HierarchyPath, PlaylistFormat, SanitizeNamesConfig,
+        HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, PlaylistFormat,
+        SanitizeNamesConfig,
     };
     use crate::config::source_types::{MediaSourceSpec, MediaStep, MediaStepTool};
     use crate::config::{GenericOutputVariantConfig, MediaMetadataValue, OutputVariantValue};
@@ -1325,6 +1326,26 @@ mod tests {
         BarId, ProgressOp, RecordedProgressOp, RecordingProgressTracker,
     };
     use std::path::Path;
+
+    /// Media-folder variant name carrying a reserved character, so the
+    /// `SanitizePolicy` rewrite half has something it would change.
+    const UNSAFE_VARIANT_NAME: &str = "raw<b";
+
+    /// The spelling `SanitizePolicy::Enabled` produces from
+    /// [`UNSAFE_VARIANT_NAME`]. The variant join uses the reject half, so
+    /// this path must stay absent; its presence is the silent rewrite.
+    const REWRITTEN_VARIANT_NAME: &str = "raw_b";
+
+    /// A `rename_files` replacement emitting a reserved character, applied to
+    /// the member `cover.jpg` so the produced leaf is [`REPLACED_LEAF`].
+    const UNSAFE_REPLACEMENT: &str = "raw<b";
+
+    /// The file name `UNSAFE_REPLACEMENT` produces on `cover.jpg`.
+    const REPLACED_LEAF: &str = "raw<b.jpg";
+
+    /// The spelling the configured replacement map would produce from
+    /// [`REPLACED_LEAF`]. Its presence means the map reached the rename chain.
+    const REWRITTEN_MEMBER_NAME: &str = "raw_b.jpg";
 
     #[test]
     fn normalize_yt_dlp_sandbox_zip_member_path_strips_downloads_and_mediapm_marker() {
@@ -2256,6 +2277,148 @@ mod tests {
         }
     }
 
+    /// A media-folder variant name the sanitizer would rewrite is refused, and
+    /// neither the raw spelling nor the rewritten one reaches the library.
+    ///
+    /// A variant name is a free-form key in the source's variant map, so it
+    /// reaches `target_path.join(...)` and then `tokio::fs::write` without
+    /// being a hierarchy component. The join parses it under
+    /// `SanitizePolicy::disabled()`, which is the reject half of the policy
+    /// rather than the rewrite half: the name is a key an upstream tool chose,
+    /// so committing `raw_b` would materialize a file the document never
+    /// spelled.
+    ///
+    /// The assertion is the absence of both spellings on disk, not the error
+    /// alone. A refusal and a silent rewrite are told apart by the library
+    /// tree, because a rewritten name leaves a file where the refused one
+    /// leaves nothing.
+    #[tokio::test]
+    async fn a_media_folder_variant_name_the_sanitizer_would_rewrite_is_refused() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+        let hash = cas.put(bytes::Bytes::from_static(b"variant-name-guard-bytes")).await.unwrap();
+
+        let mut document = folder_and_playlist_document(&hash.to_string());
+        document.hierarchy.retain(|node| matches!(node.kind, HierarchyNodeKind::MediaFolder));
+        let source = document.media.get_mut("src1").unwrap();
+        source.steps[0].output_variants = BTreeMap::from([(
+            UNSAFE_VARIANT_NAME.to_string(),
+            OutputVariantValue::Generic(GenericOutputVariantConfig {
+                kind: "primary".to_string(),
+                ..Default::default()
+            }),
+        )]);
+
+        let result = sync_hierarchy(
+            &paths,
+            &document,
+            &mut MediaPmState::default(),
+            &cas,
+            true,
+            &ConductorState::new_empty(),
+            &NickelDocument::default(),
+            None,
+            None,
+        )
+        .await;
+
+        let folder = root.path().join("album");
+        let raw = folder.join(UNSAFE_VARIANT_NAME);
+        let rewritten = folder.join(REWRITTEN_VARIANT_NAME);
+        assert!(!raw.exists(), "the raw variant name was written to '{}'", raw.display());
+        assert!(
+            !rewritten.exists(),
+            "the sanitizer rewrote '{UNSAFE_VARIANT_NAME}' to '{REWRITTEN_VARIANT_NAME}', \
+             which is what this guard exists to prevent; '{}' exists",
+            rewritten.display()
+        );
+
+        let error = result.err().unwrap_or_else(|| {
+            panic!("a variant name carrying '{UNSAFE_VARIANT_NAME}' must not reach the join")
+        });
+        assert!(
+            error.to_string().contains(UNSAFE_VARIANT_NAME),
+            "the error must name the refused variant so the document key is identifiable; got: {error}"
+        );
+    }
+
+    /// A `rename_files` replacement emitting a reserved character is refused
+    /// even when the entry configures `sanitize_names = Enabled`, and the
+    /// rewritten spelling never reaches the library.
+    ///
+    /// `SanitizePolicy` has two halves: `Enabled` and `Custom` carry a
+    /// replacement map and rewrite reserved characters, `disabled` carries
+    /// none and rejects them. The ZIP rename chain uses the second half, so
+    /// the configured map has no effect on a replacement's output. That is a
+    /// decision rather than an omission, and `SanitizePolicy::disabled` gives
+    /// the reason: a member name belongs to whatever produced the archive, so
+    /// rewriting it would materialize a file nobody asked for.
+    ///
+    /// Configuring `Enabled` on the entry is what makes this a guard. With the
+    /// entry left on its default the map is not in play anywhere, so the test
+    /// would pass against any policy. Here the document asks for the rewrite
+    /// and the run refuses, which fails the moment someone routes the
+    /// configured map into the rename chain.
+    ///
+    /// The coverage-matrix row this replaces asked for the opposite: that
+    /// replacement strings are sanitized with the configured map. Asserting
+    /// that would have pinned a rewrite that does not happen. What is pinned
+    /// instead is the refusal, and the absence of both spellings on disk.
+    #[tokio::test]
+    async fn a_rename_rule_output_is_refused_even_when_sanitize_names_is_enabled() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+        let members = [("cover.jpg", &b"rename-rule-bytes"[..])];
+        let hash = cas
+            .put(bytes::Bytes::from(zip_payload(&members)))
+            .await
+            .expect("the archive enters the store");
+
+        let mut document = folder_and_playlist_document(&hash.to_string());
+        document.hierarchy.retain(|node| matches!(node.kind, HierarchyNodeKind::MediaFolder));
+        let folder = document.hierarchy.first_mut().expect("the folder node is retained");
+        folder.sanitize_names = Some(SanitizeNamesConfig::Enabled);
+        folder.rename_files = vec![HierarchyFolderRenameRule {
+            pattern: "^cover".to_string(),
+            replacement: UNSAFE_REPLACEMENT.to_string(),
+        }];
+
+        let result = sync_hierarchy(
+            &paths,
+            &document,
+            &mut MediaPmState::default(),
+            &cas,
+            true,
+            &ConductorState::new_empty(),
+            &NickelDocument::default(),
+            None,
+            None,
+        )
+        .await;
+
+        let folder_dir = root.path().join("album");
+        let rewritten = folder_dir.join(REWRITTEN_MEMBER_NAME);
+        assert!(
+            !rewritten.exists(),
+            "'{}' was written, so the configured replacement map reached the rename chain; \
+             the member name is not the user's to rewrite",
+            rewritten.display()
+        );
+
+        let error = result.err().unwrap_or_else(|| {
+            panic!(
+                "a replacement emitting '{UNSAFE_REPLACEMENT}' must be refused under \
+                 sanitize_names = Enabled, not rewritten"
+            )
+        });
+        assert!(
+            error.to_string().contains(REPLACED_LEAF),
+            "the error must name the file name the rule produced; got: {error}"
+        );
+    }
+
     /// A media entry that writes its variant walks `[stg]`, `[vrf]`, `[cmt]`.
     ///
     /// The fixture the `[cmt]` row of the coverage matrix leaned on was a
@@ -2374,6 +2537,143 @@ mod tests {
             Some("[F] broken.m3u8 playlists [stg]"),
             "the failure must finish the row on the phase it stopped at; got {ops:?}",
         );
+    }
+
+    /// The overall row finishes `FinishError` when an entry fails and
+    /// `FinishSuccess` when the only entry was skipped.
+    ///
+    /// The overall handle and the per-entry rows share the op vocabulary, so
+    /// an unfiltered search for a finish finds whichever row emitted it first
+    /// and a test written that way says nothing about the overall row. Every
+    /// finish assertion here is therefore keyed on the [`BarId`] of the
+    /// handle [`RecordingProgressTracker::with_overall`] handed back.
+    ///
+    /// Each half establishes the entry's outcome from the run itself before
+    /// reading the overall finish, so the assertion cannot pass against a run
+    /// that did the opposite: the failing half checks the returned `Err` and
+    /// the entry row's own `FinishError`, the skipping half checks
+    /// `skipped_paths` and the entry row's `FinishWarning`.
+    ///
+    /// What this pins is the implemented contract, which is not what the
+    /// coverage-matrix row originally claimed. The row asked for
+    /// `finish_warning` when any entry is skipped; the overall handle has no
+    /// `finish_warning` call, and a skipped entry ends `FinishSuccess`. The
+    /// open product question is whether one skipped entry should turn the
+    /// whole screen yellow; until that is decided deliberately, the behaviour
+    /// to protect is the one that runs.
+    #[tokio::test]
+    async fn the_overall_row_finishes_error_on_a_failed_entry_and_success_on_a_skipped_one() {
+        let failed = {
+            let root = mediapm_utils::temp::artifact_dir().unwrap();
+            let paths = MediaPmPaths::from_root(root.path());
+            let cas = open_hierarchy_cas(&paths).await;
+            let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
+
+            let result = sync_hierarchy(
+                &paths,
+                &playlist_with_unknown_reference_document(),
+                &mut MediaPmState::default(),
+                &cas,
+                true,
+                &ConductorState::new_empty(),
+                &NickelDocument::default(),
+                Some(Arc::new(recording.clone())),
+                Some(Arc::new(overall.clone())),
+            )
+            .await;
+
+            assert!(result.is_err(), "the broken playlist must fail the run: {result:?}");
+            assert_eq!(
+                entry_finishes(&recording),
+                vec![ProgressOp::FinishError],
+                "the failing entry row must be the one that reports the error; got {recorded:?}",
+                recorded = recording.recorded()
+            );
+            (recording, overall)
+        };
+        assert_eq!(
+            overall_finish(&failed.0, &failed.1),
+            Some(ProgressOp::FinishError),
+            "a run with a failed entry must end the overall row as an error; got {ops:?}",
+            ops = failed.0.recorded()
+        );
+
+        let skipped = {
+            let root = mediapm_utils::temp::artifact_dir().unwrap();
+            let paths = MediaPmPaths::from_root(root.path());
+            let cas = open_hierarchy_cas(&paths).await;
+            let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
+
+            let result = sync_hierarchy(
+                &paths,
+                &single_media_document("src1", HierarchyPath::simple("test_file")),
+                &mut MediaPmState::default(),
+                &cas,
+                true,
+                &ConductorState::new_empty(),
+                &NickelDocument::default(),
+                Some(Arc::new(recording.clone())),
+                Some(Arc::new(overall.clone())),
+            )
+            .await;
+
+            let report = result.expect("a skipped entry is not a failed run");
+            assert_eq!(
+                report.skipped_paths, 1,
+                "the run must really have skipped its one entry before the overall finish is read; \
+                 got {report:?}"
+            );
+            assert_eq!(
+                entry_finishes(&recording),
+                vec![ProgressOp::FinishWarning],
+                "the skipped entry row must be the one carrying the warning; got {ops:?}",
+                ops = recording.ops()
+            );
+            (recording, overall)
+        };
+        assert_eq!(
+            overall_finish(&skipped.0, &skipped.1),
+            Some(ProgressOp::FinishSuccess),
+            "a run whose only entry was skipped must still end the overall row as a success; \
+             got {ops:?}",
+            ops = skipped.0.recorded()
+        );
+    }
+
+    /// Returns the terminal op of every bar the tracker opened other than the
+    /// overall one, in the order the bars were added.
+    fn entry_finishes(tracker: &RecordingProgressTracker) -> Vec<ProgressOp> {
+        tracker
+            .recorded()
+            .iter()
+            .filter(|entry| entry.bar != BarId::Index(0))
+            .filter_map(|entry| match entry.op {
+                ProgressOp::FinishSuccess | ProgressOp::FinishWarning | ProgressOp::FinishError => {
+                    Some(entry.op.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Returns the terminal op of one handle's own bar, or `None` when it never
+    /// finished.
+    fn overall_finish(
+        tracker: &RecordingProgressTracker,
+        overall: &mediapm_utils::progress::recording::RecordingTrackedHandle,
+    ) -> Option<ProgressOp> {
+        let bar = overall.bar();
+        tracker.recorded().iter().find_map(|entry| {
+            if entry.bar != bar {
+                return None;
+            }
+            match entry.op {
+                ProgressOp::FinishSuccess | ProgressOp::FinishWarning | ProgressOp::FinishError => {
+                    Some(entry.op.clone())
+                }
+                _ => None,
+            }
+        })
     }
 
     /// A playlist at `playlists/broken.m3u8` whose only item names a hierarchy
