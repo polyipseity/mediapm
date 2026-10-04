@@ -1731,7 +1731,7 @@ mod tests {
         }
     }
 
-    /// A folder and a playlist declare the two phases their arms walk.
+    /// Every kind declares the phases its arm walks.
     ///
     /// A folder makes its directory and then writes each selected variant, so
     /// it declares staging and write. A playlist resolves its references,
@@ -1739,8 +1739,13 @@ mod tests {
     /// commit. Neither verifies, so a list with `[vrf]` in it would put a tag
     /// on the screen with no code behind it. A media entry walks all three
     /// phases, and is the only kind that claims verify.
+    ///
+    /// The media assertion is here for that reason. Deleting the test as a
+    /// duplicate of the tag-driven ones above would leave nothing saying that
+    /// media is the only kind that lists verify, since every other assertion
+    /// in the module reads a declaration rather than pinning one.
     #[test]
-    fn folder_and_playlist_declare_only_the_phase_they_walk() {
+    fn every_kind_declares_the_phases_its_arm_walks() {
         assert_eq!(
             HierarchyEntryKind::MediaFolder.phases(),
             &[MaterializationPhase::Staging, MaterializationPhase::Write],
@@ -1759,13 +1764,18 @@ mod tests {
         );
     }
 
-    /// A media entry that fails part-way names where it stopped.
+    /// A media entry that stops before the end names the phase it reached.
     ///
-    /// The finish reads the phase the row is on rather than a literal, so the
-    /// two failure points report different tags. One literal for both is the
-    /// shape this replaced: the media arm passed `"vrf"` at a skip and the
-    /// folder and playlist arms passed `"stg"` at a failure, each correct only
-    /// as long as no arm moved.
+    /// The finish reads the phase the row is on rather than a literal, so a
+    /// stop at verify and a stop at commit name different tags. The media
+    /// arm has one non-success exit, the missing-hash skip, which is a warning
+    /// and leaves the row on `[vrf]`; the commit case here is the declared end
+    /// of the media phases rather than a second exit, and pins that the same
+    /// finish reports it.
+    ///
+    /// One literal per exit is the shape this replaced: the media arm passed
+    /// `"vrf"` at its skip and the folder and playlist arms passed `"stg"` at
+    /// a failure, each correct only as long as no arm moved.
     #[test]
     fn a_finished_media_entry_names_the_phase_it_reached() {
         for (phase, tag) in
