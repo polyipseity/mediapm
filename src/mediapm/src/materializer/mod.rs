@@ -2256,6 +2256,67 @@ mod tests {
         }
     }
 
+    /// A media entry that writes its variant walks `[stg]`, `[vrf]`, `[cmt]`.
+    ///
+    /// The fixture the `[cmt]` row of the coverage matrix leaned on was a
+    /// media entry with no variant hash. That entry stops at the verify
+    /// phase and finishes as skipped, so its row never reached the commit
+    /// phase and the tag had nothing behind it. This entry carries a hash the
+    /// workspace can resolve, so the arm gets as far as the write.
+    ///
+    /// The tags are read off the recorded ops rather than off a drawn frame,
+    /// so the assertion is which phase the row was on, not which glyph that
+    /// phase happened to draw. The bytes come back off disk as well, so a row
+    /// cannot claim a commit that did not land.
+    #[tokio::test]
+    async fn a_written_media_entry_walks_stg_vrf_cmt() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+        let payload = b"phase-sequence-bytes";
+        let hash = cas.put(bytes::Bytes::from_static(payload)).await.unwrap();
+        let mut document = folder_and_playlist_document(&hash.to_string());
+        document.hierarchy.retain(|node| matches!(node.kind, HierarchyNodeKind::Media));
+
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
+        sync_hierarchy(
+            &paths,
+            &document,
+            &mut MediaPmState::default(),
+            &cas,
+            true,
+            &ConductorState::new_empty(),
+            &NickelDocument::default(),
+            Some(Arc::new(recording.clone())),
+            Some(Arc::new(overall)),
+        )
+        .await
+        .expect("a media entry holding a resolvable variant hash should write");
+
+        let ops = recording.ops();
+        let tags: Vec<Option<&str>> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProgressOp::SetTruncation { prefix, .. } if prefix.contains("song ") => {
+                    Some(rendered_phase_tag(prefix))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tags,
+            [Some("stg"), Some("vrf"), Some("cmt")],
+            "a written media entry stages, verifies, then commits, and names no other phase; \
+             got {ops:?}",
+        );
+
+        assert_eq!(
+            std::fs::read(root.path().join("song")).unwrap_or_default().as_slice(),
+            payload.as_slice(),
+            "the row reached [cmt] because the variant it staged landed in the library",
+        );
+    }
+
     /// A playlist that fails before its write stays on `[stg]`.
     ///
     /// The playlist arm reaches `[cmt]` at the write, not at the top of the
