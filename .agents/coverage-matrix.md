@@ -1,6 +1,6 @@
 # Coverage matrix
 
-The rows still marked `[missing]` or `[partial]` are deferred to `.pi/plans/plan-2026-10-04T110000-the-deferred-coverage-rows.md`, and none of them is closed by the work recorded here.
+The rows still marked `[missing]` or `[partial]` are deferred to `.pi/plans/plan-2026-10-04T140000-the-last-23-rows.md`, which closes them. `.pi/plans/plan-2026-10-04T110000-the-deferred-coverage-rows.md` groups them by owning subsystem.
 
 ## MultiItemBudget architecture
 
@@ -945,7 +945,7 @@ Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. On
 | Spec item | Test(s) | Status |
 | --- | --- | --- |
 | (a) Repo-wide no-`Option` policy: resolved config types (`MediaRuntimeStorage`/`MediaRuntimeStorage` resolved, `ConductorRuntimeConfig`) hold plain values; `Option` only on boundary structs (`*Latest`); `cache_root_override` is the sole documented `Option` exception (reason: testing only) | `cargo check` clean; `MediaRuntimeStorageLatest`/`ConductorRuntimeConfigLatest` are the boundary types; `MediaRuntimeStorage::cache_root_override` docstring records the exception | [covered] |
-| (b) `sanitize_names` optional at boundary: `HierarchyNodeLatest.sanitize_names: Option<SanitizeNamesConfig>` resolves `None` to `Inherit` via `From`; `HierarchyNode.sanitize_names: SanitizeNamesConfig` resolved | (to be added by the sanitize_names boundary slice) | [partial]: still open; the config boundary slice owns this, not the progress work |
+| (b) `sanitize_names` optional at boundary: `HierarchyNodeLatest.sanitize_names: Option<SanitizeNamesConfig>` resolves `None` to `Inherit` via `From`; `HierarchyNode.sanitize_names: SanitizeNamesConfig` resolved | `hierarchy_node_sanitize_names_absent_resolves_to_inherit`, `hierarchy_node_sanitize_names_explicit_overrides` (unit, `src/mediapm/src/config/hierarchy_types.rs`) | [covered] |
 | (c) Flat `runtime` grouped into sub-records (`paths`, `materialization`, `verification`, `caching`, `lifecycle`, `environment`; top-level `path_sanitization`, `retry_impure`) in both Rust and Nickel v2 contracts | `parity_mediapm_document_serialization_invariants` (runtime object has no `tools` key), `parity_v2_ncl_evaluates_cleanly`, conductor `schema_strictness` 26 tests green | [covered] |
 | (d) v2 changed directly, no backwards compatibility; v1→v2 migration still decodes into grouped v2 shape | `parity_v1_to_v2_migration_output_passes_tightened_envelope` green | [covered] |
 | (e) Conductor `ConductorRuntimeConfig` grouped (`environment` sub-record holds `platform_inherited_env_vars`; top-level `retry_impure`); `ConductorRuntimeConfigLatest` boundary mirrors with `Option` | `regression_valid_conductor_docs_still_round_trip`, `strict_platform_env_rejects_unknown_key`, `strict_platform_env_rejects_empty_env_name` green | [covered] |
