@@ -648,3 +648,83 @@ fn fill_at_its_floor_gives_its_columns_to_the_label_and_count() {
         "a wide row keeps its fill and its timing"
     );
 }
+
+/// A label that renders a tally, a timing, a rate, and an ETA, the way the
+/// conductor's `StepBarLabel` renders the pinned overall workflow row.
+///
+/// Duplicated here because `mediapm-utils` cannot depend on the conductor,
+/// the same duplication `WorkerRowLabel` above carries.
+struct TallyRowLabel;
+
+impl BarLabelTruncation for TallyRowLabel {
+    fn truncate_prefix(&self, max_width: usize) -> String {
+        fit_segments(&[Segment::keep("default".to_string())], max_width)
+    }
+
+    fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
+        let mut segments = Vec::new();
+        if !suffix.count.is_empty() && !suffix.total.is_empty() {
+            segments.push(Segment::keep(format!("{}/{}", suffix.count, suffix.total)));
+        }
+        if !suffix.elapsed.is_empty() {
+            segments.push(Segment::keep(suffix.elapsed.clone()));
+        }
+        if let Some(ref rate) = suffix.rate {
+            segments.push(Segment::keep(rate.clone()));
+        }
+        if let Some(ref eta) = suffix.eta {
+            segments.push(Segment::keep(eta.clone()));
+        }
+        fit_segments(&segments, max_width)
+    }
+}
+
+/// A client label reserves exactly the width of the suffix it draws, so the
+/// column it no longer needs goes to the fill.
+///
+/// The built-in suffix renderer opens `count`/`total` with a space of its own,
+/// and that space is measured from the same renderer the row draws through, so
+/// a row without a client label reserves it and its fill is one cell shorter. A
+/// client label replaces the suffix wholesale, and `fit_segments` joins its
+/// pieces with single spaces and puts nothing in front, so the fitted string is
+/// one column narrower and the fill claims it.
+///
+/// Both rows below carry the same tally, timing, rate, and ETA, and draw the
+/// same text. Only the fill differs, and it differs by exactly the one column
+/// the suffix measurement gave back. This is what moves the workflow screen:
+/// `suffix_w` is one width for the whole frame, so the overall row giving up
+/// that space lengthens the fill on every row of the screen, and the rows that
+/// keep their own text look one cell longer for a reason that is not theirs.
+#[test]
+fn client_suffix_reserves_exactly_what_it_draws_and_the_fill_keeps_the_rest() {
+    let (terminal, term) = mk_with_capacity(2, 80, 1);
+    let screen = terminal.screen().build();
+    let bar = screen.add_bar(12, "default");
+    bar.advance(4);
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "⠼     default ",
+            "████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+            "  4/12 0s 0/d",
+        ),
+        "the built-in suffix renderer opens the tally with a space, and the fill reserves it"
+    );
+
+    let (terminal, term) = mk_with_capacity(2, 80, 1);
+    let screen = terminal.screen().build();
+    let bar = screen.add_bar(12, "default");
+    bar.advance(4);
+    bar.set_truncation(Arc::new(TallyRowLabel));
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "⠼     default ",
+            "█████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+            " 4/12 0s 0/d",
+        ),
+        "a client label draws a suffix with no leading space, and the fill takes that column"
+    );
+}
