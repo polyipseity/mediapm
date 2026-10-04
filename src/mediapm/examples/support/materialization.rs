@@ -120,7 +120,7 @@ use crate::support::{ScreenConfig, capture_terminal};
 /// leave out, a warned entry, a failed one, and names wide enough to clip.
 pub const SCENARIOS: [Scenario; 3] = [
     Scenario::new(ScenarioName::Baseline, 5, render_materialization_screen),
-    Scenario::new(ScenarioName::Dense, 10, render_dense),
+    Scenario::new(ScenarioName::Dense, 12, render_dense),
     Scenario::new(ScenarioName::States, 8, render_states),
 ];
 
@@ -497,15 +497,17 @@ fn commit_media_entry(bar: &ProgressBarHandle, relative_path: &str) {
 
 /// A library band: an entry of every kind the materializer dispatches.
 ///
-/// Seven entries and the two sub-bars a folder with two ZIP variants opens,
-/// under the pinned overall bar. The media entries walk their phases, one
-/// stops on `[vrf]` with its hash resolved, one is still staging, the folder
-/// is unpacking its last variant, and the playlist has been written. That is
-/// the band a real sync of a mixed library fills, which the three-entry
-/// baseline has no room to show.
+/// Eight entries and the three sub-bars that two folders with ZIP variants open,
+/// under the pinned overall bar. The media entries walk their phases, one stops on
+/// `[vrf]` with its hash resolved, one is still staging, and the playlist has been
+/// written. Both folders are on `[wrt]` from the variant each is writing, and each
+/// has a sub-bar under it: the online demo's folder has finished its `thumbnails`
+/// and is part-way through `links`, and the second folder is still on its first
+/// variant. A mixed library has one folder per artist, so two of them is the
+/// ordinary case and the three-entry baseline has no room to show it.
 fn render_dense(config: ScreenConfig) -> String {
     /// Entries in the synthetic library, which is what the overall bar totals.
-    const ENTRY_COUNT: u64 = 7;
+    const ENTRY_COUNT: u64 = 8;
     /// Seed the overall bar carries, from `src/mediapm/src/service.rs:1349`.
     const OVERALL_SEED: &str = "materializing";
     /// Variant that unpacks the JPEG and the WebP.
@@ -522,7 +524,7 @@ fn render_dense(config: ScreenConfig) -> String {
         entry_name: "materializing".to_string(),
         ..Default::default()
     }));
-    let frames = Frames::new(12);
+    let frames = Frames::new(13);
 
     for (index, track) in [BOARDS_TRACK, GEOGADDI_TRACK, WALL_TRACK].into_iter().enumerate() {
         let bar = add_entry_bar(&screen, track);
@@ -577,7 +579,17 @@ fn render_dense(config: ScreenConfig) -> String {
     overall.advance(1);
     frames.draw(&screen, &clock, Duration::from_secs(1));
 
-    // Three entries are still in flight, so the overall bar is active rather
+    // A second folder, still on its first variant. Its own row moves to `[wrt]`
+    // the moment that variant starts, the way the folder above did, and its
+    // sub-bar sits below it while the first folder's sub-bars sit below that one.
+    let second_folder = add_entry_bar(&screen, READABLE_FOLDER_ENTRY);
+    set_entry_phase(&second_folder, READABLE_FOLDER_ENTRY, MaterializationPhase::Write);
+    let second_thumbnails =
+        add_write_bar(&screen, READABLE_FOLDER_ENTRY, THUMBNAILS, THUMBNAIL_MEMBERS);
+    second_thumbnails.advance(1);
+    frames.draw(&screen, &clock, Duration::from_secs(3));
+
+    // Four entries are still in flight, so the overall bar is active rather
     // than closed out.
     overall.set_position(ENTRIES_RETURNED);
     frames.finish(&screen);

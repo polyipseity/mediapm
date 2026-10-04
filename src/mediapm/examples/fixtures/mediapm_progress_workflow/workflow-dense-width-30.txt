@@ -1,9 +1,12 @@
-⠸             default s1
-⠹             default s2
-⠙             default s3
-⠋             default s4
-⠇             default s5
-⠧             default s6
-⠦             default s7
-⠦             default s8
-⠏     default s8 -tagger 8/24
+⠏                 [idle]
+⠏                 [idle]
+⠏                 [idle]
+⠏                 [idle]
+⠏                 [idle]
+⠏                 [idle]
+⠏             [W] [idle]
+⠇             default s8
+⠧             default s9
+⠦            default s10
+⠦            default s11
+⠏     default s8 -tagger 7/26

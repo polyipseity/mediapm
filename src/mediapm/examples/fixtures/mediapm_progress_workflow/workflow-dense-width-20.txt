@@ -1,9 +1,12 @@
-⠸      default
-⠹      default
-⠙      default
-⠋      default
+⠏       [idle]
+⠏       [idle]
+⠏       [idle]
+⠏       [idle]
+⠏       [idle]
+⠏       [idle]
+⠏          [W]
 ⠇      default
 ⠧      default
 ⠦      default
 ⠦      default
-⠏      default 8/24
+⠏      default 7/26

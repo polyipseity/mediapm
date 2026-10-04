@@ -71,14 +71,14 @@ use crate::support::{ScreenConfig, capture_terminal};
 
 /// The workflow screen in each of the three shapes it is captured in.
 ///
-/// `baseline` draws the screen as it shipped. `dense` runs a whole worker pool
-/// at once so the band of slots is long. `states` draws tool names and a version
-/// wider than any committed transcript, which is the only thing the other two
-/// leave out once the baseline has already drawn a warned slot, a failed slot and
-/// an idle one.
+/// `baseline` draws the screen as it shipped. `dense` runs a whole worker pool at
+/// once and is read while the level is unwinding, so active, idle and warned
+/// slots share the band. `states` draws tool names and a version wider than any
+/// committed transcript, which is the only thing the other two leave out once the
+/// baseline has already drawn a warned slot, a failed slot and an idle one.
 pub const SCENARIOS: [Scenario; 3] = [
     Scenario::new(ScenarioName::Baseline, 7, render_workflow_screen),
-    Scenario::new(ScenarioName::Dense, 9, render_dense),
+    Scenario::new(ScenarioName::Dense, 12, render_dense),
     Scenario::new(ScenarioName::States, 7, render_states),
 ];
 
@@ -368,42 +368,47 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     grid.contents()
 }
 
-/// A pool with every slot busy, which is what a wide host looks like.
+/// A wide host's worker pool, caught while a level of it is unwinding.
 ///
 /// The coordinator sizes the pool from the host's available parallelism and lets
 /// `MEDIAPM_CONDUCTOR_WORKER_POOL_SIZE` override it
 /// (`orchestration/config.rs:40`), so a machine with room for it runs a level's
-/// steps side by side and the screen fills with active slots. The baseline leaves
-/// two of its five slots running and puts the other three through a warning, a
-/// failure and a return to idle; this one has nothing in it but running steps.
+/// steps side by side. Eleven slots is a host with the cores to fill it, which the
+/// five-slot baseline never draws.
 ///
-/// There is no per-step bar in this scenario, and that is a measurement rather
-/// than an oversight. A band wide enough to want one stops being reproducible:
-/// past a certain number of animating rows at once, one row's spinner glyph comes
-/// out a step different depending on how tall the terminal was, which
-/// [`Scenario::render_at`](crate::scenarios::Scenario::render_at) refuses as a
-/// frame that moves with the height. Measured on 2026-10-03, eight animating rows
-/// reproduce at every width from 8 to 500, ten of them fail at width 8 about four
-/// runs in ten, and sixteen of them fail from width 8 to width 15 on every run.
-/// The draw target throttles redraws against the wall clock and every unfinished
-/// bar animates on every frame, so a wide band is the likely cause. The bar count
-/// here is the largest this renderer can hold still, not the largest a host could
-/// reach.
+/// The frame is caught part-way through the level rather than at the moment it
+/// starts. A level that has just begun is eleven copies of the same `[active]`
+/// row, and what a band this wide is for is the three slot states side by side.
+/// Seven of the eleven steps have returned: six left their slots on `[idle]`,
+/// and one failed with a retry left, so its slot carries the `W` the coordinator
+/// puts on a step it will run again. The other four are still running. The pinned
+/// overall row names one of those four rather than the step that finished last,
+/// which is the state it is in whenever a level is in flight.
 ///
-/// The steps carry the six managed tools' bare ids, which is what a conductor
-/// step names (`WorkerBarLabel.tool` is `ToolSpec.name`, and a managed tool's
+/// There is no per-step bar here, and that is a shape rather than an oversight. A
+/// conductor step opens no bar of its own, so a band this wide would carry one
+/// only to make the row count a number with nothing behind it.
+///
+/// The steps name the six managed tools' bare ids plus two builtins, which is
+/// what a conductor step holds in `WorkerBarLabel.tool`: a managed tool's
 /// generated-document key is its id plus a content hash, while the spec's own
-/// name is the bare id). A workflow reaches for the same tool from more than one
-/// step, so ffmpeg and yt-dlp each appear twice.
+/// name is the bare id. A workflow reaches for the same tool from more than one
+/// step, so several names repeat.
 #[must_use]
 fn render_dense(config: ScreenConfig) -> String {
     /// Slots the pool holds. A pool this size is a host with the cores to fill
     /// it, which is the case the baseline never draws.
-    const POOL_SIZE: usize = 8;
-    /// Steps in the workflow, which is what the overall bar totals. The level
-    /// below runs eight of them, so the overall bar is part-way through the whole
+    const POOL_SIZE: usize = 11;
+    /// Steps in the whole workflow, which is what the overall bar totals. A level
+    /// of eleven is one band of it, so the overall bar reads part-way through the
     /// workflow rather than through the level.
-    const STEP_COUNT: u64 = 24;
+    const STEP_COUNT: u64 = 26;
+    /// Steps whose slot has gone back to idle by the last frame.
+    const RETURNED: usize = 6;
+    /// The slot the coordinator will retry a step on. It follows the returned
+    /// ones because a step that fails and retries does so after the steps beside
+    /// it have finished.
+    const RETRYING: usize = RETURNED;
     /// Seed the coordinator installs on every worker slot, quoted from
     /// `coordinator.rs:348`.
     const WORKFLOW_SEED: &str = "idle";
@@ -417,6 +422,9 @@ fn render_dense(config: ScreenConfig) -> String {
         ("s6", "yt-dlp"),
         ("s7", "sd"),
         ("s8", "media-tagger"),
+        ("s9", "import"),
+        ("s10", "archive"),
+        ("s11", "ffmpeg"),
     ];
 
     let (terminal, grid, clock) = capture_terminal(config);
@@ -435,16 +443,42 @@ fn render_dense(config: ScreenConfig) -> String {
     screen.tick();
     clock.advance(Duration::from_secs(1));
 
-    // Each slot takes its step and stays on it. The frame is caught mid-level,
-    // so no slot has gone back to idle and no slot has failed.
+    // Every step in the level is dispatched before any of them returns, which is
+    // how wide the band gets.
     for (index, (step_id, tool)) in LEVEL_STEPS.iter().enumerate() {
         dispatch(&workers[index], "default", step_id, tool);
-        dispatch_overall(&overall, step_id, tool);
-        overall.advance(1);
         screen.tick();
         clock.advance(Duration::from_secs(1 + index as u64));
     }
-    overall.finish_success();
+
+    // The steps that came back first drop their identifiers on the way to
+    // `[idle]`, and the coordinator counts each of them as done.
+    for bar in workers.iter().take(RETURNED) {
+        WorkerSlot::Idle.apply(bar);
+        bar.advance(1);
+        bar.finish_success();
+        release_overall(&overall);
+        overall.advance(1);
+        screen.tick();
+        clock.advance(Duration::from_secs(2));
+    }
+
+    // The next step failed with a retry left, so its slot takes the `W` marker.
+    screen.tick();
+    clock.advance(Duration::from_secs(3));
+    WorkerSlot::PendingRetry.apply(&workers[RETRYING]);
+    workers[RETRYING].advance(1);
+    workers[RETRYING].finish_warning();
+    release_overall(&overall);
+    overall.advance(1);
+    screen.tick();
+    clock.advance(Duration::from_secs(2));
+
+    let (running_step, running_tool) = LEVEL_STEPS[RETRYING + 1];
+    dispatch_overall(&overall, running_step, running_tool);
+    overall.set_position(RETURNED as u64 + 1);
+    screen.tick();
+    overall.finish_warning();
     screen.join();
     drop(terminal);
     grid.contents()

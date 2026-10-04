@@ -2,9 +2,11 @@
 ⠏     on.wav [cmt]
 ⠏     h?.m4a [cmt]
 ⠹     ce.m4a [vrf]
-⠼     al.m4a [stg]
-⠴
+⠸     al.m4a [stg]
+⠼
 ⠏
 ⠇
 ⠏     l.m3u8 [cmt]
-⠇     aterializing
+⠙     You Up [wrt]
+⠸       thumbnails
+⠋     aterializing
