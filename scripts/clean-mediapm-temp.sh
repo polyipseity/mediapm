@@ -22,10 +22,10 @@ for arg in "$@"; do
     esac
 done
 
-# A temp root that does not exist cannot be scanned, and an unscanned sweep
-# prints the same "nothing found" line a real clean sweep prints. Fail instead
-# of letting a caller read the silent case as a clean one.
-if [[ ! -d "$tmp_root" ]]; then
+# A temp root that does not exist, or that cannot be enumerated, produces a
+# sweep indistinguishable from a clean one: `find`'s own failure is discarded
+# by the process substitution below. Fail instead.
+if [[ ! -d "$tmp_root" || ! -r "$tmp_root" || ! -x "$tmp_root" ]]; then
     echo "no such directory: $tmp_root" >&2
     exit 1
 fi

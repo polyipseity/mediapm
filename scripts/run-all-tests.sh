@@ -66,6 +66,13 @@ dry_run_out="$(scripts/clean-mediapm-temp.sh --dry-run 2>&1)" || {
     echo "error: mediapm temp-dir sweep failed: $dry_run_out" >&2
     exit 1
 }
+# The capture above also swallows the janitor's own diagnostics on the
+# success path, which is where they are least expected. Anything that is not
+# one of the janitor's output-contract lines goes back out on stderr, so a
+# warning it grows later cannot vanish into this variable.
+printf '%s\n' "$dry_run_out" |
+    grep -vE '^(would remove: |removed: |would remove [0-9]+ mediapm temp director\(ies\)$|removed [0-9]+ mediapm temp director\(ies\)$|no mediapm temp directories found$)' >&2 ||
+    true # check-suppress:suppression_doc: grep exits 1 when every line is a known-good one, which is the passing case.
 if printf '%s\n' "$dry_run_out" | grep -q 'would remove'; then
     echo "error: test suite left mediapm temp dirs behind" >&2
     exit 1

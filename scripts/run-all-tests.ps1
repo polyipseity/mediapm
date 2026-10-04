@@ -80,6 +80,14 @@ if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("error: mediapm temp-dir sweep failed: $($dryRun -join ' ')")
     exit 1
 }
+# The capture above also swallows the janitor's own diagnostics on the success
+# path, which is where they are least expected. Anything that is not one of
+# the janitor's output-contract lines goes back out on stderr, so a warning it
+# grows later cannot vanish into $dryRun. Parity with run-all-tests.sh.
+$knownOutput = '^(would remove: |removed: |would remove \d+ mediapm temp director\(ies\)|removed \d+ mediapm temp director\(ies\)|no mediapm temp directories found)$'
+foreach ($line in @($dryRun | Where-Object { [string]$_ -notmatch $knownOutput })) {
+    [Console]::Error.WriteLine([string]$line)
+}
 if (@($dryRun | Where-Object { $_ -like 'would remove:*' }).Count -gt 0) {
     [Console]::Error.WriteLine('error: test suite left mediapm temp dirs behind')
     exit 1

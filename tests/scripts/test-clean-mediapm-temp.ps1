@@ -8,8 +8,9 @@
 #   2. Static: the janitor source must contain no migration-era workspace
 #      globs (cli-add-hierarchy / examples/artifacts / stale stamped) - the
 #      janitor scope is the temp-root three prefixes ONLY.
-#   3. Temp root preconditions: a temp root that does not exist must fail and
-#      name that path; an existing empty one must report a clean sweep.
+#   3. Temp root preconditions: a temp root that does not exist, or that
+#      exists but cannot be enumerated, must fail and name that path; an
+#      existing empty one must report a clean sweep.
 #
 # Runs only when pwsh is available (the `mediapm-tests` crate probes and
 # skips). CI-covered via the Windows workspace-tests job. Behavioral twin of
@@ -103,14 +104,14 @@ function Invoke-JanitorAtRoot {
 }
 
 # --- Preconditions: a missing temp root must fail, an existing empty one passes.
-$missingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("clean-mediapm-temp-missing-" + [System.Guid]::NewGuid().ToString('N'))
+$missingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mediapm-clean-mediapm-temp-missing-" + [System.Guid]::NewGuid().ToString('N'))
 $missing = Invoke-JanitorAtRoot -Root $missingRoot -JanitorArgs @('--dry-run')
 if ($missing.ExitCode -eq 0) { Fail "janitor exited 0 for a missing temp root ($missingRoot)" }
 if (-not $missing.Output.Contains("no such directory: $missingRoot")) {
     Fail "missing-root diagnostic did not name ${missingRoot}: $($missing.Output)"
 }
 
-$emptyRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("clean-mediapm-temp-empty-" + [System.Guid]::NewGuid().ToString('N'))
+$emptyRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mediapm-clean-mediapm-temp-empty-" + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $emptyRoot | Out-Null
 try {
     $empty = Invoke-JanitorAtRoot -Root $emptyRoot -JanitorArgs @('--dry-run')
@@ -120,6 +121,31 @@ try {
     }
 } finally {
     Remove-Item -LiteralPath $emptyRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# A temp root that exists but cannot be enumerated is the same hazard as a
+# missing one: Get-ChildItem throws UnauthorizedAccessException, which is
+# terminating under $ErrorActionPreference = 'Stop', so this twin already
+# fails closed where the sh twin used to report a clean run it never
+# performed. Assert the exit code only: the diagnostic is .NET's, not the
+# janitor's. SetUnixFileMode is .NET 7+ and Unix-only, and root ignores the
+# permission bits, so the case is skipped on Windows and as root.
+if (-not $IsWindows) {
+    $deniedRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mediapm-clean-mediapm-temp-denied-" + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $deniedRoot | Out-Null
+    [System.IO.File]::SetUnixFileMode($deniedRoot, [System.IO.UnixFileMode]::None)
+    try {
+        if ((& id -u) -eq 0) {
+            Write-Output 'test-clean-mediapm-temp.ps1: skipped denied-root case (running as root)'
+        } else {
+            $denied = Invoke-JanitorAtRoot -Root $deniedRoot -JanitorArgs @('--dry-run')
+            if ($denied.ExitCode -eq 0) { Fail "janitor exited 0 for a temp root it cannot enumerate ($deniedRoot)" }
+        }
+    } finally {
+        # Restore the mode so Remove-Item can reach inside the dir.
+        [System.IO.File]::SetUnixFileMode($deniedRoot, ([System.IO.UnixFileMode]::UserRead -bor [System.IO.UnixFileMode]::UserWrite -bor [System.IO.UnixFileMode]::UserExecute))
+        Remove-Item -LiteralPath $deniedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # --- Static part: migration-era workspace globs must be gone.

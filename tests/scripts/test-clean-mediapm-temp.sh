@@ -8,8 +8,9 @@
 #   2. Static: the janitor source must contain no migration-era workspace
 #      globs (cli-add-hierarchy / examples/artifacts / stale stamped): the
 #      janitor scope is the temp-root three prefixes ONLY.
-#   3. Temp root preconditions: a $TMPDIR that does not exist must fail and
-#      name that path; an existing empty one must report a clean sweep.
+#   3. Temp root preconditions: a $TMPDIR that does not exist, or that exists
+#      but cannot be enumerated, must fail and name that path; an existing
+#      empty one must report a clean sweep.
 #
 # POSIX sh (driven by the `mediapm-tests` crate via `cargo test-all`; also
 # runnable standalone).
@@ -79,6 +80,25 @@ case "$empty_out" in
     'no mediapm temp directories found') ;;
     *) fail "empty temp root did not report a clean sweep: $empty_out" ;;
 esac
+
+# A temp root that exists but cannot be enumerated is the same hazard as a
+# missing one: `find` prints its own diagnostic, its exit status dies inside
+# the janitor's process substitution, and the sweep reports a clean run it
+# never performed. Skipped as root, where the permission bits are advisory.
+if [ "$(id -u)" -ne 0 ]; then
+    denied_root="$tmpdir/denied-root"
+    mkdir -p "$denied_root"
+    chmod 000 "$denied_root"
+    if TMPDIR="$denied_root" "$janitor" --dry-run >/dev/null 2>"$tmpdir/denied.err"; then
+        fail "janitor exited 0 for a temp root it cannot enumerate ($denied_root)"
+    fi
+    case "$(cat "$tmpdir/denied.err")" in
+        *"no such directory: $denied_root"*) ;;
+        *) fail "denied-root diagnostic did not name $denied_root: $(cat "$tmpdir/denied.err")" ;;
+    esac
+    # Restore the mode so the EXIT trap can reach inside the dir.
+    chmod 755 "$denied_root"
+fi
 
 # --- Static part: migration-era workspace globs must be gone.
 if grep -qE 'cli-add-hierarchy|examples/artifacts|stale stamped' "$janitor"; then
