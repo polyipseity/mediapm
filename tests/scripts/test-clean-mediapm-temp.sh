@@ -11,6 +11,8 @@
 #   3. Temp root preconditions: a $TMPDIR that does not exist, or that exists
 #      but cannot be enumerated, must fail and name that path; an existing
 #      empty one must report a clean sweep.
+#   4. Scan failure: a `find` that dies part way through must fail the
+#      janitor, sweep nothing, and leave no listing file behind.
 #
 # POSIX sh (driven by the `mediapm-tests` crate via `cargo test-all`; also
 # runnable standalone).
@@ -98,6 +100,86 @@ if [ "$(id -u)" -ne 0 ]; then
     esac
     # Restore the mode so the EXIT trap can reach inside the dir.
     chmod 755 "$denied_root"
+fi
+
+# --- Scan failure: a find that dies part way through must not read as clean.
+# `-maxdepth 1` opens the temp root and stats each entry, but never opens a
+# depth-1 entry, so no mode, ACL, or owner on one can make the real find fail
+# and there is nothing to provoke on the filesystem. The stub is the failure
+# instead: a find that enumerated the root and died before reporting the
+# sweep incomplete, which is the shape a truncated scan actually takes.
+stub_bin="$tmpdir/stub-bin"
+stub_find="$tmpdir/stub-find"
+mkdir -p "$stub_bin" "$stub_find"
+
+cat >"$stub_find/find" <<'STUB'
+#!/bin/sh
+# stand in for a find that listed the root and then died
+printf '%s\0' "$1/mediapm-artifact-one" "$1/mediapm-artifact-two"
+exit 1
+STUB
+chmod +x "$stub_find/find"
+
+# The second stub reports where mktemp put the listing, so the leak assertion
+# names the file the janitor actually created. Guessing where to look would
+# not work: GNU mktemp honours TMPDIR and writes into the sweep root, the
+# macOS one ignores TMPDIR and writes into the per-user temp dir.
+cat >"$stub_bin/mktemp" <<'STUB'
+#!/bin/sh
+# stand in for mktemp, reporting the path it handed back
+PATH="${PATH#*:}"
+listing="$(mktemp "$@")" || exit $?
+printf '%s\n' "$listing" >"$MEDIAPM_TEST_LISTING_CAPTURE"
+printf '%s\n' "$listing"
+STUB
+chmod +x "$stub_bin/mktemp"
+
+scan_root="$tmpdir/scan-root"
+mkdir -p "$scan_root/mediapm-artifact-one" "$scan_root/mediapm-artifact-two"
+capture="$tmpdir/listing-path"
+
+if PATH="$stub_find:$stub_bin:$PATH" TMPDIR="$scan_root" MEDIAPM_TEST_LISTING_CAPTURE="$capture" \
+    "$janitor" >"$tmpdir/scan.out" 2>"$tmpdir/scan.err"; then
+    fail "janitor exited 0 for a find that died part way through ($scan_root)"
+fi
+
+# Nothing may be swept from a scan that never finished: a caller reading
+# "removed 2" cannot tell the entry after it was never looked at.
+case "$(cat "$tmpdir/scan.out")" in
+    'no mediapm temp directories found') fail "a failed scan reported a clean sweep" ;;
+    'removed '*) fail "a failed scan swept entries and claimed success: $(cat "$tmpdir/scan.out")" ;;
+    *) ;;
+esac
+test -d "$scan_root/mediapm-artifact-one" || fail "a failed scan removed mediapm-artifact-one"
+test -d "$scan_root/mediapm-artifact-two" || fail "a failed scan removed mediapm-artifact-two"
+
+# The listing must not outlive the run that created it, and this run exits
+# through the find-failure branch.
+test -s "$capture" || fail "the stub mktemp recorded no listing path"
+if [ -e "$(cat "$capture")" ]; then
+    fail "a failed sweep left its listing behind: $(cat "$capture")"
+fi
+
+# The other way out of the loop is `rm -rf` refusing a tree, which `set -e`
+# turns into an immediate abort with the listing still on disk. Only macOS
+# offers a non-privileged way to make rm refuse (a BSD file flag), so this
+# case is Darwin-only.
+if [ "$(uname -s)" = "Darwin" ] && [ "$(id -u)" -ne 0 ] && command -v chflags >/dev/null 2>&1; then
+    stuck_root="$tmpdir/stuck-root"
+    mkdir -p "$stuck_root/mediapm-artifact-stuck/inner"
+    chflags uchg "$stuck_root/mediapm-artifact-stuck/inner"
+    rm -f "$capture"
+    # Only the mktemp stub is on PATH here: the real find has to run for the
+    # loop to reach the tree rm refuses.
+    if PATH="$stub_bin:$PATH" TMPDIR="$stuck_root" MEDIAPM_TEST_LISTING_CAPTURE="$capture" \
+        "$janitor" >"$tmpdir/stuck.out" 2>"$tmpdir/stuck.err"; then
+        fail "janitor exited 0 for a tree it cannot remove ($stuck_root)"
+    fi
+    chflags -R nouchg "$stuck_root"
+    test -s "$capture" || fail "the stub mktemp recorded no listing path for the aborted sweep"
+    if [ -e "$(cat "$capture")" ]; then
+        fail "an aborted sweep left its listing behind: $(cat "$capture")"
+    fi
 fi
 
 # --- Static part: migration-era workspace globs must be gone.

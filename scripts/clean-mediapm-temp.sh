@@ -23,8 +23,7 @@ for arg in "$@"; do
 done
 
 # A temp root that does not exist, or that cannot be enumerated, produces a
-# sweep indistinguishable from a clean one: `find`'s own failure is discarded
-# by the process substitution below. Fail instead.
+# sweep indistinguishable from a clean one. Fail instead.
 if [[ ! -d "$tmp_root" || ! -r "$tmp_root" || ! -x "$tmp_root" ]]; then
     echo "no such directory: $tmp_root" >&2
     exit 1
@@ -49,9 +48,25 @@ remove_if_exists() {
     removed=$((removed + 1))
 }
 
+# `find` runs into a file rather than a process substitution: a process
+# substitution is not a compound command, so its exit status reaches neither
+# the loop nor `set -e`, and a `find` that dies part way through reports a
+# clean sweep it never performed. The whole root is listed before anything is
+# removed, so a failed scan leaves every entry in place instead of sweeping
+# the part it happened to see. The listing is named `tmp.*`, which the
+# `mediapm-*` glob below cannot match, so the scan never sees its own file.
+# The EXIT trap covers every exit after this point, including the one `set -e`
+# takes when `rm -rf` refuses a tree part way down.
+listing="$(mktemp)"
+trap 'rm -f "$listing"' EXIT
+
+if ! find "$tmp_root" -maxdepth 1 -type d -name 'mediapm-*' -print0 >"$listing"; then
+    exit 1
+fi
+
 while IFS= read -r -d '' dir; do
     remove_if_exists "$dir"
-done < <(find "$tmp_root" -maxdepth 1 -type d -name 'mediapm-*' -print0)
+done <"$listing"
 
 if [[ "$removed" -eq 0 ]]; then
     echo "no mediapm temp directories found"
