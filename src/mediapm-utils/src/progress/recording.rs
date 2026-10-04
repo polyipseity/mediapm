@@ -1,16 +1,64 @@
 //! Recording progress tracker for testing progress-bar behavior without a
 //! terminal.
 //!
-//! [`RecordingProgressTracker::ops`] to retrieve the recorded sequence for
-//! verification.
+//! [`RecordingProgressTracker::recorded`] returns the log with the bar each
+//! operation came from, so a test can count what one row emitted without also
+//! counting another row's. [`RecordingProgressTracker::ops`] drops the bar
+//! identity and is for tests that only care about the sequence.
 //!
 //! Only available when the `progress` feature is enabled.
 
 #![allow(clippy::missing_panics_doc)]
 
 use crate::progress::BarStyle;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+
+/// Which bar a recorded operation came from.
+///
+/// Indices are handed out in the order bars were added, so the first bar a
+/// tracker adds is `Index(0)` for every screen that opens with an overall row.
+/// An index rather than a label because the coordinator relabels a worker slot
+/// on every dispatch and every outcome: a label is only as stable as the code
+/// under test, so a test keyed on one fails or passes for the wrong reason when
+/// the label text moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BarId {
+    /// The `n`th bar added to the tracker, counting from 0.
+    Index(usize),
+    /// A standalone handle that owns its log and belongs to no group, so it
+    /// has no index among a tracker's bars.
+    Standalone,
+}
+
+impl BarId {
+    /// Return the bar's index, or `None` for a standalone handle.
+    ///
+    /// A test that wants "every bar except the overall row" compares against
+    /// [`BarId::Index`] values and lets [`BarId::Standalone`] fall out, which
+    /// is what a standalone handle deserves since it is not one of the group's
+    /// rows.
+    #[must_use]
+    pub fn index(self) -> Option<usize> {
+        match self {
+            Self::Index(index) => Some(index),
+            Self::Standalone => None,
+        }
+    }
+}
+
+/// A recorded operation together with the bar it was recorded from.
+///
+/// A screen draws several rows at once and any of them can emit a status
+/// marker, so an op on its own cannot say which row it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedProgressOp {
+    /// Bar the operation belongs to.
+    pub bar: BarId,
+    /// The operation as the bar received it.
+    pub op: ProgressOp,
+}
 
 /// Recorded progress operation for test assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,14 +135,18 @@ pub enum ProgressOp {
 /// operation log.
 #[derive(Clone)]
 pub struct RecordingProgressTracker {
-    ops: Arc<Mutex<Vec<ProgressOp>>>,
+    ops: Arc<Mutex<Vec<RecordedProgressOp>>>,
+    next_bar_index: Arc<AtomicUsize>,
 }
 
 impl RecordingProgressTracker {
     /// Create a new empty recording tracker.
     #[must_use]
     pub fn new() -> Self {
-        Self { ops: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            ops: Arc::new(Mutex::new(Vec::new())),
+            next_bar_index: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     /// Create a tracker with a pre-recorded overall bar.
@@ -119,16 +171,20 @@ impl RecordingProgressTracker {
     /// operation log.
     #[must_use]
     pub fn add_bar(&self, total: u64, label: &str) -> RecordingTrackedHandle {
-        self.ops
-            .lock()
-            .expect("recording lock")
-            .push(ProgressOp::AddBar { total, label: label.to_string() });
+        let bar = BarId::Index(self.next_bar_index.fetch_add(1, Ordering::AcqRel));
+        self.push(bar, ProgressOp::AddBar { total, label: label.to_string() });
         RecordingTrackedHandle {
             ops: self.ops.clone(),
+            bar,
             total: Some(total),
             start_time: RwLock::new(Instant::now()),
             finished_elapsed: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Append one operation for `bar`.
+    fn push(&self, bar: BarId, op: ProgressOp) {
+        self.ops.lock().expect("recording lock").push(RecordedProgressOp { bar, op });
     }
 
     /// Record adding a bar whose prefix fields are given as components.
@@ -145,10 +201,24 @@ impl RecordingProgressTracker {
         self.add_bar(total, &prefix.display_label())
     }
 
-    /// Return a snapshot of all recorded operations.
+    /// Return a snapshot of all recorded operations with their bar identity.
+    ///
+    /// This is what a per-row assertion needs: filter on
+    /// [`RecordedProgressOp::bar`] before counting, so an overall row's
+    /// terminal marker cannot land in a worker slot's count.
+    #[must_use]
+    pub fn recorded(&self) -> Vec<RecordedProgressOp> {
+        self.ops.lock().expect("recording lock").clone()
+    }
+
+    /// Return a snapshot of the recorded operations with the bar identity
+    /// dropped.
+    ///
+    /// Every bar lands in one sequence, so this cannot answer "how many did
+    /// this row do". Use [`recorded`](Self::recorded) when the row matters.
     #[must_use]
     pub fn ops(&self) -> Vec<ProgressOp> {
-        self.ops.lock().expect("recording lock").clone()
+        self.ops.lock().expect("recording lock").iter().map(|entry| entry.op.clone()).collect()
     }
 
     /// Clear all recorded operations.
@@ -166,7 +236,8 @@ impl Default for RecordingProgressTracker {
 /// A recording tracked handle that records operations into the shared log
 /// of its parent [`RecordingProgressTracker`].
 pub struct RecordingTrackedHandle {
-    ops: Arc<Mutex<Vec<ProgressOp>>>,
+    ops: Arc<Mutex<Vec<RecordedProgressOp>>>,
+    bar: BarId,
     total: Option<u64>,
     start_time: RwLock<Instant>,
     finished_elapsed: Arc<Mutex<Option<Duration>>>,
@@ -176,6 +247,7 @@ impl Clone for RecordingTrackedHandle {
     fn clone(&self) -> Self {
         Self {
             ops: Arc::clone(&self.ops),
+            bar: self.bar,
             total: self.total,
             start_time: RwLock::new(*self.start_time.read().expect("recording start_time lock")),
             finished_elapsed: Arc::clone(&self.finished_elapsed),
@@ -186,11 +258,13 @@ impl Clone for RecordingTrackedHandle {
 impl RecordingTrackedHandle {
     /// Create a standalone recording handle (not managed by a tracker).
     ///
-    /// The handle has its own private operation log.
+    /// The handle has its own private operation log, so its operations carry
+    /// [`BarId::Standalone`] rather than an index into some group's bars.
     #[must_use]
     pub fn new(total: u64) -> Self {
         Self {
             ops: Arc::new(Mutex::new(Vec::new())),
+            bar: BarId::Standalone,
             total: Some(total),
             start_time: RwLock::new(Instant::now()),
             finished_elapsed: Arc::new(Mutex::new(None)),
@@ -205,10 +279,21 @@ impl RecordingTrackedHandle {
     pub fn disabled() -> Self {
         Self {
             ops: Arc::new(Mutex::new(Vec::new())),
+            bar: BarId::Standalone,
             total: None,
             start_time: RwLock::new(Instant::now()),
             finished_elapsed: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Return the bar this handle records for.
+    ///
+    /// Set once when the handle is created, from the tracker's add order, and
+    /// never changed afterwards, so a filter on it stays valid for the whole
+    /// run even though the row's label text moves.
+    #[must_use]
+    pub fn bar(&self) -> BarId {
+        self.bar
     }
 
     /// Return the total number of work units (0 = indeterminate/disabled).
@@ -221,22 +306,22 @@ impl RecordingTrackedHandle {
     /// [`total()`](RecordingTrackedHandle::total) — use
     /// [`ops()`](RecordingTrackedHandle::ops) to verify).
     pub fn set_total(&self, total: u64) {
-        self.ops.lock().expect("recording lock").push(ProgressOp::SetTotal { total });
+        self.push(ProgressOp::SetTotal { total });
     }
 
     /// Advance the handle by `delta` work units.
     pub fn advance(&self, delta: u64) {
-        self.ops.lock().expect("recording lock").push(ProgressOp::Advance { delta });
+        self.push(ProgressOp::Advance { delta });
     }
 
     /// Jump to an absolute position.
     pub fn set_position(&self, pos: u64) {
-        self.ops.lock().expect("recording lock").push(ProgressOp::SetPosition { pos });
+        self.push(ProgressOp::SetPosition { pos });
     }
 
     /// Set prefix components.
     pub fn set_prefix_components(&self, components: crate::progress::PrefixComponents) {
-        self.ops.lock().expect("recording lock").push(ProgressOp::SetPrefixComponents {
+        self.push(ProgressOp::SetPrefixComponents {
             marker: components.marker,
             tool_name: components.tool_name,
             version: components.version,
@@ -248,10 +333,7 @@ impl RecordingTrackedHandle {
 
     /// Set suffix components.
     pub fn set_suffix_components(&self, components: crate::progress::SuffixComponents) {
-        self.ops
-            .lock()
-            .expect("recording lock")
-            .push(ProgressOp::SetSuffixComponents { components });
+        self.push(ProgressOp::SetSuffixComponents { components });
     }
 
     /// Install a client-defined truncation implementation.
@@ -262,7 +344,7 @@ impl RecordingTrackedHandle {
         let prefix = truncation.truncate_prefix(usize::MAX);
         let suffix =
             truncation.truncate_suffix(usize::MAX, &crate::progress::SuffixComponents::default());
-        self.ops.lock().expect("recording lock").push(ProgressOp::SetTruncation { prefix, suffix });
+        self.push(ProgressOp::SetTruncation { prefix, suffix });
     }
 
     /// Set the visual style for the bar (see [`BarStyle`]).
@@ -280,25 +362,25 @@ impl RecordingTrackedHandle {
 
     /// Mark as finished with success.
     pub fn finish_success(&self) {
-        self.ops.lock().expect("recording lock").push(ProgressOp::FinishSuccess);
+        self.push(ProgressOp::FinishSuccess);
         self.mark_finished();
     }
 
     /// Mark as finished with an error.
     pub fn finish_error(&self) {
-        self.ops.lock().expect("recording lock").push(ProgressOp::FinishError);
+        self.push(ProgressOp::FinishError);
         self.mark_finished();
     }
 
     /// Mark as finished with a non-fatal warning.
     pub fn finish_warning(&self) {
-        self.ops.lock().expect("recording lock").push(ProgressOp::FinishWarning);
+        self.push(ProgressOp::FinishWarning);
         self.mark_finished();
     }
 
     /// Finish and clear from display.
     pub fn finish_and_clear(&self) {
-        self.ops.lock().expect("recording lock").push(ProgressOp::FinishAndClear);
+        self.push(ProgressOp::FinishAndClear);
         self.mark_finished();
     }
 
@@ -306,17 +388,25 @@ impl RecordingTrackedHandle {
     /// resets elapsed tracking, and marks the bar dirty so the next
     /// tick redraws it as active.
     pub fn restart(&self) {
-        self.ops.lock().expect("recording lock").push(ProgressOp::Restart);
+        self.push(ProgressOp::Restart);
         *self.finished_elapsed.lock().expect("recording finished_elapsed lock") = None;
         *self.start_time.write().expect("recording start_time lock") = Instant::now();
     }
 
-    /// Return a snapshot of recorded operations for this handle.
+    /// Return a snapshot of recorded operations for this handle with the bar
+    /// identity dropped.
     ///
     /// When created via [`RecordingProgressTracker::add_bar`], this
     /// returns the same shared log as all handles from that tracker.
     #[must_use]
     pub fn ops(&self) -> Vec<ProgressOp> {
+        self.ops.lock().expect("recording lock").iter().map(|entry| entry.op.clone()).collect()
+    }
+
+    /// Return a snapshot of recorded operations for this handle, each tagged
+    /// with this handle's [`BarId`].
+    #[must_use]
+    pub fn recorded(&self) -> Vec<RecordedProgressOp> {
         self.ops.lock().expect("recording lock").clone()
     }
 
@@ -338,5 +428,10 @@ impl RecordingTrackedHandle {
         if elapsed.is_none() {
             *elapsed = Some(self.start_time.read().expect("recording start_time lock").elapsed());
         }
+    }
+
+    /// Append one operation tagged with this handle's bar identity.
+    fn push(&self, op: ProgressOp) {
+        self.ops.lock().expect("recording lock").push(RecordedProgressOp { bar: self.bar, op });
     }
 }
