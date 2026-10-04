@@ -21,6 +21,8 @@ mod tool_sync;
 mod all_platform;
 /// Dual-write strategy: state.json always-writes, NCL files skip when unchanged.
 mod dual_write;
+/// Re-sync over an unchanged library: the second run must skip no path.
+mod resync;
 /// Runtime root `.gitignore` creation on service construction.
 mod runtime_gitignore;
 /// State JSON persistence and migration tests.
