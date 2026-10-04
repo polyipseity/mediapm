@@ -14,7 +14,10 @@ use mediapm_utils::progress::{
     TestTimeSource, fit_segments,
 };
 
-use super::common::{mk_with_capacity, mk_with_capacity_and_ts, mk_with_dims, without_spinners};
+use super::common::{
+    bar_cells, drawn_width, line_with, mk_with_capacity, mk_with_capacity_and_ts, mk_with_dims,
+    without_spinners,
+};
 
 /// A worker row's label, laid out the way
 /// `mediapm_conductor::orchestration::progress_labels::WorkerBarLabel` lays it
@@ -816,5 +819,129 @@ fn client_suffix_reserves_exactly_what_it_draws_and_the_fill_keeps_the_rest() {
             " 4/12 0s 0/d",
         ),
         "a client label draws a suffix with no leading space, and the fill takes that column"
+    );
+}
+
+/// A label with nothing of its own to say, the shape a conductor worker slot
+/// has when its client truncation cannot fit any of its fields.
+///
+/// The prefix is unconditionally empty and the suffix carries the timing and
+/// nothing else, so the row is bare the moment the timing goes too: strip the
+/// timing and there is no prefix and no tally left on it. This is the shape
+/// `keeps_timing` in the renderer exists for.
+struct BareRowLabel;
+
+impl BarLabelTruncation for BareRowLabel {
+    fn truncate_prefix(&self, _max_width: usize) -> String {
+        String::new()
+    }
+
+    fn truncate_suffix(&self, _max_width: usize, suffix: &SuffixComponents) -> String {
+        suffix.elapsed.clone()
+    }
+}
+
+/// A row with nothing left on it keeps its clock instead of a bare spinner.
+///
+/// At this width the budget has run out below `MIN_BAR_FILL`, so no row on the
+/// screen draws a fill and the columns the fill would have taken go to the
+/// label and the count. That is the condition under which a client label's
+/// suffix loses its timing columns, and this screen carries the shape that
+/// makes losing them a regression: a second row reserves a suffix slot for its
+/// tally, and a bare row on the same screen is rendered into that same slot.
+///
+/// So the assertion is on content rather than on geometry. Both rows are the
+/// same drawn width whether the bare row keeps its timing or not, because the
+/// slot is the same either way; what a stripped bare row would draw is the same
+/// width of nothing. Its timing being on the row is the whole difference, and
+/// it is what stops the row reading as a spinner with nothing beside it.
+#[test]
+fn a_row_with_nothing_left_keeps_its_timing() {
+    let (terminal, term) = mk_with_capacity(2, 16, 2);
+    let screen = terminal.screen().build();
+
+    // The tally row sets the screen's suffix slot, so the bare row beside it
+    // has somewhere to render its clock.
+    let tally = screen.add_bar(3, "tally row");
+    tally.set_truncation(Arc::new(TallyRowLabel));
+    tally.advance(1);
+
+    // The bare row names nothing and carries no tally of its own.
+    let bare = screen.add_bar(3, "bare row");
+    bare.set_truncation(Arc::new(BareRowLabel));
+    bare.advance(1);
+
+    terminal.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().filter(|line| !line.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 2, "both rows must be drawn:\n{contents:?}");
+
+    let _tally_line = lines.iter().find(|line| line.contains("1/3")).copied().unwrap_or_else(|| {
+        panic!("the tally row must render its tally, which is what reserves the suffix slot:\n{contents:?}")
+    });
+    let bare_line = lines.iter().find(|line| !line.contains("1/3")).copied().unwrap_or_else(|| {
+        panic!("the bare row must be drawn beside the tally row:\n{contents:?}")
+    });
+
+    // The spinner is the first character of every bar line, so what the row
+    // says is everything after it.
+    let bare_text = bare_line.chars().skip(1).collect::<String>();
+    assert_eq!(
+        bare_text.trim(),
+        "0s",
+        "a row with no label and no tally must keep its timing rather than render nothing:\n{contents:?}"
+    );
+    assert_eq!(
+        bar_cells(&contents),
+        0,
+        "this width is below the crossing, so the frame must have dropped its fill; \
+         the timing assertion below is only meaningful on the no-fill shape:\n{contents:?}"
+    );
+}
+
+/// Every row on a screen is drawn into the same prefix slot.
+///
+/// The layout settles one `prefix_w` and one `suffix_w` for the whole frame
+/// from the widest label and the widest suffix on it, and right-aligns every
+/// prefix into that slot. Three seeds three different lengths apart is the
+/// measurement: each label ends at the same column, and each one ends at a
+/// column past its own text, which is only true if the short labels were padded
+/// out to the slot the long one set.
+#[test]
+fn every_row_shares_one_prefix_slot_whatever_its_label_is() {
+    let (terminal, term) = mk_with_capacity(3, 40, 3);
+    let screen = terminal.screen().build();
+
+    let labels = ["a", "abcdefghijklmnopqrstuvwxyz", "mid"];
+    for (index, label) in labels.iter().enumerate() {
+        let bar = screen.add_bar(3, label);
+        bar.advance(index as u64);
+    }
+    terminal.tick();
+
+    let contents = term.contents();
+    let ends: Vec<usize> = labels
+        .iter()
+        .map(|label| {
+            let line = line_with(&contents, label);
+            let start = line
+                .find(label)
+                .unwrap_or_else(|| panic!("label {label:?} must be drawn in full:\n{contents:?}"));
+            assert!(drawn_width(line) <= 40, "a row longer than the terminal wrapped: {line:?}");
+            start + label.chars().count()
+        })
+        .collect();
+
+    assert_eq!(
+        ends[0], ends[1],
+        "a one-character label and a twenty-six-character one must end at the same column:\n{contents:?}"
+    );
+    assert_eq!(
+        ends[1], ends[2],
+        "the widest label sets the slot the others are padded into:\n{contents:?}"
+    );
+    assert!(
+        ends[2] > labels[2].chars().count() + 2,
+        "a short label must be padded out to the slot rather than sit against the spinner:\n{contents:?}"
     );
 }

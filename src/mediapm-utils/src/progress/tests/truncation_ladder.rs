@@ -93,6 +93,90 @@ fn head_survives_below_and_above_its_own_width() {
     }
 }
 
+/// A segment set with nothing elastic in it, so the ladder has only the drop
+/// phase to run.
+///
+/// The widths are deliberately uneven and the pieces are all `Keep`, so the
+/// only thing that can change the rendering at a given width is which segments
+/// survive. A `Keep` segment is never shortened, so a survivor is always
+/// rendered whole and the survivors of any width are readable straight off the
+/// list.
+fn drop_only_segments() -> Vec<Segment> {
+    ["[wf]", "[F]", "1/4", "9.9.9", "default", "s5"].into_iter().map(Segment::keep).collect()
+}
+
+/// Once nothing can shrink, the survivors are a leading run of the list.
+///
+/// This is the drop half of the ladder stated as a property rather than as a
+/// table of widths: at every width the row is the first `k` segments joined,
+/// and `k` grows as the slot widens. Both halves matter, and a change to
+/// either one is what the test is here to catch. A rule that dropped from the
+/// head, or that dropped the shortest piece first, would leave an interior
+/// subset standing at some width and fail the prefix check; a rule that dropped
+/// in an order that did not track the width would fail the monotonicity check.
+///
+/// The expected strings are built from the same fixture the ladder is handed,
+/// so the assertion is about which segments survive rather than about how a
+/// particular list of words happens to be spelled.
+#[test]
+fn whole_segments_drop_from_the_tail_leaving_a_leading_run() {
+    let segments = drop_only_segments();
+    let rendered: Vec<String> = segments.iter().map(|segment| segment.text.clone()).collect();
+
+    // Every leading run of the fixture, joined the way `fit_segments` joins,
+    // shortest run first so the index of a run is also its segment count.
+    let mut rows: Vec<String> = Vec::with_capacity(rendered.len() + 1);
+    let mut run = String::new();
+    for text in &rendered {
+        if !run.is_empty() {
+            run.push(' ');
+        }
+        run.push_str(text);
+        rows.push(run.clone());
+    }
+
+    // A slot too narrow for even the leading segment renders nothing, so the
+    // empty run leads the table and its index is zero.
+    rows.insert(0, String::new());
+
+    let survivors_at_width = |width: usize| -> usize {
+        (0..rows.len()).rev().find(|&run| rows[run].chars().count() <= width).unwrap_or(0)
+    };
+
+    let mut previous = 0;
+    for width in 0..=40 {
+        let survivors = survivors_at_width(width);
+        assert_eq!(
+            fit_segments(&segments, width),
+            rows[survivors],
+            "width {width}: the row is not a leading run of the segment list"
+        );
+        assert!(
+            survivors >= previous,
+            "width {width} kept {survivors} segments after width {} kept {previous}: \
+             a wider slot cannot lose a segment",
+            width.saturating_sub(1)
+        );
+        previous = survivors;
+    }
+
+    // The tail goes one piece at a time rather than all at once: the widths
+    // either side of each drop boundary hold one more piece than the width
+    // below them, which is what makes the ladder a ladder and not a cut.
+    for (narrow, wide) in [(4, 7), (8, 11), (12, 17), (18, 25), (26, 28)] {
+        assert_eq!(
+            survivors_at_width(narrow),
+            survivors_at_width(wide),
+            "widths {narrow}..={wide} should sit on one step of the ladder, not a boundary"
+        );
+        assert!(
+            survivors_at_width(wide + 1) == survivors_at_width(narrow) + 1,
+            "width {} should bring exactly one more segment back",
+            wide + 1
+        );
+    }
+}
+
 /// Rendered length never rises as the slot narrows.
 ///
 /// This is the property the boundary-snapped clip could not hold. Snapping
