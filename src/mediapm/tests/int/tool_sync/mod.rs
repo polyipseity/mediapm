@@ -163,6 +163,7 @@ async fn seeded_three_tool_skip_service() -> Result<
     doc.tools.insert(
         "yt-dlp@blake3:abc123".to_string(),
         ToolSpec {
+            version: None,
             name: "yt-dlp".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
@@ -180,6 +181,7 @@ async fn seeded_three_tool_skip_service() -> Result<
     doc.tools.insert(
         "ffmpeg@blake3:ffmpeg1".to_string(),
         ToolSpec {
+            version: None,
             name: "ffmpeg".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
@@ -195,6 +197,7 @@ async fn seeded_three_tool_skip_service() -> Result<
     doc.tools.insert(
         "deno@blake3:deno1".to_string(),
         ToolSpec {
+            version: None,
             name: "deno".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {

@@ -21,6 +21,7 @@ pub(crate) fn write_text_file(path: &Path, content: &str) -> ExampleResult<()> {
 /// Builds the shared `echo@v1` tool spec used by all conductor examples.
 pub(crate) fn echo_tool() -> ToolSpec {
     ToolSpec {
+        version: None,
         kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".into() },
         name: "echo".into(),
         inputs: BTreeMap::from([(

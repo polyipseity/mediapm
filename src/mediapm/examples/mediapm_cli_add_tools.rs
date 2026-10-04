@@ -163,6 +163,7 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
         machine.tools.insert(
             tool_id.clone(),
             ToolSpec {
+                version: None,
                 name: tool_id.clone(),
                 kind: ToolKindSpec::Executable {
                     command: vec![relative_payload_path.clone()],

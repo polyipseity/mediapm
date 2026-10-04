@@ -131,6 +131,7 @@ pub(crate) fn assemble_tool_spec(
     };
 
     let spec = ToolSpec {
+        version: None,
         kind: ToolKindSpec::Executable {
             command,
             env_vars: BTreeMap::new(),

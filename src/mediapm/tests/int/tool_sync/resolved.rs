@@ -197,6 +197,7 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
     doc.tools.insert(
         "media-tagger@blake3:abc".to_string(),
         ToolSpec {
+            version: None,
             name: "media-tagger".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
@@ -305,6 +306,7 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
     doc.tools.insert(
         "ffmpeg@blake3:abc123".to_string(),
         ToolSpec {
+            version: None,
             name: "ffmpeg".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {

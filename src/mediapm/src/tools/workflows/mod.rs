@@ -740,6 +740,7 @@ mod tests {
                     (
                         name.to_string(),
                         ToolSpec {
+                            version: None,
                             name: name.to_string(),
                             kind: ToolKindSpec::default(),
                             ..ToolSpec::default()
@@ -756,6 +757,7 @@ mod tests {
             tools: BTreeMap::from([(
                 "import@v1".to_string(),
                 ToolSpec {
+                    version: None,
                     name: "import".to_string(),
                     kind: ToolKindSpec::Builtin { builtin_id: "import@v1".to_string() },
                     ..ToolSpec::default()

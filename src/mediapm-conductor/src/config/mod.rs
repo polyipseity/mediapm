@@ -448,6 +448,14 @@ pub struct ToolSpec {
     pub kind: ToolKindSpec,
     /// Logical tool name (display-only).
     pub name: String,
+    /// Human-readable tool version, absent when the document makes no claim.
+    ///
+    /// Merged and compared like `kind` and `name`, so a version declared in
+    /// one document reaches every merged spec. `None` is the wire shape for
+    /// an omitted Nickel `| optional` field; an empty string is not
+    /// representable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// Declared input specifications keyed by input name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, ToolInputSpec>,

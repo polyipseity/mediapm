@@ -113,6 +113,9 @@ in
 let BuiltinToolSpecV2 = {
   kind | std.contract.from_predicate (fun value => value == "builtin"),
   name | NonEmptyStringV2,
+  # ||| Human-readable tool version, shown on progress rows. Absent means the
+  # ||| document makes no version claim, so nothing is rendered.
+  version | NonEmptyStringV2 | optional,
   builtin_id | NonEmptyStringV2,
   inputs | { _ : ToolInputSpecV2 } | optional,
   default_inputs | { _ : InputBindingV2 } | optional,
@@ -125,6 +128,9 @@ in
 let ExecutableToolSpecV2 = {
   kind | std.contract.from_predicate (fun value => value == "executable"),
   name | NonEmptyStringV2,
+  # ||| Human-readable tool version, shown on progress rows. Absent means the
+  # ||| document makes no version claim, so nothing is rendered.
+  version | NonEmptyStringV2 | optional,
   command | Array String,
   env_vars | { _ : String } | optional,
   success_codes | Array IntegerNumberV2 | optional,

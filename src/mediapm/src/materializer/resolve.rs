@@ -963,6 +963,7 @@ mod tests {
             tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 ToolSpec {
+                    version: None,
                     name: "yt-dlp".to_string(),
                     kind: ToolKindSpec::default(),
                     ..ToolSpec::default()
@@ -1087,6 +1088,7 @@ mod tests {
             tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 ToolSpec {
+                    version: None,
                     name: "yt-dlp".to_string(),
                     kind: ToolKindSpec::default(),
                     ..ToolSpec::default()
@@ -1243,6 +1245,7 @@ mod tests {
             tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 ToolSpec {
+                    version: None,
                     name: "yt-dlp".to_string(),
                     kind: ToolKindSpec::default(),
                     ..ToolSpec::default()
@@ -1346,6 +1349,7 @@ mod tests {
             tools: BTreeMap::from([(
                 versioned_tool_id.clone(),
                 ToolSpec {
+                    version: None,
                     name: "yt-dlp".to_string(),
                     kind: ToolKindSpec::default(),
                     runtime: ToolRuntime {

@@ -21,6 +21,7 @@ mod int;
 /// Creates an echo@v1 `ToolSpec`.
 fn echo_tool(name: &str) -> ToolSpec {
     ToolSpec {
+        version: None,
         kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
         name: name.into(),
         inputs: BTreeMap::from([(
@@ -50,6 +51,7 @@ fn echo_step(tool_id: &str, text: &str) -> WorkflowStepSpec {
 #[cfg(any(test, feature = "progress"))]
 fn flaky_tool(name: &str) -> ToolSpec {
     ToolSpec {
+        version: None,
         kind: ToolKindSpec::Builtin { builtin_id: "flaky@v1".to_string() },
         name: name.into(),
         inputs: BTreeMap::from([

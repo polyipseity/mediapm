@@ -447,6 +447,7 @@ mod tests {
     /// Builds a minimal builtin-tool wire entry.
     fn builtin_tool(name: &str) -> ToolSpecLatest {
         ToolSpecLatest {
+            version: None,
             kind: ToolKindLatest::Builtin { builtin_id: "echo@v1".into() },
             name: name.into(),
             inputs: BTreeMap::new(),

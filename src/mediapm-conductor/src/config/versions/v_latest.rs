@@ -339,6 +339,13 @@ pub(crate) struct ToolSpecLatest {
     pub(crate) kind: ToolKindLatest,
     /// Logical tool name (display-only).
     pub(crate) name: String,
+    /// Human-readable tool version, absent when the document makes no claim.
+    ///
+    /// `None` is the wire shape for an omitted Nickel `| optional` field, the
+    /// same convention `WorkflowSpecLatest::display_name` uses. An empty
+    /// string is not representable: the Nickel contract types this as
+    /// `NonEmptyStringV2 | optional`.
+    pub(crate) version: Option<String>,
     /// Declared inputs.
     pub(crate) inputs: BTreeMap<String, ToolInputSpecLatest>,
     /// Default input values.
@@ -350,9 +357,10 @@ pub(crate) struct ToolSpecLatest {
 }
 
 /// Flat-record keys accepted by `ToolSpecLatest`'s custom Deserialize (S-D2).
-const TOOL_SPEC_LATEST_KNOWN_KEYS: [&str; 10] = [
+const TOOL_SPEC_LATEST_KNOWN_KEYS: [&str; 11] = [
     "kind",
     "name",
+    "version",
     "builtin_id",
     "command",
     "env_vars",
@@ -388,6 +396,9 @@ impl Serialize for ToolSpecLatest {
 
         map.serialize_entry("name", &self.name)?;
 
+        if let Some(version) = &self.version {
+            map.serialize_entry("version", version)?;
+        }
         if !self.inputs.is_empty() {
             map.serialize_entry("inputs", &self.inputs)?;
         }
@@ -469,6 +480,15 @@ impl<'de> Deserialize<'de> for ToolSpecLatest {
             .and_then(|v| v.as_str())
             .ok_or_else(|| D::Error::missing_field("name"))?
             .to_string();
+
+        let version = map
+            .get("version")
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| D::Error::custom("expected version to be a string"))
+                    .map(String::from)
+            })
+            .transpose()?;
 
         let kind = match kind_str {
             "builtin" => {
@@ -555,7 +575,7 @@ impl<'de> Deserialize<'de> for ToolSpecLatest {
             return Err(D::Error::custom(format!("unknown field '{unknown}' for ToolSpecLatest")));
         }
 
-        Ok(ToolSpecLatest { kind, name, inputs, default_inputs, outputs, runtime })
+        Ok(ToolSpecLatest { kind, name, version, inputs, default_inputs, outputs, runtime })
     }
 }
 
@@ -761,6 +781,7 @@ fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
             }
         },
         name: spec.name,
+        version: spec.version,
         inputs: spec
             .inputs
             .into_iter()
@@ -818,6 +839,7 @@ fn tool_spec_to_latest(spec: ToolSpec) -> ToolSpecLatest {
             }
         },
         name: spec.name,
+        version: spec.version,
         inputs: spec
             .inputs
             .into_iter()
@@ -983,6 +1005,7 @@ mod tests {
             tools: BTreeMap::from([(
                 "echo@v1".to_string(),
                 ToolSpecLatest {
+                    version: None,
                     kind: ToolKindLatest::Builtin { builtin_id: "echo@v1".to_string() },
                     name: "echo".to_string(),
                     inputs: BTreeMap::new(),
@@ -1088,6 +1111,7 @@ mod tests {
                 (
                     "echo@v1".to_string(),
                     ToolSpec {
+                        version: None,
                         kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
                         name: "echo".to_string(),
                         inputs: BTreeMap::new(),
@@ -1099,6 +1123,7 @@ mod tests {
                 (
                     "ffmpeg".to_string(),
                     ToolSpec {
+                        version: None,
                         kind: ToolKindSpec::Executable {
                             command: vec!["ffmpeg".to_string()],
                             env_vars: BTreeMap::from([(

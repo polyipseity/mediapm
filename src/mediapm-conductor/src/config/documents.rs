@@ -111,6 +111,7 @@ impl NickelDocument {
                 };
                 let unified = UnifiedToolSpec {
                     name: spec.name.clone(),
+                    version: spec.version.clone(),
                     is_impure: spec.runtime.impure,
                     max_concurrent_calls: spec.runtime.max_concurrent_calls,
                     max_retries: spec.runtime.max_retries,
@@ -239,6 +240,7 @@ mod tests {
             (
                 "tool-a".to_string(),
                 ToolSpec {
+                    version: None,
                     kind: ToolKindSpec::Executable {
                         command: vec!["tool-a".to_string()],
                         env_vars: BTreeMap::new(),
@@ -260,6 +262,7 @@ mod tests {
             (
                 "tool-b".to_string(),
                 ToolSpec {
+                    version: None,
                     kind: ToolKindSpec::Executable {
                         command: vec!["tool-b".to_string()],
                         env_vars: BTreeMap::new(),
@@ -292,6 +295,7 @@ mod tests {
         let tools = BTreeMap::from([(
             "echo".to_string(),
             ToolSpec {
+                version: None,
                 kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
                 name: "echo".to_string(),
                 inputs: BTreeMap::new(),
@@ -338,6 +342,7 @@ mod tests {
             tools: BTreeMap::from([(
                 "tool-a".to_string(),
                 ToolSpec {
+                    version: None,
                     kind: ToolKindSpec::Executable {
                         command: vec!["tool-a".to_string()],
                         env_vars: BTreeMap::new(),
@@ -377,6 +382,7 @@ mod tests {
             tools: BTreeMap::from([(
                 "tool-a".to_string(),
                 ToolSpec {
+                    version: None,
                     kind: ToolKindSpec::Executable {
                         command: vec!["tool-a".to_string()],
                         env_vars: BTreeMap::new(),
@@ -421,6 +427,7 @@ mod tests {
             tools: BTreeMap::from([(
                 "echo".to_string(),
                 ToolSpec {
+                    version: None,
                     kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
                     name: "echo".to_string(),
                     inputs: BTreeMap::new(),
@@ -458,6 +465,7 @@ mod tests {
             (
                 "tool-a".to_string(),
                 ToolSpec {
+                    version: None,
                     kind: ToolKindSpec::Executable {
                         command: vec!["tool-a".to_string()],
                         env_vars: BTreeMap::new(),
@@ -476,6 +484,7 @@ mod tests {
             (
                 "tool-b".to_string(),
                 ToolSpec {
+                    version: None,
                     kind: ToolKindSpec::Executable {
                         command: vec!["tool-b".to_string()],
                         env_vars: BTreeMap::new(),
@@ -513,5 +522,54 @@ mod tests {
         let hashes = collect_config_content_hashes(&BTreeMap::new(), &external_data);
         assert_eq!(hashes.len(), 1);
         assert!(hashes.contains(&hash_a));
+    }
+
+    /// A version declared in the persisted document reaches the unified spec
+    /// a workflow row reads, and an undeclared one stays absent.
+    ///
+    /// The row can only render what the merge carries, so this pins the whole
+    /// decode-then-unify path rather than one hop of it.
+    #[test]
+    fn declared_tool_version_reaches_the_unified_spec() {
+        let document = NickelDocument {
+            tools: BTreeMap::from([
+                (
+                    "ffmpeg".to_string(),
+                    ToolSpec {
+                        version: Some("autobuild-2025-07-15+evermeet-8.1.2".to_string()),
+                        kind: ToolKindSpec::Executable {
+                            command: vec!["ffmpeg".to_string()],
+                            env_vars: BTreeMap::new(),
+                            success_codes: vec![0],
+                        },
+                        name: "ffmpeg".to_string(),
+                        ..ToolSpec::default()
+                    },
+                ),
+                (
+                    "echo".to_string(),
+                    ToolSpec {
+                        version: None,
+                        kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+                        name: "echo".to_string(),
+                        ..ToolSpec::default()
+                    },
+                ),
+            ]),
+            ..NickelDocument::default()
+        };
+
+        let bytes = super::super::versions::encode_document(document.clone())
+            .expect("encode document declaring a version");
+        let decoded = super::super::versions::decode_document(&bytes).expect("decode document");
+
+        assert_eq!(decoded.tools["ffmpeg"].version, document.tools["ffmpeg"].version);
+        assert_eq!(decoded.tools["echo"].version, None);
+        let unified = decoded.to_unified();
+        assert_eq!(
+            unified.tools["ffmpeg"].version.as_deref(),
+            Some("autobuild-2025-07-15+evermeet-8.1.2")
+        );
+        assert_eq!(unified.tools["echo"].version, None);
     }
 }

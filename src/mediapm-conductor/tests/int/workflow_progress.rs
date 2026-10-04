@@ -86,6 +86,7 @@ fn flaky_step(
 /// step worker — the worker will return an error during dispatch.
 fn broken_tool(name: &str) -> mediapm_conductor::ToolSpec {
     mediapm_conductor::ToolSpec {
+        version: None,
         kind: ToolKindSpec::Builtin { builtin_id: "nonexistent-builtin@v1".to_string() },
         name: name.into(),
         inputs: BTreeMap::new(),

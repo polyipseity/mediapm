@@ -15,6 +15,7 @@ pub fn apply(os_exec_paths: &BTreeMap<String, String>) -> (ToolSpec, ToolRuntime
         vec![command_path, "${*inputs.args}".into()]
     };
     let spec = ToolSpec {
+        version: None,
         name: "archive".into(),
         kind: crate::ToolKindSpec::Executable {
             command,

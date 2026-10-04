@@ -64,6 +64,10 @@ pub(super) type StepOutputs = BTreeMap<String, BTreeMap<String, Hash>>;
 pub(crate) struct UnifiedToolSpec {
     /// Tool name (e.g. "ffmpeg").
     pub name: String,
+    /// Human-readable tool version, absent when the document makes no claim.
+    ///
+    /// Progress rows read this field and render nothing when it is `None`.
+    pub version: Option<String>,
     /// Whether the tool is treated as impure for tool call instance-key invalidation.
     pub is_impure: bool,
     /// Maximum concurrent calls allowed for this tool.
@@ -162,6 +166,7 @@ mod tests {
             "mediapm.tools.yt-dlp@somehash".to_string(),
             UnifiedToolSpec {
                 name: "mediapm.tools.yt-dlp@somehash".to_string(),
+                version: None,
                 is_impure: false,
                 max_concurrent_calls: 0,
                 max_retries: 0,
@@ -198,6 +203,7 @@ mod tests {
     fn find_tool_by_name_prefers_active_content_map_over_pruned_stale() {
         let base = || UnifiedToolSpec {
             name: "ffmpeg".to_string(),
+            version: None,
             is_impure: false,
             max_concurrent_calls: 0,
             max_retries: 0,

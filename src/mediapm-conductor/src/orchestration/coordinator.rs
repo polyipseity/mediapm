@@ -259,6 +259,11 @@ enum OverallBarState<'a> {
         /// `ToolSpec.name` and therefore a builtin id like `"echo@v1"` where
         /// the workflow names a builtin.
         tool: &'a str,
+        /// Human-readable version the merged tool spec declares, or `""` when
+        /// the document declares none. The name identifies the tool and the
+        /// step, so a missing version must leave the row as it was rather
+        /// than carry a substitute.
+        version: &'a str,
     },
     /// The run is over and the pinned row names the outcome.
     ///
@@ -284,12 +289,13 @@ enum OverallBarState<'a> {
 /// to that workflow whether or not one of its steps is running; only the
 /// `Running` state fills the step and tool fields.
 ///
-/// `version` is left empty. Nothing in `src/mediapm-conductor/` carries a
-/// human-readable tool version: the merged [`super::protocol::UnifiedToolSpec`]
-/// holds `builtin_id` (`"echo@v1"`) and no version, and a managed tool's
-/// document key is `"{name}@{content-hash}"`, which identifies a payload
-/// rather than naming a release. The field is filled by the workflow example,
-/// which supplies a literal.
+/// `Running` also fills `version` from the merged
+/// [`super::protocol::UnifiedToolSpec`], which carries whatever
+/// `version` the document declared for the step's tool. A builtin holds only
+/// a `builtin_id` (`"echo@v1"`) and a managed tool's document key is
+/// `"{name}@{content-hash}"`, which identifies a payload rather than naming a
+/// release, so neither is read as a version: an undeclared version leaves the
+/// row exactly as it was before the field existed.
 #[cfg(feature = "progress")]
 fn overall_bar_label(state: OverallBarState<'_>, workflow_name: &str) -> StepBarLabel {
     match state {
@@ -302,12 +308,12 @@ fn overall_bar_label(state: OverallBarState<'_>, workflow_name: &str) -> StepBar
             completed: String::new(),
             total: String::new(),
         },
-        OverallBarState::Running { step_id, tool } => StepBarLabel {
+        OverallBarState::Running { step_id, tool, version } => StepBarLabel {
             status_marker: String::new(),
             workflow_id: workflow_name.to_string(),
             step_id: step_id.to_string(),
             tool: tool.to_string(),
-            version: String::new(),
+            version: version.to_string(),
             completed: String::new(),
             total: String::new(),
         },
@@ -549,6 +555,9 @@ where
                     set_overall_label(OverallBarState::Running {
                         step_id: &step_id,
                         tool: &step.tool,
+                        version: find_tool_by_name(&unified.tools, &step.tool)
+                            .and_then(|spec| spec.version.as_deref())
+                            .unwrap_or_default(),
                     });
                     let handle = tokio::spawn(async move {
                         let result = worker

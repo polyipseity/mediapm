@@ -235,6 +235,7 @@ where
         };
 
         let tool = crate::config::ToolSpec {
+            version: None,
             kind: crate::config::ToolKindSpec::Executable {
                 command: executable.map_or(vec![], |cmd| vec![cmd.to_string()]),
                 env_vars: BTreeMap::new(),

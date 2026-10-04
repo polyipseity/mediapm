@@ -467,12 +467,16 @@ fn apply_entry_outcome(
 
             let ffmpeg_limits =
                 resolve_ffmpeg_slot_limits(tool_req.max_input_slots, tool_req.max_output_slots);
-            let (spec, runtime) = build_tool_spec(
+            let (mut spec, runtime) = build_tool_spec(
                 &tool_id,
                 payload.content_map,
                 &payload.os_exec_paths,
                 ffmpeg_limits,
             );
+            // The provider resolved this human-readable version, so the
+            // generated document can carry the claim it actually made. A
+            // workflow row reads it back through the merged tool spec.
+            spec.version = Some(payload.human_readable_version.clone());
 
             if !already_exists && !is_builtin_code {
                 report.tools_added += 1;
@@ -582,6 +586,7 @@ fn apply_entry_outcome(
                 generated_doc.tools.insert(
                     tool_id.clone(),
                     mediapm_conductor::ToolSpec {
+                        version: None,
                         name: tool_id.clone(),
                         kind: mediapm_conductor::ToolKindSpec::Executable {
                             command: Vec::new(),
@@ -1579,6 +1584,7 @@ mod tests {
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
         let tool_spec = ToolSpec {
+            version: None,
             name: "user_script".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime { content_map, ..Default::default() },
@@ -1659,6 +1665,7 @@ mod tests {
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
         let tool_spec = ToolSpec {
+            version: None,
             name: "user_script".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime { content_map, ..Default::default() },
@@ -1805,6 +1812,7 @@ mod tests {
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
         let tool_spec = ToolSpec {
+            version: None,
             name: "user_script".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime { content_map, ..Default::default() },
@@ -2310,6 +2318,7 @@ mod tests {
         tools.insert(
             "yt-dlp".to_string(),
             ToolSpec {
+                version: None,
                 name: "yt-dlp".to_string(),
                 kind: ToolKindSpec::default(),
                 runtime: ToolRuntime::default(),
@@ -2319,6 +2328,7 @@ mod tests {
         tools.insert(
             "yt-dlp@blake3:abc".to_string(),
             ToolSpec {
+                version: None,
                 name: "yt-dlp".to_string(),
                 kind: ToolKindSpec::default(),
                 runtime: ToolRuntime { content_map, ..Default::default() },
@@ -2341,6 +2351,7 @@ mod tests {
         tools.insert(
             "yt-dlp@blake3:abc".to_string(),
             ToolSpec {
+                version: None,
                 name: "yt-dlp".to_string(),
                 kind: ToolKindSpec::default(),
                 runtime: ToolRuntime::default(),
@@ -2350,6 +2361,7 @@ mod tests {
         tools.insert(
             "yt-dlp@blake3:def".to_string(),
             ToolSpec {
+                version: None,
                 name: "yt-dlp".to_string(),
                 kind: ToolKindSpec::default(),
                 runtime: ToolRuntime::default(),
@@ -2373,6 +2385,7 @@ mod tests {
         tools.insert(
             "ffmpeg@blake3:abc".to_string(),
             ToolSpec {
+                version: None,
                 name: "ffmpeg".to_string(),
                 kind: ToolKindSpec::default(),
                 runtime: ToolRuntime { content_map, ..Default::default() },
@@ -2591,6 +2604,7 @@ mod tests {
         let mut content_map = BTreeMap::new();
         content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
         let tool_spec = ToolSpec {
+            version: None,
             name: "user_script".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime { content_map, ..Default::default() },
@@ -2647,6 +2661,7 @@ mod tests {
         let mut cm1 = BTreeMap::new();
         cm1.insert("linux/tool_a".to_string(), hash_zero_hex);
         let spec_a = ToolSpec {
+            version: None,
             name: "tool_a".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime { content_map: cm1, ..Default::default() },
@@ -2655,6 +2670,7 @@ mod tests {
         let mut cm2 = BTreeMap::new();
         cm2.insert("macos/tool_b".to_string(), hash_one_hex);
         let spec_b = ToolSpec {
+            version: None,
             name: "tool_b".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime { content_map: cm2, ..Default::default() },

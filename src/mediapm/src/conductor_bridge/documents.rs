@@ -145,6 +145,7 @@ pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {
             document.tools.insert(
                 builtin.builtin_id.to_string(),
                 ToolSpec {
+                    version: None,
                     name: builtin.name.to_string(),
                     kind: ToolKindSpec::Builtin { builtin_id: builtin.builtin_id.to_string() },
                     inputs: std::collections::BTreeMap::new(),
@@ -175,6 +176,8 @@ pub(crate) fn apply_builtin_runtime_defaults(document: &mut NickelDocument) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use mediapm_conductor::WorkflowSpec;
 
     use super::*;
@@ -186,6 +189,7 @@ mod tests {
                 (
                     (*key).to_string(),
                     ToolSpec {
+                        version: None,
                         name: key.split('@').next().unwrap_or(key).to_string(),
                         kind: ToolKindSpec::default(),
                         ..Default::default()
@@ -276,5 +280,39 @@ mod tests {
             .expect("save bad user doc");
         let err = load_conductor_user_document(&paths).expect_err("managed namespace must fail");
         assert_eq!(err.code(), "MPM-E009");
+    }
+
+    /// A declared tool version survives the writer, and an undeclared one stays
+    /// undeclared rather than becoming an empty string.
+    ///
+    /// The writer is the only path that persists the generated document, so a
+    /// version dropped here would leave every production workflow row without
+    /// one no matter what the merge produced.
+    #[test]
+    fn generated_document_round_trips_declared_tool_version() {
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(tmp.path());
+
+        let doc = NickelDocument {
+            tools: BTreeMap::from([
+                (
+                    "mediapm.tools.yt-dlp@somehash".to_string(),
+                    ToolSpec {
+                        version: Some("v7.1".to_string()),
+                        name: "mediapm.tools.yt-dlp@somehash".to_string(),
+                        kind: ToolKindSpec::default(),
+                        ..Default::default()
+                    },
+                ),
+                ("echo".to_string(), ToolSpec { name: "echo".to_string(), ..Default::default() }),
+            ]),
+            ..Default::default()
+        };
+
+        save_conductor_generated_document(&paths, &doc).expect("save generated doc");
+        let loaded = load_conductor_generated_document(&paths).expect("load generated doc");
+
+        assert_eq!(loaded.tools["mediapm.tools.yt-dlp@somehash"].version.as_deref(), Some("v7.1"));
+        assert_eq!(loaded.tools["echo"].version, None);
     }
 }

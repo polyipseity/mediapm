@@ -82,6 +82,7 @@ pub fn apply(
     ]);
 
     let spec = ToolSpec {
+        version: None,
         name: "sd".into(),
         kind: crate::ToolKindSpec::Executable {
             command,
