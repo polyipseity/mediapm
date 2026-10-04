@@ -10,11 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mediapm_utils::progress::{
-    BarLabelTruncation, Brackets, Segment, SuffixComponents, TestDimensionSource, TestTimeSource,
-    fit_segments,
+    BarLabelTruncation, Brackets, PrefixComponents, Segment, SuffixComponents, TestDimensionSource,
+    TestTimeSource, fit_segments,
 };
 
-use super::common::{mk_with_capacity, mk_with_capacity_and_ts, mk_with_dims};
+use super::common::{mk_with_capacity, mk_with_capacity_and_ts, mk_with_dims, without_spinners};
 
 /// A worker row's label, laid out the way
 /// `mediapm_conductor::orchestration::progress_labels::WorkerBarLabel` lays it
@@ -420,23 +420,31 @@ fn overflow_bars_are_tracked_but_not_drawn() {
     );
 }
 
-/// A resolve label that fits the prefix budget keeps its `[phase]` tag: the label
-/// is parsed into components at construction, so the tool name and the phase tag
-/// are separate fields before anything is drawn.
+/// A resolve bar that fits the prefix budget keeps its `[phase]` tag: the name
+/// and the phase tag are separate components before anything is drawn, so
+/// truncation could drop the tag while shortening the version.
 ///
-/// The label is 33 characters and the 80-column terminal pays for the prefix,
-/// the suffix and the fill, so nothing is truncated here. The drop order that
-/// would apply if it were, where the version shrinks before the phase is
+/// The three fields are 33 characters and the 80-column terminal pays for the
+/// prefix, the suffix and the fill, so nothing is truncated here. The drop order
+/// that would apply if it were, where the version shrinks before the phase is
 /// removed, is pinned by the inline `truncate_parsed_resolve_label_preserves_phase`
 /// unit test.
 #[test]
-fn resolve_label_within_budget_keeps_phase_tag() {
+fn resolve_prefix_within_budget_keeps_phase_tag() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
     let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
 
-    let child = screen.add_bar(100, "ffmpeg autobuild-2026-07-31 [res]");
+    let child = screen.add_bar_with_prefix(
+        100,
+        &PrefixComponents {
+            tool_name: "ffmpeg".to_string(),
+            version: "autobuild-2026-07-31".to_string(),
+            phase: "res".to_string(),
+            ..Default::default()
+        },
+    );
     child.set_position(0);
     screen.tick();
     assert_eq!(
@@ -448,8 +456,103 @@ fn resolve_label_within_budget_keeps_phase_tag() {
             "⠸     ffmpeg autobuild-2026-07-31 [res] ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d\n",
             "⠹                               overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
         ),
-        "resolve_label_within_budget_keeps_phase_tag"
+        "resolve_prefix_within_budget_keeps_phase_tag"
     );
+}
+
+/// One bar, seeded by label, drawn on a screen of its own.
+fn frame_from_label(label: &str) -> String {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    screen.add_bar(100, label).set_position(0);
+    screen.tick();
+    without_spinners(&term.contents())
+}
+
+/// The same bar, seeded by components. Differs from [`frame_from_label`] only in
+/// the constructor, so any difference between the two frames belongs to it.
+fn frame_from_prefix(prefix: &PrefixComponents) -> String {
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    screen.add_bar_with_prefix(100, prefix).set_position(0);
+    screen.tick();
+    without_spinners(&term.contents())
+}
+
+/// Moving a bar off the label route changes its route, not its row.
+///
+/// Each case pairs a label with the components that label used to be parsed
+/// into. A mismatch means the migration altered what a bar draws, which is the
+/// one thing it was not meant to do.
+#[test]
+fn structured_prefix_renders_the_frame_the_label_route_rendered() {
+    let cases = [
+        (
+            "ffmpeg autobuild-2026-07-31 [res]",
+            PrefixComponents {
+                tool_name: "ffmpeg".to_string(),
+                version: "autobuild-2026-07-31".to_string(),
+                phase: "res".to_string(),
+                ..Default::default()
+            },
+        ),
+        (
+            // A tool reporting no version drops the field and its space.
+            "media-tagger [fch]",
+            PrefixComponents {
+                tool_name: "media-tagger".to_string(),
+                phase: "fch".to_string(),
+                ..Default::default()
+            },
+        ),
+        (
+            // Neither a version nor a phase, which is all the parser is for.
+            "materializing",
+            PrefixComponents { tool_name: "materializing".to_string(), ..Default::default() },
+        ),
+    ];
+
+    for (label, prefix) in cases {
+        assert_eq!(
+            frame_from_label(label),
+            frame_from_prefix(&prefix),
+            "{label:?} must draw the same row through both constructors"
+        );
+    }
+}
+
+/// A name carrying a space is what the label route cannot express: the parser
+/// reads the first token as the name and the rest as the version. The drawn row
+/// happens to match either way, so the loss shows in the components the bar
+/// carries, which is what truncation then shortens field by field.
+#[test]
+fn structured_prefix_keeps_a_tool_name_carrying_a_space() {
+    let prefix = PrefixComponents {
+        tool_name: "my tool".to_string(),
+        version: "1.0 build 7".to_string(),
+        phase: "pro".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(prefix.display_label(), "my tool 1.0 build 7 [pro]");
+
+    let dims = Arc::new(TestDimensionSource::new((4, 80)));
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, _term) = mk_with_dims(5, 120, 4, &dims, Some(&ts), false);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+
+    let structured = screen.add_bar_with_prefix(100, &prefix);
+    assert_eq!(structured.snapshot().prefix_components.tool_name, "my tool");
+    assert_eq!(structured.snapshot().prefix_components.version, "1.0 build 7");
+
+    let parsed = screen.add_bar(100, &prefix.display_label());
+    assert_eq!(parsed.snapshot().prefix_components.tool_name, "my");
+    assert_eq!(parsed.snapshot().prefix_components.version, "tool 1.0 build 7");
+
+    assert!(frame_from_prefix(&prefix).contains("my tool 1.0 build 7 [pro]"));
 }
 
 /// A multi-word label with no bracket is kept whole as the tool name rather

@@ -1491,6 +1491,7 @@ mod tests {
     use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
     use mediapm_conductor::tools::provider::VersionSpecFields;
     use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
+    use mediapm_utils::progress::PrefixComponents;
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
     use crate::config::ToolRequirement;
@@ -1766,6 +1767,16 @@ mod tests {
             let reported = handle.snapshot().total;
             self.calls.lock().expect("recording lock").push((label.to_string(), reported));
             Arc::new(handle)
+        }
+
+        /// Log the components under the label they render to, so a
+        /// structured bar is looked up the same way a string one is.
+        fn add_bar_with_prefix(
+            &self,
+            total: u64,
+            prefix: &PrefixComponents,
+        ) -> Arc<dyn ProgressBarApi> {
+            self.add_bar(total, &prefix.display_label())
         }
 
         /// Joining the inert screen is a no-op; delegate so the sync's join

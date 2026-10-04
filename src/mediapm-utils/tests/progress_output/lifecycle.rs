@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use indicatif::TermLike;
-use mediapm_utils::progress::{BarStyle, ProgressScreen, TestTimeSource};
+use mediapm_utils::progress::{BarStyle, PrefixComponents, ProgressScreen, TestTimeSource};
 
 use super::common::{
     H, W, line_with, mk_with_capacity, mk_with_capacity_and_ts, mk_with_capacity_gated,
@@ -436,11 +436,24 @@ fn recycle_oldest_finished_slot() {
     let (terminal, term) = mk_with_capacity_and_ts(10, 80, 6, &ts);
     let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
 
-    let a1 = screen.add_bar(1, "a [resolve]");
-    let a2 = screen.add_bar(1, "a [fetch]");
-    let a3 = screen.add_bar(1, "a [process]");
-    let b1 = screen.add_bar(1, "b [resolve]");
-    let b2 = screen.add_bar(1, "b [fetch]");
+    // Name and phase go in as components. What is under test here is the slot
+    // recycling, not how the label was spelled.
+    let bar = |name: &str, phase: &str, total: u64| {
+        screen.add_bar_with_prefix(
+            total,
+            &PrefixComponents {
+                tool_name: name.to_string(),
+                phase: phase.to_string(),
+                ..Default::default()
+            },
+        )
+    };
+
+    let a1 = bar("a", "resolve", 1);
+    let a2 = bar("a", "fetch", 1);
+    let a3 = bar("a", "process", 1);
+    let b1 = bar("b", "resolve", 1);
+    let b2 = bar("b", "fetch", 1);
     a1.finish_success();
     a2.finish_success();
     a3.finish_success();
@@ -462,7 +475,7 @@ fn recycle_oldest_finished_slot() {
         "recycle_oldest_finished_slot/before"
     );
 
-    let b3 = screen.add_bar(1, "b [process]");
+    let b3 = bar("b", "process", 1);
     b3.finish_success();
     screen.tick();
     assert_eq!(

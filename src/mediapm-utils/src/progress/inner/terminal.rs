@@ -13,6 +13,7 @@ use indicatif::{MultiProgress, ProgressDrawTarget, TermLike};
 
 use super::HasOverall;
 use super::NoOverall;
+use super::PrefixComponents;
 use super::{
     DimensionSource, MAX_SLOTS, ProgressBarHandle, ProgressDebugSink, ProgressRenderer,
     RealTerminalSource, RealTimeSource, SharedState, TimeSource, detect_progress_debug_env,
@@ -595,6 +596,24 @@ impl ProgressScreen {
         self.add_bar_with_style(total, label, BarStyle::StepCount)
     }
 
+    /// Add a child bar whose prefix fields are given as components.
+    ///
+    /// This is the constructor to reach for when the bar carries structure: a
+    /// name, a version, a phase. [`add_bar`](Self::add_bar) fits a label the
+    /// renderer can read back out of (a single word), because the display
+    /// string it takes is parsed into components at construction and any field
+    /// the string cannot express is lost there.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this screen is not the live screen (already joined or dropped).
+    #[must_use]
+    pub fn add_bar_with_prefix(&self, total: u64, prefix: &PrefixComponents) -> ProgressBarHandle {
+        self.attach_state(|time_source| {
+            SharedState::with_prefix(total, prefix, BarStyle::StepCount, time_source)
+        })
+    }
+
     /// Add a child bar with an explicit [`BarStyle`].
     ///
     /// See [`add_bar`](Self::add_bar) for the default-style variant.
@@ -607,6 +626,20 @@ impl ProgressScreen {
         total: u64,
         label: &str,
         style: BarStyle,
+    ) -> ProgressBarHandle {
+        self.attach_state(|time_source| {
+            SharedState::with_time_source_and_style(total, label, style, time_source)
+        })
+    }
+
+    /// Build the bar state from `make` and attach it to the live renderer.
+    ///
+    /// `make` runs while the renderer is locked because it reads the shared
+    /// clock, so the two entry points share the disabled/live checks and the
+    /// attach rather than repeating them.
+    fn attach_state(
+        &self,
+        make: impl FnOnce(Arc<dyn TimeSource>) -> SharedState,
     ) -> ProgressBarHandle {
         // A disabled screen has no live status to check: it is the `--no-progress`
         // screen, and callers such as the materializer add bars to whatever group
@@ -629,12 +662,7 @@ impl ProgressScreen {
         let state;
         {
             let mut locked = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            state = Arc::new(SharedState::with_time_source_and_style(
-                total,
-                label,
-                style,
-                Arc::clone(&locked.time_source),
-            ));
+            state = Arc::new(make(Arc::clone(&locked.time_source)));
             locked.attach(&state);
         }
         ProgressBarHandle { state }

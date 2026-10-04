@@ -47,7 +47,9 @@ pub use traits::{BarStyle, ProgressBarApi, ProgressScreenApi};
 #[cfg(feature = "progress")]
 mod truncation;
 #[cfg(feature = "progress")]
-pub use truncation::{BarLabelTruncation, Brackets, Segment, Shrink, fit_segments, front_tail};
+pub use truncation::{
+    BarLabelTruncation, Brackets, Join, Segment, Shrink, fit_segments, front_tail,
+};
 
 // Recording types for test assertions (feature-gated)
 
@@ -128,6 +130,13 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
 impl ProgressScreenApi for recording::RecordingProgressTracker {
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
         Arc::new(recording::RecordingProgressTracker::add_bar(self, total, label))
+    }
+    fn add_bar_with_prefix(
+        &self,
+        total: u64,
+        prefix: &PrefixComponents,
+    ) -> Arc<dyn ProgressBarApi> {
+        Arc::new(recording::RecordingProgressTracker::add_bar_with_prefix(self, total, prefix))
     }
     fn join(&self) {
         // Recording tracker has no display to block on.

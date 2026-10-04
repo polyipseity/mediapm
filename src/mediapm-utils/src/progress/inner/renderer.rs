@@ -241,11 +241,37 @@ impl SharedState {
         style: BarStyle,
         time_source: Arc<dyn TimeSource>,
     ) -> Self {
+        Self::build(total, label.to_string(), prefix_components_from_str(label), style, time_source)
+    }
+
+    /// Create shared state from prefix components rather than a label.
+    ///
+    /// The components are kept as given and the `label` is derived from them,
+    /// so a field the caller owns survives whatever shape it has. The label
+    /// the string path seeds can only report what the render draws, which is
+    /// why a bar carrying structure is built here.
+    pub(crate) fn with_prefix(
+        total: u64,
+        prefix: &PrefixComponents,
+        style: BarStyle,
+        time_source: Arc<dyn TimeSource>,
+    ) -> Self {
+        Self::build(total, prefix.display_label(), prefix.clone(), style, time_source)
+    }
+
+    /// Shared construction body for the label and component entry points.
+    fn build(
+        total: u64,
+        label: String,
+        prefix_components: PrefixComponents,
+        style: BarStyle,
+        time_source: Arc<dyn TimeSource>,
+    ) -> Self {
         Self {
             position: AtomicU64::new(0),
             total: AtomicU64::new(total),
-            label: RwLock::new(label.to_string()),
-            prefix_components: RwLock::new(prefix_components_from_str(label)),
+            label: RwLock::new(label),
+            prefix_components: RwLock::new(prefix_components),
             suffix_components: RwLock::new(SuffixComponents::default()),
             truncation: RwLock::new(None),
             status: AtomicU8::new(0),

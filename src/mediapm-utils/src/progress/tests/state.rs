@@ -631,8 +631,20 @@ fn spinner_advances_per_cycle_for_all_bars() {
         .build();
     let (group, overall) = terminal.screen().with_overall("syncing", 3).build();
 
-    let bar1 = group.add_bar(100, "tool [resolve]");
-    let bar2 = group.add_bar(100, "tool [fetch]");
+    // Name and phase as components; the ticker is what this test measures.
+    let bar = |phase: &str, total: u64| {
+        group.add_bar_with_prefix(
+            total,
+            &PrefixComponents {
+                tool_name: "tool".to_string(),
+                phase: phase.to_string(),
+                ..Default::default()
+            },
+        )
+    };
+
+    let bar1 = bar("resolve", 100);
+    let bar2 = bar("fetch", 100);
 
     // Advance time so rate computation has positive dt.
     ts.advance(std::time::Duration::from_millis(100));
@@ -721,8 +733,19 @@ fn recycled_bar_spinner_animates() {
         .build();
     let (group, overall) = terminal.screen().with_overall("syncing", 3).build();
 
+    let bar = |phase: &str, total: u64| {
+        group.add_bar_with_prefix(
+            total,
+            &PrefixComponents {
+                tool_name: "tool".to_string(),
+                phase: phase.to_string(),
+                ..Default::default()
+            },
+        )
+    };
+
     // Phase 1: finish resolve bar (fills the single child slot).
-    let bar1 = group.add_bar(1, "tool [resolve]");
+    let bar1 = bar("resolve", 1);
     bar1.finish_success();
 
     // Tick to trigger finish_slot → bar.finish() → DoneVisible.
@@ -730,7 +753,7 @@ fn recycled_bar_spinner_animates() {
     group.tick();
 
     // Phase 2: add fetch bar (recycles bar1's slot via attach Phase 2).
-    let bar2 = group.add_bar(5, "tool [fetch]");
+    let bar2 = bar("fetch", 5);
     bar2.advance(2);
     ts.advance(std::time::Duration::from_millis(50));
     group.tick();
@@ -906,7 +929,14 @@ fn sync_slot_resets_finished_bar_on_restart() {
         .build();
     let group = terminal.screen().build();
 
-    let h = group.add_bar(100, "tool [work]");
+    let h = group.add_bar_with_prefix(
+        100,
+        &PrefixComponents {
+            tool_name: "tool".to_string(),
+            phase: "work".to_string(),
+            ..Default::default()
+        },
+    );
     h.advance(50);
     group.tick();
 

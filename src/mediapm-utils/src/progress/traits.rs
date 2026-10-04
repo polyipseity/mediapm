@@ -149,6 +149,13 @@ impl ProgressBarApi for ProgressBarHandle {
 pub trait ProgressScreenApi {
     /// Add a child bar and return an [`Arc`]-wrapped handle.
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi>;
+    /// Add a child bar whose prefix fields are given as components.
+    ///
+    /// Preferred over [`add_bar`](Self::add_bar) whenever the caller has the
+    /// fields, since the label path parses the display string back into
+    /// components and cannot carry a field that string cannot express.
+    fn add_bar_with_prefix(&self, total: u64, prefix: &PrefixComponents)
+    -> Arc<dyn ProgressBarApi>;
     /// Block until all bars in the group reach a finished state.
     fn join(&self);
 }
@@ -157,6 +164,13 @@ pub trait ProgressScreenApi {
 impl ProgressScreenApi for ProgressScreen {
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi> {
         Arc::new(ProgressScreen::add_bar(self, total, label))
+    }
+    fn add_bar_with_prefix(
+        &self,
+        total: u64,
+        prefix: &PrefixComponents,
+    ) -> Arc<dyn ProgressBarApi> {
+        Arc::new(ProgressScreen::add_bar_with_prefix(self, total, prefix))
     }
     fn join(&self) {
         ProgressScreen::join(self);

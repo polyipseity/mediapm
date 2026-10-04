@@ -141,11 +141,10 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// (`set_position`/`set_total`). The bridge does not interpret the meaning
 /// of items or bytes — it only relays the values to the bar.
 ///
-/// Bar labels follow the format `{tool_id}{version_suffix} [{phase_abbr}]`
-/// where `version_suffix` is ` {human_readable_version}` when non-empty
-/// (e.g., `"ffmpeg v7.1 [res]"`) or empty when the version is blank
-/// (e.g., `"media-tagger [fch]"`). Phase abbreviations: `[res]`, `[fch]`,
-/// `[pro]`.
+/// A bar reads as `{tool_id}{version_suffix} [{phase_abbr}]`, with
+/// `version_suffix` empty when the tool reports no version (so the row is
+/// `media-tagger [fch]`). The three fields reach the renderer as
+/// [`PrefixComponents`], so a tool id carrying a space stays one field.
 ///
 /// After phase 1 (resolve), a HEAD-prefetch step populates
 /// [`ResolvedSource::expected_size`] for each `Fetch`-producer source so
@@ -205,12 +204,21 @@ pub(super) async fn fetch_and_import_tool_payload(
     };
     let version_suffix =
         if version_for_label.is_empty() { String::new() } else { format!(" {version_for_label}") };
+    // The fields each phase bar draws, given to the bar rather than rendered
+    // into a label and read back out. Phase abbreviations: `[res]`, `[fch]`,
+    // `[pro]`.
+    let bar_prefix = |phase: &str| PrefixComponents {
+        tool_name: tool_id.to_string(),
+        version: version_suffix.trim().to_string(),
+        phase: phase.to_string(),
+        ..Default::default()
+    };
     let metadata_fetch_count = match &outcome {
         PreResolveOutcome::Resolved(_, metadata) => metadata.metadata_fetch_count,
         PreResolveOutcome::Skip { metadata_fetch_count, .. } => *metadata_fetch_count,
     };
     let bar_total = metadata_fetch_count;
-    let resolve_bar = group.add_bar(bar_total.into(), &format!("{tool_id}{version_suffix} [res]"));
+    let resolve_bar = group.add_bar_with_prefix(bar_total.into(), &bar_prefix("res"));
     error_bars.push(resolve_bar.clone());
     let (
         mut fetch,
@@ -290,7 +298,7 @@ pub(super) async fn fetch_and_import_tool_payload(
         .sum();
 
     // Phase 2: Fetch — download (or generate) bytes for each source.
-    let fetch_bar = group.add_bar(total, &format!("{tool_id}{version_suffix} [fch]"));
+    let fetch_bar = group.add_bar_with_prefix(total, &bar_prefix("fch"));
     error_bars.push(fetch_bar.clone());
     let fetch_bar_cb = fetch_bar.clone();
     let fetch_tool_id = tool_id.to_string();
@@ -335,8 +343,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     // populated with source byte sizes. The budget starts with item count
     // as the aggregate total and refines to actual payload sizes as each
     // source begins processing.
-    let process_bar =
-        group.add_bar(total_process_items, &format!("{tool_id}{version_suffix} [pro]"));
+    let process_bar = group.add_bar_with_prefix(total_process_items, &bar_prefix("pro"));
     error_bars.push(process_bar.clone());
     let process_bar_cb = process_bar.clone();
     let pp_tool_id = tool_id.to_string();

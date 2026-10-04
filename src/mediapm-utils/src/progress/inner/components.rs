@@ -287,8 +287,10 @@ pub(crate) fn render_suffix_components(parts: &SuffixComponents, color_code: &st
 /// [`TrackStatus::Warning`] — when non-empty. The marker brackets are
 /// visible characters that participate in truncation.
 ///
-/// Initial values come from parsing the `add_bar`/`with_overall` label at
-/// construction; [`set_prefix_components`](super::ProgressBarHandle::set_prefix_components)
+/// Initial values come from the components the bar was constructed with: the
+/// [`add_bar_with_prefix`](super::ProgressScreen::add_bar_with_prefix)
+/// components as given, or the parsed `add_bar`/`with_overall` label.
+/// [`set_prefix_components`](super::ProgressBarHandle::set_prefix_components)
 /// is the only runtime mutation API. The removal order above is a normative spec,
 /// verified verbatim by the `semantic_truncate_prefix_*` unit suites.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -305,6 +307,37 @@ pub struct PrefixComponents {
     pub count: String,
     /// Total (denominator), rendered with `count` as `{count}/{total}`.
     pub total: String,
+}
+
+impl PrefixComponents {
+    /// Render the components as plain text, without the reset and the marker
+    /// color the renderer adds on top: `{tool_name}[ {version}]
+    /// [ [{phase}]][ {count}/{total}]`.
+    ///
+    /// This is what a bar built from components reports as its `label`, and
+    /// what the recording tracker logs in place of the display string a
+    /// string-seeded bar would have carried.
+    #[must_use]
+    pub fn display_label(&self) -> String {
+        let mut s = String::with_capacity(self.tool_name.len() + 8);
+        s.push_str(&self.tool_name);
+        if !self.version.is_empty() {
+            s.push(' ');
+            s.push_str(&self.version);
+        }
+        if !self.phase.is_empty() {
+            s.push_str(" [");
+            s.push_str(&self.phase);
+            s.push(']');
+        }
+        if !self.count.is_empty() || !self.total.is_empty() {
+            s.push(' ');
+            s.push_str(&self.count);
+            s.push('/');
+            s.push_str(&self.total);
+        }
+        s
+    }
 }
 
 /// Source components of a progress suffix, stored separately so the internal
@@ -389,6 +422,14 @@ impl SuffixComponents {
 
 /// Parse an `add_bar` label into [`PrefixComponents`].
 ///
+/// This is the fallback for labels that carry no structure: a single word, or
+/// a word plus a trailing `count/total`. Anything with a name, a version and a
+/// phase belongs in [`PrefixComponents`] passed to
+/// [`add_bar_with_prefix`](super::ProgressScreen::add_bar_with_prefix), which
+/// keeps the fields instead of reading them back out of a rendered string.
+/// A tool name containing a space is the case this cannot express: the first
+/// whitespace token becomes the name and the rest is read as a version.
+///
 /// Parsing rules:
 /// - First whitespace-bounded token = `tool_name`.
 /// - Trailing `[phase]` (last bracket pair) = phase inner text.
@@ -397,8 +438,8 @@ impl SuffixComponents {
 /// - If no `[` found: `tool_name` = entire string (single or multi-word),
 ///   except a trailing space-separated `count/total` token is split off.
 ///
-/// Labels are the single identity source for a bar; structured
-/// `set_prefix_components` calls override the parsed components later.
+/// A later [`set_prefix_components`](super::ProgressBarHandle::set_prefix_components)
+/// replaces whatever was parsed.
 pub fn prefix_components_from_str(s: &str) -> PrefixComponents {
     let s = s.trim();
     if s.is_empty() {
@@ -484,22 +525,7 @@ pub fn render_prefix_components(parts: &PrefixComponents, status: TrackStatus) -
             }
         }
     }
-    s.push_str(&parts.tool_name);
-    if !parts.version.is_empty() {
-        s.push(' ');
-        s.push_str(&parts.version);
-    }
-    if !parts.phase.is_empty() {
-        s.push_str(" [");
-        s.push_str(&parts.phase);
-        s.push(']');
-    }
-    if !parts.count.is_empty() || !parts.total.is_empty() {
-        s.push(' ');
-        s.push_str(&parts.count);
-        s.push('/');
-        s.push_str(&parts.total);
-    }
+    s.push_str(&parts.display_label());
     s
 }
 

@@ -131,6 +131,20 @@ impl RecordingProgressTracker {
         }
     }
 
+    /// Record adding a bar whose prefix fields are given as components.
+    ///
+    /// The log keeps the same [`AddBar`](ProgressOp::AddBar) shape as the label
+    /// path, with the label the components render to, so a test asserting on
+    /// the recorded bar cannot tell the two routes apart.
+    #[must_use]
+    pub fn add_bar_with_prefix(
+        &self,
+        total: u64,
+        prefix: &crate::progress::PrefixComponents,
+    ) -> RecordingTrackedHandle {
+        self.add_bar(total, &prefix.display_label())
+    }
+
     /// Return a snapshot of all recorded operations.
     #[must_use]
     pub fn ops(&self) -> Vec<ProgressOp> {
