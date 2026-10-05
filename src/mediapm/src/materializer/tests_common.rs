@@ -323,6 +323,12 @@ pub(super) struct WrittenEntry {
 }
 
 impl WrittenEntry {
+    /// The layout of the workspace, so a caller can reach the cache file the
+    /// first run wrote beside the other workspace metadata.
+    pub(super) fn paths(&self) -> &MediaPmPaths {
+        &self.paths
+    }
+
     /// Runs `sync_hierarchy` again over the same document and the records the
     /// first run left.
     pub(super) async fn resync(

@@ -87,12 +87,19 @@ pub(super) async fn output_relationship(
 /// whole at a time is what makes a verification pass over a library expensive.
 /// Every byte an independent-inode method's output holds passes through here,
 /// so the cost of this branch is the size of what it checks.
+///
+/// This is the one place a library output's bytes are read to settle whether
+/// it may be left alone, which is why [`read_watch`] counts here and nowhere
+/// else. A caller that needs to know whether a run read an output at all has
+/// no other place to look.
 pub(super) async fn file_content_matches_hash(path: &Path, expected: &Hash) -> bool {
     use tokio::io::AsyncReadExt as _;
 
     let Ok(mut file) = tokio::fs::File::open(path).await else {
         return false;
     };
+    #[cfg(test)]
+    read_watch::note_hashed_output(path);
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0u8; HASH_CHUNK_BYTES];
     loop {
@@ -129,6 +136,103 @@ fn describes_one_file(left: &Metadata, right: &Metadata) -> bool {
                 Some((volume, index)) == (right.volume_serial_number(), right.file_index())
             }
             _ => false,
+        }
+    }
+}
+
+/// Counting the managed outputs a test asked to have their bytes read.
+///
+/// The count answers one question: did the run open that output to hash it, or
+/// did it settle the question some other way. [`file_content_matches_hash`] is
+/// the only place a library output's bytes are read to decide whether it may
+/// be left alone, so a run that leaves the count at zero for an output it
+/// declined to rewrite read none of it. That is the witness the skip cache
+/// needs, because a modification time cannot tell a hardlink rewrite from a
+/// no-op and a re-read looks like neither.
+///
+/// Watched paths are whole paths rather than a directory, so tests running
+/// beside each other in one process cannot count each other's reads: each
+/// holds its own tempdir and names its own outputs. A guard removes its paths
+/// when it drops, so the count a later test starts from is the one it left.
+#[cfg(test)]
+pub(super) mod read_watch {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Watched path to how many times its bytes were read, shared by every
+    /// guard in the process.
+    fn watched() -> &'static Mutex<BTreeMap<PathBuf, u64>> {
+        static WATCHED: OnceLock<Mutex<BTreeMap<PathBuf, u64>>> = OnceLock::new();
+        WATCHED.get_or_init(|| Mutex::new(BTreeMap::new()))
+    }
+
+    /// The watched map, recovering from a guard that panicked while holding
+    /// it.
+    ///
+    /// Recovery rather than propagation, because a poisoned lock must not turn
+    /// a read into something no test can observe. A count of zero is the
+    /// direction that fails a watched test rather than passing one, so a lost
+    /// increment still cannot let a re-read through.
+    fn locked() -> MutexGuard<'static, BTreeMap<PathBuf, u64>> {
+        watched().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Count one read of `path`'s bytes, which does nothing unless a guard is
+    /// watching that exact path.
+    pub(super) fn note_hashed_output(path: &Path) {
+        let mut watched = locked();
+        if let Some(count) = watched.get_mut(path) {
+            *count += 1;
+        }
+    }
+
+    /// Counts the reads of a fixed set of outputs until it drops.
+    ///
+    /// Held for as long as the run under observation, so the count covers that
+    /// run and nothing else.
+    #[derive(Debug)]
+    pub(in crate::materializer) struct ReadCountGuard {
+        /// The paths this guard watches, kept so it can name which one was
+        /// read and so it can unregister them on drop.
+        paths: Vec<PathBuf>,
+    }
+
+    impl ReadCountGuard {
+        /// Start counting the reads of `paths`, each starting from zero.
+        pub(in crate::materializer) fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+            let paths: Vec<PathBuf> = paths.into_iter().collect();
+            let mut watched = locked();
+            for path in &paths {
+                watched.insert(path.clone(), 0);
+            }
+            ReadCountGuard { paths }
+        }
+
+        /// How many times `path`'s bytes were read while this guard was held.
+        ///
+        /// Zero for a path this guard does not watch, so a caller that mistyped
+        /// a path reads zero rather than a number belonging to something else.
+        pub(in crate::materializer) fn hashed(&self, path: &Path) -> u64 {
+            if !self.paths.iter().any(|watched| watched == path) {
+                return 0;
+            }
+            locked().get(path).copied().unwrap_or(0)
+        }
+
+        /// How many of the watched outputs were read, summed.
+        pub(in crate::materializer) fn total_hashed(&self) -> u64 {
+            let watched = locked();
+            self.paths.iter().filter_map(|path| watched.get(path)).sum()
+        }
+    }
+
+    impl Drop for ReadCountGuard {
+        fn drop(&mut self) {
+            let mut watched = locked();
+            for path in &self.paths {
+                watched.remove(path);
+            }
         }
     }
 }

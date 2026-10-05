@@ -9,6 +9,7 @@ mod metadata;
 pub(crate) mod playlist;
 pub(crate) mod progress_labels;
 mod resolve;
+mod verdicts;
 // Named `zip_reader` rather than `zip` because a child module shadows the
 // `zip` extern crate in the type namespace from edition 2018 on, and the
 // tests below this one write a ZIP archive.
@@ -50,6 +51,7 @@ use self::resolve::{
     collect_media_source_available_variants, resolve_hierarchy_source, resolve_variant_hash,
     resolve_variant_source_bytes,
 };
+use self::verdicts::VerdictCache;
 use self::zip_reader::extract_zip_member_bytes;
 
 /// Per-workflow required step output names (`step_id -> output_name[]`).
@@ -171,6 +173,11 @@ struct SyncSharedState {
     /// whatever this same run happened to have written first, so a duplicate
     /// entry could skip on the strength of the other one's work.
     recorded_hashes: BTreeMap<String, String>,
+    /// What earlier runs proved about the outputs that share no inode with
+    /// their CAS object, so a run that finds a library unchanged does not read
+    /// it to learn that. Consulted and recorded by [`Self::separate_output_holds`]
+    /// and by the write path, and written out once by [`sync_hierarchy`].
+    verdicts: VerdictCache,
 }
 
 /// Returns the number of concurrent hierarchy-worker tasks.
@@ -234,6 +241,7 @@ pub async fn sync_hierarchy(
             .iter()
             .map(|(path, record)| (path.clone(), record.hash.clone()))
             .collect(),
+        verdicts: VerdictCache::open(paths),
     });
 
     let worker_count = hierarchy_worker_count();
@@ -347,6 +355,14 @@ pub async fn sync_hierarchy(
     }
     if let Some(e) = materialize_error {
         return Err(e);
+    }
+
+    // The verdicts are written once, here, rather than from the workers. A run
+    // that dies inside the loop leaves the previous run's file whole, and a
+    // partial set would be safe anyway: an entry that is absent costs one
+    // re-read, which is what a missing cache costs.
+    if let Err(error) = shared.verdicts.flush() {
+        warn!("the content verdict cache was not written: {error}");
     }
 
     let stale_managed_paths: Vec<String> = state
@@ -715,7 +731,9 @@ async fn prepare_hierarchy_entry(
                         }
                     })?;
                     crate::materializer::commit::ensure_managed_path_readonly(&target_path)?;
-                    Hash::from_content(&extracted_bytes)
+                    let extracted_hash = Hash::from_content(&extracted_bytes);
+                    shared.confirm(&relative_path, &target_path, &extracted_hash).await;
+                    extracted_hash
                 } else {
                     materialize_file_entry(&target_path, &relative_path, &hash, shared).await?;
                     hash
@@ -881,6 +899,7 @@ async fn materialize_file_entry(
 
     // Mark output as read-only.
     crate::materializer::commit::ensure_managed_path_readonly(target_path)?;
+    shared.confirm(relative_path, target_path, hash).await;
 
     Ok(())
 }
@@ -1122,12 +1141,15 @@ async fn write_zip_folder_variant(
         }
         write_generated_file(&file_target, &content).await?;
         commit::ensure_managed_path_readonly(&file_target)?;
+        let member_relative = extracted_member_relative(relative_path, &file_rel_path);
+        let member_hash = Hash::from_content(&content);
+        shared.confirm(&member_relative, &file_target, &member_hash).await;
         managed_files.insert(
-            extracted_member_relative(relative_path, &file_rel_path),
+            member_relative,
             ManagedFileRecord {
                 media_id: media_id.to_string(),
                 variant: variant.name.clone(),
-                hash: Hash::from_content(&content).to_string(),
+                hash: member_hash.to_string(),
             },
         );
         if let Some(ref sub) = file_bar {
@@ -1165,8 +1187,10 @@ async fn write_plain_folder_variant(
     write_generated_file(&variant.variant_path, &variant.data).await?;
     commit::ensure_managed_path_readonly(&variant.variant_path)?;
     let hash = variant.source_hash.unwrap_or_else(|| Hash::from_content(&variant.data));
+    let member_relative = format!("{relative_path}/{variant_name}", variant_name = variant.name);
+    shared.confirm(&member_relative, &variant.variant_path, &hash).await;
     managed_files.insert(
-        format!("{relative_path}/{variant_name}", variant_name = variant.name),
+        member_relative,
         ManagedFileRecord {
             media_id: media_id.to_string(),
             variant: variant.name.clone(),
@@ -1425,11 +1449,12 @@ async fn materialize_playlist_entry(
     // nothing, which leaves the rendered bytes as the only statement the entry
     // makes about the file.
     let bytes = generate_playlist_bytes(&rendered_entries, entry.entry.format);
+    let hash = Hash::from_content(&bytes);
     let body = ExpectedOutput {
         relative: relative_path.to_string(),
         record: None,
         target: target_path.to_path_buf(),
-        hash: Hash::from_content(&bytes),
+        hash,
         len: bytes.len() as u64,
     };
     if shared.every_output_holds(&[body]).await {
@@ -1471,6 +1496,7 @@ async fn materialize_playlist_entry(
     write_generated_file(target_path, &bytes).await?;
 
     crate::materializer::commit::ensure_managed_path_readonly(target_path)?;
+    shared.confirm(relative_path, target_path, &hash).await;
 
     Ok(PreparedHierarchyEntryResult {
         outcome: EntryOutcome::Materialized,
@@ -1778,7 +1804,7 @@ impl SyncSharedState {
             return false;
         };
         self.record_matches(relative_path, hash)
-            && self.output_holds(target_path, hash, expected.len).await
+            && self.output_holds(relative_path, target_path, hash, expected.len).await
     }
 
     /// Whether `state.managed_files` records `hash` under `relative_path`.
@@ -1800,7 +1826,13 @@ impl SyncSharedState {
     /// than from a single store object. A folder member and a playlist body are
     /// both written from resolved bytes and so share no inode with any object,
     /// which puts both on the content branch.
-    async fn output_holds(&self, target_path: &Path, hash: &Hash, expected_len: u64) -> bool {
+    async fn output_holds(
+        &self,
+        relative_path: &str,
+        target_path: &Path,
+        hash: &Hash,
+        expected_len: u64,
+    ) -> bool {
         // A blob the store holds as a WAL entry or as a delta is not a file on
         // disk, so no link can point at it and the content branch answers on
         // its own.
@@ -1813,7 +1845,79 @@ impl SyncSharedState {
                 file_ops::OutputRelationship::Separate => {}
             }
         }
-        target_holds_content(target_path, hash, expected_len).await
+        self.separate_output_holds(relative_path, target_path, hash, expected_len).await
+    }
+
+    /// Whether the bytes at `target_path` are `hash` over `expected_len` bytes,
+    /// asking a verdict an earlier run left before reading anything.
+    ///
+    /// This is the branch a reflink and a copy land in, and the branch every
+    /// output an arm resolved from the document lands in, since a folder member
+    /// and a playlist body share no inode with any object. It is the only
+    /// branch that can consult a verdict at all. A hardlink and a symlink answer
+    /// from the relationship above, and they have to: a hardlink rewrite
+    /// relinks the same inode with the same bytes and the same modification
+    /// time, so a modification time cannot tell one from a no-op and a stamp
+    /// read there would be decoration.
+    ///
+    /// The length decides before anything else, because one stat settles the
+    /// common case of a file something else replaced, and only a file that
+    /// survives it reaches the verdict.
+    ///
+    /// A miss reads the target and, when the bytes hash to `hash`, records a
+    /// fresh verdict from that same read. Confirming a miss rather than only a
+    /// hit is what keeps a library restored from a backup, or written by a
+    /// build without this cache, from paying for two consecutive runs.
+    async fn separate_output_holds(
+        &self,
+        relative_path: &str,
+        target_path: &Path,
+        hash: &Hash,
+        expected_len: u64,
+    ) -> bool {
+        // Metadata follows symlinks, so a link whose target is gone reads as
+        // absent and gets rewritten instead of standing in for the file it
+        // once named.
+        let Ok(metadata) = tokio::fs::metadata(target_path).await else {
+            return false;
+        };
+        if !metadata.is_file() || metadata.len() != expected_len {
+            return false;
+        }
+        if self.verdicts.is_current(
+            relative_path,
+            hash,
+            expected_len,
+            verdicts::mtime_nanos(&metadata),
+        ) {
+            return true;
+        }
+        if !file_ops::file_content_matches_hash(target_path, hash).await {
+            return false;
+        }
+        self.confirm(relative_path, target_path, hash).await;
+        true
+    }
+
+    /// Record that `target_path` was just written from, or just read as, the
+    /// bytes `hash` names.
+    ///
+    /// The write path knows what the file holds without reading it, which is
+    /// what makes a stamp here sound rather than a guess. The modification time
+    /// is read here, after the write landed and after the read-only bit was
+    /// set, because that is the time the next run will stat; setting the
+    /// permission moves the change time and not the modification time, so the
+    /// two orders give the same number.
+    ///
+    /// A file whose metadata cannot be read is not stamped. The alternative, a
+    /// stamp comparing equal against anything, would turn a filesystem that
+    /// reports no modification time into a library that is never checked again.
+    async fn confirm(&self, relative_path: &str, target_path: &Path, hash: &Hash) {
+        let Ok(metadata) = tokio::fs::metadata(target_path).await else {
+            return;
+        };
+        let mtime_nanos = verdicts::mtime_nanos(&metadata);
+        self.verdicts.confirm(relative_path, hash, metadata.len(), mtime_nanos);
     }
 
     /// Whether every file an entry resolves to is already on disk holding what
@@ -1846,7 +1950,8 @@ impl SyncSharedState {
             if output.record.is_some() && !self.record_matches(&output.relative, &output.hash) {
                 return false;
             }
-            if !self.output_holds(&output.target, &output.hash, output.len).await {
+            if !self.output_holds(&output.relative, &output.target, &output.hash, output.len).await
+            {
                 return false;
             }
         }
@@ -1854,28 +1959,10 @@ impl SyncSharedState {
     }
 }
 
-/// Whether the bytes at `target_path` are `hash` over `expected_len` bytes.
-///
-/// The branch a reflink and a copy land in, and the branch every output an
-/// arm resolved from the document lands in, since a folder member and a
-/// playlist body share no inode with any object. Length first, because one
-/// stat settles the common case of a file something else replaced, and a
-/// matching length is followed by hashing the target.
-async fn target_holds_content(target_path: &Path, hash: &Hash, expected_len: u64) -> bool {
-    // Metadata follows symlinks, so a link whose target is gone reads as
-    // absent and gets rewritten instead of standing in for the file it
-    // once named.
-    let Ok(metadata) = tokio::fs::metadata(target_path).await else {
-        return false;
-    };
-    if !metadata.is_file() || metadata.len() != expected_len {
-        return false;
-    }
-    file_ops::file_content_matches_hash(target_path, hash).await
-}
-
 #[cfg(test)]
 mod tests_common;
+#[cfg(test)]
+mod tests_content_verdicts;
 #[cfg(test)]
 mod tests_entry_row_phases;
 #[cfg(test)]
