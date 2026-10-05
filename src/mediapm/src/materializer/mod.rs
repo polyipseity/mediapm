@@ -963,6 +963,7 @@ async fn materialize_media_folder_entry(
                 shared.notice(format!(
                     "media '{media_id}' variant '{variant_name}' resolution failed: {error}"
                 ));
+                unwritten_variant = true;
                 continue;
             }
         };
@@ -988,6 +989,7 @@ async fn materialize_media_folder_entry(
                 shared.notice(format!(
                     "media '{media_id}' variant '{variant_name}': ZIP archive contained zero extractable files"
                 ));
+                unwritten_variant = true;
             }
             let file_bar = add_variant_sub_bar(
                 progress_group.as_ref(),

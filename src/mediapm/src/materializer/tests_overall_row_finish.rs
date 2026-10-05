@@ -7,6 +7,7 @@ use mediapm_utils::progress::recording::{BarId, ProgressOp, RecordingProgressTra
 use super::tests_common::{
     folder_only_document, open_hierarchy_cas, overall_finish,
     playlist_with_unknown_reference_document, resolvable_media_document, single_media_document,
+    zip_payload,
 };
 
 use super::*;
@@ -202,6 +203,136 @@ async fn the_overall_row_finishes_error_when_a_folder_variant_path_is_a_director
     );
 }
 
+/// A folder variant whose bytes cannot be resolved counts as missing, and
+/// ends the overall row as an error.
+///
+/// `resolve_variant_source_bytes` errors when the variant names a hash the
+/// store does not hold. The arm records a notice, moves on to the next
+/// variant, and used to leave the folder on its success outcome on the way
+/// out, so a run that wrote none of the folder reported it as materialized
+/// and finished green.
+#[tokio::test]
+async fn the_overall_row_finishes_error_when_a_folder_variant_cannot_be_resolved() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let absent = Hash::from_content(b"never-stored-in-this-cas");
+
+    let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
+    let report = sync_hierarchy(
+        &paths,
+        &folder_only_document(&absent.to_string()),
+        &mut MediaPmState::default(),
+        &cas,
+        false,
+        &ConductorState::new_empty(),
+        &NickelDocument::default(),
+        Some(Arc::new(recording.clone())),
+        Some(Arc::new(overall.clone())),
+    )
+    .await
+    .expect("one unresolvable variant leaves a report to read; it is not a failed run");
+
+    assert_eq!(
+        report.missing_paths, 1,
+        "the folder wrote nothing, so the library is short of the entry the document asked for; \
+         got {report:?}"
+    );
+    assert_eq!(
+        report.materialized_paths, 0,
+        "a folder that wrote nothing is not a materialized path; got {report:?}"
+    );
+    assert_eq!(
+        report.skipped_paths, 0,
+        "the variant resolved to no bytes at all, which is not an already-correct output; got \
+         {report:?}"
+    );
+    assert_eq!(
+        entry_finishes(&recording),
+        vec![ProgressOp::FinishWarning],
+        "the folder row must carry the warning, the way a media entry with no content does; \
+         got {ops:?}",
+        ops = recording.ops()
+    );
+    assert_eq!(
+        overall_finish(&recording, &overall),
+        Some(ProgressOp::FinishError),
+        "a folder left short a variant has not materialized the library, so the overall row must \
+         end as an error; got {ops:?}",
+        ops = recording.recorded()
+    );
+}
+
+/// A ZIP variant holding nothing to extract counts as missing, and ends the
+/// overall row as an error.
+///
+/// The archive resolves, so the arm takes the ZIP branch and opens its
+/// member row, then finds no file in it. It used to record a notice and
+/// leave the folder on its success outcome, which counted a folder with an
+/// empty directory in it as a materialized path.
+///
+/// The folder directory is read back as well, because the counters alone
+/// cannot tell an archive that was read and found empty from one the arm
+/// never opened at all.
+#[tokio::test]
+async fn the_overall_row_finishes_error_when_a_zip_folder_variant_holds_no_members() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let hash = cas.put(bytes::Bytes::from(zip_payload(&[]))).await.unwrap();
+
+    let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
+    let report = sync_hierarchy(
+        &paths,
+        &folder_only_document(&hash.to_string()),
+        &mut MediaPmState::default(),
+        &cas,
+        false,
+        &ConductorState::new_empty(),
+        &NickelDocument::default(),
+        Some(Arc::new(recording.clone())),
+        Some(Arc::new(overall.clone())),
+    )
+    .await
+    .expect("one empty archive leaves a report to read; it is not a failed run");
+
+    assert_eq!(
+        report.missing_paths, 1,
+        "the archive held no file, so the folder holds nothing the document asked for; got \
+         {report:?}"
+    );
+    assert_eq!(
+        report.materialized_paths, 0,
+        "an empty archive is not a materialized path; got {report:?}"
+    );
+    assert_eq!(
+        report.skipped_paths, 0,
+        "nothing was already on disk to decline, so this is not a normal skip; got {report:?}"
+    );
+    let folder = paths.hierarchy_root_dir.join(FOLDER_PATH);
+    assert_eq!(
+        std::fs::read_dir(&folder).unwrap().count(),
+        0,
+        "the archive has to have been read and found empty rather than skipped, or the counts \
+         above say nothing; {} is not empty",
+        folder.display()
+    );
+    assert_eq!(
+        finish_of_bar_opened_as(&recording, &format!("{FOLDER_PATH} [stg]")),
+        Some(ProgressOp::FinishWarning),
+        "the folder row must carry the warning, the way a folder with a blocked variant does; \
+         got {ops:?}",
+        ops = recording.recorded()
+    );
+    assert_eq!(
+        overall_finish(&recording, &overall),
+        Some(ProgressOp::FinishError),
+        "a folder left short a variant has not materialized the library, so the overall row must \
+         end as an error; got {ops:?}",
+        ops = recording.recorded()
+    );
+}
+
 /// A run that materializes every entry still ends the overall row as a
 /// success.
 ///
@@ -267,4 +398,30 @@ fn entry_finishes(tracker: &RecordingProgressTracker) -> Vec<ProgressOp> {
             _ => None,
         })
         .collect()
+}
+
+/// The terminal op of the bar the tracker opened under `label`, or `None`
+/// when that bar never finished.
+///
+/// A ZIP folder variant opens a member row under the folder's own row, so
+/// [`entry_finishes`] sees two finishes there and cannot say which one the
+/// folder made. Reading the bar off its `AddBar` op names the row instead of
+/// counting rows.
+fn finish_of_bar_opened_as(tracker: &RecordingProgressTracker, label: &str) -> Option<ProgressOp> {
+    let recorded = tracker.recorded();
+    let bar = recorded.iter().find_map(|entry| match &entry.op {
+        ProgressOp::AddBar { label: opened, .. } if opened == label => Some(entry.bar),
+        _ => None,
+    })?;
+    recorded.iter().rev().find_map(|entry| {
+        if entry.bar != bar {
+            return None;
+        }
+        match entry.op {
+            ProgressOp::FinishSuccess | ProgressOp::FinishWarning | ProgressOp::FinishError => {
+                Some(entry.op.clone())
+            }
+            _ => None,
+        }
+    })
 }
