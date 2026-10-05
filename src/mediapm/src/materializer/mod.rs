@@ -92,16 +92,18 @@ use self::zip_reader::{compile_hierarchy_folder_rename_rules, extract_zip_folder
 ///
 /// The three path counts are disjoint and mean different things, which is why
 /// they are three counters rather than one counter and an interpretation.
-/// [`Self::skipped_paths`] is a clean outcome: the library already held the
-/// resolved bytes and the run wrote nothing. [`Self::missing_paths`] is the
-/// opposite, a library left short an entry because its content was
+/// [`Self::skipped_paths`] is a clean outcome: the library matched what this
+/// run resolved, so the run wrote nothing. That match is a length comparison,
+/// not a rehash, so it is evidence rather than proof. [`Self::missing_paths`]
+/// is the opposite, a library left short an entry because its content was
 /// unavailable.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MaterializeReport {
     /// Number of hierarchy paths materialized (new or updated).
     pub materialized_paths: usize,
-    /// Number of hierarchy paths that already held the resolved bytes, so the
-    /// run left them untouched.
+    /// Number of hierarchy paths the run left untouched because each already
+    /// matched the resolved content by length. The materializer's
+    /// `target_already_holds` says what that check does and does not establish.
     pub skipped_paths: usize,
     /// Number of hierarchy paths the run left unwritten because it could not
     /// produce their output.
@@ -123,7 +125,8 @@ pub struct MaterializeReport {
 enum EntryOutcome {
     /// The entry's output was written.
     Materialized,
-    /// The entry's output already held the resolved bytes and was left alone.
+    /// The entry's output already matched the resolved content and was left
+    /// alone. The match was a length comparison, not a rehash.
     AlreadyCorrect,
     /// The entry's output could not be written, so the library is left short
     /// of an entry the document asked for.
@@ -640,9 +643,10 @@ async fn prepare_hierarchy_entry(
 
             if let Some(hash) = hash {
                 if shared.target_already_holds(&relative_path, &hash, &target_path).await {
-                    // The row stays on `[vrf]`: it verified the target against
-                    // the resolved hash and then had nothing to commit, so a
-                    // `[cmt]` tag here would name a write that never happened.
+                    // The row stays on `[vrf]`: it measured the target
+                    // against the resolved content and then had nothing to
+                    // commit, so a `[cmt]` tag here would name a write that
+                    // never happened.
                     if let Some(bar) = entry_bar.handle() {
                         bar.advance(1);
                         bar.finish_success();
@@ -1418,21 +1422,46 @@ impl SyncSharedState {
         warn!("{}", message.into());
     }
 
-    /// Whether `target_path` already holds the bytes `hash` names, so writing
-    /// it again would produce a file the run already has.
+    /// Whether `target_path` still holds what `hash` names, closely enough
+    /// that writing it again would reproduce the file the run already has.
     ///
-    /// Two things have to hold, and the second is not implied by the first. A
-    /// recorded hash says what a previous run wrote, which says nothing about
-    /// whether the file is still there: deleting an output leaves its record
-    /// behind, so a hash match over an absent file would skip the one path
-    /// that needed writing. A path occupied by a directory has no file to
-    /// compare either, and the write would have to fail on it rather than
-    /// skip it.
+    /// A recorded hash answers "what did an earlier run put here". It says
+    /// nothing about what the file holds now, and a managed library is a
+    /// directory something else can write into. A user editing a file in place,
+    /// a tool writing through the library, and a restore from backup all leave
+    /// the record untouched while the bytes change, so trusting the record on
+    /// its own reports success for a file that is no longer what the document
+    /// asked for. Three things are checked, and each covers a failure the
+    /// others miss.
+    ///
+    /// The record has to name this hash, which is what ties the file to the
+    /// content this run resolved. A path nothing recorded stops there.
+    ///
+    /// The path has to be a regular file. Deleting an output leaves its record
+    /// behind, so a hash match on its own would decline the one path that
+    /// needed writing. A directory sitting on the path has no length to
+    /// compare either, and the write has to fail on it rather than skip it.
+    ///
+    /// The file's length has to equal the length of the CAS object `hash`
+    /// names. An edit that changes how many bytes the file holds is the common
+    /// case, and a length comparison catches it without reading the content.
+    ///
+    /// # What a matching length does not establish
+    ///
+    /// Content can change without changing length, so an edit that rewrites
+    /// the file in place with the same number of bytes survives a re-sync.
+    /// That is the deliberate limit of the rule rather than a defect in it:
+    /// rehashing every output on every run would catch the case, and would also
+    /// read the whole library each time, which is the work this short circuit
+    /// exists to avoid. A skip asserts "same length as the content this run
+    /// resolved", never "same bytes". A test in `tests_unchanged_targets` pins
+    /// the limit, so a reader meets it there rather than inferring a guarantee
+    /// the code does not make.
     ///
     /// A variant bound to a ZIP member never matches, because the record holds
-    /// the hash of the extracted member while `hash` names the archive. That is
-    /// the safe direction to be wrong in: the arm extracts, finds the member's
-    /// hash differs, and writes.
+    /// the hash of the extracted member while `hash` names the archive. That
+    /// is the safe direction to be wrong in: the arm extracts, finds the
+    /// member's hash differs, and writes.
     async fn target_already_holds(
         &self,
         relative_path: &str,
@@ -1448,7 +1477,19 @@ impl SyncSharedState {
         // Metadata follows symlinks, so a link whose target is gone reads as
         // absent and gets rewritten instead of standing in for the file it
         // once named.
-        tokio::fs::metadata(target_path).await.is_ok_and(|metadata| metadata.is_file())
+        let Ok(metadata) = tokio::fs::metadata(target_path).await else {
+            return false;
+        };
+        if !metadata.is_file() {
+            return false;
+        }
+        match self.cas.stat(*hash).await {
+            Ok(expected) => metadata.len() == expected.len,
+            // A CAS that cannot answer for this hash holds nothing this run
+            // could write either, so declining the skip costs one failed
+            // write and reports the cause with the path it failed on.
+            Err(_) => false,
+        }
     }
 }
 

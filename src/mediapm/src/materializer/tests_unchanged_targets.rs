@@ -203,6 +203,180 @@ async fn an_entry_whose_file_was_deleted_is_written_again() {
     );
 }
 
+/// Payload the edit tests write over the library file. Its length differs from
+/// every CAS object they resolve, which is what the length comparison sees.
+const EDITED_IN_PLACE: &[u8] = b"a different number of bytes than the CAS object holds";
+
+/// Payload whose length [`SAME_LENGTH_EDIT`] matches exactly.
+const SAME_LENGTH_PAYLOAD: &[u8] = b"same-number-of-bytes";
+
+/// Replacement for [`SAME_LENGTH_PAYLOAD`]: different bytes, same number of
+/// them, which is the case the length comparison cannot see.
+const SAME_LENGTH_EDIT: &[u8] = b"SAME-NUMBER-OF-BYTES";
+
+/// Writes the entry once, then writes `replacement` over it and re-syncs.
+///
+/// Returns the workspace holding the run, the second report and the entry's
+/// path, so each test can assert on whichever half of the outcome its case is
+/// about. The workspace comes back with them because the run's files live
+/// inside it, and a caller that dropped it would be reading paths out of a tree
+/// that no longer exists.
+///
+/// The write goes through `remove_path` and a fresh file rather than through
+/// the existing inode, because the library file is a hardlink of the CAS object
+/// and writing through it would edit the object the run restores from. The
+/// case where the write does go through the shared inode is
+/// [`an_edit_written_through_the_hardlink_is_written_again`].
+async fn sync_edit_over_the_entry(
+    payload: &[u8],
+    replacement: &[u8],
+) -> (tempfile::TempDir, MaterializeReport, PathBuf) {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let hash = cas.put(bytes::Bytes::copy_from_slice(payload)).await.unwrap();
+    let document = resolvable_media_document(&hash.to_string());
+    let mut state = MediaPmState::default();
+
+    let first = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    assert_eq!(
+        first.materialized_paths, 1,
+        "the first run has nothing recorded, so it writes: {first:?}"
+    );
+
+    let target = paths.hierarchy_root_dir.join(RELATIVE_PATH);
+    commit::remove_path(&target).expect("a readonly managed output is removable");
+    std::fs::write(&target, replacement).expect("the external write lands on the library file");
+
+    let second = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    (root, second, target)
+}
+
+/// An output something else rewrote with a different number of bytes is
+/// written again, and the run counts it as materialized.
+///
+/// The recorded hash cannot see this. A write into the library does not touch
+/// `state.managed_files`, so the record still names the content the document
+/// resolved while the file holds something else. The length is what notices,
+/// and the counters have to agree with it: a run that rewrote the file and
+/// still counted a skip would report a clean library over bytes it just
+/// replaced.
+#[tokio::test]
+async fn an_external_write_that_changes_the_length_is_written_again() {
+    let (_workspace, second, target) =
+        sync_edit_over_the_entry(SAME_LENGTH_PAYLOAD, EDITED_IN_PLACE).await;
+    assert_eq!(
+        (second.materialized_paths, second.skipped_paths, second.missing_paths),
+        (1, 0, 0),
+        "the library file no longer has the length of the object the document names, so the \
+         entry must be written and must not be reported as a skip: {second:?}"
+    );
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        SAME_LENGTH_PAYLOAD,
+        "the entry must hold the bytes the document resolved, not the bytes the external write \
+         left behind"
+    );
+}
+
+/// An edit written through the hardlink the materializer created is written
+/// again, because its length no longer matches the object.
+///
+/// The first materialization method is a hardlink, so the library file and the
+/// CAS object are one inode and a write to either reaches both. The record
+/// still matches and the path is still there, which leaves the length as the
+/// only thing that can notice, so this is the case where the check has to work
+/// on its own.
+///
+/// The file's content cannot be asserted afterwards. The external write
+/// reached the CAS object through the shared inode, so a rewrite restores the
+/// edited bytes rather than the original ones. What the run does about that is
+/// a separate question from what it counts, and the counters are what this
+/// test is about.
+#[tokio::test]
+async fn an_edit_written_through_the_hardlink_is_written_again() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let hash = cas.put(bytes::Bytes::from_static(SAME_LENGTH_PAYLOAD)).await.unwrap();
+    let document = resolvable_media_document(&hash.to_string());
+    let mut state = MediaPmState::default();
+
+    let first = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    assert_eq!(first.materialized_paths, 1, "the first run must write: {first:?}");
+
+    let target = paths.hierarchy_root_dir.join(RELATIVE_PATH);
+    clear_readonly(&target);
+    std::fs::write(&target, EDITED_IN_PLACE).expect("the write lands through the shared inode");
+
+    let second = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    assert_eq!(
+        (second.materialized_paths, second.skipped_paths, second.missing_paths),
+        (1, 0, 0),
+        "the edit went through the CAS object, so the recorded hash still matches while the file \
+         is the wrong length; the entry must still be written: {second:?}"
+    );
+}
+
+/// A same-length edit survives the skip, and this test pins that.
+///
+/// This is the limit of the rule rather than a case it handles. Content can
+/// change without changing length, and the run compares lengths because
+/// rehashing every output on every run would read the whole library each time.
+/// An edit that keeps the number of bytes therefore looks correct to the next
+/// sync and is left in place.
+///
+/// The assertion on the surviving edit is deliberate. A change that starts
+/// rehashing the target has to come here and delete it, which is how a reader
+/// finds out the guarantee moved.
+#[tokio::test]
+async fn a_same_length_edit_survives_the_skip_and_the_limit_is_pinned() {
+    let (_workspace, second, target) =
+        sync_edit_over_the_entry(SAME_LENGTH_PAYLOAD, SAME_LENGTH_EDIT).await;
+    assert_eq!(
+        (second.materialized_paths, second.skipped_paths, second.missing_paths),
+        (0, 1, 0),
+        "the edit holds as many bytes as the object the document names, so the run takes it for \
+         the content it resolved and leaves it alone: {second:?}"
+    );
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        SAME_LENGTH_EDIT,
+        "the limit is that a same-length edit survives. A rule that rehashed the target would \
+         restore the resolved bytes here, and this assertion is what makes that change visible"
+    );
+}
+
+/// Clears the read-only bit the materializer sets on every managed output, so
+/// a test can stand in for something outside mediapm writing into the library.
+fn clear_readonly(path: &Path) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mode = permissions.mode();
+        let writable_mode = mode | 0o200;
+        if writable_mode != mode {
+            permissions.set_mode(writable_mode);
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "on non-Unix platforms the readonly flag blocks the external write this helper exists to stage"
+        )]
+        {
+            permissions.set_readonly(false);
+        }
+    }
+
+    std::fs::set_permissions(path, permissions).expect("the permissions are restored");
+}
+
 /// Runs `sync_hierarchy` over `document` with no progress output, or with the
 /// tracker's own bars when one is supplied.
 async fn run_sync(

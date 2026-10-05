@@ -6,6 +6,14 @@
 //! did, and `state.managed_files` already records that hash against the output
 //! path. Matching the two is what lets the run write nothing.
 //!
+//! The recorded hash on its own is not enough, because it says what an earlier
+//! run put there and not what the file holds now. The decline therefore also
+//! compares the length of the file against the length of the object the
+//! document resolved, which is what catches a write into the library from
+//! outside mediapm. The limit of that rule, a same-length edit that survives,
+//! is pinned in the materializer's own tests rather than here, because the
+//! rule and its limit belong together.
+//!
 //! The counters alone would not carry this file. `skipped_paths == 1` says
 //! the entry was declined, not that the file was left alone: an implementation
 //! could count the skip and then write anyway, and the count would read the
@@ -48,6 +56,11 @@ const PAYLOAD: &[u8] = b"resync payload";
 /// Second payload, used where a test has to make the document resolve content
 /// the library does not hold.
 const OTHER_PAYLOAD: &[u8] = b"resync payload, revised";
+
+/// Bytes written over a materialized entry to stand in for something outside
+/// mediapm writing into the library. Deliberately a different length from
+/// [`PAYLOAD`], which is what the re-sync's length comparison looks at.
+const EXTERNAL_WRITE: &[u8] = b"an outside writer left these bytes here instead";
 
 /// Builds a document with one media source bound to `media_id` at
 /// [`HIERARCHY_PATH`], its variant pointing at `variant_hash`.
@@ -231,6 +244,59 @@ async fn resync_after_the_file_was_deleted_rewrites_the_entry() -> Result<(), me
         ))?,
         PAYLOAD,
         "the entry must be back on disk holding the bytes its record names"
+    );
+
+    drop(service);
+    Ok(())
+}
+
+/// An output something outside mediapm rewrote with a different number of
+/// bytes is materialized again, because the record cannot see the write.
+///
+/// The record cannot see the write. Nothing an outside writer does reaches
+/// `state.managed_files`, so it still names the hash the first run resolved
+/// while the file holds something else, and a run that trusted the record
+/// would report a clean library over bytes it never looked at. The length of
+/// the file against the length of the object is what notices.
+///
+/// The external write replaces the file rather than writing through it. The
+/// library file is a hardlink of the CAS object, so writing through it would
+/// edit the content the re-sync restores from and leave nothing to assert.
+#[tokio::test]
+async fn resync_after_an_external_write_rewrites_the_entry() -> Result<(), mediapm::MediaPmError> {
+    let (mut service, root, _cache) = service_with_cache(MediaRuntimeStorage::default()).await?;
+
+    let hash = seed_cas(&service, Bytes::from_static(PAYLOAD), "resync variant").await?;
+    ensure_blob_is_materialized(&service, &hash).await?;
+
+    save_mediapm_document(
+        &service.paths().mediapm_ncl,
+        &document_with_one_media_entry(&hash.to_string()),
+    )?;
+    let first = sync_library_with_test_terminal(&mut service, false).await?;
+    assert_eq!(first.materialized_paths, 1, "the first run must write the entry: {first:?}");
+
+    let materialized = root.path().join(MEDIA_ID).join("track.mp4");
+    std::fs::remove_file(&materialized)
+        .map_err(|source| io_error("removing the materialized entry", &materialized, source))?;
+    std::fs::write(&materialized, EXTERNAL_WRITE)
+        .map_err(|source| io_error("writing over the materialized entry", &materialized, source))?;
+
+    let second = sync_library_with_test_terminal(&mut service, false).await?;
+    assert_eq!(
+        (second.materialized_paths, second.skipped_paths),
+        (1, 0),
+        "the record still names the resolved hash but the file no longer has that length, so the \
+         entry must be written rather than declined: {second:?}"
+    );
+    assert_eq!(
+        std::fs::read(&materialized).map_err(|source| io_error(
+            "reading the rewritten entry",
+            &materialized,
+            source
+        ))?,
+        PAYLOAD,
+        "the entry must hold the bytes the document resolves"
     );
 
     drop(service);
