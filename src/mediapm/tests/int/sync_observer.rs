@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(
             sync_summary_icon(&summary),
             StatusIcon::Success,
-            "the library already held the resolved bytes; summary: {summary:?}"
+            "a skipped entry matched its recorded hash and length; summary: {summary:?}"
         );
         assert!(
             !sync_summary_is_incomplete(&summary),

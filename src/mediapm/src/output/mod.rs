@@ -57,9 +57,9 @@ pub enum SyncOutcome {
 /// materialized cannot both be true of the same entry. The media is not on
 /// disk, and a green run tells a pipeline the opposite.
 ///
-/// A normal skip is [`SyncOutcome::Clean`]. The output already held the
-/// resolved bytes, so the run had nothing to write and nothing to apologize
-/// for.
+/// A normal skip is [`SyncOutcome::Clean`]. The recorded hash matched the
+/// resolved one and the target was already the right length, so the run had
+/// nothing to write and nothing to apologize for.
 #[must_use]
 pub fn sync_outcome(summary: &SyncSummary) -> SyncOutcome {
     if summary.missing_paths > 0 || summary.workflow_failed_steps > 0 {

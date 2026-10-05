@@ -325,9 +325,9 @@ pub async fn sync_hierarchy(
 
     // A path left unwritten ends the row as an error, not as a neutral
     // success: its content was unavailable, so the library is not the shape
-    // the document asked for. A path that already held the resolved bytes does
-    // not, because writing it again would have produced the library the run
-    // already has.
+    // the document asked for. A path that already matched its recorded hash
+    // and length does not, because writing it again would have produced the
+    // library the run already has.
     //
     // The `Err` below stays reserved for a real `materialize_error`. Returning
     // one here would discard the report, and the caller still needs it to say

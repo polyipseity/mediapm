@@ -1445,9 +1445,9 @@ mod tests {
 
     /// A run whose entries were all already correct exits zero.
     ///
-    /// This is the direction a wrong fix breaks. A skipped entry means the file
-    /// already held the resolved bytes, so a rule that reads it as damage turns
-    /// a perfectly good second run into a red one.
+    /// This is the direction a wrong fix breaks. A skipped entry means the target
+    /// already matched the resolved hash and its length, so a rule that reads it
+    /// as damage turns a perfectly good second run into a red one.
     #[test]
     fn sync_exits_zero_when_every_entry_was_already_correct() {
         let summary =
@@ -1455,7 +1455,7 @@ mod tests {
         assert_eq!(
             sync_exit_status(&summary),
             None,
-            "an entry that already held the resolved bytes has nothing to report; \
+            "a skipped entry matched its recorded hash and length; \
              summary: {summary:?}"
         );
     }

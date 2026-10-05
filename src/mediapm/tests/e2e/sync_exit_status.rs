@@ -58,9 +58,9 @@ const HIERARCHY_PATH: &str = "${media.id}/track.bin";
 const UNRESOLVABLE_HASH: &str =
     "blake3:0000000000000000000000000000000000000000000000000000000000000000";
 
-/// Field the summary prints for entries whose target already held the resolved
-/// bytes. It appears only above a count of zero, so its presence is proof the
-/// run found an already-correct entry.
+/// Field the summary prints for entries whose target already matched the
+/// resolved hash and length. It appears only above a count of zero, so its
+/// presence is proof the run found an already-correct entry.
 const SKIPPED_FIELD: &str = "skipped=";
 
 /// Substring the post-sync summary prints on stdout once the sync finishes.
