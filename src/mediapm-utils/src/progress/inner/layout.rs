@@ -185,11 +185,11 @@ impl ProgressRenderer {
     ///
     /// This is the budget and nothing else: it says how many columns a label
     /// may use, not which of its fields survive. That is
-    /// [`semantic_truncate_prefix`] for the built-in components and the
-    /// client's own [`BarLabelTruncation`] for a client label, and each ranks
-    /// its own fields. Moving a ranking in here is tempting and wrong: it puts
-    /// one cut in two places, and the two disagree the first time a screen
-    /// gains a field.
+    /// [`semantic_truncate_prefix`] for the built-in components and the client's
+    /// own [`BarLabelTruncation`](crate::progress::BarLabelTruncation) for a
+    /// client label, and each ranks its own fields. Moving a ranking in here is
+    /// tempting and wrong: it puts one cut in two places, and the two disagree
+    /// the first time a screen gains a field.
     ///
     /// # The fill threshold
     ///

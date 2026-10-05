@@ -101,8 +101,8 @@ pub struct ProgressRenderer {
     /// height shrink.  Reattached (FIFO) when the terminal grows back.
     orphaned_states: RefCell<VecDeque<Arc<SharedState>>>,
     /// Guard against double-`finalize` from both
-    /// [`join_and_clear`](Self::join_and_clear) and
-    /// [`Drop`](Drop).
+    /// [`ProgressScreen::join_and_clear`](super::ProgressScreen::join_and_clear)
+    /// and [`Drop`](Drop).
     finalized: Cell<bool>,
     /// Injectable time source (real or synthetic for testing).
     pub(crate) time_source: Arc<dyn TimeSource>,
@@ -114,8 +114,8 @@ pub struct ProgressRenderer {
     /// the write window is through `gate.open()` (private to `gate.rs`).
     gate: WriteGate,
 
-    /// Nesting guard: `true` while inside [`run_frame`].  Panics in debug
-    /// builds if `run_frame` or `tick` is called re-entrantly.
+    /// Nesting guard: `true` while inside [`run_frame`](Self::run_frame).  Panics
+    /// in debug builds if `run_frame` or `tick` is called re-entrantly.
     in_frame: Cell<bool>,
 
     /// Optional JSONL debug sink — emits bar-state snapshots on every tick.
@@ -441,9 +441,9 @@ impl ProgressRenderer {
     /// When all slots are occupied by active handles, recycles the
     /// oldest finished slot from the top of the band and shifts all
     /// remaining bars up, keeping the newest bars contiguous at the
-    /// bottom.  When no finished slot is available, the handle is
-    /// pushed to [`orphaned_states`] — it remains tracked but has no
-    /// render slot until the terminal grows back.
+    /// bottom.  When no finished slot is available, the handle is pushed to
+    /// [`orphaned_states`](Self::orphaned_states) — it remains tracked but has
+    /// no render slot until the terminal grows back.
     ///
     /// Every slot keeps its [`SlotCache`]. The shift moves sources between
     /// slots, never bars between slots, so a slot's cache still describes
@@ -598,7 +598,7 @@ impl ProgressRenderer {
     /// trigger a final draw so that only the non-blank finished bars
     /// remain visible in the terminal and in scrollback.
     ///
-    /// This is intended as a replacement for [`clear()`](Self::clear)
+    /// This is intended as a replacement for [`MultiProgress::clear`]
     /// when the caller wants the final state of progress bars to
     /// persist in scrollback without empty reserved lines.
     ///

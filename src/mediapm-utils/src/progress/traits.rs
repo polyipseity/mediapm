@@ -2,9 +2,10 @@
 //! injection.
 //!
 //! These types are feature-gated behind `progress`. Both [`ProgressBarHandle`] and
-//! [`recording::RecordingTrackedHandle`] implement [`ProgressBarApi`]; both
-//! [`ProgressScreen`] and [`recording::RecordingProgressTracker`] implement
-//! [`ProgressScreenApi`].
+//! [`RecordingTrackedHandle`](super::recording::RecordingTrackedHandle)
+//! implement [`ProgressBarApi`]; both [`ProgressScreen`] and
+//! [`RecordingProgressTracker`](super::recording::RecordingProgressTracker)
+//! implement [`ProgressScreenApi`].
 
 use crate::progress::BarLabelTruncation;
 use crate::progress::inner::{

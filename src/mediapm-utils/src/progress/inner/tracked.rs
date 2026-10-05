@@ -95,12 +95,13 @@ impl SharedState {
     /// The **single canonical construction path** for prefix data: the
     /// `add_bar`/`with_overall` label is parsed once here via
     /// [`prefix_components_from_str`], so even bars whose label was never
-    /// touched by [`set_prefix_components`] carry structured components
-    /// (tool name, version, phase, count/total) for
+    /// touched by [`ProgressBarHandle::set_prefix_components`] carry
+    /// structured components (tool name, version, phase, count/total) for
     /// [`semantic_truncate_prefix`](super::super::semantic_truncate_prefix)
     /// to truncate field-by-field. The legacy `set_prefix(String)` API has
-    /// been removed — this construction-time parse plus [`set_prefix_components`]
-    /// is the only prefix mechanism.
+    /// been removed — this construction-time parse plus
+    /// [`ProgressBarHandle::set_prefix_components`] is the only prefix
+    /// mechanism.
     pub(crate) fn with_time_source(
         total: u64,
         label: &str,

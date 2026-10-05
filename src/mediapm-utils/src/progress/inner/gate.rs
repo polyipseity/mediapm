@@ -181,14 +181,16 @@ impl TermLike for BufferedTerm {
 /// outside this module cannot bypass the gate.
 ///
 /// Use [`WriteGate::new_noop`] for test paths where the caller
-/// provides their own [`MultiProgress`] without a [`BufferedTerm`].
+/// provides their own [`MultiProgress`](indicatif::MultiProgress) without a
+/// [`BufferedTerm`].
 #[derive(Debug, Clone)]
 pub(crate) struct WriteGate {
     flag: Arc<AtomicBool>,
     /// The terminal the paired [`BufferedTerm`] wraps, when there is one.
     ///
     /// `None` for the no-op gate: a caller that supplies its own
-    /// [`MultiProgress`] has no suppressed draws to compensate for, so there
+    /// [`MultiProgress`](indicatif::MultiProgress) has no suppressed draws to
+    /// compensate for, so there
     /// is no commit cursor advance to issue (see [`Self::commit_frame`]).
     committed_frame_term: Option<Arc<dyn TermLike>>,
 }
@@ -196,8 +198,9 @@ pub(crate) struct WriteGate {
 impl WriteGate {
     /// Create a gate that never suppresses writes.
     ///
-    /// Used by [`ProgressRenderer`] test paths where the caller
-    /// provides their own [`MultiProgress`] without a [`BufferedTerm`].
+    /// Used by [`ProgressRenderer`](super::ProgressRenderer) test paths where
+    /// the caller provides their own [`MultiProgress`](indicatif::MultiProgress)
+    /// without a [`BufferedTerm`].
     pub(crate) fn new_noop() -> Self {
         Self { flag: Arc::new(AtomicBool::new(false)), committed_frame_term: None }
     }
@@ -260,7 +263,8 @@ impl WriteGate {
     ///
     /// Idempotent — safe to call when already suppressed (e.g. on
     /// re-entry after a previous `open`).  The nesting guard lives in
-    /// [`ProgressRenderer::run_frame`] via the `in_frame` cell.
+    /// [`ProgressRenderer::run_frame`](super::ProgressRenderer::run_frame) via
+    /// the `in_frame` cell.
     pub(crate) fn suppress(&self) {
         self.flag.store(true, Ordering::Release);
     }
