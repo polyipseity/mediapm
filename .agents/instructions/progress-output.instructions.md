@@ -291,6 +291,8 @@ After progress bars finish, the CLI prints structured result lines via primitive
 | `Warning` | `Δ` | yellow bold |
 | `Error` | `✗` | red bold |
 
+A skipped hierarchy path resolved no content hash, so the upstream step ran and produced nothing to commit. The library is missing that entry, so the Screen A summary and the Screen C phase line both report it as `Error`, and `mediapm sync` ends on a non-zero status. A failed workflow step stays `Warning`: the paths that step owns may still have materialized, which is what separates it from a skip.
+
 ### Per-screen summary formats
 
 **Screen A: `mediapm sync`** (via `print_sync_summary` in `output/mod.rs`):
@@ -300,7 +302,14 @@ After progress bars finish, the CLI prints structured result lines via primitive
   Δ some warning message
 ```
 
-- Icon: `Warning` when `workflow_failed_steps > 0`; `Success` when `executed > 0 || materialized > 0`; `NoChange` otherwise.
+```text
+✗ sync complete    executed=3  materialized=5  skipped=3
+  Δ some warning message
+✗ sync left 3 path(s) unmaterialized, so the library is incomplete
+```
+
+- Icon: `Error` when `skipped_paths > 0`, ahead of every count; `Warning` when `workflow_failed_steps > 0`; `Success` when `executed > 0 || materialized > 0`; `NoChange` otherwise.
+- Exit status: `3` when `skipped_paths > 0`, with a `print_error` line naming the count. `sync_exit_status` in `src/mediapm/src/main.rs` reads the same predicate the icon does (`sync_summary_is_incomplete`), so the line a user sees and the status a script sees come from one rule. `2` is unused because POSIX reserves it for shell misuse, and the missing-`cli`-feature path keeps its own `1`.
 - Fields: `executed` always shown; `cached`, `materialized`, `skipped`, `removed`, `removed_empty`, `added_tools`, `updated_tools`, `pruned_tools`, `removed_tools`, `skipped_tools`, `failed` shown only when >0.
 - Warnings: one `print_warning` line per warning.
 
@@ -327,10 +336,10 @@ After progress bars finish, the CLI prints structured result lines via primitive
 **Screen C: materialization** (via `CliSyncObserver` in `output/observer.rs`):
 
 ```text
-✓ materialized    paths=5  skipped=3  removed=1
+✗ materialized    paths=5  skipped=3  removed=1
 ```
 
-- Icon: `Success` when `materialized + removed > 0`; `NoChange` otherwise.
+- Icon: `Error` when `skipped_paths > 0`, ahead of the counts; `Success` when `materialized + removed > 0`; `NoChange` otherwise. The screen above this line already ends red on a skip, and the line agrees with it.
 - Fields: `paths`, `skipped`, `removed`.
 
 ### Per-phase observer contract

@@ -92,6 +92,12 @@ pub struct MediaPackage {
 }
 
 /// Summary of one complete `mediapm sync` execution.
+///
+/// A `skipped_paths` count above zero means the library is incomplete: a
+/// variant resolved no content hash, so the upstream step ran and left nothing
+/// to commit. The CLI reports that as an error on its summary line and exits
+/// non-zero, which makes the count the run's headline result rather than one
+/// number among several.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSummary {
     /// Number of conductor instances executed during sync.
@@ -134,6 +140,10 @@ pub struct WorkflowSyncSummary {
 }
 
 /// Aggregate result of the materialization phase.
+///
+/// A `skipped_paths` count above zero means this phase did not materialize the
+/// library, which is what both the screen's overall row and the phase's
+/// summary line report as an error.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MaterializationSyncSummary {
     /// Paths materialized (new or updated).
