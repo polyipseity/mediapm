@@ -1,5 +1,13 @@
 //! Filesystem materialization helpers: staging, linking, copying, and reflink.
+//!
+//! The second half of the module answers the question the first half creates.
+//! Writing an output leaves a relationship to its CAS object that differs by
+//! method, and a re-sync that wants to decline a write has to establish what
+//! that relationship is before it can decline anything:
+//! [`output_relationship`] for what each method leaves, and
+//! [`file_content_matches_hash`] for the one case where only bytes can answer.
 
+use std::fs::Metadata;
 use std::io;
 use std::path::Path;
 
@@ -9,6 +17,121 @@ use crate::config::MaterializationMethod;
 use crate::error::MediaPmError;
 
 use super::commit::remove_path;
+
+/// Bytes read per chunk while hashing a managed output.
+///
+/// Managed outputs are media files and a library is large, so the hash streams
+/// instead of holding a whole file in memory.
+const HASH_CHUNK_BYTES: usize = 64 * 1024;
+
+/// What an output is, as far as the CAS object it was materialized from goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OutputRelationship {
+    /// The output is the object, or a symlink naming it.
+    ///
+    /// A hardlink and the object are one inode, so comparing device and inode
+    /// settles it with two stat calls and no bytes read. A symlink names the
+    /// object's path, so reading the link settles it with one syscall. Neither
+    /// check can be wrong about what the output holds, because the output is
+    /// the object.
+    Linked,
+    /// A symlink naming somewhere other than the object.
+    ///
+    /// Wrong whatever the link happens to resolve to: a managed output is
+    /// materialized from the store, so one pointing outside it is not an
+    /// output this run can leave alone. Nothing further is worth reading.
+    Mislinked,
+    /// A regular file that is not the object, which is what a reflink and a
+    /// copy leave. A reflink shares blocks but has its own inode, and a copy
+    /// has its own inode by definition, so neither says anything about the
+    /// bytes in the file. Only comparing the bytes can say.
+    Separate,
+}
+
+/// Establishes what `target_path` is in relation to the CAS object at
+/// `object_path`.
+///
+/// A path that is neither a file nor a symlink, and an object whose metadata
+/// cannot be read, both answer [`OutputRelationship::Separate`], which leaves
+/// the caller comparing bytes. That is the direction to err in: the caller
+/// rewrites the file to what the document resolved.
+pub(super) async fn output_relationship(
+    target_path: &Path,
+    object_path: &Path,
+) -> OutputRelationship {
+    let Ok(target_metadata) = tokio::fs::symlink_metadata(target_path).await else {
+        return OutputRelationship::Separate;
+    };
+    if target_metadata.file_type().is_symlink() {
+        return match tokio::fs::read_link(target_path).await {
+            Ok(link) if link == object_path => OutputRelationship::Linked,
+            _ => OutputRelationship::Mislinked,
+        };
+    }
+    if !target_metadata.is_file() {
+        return OutputRelationship::Separate;
+    }
+    let Ok(object_metadata) = tokio::fs::metadata(object_path).await else {
+        return OutputRelationship::Separate;
+    };
+    if describes_one_file(&target_metadata, &object_metadata) {
+        OutputRelationship::Linked
+    } else {
+        OutputRelationship::Separate
+    }
+}
+
+/// Whether the bytes at `path` hash to `expected`.
+///
+/// Streams the file, because a managed output is a media file and reading one
+/// whole at a time is what makes a verification pass over a library expensive.
+/// Every byte an independent-inode method's output holds passes through here,
+/// so the cost of this branch is the size of what it checks.
+pub(super) async fn file_content_matches_hash(path: &Path, expected: &Hash) -> bool {
+    use tokio::io::AsyncReadExt as _;
+
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return false;
+    };
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0u8; HASH_CHUNK_BYTES];
+    loop {
+        match file.read(&mut buffer).await {
+            Ok(0) => return Hash::from_bytes(*hasher.finalize().as_bytes()) == *expected,
+            Ok(read) => {
+                hasher.update(&buffer[..read]);
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Whether two `stat` results describe one file rather than two that happen to
+/// agree on length.
+///
+/// The platform's own answer to the question: device and inode on unix, volume
+/// serial number and file index on Windows. Windows reports both as optional,
+/// and a pair it declines to report is not evidence of identity, so that case
+/// answers `false` and the caller falls through to comparing content.
+fn describes_one_file(left: &Metadata, right: &Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+
+        match (left.volume_serial_number(), left.file_index()) {
+            (Some(volume), Some(index)) => {
+                Some((volume, index)) == (right.volume_serial_number(), right.file_index())
+            }
+            _ => false,
+        }
+    }
+}
 
 /// Removes one destination path if it already exists.
 ///

@@ -93,17 +93,19 @@ use self::zip_reader::{compile_hierarchy_folder_rename_rules, extract_zip_folder
 /// The three path counts are disjoint and mean different things, which is why
 /// they are three counters rather than one counter and an interpretation.
 /// [`Self::skipped_paths`] is a clean outcome: the library matched what this
-/// run resolved, so the run wrote nothing. That match is a length comparison,
-/// not a rehash, so it is evidence rather than proof. [`Self::missing_paths`]
-/// is the opposite, a library left short an entry because its content was
-/// unavailable.
+/// run resolved, so the run wrote nothing. How much that match was proved
+/// depends on the method that produced each output, which
+/// [`Self::skipped_paths`] describes. [`Self::missing_paths`] is the opposite,
+/// a library left short an entry because its content was unavailable.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MaterializeReport {
     /// Number of hierarchy paths materialized (new or updated).
     pub materialized_paths: usize,
     /// Number of hierarchy paths the run left untouched because each already
-    /// matched the resolved content by length. The materializer's
-    /// `target_already_holds` says what that check does and does not establish.
+    /// matched the resolved content. A hardlinked or symlinked output is
+    /// checked against the CAS object it links to, and a reflinked or copied
+    /// one is checked by length and then by hash; the materializer's
+    /// `target_already_holds` says what each of those establishes.
     pub skipped_paths: usize,
     /// Number of hierarchy paths the run left unwritten because it could not
     /// produce their output.
@@ -126,7 +128,8 @@ enum EntryOutcome {
     /// The entry's output was written.
     Materialized,
     /// The entry's output already matched the resolved content and was left
-    /// alone. The match was a length comparison, not a rehash.
+    /// alone. How much that match proved depends on the method that produced
+    /// the output, and on the store being intact for the two link methods.
     AlreadyCorrect,
     /// The entry's output could not be written, so the library is left short
     /// of an entry the document asked for.
@@ -1429,34 +1432,44 @@ impl SyncSharedState {
     /// nothing about what the file holds now, and a managed library is a
     /// directory something else can write into. A user editing a file in place,
     /// a tool writing through the library, and a restore from backup all leave
-    /// the record untouched while the bytes change, so trusting the record on
-    /// its own reports success for a file that is no longer what the document
-    /// asked for. Three things are checked, and each covers a failure the
-    /// others miss.
+    /// the record untouched while the bytes change, so the record has to name
+    /// this hash and the file's own content has to be established separately.
     ///
-    /// The record has to name this hash, which is what ties the file to the
-    /// content this run resolved. A path nothing recorded stops there.
+    /// How the content gets established depends on the relationship between
+    /// the output and the CAS object, because two of the four methods leave a
+    /// relationship that answers the question outright.
     ///
-    /// The path has to be a regular file. Deleting an output leaves its record
-    /// behind, so a hash match on its own would decline the one path that
-    /// needed writing. A directory sitting on the path has no length to
-    /// compare either, and the write has to fail on it rather than skip it.
+    /// - A hardlink and the object are one inode. Comparing device and inode
+    ///   is the whole check: two stat calls, no bytes read, and nothing that
+    ///   can be wrong about what the output holds.
+    /// - A symlink names the object's path. Reading the link and comparing it
+    ///   to that path is the whole check: one syscall, no bytes read. A link
+    ///   naming anywhere else is wrong whatever it resolves to, because a
+    ///   managed output is materialized from the store.
+    /// - A reflink and a copy are separate inodes by construction, and the
+    ///   blocks a reflink shares say nothing about the bytes in the file. The
+    ///   length decides first, and a matching length is followed by hashing
+    ///   the target, so an edit that kept the number of bytes is caught at
+    ///   the cost of reading the outputs this run declined to write.
     ///
-    /// The file's length has to equal the length of the CAS object `hash`
-    /// names. An edit that changes how many bytes the file holds is the common
-    /// case, and a length comparison catches it without reading the content.
+    /// The check reads which relationship is present rather than being told
+    /// which method ran, because no record of that survives to the next run:
+    /// the write path tries the four methods in order and falls back whenever
+    /// one fails, and nothing persisted says which one succeeded. Probing for
+    /// the relationship reports what is on disk whichever method put it there.
     ///
-    /// # What a matching length does not establish
+    /// # What each branch assumes
     ///
-    /// Content can change without changing length, so an edit that rewrites
-    /// the file in place with the same number of bytes survives a re-sync.
-    /// That is the deliberate limit of the rule rather than a defect in it:
-    /// rehashing every output on every run would catch the case, and would also
-    /// read the whole library each time, which is the work this short circuit
-    /// exists to avoid. A skip asserts "same length as the content this run
-    /// resolved", never "same bytes". A test in `tests_unchanged_targets` pins
-    /// the limit, so a reader meets it there rather than inferring a guarantee
-    /// the code does not make.
+    /// Both link branches assume the store is intact, and detecting a store
+    /// that is not is the store's job. A hardlink's content is the object's
+    /// content by construction, so an edit written through the library path
+    /// edits the object with it. That is a corrupted store rather than a stale
+    /// library, and rehashing the object here would answer a question this
+    /// layer has no standing to answer.
+    ///
+    /// A path no record names, a path that is not a regular file, and a CAS
+    /// that cannot answer for the hash all decline the skip. Declining costs a
+    /// rewrite that reproduces the file the target should have held.
     ///
     /// A variant bound to a ZIP member never matches, because the record holds
     /// the hash of the extracted member while `hash` names the archive. That
@@ -1474,6 +1487,28 @@ impl SyncSharedState {
         if recorded != &hash.to_string() {
             return false;
         }
+        // A blob the store holds as a WAL entry or as a delta is not a file on
+        // disk, so no link can point at it and the content branch answers on
+        // its own.
+        if let Some(object_path) =
+            self.cas.object_path_for_hash(*hash).filter(|path| path.is_file())
+        {
+            match file_ops::output_relationship(target_path, &object_path).await {
+                file_ops::OutputRelationship::Linked => return true,
+                file_ops::OutputRelationship::Mislinked => return false,
+                file_ops::OutputRelationship::Separate => {}
+            }
+        }
+        self.target_content_matches(hash, target_path).await
+    }
+
+    /// Whether the bytes at `target_path` are what `hash` names.
+    ///
+    /// The branch a reflink and a copy land in, the two methods that leave no
+    /// relationship to compare. Length first, because one stat settles the
+    /// common case of a file something else replaced, and a matching length is
+    /// followed by hashing the target.
+    async fn target_content_matches(&self, hash: &Hash, target_path: &Path) -> bool {
         // Metadata follows symlinks, so a link whose target is gone reads as
         // absent and gets rewritten instead of standing in for the file it
         // once named.
@@ -1484,7 +1519,8 @@ impl SyncSharedState {
             return false;
         }
         match self.cas.stat(*hash).await {
-            Ok(expected) => metadata.len() == expected.len,
+            Ok(expected) if metadata.len() != expected.len => false,
+            Ok(_) => file_ops::file_content_matches_hash(target_path, hash).await,
             // A CAS that cannot answer for this hash holds nothing this run
             // could write either, so declining the skip costs one failed
             // write and reports the cause with the path it failed on.

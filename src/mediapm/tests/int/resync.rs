@@ -8,11 +8,12 @@
 //!
 //! The recorded hash on its own is not enough, because it says what an earlier
 //! run put there and not what the file holds now. The decline therefore also
-//! compares the length of the file against the length of the object the
-//! document resolved, which is what catches a write into the library from
-//! outside mediapm. The limit of that rule, a same-length edit that survives,
-//! is pinned in the materializer's own tests rather than here, because the
-//! rule and its limit belong together.
+//! establishes what the file holds, by whichever means the method that produced
+//! it allows: an identity or a name for a hardlink or a symlink, and the bytes
+//! themselves for a reflink or a copy. That is what catches a write into the
+//! library from outside mediapm. The method-dependent cases are pinned in the
+//! materializer's own tests, where each relationship is set up directly,
+//! rather than here, where every run writes through hardlink.
 //!
 //! The counters alone would not carry this file. `skipped_paths == 1` says
 //! the entry was declined, not that the file was left alone: an implementation
@@ -59,7 +60,7 @@ const OTHER_PAYLOAD: &[u8] = b"resync payload, revised";
 
 /// Bytes written over a materialized entry to stand in for something outside
 /// mediapm writing into the library. Deliberately a different length from
-/// [`PAYLOAD`], which is what the re-sync's length comparison looks at.
+/// [`PAYLOAD`], which is the first thing the re-sync's content check looks at.
 const EXTERNAL_WRITE: &[u8] = b"an outside writer left these bytes here instead";
 
 /// Builds a document with one media source bound to `media_id` at
@@ -256,8 +257,8 @@ async fn resync_after_the_file_was_deleted_rewrites_the_entry() -> Result<(), me
 /// The record cannot see the write. Nothing an outside writer does reaches
 /// `state.managed_files`, so it still names the hash the first run resolved
 /// while the file holds something else, and a run that trusted the record
-/// would report a clean library over bytes it never looked at. The length of
-/// the file against the length of the object is what notices.
+/// would report a clean library over bytes it never looked at. Reading the
+/// file is what notices.
 ///
 /// The external write replaces the file rather than writing through it. The
 /// library file is a hardlink of the CAS object, so writing through it would
