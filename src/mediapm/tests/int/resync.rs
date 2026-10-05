@@ -51,6 +51,10 @@ const VARIANT: &str = "default";
 /// path, so the entry's output is observable on disk after each run.
 const HIERARCHY_PATH: &str = "${media.id}/track.mp4";
 
+/// Hierarchy path template for the same source as a media folder, whose output
+/// lands under the media id rather than at it.
+const FOLDER_HIERARCHY_PATH: &str = "${media.id}";
+
 /// Payload stored in CAS for [`VARIANT`].
 const PAYLOAD: &[u8] = b"resync payload";
 
@@ -93,6 +97,21 @@ fn document_with_one_media_entry(variant_hash: &str) -> MediaPmDocument {
         }],
         ..MediaPmDocument::default()
     }
+}
+
+/// Builds a document with one media source bound to `media_id`, whose single
+/// hierarchy entry is a media folder at [`FOLDER_HIERARCHY_PATH`].
+///
+/// The folder arm writes one file per variant under its own path, so the
+/// materialized output is `<root>/<MEDIA_ID>/<VARIANT>` rather than the single
+/// file the media entry produces. Everything else matches the media fixture, so
+/// the two arms differ in the shape of what they leave on disk and in nothing
+/// about how the runs reach them.
+fn document_with_one_media_folder(variant_hash: &str) -> MediaPmDocument {
+    let mut document = document_with_one_media_entry(variant_hash);
+    document.hierarchy[0].path = HierarchyPath::from(FOLDER_HIERARCHY_PATH);
+    document.hierarchy[0].kind = HierarchyNodeKind::MediaFolder;
+    document
 }
 
 /// A second `sync_library` over an unchanged library counts one normal skip,
@@ -156,6 +175,77 @@ async fn resync_over_an_unchanged_library_skips_the_entry_and_writes_nothing()
 
     // Release the CAS `store/lock` before the workspace `TempDir` removes the
     // tree it guards.
+    drop(service);
+    Ok(())
+}
+
+/// A second `sync_library` over an unchanged media folder declines it and
+/// leaves its member alone.
+///
+/// The folder arm is a separate one from the media arm, and a counter of one
+/// against zero is all either of them can report, so this reads the member's
+/// timestamps as well. The materializer marks every member read-only and a
+/// rewrite unlinks and rewrites it, so a folder that was rewritten leaves
+/// either a different modification time or a different status-change time.
+///
+/// One member is all this can cover. Which members a folder resolves to comes
+/// from its document, and a member that drifts is the case the materializer's
+/// own tests cover, where each member can be set up on its own.
+#[tokio::test]
+async fn resync_over_an_unchanged_media_folder_skips_the_entry_and_writes_nothing()
+-> Result<(), mediapm::MediaPmError> {
+    let (mut service, root, _cache) = service_with_cache(MediaRuntimeStorage::default()).await?;
+
+    let hash = seed_cas(&service, Bytes::from_static(PAYLOAD), "resync folder variant").await?;
+    ensure_blob_is_materialized(&service, &hash).await?;
+
+    save_mediapm_document(
+        &service.paths().mediapm_ncl,
+        &document_with_one_media_folder(&hash.to_string()),
+    )?;
+
+    let first = sync_library_with_test_terminal(&mut service, false).await?;
+    assert_eq!(
+        (first.materialized_paths, first.skipped_paths, first.missing_paths),
+        (1, 0, 0),
+        "the first run has nothing recorded for the folder, so it must write it: {first:?}"
+    );
+    let member = root.path().join(MEDIA_ID).join(VARIANT);
+    assert!(
+        member.is_file(),
+        "the first run's folder member must exist on disk before the re-sync is read: {}",
+        member.display()
+    );
+
+    let before = read_witness(&member)?;
+
+    let second = sync_library_with_test_terminal(&mut service, false).await?;
+    assert_eq!(
+        (second.materialized_paths, second.skipped_paths, second.missing_paths),
+        (0, 1, 0),
+        "the re-sync resolved the hash the first run wrote and the member is still there, so it \
+         must decline the folder and write nothing: {second:?}"
+    );
+
+    let after = read_witness(&member)?;
+    assert_eq!(
+        after.modified, before.modified,
+        "the re-sync must not rewrite the folder's member, or its modification time moves"
+    );
+    assert_eq!(
+        after.changed, before.changed,
+        "the re-sync must not replace the folder's member, or its status-change time moves"
+    );
+    assert_eq!(
+        std::fs::read(&member).map_err(|source| io_error(
+            "reading the folder member",
+            &member,
+            source
+        ))?,
+        PAYLOAD,
+        "the member must still hold what the first run wrote"
+    );
+
     drop(service);
     Ok(())
 }

@@ -7,7 +7,9 @@
 
 use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
-use super::tests_common::{open_hierarchy_cas, overall_finish, resolvable_media_document};
+use super::tests_common::{
+    clear_readonly, open_hierarchy_cas, overall_finish, resolvable_media_document, run_sync,
+};
 
 use super::*;
 use crate::config::MaterializationMethod;
@@ -546,59 +548,4 @@ async fn an_untouched_output_skips_whatever_method_produced_it() {
              {outputs:?}"
         );
     }
-}
-
-/// Clears the read-only bit the materializer sets on every managed output, so
-/// a test can stand in for something outside mediapm writing into the library.
-fn clear_readonly(path: &Path) {
-    let mut permissions = std::fs::metadata(path).unwrap().permissions();
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let mode = permissions.mode();
-        let writable_mode = mode | 0o200;
-        if writable_mode != mode {
-            permissions.set_mode(writable_mode);
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        #[expect(
-            clippy::permissions_set_readonly_false,
-            reason = "on non-Unix platforms the readonly flag blocks the external write this helper exists to stage"
-        )]
-        {
-            permissions.set_readonly(false);
-        }
-    }
-
-    std::fs::set_permissions(path, permissions).expect("the permissions are restored");
-}
-
-/// Runs `sync_hierarchy` over `document` with no progress output, or with the
-/// tracker's own bars when one is supplied.
-async fn run_sync(
-    paths: &MediaPmPaths,
-    document: &MediaPmDocument,
-    state: &mut MediaPmState,
-    cas: &FileSystemCas,
-    progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
-    overall_bar: Option<Arc<dyn ProgressBarApi>>,
-) -> MaterializeReport {
-    sync_hierarchy(
-        paths,
-        document,
-        state,
-        cas,
-        false,
-        &ConductorState::new_empty(),
-        &NickelDocument::default(),
-        progress_group,
-        overall_bar,
-    )
-    .await
-    .expect("a run over one resolvable entry either writes it or skips it")
 }

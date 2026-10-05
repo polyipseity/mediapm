@@ -86,7 +86,10 @@ pub(super) struct VariantSourceBytes {
     /// Source CAS hash when bytes map directly to one stored object.
     pub(super) source_hash: Option<Hash>,
 }
-use self::zip_reader::{compile_hierarchy_folder_rename_rules, extract_zip_folder_variant_bytes};
+use self::zip_reader::{
+    CompiledFolderRenameRule, compile_hierarchy_folder_rename_rules,
+    extract_zip_folder_variant_bytes,
+};
 
 /// Summary of one `sync_hierarchy` invocation.
 ///
@@ -882,6 +885,285 @@ async fn materialize_file_entry(
     Ok(())
 }
 
+/// One file a media-folder entry's variants resolve to.
+///
+/// The folder arm builds these from the document and the store, never from a
+/// directory listing, because a listing cannot tell a member the document
+/// still asks for from a member it stopped asking for. That difference is the
+/// whole reason the set is derived rather than read: an output removed from
+/// the document has to leave the expected set, and a listing would have kept
+/// it.
+#[derive(Debug, Clone)]
+struct FolderMember {
+    /// Key this entry's records carry for the file, which is the hierarchy
+    /// path joined with the path below the folder.
+    relative: String,
+    /// Variant the file came from, recorded so a declined folder still returns
+    /// the records the write path would have built.
+    variant: String,
+    /// Where the file sits under the folder.
+    target: PathBuf,
+    /// Hash of the bytes this run resolved for it.
+    hash: Hash,
+    /// Length of those bytes, which settles the common case in one stat.
+    len: u64,
+}
+
+/// One selected folder variant's resolved payload.
+///
+/// The arm resolves every variant before it decides anything, because a folder
+/// is only correct if all of its variants are, and a decision made after the
+/// first variant was written could not be taken back. Holding the payloads to
+/// the end of the entry is what lets the write pass reuse the resolve instead
+/// of reading every archive twice and repeating the notices a fallback
+/// resolution produced.
+#[derive(Debug)]
+struct ResolvedFolderVariant {
+    /// Variant name as the document spells it, which is the record key for a
+    /// variant that is not an archive.
+    name: String,
+    /// Variant path parsed into components and joined under the folder. Used
+    /// only for a variant whose payload is not a ZIP archive, and kept beside
+    /// the name because the record key is the name the document spells while
+    /// the path on disk is that name parsed.
+    variant_path: PathBuf,
+    /// Archive bytes, or the plain file's bytes.
+    data: Vec<u8>,
+    /// Hash of the archive in the store when the resolver found one. A plain
+    /// variant records it, an extracted member records the hash of the bytes
+    /// the extraction produced instead.
+    source_hash: Option<Hash>,
+}
+
+impl FolderMember {
+    /// The record the entry stores for this member, which a declined folder
+    /// returns so the stale scan keeps the files the run left alone.
+    fn managed_record(&self, media_id: &str) -> ManagedFileRecord {
+        ManagedFileRecord {
+            media_id: media_id.to_string(),
+            variant: self.variant.clone(),
+            hash: self.hash.to_string(),
+        }
+    }
+}
+
+/// The files `resolved_variants` resolve to, or `None` when one of them cannot
+/// be turned into a member set.
+///
+/// This is where a folder's expected shape comes from. It reads the document's
+/// variants and the store, applies the archive-shape normalizer and the folder
+/// rename rules the write pass applies, and never reads the library
+/// directory. That is the difference between checking a folder and reading it
+/// back: a member the document dropped is missing here, whereas a listing
+/// would have found the file it used to write and called the folder correct.
+///
+/// A variant whose extraction fails or yields nothing answers `None`, which
+/// declines the skip rather than raising. The write pass then reports the
+/// condition once, with the variant name in its message, where a check that
+/// raised here would report the same archive twice.
+///
+/// The archive is read twice on the path that rewrites: once here to learn
+/// what it holds, and once in the write pass to get the bytes back. Only the
+/// content is dropped between the two, never the payloads, which are held on
+/// [`ResolvedFolderVariant`] so a fallback notice is emitted once however many
+/// passes run.
+fn expected_folder_members(
+    variants: &[ResolvedFolderVariant],
+    target_path: &Path,
+    relative_path: &str,
+    media_id: &str,
+    rename_rules: &[CompiledFolderRenameRule],
+) -> Option<Vec<FolderMember>> {
+    let mut members = Vec::new();
+    for variant in variants {
+        if !is_zip_content(&variant.data) {
+            members.push(FolderMember {
+                relative: format!("{relative_path}/{variant_name}", variant_name = variant.name),
+                variant: variant.name.clone(),
+                target: variant.variant_path.clone(),
+                hash: variant.source_hash.unwrap_or_else(|| Hash::from_content(&variant.data)),
+                len: variant.data.len() as u64,
+            });
+            continue;
+        }
+        let extracted = extract_zip_folder_variant_bytes(&variant.data, rename_rules).ok()?;
+        if extracted.is_empty() {
+            return None;
+        }
+        for (file_rel_path, content) in extracted {
+            let file_rel_path =
+                resolve_extracted_member_path(&file_rel_path, media_id, &variant.name).ok()?;
+            let target = target_path.join(&file_rel_path);
+            let content = rewrite_extracted_member_content(&target, content);
+            members.push(FolderMember {
+                relative: extracted_member_relative(relative_path, &file_rel_path),
+                variant: variant.name.clone(),
+                target,
+                hash: Hash::from_content(&content),
+                len: content.len() as u64,
+            });
+        }
+    }
+    Some(members)
+}
+
+/// Writes one folder member, replacing whatever is already at `target`.
+/// Writes one folder member, replacing whatever is already at `target`.
+///
+/// The folder arm marks every member read-only once it has written it, so a
+/// plain write cannot open one for writing again. The single-file arm clears
+/// the way through `file_ops` before each method it tries; this is the same
+/// step for a file the folder arm writes from resolved bytes rather than from
+/// the store, and it is what lets a folder whose member drifted be rewritten
+/// at all.
+async fn write_folder_member(target: &Path, content: &[u8]) -> Result<(), MediaPmError> {
+    if tokio::fs::symlink_metadata(target).await.is_ok() {
+        commit::remove_path(target)?;
+    }
+    tokio::fs::write(target, content).await.map_err(|source| MediaPmError::Io {
+        operation: "writing folder member".to_string(),
+        path: target.to_path_buf(),
+        source,
+    })
+}
+
+/// Record key for an extracted member, which the folder's own hierarchy path
+/// prefixed onto the member's path below it.
+fn extracted_member_relative(folder_relative: &str, member_path: &Path) -> String {
+    format!("{folder_relative}/{}", member_path.to_string_lossy().replace('\\', "/"))
+}
+
+/// Normalises and parses one extracted ZIP member's path.
+///
+/// The member name is untrusted archive data, and the join it reaches is what
+/// writes it to disk. Parsing it through `PathComponent` is the same contract
+/// the hierarchy path uses, so a traversal component cannot reach the join even
+/// if the archive-shape normalizer is later loosened.
+fn resolve_extracted_member_path(
+    file_rel_path: &Path,
+    media_id: &str,
+    variant_name: &str,
+) -> Result<PathBuf, MediaPmError> {
+    let normalized = normalize_yt_dlp_sandbox_zip_member_path(file_rel_path);
+    let components = commit::parse_relative_path_components(&normalized, &SanitizePolicy::disabled())
+        .map_err(|error| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' variant '{variant_name}': refusing extracted ZIP member '{}': {error}",
+                normalized.to_string_lossy()
+            ))
+        })?;
+    Ok(commit::join_path_components(&components))
+}
+
+/// Rewrites the yt-dlp artifacts a `.desktop` link file carries, leaving every
+/// other member alone.
+fn rewrite_extracted_member_content(target: &Path, content: Vec<u8>) -> Vec<u8> {
+    if target.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("desktop")) {
+        return rewrite_desktop_link_content(std::str::from_utf8(&content).unwrap_or_default())
+            .into_bytes();
+    }
+    content
+}
+
+/// Writes one variant whose payload is a ZIP archive, extracting every member
+/// under `target_path`. Answers whether the variant produced a file.
+///
+/// The sub-bar is opened over the number of members the archive holds and
+/// advanced once per written file, so the materialization screen shows the
+/// variant as a fan-out rather than as one write. An archive holding no
+/// extractable file leaves the variant unwritten, because the folder is then
+/// short of what the document resolved it to.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the extracted-member loop needs the folder's naming context and the two writers it feeds"
+)]
+async fn write_zip_folder_variant(
+    variant: &ResolvedFolderVariant,
+    target_path: &Path,
+    relative_path: &str,
+    media_id: &str,
+    rename_rules: &[CompiledFolderRenameRule],
+    shared: &SyncSharedState,
+    progress_group: Option<&Arc<dyn ProgressScreenApi + Send + Sync>>,
+    managed_files: &mut BTreeMap<String, ManagedFileRecord>,
+) -> Result<bool, MediaPmError> {
+    let extracted = extract_zip_folder_variant_bytes(&variant.data, rename_rules)?;
+    if extracted.is_empty() {
+        shared.notice(format!(
+            "media '{media_id}' variant '{}': ZIP archive contained zero extractable files",
+            variant.name
+        ));
+        return Ok(false);
+    }
+    let file_bar =
+        add_variant_sub_bar(progress_group, relative_path, &variant.name, extracted.len());
+    for (file_rel_path, content) in extracted {
+        let file_rel_path = resolve_extracted_member_path(&file_rel_path, media_id, &variant.name)?;
+        let file_target = target_path.join(&file_rel_path);
+        let content = rewrite_extracted_member_content(&file_target, content);
+        if let Some(parent) = file_target.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|source| MediaPmError::Io {
+                operation: "creating extracted-file parent directory".to_string(),
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        write_folder_member(&file_target, &content).await?;
+        commit::ensure_managed_path_readonly(&file_target)?;
+        managed_files.insert(
+            extracted_member_relative(relative_path, &file_rel_path),
+            ManagedFileRecord {
+                media_id: media_id.to_string(),
+                variant: variant.name.clone(),
+                hash: Hash::from_content(&content).to_string(),
+            },
+        );
+        if let Some(ref sub) = file_bar {
+            sub.advance(1);
+        }
+    }
+    if let Some(ref sub) = file_bar {
+        sub.finish_success();
+    }
+    Ok(true)
+}
+
+/// Writes one variant whose payload is not an archive, as one file at the
+/// variant's own path. Answers whether the variant produced a file.
+///
+/// A directory already sitting on that path is left alone and the variant goes
+/// unwritten: a managed output is materialized from the store, so a folder
+/// entry the arm refuses to overwrite leaves the folder short a file, and
+/// counting it as written is what the three earlier folder commits removed.
+async fn write_plain_folder_variant(
+    variant: &ResolvedFolderVariant,
+    relative_path: &str,
+    media_id: &str,
+    shared: &SyncSharedState,
+    managed_files: &mut BTreeMap<String, ManagedFileRecord>,
+) -> Result<bool, MediaPmError> {
+    if tokio::fs::metadata(&variant.variant_path).await.is_ok_and(|metadata| metadata.is_dir()) {
+        shared.notice(format!(
+            "media '{media_id}' variant '{}': not writing '{}' because it is already a directory",
+            variant.name,
+            variant.variant_path.display()
+        ));
+        return Ok(false);
+    }
+    write_folder_member(&variant.variant_path, &variant.data).await?;
+    commit::ensure_managed_path_readonly(&variant.variant_path)?;
+    let hash = variant.source_hash.unwrap_or_else(|| Hash::from_content(&variant.data));
+    managed_files.insert(
+        format!("{relative_path}/{variant_name}", variant_name = variant.name),
+        ManagedFileRecord {
+            media_id: media_id.to_string(),
+            variant: variant.name.clone(),
+            hash: hash.to_string(),
+        },
+    );
+    Ok(true)
+}
+
 /// Materialises a media-folder (multi-variant or ZIP-folder) entry.
 #[expect(
     clippy::too_many_lines,
@@ -899,16 +1181,10 @@ async fn materialize_media_folder_entry(
     progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
     entry_bar: &mut EntryPhaseBar<'_>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
-    tokio::fs::create_dir_all(target_path).await.map_err(|source| MediaPmError::Io {
-        operation: "creating media-folder directory".to_string(),
-        path: target_path.to_path_buf(),
-        source,
-    })?;
-
     // Resolve variant selectors.
     let available = collect_media_source_available_variants(source);
     let selected_variants = if entry.entry.variants.is_empty() {
-        // No selectors → use all available variants.
+        // No selectors means every available variant.
         available.iter().cloned().collect::<Vec<_>>()
     } else {
         expand_variant_selectors(&entry.entry.variants, &available).map_err(|e| {
@@ -918,6 +1194,27 @@ async fn materialize_media_folder_entry(
         })?
     };
 
+    // The variant name is a second untrusted join on this path: it reaches
+    // `target_path.join(...)` and then a write, and it can carry a separator
+    // or `..` because it is a free-form key in the source's `variant_hashes`
+    // map rather than a validated hierarchy component. Parsing it through
+    // `PathComponent` closes the same class of write-outside-the-target-folder
+    // bug the ZIP member path had. Whether the name parses does not depend on
+    // the payload, so it is settled before the arm reads a byte.
+    let mut parsed_variants = Vec::with_capacity(selected_variants.len());
+    for variant_name in &selected_variants {
+        let components = commit::parse_relative_path_components(
+            Path::new(variant_name),
+            &SanitizePolicy::disabled(),
+        )
+        .map_err(|error| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}': refusing unsafe variant name '{variant_name}': {error}"
+            ))
+        })?;
+        parsed_variants.push(target_path.join(commit::join_path_components(&components)));
+    }
+
     let interpolated_rename_rules = resolve_interpolated_folder_rename_rules(
         &entry.entry.rename_files,
         media_id,
@@ -926,9 +1223,8 @@ async fn materialize_media_folder_entry(
     )
     .await?;
     let rename_rules = compile_hierarchy_folder_rename_rules(&interpolated_rename_rules)?;
-    let mut managed_files = BTreeMap::new();
-    let mut variant_hashes = BTreeMap::new();
-    // Whether any variant ended the loop without a file. The counters are per
+
+    // Whether any variant ended the run without a file. The counters are per
     // hierarchy path, and a folder is one path however many variants it holds,
     // so one blocked variant makes the whole entry unwritten: counting it as
     // materialized would report a library the document did not ask for, and
@@ -939,32 +1235,21 @@ async fn materialize_media_folder_entry(
     // runs zero times and reaches none of the arms that set this. That is the
     // one shape in which the loop leaves the flag false without having
     // written anything.
-    let mut unwritten_variant = selected_variants.is_empty();
-    if selected_variants.is_empty() {
+    let mut unwritten_variant = parsed_variants.is_empty();
+    if parsed_variants.is_empty() {
         shared
             .notice(format!("media '{media_id}' resolved to no variants, so nothing was written"));
     }
 
-    for variant_name in &selected_variants {
-        // A variant name is a second untrusted join on this path: it reaches
-        // `target_path.join(...)` and then `tokio::fs::write`, and it can
-        // carry a separator or `..` because it is a free-form key in the
-        // source's `variant_hashes` map rather than a validated hierarchy
-        // component. Parsing it through `PathComponent` closes the same class
-        // of write-outside-the-target-folder bug the ZIP member path had.
-        let variant_path = commit::join_path_components(
-            &commit::parse_relative_path_components(
-                Path::new(variant_name),
-                &SanitizePolicy::disabled(),
-            )
-            .map_err(|error| {
-                MediaPmError::Workflow(format!(
-                    "media '{media_id}': refusing unsafe variant name '{variant_name}': {error}"
-                ))
-            })?,
-        );
-        let variant_path = target_path.join(variant_path);
-
+    // Resolve every variant before deciding anything, so a folder is never
+    // declared correct on the strength of the variants that happened to
+    // resolve. A variant that cannot be resolved sets the flag above and is
+    // absent from the list, which is what keeps a folder short a file out of
+    // the skipped counter.
+    let mut resolved_variants: Vec<ResolvedFolderVariant> =
+        Vec::with_capacity(parsed_variants.len());
+    let mut variant_hashes: BTreeMap<String, String> = BTreeMap::new();
+    for (variant_name, variant_path) in selected_variants.iter().zip(parsed_variants) {
         let payload = match resolve_variant_source_bytes(
             lookup,
             media_id,
@@ -983,135 +1268,82 @@ async fn materialize_media_folder_entry(
                 continue;
             }
         };
-
-        let data = payload.bytes;
         if let Some(notice) = payload.notice {
             shared.notice(notice);
         }
         if let Some(source_hash) = payload.source_hash {
             variant_hashes.insert(variant_name.clone(), source_hash.to_string());
         }
+        resolved_variants.push(ResolvedFolderVariant {
+            name: variant_name.clone(),
+            variant_path,
+            data: payload.bytes,
+            source_hash: payload.source_hash,
+        });
+    }
 
-        // Per-variant file sub-bar: advanced once per written extracted/file
-        // member so the materialization screen shows per-file progress.
+    // Where the expected members come from: the document and the store, read
+    // through the same two rules the write pass applies. Nothing here looks at
+    // the library directory, so a member the document dropped is absent from
+    // the set rather than confirmed by the file it used to write.
+    let expected_members = expected_folder_members(
+        &resolved_variants,
+        target_path,
+        relative_path,
+        media_id,
+        &rename_rules,
+    );
+
+    if !unwritten_variant
+        && let Some(members) = &expected_members
+        && shared.folder_already_holds(members).await
+    {
+        // The row stays on `[stg]`: it measured the folder against what the
+        // document resolves and then had nothing to commit, the way the media
+        // arm stays on `[vrf]` when it declines an entry.
+        if let Some(bar) = entry_bar.handle() {
+            bar.advance(1);
+            bar.finish_success();
+        }
+        return Ok(PreparedHierarchyEntryResult {
+            outcome: EntryOutcome::AlreadyCorrect,
+            managed_files: members
+                .iter()
+                .map(|member| (member.relative.clone(), member.managed_record(media_id)))
+                .collect(),
+            media_variant_updates: BTreeMap::from([(media_id.to_string(), variant_hashes)]),
+        });
+    }
+
+    tokio::fs::create_dir_all(target_path).await.map_err(|source| MediaPmError::Io {
+        operation: "creating media-folder directory".to_string(),
+        path: target_path.to_path_buf(),
+        source,
+    })?;
+
+    let mut managed_files = BTreeMap::new();
+    for variant in &resolved_variants {
         // The parent row moves to `[wrt]` here, before the ZIP test decides
         // whether this variant opens a sub-bar or writes a plain file, because
         // both arms write and both belong to the phase the folder declares.
         entry_bar.enter_once(MaterializationPhase::Write);
-        let is_zip = is_zip_content(&data);
-        if is_zip {
-            let extracted = extract_zip_folder_variant_bytes(&data, &rename_rules)?;
-            if extracted.is_empty() {
-                shared.notice(format!(
-                    "media '{media_id}' variant '{variant_name}': ZIP archive contained zero extractable files"
-                ));
-                unwritten_variant = true;
-            }
-            let file_bar = add_variant_sub_bar(
-                progress_group.as_ref(),
+        let wrote_variant = if is_zip_content(&variant.data) {
+            write_zip_folder_variant(
+                variant,
+                target_path,
                 relative_path,
-                variant_name,
-                extracted.len(),
-            );
-            for (file_rel_path, content) in extracted {
-                let file_rel_path = normalize_yt_dlp_sandbox_zip_member_path(&file_rel_path);
-                // The extracted member name is untrusted archive data, and
-                // this is the join that writes it to disk. Parsing it through
-                // `PathComponent` is the same contract the hierarchy path
-                // uses, so a traversal component cannot reach the join even if
-                // the archive-shape normalizer above is later loosened.
-                let file_rel_path = commit::join_path_components(
-                    &commit::parse_relative_path_components(
-                        &file_rel_path,
-                        &SanitizePolicy::disabled(),
-                    )
-                    .map_err(|error| MediaPmError::Workflow(format!(
-                        "media '{media_id}' variant '{variant_name}': refusing extracted ZIP member '{}': {error}",
-                        file_rel_path.to_string_lossy()
-                    )))?,
-                );
-                let file_target = target_path.join(&file_rel_path);
-                let file_relative = format!(
-                    "{relative_path}/{}",
-                    file_rel_path.to_string_lossy().replace('\\', "/")
-                );
-                if let Some(parent) = file_target.parent() {
-                    tokio::fs::create_dir_all(parent).await.map_err(|source| MediaPmError::Io {
-                        operation: "creating extracted-file parent directory".to_string(),
-                        path: parent.to_path_buf(),
-                        source,
-                    })?;
-                }
-                // Rewrite .desktop Name= content to strip yt-dlp artifacts.
-                let content =
-                    if file_target.extension().is_some_and(|e| e.eq_ignore_ascii_case("desktop")) {
-                        let rewritten = rewrite_desktop_link_content(
-                            std::str::from_utf8(&content).unwrap_or_default(),
-                        );
-                        rewritten.into_bytes()
-                    } else {
-                        content
-                    };
-                tokio::fs::write(&file_target, &content).await.map_err(|source| {
-                    MediaPmError::Io {
-                        operation: "writing extracted variant file".to_string(),
-                        path: file_target.clone(),
-                        source,
-                    }
-                })?;
-                crate::materializer::commit::ensure_managed_path_readonly(&file_target)?;
-                let hash = Hash::from_content(&content);
-                managed_files.insert(
-                    file_relative,
-                    ManagedFileRecord {
-                        media_id: media_id.to_string(),
-                        variant: variant_name.clone(),
-                        hash: hash.to_string(),
-                    },
-                );
-                if let Some(ref sub) = file_bar {
-                    sub.advance(1);
-                }
-            }
-            if let Some(ref sub) = file_bar {
-                sub.finish_success();
-            }
+                media_id,
+                &rename_rules,
+                shared,
+                progress_group.as_ref(),
+                &mut managed_files,
+            )
+            .await?
         } else {
-            if variant_path.exists()
-                && std::fs::metadata(&variant_path).is_ok_and(|metadata| metadata.is_dir())
-            {
-                shared.notice(format!(
-                    "media '{media_id}' variant '{variant_name}': not writing '{}' because it is \
-                     already a directory",
-                    variant_path.display()
-                ));
-                unwritten_variant = true;
-                continue;
-            }
-            if let Some(parent) = variant_path.parent() {
-                tokio::fs::create_dir_all(parent).await.map_err(|source| MediaPmError::Io {
-                    operation: "creating variant-file parent directory".to_string(),
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
-            tokio::fs::write(&variant_path, &data).await.map_err(|source| MediaPmError::Io {
-                operation: "writing variant file".to_string(),
-                path: variant_path.clone(),
-                source,
-            })?;
-            crate::materializer::commit::ensure_managed_path_readonly(&variant_path)?;
-            let file_relative = format!("{relative_path}/{variant_name}");
-            let hash = payload.source_hash.unwrap_or_else(|| Hash::from_content(&data));
-            managed_files.insert(
-                file_relative,
-                ManagedFileRecord {
-                    media_id: media_id.to_string(),
-                    variant: variant_name.clone(),
-                    hash: hash.to_string(),
-                },
-            );
-        }
+            write_plain_folder_variant(variant, relative_path, media_id, shared, &mut managed_files)
+                .await?
+        };
+        unwritten_variant |= !wrote_variant;
     }
 
     Ok(PreparedHierarchyEntryResult {
@@ -1490,6 +1722,30 @@ impl SyncSharedState {
         hash: &Hash,
         target_path: &Path,
     ) -> bool {
+        let Ok(expected) = self.cas.stat(*hash).await else {
+            // A CAS that cannot answer for this hash holds nothing this run
+            // could write either, so declining the skip costs one failed
+            // write and reports the cause with the path it failed on.
+            return false;
+        };
+        self.output_holds(relative_path, hash, expected.len, target_path).await
+    }
+
+    /// Whether the record for `relative_path` names `hash` and the file at
+    /// `target_path` holds those `expected_len` bytes.
+    ///
+    /// The record check comes first because it is the only statement about the
+    /// target that survives between runs, and it is cheap. Everything after it
+    /// is about the file itself, and is the same for a single-file entry and a
+    /// folder member: the relationship to the CAS object when there is one, and
+    /// the bytes when there is not.
+    async fn output_holds(
+        &self,
+        relative_path: &str,
+        hash: &Hash,
+        expected_len: u64,
+        target_path: &Path,
+    ) -> bool {
         let Some(recorded) = self.recorded_hashes.get(relative_path) else {
             return false;
         };
@@ -1508,34 +1764,64 @@ impl SyncSharedState {
                 file_ops::OutputRelationship::Separate => {}
             }
         }
-        self.target_content_matches(hash, target_path).await
+        target_holds_content(target_path, hash, expected_len).await
     }
 
-    /// Whether the bytes at `target_path` are what `hash` names.
+    /// Whether every file a folder resolves to is already on disk holding what
+    /// this run resolved.
     ///
-    /// The branch a reflink and a copy land in, the two methods that leave no
-    /// relationship to compare. Length first, because one stat settles the
-    /// common case of a file something else replaced, and a matching length is
-    /// followed by hashing the target.
-    async fn target_content_matches(&self, hash: &Hash, target_path: &Path) -> bool {
-        // Metadata follows symlinks, so a link whose target is gone reads as
-        // absent and gets rewritten instead of standing in for the file it
-        // once named.
-        let Ok(metadata) = tokio::fs::metadata(target_path).await else {
-            return false;
-        };
-        if !metadata.is_file() {
+    /// "All" is the whole of `members`, which the caller derived from the
+    /// document rather than from a directory listing, and every one of them has
+    /// to answer `true`. A check that looked at the members it could and
+    /// declined the folder on those would pass a folder holding a drifted file,
+    /// which is the error this arm is being given the same treatment as the
+    /// single-file one for. A variant that produced nothing at all is not here
+    /// to be checked, so the caller keeps such a folder out of the skipped
+    /// counter on its own flag.
+    ///
+    /// # What this does not establish
+    ///
+    /// It says nothing about files in the directory that `members` does not
+    /// name. Nothing mediapm writes sits beside the members of a folder without
+    /// being one of them, and the stale scan protects every path under a
+    /// declared folder path precisely so a file a user or another tool put
+    /// there survives. Counting one as drift would make such a folder rewrite
+    /// for ever, since neither the folder arm nor the stale scan removes it.
+    async fn folder_already_holds(&self, members: &[FolderMember]) -> bool {
+        // An empty set is a folder nothing resolved to rather than a folder
+        // with nothing in it, and the caller keeps such a folder out of the
+        // skipped counter on its own flag.
+        if members.is_empty() {
             return false;
         }
-        match self.cas.stat(*hash).await {
-            Ok(expected) if metadata.len() != expected.len => false,
-            Ok(_) => file_ops::file_content_matches_hash(target_path, hash).await,
-            // A CAS that cannot answer for this hash holds nothing this run
-            // could write either, so declining the skip costs one failed
-            // write and reports the cause with the path it failed on.
-            Err(_) => false,
+        for member in members {
+            if !self.output_holds(&member.relative, &member.hash, member.len, &member.target).await
+            {
+                return false;
+            }
         }
+        true
     }
+}
+
+/// Whether the bytes at `target_path` are `hash` over `expected_len` bytes.
+///
+/// The branch a reflink and a copy land in, and the branch every folder member
+/// lands in, since a folder member is written from resolved bytes and so
+/// shares no inode with any object. Length first, because one stat settles the
+/// common case of a file something else replaced, and a matching length is
+/// followed by hashing the target.
+async fn target_holds_content(target_path: &Path, hash: &Hash, expected_len: u64) -> bool {
+    // Metadata follows symlinks, so a link whose target is gone reads as
+    // absent and gets rewritten instead of standing in for the file it
+    // once named.
+    let Ok(metadata) = tokio::fs::metadata(target_path).await else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() != expected_len {
+        return false;
+    }
+    file_ops::file_content_matches_hash(target_path, hash).await
 }
 
 #[cfg(test)]
@@ -1544,6 +1830,8 @@ mod tests_common;
 mod tests_entry_row_phases;
 #[cfg(test)]
 mod tests_entry_row_total;
+#[cfg(test)]
+mod tests_folder_members;
 #[cfg(test)]
 mod tests_overall_row_finish;
 #[cfg(test)]

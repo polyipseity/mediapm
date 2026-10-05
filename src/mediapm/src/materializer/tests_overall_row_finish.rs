@@ -5,21 +5,13 @@ use crate::config::hierarchy_types::HierarchyPath;
 use mediapm_utils::progress::recording::{BarId, ProgressOp, RecordingProgressTracker};
 
 use super::tests_common::{
-    BLOCKED_VARIANT, folder_only_document, folder_with_blocked_and_good_variants_document,
-    folder_without_variants_document, open_hierarchy_cas, overall_finish,
-    playlist_with_unknown_reference_document, resolvable_media_document, single_media_document,
-    zip_payload,
+    BLOCKED_VARIANT, FOLDER_PATH, FOLDER_VARIANT, folder_only_document,
+    folder_with_blocked_and_good_variants_document, folder_without_variants_document,
+    open_hierarchy_cas, overall_finish, playlist_with_unknown_reference_document,
+    resolvable_media_document, single_media_document, zip_payload,
 };
 
 use super::*;
-
-/// Hierarchy path of the single folder entry in [`folder_only_document`],
-/// which is the directory the conflict test occupies.
-const FOLDER_PATH: &str = "album";
-
-/// Variant name of that folder's single variant, and so the file name it
-/// would write inside [`FOLDER_PATH`].
-const FOLDER_VARIANT: &str = "default";
 
 /// The overall row finishes `FinishError` when an entry fails and when an
 /// entry's output could not be written.

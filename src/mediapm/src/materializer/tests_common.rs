@@ -269,11 +269,150 @@ pub(super) fn folder_with_blocked_and_good_variants_document(good_hash: &str) ->
 /// write it.
 pub(super) const BLOCKED_VARIANT: &str = "blocked";
 
+/// Hierarchy path of the folder entries these fixtures declare, which is the
+/// directory the folder arm writes its members into.
+pub(super) const FOLDER_PATH: &str = "album";
+
+/// Variant name those folder fixtures give their resolvable variant, and so
+/// the file name a single-variant folder writes inside [`FOLDER_PATH`].
+pub(super) const FOLDER_VARIANT: &str = "default";
+
+/// A workspace holding a folder a first run already wrote, kept together so a
+/// re-sync can be asked for without repeating the setup each time.
+pub(super) struct WrittenFolder {
+    /// Workspace owning the tree on disk. Dropping it removes the tree, so it
+    /// is held for as long as any test reads a path inside it.
+    _workspace: tempfile::TempDir,
+    /// Layout of that workspace, which is what `sync_hierarchy` takes.
+    paths: MediaPmPaths,
+    /// The folder the first run wrote.
+    pub(super) folder: PathBuf,
+    /// Document whose single variant resolves the archive every run reads.
+    document: MediaPmDocument,
+    /// Records the first run left, which a re-sync has to match.
+    state: MediaPmState,
+    /// Store every run reads from.
+    cas: FileSystemCas,
+}
+
+impl WrittenFolder {
+    /// Runs `sync_hierarchy` again over the same folder and the records the
+    /// first run left.
+    pub(super) async fn resync(
+        &mut self,
+        progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
+        overall_bar: Option<Arc<dyn ProgressBarApi>>,
+    ) -> MaterializeReport {
+        run_sync(
+            &self.paths,
+            &self.document,
+            &mut self.state,
+            &self.cas,
+            progress_group,
+            overall_bar,
+        )
+        .await
+    }
+}
+
+/// A folder the first run has written from `members`, ready to be disturbed
+/// and re-synced.
+///
+/// The payload is a stored ZIP rather than plain bytes because a plain variant
+/// writes one file per variant, and a folder with one member is a case a
+/// single-file check would already cover. Two members are what makes "every
+/// member verifies" a question with more than one answer.
+///
+/// Asserts that both members landed, so a caller whose archive did not produce
+/// two files finds out here rather than in an assertion about drift.
+pub(super) async fn write_folder_over_archive(members: &[(&str, &[u8])]) -> WrittenFolder {
+    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(workspace.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let archive = cas.put(bytes::Bytes::from(zip_payload(members))).await.unwrap();
+    let document = folder_only_document(&archive.to_string());
+    let mut state = MediaPmState::default();
+
+    let first = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    assert_eq!(
+        (first.materialized_paths, first.skipped_paths, first.missing_paths),
+        (1, 0, 0),
+        "the first run has nothing recorded for the folder, so it must write it: {first:?}"
+    );
+
+    let folder = paths.hierarchy_root_dir.join(FOLDER_PATH);
+    for (name, payload) in members {
+        assert_eq!(
+            std::fs::read(folder.join(name)).unwrap(),
+            *payload,
+            "the archive member '{name}' has to be on disk, or the case its caller is about to \
+             stage was never set up"
+        );
+    }
+
+    WrittenFolder { _workspace: workspace, paths, folder, document, state, cas }
+}
+
 /// Opens a CAS under the workspace runtime root for a `sync_hierarchy` call.
 pub(super) async fn open_hierarchy_cas(paths: &MediaPmPaths) -> FileSystemCas {
     let cas_root = paths.runtime_root.join("store");
     tokio::fs::create_dir_all(&cas_root).await.unwrap();
     FileSystemCas::open(&cas_root).await.unwrap()
+}
+
+/// Runs `sync_hierarchy` over `document` with no progress output, or with the
+/// tracker's own bars when one is supplied.
+pub(super) async fn run_sync(
+    paths: &MediaPmPaths,
+    document: &MediaPmDocument,
+    state: &mut MediaPmState,
+    cas: &FileSystemCas,
+    progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
+    overall_bar: Option<Arc<dyn ProgressBarApi>>,
+) -> MaterializeReport {
+    sync_hierarchy(
+        paths,
+        document,
+        state,
+        cas,
+        false,
+        &ConductorState::new_empty(),
+        &NickelDocument::default(),
+        progress_group,
+        overall_bar,
+    )
+    .await
+    .expect("a run over one resolvable entry either writes it or skips it")
+}
+
+/// Clears the read-only bit the materializer sets on every managed output, so
+/// a test can stand in for something outside mediapm writing into the library.
+pub(super) fn clear_readonly(path: &Path) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mode = permissions.mode();
+        let writable_mode = mode | 0o200;
+        if writable_mode != mode {
+            permissions.set_mode(writable_mode);
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "on non-Unix platforms the readonly flag blocks the external write this helper exists to stage"
+        )]
+        {
+            permissions.set_readonly(false);
+        }
+    }
+
+    std::fs::set_permissions(path, permissions).expect("the permissions are restored");
 }
 
 /// The terminal op of one handle's own bar, or `None` when it never finished.
