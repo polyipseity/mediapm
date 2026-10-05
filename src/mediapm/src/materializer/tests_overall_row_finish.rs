@@ -5,7 +5,7 @@ use crate::config::hierarchy_types::HierarchyPath;
 use mediapm_utils::progress::recording::{BarId, ProgressOp, RecordingProgressTracker};
 
 use super::tests_common::{
-    BLOCKED_VARIANT, FOLDER_PATH, FOLDER_VARIANT, folder_only_document,
+    BLOCKED_VARIANT, FOLDER_PATH, FOLDER_VARIANT, finish_of_bar_opened_as, folder_only_document,
     folder_with_blocked_and_good_variants_document, folder_without_variants_document,
     open_hierarchy_cas, overall_finish, playlist_with_unknown_reference_document,
     resolvable_media_document, single_media_document, zip_payload,
@@ -535,30 +535,4 @@ fn entry_finishes(tracker: &RecordingProgressTracker) -> Vec<ProgressOp> {
             _ => None,
         })
         .collect()
-}
-
-/// The terminal op of the bar the tracker opened under `label`, or `None`
-/// when that bar never finished.
-///
-/// A ZIP folder variant opens a member row under the folder's own row, so
-/// [`entry_finishes`] sees two finishes there and cannot say which one the
-/// folder made. Reading the bar off its `AddBar` op names the row instead of
-/// counting rows.
-fn finish_of_bar_opened_as(tracker: &RecordingProgressTracker, label: &str) -> Option<ProgressOp> {
-    let recorded = tracker.recorded();
-    let bar = recorded.iter().find_map(|entry| match &entry.op {
-        ProgressOp::AddBar { label: opened, .. } if opened == label => Some(entry.bar),
-        _ => None,
-    })?;
-    recorded.iter().rev().find_map(|entry| {
-        if entry.bar != bar {
-            return None;
-        }
-        match entry.op {
-            ProgressOp::FinishSuccess | ProgressOp::FinishWarning | ProgressOp::FinishError => {
-                Some(entry.op.clone())
-            }
-            _ => None,
-        }
-    })
 }

@@ -15,9 +15,9 @@
 use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
 use super::tests_common::{
-    BLOCKED_VARIANT, FOLDER_PATH, FOLDER_VARIANT, folder_only_document,
+    BLOCKED_VARIANT, FOLDER_PATH, FOLDER_VARIANT, folder_and_media_document, folder_only_document,
     folder_with_blocked_and_good_variants_document, open_hierarchy_cas, overall_finish,
-    write_folder_over_archive,
+    write_folder_over_archive, zip_payload,
 };
 
 use super::*;
@@ -270,6 +270,107 @@ async fn a_folder_whose_variant_path_is_a_directory_stays_missing() {
             ops = recording.recorded()
         );
     }
+}
+
+/// Name of the member a directory is placed on, so the folder arm refuses to
+/// write it.
+///
+/// It sorts after [`FIRST_MEMBER`], which is what makes the test say the
+/// refusal ended one member rather than the loop: the member before it has
+/// already been written by the time the arm reaches the collision.
+const OCCUPIED_MEMBER: &str = "cover.bin";
+
+/// Bytes the fixture's archive stores under [`OCCUPIED_MEMBER`].
+const OCCUPIED_PAYLOAD: &[u8] = b"cover art payload";
+
+/// Name of a file inside the directory that occupies [`OCCUPIED_MEMBER`], so
+/// the directory is not empty and clearing it would destroy something visible.
+const RESIDENT_FILE: &str = "resident.bin";
+
+/// Bytes [`RESIDENT_FILE`] holds, chosen so a reader can tell it from anything
+/// the archive carries.
+const RESIDENT_PAYLOAD: &[u8] = b"put there by something other than this run";
+
+/// A folder ZIP member whose path is already a directory counts as missing, and
+/// the other members still write.
+///
+/// The plain variant arm refuses a path a directory occupies, because the
+/// shared writer clears whatever sits at the target and clearing one would
+/// delete something the run does not own. The member path made no such
+/// refusal: a directory where the archive named a member was removed and the
+/// file written in its place, so the folder reported itself materialized on the
+/// strength of having destroyed it. A member name is archive data rather than a
+/// path the document declared, which leaves the arm no claim on what is already
+/// there, and refusing is what the plain variant arm already does one level up.
+///
+/// The members the arm can write are still written, because one member it
+/// cannot leaves the run as much to do as a blocked plain variant does.
+/// [`folder_and_media_document`] holds a media entry beside the folder so the
+/// counts can be read: a document holding only the folder cannot tell
+/// `materialized_paths == 1` apart from a run that counted the folder wrongly.
+#[tokio::test]
+async fn a_folder_member_whose_path_is_a_directory_is_counted_as_missing() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let archive = cas
+        .put(bytes::Bytes::from(zip_payload(&[
+            (FIRST_MEMBER, FIRST_PAYLOAD),
+            (OCCUPIED_MEMBER, OCCUPIED_PAYLOAD),
+        ])))
+        .await
+        .unwrap();
+
+    let occupied = paths.hierarchy_root_dir.join(FOLDER_PATH).join(OCCUPIED_MEMBER);
+    tokio::fs::create_dir_all(&occupied).await.unwrap();
+    std::fs::write(occupied.join(RESIDENT_FILE), RESIDENT_PAYLOAD).unwrap();
+
+    let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 2);
+    let report = sync_hierarchy(
+        &paths,
+        &folder_and_media_document(&archive.to_string()),
+        &mut MediaPmState::default(),
+        &cas,
+        false,
+        &ConductorState::new_empty(),
+        &NickelDocument::default(),
+        Some(Arc::new(recording.clone())),
+        Some(Arc::new(overall.clone())),
+    )
+    .await
+    .expect("one refused member leaves a report to read; it is not a failed run");
+
+    assert_eq!(
+        (report.missing_paths, report.materialized_paths, report.skipped_paths),
+        (1, 1, 0),
+        "the folder is short the member it refused while the media entry beside it wrote, so the \
+         three counters stay disjoint and the run keeps the ones that did land: {report:?}"
+    );
+    assert!(
+        occupied.is_dir(),
+        "the arm must leave the directory alone rather than clear it and write the member into \
+         its place: {}",
+        occupied.display()
+    );
+    assert_eq!(
+        std::fs::read(occupied.join(RESIDENT_FILE)).unwrap(),
+        RESIDENT_PAYLOAD,
+        "the file inside the directory has to survive, which is the whole reason the member is \
+         refused rather than written"
+    );
+    assert_eq!(
+        std::fs::read(paths.hierarchy_root_dir.join(FOLDER_PATH).join(FIRST_MEMBER)).unwrap(),
+        FIRST_PAYLOAD,
+        "the member the archive names before the collision must still be written, or the refusal \
+         ended the loop rather than one iteration of it"
+    );
+    assert_eq!(
+        overall_finish(&recording, &overall),
+        Some(ProgressOp::FinishError),
+        "a folder left short a member has not materialized the library, so the overall row must \
+         end as an error; got {ops:?}",
+        ops = recording.recorded()
+    );
 }
 
 /// A folder with one blocked variant and one good variant stays missing over

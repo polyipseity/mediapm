@@ -793,27 +793,8 @@ async fn prepare_hierarchy_entry(
                 &mut entry_bar,
             )
             .await;
-            // The folder arm moves to `[wrt]` when it starts writing a variant
-            // and stays there, so a failure during the write names that phase
-            // while one raised before the first write names `[stg]`.
-            //
-            // The row reports what the entry did, not only whether it raised.
-            // A folder that could not write one variant left the library short
-            // of what the document asked for, which is the same warning the
-            // media arm gives for a variant with no content hash.
             if let Some(bar) = entry_bar.handle() {
-                bar.advance(1);
-                match result {
-                    Ok(ref prepared) if matches!(prepared.outcome, EntryOutcome::Missing) => {
-                        entry_bar.finish("W");
-                        bar.finish_warning();
-                    }
-                    Ok(_) => bar.finish_success(),
-                    Err(_) => {
-                        entry_bar.finish("F");
-                        bar.finish_error();
-                    }
-                }
+                finish_entry_row(&result, &mut entry_bar, &bar);
             }
             result
         }
@@ -829,15 +810,41 @@ async fn prepare_hierarchy_entry(
             )
             .await;
             if let Some(bar) = entry_bar.handle() {
-                bar.advance(1);
-                if result.is_ok() {
-                    bar.finish_success();
-                } else {
-                    entry_bar.finish("F");
-                    bar.finish_error();
-                }
+                finish_entry_row(&result, &mut entry_bar, &bar);
             }
             result
+        }
+    }
+}
+
+/// Advances and finishes one entry row from what its arm returned.
+///
+/// The row reports what the entry did, not only whether it raised. An entry
+/// whose output could not be written left the library short of something the
+/// document asked for, so that row warns and the overall row errors. An entry
+/// that raised errors on both. The folder and playlist arms reach here from the
+/// same kind of collision, and this is the one place that says which finish a
+/// [`EntryOutcome::Missing`] gets.
+///
+/// The phase a failure names is the row's own, so a multi-phase entry reports
+/// where it stopped. The folder arm moves to `[wrt]` when it starts writing a
+/// variant and stays there, so a failure during the write names that phase while
+/// one raised before the first write names `[stg]`.
+fn finish_entry_row(
+    result: &Result<PreparedHierarchyEntryResult, MediaPmError>,
+    entry_bar: &mut EntryPhaseBar<'_>,
+    bar: &Arc<dyn ProgressBarApi>,
+) {
+    bar.advance(1);
+    match result {
+        Ok(prepared) if matches!(prepared.outcome, EntryOutcome::Missing) => {
+            entry_bar.finish("W");
+            bar.finish_warning();
+        }
+        Ok(_) => bar.finish_success(),
+        Err(_) => {
+            entry_bar.finish("F");
+            bar.finish_error();
         }
     }
 }
@@ -1042,11 +1049,10 @@ fn expected_folder_members(
 /// resolved bytes, and it is what lets a folder whose member drifted, or a
 /// playlist whose body changed, be written at all.
 ///
-/// It clears whatever is in the way, a directory among it. A caller whose
+/// It clears whatever is in the way, a directory among it. Every caller whose
 /// path the document declares refuses an occupied directory before it reaches
-/// here, because clearing one would delete something the run does not own. The
-/// ZIP member path makes no such refusal, so a directory sitting where an
-/// archive names a member is cleared, which is what that arm already did.
+/// here, because clearing one would delete something the run does not own, and
+/// so does the ZIP member loop, one level below the folder arm.
 async fn write_generated_file(target: &Path, content: &[u8]) -> Result<(), MediaPmError> {
     if tokio::fs::symlink_metadata(target).await.is_ok() {
         commit::remove_path(target)?;
@@ -1104,6 +1110,11 @@ fn rewrite_extracted_member_content(target: &Path, content: Vec<u8>) -> Vec<u8> 
 /// variant as a fan-out rather than as one write. An archive holding no
 /// extractable file leaves the variant unwritten, because the folder is then
 /// short of what the document resolved it to.
+///
+/// A member whose path is a directory is refused and the rest are still
+/// written, so the answer is `false` rather than an error. Raising there would
+/// give the join loop an `Err` to break on, and the report the counters live in
+/// would go back with it.
 #[expect(
     clippy::too_many_arguments,
     reason = "the extracted-member loop needs the folder's naming context and the two writers it feeds"
@@ -1128,10 +1139,26 @@ async fn write_zip_folder_variant(
     }
     let file_bar =
         add_variant_sub_bar(progress_group, relative_path, &variant.name, extracted.len());
+    let mut wrote_member = true;
     for (file_rel_path, content) in extracted {
         let file_rel_path = resolve_extracted_member_path(&file_rel_path, media_id, &variant.name)?;
         let file_target = target_path.join(&file_rel_path);
         let content = rewrite_extracted_member_content(&file_target, content);
+        // The same refusal `write_plain_folder_variant` makes, one level down.
+        // The member name is archive data rather than a path the document
+        // declared, so the arm has no claim on what is already there, and the
+        // shared writer clearing a directory would delete something the run
+        // does not own.
+        if tokio::fs::metadata(&file_target).await.is_ok_and(|metadata| metadata.is_dir()) {
+            shared.notice(format!(
+                "media '{media_id}' variant '{}': not writing '{}' because it is already a \
+                 directory",
+                variant.name,
+                file_target.display()
+            ));
+            wrote_member = false;
+            continue;
+        }
         if let Some(parent) = file_target.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|source| MediaPmError::Io {
                 operation: "creating extracted-file parent directory".to_string(),
@@ -1157,9 +1184,16 @@ async fn write_zip_folder_variant(
         }
     }
     if let Some(ref sub) = file_bar {
-        sub.finish_success();
+        // A variant that refused a member still ends short of its total. Saying
+        // success here would show a green bar that did not reach the end, under
+        // a parent the materializer has already counted as missing.
+        if wrote_member {
+            sub.finish_success();
+        } else {
+            sub.finish_warning();
+        }
     }
-    Ok(true)
+    Ok(wrote_member)
 }
 
 /// Writes one variant whose payload is not an archive, as one file at the
@@ -1487,11 +1521,24 @@ async fn materialize_playlist_entry(
     // entry's own declared path, so removing it would delete a directory
     // something else put there. A folder makes the same refusal for a variant
     // whose path is occupied.
+    //
+    // The refusal leaves the entry missing instead of raising, which is the one
+    // answer here that is not a copy of the folder arm's. A folder has a
+    // variant loop to carry on past a blocked variant in and reaches its end
+    // with a flag set. A playlist renders to one file, so there is nothing
+    // after the refusal to reach and nothing to retry, and raising ended the
+    // worker, broke the join loop on the `Err`, and sent the report back with
+    // it.
     if tokio::fs::metadata(target_path).await.is_ok_and(|metadata| metadata.is_dir()) {
-        return Err(MediaPmError::Workflow(format!(
+        shared.notice(format!(
             "playlist '{relative_path}' is not written because a directory already sits at '{}'",
             target_path.display()
-        )));
+        ));
+        return Ok(PreparedHierarchyEntryResult {
+            outcome: EntryOutcome::Missing,
+            managed_files: BTreeMap::new(),
+            media_variant_updates: BTreeMap::new(),
+        });
     }
     write_generated_file(target_path, &bytes).await?;
 

@@ -217,6 +217,24 @@ pub(super) fn folder_only_document(variant_hash: &str) -> MediaPmDocument {
     document
 }
 
+/// A document holding the media entry [`folder_and_playlist_document`]
+/// declares and the folder beside it, so a run reaches both arms at once.
+///
+/// The playlist node and the `playlists` folder that held it are dropped,
+/// which leaves exactly two entries: one media file at `song` and one folder at
+/// `album`. Two entries are what lets a counter be read unambiguously. A folder
+/// is one hierarchy path however many members it holds, so a folder that wrote
+/// some of its members still contributes one path, and a document holding
+/// nothing but that folder cannot say whether `materialized_paths == 1` means
+/// the folder wrote or the run failed to count it at all.
+pub(super) fn folder_and_media_document(variant_hash: &str) -> MediaPmDocument {
+    let mut document = folder_and_playlist_document(variant_hash);
+    document.hierarchy.retain(|node| {
+        matches!(node.kind, HierarchyNodeKind::Media | HierarchyNodeKind::MediaFolder)
+    });
+    document
+}
+
 /// A one-folder-entry document whose media source declares no output
 /// variants and carries no variant hashes.
 ///
@@ -480,6 +498,35 @@ pub(super) fn clear_readonly(path: &Path) {
     }
 
     std::fs::set_permissions(path, permissions).expect("the permissions are restored");
+}
+
+/// The terminal op of the bar the tracker opened under `label`, or `None`
+/// when that bar never finished.
+///
+/// A ZIP folder variant opens a member row under the folder's own row, so a
+/// count of finished rows cannot say which one the folder made. Reading the
+/// bar off its `AddBar` op names the row instead of counting rows, which is
+/// what lets a test read one entry's outcome in a document holding two.
+pub(super) fn finish_of_bar_opened_as(
+    tracker: &RecordingProgressTracker,
+    label: &str,
+) -> Option<ProgressOp> {
+    let recorded = tracker.recorded();
+    let bar = recorded.iter().find_map(|entry| match &entry.op {
+        ProgressOp::AddBar { label: opened, .. } if opened == label => Some(entry.bar),
+        _ => None,
+    })?;
+    recorded.iter().rev().find_map(|entry| {
+        if entry.bar != bar {
+            return None;
+        }
+        match entry.op {
+            ProgressOp::FinishSuccess | ProgressOp::FinishWarning | ProgressOp::FinishError => {
+                Some(entry.op.clone())
+            }
+            _ => None,
+        }
+    })
 }
 
 /// The terminal op of one handle's own bar, or `None` when it never finished.

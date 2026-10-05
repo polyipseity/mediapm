@@ -20,8 +20,8 @@
 use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
 use super::tests_common::{
-    PLAYLIST_PATH, clear_readonly, open_hierarchy_cas, overall_finish, playlist_document,
-    write_playlist,
+    PLAYLIST_PATH, clear_readonly, finish_of_bar_opened_as, open_hierarchy_cas, overall_finish,
+    playlist_document, write_playlist,
 };
 
 use super::*;
@@ -196,27 +196,26 @@ async fn a_file_the_document_never_asked_for_does_not_stop_the_playlist_being_sk
     );
 }
 
-/// A playlist whose path is occupied by a directory still ends the run as an
-/// error.
+/// A playlist whose path is occupied by a directory counts as missing, and the
+/// run still reports what it wrote.
 ///
 /// The shared writer clears whatever is in the way so a body this run marked
 /// read-only can be replaced, and this is the case that must not go through it:
 /// the path is the entry's own, so clearing it would delete a directory
 /// something else put there.
 ///
-/// The two commits that gave a folder its `missing_paths` counting left the
-/// playlist arm alone, so this shape does not reach `missing_paths` here: a
-/// playlist has no variant loop to continue past, so an unwritable body
-/// propagates and fails the run, and the report the counters live in is
-/// discarded with it. What the guard pins is the part that does hold: the
-/// directory survives and the overall row finishes `finish_error`, which is what
-/// a caller reads to learn the library is not the shape the document asked for.
+/// The arm refused the write and raised. A playlist renders to one file, so
+/// there is no variant loop to carry on past the refusal in and nothing later
+/// in the entry to reach, which is the whole difference from the folder arm
+/// that answers the same collision with a missing count. Raising ended the
+/// worker, the join loop broke on the `Err`, and the report the counters live
+/// in went back with it, so a caller saw a run that failed and learned nothing
+/// about the media entry beside the playlist, which did write.
 ///
-/// Whether a playlist should count as missing rather than fail the run is a
-/// separate question, and answering it here would change what a caller sees
-/// from a report to an error.
+/// The three counts are read together, and the media entry is read off disk,
+/// because any one of them alone is satisfiable by a run that stopped early.
 #[tokio::test]
-async fn a_playlist_whose_path_is_a_directory_ends_the_run_as_an_error() {
+async fn a_playlist_whose_path_is_a_directory_is_counted_as_missing() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
@@ -231,7 +230,7 @@ async fn a_playlist_whose_path_is_a_directory_ends_the_run_as_an_error() {
     );
 
     let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 2);
-    let result = sync_hierarchy(
+    let report = sync_hierarchy(
         &paths,
         &document,
         &mut MediaPmState::default(),
@@ -242,16 +241,32 @@ async fn a_playlist_whose_path_is_a_directory_ends_the_run_as_an_error() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
     )
-    .await;
-    assert!(
-        result.is_err(),
-        "the playlist's path is a directory where the document asked for a file, so the run has \
-         nothing to report and fails: {result:?}"
+    .await
+    .expect("a playlist that cannot be written leaves a report to read; it is not a failed run");
+
+    assert_eq!(
+        (report.materialized_paths, report.skipped_paths, report.missing_paths),
+        (1, 0, 1),
+        "the document declares two entries: the media entry wrote and the playlist did not, so \
+         the counts have to say one of each rather than failing the run and reporting neither: \
+         {report:?}"
     );
     assert!(
         occupied.is_dir(),
         "the directory has to survive the run, or the shared writer cleared a path the run does \
          not own"
+    );
+    assert!(
+        paths.hierarchy_root_dir.join("song").is_file(),
+        "the media entry the playlist references has to be on disk, or the materialized count \
+         above is what a run that wrote nothing reports"
+    );
+    assert_eq!(
+        finish_of_bar_opened_as(&recording, &format!("{PLAYLIST_PATH} [stg]")),
+        Some(ProgressOp::FinishWarning),
+        "an entry left unwritten is the same warning a folder with a blocked variant carries, so \
+         the playlist row must warn rather than error; got {ops:?}",
+        ops = recording.recorded()
     );
     assert_eq!(
         overall_finish(&recording, &overall),
