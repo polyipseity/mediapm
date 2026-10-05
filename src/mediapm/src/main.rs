@@ -20,7 +20,9 @@ use mediapm::MediaPmService;
 use mediapm::RecheckPolicy;
 #[cfg(feature = "cli")]
 use mediapm::config::{RuntimeMaterializationConfig, RuntimePathsConfig};
-use mediapm::output::{StatusIcon, print_hint, print_result, print_status_report, print_warning};
+use mediapm::output::{
+    StatusIcon, print_error, print_hint, print_result, print_status_report, print_warning,
+};
 #[cfg(feature = "cli")]
 use mediapm::{
     AddInsertPosition, MediaHierarchyPreset, MediaMetadataValue, MediaPmGlobalPaths, MediaPmPaths,
@@ -31,6 +33,29 @@ use mediapm::{
 };
 #[cfg(feature = "cli")]
 use url::Url;
+
+/// Exit status for a `sync` that left the library incomplete.
+///
+/// It is a status of its own so a caller can tell a library with missing
+/// entries from a binary that never ran: the missing-`cli`-feature path exits
+/// `1` and says so on stderr, this one exits `3` and names the skipped paths.
+/// `2` is left alone because POSIX reserves it for shell misuse.
+const EXIT_INCOMPLETE_LIBRARY: i32 = 3;
+
+/// Exit status for a finished `sync`, or `None` when the run leaves the library
+/// in the state it was asked to build.
+///
+/// Split out from the call site so the rule is testable without ending the test
+/// process, and so the one place that reads the summary cannot drift from the
+/// one that reports it.
+#[must_use]
+fn sync_exit_status(summary: &mediapm::SyncSummary) -> Option<i32> {
+    if mediapm::output::sync_summary_is_incomplete(summary) {
+        Some(EXIT_INCOMPLETE_LIBRARY)
+    } else {
+        None
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -104,6 +129,13 @@ async fn main_cli() -> anyhow::Result<()> {
             };
             let summary = service.sync_library_with_options(options).await?;
             mediapm::output::print_sync_summary(&summary);
+            if let Some(status) = sync_exit_status(&summary) {
+                print_error(format!(
+                    "sync left {} path(s) unmaterialized, so the library is incomplete",
+                    summary.skipped_paths
+                ));
+                std::process::exit(status);
+            }
             Ok(())
         }
         Command::Tool { command } => match command {
@@ -1174,7 +1206,10 @@ mod tests {
     use mediapm::MediaPmPaths;
     use std::path::PathBuf;
 
-    use super::{Cli, inject_cas_passthrough_defaults, inject_conductor_passthrough_defaults};
+    use super::{
+        Cli, EXIT_INCOMPLETE_LIBRARY, inject_cas_passthrough_defaults,
+        inject_conductor_passthrough_defaults, sync_exit_status,
+    };
 
     /// Protects no-backcompat policy by rejecting removed hidden internal route.
     #[test]
@@ -1357,5 +1392,58 @@ mod tests {
     fn tool_prune_with_metadata_is_parsed() {
         let parsed = Cli::try_parse_from(["mediapm", "tool", "prune", "tool-id", "--metadata"]);
         assert!(parsed.is_ok(), "tool prune --metadata must parse");
+    }
+
+    /// Builds a whole-run summary with only the fields the exit rule reads set.
+    fn sync_summary(materialized: usize, skipped: usize) -> mediapm::SyncSummary {
+        mediapm::SyncSummary {
+            executed_instances: 0,
+            cached_instances: 0,
+            materialized_paths: materialized,
+            skipped_paths: skipped,
+            removed_paths: 0,
+            removed_empty_dirs: 0,
+            added_tools: 0,
+            updated_tools: 0,
+            pruned_tools: 0,
+            removed_tools: 0,
+            skipped_tools: 0,
+            workflow_failed_steps: 0,
+            warnings: vec![],
+        }
+    }
+
+    /// A skipped hierarchy path ends `mediapm sync` on a non-zero status.
+    ///
+    /// The status is a non-zero value whatever the counts around it say, so a
+    /// run that wrote plenty of paths and skipped one still tells a caller the
+    /// library is short an entry.
+    #[test]
+    fn sync_exits_non_zero_when_a_path_is_skipped() {
+        let summary = sync_summary(5, 3);
+        let status = sync_exit_status(&summary);
+
+        assert_eq!(
+            status,
+            Some(EXIT_INCOMPLETE_LIBRARY),
+            "a skipped path writes nothing, so the command must not report success; \
+             summary: {summary:?}"
+        );
+        assert_ne!(
+            Some(EXIT_INCOMPLETE_LIBRARY),
+            Some(1),
+            "the missing-cli-feature path already exits 1 and says so; sharing that \
+             status would make an incomplete library unreadable from the status alone"
+        );
+    }
+
+    /// A run that skipped nothing exits as it always did.
+    ///
+    /// Without this, a rule that fails every `sync` would satisfy the test
+    /// above, including on a workspace that wrote everything.
+    #[test]
+    fn sync_exits_zero_when_no_path_is_skipped() {
+        let summary = sync_summary(5, 0);
+        assert_eq!(sync_exit_status(&summary), None, "summary: {summary:?}");
     }
 }

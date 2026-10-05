@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use mediapm_utils::report::{StatusIcon, print_result};
 
-use crate::{SyncPhaseObserver, SyncPhaseReport, ToolsSyncSummary};
+use crate::{MaterializationSyncSummary, SyncPhaseObserver, SyncPhaseReport, ToolsSyncSummary};
 
 /// Renders [`SyncPhaseReport`]s as structured result lines.
 ///
@@ -17,8 +17,27 @@ use crate::{SyncPhaseObserver, SyncPhaseReport, ToolsSyncSummary};
 /// [`SyncLibraryOptions`](crate::SyncLibraryOptions).
 pub struct CliSyncObserver;
 
+/// True when a tool sync changed the registry in any way.
 fn has_tool_changes(s: &ToolsSyncSummary) -> bool {
     s.added_tools > 0 || s.updated_tools > 0 || s.pruned_tools > 0 || s.removed_tools > 0
+}
+
+/// Icon for the materialization phase line.
+///
+/// A skipped path is a hierarchy entry whose variant resolved no content hash,
+/// so nothing was written for it and the entry is absent from the library. A
+/// run that skipped anything has not materialized the library, so the icon is
+/// [`StatusIcon::Error`] regardless of how many other paths landed. The screen
+/// behind this line already ends red on a skip, and the line agrees with it.
+#[must_use]
+pub fn materialization_icon(summary: &MaterializationSyncSummary) -> StatusIcon {
+    if summary.skipped_paths > 0 {
+        StatusIcon::Error
+    } else if summary.materialized_paths > 0 || summary.removed_paths > 0 {
+        StatusIcon::Success
+    } else {
+        StatusIcon::NoChange
+    }
 }
 
 impl SyncPhaseObserver for CliSyncObserver {
@@ -62,13 +81,8 @@ impl SyncPhaseObserver for CliSyncObserver {
                 );
             }
             SyncPhaseReport::Materialization(s) => {
-                let icon = if s.materialized_paths > 0 || s.removed_paths > 0 {
-                    StatusIcon::Success
-                } else {
-                    StatusIcon::NoChange
-                };
                 print_result(
-                    icon,
+                    materialization_icon(&s),
                     "materialized",
                     &[
                         ("paths", &s.materialized_paths as &dyn std::fmt::Display),

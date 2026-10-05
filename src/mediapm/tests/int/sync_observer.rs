@@ -5,9 +5,11 @@
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use mediapm::output::observer::materialization_icon;
+    use mediapm::output::{sync_summary_icon, sync_summary_is_incomplete};
     use mediapm::{
         MaterializationSyncSummary, SyncLibraryOptions, SyncPhaseObserver, SyncPhaseReport,
-        ToolsSyncSummary, WorkflowSyncSummary,
+        SyncSummary, ToolsSyncSummary, WorkflowSyncSummary,
     };
     use mediapm_utils::report::{StatusIcon, format_duration, format_result_line};
 
@@ -96,20 +98,51 @@ mod tests {
         assert!(line.contains("failed=1"));
     }
 
-    /// `CliSyncObserver` renders the Materialization phase line.
+    /// Builds a whole-run summary, leaving every field the rules under test do
+    /// not name at zero.
+    fn sync_summary(
+        executed: usize,
+        materialized: usize,
+        skipped: usize,
+        failed_steps: usize,
+    ) -> SyncSummary {
+        SyncSummary {
+            executed_instances: executed,
+            cached_instances: 0,
+            materialized_paths: materialized,
+            skipped_paths: skipped,
+            removed_paths: 0,
+            removed_empty_dirs: 0,
+            added_tools: 0,
+            updated_tools: 0,
+            pruned_tools: 0,
+            removed_tools: 0,
+            skipped_tools: 0,
+            workflow_failed_steps: failed_steps,
+            warnings: vec![],
+        }
+    }
+
+    /// A skipped hierarchy path makes the materialization line an error.
+    ///
+    /// The icon comes from `materialization_icon`, the function the observer
+    /// calls, so a change to that rule is what this assertion sees. Recomputing
+    /// the rule here would pass whatever the observer did.
     #[test]
-    fn materialization_phase_line_shape() {
+    fn materialization_phase_line_is_an_error_when_a_path_is_skipped() {
         let s = MaterializationSyncSummary {
             materialized_paths: 5,
             skipped_paths: 3,
             removed_paths: 1,
             removed_empty_dirs: 0,
         };
-        let icon = if s.materialized_paths > 0 || s.removed_paths > 0 {
-            StatusIcon::Success
-        } else {
-            StatusIcon::NoChange
-        };
+        let icon = materialization_icon(&s);
+        assert_eq!(
+            icon,
+            StatusIcon::Error,
+            "a skipped path wrote nothing, so the phase line must not claim success; \
+             summary: {s:?}"
+        );
         let line = format_result_line(
             icon,
             "materialized",
@@ -120,9 +153,69 @@ mod tests {
             ],
             None,
         );
-        assert!(line.contains("✓"));
+        assert!(line.contains(StatusIcon::Error.glyph()), "line: {line}");
         assert!(line.contains("paths=5"));
         assert!(line.contains("skipped=3"));
+    }
+
+    /// The counterpart: a run that skipped nothing still reports success.
+    ///
+    /// Without this, an observer that returned `Error` for every materialization
+    /// phase would satisfy the test above.
+    #[test]
+    fn materialization_phase_line_is_a_success_when_no_path_is_skipped() {
+        let s = MaterializationSyncSummary {
+            materialized_paths: 5,
+            skipped_paths: 0,
+            removed_paths: 1,
+            removed_empty_dirs: 0,
+        };
+        assert_eq!(materialization_icon(&s), StatusIcon::Success, "summary: {s:?}");
+
+        let idle = MaterializationSyncSummary::default();
+        assert_eq!(materialization_icon(&idle), StatusIcon::NoChange, "summary: {idle:?}");
+    }
+
+    /// A skipped path makes the whole-sync summary an error and marks the run
+    /// incomplete, which is what the CLI turns into a non-zero exit.
+    #[test]
+    fn sync_summary_is_an_error_when_a_path_is_skipped() {
+        let summary = sync_summary(2, 5, 3, 0);
+        assert_eq!(sync_summary_icon(&summary), StatusIcon::Error, "summary: {summary:?}");
+        assert!(
+            sync_summary_is_incomplete(&summary),
+            "the exit status reads this predicate, so a skipped path must set it; \
+             summary: {summary:?}"
+        );
+    }
+
+    /// The rule stops there: a failed workflow step stays a warning, and a run
+    /// that skipped nothing keeps the icon its counts give it.
+    #[test]
+    fn sync_summary_icon_without_a_skipped_path() {
+        let clean = sync_summary(2, 5, 0, 0);
+        assert_eq!(sync_summary_icon(&clean), StatusIcon::Success, "summary: {clean:?}");
+        assert!(!sync_summary_is_incomplete(&clean), "summary: {clean:?}");
+
+        let failed_step = sync_summary(2, 5, 0, 1);
+        assert_eq!(
+            sync_summary_icon(&failed_step),
+            StatusIcon::Warning,
+            "summary: {failed_step:?}"
+        );
+
+        let quiet = sync_summary(0, 0, 0, 0);
+        assert_eq!(sync_summary_icon(&quiet), StatusIcon::NoChange, "summary: {quiet:?}");
+    }
+
+    /// A skipped path outranks a failed workflow step.
+    ///
+    /// Both are unfinished business, but only the skip means an entry is missing
+    /// from the library, which is the state a caller has to act on.
+    #[test]
+    fn sync_summary_is_an_error_when_a_path_is_skipped_and_a_step_failed() {
+        let summary = sync_summary(2, 5, 1, 1);
+        assert_eq!(sync_summary_icon(&summary), StatusIcon::Error, "summary: {summary:?}");
     }
 
     /// `RecordingObserver` collects phases in order.

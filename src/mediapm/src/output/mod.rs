@@ -23,17 +23,41 @@ pub use progress::{
 
 use crate::SyncSummary;
 
-/// Print a sync summary line with status icon and duration tracking.
+/// True when a sync left the library incomplete.
 ///
-/// Constructs the field list from [`SyncSummary`] and calls [`print_result`].
-pub fn print_sync_summary(summary: &SyncSummary) {
-    let icon = if summary.workflow_failed_steps > 0 {
+/// A skipped hierarchy path resolved no content hash, so nothing was written
+/// for that entry. The whole-run icon and the `mediapm sync` exit status both
+/// read this, so a caller cannot get a green summary line from a library that
+/// is missing entries, nor a zero exit status from one.
+#[must_use]
+pub fn sync_summary_is_incomplete(summary: &SyncSummary) -> bool {
+    summary.skipped_paths > 0
+}
+
+/// Icon for the whole-sync summary line.
+///
+/// An incomplete library outranks the counts, so it is [`StatusIcon::Error`]
+/// even when every entry the run did handle was written. A workflow step that
+/// failed is [`StatusIcon::Warning`] and no more: the paths that step owns may
+/// still have materialized, which is what separates it from a skip.
+#[must_use]
+pub fn sync_summary_icon(summary: &SyncSummary) -> StatusIcon {
+    if sync_summary_is_incomplete(summary) {
+        StatusIcon::Error
+    } else if summary.workflow_failed_steps > 0 {
         StatusIcon::Warning
     } else if summary.executed_instances > 0 || summary.materialized_paths > 0 {
         StatusIcon::Success
     } else {
         StatusIcon::NoChange
-    };
+    }
+}
+
+/// Print a sync summary line with status icon and duration tracking.
+///
+/// Constructs the field list from [`SyncSummary`] and calls [`print_result`].
+pub fn print_sync_summary(summary: &SyncSummary) {
+    let icon = sync_summary_icon(summary);
 
     let mut fields: Vec<(&str, Box<dyn std::fmt::Display>)> = Vec::new();
     fields.push(("executed", Box::new(summary.executed_instances)));
