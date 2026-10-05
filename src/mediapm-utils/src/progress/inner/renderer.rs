@@ -1286,7 +1286,7 @@ impl ProgressRenderer {
         // slot is the widest seed label on screen, and a bar seeded with a short
         // placeholder never grows past it however much room the line has.
         let settle = |label_columns: usize, max_suffix: usize| {
-            let suffix_w = max_suffix.min(suffix_ceiling).min(label_columns);
+            let suffix_w = max_suffix.min(label_columns);
             let prefix_w = max_prefix.min(prefix_ceiling).min(label_columns - suffix_w);
             (prefix_w, suffix_w)
         };
