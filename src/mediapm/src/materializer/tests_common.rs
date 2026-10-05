@@ -265,6 +265,21 @@ pub(super) fn folder_with_blocked_and_good_variants_document(good_hash: &str) ->
     document
 }
 
+/// A one-media-entry document and the playlist beside it, with the album node
+/// of [`folder_and_playlist_document`] dropped, so the run reaches the media
+/// arm and the playlist arm and nothing else.
+///
+/// The referenced media entry has to stay. A playlist resolves its references
+/// through the media index, which holds `Media` entries and nothing else, so a
+/// document holding a playlist alone could not name a path for it. That is why
+/// every counter a playlist test reads also carries the media entry, and why
+/// the tests say which entry each count is about.
+pub(super) fn playlist_document(variant_hash: &str) -> MediaPmDocument {
+    let mut document = folder_and_playlist_document(variant_hash);
+    document.hierarchy.retain(|node| !matches!(node.kind, HierarchyNodeKind::MediaFolder));
+    document
+}
+
 /// Variant name a test occupies with a directory so the folder arm refuses to
 /// write it.
 pub(super) const BLOCKED_VARIANT: &str = "blocked";
@@ -277,17 +292,29 @@ pub(super) const FOLDER_PATH: &str = "album";
 /// the file name a single-variant folder writes inside [`FOLDER_PATH`].
 pub(super) const FOLDER_VARIANT: &str = "default";
 
-/// A workspace holding a folder a first run already wrote, kept together so a
+/// Hierarchy path of the playlist [`playlist_document`] declares.
+pub(super) const PLAYLIST_PATH: &str = "playlists/rickroll.m3u8";
+
+/// Byte the M3U8 body [`playlist_document`] renders starts with, which is how
+/// a reader tells a playlist body from whatever else is on disk.
+const PLAYLIST_FIRST_BYTE: u8 = b'#';
+
+/// A workspace holding an entry a first run already wrote, kept together so a
 /// re-sync can be asked for without repeating the setup each time.
-pub(super) struct WrittenFolder {
+///
+/// One shape for both arms that resolve their content from the document rather
+/// than from a single CAS object, because what a caller does with the result is
+/// the same for either: disturb `output`, re-sync, read the counters.
+pub(super) struct WrittenEntry {
     /// Workspace owning the tree on disk. Dropping it removes the tree, so it
     /// is held for as long as any test reads a path inside it.
     _workspace: tempfile::TempDir,
     /// Layout of that workspace, which is what `sync_hierarchy` takes.
     paths: MediaPmPaths,
-    /// The folder the first run wrote.
-    pub(super) folder: PathBuf,
-    /// Document whose single variant resolves the archive every run reads.
+    /// The file the first run wrote, which is a folder directory for a folder
+    /// entry and the playlist body for a playlist entry.
+    pub(super) output: PathBuf,
+    /// Document every run reads, and the one whose entries the first run wrote.
     document: MediaPmDocument,
     /// Records the first run left, which a re-sync has to match.
     state: MediaPmState,
@@ -295,8 +322,8 @@ pub(super) struct WrittenFolder {
     cas: FileSystemCas,
 }
 
-impl WrittenFolder {
-    /// Runs `sync_hierarchy` again over the same folder and the records the
+impl WrittenEntry {
+    /// Runs `sync_hierarchy` again over the same document and the records the
     /// first run left.
     pub(super) async fn resync(
         &mut self,
@@ -325,7 +352,7 @@ impl WrittenFolder {
 ///
 /// Asserts that both members landed, so a caller whose archive did not produce
 /// two files finds out here rather than in an assertion about drift.
-pub(super) async fn write_folder_over_archive(members: &[(&str, &[u8])]) -> WrittenFolder {
+pub(super) async fn write_folder_over_archive(members: &[(&str, &[u8])]) -> WrittenEntry {
     let workspace = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
@@ -350,7 +377,41 @@ pub(super) async fn write_folder_over_archive(members: &[(&str, &[u8])]) -> Writ
         );
     }
 
-    WrittenFolder { _workspace: workspace, paths, folder, document, state, cas }
+    WrittenEntry { _workspace: workspace, paths, output: folder, document, state, cas }
+}
+
+/// A playlist the first run has written, ready to be disturbed and re-synced.
+///
+/// Asserts the body landed and reads as a playlist, so a caller whose document
+/// failed to reference anything finds out here rather than in an assertion
+/// about drift.
+pub(super) async fn write_playlist() -> WrittenEntry {
+    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(workspace.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let payload = b"playlist media payload";
+    let hash = cas.put(bytes::Bytes::from_static(payload)).await.unwrap();
+    let document = playlist_document(&hash.to_string());
+    let mut state = MediaPmState::default();
+
+    let first = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    assert_eq!(
+        (first.materialized_paths, first.skipped_paths, first.missing_paths),
+        (2, 0, 0),
+        "the first run has nothing recorded for either entry, so it must write both: {first:?}"
+    );
+
+    let playlist = paths.hierarchy_root_dir.join(PLAYLIST_PATH);
+    let body = std::fs::read(&playlist).unwrap();
+    assert_eq!(
+        body.first().copied(),
+        Some(PLAYLIST_FIRST_BYTE),
+        "the first run has to have written a playlist body at {}, or the case about to be staged \
+         was never set up: {body:?}",
+        playlist.display()
+    );
+
+    WrittenEntry { _workspace: workspace, paths, output: playlist, document, state, cas }
 }
 
 /// Opens a CAS under the workspace runtime root for a `sync_hierarchy` call.

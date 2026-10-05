@@ -81,7 +81,7 @@ async fn a_folder_whose_every_member_is_correct_is_skipped() {
 
     for (member, payload) in [(FIRST_MEMBER, FIRST_PAYLOAD), (DRIFTED_MEMBER, SECOND_PAYLOAD)] {
         assert_eq!(
-            std::fs::read(written.folder.join(member)).unwrap(),
+            std::fs::read(written.output.join(member)).unwrap(),
             payload,
             "the member must still hold what the first run wrote"
         );
@@ -120,7 +120,7 @@ async fn a_folder_with_one_drifted_member_is_written_again() {
          test would not say whether the folder arm reads its members"
     );
 
-    let drifted = written.folder.join(DRIFTED_MEMBER);
+    let drifted = written.output.join(DRIFTED_MEMBER);
     commit::remove_path(&drifted).expect("a readonly managed output is removable");
     std::fs::write(&drifted, SECOND_PAYLOAD_EDIT).expect("the external write lands on the member");
 
@@ -138,7 +138,7 @@ async fn a_folder_with_one_drifted_member_is_written_again() {
          behind"
     );
     assert_eq!(
-        std::fs::read(written.folder.join(UNTOUCHED_MEMBER)).unwrap(),
+        std::fs::read(written.output.join(UNTOUCHED_MEMBER)).unwrap(),
         FIRST_PAYLOAD,
         "the member that never drifted must still hold what the document resolves"
     );
@@ -156,7 +156,7 @@ async fn a_folder_with_a_deleted_member_is_written_again() {
     ])
     .await;
 
-    let deleted = written.folder.join(DRIFTED_MEMBER);
+    let deleted = written.output.join(DRIFTED_MEMBER);
     commit::remove_path(&deleted).expect("a readonly managed output is removable");
     assert!(
         !deleted.exists(),
@@ -198,7 +198,7 @@ async fn a_file_the_document_never_asked_for_does_not_stop_the_folder_being_skip
     ])
     .await;
 
-    let stray = written.folder.join("stray.bin");
+    let stray = written.output.join("stray.bin");
     let stray_contents = b"nothing in the document produced this";
     std::fs::write(&stray, stray_contents).expect("the stray file lands");
 

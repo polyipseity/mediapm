@@ -885,23 +885,31 @@ async fn materialize_file_entry(
     Ok(())
 }
 
-/// One file a media-folder entry's variants resolve to.
+/// One file an entry's document resolves to.
 ///
-/// The folder arm builds these from the document and the store, never from a
-/// directory listing, because a listing cannot tell a member the document
-/// still asks for from a member it stopped asking for. That difference is the
-/// whole reason the set is derived rather than read: an output removed from
+/// The folder arm and the playlist arm both build these from the document and
+/// never from a directory listing, because a listing cannot tell a file the
+/// document still asks for from one it stopped asking for. That difference is
+/// the whole reason the set is derived rather than read: an output removed from
 /// the document has to leave the expected set, and a listing would have kept
 /// it.
+///
+/// The two arms differ in one field. A folder records each member in
+/// `state.managed_files` and a playlist records nothing, so a playlist has no
+/// recorded statement to compare and rests on the bytes it rendered. An absent
+/// `record` says that, and nothing else says it.
 #[derive(Debug, Clone)]
-struct FolderMember {
+struct ExpectedOutput {
     /// Key this entry's records carry for the file, which is the hierarchy
-    /// path joined with the path below the folder.
+    /// path joined with the path below the folder, or the entry's own path.
     relative: String,
-    /// Variant the file came from, recorded so a declined folder still returns
-    /// the records the write path would have built.
-    variant: String,
-    /// Where the file sits under the folder.
+    /// Record the entry stores for the file once it has written it, or `None`
+    /// for an entry that stores none. Carried on the output rather than looked
+    /// up so a declined entry returns the records the write path would have
+    /// built, and so the check knows whether there is a recorded statement to
+    /// consult at all.
+    record: Option<ManagedFileRecord>,
+    /// Where the file sits in the library.
     target: PathBuf,
     /// Hash of the bytes this run resolved for it.
     hash: Hash,
@@ -935,18 +943,6 @@ struct ResolvedFolderVariant {
     source_hash: Option<Hash>,
 }
 
-impl FolderMember {
-    /// The record the entry stores for this member, which a declined folder
-    /// returns so the stale scan keeps the files the run left alone.
-    fn managed_record(&self, media_id: &str) -> ManagedFileRecord {
-        ManagedFileRecord {
-            media_id: media_id.to_string(),
-            variant: self.variant.clone(),
-            hash: self.hash.to_string(),
-        }
-    }
-}
-
 /// The files `resolved_variants` resolve to, or `None` when one of them cannot
 /// be turned into a member set.
 ///
@@ -973,15 +969,20 @@ fn expected_folder_members(
     relative_path: &str,
     media_id: &str,
     rename_rules: &[CompiledFolderRenameRule],
-) -> Option<Vec<FolderMember>> {
+) -> Option<Vec<ExpectedOutput>> {
     let mut members = Vec::new();
     for variant in variants {
         if !is_zip_content(&variant.data) {
-            members.push(FolderMember {
+            let hash = variant.source_hash.unwrap_or_else(|| Hash::from_content(&variant.data));
+            members.push(ExpectedOutput {
                 relative: format!("{relative_path}/{variant_name}", variant_name = variant.name),
-                variant: variant.name.clone(),
+                record: Some(ManagedFileRecord {
+                    media_id: media_id.to_string(),
+                    variant: variant.name.clone(),
+                    hash: hash.to_string(),
+                }),
                 target: variant.variant_path.clone(),
-                hash: variant.source_hash.unwrap_or_else(|| Hash::from_content(&variant.data)),
+                hash,
                 len: variant.data.len() as u64,
             });
             continue;
@@ -995,11 +996,16 @@ fn expected_folder_members(
                 resolve_extracted_member_path(&file_rel_path, media_id, &variant.name).ok()?;
             let target = target_path.join(&file_rel_path);
             let content = rewrite_extracted_member_content(&target, content);
-            members.push(FolderMember {
+            let hash = Hash::from_content(&content);
+            members.push(ExpectedOutput {
                 relative: extracted_member_relative(relative_path, &file_rel_path),
-                variant: variant.name.clone(),
+                record: Some(ManagedFileRecord {
+                    media_id: media_id.to_string(),
+                    variant: variant.name.clone(),
+                    hash: hash.to_string(),
+                }),
                 target,
-                hash: Hash::from_content(&content),
+                hash,
                 len: content.len() as u64,
             });
         }
@@ -1007,21 +1013,27 @@ fn expected_folder_members(
     Some(members)
 }
 
-/// Writes one folder member, replacing whatever is already at `target`.
-/// Writes one folder member, replacing whatever is already at `target`.
+/// Writes one file from bytes this run resolved rather than from the store,
+/// replacing whatever is already at `target`.
 ///
-/// The folder arm marks every member read-only once it has written it, so a
-/// plain write cannot open one for writing again. The single-file arm clears
-/// the way through `file_ops` before each method it tries; this is the same
-/// step for a file the folder arm writes from resolved bytes rather than from
-/// the store, and it is what lets a folder whose member drifted be rewritten
-/// at all.
-async fn write_folder_member(target: &Path, content: &[u8]) -> Result<(), MediaPmError> {
+/// A folder member and a playlist body are both written this way, and both are
+/// marked read-only once the write lands, so neither arm can open the file for
+/// writing again. The single-file arm clears the way through `file_ops` before
+/// each method it tries; this is the same step for the two arms that write
+/// resolved bytes, and it is what lets a folder whose member drifted, or a
+/// playlist whose body changed, be written at all.
+///
+/// It clears whatever is in the way, a directory among it. A caller whose
+/// path the document declares refuses an occupied directory before it reaches
+/// here, because clearing one would delete something the run does not own. The
+/// ZIP member path makes no such refusal, so a directory sitting where an
+/// archive names a member is cleared, which is what that arm already did.
+async fn write_generated_file(target: &Path, content: &[u8]) -> Result<(), MediaPmError> {
     if tokio::fs::symlink_metadata(target).await.is_ok() {
         commit::remove_path(target)?;
     }
     tokio::fs::write(target, content).await.map_err(|source| MediaPmError::Io {
-        operation: "writing folder member".to_string(),
+        operation: "writing a resolved entry file".to_string(),
         path: target.to_path_buf(),
         source,
     })
@@ -1108,7 +1120,7 @@ async fn write_zip_folder_variant(
                 source,
             })?;
         }
-        write_folder_member(&file_target, &content).await?;
+        write_generated_file(&file_target, &content).await?;
         commit::ensure_managed_path_readonly(&file_target)?;
         managed_files.insert(
             extracted_member_relative(relative_path, &file_rel_path),
@@ -1150,7 +1162,7 @@ async fn write_plain_folder_variant(
         ));
         return Ok(false);
     }
-    write_folder_member(&variant.variant_path, &variant.data).await?;
+    write_generated_file(&variant.variant_path, &variant.data).await?;
     commit::ensure_managed_path_readonly(&variant.variant_path)?;
     let hash = variant.source_hash.unwrap_or_else(|| Hash::from_content(&variant.data));
     managed_files.insert(
@@ -1296,7 +1308,7 @@ async fn materialize_media_folder_entry(
 
     if !unwritten_variant
         && let Some(members) = &expected_members
-        && shared.folder_already_holds(members).await
+        && shared.every_output_holds(members).await
     {
         // The row stays on `[stg]`: it measured the folder against what the
         // document resolves and then had nothing to commit, the way the media
@@ -1309,7 +1321,7 @@ async fn materialize_media_folder_entry(
             outcome: EntryOutcome::AlreadyCorrect,
             managed_files: members
                 .iter()
-                .map(|member| (member.relative.clone(), member.managed_record(media_id)))
+                .filter_map(|member| Some((member.relative.clone(), member.record.clone()?)))
                 .collect(),
             media_variant_updates: BTreeMap::from([(media_id.to_string(), variant_hashes)]),
         });
@@ -1401,6 +1413,36 @@ async fn materialize_playlist_entry(
         });
     }
 
+    // Where the expected body comes from: the document's references rendered
+    // into the format it asks for. Nothing here reads the library directory,
+    // so the file on disk can never confirm itself, and a playlist whose
+    // references dropped is measured against the shorter body this run renders
+    // rather than against the longer one it used to write.
+    //
+    // The set has one member because a playlist renders to one file. That is
+    // not a weaker check than a folder's. It is the same check with one fewer
+    // question, and the member carries no record, because a playlist records
+    // nothing, which leaves the rendered bytes as the only statement the entry
+    // makes about the file.
+    let bytes = generate_playlist_bytes(&rendered_entries, entry.entry.format);
+    let body = ExpectedOutput {
+        relative: relative_path.to_string(),
+        record: None,
+        target: target_path.to_path_buf(),
+        hash: Hash::from_content(&bytes),
+        len: bytes.len() as u64,
+    };
+    if shared.every_output_holds(&[body]).await {
+        // The row stays on `[stg]`: it rendered the body and then had nothing
+        // to commit, the way the media arm stays on `[vrf]` when it declines an
+        // entry and the folder arm on `[stg]`.
+        return Ok(PreparedHierarchyEntryResult {
+            outcome: EntryOutcome::AlreadyCorrect,
+            managed_files: BTreeMap::new(),
+            media_variant_updates: BTreeMap::new(),
+        });
+    }
+
     // Ensure parent directory exists.
     if let Some(parent) = target_path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|source| MediaPmError::Io {
@@ -1410,16 +1452,23 @@ async fn materialize_playlist_entry(
         })?;
     }
 
-    let bytes = generate_playlist_bytes(&rendered_entries, entry.entry.format);
     // The row reaches `[cmt]` at the write rather than at the top of the
-    // function, because a playlist that fails while resolving a reference has
-    // not committed anything and should say so.
+    // function, because a playlist that failed while resolving a reference, or
+    // that had nothing to commit, has not committed anything and should say so.
     entry_bar.enter(MaterializationPhase::Commit);
-    tokio::fs::write(target_path, &bytes).await.map_err(|source| MediaPmError::Io {
-        operation: "writing playlist file".to_string(),
-        path: target_path.to_path_buf(),
-        source,
-    })?;
+    // A directory already sitting on this path is refused rather than cleared.
+    // The shared writer removes whatever is in the way so a body this run
+    // marked read-only can be replaced, and here what is in the way is the
+    // entry's own declared path, so removing it would delete a directory
+    // something else put there. A folder makes the same refusal for a variant
+    // whose path is occupied.
+    if tokio::fs::metadata(target_path).await.is_ok_and(|metadata| metadata.is_dir()) {
+        return Err(MediaPmError::Workflow(format!(
+            "playlist '{relative_path}' is not written because a directory already sits at '{}'",
+            target_path.display()
+        )));
+    }
+    write_generated_file(target_path, &bytes).await?;
 
     crate::materializer::commit::ensure_managed_path_readonly(target_path)?;
 
@@ -1728,30 +1777,30 @@ impl SyncSharedState {
             // write and reports the cause with the path it failed on.
             return false;
         };
-        self.output_holds(relative_path, hash, expected.len, target_path).await
+        self.record_matches(relative_path, hash)
+            && self.output_holds(target_path, hash, expected.len).await
     }
 
-    /// Whether the record for `relative_path` names `hash` and the file at
-    /// `target_path` holds those `expected_len` bytes.
+    /// Whether `state.managed_files` records `hash` under `relative_path`.
     ///
-    /// The record check comes first because it is the only statement about the
-    /// target that survives between runs, and it is cheap. Everything after it
-    /// is about the file itself, and is the same for a single-file entry and a
-    /// folder member: the relationship to the CAS object when there is one, and
-    /// the bytes when there is not.
-    async fn output_holds(
-        &self,
-        relative_path: &str,
-        hash: &Hash,
-        expected_len: u64,
-        target_path: &Path,
-    ) -> bool {
-        let Some(recorded) = self.recorded_hashes.get(relative_path) else {
-            return false;
-        };
-        if recorded != &hash.to_string() {
-            return false;
-        }
+    /// Cheap, and it is the only statement about a target that survives
+    /// between runs, so every check consults it before it reads a byte. An
+    /// entry that records nothing for a file has no such statement to consult
+    /// and skips this step, which is what an absent `ExpectedOutput::record`
+    /// says.
+    fn record_matches(&self, relative_path: &str, hash: &Hash) -> bool {
+        self.recorded_hashes.get(relative_path) == Some(&hash.to_string())
+    }
+
+    /// Whether the file at `target_path` holds `hash` over `expected_len`
+    /// bytes.
+    ///
+    /// The file-level half of what [`Self::target_already_holds`] documents,
+    /// shared with the arms that resolve their content from the document rather
+    /// than from a single store object. A folder member and a playlist body are
+    /// both written from resolved bytes and so share no inode with any object,
+    /// which puts both on the content branch.
+    async fn output_holds(&self, target_path: &Path, hash: &Hash, expected_len: u64) -> bool {
         // A blob the store holds as a WAL entry or as a delta is not a file on
         // disk, so no link can point at it and the content branch answers on
         // its own.
@@ -1767,36 +1816,37 @@ impl SyncSharedState {
         target_holds_content(target_path, hash, expected_len).await
     }
 
-    /// Whether every file a folder resolves to is already on disk holding what
+    /// Whether every file an entry resolves to is already on disk holding what
     /// this run resolved.
     ///
-    /// "All" is the whole of `members`, which the caller derived from the
+    /// "Every" is the whole of `outputs`, which the caller derived from the
     /// document rather than from a directory listing, and every one of them has
-    /// to answer `true`. A check that looked at the members it could and
-    /// declined the folder on those would pass a folder holding a drifted file,
-    /// which is the error this arm is being given the same treatment as the
-    /// single-file one for. A variant that produced nothing at all is not here
-    /// to be checked, so the caller keeps such a folder out of the skipped
-    /// counter on its own flag.
+    /// to answer `true`. A check that looked at the outputs it could and
+    /// declined the entry on those would pass a folder holding a drifted
+    /// member, which is the error `31c9ee5e` removed one level up. An entry
+    /// that produced nothing at all is not here to be checked, so the caller
+    /// keeps it out of the skipped counter on its own flag.
     ///
     /// # What this does not establish
     ///
-    /// It says nothing about files in the directory that `members` does not
-    /// name. Nothing mediapm writes sits beside the members of a folder without
-    /// being one of them, and the stale scan protects every path under a
-    /// declared folder path precisely so a file a user or another tool put
-    /// there survives. Counting one as drift would make such a folder rewrite
-    /// for ever, since neither the folder arm nor the stale scan removes it.
-    async fn folder_already_holds(&self, members: &[FolderMember]) -> bool {
-        // An empty set is a folder nothing resolved to rather than a folder
-        // with nothing in it, and the caller keeps such a folder out of the
+    /// It says nothing about files in the directory that `outputs` does not
+    /// name. Nothing mediapm writes sits beside an entry's output without
+    /// being one of its outputs, and where the stale scan protects every path
+    /// under a declared folder path, a file a user or another tool put there
+    /// survives. Counting one as drift would make such an entry rewrite for
+    /// ever, since neither arm nor the stale scan removes it.
+    async fn every_output_holds(&self, outputs: &[ExpectedOutput]) -> bool {
+        // An empty set is an entry nothing resolved to rather than an entry
+        // with nothing in it, and the caller keeps such an entry out of the
         // skipped counter on its own flag.
-        if members.is_empty() {
+        if outputs.is_empty() {
             return false;
         }
-        for member in members {
-            if !self.output_holds(&member.relative, &member.hash, member.len, &member.target).await
-            {
+        for output in outputs {
+            if output.record.is_some() && !self.record_matches(&output.relative, &output.hash) {
+                return false;
+            }
+            if !self.output_holds(&output.target, &output.hash, output.len).await {
                 return false;
             }
         }
@@ -1806,11 +1856,11 @@ impl SyncSharedState {
 
 /// Whether the bytes at `target_path` are `hash` over `expected_len` bytes.
 ///
-/// The branch a reflink and a copy land in, and the branch every folder member
-/// lands in, since a folder member is written from resolved bytes and so
-/// shares no inode with any object. Length first, because one stat settles the
-/// common case of a file something else replaced, and a matching length is
-/// followed by hashing the target.
+/// The branch a reflink and a copy land in, and the branch every output an
+/// arm resolved from the document lands in, since a folder member and a
+/// playlist body share no inode with any object. Length first, because one
+/// stat settles the common case of a file something else replaced, and a
+/// matching length is followed by hashing the target.
 async fn target_holds_content(target_path: &Path, hash: &Hash, expected_len: u64) -> bool {
     // Metadata follows symlinks, so a link whose target is gone reads as
     // absent and gets rewritten instead of standing in for the file it
@@ -1838,6 +1888,8 @@ mod tests_overall_row_finish;
 mod tests_path_validation;
 #[cfg(test)]
 mod tests_phase_sequence;
+#[cfg(test)]
+mod tests_playlist_members;
 #[cfg(test)]
 mod tests_progress_ops;
 #[cfg(test)]

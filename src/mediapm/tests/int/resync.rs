@@ -55,6 +55,14 @@ const HIERARCHY_PATH: &str = "${media.id}/track.mp4";
 /// lands under the media id rather than at it.
 const FOLDER_HIERARCHY_PATH: &str = "${media.id}";
 
+/// Hierarchy path of the playlist [`document_with_one_playlist`] declares.
+const PLAYLIST_PATH: &str = "playlists/track.m3u8";
+
+/// Hierarchy id of the media entry that playlist references. A playlist
+/// resolves its references through the media index, which holds media entries
+/// and nothing else, so the entry it names has to carry an id.
+const PLAYLISTED_HIERARCHY_ID: &str = "playlist-item";
+
 /// Payload stored in CAS for [`VARIANT`].
 const PAYLOAD: &[u8] = b"resync payload";
 
@@ -244,6 +252,109 @@ async fn resync_over_an_unchanged_media_folder_skips_the_entry_and_writes_nothin
         ))?,
         PAYLOAD,
         "the member must still hold what the first run wrote"
+    );
+
+    drop(service);
+    Ok(())
+}
+
+/// Builds a document with the media entry [`document_with_one_media_entry`]
+/// declares and a playlist naming it, so a run reaches the media arm and the
+/// playlist arm.
+///
+/// The playlist's entry carries an explicit `id`, which is the only thing that
+/// makes it addressable: a playlist looks a reference up by hierarchy id and
+/// the media index is built from ids, so an entry without one could not be
+/// named at all. Both entries count towards every counter a caller reads, so
+/// the counters say two where a playlist-only document would say one.
+fn document_with_one_playlist(variant_hash: &str) -> MediaPmDocument {
+    let mut document = document_with_one_media_entry(variant_hash);
+    document.hierarchy[0].id = Some(PLAYLISTED_HIERARCHY_ID.to_string());
+    document.hierarchy.push(HierarchyNode {
+        path: HierarchyPath::from(PLAYLIST_PATH),
+        kind: HierarchyNodeKind::Playlist,
+        id: None,
+        media_id: None,
+        variant: None,
+        variants: Vec::new(),
+        rename_files: Vec::new(),
+        format: PlaylistFormat::M3u8,
+        ids: vec![mediapm::PlaylistItemRef::Shorthand(PLAYLISTED_HIERARCHY_ID.to_string())],
+        sanitize_names: None,
+        children: Vec::new(),
+    });
+    document
+}
+
+/// A second `sync_library` over an unchanged playlist declines it and leaves
+/// its body alone.
+///
+/// The playlist arm is a separate one from the media and folder arms, and a
+/// counter cannot say which of the document's two entries a run acted on, so
+/// this reads the body's timestamps as well. A playlist records nothing in
+/// `state.managed_files`, so nothing survives into a second run to say the body
+/// was ever written: the bytes it renders are the only statement the arm has,
+/// and a rewrite leaves either a different modification time or a different
+/// status-change time.
+///
+/// What the body resolves is a question about the document, and an edit to it
+/// is the case the materializer's own tests cover, where the body can be
+/// staged on its own.
+#[tokio::test]
+async fn resync_over_an_unchanged_playlist_skips_the_entry_and_writes_nothing()
+-> Result<(), mediapm::MediaPmError> {
+    let (mut service, root, _cache) = service_with_cache(MediaRuntimeStorage::default()).await?;
+
+    let hash = seed_cas(&service, Bytes::from_static(PAYLOAD), "resync playlist variant").await?;
+    ensure_blob_is_materialized(&service, &hash).await?;
+
+    save_mediapm_document(
+        &service.paths().mediapm_ncl,
+        &document_with_one_playlist(&hash.to_string()),
+    )?;
+
+    let first = sync_library_with_test_terminal(&mut service, false).await?;
+    assert_eq!(
+        (first.materialized_paths, first.skipped_paths, first.missing_paths),
+        (2, 0, 0),
+        "the first run has nothing recorded for either entry, so it must write both: {first:?}"
+    );
+    let body = root.path().join(PLAYLIST_PATH);
+    assert!(
+        body.is_file(),
+        "the first run's playlist body must exist on disk before the re-sync is read: {}",
+        body.display()
+    );
+
+    let before = read_witness(&body)?;
+    let before_bytes = std::fs::read(&body)
+        .map_err(|source| io_error("reading the playlist body", &body, source))?;
+
+    let second = sync_library_with_test_terminal(&mut service, false).await?;
+    assert_eq!(
+        (second.materialized_paths, second.skipped_paths, second.missing_paths),
+        (0, 2, 0),
+        "the re-sync rendered the same body the first run wrote and it is still on disk, so the \
+         playlist and the media entry it references must both be declined: {second:?}"
+    );
+
+    let after = read_witness(&body)?;
+    assert_eq!(
+        after.modified, before.modified,
+        "the re-sync must not rewrite the playlist body, or its modification time moves"
+    );
+    assert_eq!(
+        after.changed, before.changed,
+        "the re-sync must not replace the playlist body, or its status-change time moves"
+    );
+    assert_eq!(
+        std::fs::read(&body).map_err(|source| io_error(
+            "reading the playlist body",
+            &body,
+            source
+        ))?,
+        before_bytes,
+        "the body must still hold what the first run rendered"
     );
 
     drop(service);
