@@ -22,10 +22,6 @@
 # See nextest docs for details: <https://nexte.st/>
 
 # ── UI/UX ──────────────────────────────────────────────────────────────
-[ui]
-show-progress = "bar"
-max-progress-running = 4
-
 # ── Default profile (local dev) ────────────────────────────────────────
 # Per-test timeout: kill a test that runs >60s with no output.
 # Leak detection: warn if a test doesn't clean up child processes within 100ms.
