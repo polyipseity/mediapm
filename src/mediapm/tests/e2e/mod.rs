@@ -8,3 +8,7 @@ mod materialization_nfd_metadata;
 mod materialization_zip_traversal;
 mod media_identity;
 mod service;
+#[cfg(feature = "cli")]
+mod subprocess;
+#[cfg(feature = "cli")]
+mod sync_exit_status;

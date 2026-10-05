@@ -20,8 +20,7 @@
 //! that control run, so the empty stderr of the suppressed run reads as "the
 //! flag worked" rather than "nothing drew".
 
-use std::path::Path;
-use std::process::{Command, Output};
+use super::subprocess::run_sync;
 
 /// A V2 document with no media, no hierarchy and no tools. A sync over it
 /// still walks all three phases, so all three are phases that would draw,
@@ -43,31 +42,6 @@ fn isolated_workspace() -> tempfile::TempDir {
     std::fs::write(workspace.path().join("mediapm.ncl"), MINIMAL_CONFIG)
         .expect("write minimal mediapm.ncl");
     workspace
-}
-
-/// Runs `mediapm --root <workspace> sync`, optionally with `--no-progress`,
-/// and returns the captured process output.
-///
-/// Isolation has two halves. The child gets a fresh `HOME` and no inherited
-/// `XDG_CACHE_HOME`, so `dirs::cache_dir()` resolves under `cache_home` on
-/// macOS and on Linux and the tool download cache stays off the real OS
-/// cache. Every ambient `MEDIAPM_*` variable is removed, so an inherited
-/// `MEDIAPM_ROOT` or `MEDIAPM_PROGRESS_DEBUG` in the test process cannot
-/// steer the child. `PATH` and the rest of the environment are left alone so
-/// the binary resolves the same tools it normally would.
-fn run_sync(workspace: &Path, cache_home: &Path, no_progress: bool) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_mediapm"));
-    command.arg("--root").arg(workspace).arg("sync");
-    if no_progress {
-        command.arg("--no-progress");
-    }
-    command.env("HOME", cache_home).env_remove("XDG_CACHE_HOME");
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("MEDIAPM_") {
-            command.env_remove(&key);
-        }
-    }
-    command.output().expect("mediapm binary should run")
 }
 
 /// True when `stream` carries a drawn progress frame.
