@@ -291,7 +291,7 @@ After progress bars finish, the CLI prints structured result lines via primitive
 | `Warning` | `Δ` | yellow bold |
 | `Error` | `✗` | red bold |
 
-A skipped hierarchy path resolved no content hash, so the upstream step ran and produced nothing to commit. The library is missing that entry, so the Screen A summary and the Screen C phase line both report it as `Error`, and `mediapm sync` ends on a non-zero status. A failed workflow step stays `Warning`: the paths that step owns may still have materialized, which is what separates it from a skip.
+A missing hierarchy path is one the run could not produce, so the library does not hold what the config asked for. The Screen A summary and the Screen C phase line both report it as `Error`, and `mediapm sync` exits non-zero. A failed workflow step is the same case: the media that step was to produce is missing, so it is `Error` too. It used to be a `Warning` on the grounds that the paths the step owns may still have materialized, which does not hold up: those paths are materialized from what the step was supposed to produce. A skipped path is the opposite case and is neither, since the file already held the resolved bytes.
 
 ### Per-screen summary formats
 
@@ -303,14 +303,14 @@ A skipped hierarchy path resolved no content hash, so the upstream step ran and 
 ```
 
 ```text
-✗ sync complete    executed=3  materialized=5  skipped=3
+✗ sync complete    executed=3  materialized=5  missing=3
   Δ some warning message
-✗ sync left 3 path(s) unmaterialized, so the library is incomplete
+✗ sync did not produce everything the config asked for: missing=3 failed_steps=0
 ```
 
-- Icon: `Error` when `skipped_paths > 0`, ahead of every count; `Warning` when `workflow_failed_steps > 0`; `Success` when `executed > 0 || materialized > 0`; `NoChange` otherwise.
-- Exit status: `3` when `skipped_paths > 0`, with a `print_error` line naming the count. `sync_exit_status` in `src/mediapm/src/main.rs` reads the same predicate the icon does (`sync_summary_is_incomplete`), so the line a user sees and the status a script sees come from one rule. `2` is unused because POSIX reserves it for shell misuse, and the missing-`cli`-feature path keeps its own `1`.
-- Fields: `executed` always shown; `cached`, `materialized`, `skipped`, `removed`, `removed_empty`, `added_tools`, `updated_tools`, `pruned_tools`, `removed_tools`, `skipped_tools`, `failed` shown only when >0.
+- Icon: `Error` when `missing_paths > 0 || workflow_failed_steps > 0`, ahead of every count; `Warning` when the run carried warnings; `Success` when `executed > 0 || materialized > 0`; `NoChange` otherwise. `skipped_paths` is read by none of these, so an entry that was already correct leaves the icon alone.
+- Exit status: `0` clean, `3` warning, `4` error. The error path prints a `print_error` line naming the two counts; the warning path adds nothing, since the `Δ` lines already said it. `sync_exit_status` in `src/mediapm/src/main.rs` holds the status mapping and reads [`sync_outcome`](../../src/mediapm/src/output/mod.rs), which is the same function `sync_summary_icon` reads, so the line a user sees and the status a script sees come from one rule. `2` is unused because POSIX reserves it for shell misuse, and the missing-`cli`-feature path keeps its own `1`.
+- Fields: `executed` always shown; `cached`, `materialized`, `skipped`, `missing`, `removed`, `removed_empty`, `added_tools`, `updated_tools`, `pruned_tools`, `removed_tools`, `skipped_tools`, `failed` shown only when >0.
 - Warnings: one `print_warning` line per warning.
 
 **Screen A: `mediapm tool sync`** (via `CliSyncObserver::on_phase` in `output/observer.rs`, which calls `print_result` with the `ToolsSyncSummary` fields):
@@ -329,18 +329,18 @@ A skipped hierarchy path resolved no content hash, so the upstream step ran and 
 ✓ workflow    executed=3  cached=2  failed=0
 ```
 
-- Icon: `Warning` when `failed_steps > 0`; `NoChange` when nothing ran; `Success` otherwise.
+- Icon: `Error` when `failed_steps > 0`; `NoChange` when nothing ran; `Success` otherwise. The rule is `workflow_icon` in `output/observer.rs`.
 - Fields: `executed`, `cached`, `failed`.
 - The conductor CLI (`conductor run`) renders identically via `format_result_line`.
 
 **Screen C: materialization** (via `CliSyncObserver` in `output/observer.rs`):
 
 ```text
-✗ materialized    paths=5  skipped=3  removed=1
+✗ materialized    paths=5  skipped=3  removed=1  missing=2
 ```
 
-- Icon: `Error` when `skipped_paths > 0`, ahead of the counts; `Success` when `materialized + removed > 0`; `NoChange` otherwise. The screen above this line already ends red on a skip, and the line agrees with it.
-- Fields: `paths`, `skipped`, `removed`.
+- Icon: `Error` when `missing_paths > 0`, ahead of the counts; `Success` when `materialized + removed > 0`; `NoChange` otherwise. The screen above this line already ends red on a missing path, and the line agrees with it. The rule is `materialization_icon` in `output/observer.rs`.
+- Fields: `paths`, `skipped`, `removed`, plus `missing` when it is above zero.
 
 ### Per-phase observer contract
 

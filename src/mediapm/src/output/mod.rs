@@ -8,6 +8,10 @@
 //! Result-line primitives (`StatusIcon`, `print_result`, `format_result_line`, etc.)
 //! are centralized in `mediapm_utils::report` and re-exported here for backward
 //! compatibility with existing `crate::output::*` import paths.
+//!
+//! The whole-run summary rule lives here too, in [`sync_outcome`] and
+//! [`sync_summary_icon`], because the CLI has to read a [`crate::SyncSummary`]
+//! and library code is the only place both of them can reach.
 
 pub mod observer;
 pub mod progress;
@@ -23,33 +27,77 @@ pub use progress::{
 
 use crate::SyncSummary;
 
+/// How a finished sync amounts to something for a caller.
+///
+/// Three states, because the counters say three different things. A binary
+/// that cannot tell them apart cannot be scripted against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncOutcome {
+    /// The library holds what the config asked for. An entry that was already
+    /// correct lands here: there was nothing to write, so there is nothing to
+    /// report either.
+    Clean,
+    /// The run left the library correct and said something worth reading.
+    Warning,
+    /// The library is short of what the config asked for.
+    Error,
+}
+
+/// The one rule that reads a [`SyncSummary`] and says how the run went.
+///
+/// Everything downstream reads this: [`sync_summary_icon`] turns it into the
+/// summary line's icon, and `sync_exit_status` in `src/mediapm/src/main.rs`
+/// turns it into the process status. Neither derives its own answer from the
+/// counters, because two rules over the same fields drift apart.
+///
+/// A failed workflow step is [`SyncOutcome::Error`]. It used to be a warning on
+/// the grounds that the paths the step owns may still have materialized. That
+/// is the claim that does not hold: those paths are materialized from what the
+/// failing step was supposed to produce, so a step that failed and paths that
+/// materialized cannot both be true of the same entry. The media is not on
+/// disk, and a green run tells a pipeline the opposite.
+///
+/// A normal skip is [`SyncOutcome::Clean`]. The output already held the
+/// resolved bytes, so the run had nothing to write and nothing to apologize
+/// for.
+#[must_use]
+pub fn sync_outcome(summary: &SyncSummary) -> SyncOutcome {
+    if summary.missing_paths > 0 || summary.workflow_failed_steps > 0 {
+        SyncOutcome::Error
+    } else if !summary.warnings.is_empty() {
+        SyncOutcome::Warning
+    } else {
+        SyncOutcome::Clean
+    }
+}
+
 /// True when a sync left the library incomplete.
 ///
-/// A skipped hierarchy path resolved no content hash, so nothing was written
-/// for that entry. The whole-run icon and the `mediapm sync` exit status both
-/// read this, so a caller cannot get a green summary line from a library that
-/// is missing entries, nor a zero exit status from one.
+/// An incomplete library outranks every count, so this is what both the
+/// summary line and the exit status read. It is [`SyncOutcome::Error`] spelled
+/// as a predicate, kept for callers that want the question without the
+/// three-way answer.
 #[must_use]
 pub fn sync_summary_is_incomplete(summary: &SyncSummary) -> bool {
-    summary.skipped_paths > 0
+    sync_outcome(summary) == SyncOutcome::Error
 }
 
 /// Icon for the whole-sync summary line.
 ///
 /// An incomplete library outranks the counts, so it is [`StatusIcon::Error`]
-/// even when every entry the run did handle was written. A workflow step that
-/// failed is [`StatusIcon::Warning`] and no more: the paths that step owns may
-/// still have materialized, which is what separates it from a skip.
+/// even when every entry the run did handle was written. A warning-only run is
+/// [`StatusIcon::Warning`]. A clean run is [`StatusIcon::Success`] when it did
+/// some work and [`StatusIcon::NoChange`] when it did not, which is the
+/// normal skip: the library was already right and still is.
 #[must_use]
 pub fn sync_summary_icon(summary: &SyncSummary) -> StatusIcon {
-    if sync_summary_is_incomplete(summary) {
-        StatusIcon::Error
-    } else if summary.workflow_failed_steps > 0 {
-        StatusIcon::Warning
-    } else if summary.executed_instances > 0 || summary.materialized_paths > 0 {
-        StatusIcon::Success
-    } else {
-        StatusIcon::NoChange
+    match sync_outcome(summary) {
+        SyncOutcome::Error => StatusIcon::Error,
+        SyncOutcome::Warning => StatusIcon::Warning,
+        SyncOutcome::Clean if summary.executed_instances > 0 || summary.materialized_paths > 0 => {
+            StatusIcon::Success
+        }
+        SyncOutcome::Clean => StatusIcon::NoChange,
     }
 }
 
@@ -70,6 +118,9 @@ pub fn print_sync_summary(summary: &SyncSummary) {
     }
     if summary.skipped_paths > 0 {
         fields.push(("skipped", Box::new(summary.skipped_paths)));
+    }
+    if summary.missing_paths > 0 {
+        fields.push(("missing", Box::new(summary.missing_paths)));
     }
     if summary.removed_paths > 0 {
         fields.push(("removed", Box::new(summary.removed_paths)));

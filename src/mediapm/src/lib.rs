@@ -98,6 +98,12 @@ pub struct MediaPackage {
 /// opposite, a library left short an entry because the run could not produce
 /// its output, which the CLI reports as an error on its summary line and
 /// exits non-zero for.
+///
+/// How the counters become an icon and an exit status is one rule, in
+/// [`crate::output::sync_outcome`], with a short version: a missing path or a
+/// failed workflow step is an error, a run that only warned is a warning, and
+/// everything else is clean. A skipped path is clean: the library already holds
+/// what it should, and the run had nothing to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSummary {
     /// Number of conductor instances executed during sync.
@@ -110,7 +116,7 @@ pub struct SyncSummary {
     /// run left them untouched.
     pub skipped_paths: usize,
     /// Number of hierarchy paths the run left unwritten because it could not
-    /// produce their output.
+    /// produce their output. Any count above zero makes the run an error.
     pub missing_paths: usize,
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,
@@ -126,9 +132,12 @@ pub struct SyncSummary {
     pub removed_tools: usize,
     /// Number of tools skipped (already at the desired version).
     pub skipped_tools: usize,
-    /// Number of managed-workflow steps that failed across all workflows.
+    /// Number of managed-workflow steps that failed across all workflows. Any
+    /// count above zero makes the run an error: the media a failed step was to
+    /// produce is not on disk.
     pub workflow_failed_steps: usize,
-    /// Non-fatal warnings surfaced during sync.
+    /// Warnings surfaced during sync, one `Δ` line each. A run that carries
+    /// warnings and nothing worse is a warning, not an error.
     pub warnings: Vec<String>,
 }
 
@@ -147,7 +156,8 @@ pub struct WorkflowSyncSummary {
 ///
 /// A `missing_paths` count above zero means this phase left the library short
 /// an entry, which is what both the screen's overall row and the phase's
-/// summary line report as an error. A `skipped_paths` count is clean.
+/// summary line report as an error. A `skipped_paths` count is clean and is
+/// not asked about anywhere.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MaterializationSyncSummary {
     /// Paths materialized (new or updated).

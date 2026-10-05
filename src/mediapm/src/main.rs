@@ -34,26 +34,35 @@ use mediapm::{
 #[cfg(feature = "cli")]
 use url::Url;
 
-/// Exit status for a `sync` that left the library incomplete.
+/// Exit status for a run that reported warnings and nothing worse.
 ///
-/// It is a status of its own so a caller can tell a library with missing
-/// entries from a binary that never ran: the missing-`cli`-feature path exits
-/// `1` and says so on stderr, this one exits `3` and names the skipped paths.
-/// `2` is left alone because POSIX reserves it for shell misuse.
-const EXIT_INCOMPLETE_LIBRARY: i32 = 3;
+/// Warnings are printed as `Δ` lines, so this status says the same thing to a
+/// caller reading only the number. `2` is left alone because POSIX reserves it
+/// for shell misuse.
+const EXIT_WARNING: i32 = 3;
+
+/// Exit status for a `sync` that left the library short of what the config
+/// asked for.
+///
+/// Its own status, so a caller can tell a library missing entries from a
+/// binary that never ran: the missing-`cli`-feature path exits `1` and says so
+/// on stderr, a warning exits `3`, this one exits `4` and names the counts.
+const EXIT_INCOMPLETE_LIBRARY: i32 = 4;
 
 /// Exit status for a finished `sync`, or `None` when the run leaves the library
 /// in the state it was asked to build.
 ///
-/// Split out from the call site so the rule is testable without ending the test
-/// process, and so the one place that reads the summary cannot drift from the
-/// one that reports it.
+/// This is the only place the mapping from [`mediapm::output::SyncOutcome`] to
+/// a process status lives. Split out from the call site so the rule is
+/// testable without ending the test process, and reading
+/// [`mediapm::output::sync_outcome`] rather than the counters keeps the icon
+/// and the status from being two rules over the same fields.
 #[must_use]
 fn sync_exit_status(summary: &mediapm::SyncSummary) -> Option<i32> {
-    if mediapm::output::sync_summary_is_incomplete(summary) {
-        Some(EXIT_INCOMPLETE_LIBRARY)
-    } else {
-        None
+    match mediapm::output::sync_outcome(summary) {
+        mediapm::output::SyncOutcome::Clean => None,
+        mediapm::output::SyncOutcome::Warning => Some(EXIT_WARNING),
+        mediapm::output::SyncOutcome::Error => Some(EXIT_INCOMPLETE_LIBRARY),
     }
 }
 
@@ -129,12 +138,19 @@ async fn main_cli() -> anyhow::Result<()> {
             };
             let summary = service.sync_library_with_options(options).await?;
             mediapm::output::print_sync_summary(&summary);
-            if let Some(status) = sync_exit_status(&summary) {
-                print_error(format!(
-                    "sync left {} path(s) unmaterialized, so the library is incomplete",
-                    summary.skipped_paths
-                ));
-                std::process::exit(status);
+            match sync_exit_status(&summary) {
+                None => {}
+                // The `Δ` lines above are the warning, so only the status is
+                // left to add.
+                Some(EXIT_WARNING) => std::process::exit(EXIT_WARNING),
+                Some(status) => {
+                    print_error(format!(
+                        "sync did not produce everything the config asked for: \
+                         missing={} failed_steps={}",
+                        summary.missing_paths, summary.workflow_failed_steps
+                    ));
+                    std::process::exit(status);
+                }
             }
             Ok(())
         }
@@ -1207,7 +1223,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        Cli, EXIT_INCOMPLETE_LIBRARY, inject_cas_passthrough_defaults,
+        Cli, EXIT_INCOMPLETE_LIBRARY, EXIT_WARNING, inject_cas_passthrough_defaults,
         inject_conductor_passthrough_defaults, sync_exit_status,
     };
 
@@ -1394,13 +1410,16 @@ mod tests {
         assert!(parsed.is_ok(), "tool prune --metadata must parse");
     }
 
-    /// Builds a whole-run summary with only the fields the exit rule reads set.
-    fn sync_summary(materialized: usize, skipped: usize) -> mediapm::SyncSummary {
+    /// Builds a whole-run summary with every count at zero.
+    ///
+    /// Tests set the one or two fields their rule reads, so a summary a test
+    /// did not mean to change cannot carry a count into the assertion.
+    fn sync_summary() -> mediapm::SyncSummary {
         mediapm::SyncSummary {
             executed_instances: 0,
             cached_instances: 0,
-            materialized_paths: materialized,
-            skipped_paths: skipped,
+            materialized_paths: 0,
+            skipped_paths: 0,
             missing_paths: 0,
             removed_paths: 0,
             removed_empty_dirs: 0,
@@ -1414,37 +1433,96 @@ mod tests {
         }
     }
 
-    /// A skipped hierarchy path ends `mediapm sync` on a non-zero status.
+    /// A run that wrote what it was asked to write exits as it always did.
     ///
-    /// The status is a non-zero value whatever the counts around it say, so a
-    /// run that wrote plenty of paths and skipped one still tells a caller the
-    /// library is short an entry.
+    /// Without this, a rule that fails every `sync` would satisfy the tests
+    /// below, including on a workspace that landed every path.
     #[test]
-    fn sync_exits_non_zero_when_a_path_is_skipped() {
-        let summary = sync_summary(5, 3);
-        let status = sync_exit_status(&summary);
+    fn sync_exits_zero_when_everything_landed() {
+        let summary = mediapm::SyncSummary { materialized_paths: 5, ..sync_summary() };
+        assert_eq!(sync_exit_status(&summary), None, "summary: {summary:?}");
+    }
 
+    /// A run whose entries were all already correct exits zero.
+    ///
+    /// This is the direction a wrong fix breaks. A skipped entry means the file
+    /// already held the resolved bytes, so a rule that reads it as damage turns
+    /// a perfectly good second run into a red one.
+    #[test]
+    fn sync_exits_zero_when_every_entry_was_already_correct() {
+        let summary =
+            mediapm::SyncSummary { executed_instances: 2, skipped_paths: 3, ..sync_summary() };
         assert_eq!(
-            status,
-            Some(EXIT_INCOMPLETE_LIBRARY),
-            "a skipped path writes nothing, so the command must not report success; \
+            sync_exit_status(&summary),
+            None,
+            "an entry that already held the resolved bytes has nothing to report; \
              summary: {summary:?}"
-        );
-        assert_ne!(
-            Some(EXIT_INCOMPLETE_LIBRARY),
-            Some(1),
-            "the missing-cli-feature path already exits 1 and says so; sharing that \
-             status would make an incomplete library unreadable from the status alone"
         );
     }
 
-    /// A run that skipped nothing exits as it always did.
+    /// A path the run could not produce ends `mediapm sync` on the error status.
     ///
-    /// Without this, a rule that fails every `sync` would satisfy the test
-    /// above, including on a workspace that wrote everything.
+    /// The status holds whatever the counts around it say, so a run that wrote
+    /// plenty of paths and missed one still tells a caller the library is short.
     #[test]
-    fn sync_exits_zero_when_no_path_is_skipped() {
-        let summary = sync_summary(5, 0);
-        assert_eq!(sync_exit_status(&summary), None, "summary: {summary:?}");
+    fn sync_exits_four_when_a_path_is_missing() {
+        let summary =
+            mediapm::SyncSummary { materialized_paths: 5, missing_paths: 1, ..sync_summary() };
+        assert_eq!(
+            sync_exit_status(&summary),
+            Some(EXIT_INCOMPLETE_LIBRARY),
+            "the library is short an entry, so the command must not report success; \
+             summary: {summary:?}"
+        );
+    }
+
+    /// A failed workflow step ends the run on the error status too.
+    ///
+    /// It used to warn and exit zero, on the grounds that the paths the step
+    /// owns may still have materialized. They materialize from what the step
+    /// was supposed to produce, so that reasoning puts the run's exit code at
+    /// the mercy of a coincidence.
+    #[test]
+    fn sync_exits_four_when_a_workflow_step_failed() {
+        let summary = mediapm::SyncSummary {
+            materialized_paths: 5,
+            workflow_failed_steps: 1,
+            ..sync_summary()
+        };
+        assert_eq!(
+            sync_exit_status(&summary),
+            Some(EXIT_INCOMPLETE_LIBRARY),
+            "the media the failed step was to produce is not on disk; \
+             summary: {summary:?}"
+        );
+    }
+
+    /// A run that only warned takes the warning status, between clean and error.
+    #[test]
+    fn sync_exits_three_when_the_run_only_warned() {
+        let summary = mediapm::SyncSummary {
+            materialized_paths: 5,
+            warnings: vec!["tools require sync before library sync: ffmpeg".to_string()],
+            ..sync_summary()
+        };
+        assert_eq!(sync_exit_status(&summary), Some(EXIT_WARNING), "summary: {summary:?}");
+    }
+
+    /// The three statuses a sync can end on stay apart from each other and from
+    /// the `1` the missing-`cli`-feature path already uses.
+    ///
+    /// `1` is written as a literal at that call site and cannot be asserted
+    /// here with the `cli` feature on, so the comparison is against the value
+    /// the other path prints. A script that reads only the number has nothing
+    /// else to go on.
+    #[test]
+    fn exit_statuses_stay_distinct() {
+        let missing_cli_feature: i32 = 1;
+        assert_ne!(EXIT_WARNING, EXIT_INCOMPLETE_LIBRARY);
+        assert_ne!(EXIT_WARNING, missing_cli_feature, "a warning must not read as a usage problem");
+        assert_ne!(
+            EXIT_INCOMPLETE_LIBRARY, missing_cli_feature,
+            "an incomplete library must not read as a usage problem"
+        );
     }
 }

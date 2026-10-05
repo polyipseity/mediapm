@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use mediapm_utils::report::{StatusIcon, print_result};
 
-use crate::{MaterializationSyncSummary, SyncPhaseObserver, SyncPhaseReport, ToolsSyncSummary};
+use crate::{
+    MaterializationSyncSummary, SyncPhaseObserver, SyncPhaseReport, ToolsSyncSummary,
+    WorkflowSyncSummary,
+};
 
 /// Renders [`SyncPhaseReport`]s as structured result lines.
 ///
@@ -24,19 +27,39 @@ fn has_tool_changes(s: &ToolsSyncSummary) -> bool {
 
 /// Icon for the materialization phase line.
 ///
-/// A skipped path is a hierarchy entry whose variant resolved no content hash,
-/// so nothing was written for it and the entry is absent from the library. A
-/// run that skipped anything has not materialized the library, so the icon is
-/// [`StatusIcon::Error`] regardless of how many other paths landed. The screen
-/// behind this line already ends red on a skip, and the line agrees with it.
+/// A missing path is a hierarchy entry the run could not produce, so the
+/// library is short of it and the icon is [`StatusIcon::Error`] however many
+/// other paths landed. The screen behind this line already ends red on a
+/// missing path, and the line agrees with it.
+///
+/// A skipped path is not a missing path. It means the file was already there
+/// with the bytes the run resolved, so it says nothing about how the run went
+/// and is left out of the icon.
 #[must_use]
 pub fn materialization_icon(summary: &MaterializationSyncSummary) -> StatusIcon {
-    if summary.skipped_paths > 0 {
+    if summary.missing_paths > 0 {
         StatusIcon::Error
     } else if summary.materialized_paths > 0 || summary.removed_paths > 0 {
         StatusIcon::Success
     } else {
         StatusIcon::NoChange
+    }
+}
+
+/// Icon for the workflow phase line.
+///
+/// A failed step is [`StatusIcon::Error`], not a warning: the media that step
+/// was to produce is missing from the library, and the whole-run summary and
+/// the exit status agree. The same reasoning is spelled out in
+/// [`crate::output::sync_outcome`], which is what this line answers to.
+#[must_use]
+pub fn workflow_icon(summary: &WorkflowSyncSummary) -> StatusIcon {
+    if summary.failed_steps > 0 {
+        StatusIcon::Error
+    } else if summary.executed_instances == 0 && summary.cached_instances == 0 {
+        StatusIcon::NoChange
+    } else {
+        StatusIcon::Success
     }
 }
 
@@ -62,15 +85,8 @@ impl SyncPhaseObserver for CliSyncObserver {
                 }
             }
             SyncPhaseReport::Workflow(s) => {
-                let icon = if s.failed_steps > 0 {
-                    StatusIcon::Warning
-                } else if s.executed_instances == 0 && s.cached_instances == 0 {
-                    StatusIcon::NoChange
-                } else {
-                    StatusIcon::Success
-                };
                 print_result(
-                    icon,
+                    workflow_icon(&s),
                     "workflow",
                     &[
                         ("executed", &s.executed_instances as &dyn std::fmt::Display),
@@ -81,16 +97,17 @@ impl SyncPhaseObserver for CliSyncObserver {
                 );
             }
             SyncPhaseReport::Materialization(s) => {
-                print_result(
-                    materialization_icon(&s),
-                    "materialized",
-                    &[
-                        ("paths", &s.materialized_paths as &dyn std::fmt::Display),
-                        ("skipped", &s.skipped_paths),
-                        ("removed", &s.removed_paths),
-                    ],
-                    None,
-                );
+                // `missing` is named only when it is above zero, which keeps a
+                // clean run's line as short as it was.
+                let mut fields: Vec<(&str, &dyn std::fmt::Display)> = vec![
+                    ("paths", &s.materialized_paths as &dyn std::fmt::Display),
+                    ("skipped", &s.skipped_paths),
+                    ("removed", &s.removed_paths),
+                ];
+                if s.missing_paths > 0 {
+                    fields.push(("missing", &s.missing_paths));
+                }
+                print_result(materialization_icon(&s), "materialized", &fields, None);
             }
         }
     }
