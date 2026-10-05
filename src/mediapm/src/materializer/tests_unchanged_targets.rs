@@ -26,10 +26,11 @@ fn the_fixture_entry_is_the_one_these_tests_re_sync() {
 /// writes nothing, and leaves the overall row a success.
 ///
 /// The three counts are read together because each one on its own is
-/// satisfiable by a run that did the wrong thing. `skipped_paths` alone could
-/// come from an entry that found nothing to commit, `materialized_paths` alone
-/// from a run that rewrote the file, and the row's success finish alone from a
-/// run whose skip never reached the finish rule. Pinning all three says the
+/// satisfiable by a run that did the wrong thing, and because the two path
+/// counters have to stay apart. A run that counted a missing entry as a skip
+/// would still show `skipped_paths == 1` here while leaving the library short
+/// a file, and the overall row would end green. `materialized_paths` alone
+/// could come from a run that rewrote the file. Pinning all three says the
 /// entry was visited, declined for the right reason, and did not turn the
 /// screen red.
 ///

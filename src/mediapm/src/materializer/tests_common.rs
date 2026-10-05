@@ -204,6 +204,19 @@ pub(super) fn resolvable_media_document(variant_hash: &str) -> MediaPmDocument {
     document
 }
 
+/// A one-folder-entry document whose single variant resolves from
+/// `variant_hash`, so a `sync_hierarchy` over it reaches the folder arm.
+///
+/// Kept apart from [`resolvable_media_document`] because the two arms write
+/// differently. A media entry writes one file at its own hierarchy path; a
+/// folder writes one file per variant under its path, so a test that occupies
+/// one name inside the folder has to say which arm it is aiming at.
+pub(super) fn folder_only_document(variant_hash: &str) -> MediaPmDocument {
+    let mut document = folder_and_playlist_document(variant_hash);
+    document.hierarchy.retain(|node| matches!(node.kind, HierarchyNodeKind::MediaFolder));
+    document
+}
+
 /// Opens a CAS under the workspace runtime root for a `sync_hierarchy` call.
 pub(super) async fn open_hierarchy_cas(paths: &MediaPmPaths) -> FileSystemCas {
     let cas_root = paths.runtime_root.join("store");

@@ -95,8 +95,8 @@ pub struct MediaPackage {
 ///
 /// `skipped_paths` counts a clean outcome: the library already held the
 /// resolved bytes, so the run wrote nothing. `missing_paths` counts the
-/// opposite, a library left short an entry because its content was
-/// unavailable, which the CLI reports as an error on its summary line and
+/// opposite, a library left short an entry because the run could not produce
+/// its output, which the CLI reports as an error on its summary line and
 /// exits non-zero for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSummary {
@@ -109,8 +109,8 @@ pub struct SyncSummary {
     /// Number of hierarchy paths that already held the resolved bytes, so the
     /// run left them untouched.
     pub skipped_paths: usize,
-    /// Number of hierarchy paths the run left unwritten because their content
-    /// was unavailable.
+    /// Number of hierarchy paths the run left unwritten because it could not
+    /// produce their output.
     pub missing_paths: usize,
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,
@@ -155,7 +155,7 @@ pub struct MaterializationSyncSummary {
     /// Paths that already held the resolved bytes, so the run left them
     /// untouched.
     pub skipped_paths: usize,
-    /// Paths the run left unwritten because their content was unavailable.
+    /// Paths the run left unwritten because it could not produce their output.
     pub missing_paths: usize,
     /// Stale paths removed.
     pub removed_paths: usize,

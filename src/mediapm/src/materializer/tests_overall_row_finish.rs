@@ -1,17 +1,26 @@
-//! How the overall row finishes on a failed run, a skipped run, and a clean one.
+//! How the overall row finishes on a failed run, on a run that left a path
+//! unwritten, and on a clean one.
 
 use crate::config::hierarchy_types::HierarchyPath;
 use mediapm_utils::progress::recording::{BarId, ProgressOp, RecordingProgressTracker};
 
 use super::tests_common::{
-    open_hierarchy_cas, overall_finish, playlist_with_unknown_reference_document,
-    resolvable_media_document, single_media_document,
+    folder_only_document, open_hierarchy_cas, overall_finish,
+    playlist_with_unknown_reference_document, resolvable_media_document, single_media_document,
 };
 
 use super::*;
 
+/// Hierarchy path of the single folder entry in [`folder_only_document`],
+/// which is the directory the conflict test occupies.
+const FOLDER_PATH: &str = "album";
+
+/// Variant name of that folder's single variant, and so the file name it
+/// would write inside [`FOLDER_PATH`].
+const FOLDER_VARIANT: &str = "default";
+
 /// The overall row finishes `FinishError` when an entry fails and when an
-/// entry's content was unavailable.
+/// entry's output could not be written.
 ///
 /// The overall handle and the per-entry rows share the op vocabulary, so
 /// an unfiltered search for a finish finds whichever row emitted it first
@@ -30,7 +39,7 @@ use super::*;
 /// missing path as a green screen missed a path it was asked to write; a
 /// caller that saw it as `Err` would lose the tally of what did land.
 #[tokio::test]
-async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_skipped_one() {
+async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_missing_one() {
     let failed = {
         let root = mediapm_utils::temp::artifact_dir().unwrap();
         let paths = MediaPmPaths::from_root(root.path());
@@ -66,7 +75,7 @@ async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_skipped_one()
         ops = failed.0.recorded()
     );
 
-    let skipped = {
+    let missing = {
         let root = mediapm_utils::temp::artifact_dir().unwrap();
         let paths = MediaPmPaths::from_root(root.path());
         let cas = open_hierarchy_cas(&paths).await;
@@ -106,26 +115,100 @@ async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_skipped_one()
         assert_eq!(
             entry_finishes(&recording),
             vec![ProgressOp::FinishWarning],
-            "the skipped entry row must be the one carrying the warning; got {ops:?}",
+            "the entry row that found no content must be the one carrying the warning; \
+             got {ops:?}",
             ops = recording.ops()
         );
         (recording, overall)
     };
     assert_eq!(
-        overall_finish(&skipped.0, &skipped.1),
+        overall_finish(&missing.0, &missing.1),
         Some(ProgressOp::FinishError),
         "a run whose only entry had no content to write has not materialized the library, so \
              the overall row must end as an error; got {ops:?}",
-        ops = skipped.0.recorded()
+        ops = missing.0.recorded()
+    );
+}
+
+/// A media folder whose variant path is already a directory counts as
+/// missing, and ends the overall row as an error.
+///
+/// The arm used to record a notice, move on to the next variant and fall
+/// through to the folder's success outcome, so a folder that wrote nothing was
+/// tallied as materialized and the run finished green. Both counters are read
+/// because either one alone is satisfiable by that shape: a missing count
+/// beside a green overall row, or a red row beside a materialized count.
+///
+/// The files a folder's other variants did write are not in question, because
+/// [`folder_only_document`] gives the folder a single variant, so a clean run
+/// over this fixture writes exactly the one file the conflict blocks.
+#[tokio::test]
+async fn the_overall_row_finishes_error_when_a_folder_variant_path_is_a_directory() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let hash = cas.put(bytes::Bytes::from_static(b"blocked-folder-variant")).await.unwrap();
+
+    let occupied = paths.hierarchy_root_dir.join(FOLDER_PATH).join(FOLDER_VARIANT);
+    tokio::fs::create_dir_all(&occupied).await.unwrap();
+    assert!(
+        occupied.is_dir(),
+        "the conflict has to be in place, or the folder arm finds a free name and writes"
+    );
+
+    let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
+    let report = sync_hierarchy(
+        &paths,
+        &folder_only_document(&hash.to_string()),
+        &mut MediaPmState::default(),
+        &cas,
+        false,
+        &ConductorState::new_empty(),
+        &NickelDocument::default(),
+        Some(Arc::new(recording.clone())),
+        Some(Arc::new(overall.clone())),
+    )
+    .await
+    .expect("one blocked variant leaves a report to read; it is not a failed run");
+
+    assert_eq!(
+        report.missing_paths, 1,
+        "the folder wrote nothing, so the library is short of the entry the document asked for; \
+         got {report:?}"
+    );
+    assert_eq!(
+        report.materialized_paths, 0,
+        "a folder that wrote nothing is not a materialized path, whatever its other variants did; \
+         got {report:?}"
+    );
+    assert_eq!(
+        report.skipped_paths, 0,
+        "nothing was already correct, so the blocked variant is not a normal skip; got \
+         {report:?}"
+    );
+    assert_eq!(
+        entry_finishes(&recording),
+        vec![ProgressOp::FinishWarning],
+        "the folder row must carry the warning, the way a media entry with no content does; \
+         got {ops:?}",
+        ops = recording.ops()
+    );
+    assert_eq!(
+        overall_finish(&recording, &overall),
+        Some(ProgressOp::FinishError),
+        "a folder left short a variant has not materialized the library, so the overall row must \
+         end as an error; got {ops:?}",
+        ops = recording.recorded()
     );
 }
 
 /// A run that materializes every entry still ends the overall row as a
 /// success.
 ///
-/// The half of the error contract above that a skip now triggers needs a
-/// counterpart: if `skipped_paths` were consulted for the success path too,
-/// or if the error finish bled into a clean run, this would catch it.
+/// The half of the error contract above that a missing path now triggers
+/// needs a counterpart: if `missing_paths` were consulted for the success
+/// path too, or if the error finish bled into a clean run, this would catch
+/// it.
 #[tokio::test]
 async fn the_overall_row_finishes_success_when_every_entry_is_written() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();

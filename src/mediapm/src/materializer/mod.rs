@@ -103,8 +103,8 @@ pub struct MaterializeReport {
     /// Number of hierarchy paths that already held the resolved bytes, so the
     /// run left them untouched.
     pub skipped_paths: usize,
-    /// Number of hierarchy paths the run left unwritten because their content
-    /// was unavailable.
+    /// Number of hierarchy paths the run left unwritten because it could not
+    /// produce their output.
     pub missing_paths: usize,
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,
@@ -125,7 +125,8 @@ enum EntryOutcome {
     Materialized,
     /// The entry's output already held the resolved bytes and was left alone.
     AlreadyCorrect,
-    /// The entry's content was unavailable, so its output was not written.
+    /// The entry's output could not be written, so the library is left short
+    /// of an entry the document asked for.
     Missing,
 }
 
@@ -728,7 +729,8 @@ async fn prepare_hierarchy_entry(
                 })
             } else {
                 shared.notice(format!(
-                    "media '{media_id}' variant '{effective_variant}' has no content hash; skipping"
+                    "media '{media_id}' variant '{effective_variant}' has no content hash, so its \
+                     output was not written"
                 ));
                 if let Some(bar) = entry_bar.handle() {
                     bar.advance(1);
@@ -766,13 +768,23 @@ async fn prepare_hierarchy_entry(
             // The folder arm moves to `[wrt]` when it starts writing a variant
             // and stays there, so a failure during the write names that phase
             // while one raised before the first write names `[stg]`.
+            //
+            // The row reports what the entry did, not only whether it raised.
+            // A folder that could not write one variant left the library short
+            // of what the document asked for, which is the same warning the
+            // media arm gives for a variant with no content hash.
             if let Some(bar) = entry_bar.handle() {
                 bar.advance(1);
-                if result.is_ok() {
-                    bar.finish_success();
-                } else {
-                    entry_bar.finish("F");
-                    bar.finish_error();
+                match result {
+                    Ok(ref prepared) if matches!(prepared.outcome, EntryOutcome::Missing) => {
+                        entry_bar.finish("W");
+                        bar.finish_warning();
+                    }
+                    Ok(_) => bar.finish_success(),
+                    Err(_) => {
+                        entry_bar.finish("F");
+                        bar.finish_error();
+                    }
                 }
             }
             result
@@ -909,6 +921,13 @@ async fn materialize_media_folder_entry(
     let rename_rules = compile_hierarchy_folder_rename_rules(&interpolated_rename_rules)?;
     let mut managed_files = BTreeMap::new();
     let mut variant_hashes = BTreeMap::new();
+    // Whether any variant ended the loop without a file. The counters are per
+    // hierarchy path, and a folder is one path however many variants it holds,
+    // so one blocked variant makes the whole entry unwritten: counting it as
+    // materialized would report a library the document did not ask for, and
+    // the files the other variants did write are recorded in `managed_files`
+    // either way.
+    let mut unwritten_variant = false;
 
     for variant_name in &selected_variants {
         // A variant name is a second untrusted join on this path: it reaches
@@ -1044,9 +1063,11 @@ async fn materialize_media_folder_entry(
                 && std::fs::metadata(&variant_path).is_ok_and(|metadata| metadata.is_dir())
             {
                 shared.notice(format!(
-                    "media '{media_id}' variant '{variant_name}': skipping non-archive write because '{}' is already a directory",
+                    "media '{media_id}' variant '{variant_name}': not writing '{}' because it is \
+                     already a directory",
                     variant_path.display()
                 ));
+                unwritten_variant = true;
                 continue;
             }
             if let Some(parent) = variant_path.parent() {
@@ -1076,7 +1097,7 @@ async fn materialize_media_folder_entry(
     }
 
     Ok(PreparedHierarchyEntryResult {
-        outcome: EntryOutcome::Materialized,
+        outcome: if unwritten_variant { EntryOutcome::Missing } else { EntryOutcome::Materialized },
         managed_files,
         media_variant_updates: BTreeMap::from([(media_id.to_string(), variant_hashes)]),
     })
