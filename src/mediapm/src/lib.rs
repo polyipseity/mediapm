@@ -180,6 +180,11 @@ pub struct MaterializationSyncSummary {
 }
 
 /// Summary of tool sync operations.
+///
+/// A non-empty [`warnings`](Self::warnings) list means at least one tool failed
+/// to provision. [`crate::output::tool_sync_outcome`] reads that list, and the
+/// CLI turns its answer into the warning exit status. The counts describe what
+/// registered, not what failed, so they cannot stand in for the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolsSyncSummary {
     /// Number of tools newly registered.
@@ -193,7 +198,10 @@ pub struct ToolsSyncSummary {
     pub removed_tools: usize,
     /// Number of tools skipped (already at the desired version).
     pub skipped_tools: usize,
-    /// Tool-specific warnings.
+    /// Tool-specific warnings, one per tool whose provisioning failed.
+    ///
+    /// Non-empty means [`crate::output::tool_sync_outcome`] answers
+    /// [`ToolSyncOutcome::Warning`](crate::output::ToolSyncOutcome::Warning).
     pub warnings: Vec<String>,
 }
 

@@ -7,7 +7,8 @@ mod tests {
 
     use mediapm::output::observer::{materialization_icon, workflow_icon};
     use mediapm::output::{
-        SyncOutcome, sync_outcome, sync_summary_icon, sync_summary_is_incomplete,
+        SyncOutcome, ToolSyncOutcome, sync_outcome, sync_summary_icon, sync_summary_is_incomplete,
+        tool_sync_icon, tool_sync_outcome,
     };
     use mediapm::{
         MaterializationSyncSummary, SyncLibraryOptions, SyncPhaseObserver, SyncPhaseReport,
@@ -97,6 +98,55 @@ mod tests {
         let ran =
             WorkflowSyncSummary { executed_instances: 2, cached_instances: 1, failed_steps: 0 };
         assert_eq!(workflow_icon(&ran), StatusIcon::Success, "summary: {ran:?}");
+    }
+
+    /// Builds a tool-sync summary, leaving every count the rule does not read
+    /// at zero.
+    fn tools_sync_summary(warnings: Vec<String>) -> ToolsSyncSummary {
+        ToolsSyncSummary {
+            added_tools: 0,
+            updated_tools: 0,
+            pruned_tools: 0,
+            removed_tools: 0,
+            skipped_tools: 0,
+            warnings,
+        }
+    }
+
+    /// A tool that failed to provision turns the tool-sync line yellow.
+    ///
+    /// The counts cannot carry this. A run that registered two tools and failed
+    /// on a third looks the same by count as one that registered three, so the
+    /// warnings are the only field that says a tool is still missing.
+    #[test]
+    fn tool_sync_line_is_a_warning_when_a_tool_failed_to_provision() {
+        let s = ToolsSyncSummary {
+            added_tools: 2,
+            warnings: vec!["tool nonexistent-tool: no provider registered".to_string()],
+            ..tools_sync_summary(vec![])
+        };
+        assert_eq!(tool_sync_icon(&s), StatusIcon::Warning, "summary: {s:?}");
+        assert_eq!(tool_sync_outcome(&s), ToolSyncOutcome::Warning, "summary: {s:?}");
+
+        let line = format_result_line(
+            tool_sync_icon(&s),
+            "tools synced",
+            &[("added", &s.added_tools as &dyn std::fmt::Display), ("updated", &s.updated_tools)],
+            None,
+        );
+        assert!(line.contains(StatusIcon::Warning.glyph()), "line: {line}");
+    }
+
+    /// The counterpart: a run that registered what it wanted is clean.
+    ///
+    /// Without this, a rule that warned on every tool sync satisfies the test
+    /// above. Skipped tools are part of a clean run, so they are in the second
+    /// summary here too.
+    #[test]
+    fn tool_sync_line_is_a_success_when_every_tool_provisioned() {
+        let s = ToolsSyncSummary { added_tools: 2, skipped_tools: 1, ..tools_sync_summary(vec![]) };
+        assert_eq!(tool_sync_icon(&s), StatusIcon::Success, "summary: {s:?}");
+        assert_eq!(tool_sync_outcome(&s), ToolSyncOutcome::Clean, "summary: {s:?}");
     }
 
     /// Builds a whole-run summary, leaving every field the rules under test do

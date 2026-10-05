@@ -9,9 +9,11 @@
 //! are centralized in `mediapm_utils::report` and re-exported here for backward
 //! compatibility with existing `crate::output::*` import paths.
 //!
-//! The whole-run summary rule lives here too, in [`sync_outcome`] and
-//! [`sync_summary_icon`], because the CLI has to read a [`crate::SyncSummary`]
-//! and library code is the only place both of them can reach.
+//! The whole-run summary rules live here too, in [`sync_outcome`] and
+//! [`sync_summary_icon`] for a library [`crate::SyncSummary`] and in
+//! [`tool_sync_outcome`] and [`tool_sync_icon`] for a
+//! [`crate::ToolsSyncSummary`], because the CLI has to read a summary and
+//! library code is the only place both of them can reach.
 
 pub mod observer;
 pub mod progress;
@@ -25,7 +27,7 @@ pub use progress::{
     ProgressTerminal, TestDimensionSource, TestTimeSource,
 };
 
-use crate::SyncSummary;
+use crate::{SyncSummary, ToolsSyncSummary};
 
 /// How a finished sync amounts to something for a caller.
 ///
@@ -98,6 +100,50 @@ pub fn sync_summary_icon(summary: &SyncSummary) -> StatusIcon {
             StatusIcon::Success
         }
         SyncOutcome::Clean => StatusIcon::NoChange,
+    }
+}
+
+/// How a finished tool sync amounts to something for a caller.
+///
+/// Two states, and the missing third is the rule. A tool that failed to
+/// provision leaves every other tool in the run registered, and running the
+/// command again retries the failed one, so the run broke nothing and there is
+/// no error state to reach for. A tool sync that cannot run at all returns a
+/// [`MediaPmError`](crate::MediaPmError) instead, and the CLI leaves through
+/// the error path without consulting this answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSyncOutcome {
+    /// Every desired tool resolved and provisioned.
+    Clean,
+    /// At least one tool failed to provision. The rest are registered.
+    Warning,
+}
+
+/// The rule that reads a [`ToolsSyncSummary`] and says how the tool sync went.
+///
+/// It sits beside [`sync_outcome`] so the two answers stay in one place. A
+/// [`SyncSummary`] can be short a path and so has an error state; a
+/// [`ToolsSyncSummary`] cannot, and saying so here is cheaper than letting a
+/// caller discover it from an exit status.
+///
+/// The CLI's tool-sync exit status reads this function rather than
+/// `summary.warnings`, so the summary line's icon and the process status cannot
+/// come to different answers about the same run.
+#[must_use]
+pub fn tool_sync_outcome(summary: &ToolsSyncSummary) -> ToolSyncOutcome {
+    if summary.warnings.is_empty() { ToolSyncOutcome::Clean } else { ToolSyncOutcome::Warning }
+}
+
+/// Icon for the `mediapm tool sync` summary line.
+///
+/// A tool that failed to provision turns the line yellow. The rest of the run
+/// is registered, so this is not an error, and a green line would hide the one
+/// tool the user still has to deal with.
+#[must_use]
+pub fn tool_sync_icon(summary: &ToolsSyncSummary) -> StatusIcon {
+    match tool_sync_outcome(summary) {
+        ToolSyncOutcome::Clean => StatusIcon::Success,
+        ToolSyncOutcome::Warning => StatusIcon::Warning,
     }
 }
 

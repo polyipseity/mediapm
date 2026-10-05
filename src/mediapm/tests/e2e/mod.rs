@@ -12,3 +12,5 @@ mod service;
 mod subprocess;
 #[cfg(feature = "cli")]
 mod sync_exit_status;
+#[cfg(feature = "cli")]
+mod tool_sync_exit_status;

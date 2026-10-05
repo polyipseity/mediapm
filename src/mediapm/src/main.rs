@@ -66,6 +66,25 @@ fn sync_exit_status(summary: &mediapm::SyncSummary) -> Option<i32> {
     }
 }
 
+/// Exit status for a finished `tool sync`, or `None` when it went clean.
+///
+/// The only place the mapping from [`mediapm::output::ToolSyncOutcome`] to a
+/// process status lives for `mediapm tool sync`. A tool that failed to
+/// provision takes [`EXIT_WARNING`] and not [`EXIT_INCOMPLETE_LIBRARY`]: the
+/// other tools in the same run registered, and running the command again
+/// retries the failed one, so nothing the library needed is missing.
+///
+/// A tool sync that cannot run at all returns an error out of
+/// [`MediaPmService::sync_tools_with_tag_update_checks`] and never reaches this
+/// function.
+#[must_use]
+fn tool_sync_exit_status(summary: &mediapm::ToolsSyncSummary) -> Option<i32> {
+    match mediapm::output::tool_sync_outcome(summary) {
+        mediapm::output::ToolSyncOutcome::Clean => None,
+        mediapm::output::ToolSyncOutcome::Warning => Some(EXIT_WARNING),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "cli")]
@@ -192,7 +211,7 @@ async fn main_cli() -> anyhow::Result<()> {
                     .sync_tools_with_tag_update_checks(check_tag_updates, no_progress)
                     .await?;
                 print_result(
-                    StatusIcon::Success,
+                    mediapm::output::tool_sync_icon(&summary),
                     "tools synced",
                     &[
                         ("added", &summary.added_tools as &dyn std::fmt::Display),
@@ -204,6 +223,11 @@ async fn main_cli() -> anyhow::Result<()> {
                 );
                 for warning in &summary.warnings {
                     print_warning(warning);
+                }
+                // The `Δ` lines above carry which tool failed and why, so the
+                // status only has to add that the run was not clean.
+                if let Some(status) = tool_sync_exit_status(&summary) {
+                    std::process::exit(status);
                 }
                 Ok(())
             }
@@ -1224,7 +1248,7 @@ mod tests {
 
     use super::{
         Cli, EXIT_INCOMPLETE_LIBRARY, EXIT_WARNING, inject_cas_passthrough_defaults,
-        inject_conductor_passthrough_defaults, sync_exit_status,
+        inject_conductor_passthrough_defaults, sync_exit_status, tool_sync_exit_status,
     };
 
     /// Protects no-backcompat policy by rejecting removed hidden internal route.
@@ -1506,6 +1530,68 @@ mod tests {
             ..sync_summary()
         };
         assert_eq!(sync_exit_status(&summary), Some(EXIT_WARNING), "summary: {summary:?}");
+    }
+
+    /// Builds a tool-sync summary with every count at zero.
+    fn tools_sync_summary() -> mediapm::ToolsSyncSummary {
+        mediapm::ToolsSyncSummary {
+            added_tools: 0,
+            updated_tools: 0,
+            pruned_tools: 0,
+            removed_tools: 0,
+            skipped_tools: 0,
+            warnings: vec![],
+        }
+    }
+
+    /// A run that registered every desired tool exits as it always did.
+    ///
+    /// The control the warning tests below read against. A rule that warned on
+    /// any tool-sync summary at all satisfies them.
+    #[test]
+    fn tool_sync_exits_zero_when_every_tool_provisioned() {
+        let summary =
+            mediapm::ToolsSyncSummary { added_tools: 2, skipped_tools: 1, ..tools_sync_summary() };
+        assert_eq!(tool_sync_exit_status(&summary), None, "summary: {summary:?}");
+    }
+
+    /// A tool that failed to provision takes the warning status.
+    ///
+    /// The command used to print the `Δ` line and exit zero, so a script
+    /// reading the number could not tell a clean run from one where a tool is
+    /// still missing.
+    #[test]
+    fn tool_sync_exits_three_when_a_tool_failed_to_provision() {
+        let summary = mediapm::ToolsSyncSummary {
+            added_tools: 2,
+            warnings: vec![
+                "tool nonexistent-tool: no provider registered for resolution".to_string(),
+            ],
+            ..tools_sync_summary()
+        };
+        assert_eq!(tool_sync_exit_status(&summary), Some(EXIT_WARNING), "summary: {summary:?}");
+    }
+
+    /// A tool that failed to provision does not take the library's status.
+    ///
+    /// This is the mistake the warning status is easy to make. The rest of the
+    /// run registered, and re-running the command retries the failed tool, so
+    /// nothing the library needs is missing, and status 4 would tell a script
+    /// the run had left work undone.
+    #[test]
+    fn tool_sync_does_not_exit_four_when_a_tool_failed_to_provision() {
+        let summary = mediapm::ToolsSyncSummary {
+            added_tools: 2,
+            warnings: vec![
+                "tool nonexistent-tool: no provider registered for resolution".to_string(),
+            ],
+            ..tools_sync_summary()
+        };
+        assert_ne!(
+            tool_sync_exit_status(&summary),
+            Some(EXIT_INCOMPLETE_LIBRARY),
+            "a tool-sync warning is not an incomplete library; summary: {summary:?}"
+        );
     }
 
     /// The three statuses a sync can end on stay apart from each other and from
