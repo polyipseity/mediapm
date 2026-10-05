@@ -23,11 +23,11 @@ use crate::hash::Hash;
 
 /// Evaluates verify-on-read strategies with OR semantics.
 ///
-/// If any enabled strategy triggers, [`should_verify`] returns `true`. Call
-/// [`record_verification`] after a successful verification or write to update
-/// tracking state. All per-hash state is ephemeral (in-memory); on restart
-/// every hash is unknown, so the first read of each hash conservatively
-/// triggers `Modified` and `Stale`.
+/// If any enabled strategy triggers, [`VerifyEvaluator::should_verify`]
+/// returns `true`. Call [`VerifyEvaluator::record_verification`] after a
+/// successful verification or write to update tracking state. All per-hash
+/// state is ephemeral (in-memory); on restart every hash is unknown, so the
+/// first read of each hash conservatively triggers `Modified` and `Stale`.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "verify strategy flags are intentionally independent booleans"

@@ -28,7 +28,7 @@ if (-not ($bogusOut -match 'unknown argument')) { Fail '--bogus missing stderr d
 
 # 4. Static gates: the runner must invoke the canonical commands.
 $runnerText = Get-Content -LiteralPath $runner -Raw
-foreach ($needle in @('cargo --locked nextest run', 'cargo --locked test --doc --workspace', 'clean-mediapm-temp', 'tempfile::tempdir', '.prefix')) {
+foreach ($needle in @('cargo --locked nextest run', 'cargo --locked test --doc --workspace', 'cargo --locked doc --no-deps --workspace --all-features --document-private-items', 'clean-mediapm-temp', 'tempfile::tempdir', '.prefix')) {
     if (-not $runnerText.Contains($needle)) { Fail "runner missing static gate: $needle" }
 }
 

@@ -102,7 +102,7 @@ pub struct ProgressRenderer {
     orphaned_states: RefCell<VecDeque<Arc<SharedState>>>,
     /// Guard against double-`finalize` from both
     /// [`ProgressScreen::join_and_clear`](super::ProgressScreen::join_and_clear)
-    /// and [`Drop`](Drop).
+    /// and [`Drop`].
     finalized: Cell<bool>,
     /// Injectable time source (real or synthetic for testing).
     pub(crate) time_source: Arc<dyn TimeSource>,

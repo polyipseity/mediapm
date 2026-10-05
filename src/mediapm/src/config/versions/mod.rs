@@ -177,7 +177,7 @@ mod spelled_path_layout {
     ///
     /// `hierarchy_root_dir` is the workspace root, spelled `"."`; a caller that
     /// materializes into a subdirectory overrides it through
-    /// [`RuntimeBoundaryDeviations::hierarchy_root_dir`].
+    /// [`hierarchy_root_dir`](super::RuntimeBoundaryDeviations::hierarchy_root_dir).
     pub(super) const PATHS: [(&str, &str); 10] = [
         ("mediapm_dir", ".mediapm"),
         ("hierarchy_root_dir", "."),

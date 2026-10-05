@@ -36,7 +36,7 @@ static DIR_LOCKS: LazyLock<DashMap<PathBuf, Arc<Mutex<()>>>> = LazyLock::new(Das
 /// advisory file lock on a CAS directory.
 ///
 /// Dropping this guard releases both locks in reverse acquisition order:
-/// the flock first (via [`tokio::fs::File::drop`]), then the in-process
+/// the flock first, when the file holding it is closed, then the in-process
 /// mutex (via [`OwnedMutexGuard::drop`]).
 #[derive(Debug)]
 pub(super) struct DirectoryLockGuard {

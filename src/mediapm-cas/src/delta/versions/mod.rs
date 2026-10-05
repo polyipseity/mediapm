@@ -25,7 +25,8 @@ pub(crate) mod v1;
 pub(crate) mod v2;
 pub(crate) mod v3;
 
-/// Prefix bytes required to dispatch a delta envelope: `magic_with_version`[8].
+/// Bytes required to dispatch a delta envelope: the six-byte magic prefix plus
+/// the two-byte version field that follows it.
 const ENVELOPE_PREFIX_LEN: usize = 8;
 
 /// Magic prefix for V3+ delta envelopes (`CASDLT` = Content-Addressed Storage Delta).

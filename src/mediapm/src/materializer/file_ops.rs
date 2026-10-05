@@ -89,9 +89,9 @@ pub(super) async fn output_relationship(
 /// so the cost of this branch is the size of what it checks.
 ///
 /// This is the one place a library output's bytes are read to settle whether
-/// it may be left alone, which is why [`read_watch`] counts here and nowhere
-/// else. A caller that needs to know whether a run read an output at all has
-/// no other place to look.
+/// it may be left alone, which is why the test-only `read_watch` counts here
+/// and nowhere else. A caller that needs to know whether a run read an output
+/// at all has no other place to look.
 pub(super) async fn file_content_matches_hash(path: &Path, expected: &Hash) -> bool {
     use tokio::io::AsyncReadExt as _;
 

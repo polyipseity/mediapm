@@ -624,7 +624,7 @@ impl ProgressScreen {
 
     /// Add a child bar to the screen.
     ///
-    /// `label` is parsed into [`PrefixComponents`](super::PrefixComponents) at construction.
+    /// `label` is parsed into [`PrefixComponents`] at construction.
     ///
     /// # Panics
     ///

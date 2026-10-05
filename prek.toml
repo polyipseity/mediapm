@@ -109,4 +109,11 @@ hooks = [
   { id = "test", name = "test", entry = "cargo run --package cargo-bin -- cargo-nextest run --workspace --all-targets --all-features", language = "system", pass_filenames = false, stages = [
     "pre-push",
   ] },
+  # rustdoc: unresolved intra-doc links, the same gate `run-all-tests.sh` runs.
+  # --all-features carries as much weight as the flag does: without it a module
+  # behind an off-by-default feature is compiled out and never checked at all.
+  # Named so it can be skipped independently: SKIP=rustdoc
+  { id = "rustdoc", name = "rustdoc", entry = "cargo doc --locked --no-deps --workspace --all-features --document-private-items", language = "system", pass_filenames = false, stages = [
+    "pre-push",
+  ] },
 ]

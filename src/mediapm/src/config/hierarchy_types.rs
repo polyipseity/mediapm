@@ -846,9 +846,9 @@ pub(crate) fn check_nfd_source(components: &[&str]) -> Result<(), MediaPmError> 
 /// Rejection, not sanitization, is the correct policy here for the same reason
 /// [`check_nfd_source`] rejects: the key is user-authored, so the user can
 /// spell it correctly. The materializer's
-/// [`crate::materializer::sanitize_and_validate_hierarchy_paths`] still
-/// *normalizes* the components that carry metadata the user does not control —
-/// the two stages are complementary, and this is the earlier one.
+/// `materializer::sanitize_and_validate_hierarchy_paths` still *normalizes* the
+/// components that carry metadata the user does not control — the two stages
+/// are complementary, and this is the earlier one.
 ///
 /// The reserved-character rule is **platform-independent**, matching the
 /// sanitizer it must stay in step with. A `media` key of `a:b` is a legal

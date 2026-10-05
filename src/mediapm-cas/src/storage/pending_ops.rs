@@ -45,7 +45,7 @@ impl Drop for PendingGuard<'_> {
     }
 }
 
-/// Deduplicates concurrent operations keyed by [`Hash`].
+/// Deduplicates concurrent operations keyed by [`struct@Hash`].
 ///
 /// Lock-free for the fast path — the [`DashMap`] entry is only held during
 /// insert/remove. The actual work and waiting both happen outside the map

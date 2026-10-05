@@ -6,7 +6,7 @@
 //! The client crate (mediapm-conductor) owns the field structs, the
 //! truncation order, and the final display-string assembly.
 //!
-//! When a bar has no truncation set ([`None`](Option::None)), mediapm-utils
+//! When a bar has no truncation set ([`None`]), mediapm-utils
 //! falls back to its built-in component rendering so existing callers keep
 //! working unchanged.
 
@@ -143,7 +143,7 @@ pub struct Segment {
     /// How this piece yields width.
     pub shrink: Shrink,
     /// Brackets to wrap the content in, applied only when the whole group
-    /// rendered. [`None`](Option::None) renders the bare content.
+    /// rendered. [`None`] renders the bare content.
     pub brackets: Option<Brackets>,
     /// How many consecutive segments the decoration wraps, counting this
     /// one, so `1` is the single-segment group. Set by

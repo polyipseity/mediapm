@@ -8,6 +8,7 @@ usage: run-all-tests.sh [--large] [--help]
 Runs the full workspace validation suite:
   - cargo nextest run --workspace --all-targets (default features)
   - cargo --locked test --doc --workspace
+  - cargo --locked doc --no-deps --workspace --all-features --document-private-items
   - janitor dry-run gate (leftover mediapm temp dirs fail the suite)
   - unprefixed-tempdir invariant gate
 
@@ -52,6 +53,12 @@ else
     cargo --locked nextest run --workspace --all-targets
 fi
 cargo --locked test --doc --workspace
+
+# Rustdoc link gate. `--document-private-items` documents the private doc
+# comments that hold most cross-references here, and `--all-features` stops an
+# off-by-default module (mediapm-utils `progress` is one) from hiding behind its
+# feature flag. Without both, a broken link here would pass.
+cargo --locked doc --no-deps --workspace --all-features --document-private-items
 
 # Regression gate: the test suite must not leave mediapm-owned temp dirs
 # behind. Non-destructive (dry-run only); fails loudly if any leftover

@@ -395,10 +395,10 @@ pub async fn sync_hierarchy(
 /// Sanitizes and validates every flattened hierarchy entry's path components,
 /// returning the entries in their validated form.
 ///
-/// This is the production entry point of the chain in
-/// [`commit`]: NFD normalization, reserved-character sanitization (when the
-/// entry's effective [`SanitizeNamesConfig`] enables it), then strict
-/// validation. It runs *after* [`metadata::resolve_flattened_entry_paths`],
+/// This is the production entry point of the chain in [`commit`]: NFD
+/// normalization, reserved-character sanitization (when the entry's effective
+/// [`SanitizeNamesConfig`](crate::config::SanitizeNamesConfig) enables it),
+/// then strict validation. It runs *after* [`metadata::resolve_flattened_entry_paths`],
 /// because that step interpolates `${media.id}` and
 /// `${media.metadata.<key>}` into components — the first point at which
 /// externally sourced text (tag metadata, ffprobe output, ZIP `info.json`)

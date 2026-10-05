@@ -19,7 +19,7 @@ use bytes::Bytes;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-/// V1 journal entry — mirrors [`WalEntry`] but is self-contained within
+/// V1 journal entry — mirrors the unversioned `WalEntry` but is self-contained within
 /// `versions/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WalEntryV1 {

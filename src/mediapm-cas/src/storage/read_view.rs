@@ -4,9 +4,8 @@
 //! The [`ComposedReadView`] implements a three-layer lookup used by
 //! [`CasStore`](super::store::CasStore):
 //!
-//! 1. [`MetadataStore`](super::metadata_store::MetadataStore) — metadata (encoding, size, bases).
-//! 2. [`BlobStore`](super::blob_store::BlobStore) — payload bytes (full
-//!    or delta).
+//! 1. [`MetadataStore`] — metadata (encoding, size, bases).
+//! 2. [`BlobStore`] — payload bytes (full or delta).
 //! 3. WAL fallback — entries not yet materialized into BlobStore/MetadataStore.
 //!
 //! In-flight read dedup prevents redundant blob reads when multiple

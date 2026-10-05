@@ -45,7 +45,7 @@ esac
 
 # 4. Static gates: the runner must invoke the canonical commands.
 runner_text="$(cat "$runner")"
-for needle in 'cargo --locked nextest run' 'cargo --locked test --doc --workspace' 'clean-mediapm-temp' 'tempfile::tempdir' '.prefix'; do
+for needle in 'cargo --locked nextest run' 'cargo --locked test --doc --workspace' 'cargo --locked doc --no-deps --workspace --all-features --document-private-items' 'clean-mediapm-temp' 'tempfile::tempdir' '.prefix'; do
     case "$runner_text" in
         *"$needle"*) ;;
         *) fail "runner missing static gate: $needle" ;;

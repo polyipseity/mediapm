@@ -1,6 +1,6 @@
 //! Versioned binary wire formats for journal and checkpoint artifacts.
 //!
-//! The long-lived functional core is [`Journal`](super::super::wal::Journal).
+//! The long-lived functional core is the [`Wal`](super::Wal) trait.
 //! Each wire version owns its exact byte layout, parse/validate/encode
 //! behavior, and `From` conversions to/from version-specific state types.
 //! `vX.rs` files must never import unversioned structs outside `versions/`,

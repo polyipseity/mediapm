@@ -1,15 +1,15 @@
 //! Filesystem-backed metadata — in-memory with per-directory persistent snapshots.
 //!
-//! [`FileSystemMetadataStore`] wraps an [`InMemoryMetadataStore`](super::mem::InMemoryMetadataStore)
-//! and persists metadata entries and constraints in per-directory JSON snapshots
-//! (one per fan-out directory `v1/blake3/ab/cd/`), using the
-//! [`BlobStore`](super::super::blob_store::BlobStore) auxiliary-file API so each
-//! mutation flushes only its hash's directory — O(N/D) I/O instead of O(N).
+//! [`FileSystemMetadataStore`] wraps an [`InMemoryMetadataStore`] and persists
+//! metadata entries and constraints in per-directory JSON snapshots (one per
+//! fan-out directory `v1/blake3/ab/cd/`), using the [`BlobStore`] auxiliary-file
+//! API so each mutation flushes only its hash's directory — O(N/D) I/O instead
+//! of O(N).
 //!
 //! Snapshot files use a versioned filename (`metadata-v1.json`) so future format
 //! changes are detectable and migratable. This module holds no version
-//! knowledge of its own: it consumes the names and codecs from
-//! [`versions`](super::versions), which owns the ladder.
+//! knowledge of its own: it consumes the names and codecs from [`versions`],
+//! which owns the ladder.
 
 use async_trait::async_trait;
 use bytes::Bytes;

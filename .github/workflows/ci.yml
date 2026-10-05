@@ -59,6 +59,7 @@ jobs:
           cargo --locked clippy-all
           cargo --locked fmt-check
           cargo --locked build-all
+          cargo --locked doc --no-deps --workspace --all-features --document-private-items
 
   # Feature matrix: one `cargo check` per crate per feature combination.
   #

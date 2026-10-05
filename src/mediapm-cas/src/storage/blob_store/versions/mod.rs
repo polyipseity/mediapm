@@ -3,7 +3,7 @@
 //! Each on-disk version owns its path layout. This module keeps the ladder in
 //! one registry and provides the version-aware path derivation, the on-disk
 //! version resolver, and the migration entry point that bridges versioned
-//! internals to the unversioned [`BlobStore`](super::super::BlobStore) runtime.
+//! internals to the unversioned [`BlobStore`](super::BlobStore) runtime.
 //! `vX.rs` files must never import unversioned structs outside `versions/`, and
 //! this `mod.rs` is the only place where latest version state is bridged to
 //! unversioned runtime state.
