@@ -1,14 +1,17 @@
 use super::super::inner::*;
 use super::*;
-use crate::progress::BarLabelTruncation;
+use crate::progress::{BarLabelTruncation, Brackets, Segment, fit_segments};
 
 /// Label whose rendered prefix is a single bracketed marker, so a test can put
 /// a marker on one row and read another row's log without the two mixing.
+///
+/// The marker is a [`Shrink::Keep`] segment, so a prefix slot too narrow for
+/// it drops it whole rather than clipping the text and leaving a `]` behind.
 struct MarkerLabel(&'static str);
 
 impl BarLabelTruncation for MarkerLabel {
-    fn truncate_prefix(&self, _max_width: usize) -> String {
-        format!("[{}]", self.0)
+    fn truncate_prefix(&self, max_width: usize) -> String {
+        fit_segments(&[Segment::keep(self.0).brackets(Brackets::Square)], max_width)
     }
 
     fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
@@ -168,6 +171,20 @@ fn recording_handle_finish_and_clear_warning() {
     h.finish_and_clear();
     h.finish_warning();
     assert_eq!(h.ops(), vec![ProgressOp::FinishAndClear, ProgressOp::FinishWarning]);
+}
+
+/// The recording harness hands a label [`usize::MAX`] as its prefix budget,
+/// which is the width every marker test below reads at, so a marker renders
+/// whole there. A real slot is finite, and one too narrow for the bracketed
+/// marker has to lose the marker rather than overflow the row.
+#[test]
+fn marker_label_fits_the_width_it_is_given() {
+    let label = marker("idle");
+
+    assert_eq!(label.truncate_prefix(usize::MAX), "[idle]");
+    assert_eq!(label.truncate_prefix(6), "[idle]", "the marker fits its own width");
+    assert_eq!(label.truncate_prefix(5), "", "one column short drops the marker whole");
+    assert_eq!(label.truncate_suffix(usize::MAX, &SuffixComponents::default()), "");
 }
 
 /// A run where two rows both emit status markers. Counting across the whole

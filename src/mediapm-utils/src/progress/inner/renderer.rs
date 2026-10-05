@@ -50,7 +50,6 @@ pub use tracked::{ProgressBarHandle, TrackSnapshot, TrackStatus};
 use super::SuffixComponents;
 #[cfg(test)]
 use layout::{client_truncated_prefix, compute_ansi_overhead};
-// ---- (ProgressTracker removed: use ProgressBarHandle::with_label) -----
 
 // ---- ProgressRenderer + ProgressScreen (rendering + combined) ----------
 
