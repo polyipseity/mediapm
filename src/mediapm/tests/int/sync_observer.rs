@@ -111,6 +111,7 @@ mod tests {
             cached_instances: 0,
             materialized_paths: materialized,
             skipped_paths: skipped,
+            missing_paths: 0,
             removed_paths: 0,
             removed_empty_dirs: 0,
             added_tools: 0,
@@ -133,6 +134,7 @@ mod tests {
         let s = MaterializationSyncSummary {
             materialized_paths: 5,
             skipped_paths: 3,
+            missing_paths: 0,
             removed_paths: 1,
             removed_empty_dirs: 0,
         };
@@ -167,6 +169,7 @@ mod tests {
         let s = MaterializationSyncSummary {
             materialized_paths: 5,
             skipped_paths: 0,
+            missing_paths: 0,
             removed_paths: 1,
             removed_empty_dirs: 0,
         };
@@ -240,6 +243,7 @@ mod tests {
         obs.on_phase(SyncPhaseReport::Materialization(MaterializationSyncSummary {
             materialized_paths: 3,
             skipped_paths: 0,
+            missing_paths: 0,
             removed_paths: 0,
             removed_empty_dirs: 0,
         }));

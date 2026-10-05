@@ -1401,6 +1401,7 @@ mod tests {
             cached_instances: 0,
             materialized_paths: materialized,
             skipped_paths: skipped,
+            missing_paths: 0,
             removed_paths: 0,
             removed_empty_dirs: 0,
             added_tools: 0,

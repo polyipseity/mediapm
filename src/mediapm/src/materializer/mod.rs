@@ -89,12 +89,23 @@ pub(super) struct VariantSourceBytes {
 use self::zip_reader::{compile_hierarchy_folder_rename_rules, extract_zip_folder_variant_bytes};
 
 /// Summary of one `sync_hierarchy` invocation.
+///
+/// The three path counts are disjoint and mean different things, which is why
+/// they are three counters rather than one counter and an interpretation.
+/// [`Self::skipped_paths`] is a clean outcome: the library already held the
+/// resolved bytes and the run wrote nothing. [`Self::missing_paths`] is the
+/// opposite, a library left short an entry because its content was
+/// unavailable.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MaterializeReport {
     /// Number of hierarchy paths materialized (new or updated).
     pub materialized_paths: usize,
-    /// Number of hierarchy paths whose variant resolved no content hash.
+    /// Number of hierarchy paths that already held the resolved bytes, so the
+    /// run left them untouched.
     pub skipped_paths: usize,
+    /// Number of hierarchy paths the run left unwritten because their content
+    /// was unavailable.
+    pub missing_paths: usize,
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,
     /// Number of empty parent directories removed after stale path cleanup.
@@ -103,10 +114,25 @@ pub struct MaterializeReport {
     pub notices: Vec<String>,
 }
 
+/// What one hierarchy entry's worker did with it.
+///
+/// A bool could carry two of these and lose the third, which is exactly the
+/// confusion these counters exist to remove: a variant that resolved no
+/// content hash and a variant already on disk both wrote nothing, and only one
+/// of them leaves the library short an entry.
+enum EntryOutcome {
+    /// The entry's output was written.
+    Materialized,
+    /// The entry's output already held the resolved bytes and was left alone.
+    AlreadyCorrect,
+    /// The entry's content was unavailable, so its output was not written.
+    Missing,
+}
+
 /// The result of preparing one flattened hierarchy entry.
 struct PreparedHierarchyEntryResult {
-    /// Whether the entry was actually materialized (not skipped).
-    materialized: bool,
+    /// What the worker did with the entry.
+    outcome: EntryOutcome,
     /// Managed file records keyed by hierarchy-relative path.
     managed_files: BTreeMap<String, ManagedFileRecord>,
     /// Per-media variant hash updates (`media_id -> variant -> hash`).
@@ -126,6 +152,15 @@ struct SyncSharedState {
     flattened: Vec<ValidatedHierarchyEntry>,
     /// Whether to CAS-verify materialized outputs after writing.
     verify_materialization: bool,
+    /// The hash [`crate::config::ManagedFileRecord`] recorded for each managed
+    /// output path when this sync started, copied out of
+    /// `state.managed_files` before any worker runs.
+    ///
+    /// Copying is what makes the comparison mean "what the previous run
+    /// wrote". Reading the map through the worker would judge an entry against
+    /// whatever this same run happened to have written first, so a duplicate
+    /// entry could skip on the strength of the other one's work.
+    recorded_hashes: BTreeMap<String, String>,
 }
 
 /// Returns the number of concurrent hierarchy-worker tasks.
@@ -184,6 +219,11 @@ pub async fn sync_hierarchy(
         cas: cas.clone(),
         flattened: validated.clone(),
         verify_materialization,
+        recorded_hashes: state
+            .managed_files
+            .iter()
+            .map(|(path, record)| (path.clone(), record.hash.clone()))
+            .collect(),
     });
 
     let worker_count = hierarchy_worker_count();
@@ -250,10 +290,10 @@ pub async fn sync_hierarchy(
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok(Ok(entry_result)) => {
-                if entry_result.materialized {
-                    report.materialized_paths += 1;
-                } else {
-                    report.skipped_paths += 1;
+                match entry_result.outcome {
+                    EntryOutcome::Materialized => report.materialized_paths += 1,
+                    EntryOutcome::AlreadyCorrect => report.skipped_paths += 1,
+                    EntryOutcome::Missing => report.missing_paths += 1,
                 }
                 desired_managed_paths.extend(entry_result.managed_files.keys().cloned());
                 for (path, record) in entry_result.managed_files {
@@ -279,17 +319,18 @@ pub async fn sync_hierarchy(
         }
     }
 
-    // A skipped path ends the row as an error, not as a neutral success. A
-    // skip means the entry's variant resolved no content hash, so the upstream
-    // step produced nothing to commit and the library is not the shape the
-    // document asked for.
+    // A path left unwritten ends the row as an error, not as a neutral
+    // success: its content was unavailable, so the library is not the shape
+    // the document asked for. A path that already held the resolved bytes does
+    // not, because writing it again would have produced the library the run
+    // already has.
     //
     // The `Err` below stays reserved for a real `materialize_error`. Returning
     // one here would discard the report, and the caller still needs it to say
-    // how many paths materialized and how many were skipped. A run that
+    // how many paths materialized and how many were left missing. A run that
     // materialized most of its entries has a real result to report even when
     // one entry did not land.
-    if materialize_error.is_some() || report.skipped_paths > 0 {
+    if materialize_error.is_some() || report.missing_paths > 0 {
         pb.finish_error();
     } else {
         pb.finish_success();
@@ -313,9 +354,11 @@ pub async fn sync_hierarchy(
     report.removed_empty_dirs = stale_result.1;
 
     info!(
-        "materialization complete: {} materialized, {} skipped, {} removed, {} empty dirs removed",
+        "materialization complete: {} materialized, {} already correct, {} missing, \
+         {} removed, {} empty dirs removed",
         report.materialized_paths,
         report.skipped_paths,
+        report.missing_paths,
         report.removed_paths,
         report.removed_empty_dirs,
     );
@@ -524,6 +567,21 @@ impl<'a> EntryPhaseBar<'a> {
     }
 }
 
+/// Builds the state record for one materialized media output.
+///
+/// Both the write path and the already-correct path name the record the same
+/// way, because the record states what this run resolved for the output rather
+/// than what a past run left behind. A short circuit that replayed the stored
+/// record would carry a stale `media_id` or `variant` into the state the
+/// moment the document renamed either.
+fn record_for(media_id: &str, variant: &str, hash: &Hash) -> ManagedFileRecord {
+    ManagedFileRecord {
+        media_id: media_id.to_string(),
+        variant: variant.to_string(),
+        hash: hash.to_string(),
+    }
+}
+
 /// Materialises one flattened hierarchy entry from CAS content to the
 /// filesystem hierarchy root.
 ///
@@ -580,6 +638,27 @@ async fn prepare_hierarchy_entry(
             let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
 
             if let Some(hash) = hash {
+                if shared.target_already_holds(&relative_path, &hash, &target_path).await {
+                    // The row stays on `[vrf]`: it verified the target against
+                    // the resolved hash and then had nothing to commit, so a
+                    // `[cmt]` tag here would name a write that never happened.
+                    if let Some(bar) = entry_bar.handle() {
+                        bar.advance(1);
+                        bar.finish_success();
+                    }
+                    return Ok(PreparedHierarchyEntryResult {
+                        outcome: EntryOutcome::AlreadyCorrect,
+                        managed_files: BTreeMap::from([(
+                            relative_path.clone(),
+                            record_for(media_id, &effective_variant, &hash),
+                        )]),
+                        media_variant_updates: BTreeMap::from([(
+                            media_id.clone(),
+                            BTreeMap::from([(effective_variant.clone(), hash.to_string())]),
+                        )]),
+                    });
+                }
+
                 entry_bar.enter(MaterializationPhase::Commit);
 
                 // Check if this variant has a zip_member binding (e.g., subtitles_en
@@ -631,17 +710,13 @@ async fn prepare_hierarchy_entry(
                     hash
                 };
 
-                let record = ManagedFileRecord {
-                    media_id: media_id.clone(),
-                    variant: effective_variant.clone(),
-                    hash: materialized_hash.to_string(),
-                };
+                let record = record_for(media_id, &effective_variant, &materialized_hash);
                 if let Some(bar) = entry_bar.handle() {
                     bar.advance(1);
                     bar.finish_success();
                 }
                 Ok(PreparedHierarchyEntryResult {
-                    materialized: true,
+                    outcome: EntryOutcome::Materialized,
                     managed_files: BTreeMap::from([(relative_path.clone(), record)]),
                     media_variant_updates: BTreeMap::from([(
                         media_id.clone(),
@@ -664,7 +739,7 @@ async fn prepare_hierarchy_entry(
                     bar.finish_warning();
                 }
                 Ok(PreparedHierarchyEntryResult {
-                    materialized: false,
+                    outcome: EntryOutcome::Missing,
                     managed_files: BTreeMap::new(),
                     media_variant_updates: BTreeMap::new(),
                 })
@@ -1001,7 +1076,7 @@ async fn materialize_media_folder_entry(
     }
 
     Ok(PreparedHierarchyEntryResult {
-        materialized: true,
+        outcome: EntryOutcome::Materialized,
         managed_files,
         media_variant_updates: BTreeMap::from([(media_id.to_string(), variant_hashes)]),
     })
@@ -1078,7 +1153,7 @@ async fn materialize_playlist_entry(
     crate::materializer::commit::ensure_managed_path_readonly(target_path)?;
 
     Ok(PreparedHierarchyEntryResult {
-        materialized: true,
+        outcome: EntryOutcome::Materialized,
         managed_files: BTreeMap::new(),
         media_variant_updates: BTreeMap::new(),
     })
@@ -1319,6 +1394,39 @@ impl SyncSharedState {
     fn notice(&self, message: impl Into<String>) {
         warn!("{}", message.into());
     }
+
+    /// Whether `target_path` already holds the bytes `hash` names, so writing
+    /// it again would produce a file the run already has.
+    ///
+    /// Two things have to hold, and the second is not implied by the first. A
+    /// recorded hash says what a previous run wrote, which says nothing about
+    /// whether the file is still there: deleting an output leaves its record
+    /// behind, so a hash match over an absent file would skip the one path
+    /// that needed writing. A path occupied by a directory has no file to
+    /// compare either, and the write would have to fail on it rather than
+    /// skip it.
+    ///
+    /// A variant bound to a ZIP member never matches, because the record holds
+    /// the hash of the extracted member while `hash` names the archive. That is
+    /// the safe direction to be wrong in: the arm extracts, finds the member's
+    /// hash differs, and writes.
+    async fn target_already_holds(
+        &self,
+        relative_path: &str,
+        hash: &Hash,
+        target_path: &Path,
+    ) -> bool {
+        let Some(recorded) = self.recorded_hashes.get(relative_path) else {
+            return false;
+        };
+        if recorded != &hash.to_string() {
+            return false;
+        }
+        // Metadata follows symlinks, so a link whose target is gone reads as
+        // absent and gets rewritten instead of standing in for the file it
+        // once named.
+        tokio::fs::metadata(target_path).await.is_ok_and(|metadata| metadata.is_file())
+    }
 }
 
 #[cfg(test)]
@@ -1337,5 +1445,7 @@ mod tests_phase_sequence;
 mod tests_progress_ops;
 #[cfg(test)]
 mod tests_reserved_names;
+#[cfg(test)]
+mod tests_unchanged_targets;
 #[cfg(test)]
 mod tests_yt_dlp_sandbox_paths;

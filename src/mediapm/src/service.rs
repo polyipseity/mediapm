@@ -1373,6 +1373,7 @@ impl MediaPmService<FileSystemCas> {
                 crate::MaterializationSyncSummary {
                     materialized_paths: materialize_report.materialized_paths,
                     skipped_paths: materialize_report.skipped_paths,
+                    missing_paths: materialize_report.missing_paths,
                     removed_paths: materialize_report.removed_paths,
                     removed_empty_dirs: materialize_report.removed_empty_dirs,
                 },
@@ -1389,6 +1390,7 @@ impl MediaPmService<FileSystemCas> {
             cached_instances,
             materialized_paths: materialize_report.materialized_paths,
             skipped_paths: materialize_report.skipped_paths,
+            missing_paths: materialize_report.missing_paths,
             removed_paths: materialize_report.removed_paths,
             removed_empty_dirs: materialize_report.removed_empty_dirs,
             added_tools: tools_report.added_tools,

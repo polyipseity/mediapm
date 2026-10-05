@@ -5,6 +5,7 @@ use crate::config::hierarchy_types::{
 };
 use crate::config::source_types::{MediaStep, MediaStepTool};
 use crate::config::{GenericOutputVariantConfig, OutputVariantValue};
+use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
 use super::*;
 
@@ -191,9 +192,44 @@ pub(super) fn single_media_document(media_id: &str, path: HierarchyPath) -> Medi
     }
 }
 
+/// A one-media-entry document whose variant resolves from `variant_hash`, so
+/// a `sync_hierarchy` over it writes rather than finding nothing to commit.
+///
+/// Derived from [`folder_and_playlist_document`] by dropping the nodes the
+/// materializer would reach through a different arm, which leaves the single
+/// media entry the short-circuit tests re-sync.
+pub(super) fn resolvable_media_document(variant_hash: &str) -> MediaPmDocument {
+    let mut document = folder_and_playlist_document(variant_hash);
+    document.hierarchy.retain(|node| matches!(node.kind, HierarchyNodeKind::Media));
+    document
+}
+
 /// Opens a CAS under the workspace runtime root for a `sync_hierarchy` call.
 pub(super) async fn open_hierarchy_cas(paths: &MediaPmPaths) -> FileSystemCas {
     let cas_root = paths.runtime_root.join("store");
     tokio::fs::create_dir_all(&cas_root).await.unwrap();
     FileSystemCas::open(&cas_root).await.unwrap()
+}
+
+/// The terminal op of one handle's own bar, or `None` when it never finished.
+///
+/// Keyed on the [`BarId`] of the handle rather than found by scanning, because
+/// the overall bar and the entry bars share one op vocabulary and an
+/// unfiltered search reports whichever finished first.
+pub(super) fn overall_finish(
+    tracker: &RecordingProgressTracker,
+    overall: &mediapm_utils::progress::recording::RecordingTrackedHandle,
+) -> Option<ProgressOp> {
+    let bar = overall.bar();
+    tracker.recorded().iter().find_map(|entry| {
+        if entry.bar != bar {
+            return None;
+        }
+        match entry.op {
+            ProgressOp::FinishSuccess | ProgressOp::FinishWarning | ProgressOp::FinishError => {
+                Some(entry.op.clone())
+            }
+            _ => None,
+        }
+    })
 }

@@ -93,11 +93,11 @@ pub struct MediaPackage {
 
 /// Summary of one complete `mediapm sync` execution.
 ///
-/// A `skipped_paths` count above zero means the library is incomplete: a
-/// variant resolved no content hash, so the upstream step ran and left nothing
-/// to commit. The CLI reports that as an error on its summary line and exits
-/// non-zero, which makes the count the run's headline result rather than one
-/// number among several.
+/// `skipped_paths` counts a clean outcome: the library already held the
+/// resolved bytes, so the run wrote nothing. `missing_paths` counts the
+/// opposite, a library left short an entry because its content was
+/// unavailable, which the CLI reports as an error on its summary line and
+/// exits non-zero for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSummary {
     /// Number of conductor instances executed during sync.
@@ -106,8 +106,12 @@ pub struct SyncSummary {
     pub cached_instances: usize,
     /// Number of hierarchy paths materialized to the resolved library root.
     pub materialized_paths: usize,
-    /// Number of hierarchy paths whose variant resolved no content hash.
+    /// Number of hierarchy paths that already held the resolved bytes, so the
+    /// run left them untouched.
     pub skipped_paths: usize,
+    /// Number of hierarchy paths the run left unwritten because their content
+    /// was unavailable.
+    pub missing_paths: usize,
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,
     /// Number of empty parent directories removed after stale path cleanup.
@@ -141,15 +145,18 @@ pub struct WorkflowSyncSummary {
 
 /// Aggregate result of the materialization phase.
 ///
-/// A `skipped_paths` count above zero means this phase did not materialize the
-/// library, which is what both the screen's overall row and the phase's
-/// summary line report as an error.
+/// A `missing_paths` count above zero means this phase left the library short
+/// an entry, which is what both the screen's overall row and the phase's
+/// summary line report as an error. A `skipped_paths` count is clean.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MaterializationSyncSummary {
     /// Paths materialized (new or updated).
     pub materialized_paths: usize,
-    /// Paths whose variant resolved no content hash.
+    /// Paths that already held the resolved bytes, so the run left them
+    /// untouched.
     pub skipped_paths: usize,
+    /// Paths the run left unwritten because their content was unavailable.
+    pub missing_paths: usize,
     /// Stale paths removed.
     pub removed_paths: usize,
     /// Empty parent directories removed after stale-path cleanup.
