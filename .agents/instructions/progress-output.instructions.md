@@ -291,7 +291,7 @@ After progress bars finish, the CLI prints structured result lines via primitive
 | `Warning` | `Δ` | yellow bold |
 | `Error` | `✗` | red bold |
 
-A missing hierarchy path is one the run could not produce, so the library does not hold what the config asked for. The Screen A summary and the Screen C phase line both report it as `Error`, and `mediapm sync` exits non-zero. A failed workflow step is the same case: the media that step was to produce is missing, so it is `Error` too. It used to be a `Warning` on the grounds that the paths the step owns may still have materialized, which does not hold up: those paths are materialized from what the step was supposed to produce. A skipped path is the opposite case and is neither, since the file already held the resolved bytes.
+A missing hierarchy path is one the run could not produce, so the library does not hold what the config asked for. The Screen A summary and the Screen C phase line both report it as `Error`, and `mediapm sync` exits non-zero. A failed workflow step is the same case: the media that step was to produce is missing, so it is `Error` too. It used to be a `Warning` on the grounds that the paths the step owns may still have materialized, which does not hold up: those paths are materialized from what the step was supposed to produce. A skipped path is the opposite case and is neither. It is a path whose recorded hash is the one the run resolved and whose length matches the length of the CAS object that hash names, so the run wrote nothing. The check reads no content from the target, so a same-length in-place edit still counts as a skip.
 
 ### Per-screen summary formats
 

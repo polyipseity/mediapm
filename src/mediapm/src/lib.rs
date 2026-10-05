@@ -93,17 +93,19 @@ pub struct MediaPackage {
 
 /// Summary of one complete `mediapm sync` execution.
 ///
-/// `skipped_paths` counts a clean outcome: the library already held the
-/// resolved bytes, so the run wrote nothing. `missing_paths` counts the
-/// opposite, a library left short an entry because the run could not produce
-/// its output, which the CLI reports as an error on its summary line and
-/// exits non-zero for.
+/// `skipped_paths` counts a clean outcome: the run wrote nothing. A record
+/// already named the hash the run resolved for that path, and the file's
+/// length matched the length of the CAS object that hash names. No hash is
+/// computed over the target, so a same-length in-place edit still counts as a
+/// skip. `missing_paths` counts the opposite, a library left short an entry
+/// because the run could not produce its output, which the CLI reports as an
+/// error on its summary line and exits non-zero for.
 ///
 /// How the counters become an icon and an exit status is one rule, in
 /// [`crate::output::sync_outcome`], with a short version: a missing path or a
 /// failed workflow step is an error, a run that only warned is a warning, and
-/// everything else is clean. A skipped path is clean: the library already holds
-/// what it should, and the run had nothing to write.
+/// everything else is clean. No rule reads `skipped_paths`, so a skip can
+/// neither raise nor lower an outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSummary {
     /// Number of conductor instances executed during sync.
@@ -112,8 +114,10 @@ pub struct SyncSummary {
     pub cached_instances: usize,
     /// Number of hierarchy paths materialized to the resolved library root.
     pub materialized_paths: usize,
-    /// Number of hierarchy paths that already held the resolved bytes, so the
-    /// run left them untouched.
+    /// Number of hierarchy paths the run left untouched because a record named
+    /// the resolved hash and the file's length matched the length of the CAS
+    /// object that hash names. The target's bytes are not hashed, so this is a
+    /// length match, not a verification, and a same-length edit is not caught.
     pub skipped_paths: usize,
     /// Number of hierarchy paths the run left unwritten because it could not
     /// produce their output. Any count above zero makes the run an error.
@@ -162,8 +166,10 @@ pub struct WorkflowSyncSummary {
 pub struct MaterializationSyncSummary {
     /// Paths materialized (new or updated).
     pub materialized_paths: usize,
-    /// Paths that already held the resolved bytes, so the run left them
-    /// untouched.
+    /// Paths the run left untouched because a record named the resolved hash
+    /// and the file's length matched the length of the CAS object that hash
+    /// names. The target's bytes are not hashed, so a same-length edit is not
+    /// caught.
     pub skipped_paths: usize,
     /// Paths the run left unwritten because it could not produce their output.
     pub missing_paths: usize,
