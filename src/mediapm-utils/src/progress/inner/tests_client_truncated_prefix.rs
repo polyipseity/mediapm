@@ -16,9 +16,10 @@ impl crate::progress::BarLabelTruncation for ClippedLabel {
         self.text.chars().take(max_width).collect()
     }
 
-    /// Returns nothing: this test is about the prefix half.
-    fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
-        String::new()
+    /// Clips the same text to the budget, so both halves of this double
+    /// answer to the width the renderer grants.
+    fn truncate_suffix(&self, max_width: usize, _suffix: &SuffixComponents) -> String {
+        self.text.chars().take(max_width).collect()
     }
 }
 

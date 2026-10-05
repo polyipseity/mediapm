@@ -589,24 +589,29 @@ fn suffix_truncation_order_unchanged_after_merge() {
 
 // ---- Phase 4: client-defined truncation contract ----------------------
 
-/// Dummy truncation that ignores the width budget and returns fixed
-/// strings. Proves the renderer *calls* the trait at the single push
-/// point and uses its output verbatim (the client owns the layout).
+/// A client label that clips its own text to the width the renderer grants.
+/// Proves the renderer *calls* the trait at the single push point and uses its
+/// output verbatim (the client owns the layout).
+///
+/// Both halves clip, because that is the contract every real client honours. A
+/// double returning its text whole whatever slot it was handed renders a fixed
+/// width the row cannot shrink, so an assertion built on one cannot tell a
+/// renderer that granted a real budget from one that granted none.
 struct FixedTruncation {
     prefix: &'static str,
     suffix: &'static str,
 }
 
 impl crate::progress::BarLabelTruncation for FixedTruncation {
-    fn truncate_prefix(&self, _max_width: usize) -> String {
-        self.prefix.to_string()
+    fn truncate_prefix(&self, max_width: usize) -> String {
+        self.prefix.chars().take(max_width).collect()
     }
     fn truncate_suffix(
         &self,
-        _max_width: usize,
+        max_width: usize,
         _suffix: &crate::progress::SuffixComponents,
     ) -> String {
-        self.suffix.to_string()
+        self.suffix.chars().take(max_width).collect()
     }
 }
 
@@ -614,9 +619,16 @@ impl crate::progress::BarLabelTruncation for FixedTruncation {
 fn set_truncation_replaces_builtin_rendering() {
     // When a bar has client truncation installed, the terminal output must
     // contain the client's strings and NOT the built-in component render.
+    //
+    // The dimension source is pinned to the draw target's width because the
+    // client clips its strings to the budget it is handed. Left on the host
+    // terminal, a window too narrow for `CLIENT-PREFIX` would clip it and the
+    // assertion would fail on the machine that ran the test rather than on the
+    // renderer.
     let term = indicatif::InMemoryTerm::new(10, 80);
     let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
+        .with_dim_source(Arc::new(TestDimensionSource::new((10, 80))))
         .with_pre_roll_capture(super::pre_roll_capture())
         .capacity(4)
         .with_ticker_enabled(false)
@@ -640,16 +652,16 @@ fn set_truncation_replaces_builtin_rendering() {
 
 // ---- Task 4: the width budget handed to client-defined truncation -----
 
-/// A truncation that *honours* its budget, unlike [`FixedTruncation`], and
-/// records the budgets it is handed so the renderer's arithmetic can be
-/// asserted.
+/// A truncation that reports the budgets it is handed so the renderer's
+/// arithmetic can be asserted, alongside [`FixedTruncation`], which clips a
+/// fixed text instead of filling the budget.
 ///
-/// [`FixedTruncation`] returns fixed strings and ignores the budget, which
-/// proves the renderer calls the trait and uses its output verbatim. It
-/// cannot show that the budget is *correct*: a renderer that passed any
-/// width at all would satisfy it. This one returns a run of one character
-/// per column it was granted, so the rendered slot shows the granted width
-/// directly and each budget can be read back after a tick.
+/// [`FixedTruncation`] proves the renderer calls the trait and uses its output
+/// verbatim, which it can show without recording anything. It cannot show that
+/// the budget is *correct*: both of its halves have text to lose, so a renderer
+/// that passed any width wide enough would satisfy it. This one returns a run of
+/// one character per column it was granted, so the rendered slot shows the
+/// granted width directly and each budget can be read back after a tick.
 struct BudgetTruncation {
     seen_prefix: std::sync::Mutex<Option<usize>>,
     seen_suffix: std::sync::Mutex<Option<usize>>,
@@ -906,6 +918,116 @@ fn client_truncated_prefix_fills_exactly_its_budget_and_fits_its_slot() {
     for line in content.lines() {
         assert!(
             visible_width(line) <= usize::from(WIDE_TERMINAL_COLS),
+            "rendered line overflows the terminal: {line:?}",
+        );
+    }
+}
+
+/// A client label with more suffix text than any slot the renderer can grant,
+/// recording the budget it was handed.
+///
+/// [`BudgetTruncation`] renders one column per column granted, so it fits by
+/// construction and says nothing about whether the renderer passed a slot at
+/// all. This one has text to lose, so what the row shows is the budget the
+/// renderer chose rather than the client's own restraint.
+struct WideSuffixLabel {
+    /// Prefix text, clipped to whatever budget the renderer grants.
+    prefix: &'static str,
+    /// The suffix text, longer than any slot a test drives.
+    suffix: String,
+    /// The budget the renderer last granted, or `None` before the client
+    /// branch has run.
+    granted: std::sync::Mutex<Option<usize>>,
+}
+
+impl WideSuffixLabel {
+    /// The suffix budget the renderer granted, or `None` if the client branch
+    /// never ran.
+    fn suffix_budget(&self) -> Option<usize> {
+        *self.granted.lock().expect("suffix budget poisoned")
+    }
+}
+
+impl crate::progress::BarLabelTruncation for WideSuffixLabel {
+    fn truncate_prefix(&self, max_width: usize) -> String {
+        self.prefix.chars().take(max_width).collect()
+    }
+
+    fn truncate_suffix(
+        &self,
+        max_width: usize,
+        _suffix: &crate::progress::SuffixComponents,
+    ) -> String {
+        *self.granted.lock().expect("suffix budget poisoned") = Some(max_width);
+        self.suffix.chars().take(max_width).collect()
+    }
+}
+
+/// The word [`WideSuffixLabel`] repeats to build a suffix longer than any slot
+/// a test drives, so no test carries a literal that has to be kept in step
+/// with the ceiling.
+const SUFFIX_WORD: &str = "elapsed ";
+
+/// Terminal width for the suffix-clipping test.
+///
+/// Narrow enough that the columns left for both labels fall below
+/// [`MAX_SUFFIX_WIDTH`], so the suffix slot is smaller than the ceiling the
+/// layout measures the client at, and the draw pass asks the client for less
+/// than the measurement pass did. That difference is the case this test
+/// exists for: a renderer that handed the ceiling to the draw pass instead of
+/// the settled slot would render a row the line has no room for.
+const CLIP_TERMINAL_COLS: u16 = 40;
+
+/// The rendered suffix stays inside the slot the renderer settled, when the
+/// client holds more text than the slot can take.
+///
+/// The budget is measured at the suffix ceiling and settled to whatever the
+/// line has left, so the two differ on a narrow line and the draw pass has to
+/// ask for the settled width rather than the ceiling. Asking for the ceiling is
+/// invisible to a client with little to say and overflows the row by exactly
+/// that difference, which is what this asserts against.
+///
+/// The expected suffix comes from the label's own text cut to the budget it
+/// was granted, so the frame needs neither a hand-written filler nor a spinner
+/// glyph.
+#[test]
+fn client_suffix_is_clipped_to_the_slot_the_renderer_settled() {
+    let suffix = SUFFIX_WORD.repeat(20);
+    let label = Arc::new(WideSuffixLabel {
+        prefix: "wf",
+        suffix: suffix.clone(),
+        granted: std::sync::Mutex::new(None),
+    });
+
+    let term = indicatif::InMemoryTerm::new(10, CLIP_TERMINAL_COLS);
+    let terminal = ProgressTerminal::builder()
+        .with_term_like(Box::new(term.clone()))
+        .with_dim_source(Arc::new(TestDimensionSource::new((10, CLIP_TERMINAL_COLS))))
+        .with_pre_roll_capture(super::pre_roll_capture())
+        .capacity(4)
+        .with_ticker_enabled(false)
+        .build();
+    let group = terminal.screen().build();
+    let bar = group.add_bar(100, "test");
+    bar.set_truncation(Arc::clone(&label) as Arc<dyn crate::progress::BarLabelTruncation>);
+
+    group.tick();
+    let content = term.contents();
+
+    let granted = label.suffix_budget().expect("the client branch must have run");
+    assert!(
+        granted < suffix.len(),
+        "the client must have been asked for less than it holds, or nothing was \
+         clipped and the row proves nothing: {content:?}",
+    );
+    let expected_suffix: String = suffix.chars().take(granted).collect();
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        assert!(
+            line.ends_with(&expected_suffix),
+            "row must end in the label's text cut to its budget: {line:?}",
+        );
+        assert!(
+            visible_width(line) <= usize::from(CLIP_TERMINAL_COLS),
             "rendered line overflows the terminal: {line:?}",
         );
     }
