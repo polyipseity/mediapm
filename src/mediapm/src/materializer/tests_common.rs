@@ -217,6 +217,58 @@ pub(super) fn folder_only_document(variant_hash: &str) -> MediaPmDocument {
     document
 }
 
+/// A one-folder-entry document whose media source declares no output
+/// variants and carries no variant hashes.
+///
+/// Both places a variant name can come from are emptied, so the folder's
+/// selected list is empty before the loop rather than blocked inside it. No
+/// name reaches the loop, so nothing in it can report having written. The
+/// hash the folder fixture starts from is cleared on the way out, so the
+/// document never carries a variant the materializer could resolve.
+pub(super) fn folder_without_variants_document() -> MediaPmDocument {
+    let mut document = folder_only_document("");
+    for source in document.media.values_mut() {
+        source.variant_hashes.clear();
+        for step in &mut source.steps {
+            step.output_variants.clear();
+        }
+    }
+    document
+}
+
+/// A one-folder-entry document with two variants, [`BLOCKED_VARIANT`] and
+/// the `default` variant [`folder_only_document`] already carries, of which
+/// only `default` resolves from `good_hash`.
+///
+/// Both carry the same hash, so what refuses the first is the directory
+/// a test puts at its path rather than its content, which is what lets one
+/// test hold the resolution path constant and vary the conflict.
+///
+/// Two variants are what makes this fixture answer a question a
+/// single-variant folder cannot. A folder is one hierarchy path however many
+/// variants it holds, so an entry that wrote one file and refused another
+/// belongs in exactly one counter, and the run says which.
+pub(super) fn folder_with_blocked_and_good_variants_document(good_hash: &str) -> MediaPmDocument {
+    let mut document = folder_only_document(good_hash);
+    for source in document.media.values_mut() {
+        source.variant_hashes.insert(BLOCKED_VARIANT.to_string(), good_hash.to_string());
+        for step in &mut source.steps {
+            step.output_variants.insert(
+                BLOCKED_VARIANT.to_string(),
+                OutputVariantValue::Generic(GenericOutputVariantConfig {
+                    kind: "primary".to_string(),
+                    ..Default::default()
+                }),
+            );
+        }
+    }
+    document
+}
+
+/// Variant name a test occupies with a directory so the folder arm refuses to
+/// write it.
+pub(super) const BLOCKED_VARIANT: &str = "blocked";
+
 /// Opens a CAS under the workspace runtime root for a `sync_hierarchy` call.
 pub(super) async fn open_hierarchy_cas(paths: &MediaPmPaths) -> FileSystemCas {
     let cas_root = paths.runtime_root.join("store");

@@ -934,7 +934,16 @@ async fn materialize_media_folder_entry(
     // materialized would report a library the document did not ask for, and
     // the files the other variants did write are recorded in `managed_files`
     // either way.
-    let mut unwritten_variant = false;
+    //
+    // An entry with no variants starts out unwritten, because the loop below
+    // runs zero times and reaches none of the arms that set this. That is the
+    // one shape in which the loop leaves the flag false without having
+    // written anything.
+    let mut unwritten_variant = selected_variants.is_empty();
+    if selected_variants.is_empty() {
+        shared
+            .notice(format!("media '{media_id}' resolved to no variants, so nothing was written"));
+    }
 
     for variant_name in &selected_variants {
         // A variant name is a second untrusted join on this path: it reaches
