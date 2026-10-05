@@ -279,7 +279,17 @@ pub async fn sync_hierarchy(
         }
     }
 
-    if materialize_error.is_some() {
+    // A skipped path ends the row as an error, not as a neutral success. A
+    // skip means the entry's variant resolved no content hash, so the upstream
+    // step produced nothing to commit and the library is not the shape the
+    // document asked for.
+    //
+    // The `Err` below stays reserved for a real `materialize_error`. Returning
+    // one here would discard the report, and the caller still needs it to say
+    // how many paths materialized and how many were skipped. A run that
+    // materialized most of its entries has a real result to report even when
+    // one entry did not land.
+    if materialize_error.is_some() || report.skipped_paths > 0 {
         pb.finish_error();
     } else {
         pb.finish_success();
@@ -1482,10 +1492,14 @@ mod tests {
     /// Single media entry with no CAS content emits the full progress
     /// sequence: overall bar → per-entry `[stg]`/`[vrf]` phases →
     /// `Advance(1)` + `FinishWarning` (skipped) → overall
-    /// `Advance(1)` + `FinishSuccess`.
+    /// `Advance(1)` + `FinishError`.
     ///
     /// The order is deterministic because the single spawned task completes
     /// (advance + `entry_bar` ops) before the overall bar is finished.
+    ///
+    /// The overall row ends as an error because the entry was skipped, so this
+    /// test also pins where that finish falls in the sequence rather than only
+    /// that it happens.
     #[tokio::test]
     async fn sync_hierarchy_with_single_media_produces_progress_ops() {
         let root = mediapm_utils::temp::artifact_dir().unwrap();
@@ -1552,7 +1566,7 @@ mod tests {
         // Exact op sequence: overall bar (AddBar from with_overall,
         // then SetTotal + SetTruncation from sync_hierarchy) → per-entry
         // `[stg]`/`[vrf]` phases → `Advance(1)` + `FinishWarning` (skipped, no
-        // CAS content) → overall `Advance(1)` + `FinishSuccess`.
+        // CAS content) → overall `Advance(1)` + `FinishError`.
         assert_eq!(
             ops,
             vec![
@@ -1579,9 +1593,10 @@ mod tests {
                     suffix: String::new(),
                 },
                 ProgressOp::FinishWarning,
-                // Overall bar: advance(1) after entry completes + finish_success.
+                // Overall bar: advance(1) after entry completes + finish_error,
+                // because a skipped path has not been materialized.
                 ProgressOp::Advance { delta: 1 },
-                ProgressOp::FinishSuccess,
+                ProgressOp::FinishError,
             ],
             "\nops mismatch — expected the overall bar + [stg]→[vrf] skip path",
         );
@@ -2539,8 +2554,8 @@ mod tests {
         );
     }
 
-    /// The overall row finishes `FinishError` when an entry fails and
-    /// `FinishSuccess` when the only entry was skipped.
+    /// The overall row finishes `FinishError` when an entry fails and when an
+    /// entry is skipped.
     ///
     /// The overall handle and the per-entry rows share the op vocabulary, so
     /// an unfiltered search for a finish finds whichever row emitted it first
@@ -2554,15 +2569,12 @@ mod tests {
     /// the entry row's own `FinishError`, the skipping half checks
     /// `skipped_paths` and the entry row's `FinishWarning`.
     ///
-    /// What this pins is the implemented contract, which is not what the
-    /// coverage-matrix row originally claimed. The row asked for
-    /// `finish_warning` when any entry is skipped; the overall handle has no
-    /// `finish_warning` call, and a skipped entry ends `FinishSuccess`. The
-    /// open product question is whether one skipped entry should turn the
-    /// whole screen yellow; until that is decided deliberately, the behaviour
-    /// to protect is the one that runs.
+    /// The skipping half also pins that the run still returns `Ok`, so the
+    /// error row is not bought by throwing the report away. A caller that saw
+    /// a skip as a green screen missed a path it was asked to write; a caller
+    /// that saw it as `Err` would lose the tally of what did land.
     #[tokio::test]
-    async fn the_overall_row_finishes_error_on_a_failed_entry_and_success_on_a_skipped_one() {
+    async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_skipped_one() {
         let failed = {
             let root = mediapm_utils::temp::artifact_dir().unwrap();
             let paths = MediaPmPaths::from_root(root.path());
@@ -2617,11 +2629,18 @@ mod tests {
             )
             .await;
 
-            let report = result.expect("a skipped entry is not a failed run");
+            let report = result.expect(
+                "a skipped entry is a failure to materialize, not a failed run; the report must \
+                 survive so the caller can still read the tallies",
+            );
             assert_eq!(
                 report.skipped_paths, 1,
                 "the run must really have skipped its one entry before the overall finish is read; \
                  got {report:?}"
+            );
+            assert_eq!(
+                report.materialized_paths, 0,
+                "the report must distinguish the skipped entry from a written one; got {report:?}"
             );
             assert_eq!(
                 entry_finishes(&recording),
@@ -2633,10 +2652,57 @@ mod tests {
         };
         assert_eq!(
             overall_finish(&skipped.0, &skipped.1),
-            Some(ProgressOp::FinishSuccess),
-            "a run whose only entry was skipped must still end the overall row as a success; \
-             got {ops:?}",
+            Some(ProgressOp::FinishError),
+            "a run whose only entry was skipped has not materialized the library, so the overall \
+             row must end as an error; got {ops:?}",
             ops = skipped.0.recorded()
+        );
+    }
+
+    /// A run that materializes every entry still ends the overall row as a
+    /// success.
+    ///
+    /// The half of the error contract above that a skip now triggers needs a
+    /// counterpart: if `skipped_paths` were consulted for the success path too,
+    /// or if the error finish bled into a clean run, this would catch it.
+    #[tokio::test]
+    async fn the_overall_row_finishes_success_when_every_entry_is_written() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let paths = MediaPmPaths::from_root(root.path());
+        let cas = open_hierarchy_cas(&paths).await;
+        let payload = b"every-entry-written";
+        let hash = cas.put(bytes::Bytes::from_static(payload)).await.unwrap();
+        let mut document = folder_and_playlist_document(&hash.to_string());
+        document.hierarchy.retain(|node| matches!(node.kind, HierarchyNodeKind::Media));
+
+        let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
+        let report = sync_hierarchy(
+            &paths,
+            &document,
+            &mut MediaPmState::default(),
+            &cas,
+            true,
+            &ConductorState::new_empty(),
+            &NickelDocument::default(),
+            Some(Arc::new(recording.clone())),
+            Some(Arc::new(overall.clone())),
+        )
+        .await
+        .expect("an entry holding a resolvable variant hash should write");
+
+        assert_eq!(
+            report.materialized_paths, 1,
+            "the entry must really have written before the overall finish is read; got {report:?}"
+        );
+        assert_eq!(
+            report.skipped_paths, 0,
+            "nothing was skipped, so the error finish has nothing to rest on; got {report:?}"
+        );
+        assert_eq!(
+            overall_finish(&recording, &overall),
+            Some(ProgressOp::FinishSuccess),
+            "a run that wrote every entry must end the overall row as a success; got {ops:?}",
+            ops = recording.recorded()
         );
     }
 
@@ -2986,9 +3052,11 @@ mod tests {
                 },
                 ProgressOp::FinishWarning,
                 ProgressOp::Advance { delta: 1 },
-                ProgressOp::FinishSuccess,
+                // The entry was skipped, so the overall row ends as an error.
+                ProgressOp::FinishError,
             ],
-            "the interpolated separator must be sanitized out of the committed path",
+            "the interpolated separator must be sanitized out of the committed path; the \
+             overall row ends as an error because the entry resolved no content hash",
         );
     }
 
