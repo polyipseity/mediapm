@@ -1111,10 +1111,13 @@ fn rewrite_extracted_member_content(target: &Path, content: Vec<u8>) -> Vec<u8> 
 /// extractable file leaves the variant unwritten, because the folder is then
 /// short of what the document resolved it to.
 ///
-/// A member whose path is a directory is refused and the rest are still
-/// written, so the answer is `false` rather than an error. Raising there would
-/// give the join loop an `Err` to break on, and the report the counters live in
-/// would go back with it.
+/// A member whose path is a directory is refused, and so is one whose
+/// directory cannot be made because a file sits where it belongs; either way
+/// the rest are still written and the answer is `false` rather than an error.
+/// Raising would give the join loop an `Err` to break on, and the report the
+/// counters live in would go back with it. A failure neither refusal explains
+/// still raises, so a library that cannot be written does not pass for a
+/// member that declined.
 #[expect(
     clippy::too_many_arguments,
     reason = "the extracted-member loop needs the folder's naming context and the two writers it feeds"
@@ -1159,12 +1162,31 @@ async fn write_zip_folder_variant(
             wrote_member = false;
             continue;
         }
-        if let Some(parent) = file_target.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|source| MediaPmError::Io {
-                operation: "creating extracted-file parent directory".to_string(),
-                path: parent.to_path_buf(),
-                source,
-            })?;
+        if let Some(parent) = file_target.parent()
+            && let Err(source) = tokio::fs::create_dir_all(parent).await
+        {
+            // The forward order of the collision: an earlier member wrote a
+            // file where this one needs a directory. `create_dir_all` reports
+            // it like any other I/O failure, so the ancestors are read first:
+            // a file in the way becomes the refusal the other order already
+            // gets, and any other failure still stops the run, because a
+            // library that cannot be written must not read as a member that
+            // declined.
+            let Some(blocking) = existing_non_directory_ancestor(parent).await else {
+                return Err(MediaPmError::Io {
+                    operation: "creating extracted-file parent directory".to_string(),
+                    path: parent.to_path_buf(),
+                    source,
+                });
+            };
+            shared.notice(format!(
+                "media '{media_id}' variant '{}': not writing '{}' because '{}' is a file",
+                variant.name,
+                file_target.display(),
+                blocking.display()
+            ));
+            wrote_member = false;
+            continue;
         }
         write_generated_file(&file_target, &content).await?;
         commit::ensure_managed_path_readonly(&file_target)?;
@@ -1194,6 +1216,26 @@ async fn write_zip_folder_variant(
         }
     }
     Ok(wrote_member)
+}
+
+/// The first existing path at or above `path` that is not a directory, or
+/// `None` when every path that answers is one.
+///
+/// Only a caller already holding a `create_dir_all` failure reads this, to
+/// tell a file sitting in the way from a failure the disk reported for its
+/// own reasons. The walk stops at the first path that answers, so a
+/// permission problem or a full disk finds directories and stays an error for
+/// the caller to raise.
+async fn existing_non_directory_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut probe = Some(path);
+    while let Some(candidate) = probe {
+        match tokio::fs::metadata(candidate).await {
+            Ok(metadata) if !metadata.is_dir() => return Some(candidate.to_path_buf()),
+            Ok(_) => return None,
+            Err(_) => probe = candidate.parent(),
+        }
+    }
+    None
 }
 
 /// Writes one variant whose payload is not an archive, as one file at the

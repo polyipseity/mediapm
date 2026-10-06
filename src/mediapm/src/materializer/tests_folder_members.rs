@@ -373,6 +373,176 @@ async fn a_folder_member_whose_path_is_a_directory_is_counted_as_missing() {
     );
 }
 
+/// Name of the member that claims the path [`NESTED_MEMBER`] needs as a
+/// directory, so the two cannot both land.
+const COLLIDING_FILE_MEMBER: &str = "cover";
+
+/// Bytes [`COLLIDING_FILE_MEMBER`] holds when it lands as a file.
+const COLLIDING_FILE_PAYLOAD: &[u8] = b"cover art file";
+
+/// Name of the member inside [`COLLIDING_FILE_MEMBER`], which is what makes
+/// the pair collide over one path.
+const NESTED_MEMBER: &str = "cover/thumb.jpg";
+
+/// Bytes [`NESTED_MEMBER`] holds.
+const NESTED_PAYLOAD: &[u8] = b"cover art thumbnail";
+
+/// The name [`COLLIDING_FILE_MEMBER`] is declared under in the archive where
+/// [`NESTED_MEMBER`] has to land first.
+///
+/// Extraction sorts members by their declared path, and `cover` sorts ahead
+/// of `cover/thumb.jpg` however the archive orders them. Declared
+/// `downloads/cover` it sorts behind, and the sandbox prefix is stripped as
+/// the member lands, so it still collides at `cover`.
+const DOWNLOADS_PREFIXED_FILE_MEMBER: &str = "downloads/cover";
+
+/// The file member lands first, the member inside it cannot, and the run
+/// still hands back a report.
+///
+/// The archive asks for `cover` as a file and for `cover/thumb.jpg` inside
+/// it, which the library cannot hold at once. Extraction sorts members by
+/// their declared paths, so `cover` reaches the loop before
+/// `cover/thumb.jpg` whichever order the archive stores them in, and by the
+/// time the nested member asks for its directory the file is already on
+/// disk. The refusal ends that one member: the members written before it
+/// stay, the folder counts as missing, and the run returns its counters
+/// instead of raising.
+///
+/// The media entry [`folder_and_media_document`] declares beside the folder
+/// is what lets the counters be read, for the reason the test above gives.
+#[tokio::test]
+async fn a_folder_whose_file_member_lands_first_is_counted_as_missing() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let archive = cas
+        .put(bytes::Bytes::from(zip_payload(&[
+            (FIRST_MEMBER, FIRST_PAYLOAD),
+            (COLLIDING_FILE_MEMBER, COLLIDING_FILE_PAYLOAD),
+            (NESTED_MEMBER, NESTED_PAYLOAD),
+        ])))
+        .await
+        .unwrap();
+
+    let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 2);
+    let report = sync_hierarchy(
+        &paths,
+        &folder_and_media_document(&archive.to_string()),
+        &mut MediaPmState::default(),
+        &cas,
+        false,
+        &ConductorState::new_empty(),
+        &NickelDocument::default(),
+        Some(Arc::new(recording.clone())),
+        Some(Arc::new(overall.clone())),
+    )
+    .await
+    .expect("one member that cannot land leaves a report to read; it is not a failed run");
+
+    assert_eq!(
+        (report.missing_paths, report.materialized_paths, report.skipped_paths),
+        (1, 1, 0),
+        "the folder is short the member that could not have a directory while the media entry \
+         beside it wrote, and nothing was correct enough to skip: {report:?}"
+    );
+    let folder = paths.hierarchy_root_dir.join(FOLDER_PATH);
+    assert_eq!(
+        std::fs::read(folder.join(FIRST_MEMBER)).unwrap(),
+        FIRST_PAYLOAD,
+        "the member written before the collision has to survive it, or the refusal ended the \
+         loop rather than one iteration of it"
+    );
+    assert_eq!(
+        std::fs::read(folder.join(COLLIDING_FILE_MEMBER)).unwrap(),
+        COLLIDING_FILE_PAYLOAD,
+        "the file member is what the nested member collided with, so the file has to be what is \
+         still on disk"
+    );
+    assert!(
+        !folder.join(NESTED_MEMBER).exists(),
+        "the member whose directory a file occupies must be refused rather than written"
+    );
+    assert_eq!(
+        overall_finish(&recording, &overall),
+        Some(ProgressOp::FinishError),
+        "a folder left short a member has not materialized the library, so the overall row must \
+         end as an error; got {ops:?}",
+        ops = recording.recorded()
+    );
+}
+
+/// The nested member lands first, the file over it is refused, and the run
+/// hands back the same report the other order gives.
+///
+/// `cover/thumb.jpg` writes before the file member reaches the loop, so a
+/// directory is standing by the time the file member wants `cover` and the
+/// refusal that has always made for an occupied directory takes it. The
+/// archive declares the file member `downloads/cover` to get that order,
+/// because sorting alone always puts a file ahead of the member inside it.
+///
+/// This is the order that already behaved. It keeps a test on both halves of
+/// one collision, so the two refusals cannot drift apart again.
+#[tokio::test]
+async fn a_folder_whose_nested_member_lands_first_is_counted_as_missing() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let archive = cas
+        .put(bytes::Bytes::from(zip_payload(&[
+            (FIRST_MEMBER, FIRST_PAYLOAD),
+            (NESTED_MEMBER, NESTED_PAYLOAD),
+            (DOWNLOADS_PREFIXED_FILE_MEMBER, COLLIDING_FILE_PAYLOAD),
+        ])))
+        .await
+        .unwrap();
+
+    let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 2);
+    let report = sync_hierarchy(
+        &paths,
+        &folder_and_media_document(&archive.to_string()),
+        &mut MediaPmState::default(),
+        &cas,
+        false,
+        &ConductorState::new_empty(),
+        &NickelDocument::default(),
+        Some(Arc::new(recording.clone())),
+        Some(Arc::new(overall.clone())),
+    )
+    .await
+    .expect("one member that cannot land leaves a report to read; it is not a failed run");
+
+    assert_eq!(
+        (report.missing_paths, report.materialized_paths, report.skipped_paths),
+        (1, 1, 0),
+        "the folder is short the file member the directory displaced while the media entry \
+         beside it wrote, and nothing was correct enough to skip: {report:?}"
+    );
+    let folder = paths.hierarchy_root_dir.join(FOLDER_PATH);
+    assert_eq!(
+        std::fs::read(folder.join(FIRST_MEMBER)).unwrap(),
+        FIRST_PAYLOAD,
+        "the member written before the collision has to survive it, or the refusal ended the \
+         loop rather than one iteration of it"
+    );
+    assert_eq!(
+        std::fs::read(folder.join(NESTED_MEMBER)).unwrap(),
+        NESTED_PAYLOAD,
+        "the nested member landed first, so its bytes are on disk"
+    );
+    assert!(
+        folder.join(COLLIDING_FILE_MEMBER).is_dir(),
+        "the file member must leave the directory alone rather than replace it: {}",
+        folder.join(COLLIDING_FILE_MEMBER).display()
+    );
+    assert_eq!(
+        overall_finish(&recording, &overall),
+        Some(ProgressOp::FinishError),
+        "a folder left short a member has not materialized the library, so the overall row must \
+         end as an error; got {ops:?}",
+        ops = recording.recorded()
+    );
+}
+
 /// A folder with one blocked variant and one good variant stays missing over
 /// two runs, though its good variant's file is correct.
 ///
