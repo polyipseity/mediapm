@@ -503,3 +503,9 @@ After every task is reviewed and committed:
 5. `/tmp/mediapm-flake-samples/sample.sh 10`, which must now reach `NOT REPRODUCED in 10 runs`
 
 Item 5 is the one that closes the original question, and it is the last thing to run rather than the first, so that a fix from Task 3 has been reviewed before it is measured seventeen times.
+
+## Outcome
+
+The diagnosis in Tasks 1 through 4 terminated without reproducing the leftover, so no flake fix was made. The leftover remains unexplained and is carried as an open work item.
+
+The five small fixes and the coverage-row correction did land, and the closing gate was green.

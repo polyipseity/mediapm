@@ -175,7 +175,7 @@ mod program_tests {
     use super::janitor_command;
     use std::path::Path;
 
-    /// The unix branch must spawn the janitor by path.
+    /// The unix branch must spawn the janitor by path and pass `--dry-run`.
     ///
     /// `clean-mediapm-temp.sh` is bash: it uses `set -euo pipefail`, `[[ ]]`
     /// and `read -r -d ''`, none of which dash parses. On `ubuntu-latest` the
@@ -184,13 +184,27 @@ mod program_tests {
     /// tests cannot catch that on a bash-as-sh host, because the stub's own
     /// `set -euo pipefail` is legal there. This assertion is what closes it
     /// everywhere, with no spawn and no interpreter dependency.
+    ///
+    /// The args are the other half of that contract, for the same style of
+    /// reason: `--dry-run` is what makes the janitor report rather than
+    /// delete. Drop it and the gate removes exactly the directories it exists
+    /// to report, destroying the evidence of the failure it catches, while
+    /// every other assertion here keeps passing. The flag is checked against
+    /// the whole arg list rather than a fixed position, so reordering the
+    /// command cannot lose it silently.
     #[test]
     #[cfg(unix)]
     fn the_unix_branch_spawns_the_janitor_by_path() {
-        let (program, _args) = janitor_command(Path::new("/repo"));
+        let (program, args) = janitor_command(Path::new("/repo"));
         assert!(
             program.to_string_lossy().ends_with("clean-mediapm-temp.sh"),
             "the janitor must be spawned by path, not through an interpreter; got {program:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--dry-run"),
+            "the gate must pass --dry-run to the janitor; without it the janitor deletes \
+             the temp directories this gate exists to report instead of reporting them; \
+             got args {args:?}"
         );
     }
 }
