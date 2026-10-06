@@ -1459,7 +1459,7 @@ Expected: failure, `src/matrix.rs` does not exist.
 //!
 //! Every workspace member is checked with `--no-default-features`, then
 //! each single feature it declares, then `--all-features`. The CI workflow
-//! used to carry the resulting combination list as a 47-row YAML matrix,
+//! used to carry the resulting combination list as a 46-row YAML matrix,
 //! which is a list that silently rots: a crate gains a feature and the
 //! matrix stops covering it. Deriving the list from `cargo metadata` makes
 //! that impossible.
@@ -1572,6 +1572,48 @@ pub fn probes(metadata: &Metadata) -> Vec<Probe> {
     derived
 }
 ```
+
+- [ ] **Step 3b: Extract the probe argv into a pure function and pin it**
+
+The spawn loop builds the argv inline, which is the only place in this crate
+where argv construction is not a pure, testable function. `nextest::argv`,
+`doc::doctest_argv` and `Selection::package_flags` are all pure, and rulings
+R6 and R12 turn entirely on argv composition. As it stands, dropping the
+`--locked` push would pass every test, clippy, fmt and doc.
+
+Extract:
+
+```rust
+/// The argv for one `cargo check` probe.
+///
+/// `check` first, then the lock flag, then the package, then the probe's
+/// own feature flags. `--locked` precedes the package selector because
+/// both are cargo flags and neither changes the other's meaning; the order
+/// is fixed so two runs of the same probe produce byte-identical argv.
+fn probe_argv(args: &MatrixArgs, probe: &Probe) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = vec![OsString::from("check")];
+    if args.wants_lock() {
+        argv.push(OsString::from("--locked"));
+    }
+    argv.push(OsString::from("--package"));
+    argv.push(OsString::from(&probe.package));
+    argv.extend(probe.flags.iter().map(OsString::from));
+    argv
+}
+```
+
+Have the spawn loop call it, and pin two vectors: one for the locked default
+and one under `--no-locked` asserting `--locked` is absent. Name the local
+holding the built argv so `clippy::similar_names` stays clear of the `args`
+parameter, as Task 5's `check_argv` did.
+
+- [ ] **Step 3c: Restore `dispatch`'s by-value rationale**
+
+Task 5 deleted the whole paragraph rather than the one stale clause it meant
+to, leaving a dangling `///` and no documented reason for the by-value
+signature. Replace the dangling line with the reason that is true now: the
+match owns `command`, and each arm binds its own payload to pass by
+reference, so no arm moves it out.
 
 - [ ] **Step 4: Wire the `FeatureMatrix` arm**
 
@@ -1766,7 +1808,7 @@ In the same job's `Build project` step, delete the `cargo --locked doc --no-deps
 
 - [ ] **Step 3: Replace the feature-matrix job body**
 
-In the `feature-matrix` job, delete the entire `strategy:` block including `fail-fast: false` and the 47-row `matrix.include` list, along with the three-paragraph comment above it that explains the matrix gotchas (that comment now lives in `scripts/test-runner/src/matrix.rs`).
+In the `feature-matrix` job, delete the entire `strategy:` block including `fail-fast: false` and the 46-row `matrix.include` list, along with the three-paragraph comment above it that explains the matrix gotchas (that comment now lives in `scripts/test-runner/src/matrix.rs`).
 
 Replace the `Check feature combination` step with:
 
