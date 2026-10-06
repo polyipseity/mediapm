@@ -1,6 +1,8 @@
 //! Integration tests for repository scripts: the temp-janitor production
-//! scripts (`scripts/clean-mediapm-temp.{sh,ps1}`), their self-tests, and
-//! the run-all-tests runner self-tests (`tests/scripts/test-run-all-tests.*`).
+//! scripts (`scripts/clean-mediapm-temp.{sh,ps1}`) and their self-tests.
+//!
+//! The test pipeline itself is not tested from here. It is the
+//! `test-runner` crate, and it carries its own gate tests in Rust.
 //!
 //! Platform-smart via runtime probes: each interpreter (`bash`, `sh`,
 //! `pwsh`) is probed by spawning a harmless command, and when the binary is
@@ -21,12 +23,7 @@ const SCRIPTS: [&str; 2] = ["clean-mediapm-temp.sh", "clean-mediapm-temp.ps1"];
 
 /// Script self-tests present in this crate's directory, gated for presence
 /// and the executable bit by [`script_files_exist_and_are_executable`].
-const TEST_SCRIPTS: [&str; 4] = [
-    "test-clean-mediapm-temp.sh",
-    "test-clean-mediapm-temp.ps1",
-    "test-run-all-tests.sh",
-    "test-run-all-tests.ps1",
-];
+const TEST_SCRIPTS: [&str; 2] = ["test-clean-mediapm-temp.sh", "test-clean-mediapm-temp.ps1"];
 
 /// Fake managed-prefix dirs the janitor must remove.
 const FAKE_MEDIAPM_DIRS: [&str; 3] =
@@ -225,7 +222,7 @@ fn bash_janitor_dry_run_and_real_run() {
     });
 }
 
-/// Runs a janitor/runner self-test, skipping when its interpreter is absent.
+/// Runs a janitor self-test, skipping when its interpreter is absent.
 fn assert_self_test(
     script: &Path,
     ok_marker: &str,
@@ -266,28 +263,6 @@ fn pwsh_janitor_self_test() {
     assert_self_test(
         &test_script_path("test-clean-mediapm-temp.ps1"),
         "test-clean-mediapm-temp.ps1: OK",
-        "pwsh",
-        &["--version"],
-        run_pwsh,
-    );
-}
-
-#[test]
-fn bash_runner_self_test() {
-    assert_self_test(
-        &test_script_path("test-run-all-tests.sh"),
-        "test-run-all-tests.sh: OK",
-        "sh",
-        &["-c", "exit 0"],
-        |script, sandbox, flags| run_script("sh", script, sandbox, flags),
-    );
-}
-
-#[test]
-fn pwsh_runner_self_test() {
-    assert_self_test(
-        &test_script_path("test-run-all-tests.ps1"),
-        "test-run-all-tests.ps1: OK",
         "pwsh",
         &["--version"],
         run_pwsh,
