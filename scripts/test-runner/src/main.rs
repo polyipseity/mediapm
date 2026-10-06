@@ -11,28 +11,11 @@
 //! `CARGO_MANIFEST_DIR` and asks cargo where the workspace root is, so it
 //! works in a checkout without a `.git` directory.
 
-// Two modules still carry an unread item each, so rustc reports it dead
-// and the expectation is still required. Each is removed by the task that
-// makes its last item live, which for both is Task 5.
-//
-// `cargo` is read by the `test` subcommand, but only for `metadata()` and
-// `status_code()`. `Metadata::packages` and the `Package` struct are
-// feature-matrix inputs and nothing reads them until Task 5.
-//
-// `cli`'s `Selection` is fully live; `MatrixArgs::wants_lock` is not, and
-// stays unread while `feature-matrix` is a `todo!()` arm.
-#[expect(
-    dead_code,
-    reason = "Metadata::packages and Package are feature-matrix inputs that only the feature-matrix subcommand reads, and that arm is still todo!(), so the typed metadata view is half live; Task 5 consumes both and removes this"
-)]
 mod cargo;
-#[expect(
-    dead_code,
-    reason = "MatrixArgs::wants_lock is consumed only by the feature-matrix subcommand, which is still a todo!() arm; Task 5 removes this"
-)]
 mod cli;
 mod doc;
 mod gates;
+mod matrix;
 mod nextest;
 mod test;
 
@@ -94,15 +77,11 @@ fn process_exit_code(code: i32) -> ExitCode {
 
 /// Routes a parsed subcommand to its implementation.
 ///
-/// Takes `command` by value because every arm binds and moves its own
-/// payload: the `test` and `doc` arms hand their selection to
-/// [`test::run`] and [`doc::run`] by reference, but `feature-matrix` still
-/// holds its payload for a later task.
 fn dispatch(command: Command) -> anyhow::Result<i32> {
     match command {
         Command::Test(selection) => test::run(&selection),
         Command::Doc(selection) => doc::run(&selection),
-        Command::FeatureMatrix(_) => todo!("Task 5"),
+        Command::FeatureMatrix(args) => matrix::run(&args),
     }
 }
 
