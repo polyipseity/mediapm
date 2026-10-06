@@ -835,7 +835,7 @@ Root-level cargo member `tests/` (package `mediapm-tests`) exercises the reposit
 | Rust janitor gate (in `scripts/test-runner`, not a script in this crate): a sweep that fails is named, a leftover fails, a clean sweep passes | `a_failed_sweep_names_its_own_diagnostic`, `a_leftover_fails_the_gate`, `a_clean_sweep_passes` | [covered] |
 | Rust janitor gate output contract: which lines count as janitor contract and which are diagnostics forwarded to stderr | `contract_lines_are_recognised`, `a_count_line_needs_digits`, `contract_lines_must_match_wholly` | [covered] |
 | Static: all four scripts exist, executable bit on unix (the janitor pair and its two self-tests) | `script_files_exist_and_are_executable` | [covered] |
-| Windows CI job runs ONLY the `mediapm-tests` script crate (`cargo --locked test-pkg mediapm-tests`): the janitor and its self-tests; it does not run `test-runner`, so the temp-dir gates are exercised on `ubuntu-latest` only | `windows` job in `.github/workflows/ci.yml` | [covered] |
+| Windows CI job runs the `mediapm-tests` script crate (`cargo --locked test-pkg mediapm-tests`): the janitor and its self-tests, plus `cargo --locked test-pkg test-runner` (nextest unit tests), so the temp-dir gate tests are exercised on Windows as well as `ubuntu-latest`; the doctest/rustdoc gate (`cargo test-doc-all`) is not part of the job | `windows` job in `.github/workflows/ci.yml` (`Run workspace tests` and `Run test-runner gate tests` steps) | [covered] |
 
 ## Progress terminal and screen ownership (S1-S6)
 
